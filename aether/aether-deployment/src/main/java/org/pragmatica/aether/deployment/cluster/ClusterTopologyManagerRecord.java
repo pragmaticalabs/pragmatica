@@ -432,10 +432,10 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     /// QUIC NPE). If `clusterMembers` is empty (cold paths), the seed falls back to
     /// `buildProvisionContext`'s topology-derived peers. `failedPeer` is observability-only.
     @Override
-    public Promise<Unit> provisionReplacement(NodeId newNodeId,
-                                              Option<NodeId> failedPeer,
-                                              Set<NodeId> clusterMembers,
-                                              NodeRole intendedRole) {
+    public Promise<ProvisionDisposition> provisionReplacement(NodeId newNodeId,
+                                                              Option<NodeId> failedPeer,
+                                                              Set<NodeId> clusterMembers,
+                                                              NodeRole intendedRole) {
         log.info("CTM v2: provisionReplacement requested (newNodeId={}, failedPeer={}, clusterMembers.size={}, intendedRole={})",
                  newNodeId,
                  failedPeer,
@@ -445,17 +445,19 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
         // become a member, the LeaderReconciler re-derives the same deficit and calls back here),
         // the consecutive-failure counter trips this breaker and provisioning is suspended for a
         // backoff window. Without the gate the auto-heal loop creates containers endlessly (the
-        // crash-loop container storm). Return success (not a failure) so the reconciler treats the
-        // suspended pass as a deferral and retries after the window — symmetric with the
-        // "no healthy peers" deferral below. `onNodeReady`/`activate`/phase→NORMAL/`setDesiredSize`
-        // reset the breaker the moment a replacement actually joins or an operator intervenes.
+        // crash-loop container storm). Return a DEFERRED disposition (not a failure, not a phantom
+        // dispatched) so the reconciler removes its in-flight placeholder — nothing was booted, so
+        // the raw deficit must stay visible for the next tick to re-poke once the window clears —
+        // symmetric with the "no healthy peers" deferral below. `onNodeReady`/`activate`/
+        // phase→NORMAL/`setDesiredSize` reset the breaker the moment a replacement actually joins
+        // or an operator intervenes.
         if (provisioningCircuitOpen()) {
             log.warn("CTM v2: provisionReplacement suppressed — provisioning circuit OPEN ({} consecutive failures, backoff until {}ms); "
                     + "deferring until the backoff window clears or a node joins.",
                      consecutiveProvisioningFailures.get(),
                      nextProvisioningAllowedMs.get());
 
-            return Promise.success(unit());
+            return Promise.success(ProvisionDisposition.deferred(ProvisionDisposition.DeferralReason.CIRCUIT_OPEN));
         }
 
         var contextBase = buildProvisionContext(newNodeId, intendedRole);
@@ -466,9 +468,10 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
 
         if (contextSeeded.peers().or("").isEmpty()) {
             log.warn("CTM v2: provisionReplacement deferred — no healthy peers visible (peers list empty); "
-                    + "returning success so the LeaderReconciler retries on its next tick.");
+                    + "returning a DEFERRED disposition so the LeaderReconciler removes the in-flight "
+                    + "placeholder and retries on its next tick.");
 
-            return Promise.success(unit());
+            return Promise.success(ProvisionDisposition.deferred(ProvisionDisposition.DeferralReason.NO_HEALTHY_PEERS));
         }
 
         var baseSpec = ProvisionSpec.provisionSpec(InstanceType.ON_DEMAND, "default", "core", contextSeeded).unwrap();
@@ -476,7 +479,14 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
 
         return provisionWithZoneRotation(renderedSpec,
                                          replacementZones(intendedRole)).onFailure(this::recordProvisioningFailure)
-                                        .mapToUnit();
+                                        .map(ClusterTopologyManagerRecord::asDispatched);
+    }
+
+    /// A successful boot is a real DISPATCH — a VM is genuinely coming, so the reconciler keeps its
+    /// in-flight placeholder. A boot FAILURE stays in the `Promise` failure channel (handled by the
+    /// `onFailure(recordProvisioningFailure)` above plus the reconciler's placeholder removal).
+    private static ProvisionDisposition asDispatched(InstanceInfo instanceInfo) {
+        return ProvisionDisposition.dispatched();
     }
 
     /// #334 — auto-heal zone rotation. Mirrors the bootstrap rotation (`BootstrapPhaseProvision`):

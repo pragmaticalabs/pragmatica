@@ -11,6 +11,7 @@ import org.pragmatica.aether.config.cluster.NodeRole;
 import org.pragmatica.aether.deployment.cluster.ClusterTopologyManager;
 import org.pragmatica.aether.deployment.cluster.DrainReason;
 import org.pragmatica.aether.deployment.cluster.NodeReconcilerState;
+import org.pragmatica.aether.deployment.cluster.ProvisionDisposition;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipFsm;
 import org.pragmatica.aether.environment.ProvisionContext;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ClusterPhase;
@@ -20,11 +21,13 @@ import org.pragmatica.consensus.topology.MembershipDecision;
 import org.pragmatica.consensus.topology.NodeState;
 import org.pragmatica.consensus.topology.TopologyObserver;
 import org.pragmatica.consensus.topology.TransportObservation;
+import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
+import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.lang.utils.TimeSource;
 import org.pragmatica.net.tcp.NodeAddress;
 import org.pragmatica.net.tcp.TlsConfig;
@@ -44,6 +47,7 @@ import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 import java.util.function.IntSupplier;
 import java.util.function.Supplier;
@@ -1104,6 +1108,116 @@ class LeaderReconcilerTest {
         }
     }
 
+    /// Auto-heal-wedge fix — the in-flight placeholder stamped before [`ClusterTopologyManager#provisionReplacement`]
+    /// must be removed for a NO-BOOT deferral (circuit-open / no-healthy-peers) so the raw deficit stays
+    /// visible and re-pokes; it is kept ONLY for a real [`ProvisionDisposition.Dispatched`] boot. A genuine
+    /// boot failure removes it too (existing behavior — regression guard). Before this fix a suppressed
+    /// (no-boot) deferral left a phantom placeholder that masked the deficit and permanently wedged auto-heal
+    /// once the provisioning circuit tripped.
+    @Nested
+    class ProvisionDispositionWedgeFix {
+        /// Drive the reconciler to its armed deficit state and run the provisioning pass with the
+        /// disposition the CTM is currently configured to return. Reach full configured membership (5)
+        /// to arm the latch, drop PEER_D (deficit 1), run one suppressed pass that anchors the deficit
+        /// run, advance past both provisioning gates, then run the dispatching pass.
+        @Contract
+        private void driveArmedDeficitProvision() {
+            configuredCoreCount.set(5);
+            seedClusterWithPeers(PEER_A, PEER_B, PEER_C, PEER_D);
+            reconciler.activate();
+            scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getFirst().runIfLive();
+
+            removePeers(PEER_D);
+            triggerAndFireReconcile();
+            advancePastProvisioningGates();
+            triggerAndFireReconcile();
+        }
+
+        /// Circuit-open deferral: the CTM booted nothing, so the placeholder is removed and the raw
+        /// deficit stays visible. A subsequent fresh deficit run (breaker still open) re-pokes — proving
+        /// no phantom placeholder masked `effectiveCapacity`. Re-poking still honors the deficit-debounce
+        /// (the anti-storm gate), so the next provision needs a fresh anchor pass + debounce age. No
+        /// provisioning-failure is recorded for a deferral (the CTM stub records none on a Deferred).
+        @Test
+        void dispatch_circuitOpenDeferral_removesInFlightPlaceholder_andRePokesNextDeficitRun() {
+            ctm.deferNextProvision(ProvisionDisposition.DeferralReason.CIRCUIT_OPEN);
+
+            driveArmedDeficitProvision();
+
+            assertThat(ctm.provisionReplacementCalls())
+                    .as("the deficit dispatched exactly one provision attempt")
+                    .hasSize(1);
+            assertThat(reconciler.inFlightProvisioningCount())
+                    .as("a no-boot circuit-open deferral removes the in-flight placeholder — nothing is coming")
+                    .isZero();
+            assertThat(reconciler.inFlightProvisioningSnapshot())
+                    .as("the placeholder must not survive a deferral (it would mask the deficit and wedge auto-heal)")
+                    .isEmpty();
+
+            // The raw deficit is still visible (in-flight is empty, so effective == raw member count).
+            // The dispatch reset the debounce anchor (anti-storm), so the re-poke re-ages: one anchor
+            // pass, advance past the debounce window, then the dispatching pass — the SAME sequence a
+            // genuine post-dispatch deficit re-run follows. Before the fix the retained placeholder
+            // would have masked the deficit and this re-poke would never fire (the permanent wedge).
+            triggerAndFireReconcile();
+            timeSource.advanceTimeMillis(EXPECTED_DEBOUNCE_WINDOW.millis() + 1);
+            triggerAndFireReconcile();
+            assertThat(ctm.provisionReplacementCalls())
+                    .as("the unmasked deficit re-pokes on the next deficit run — the wedge is gone")
+                    .hasSize(2);
+        }
+
+        /// No-healthy-peers deferral: identical reconciler action to circuit-open — nothing was booted,
+        /// so the placeholder is removed and the deficit stays visible.
+        @Test
+        void dispatch_noHealthyPeersDeferral_removesInFlightPlaceholder() {
+            ctm.deferNextProvision(ProvisionDisposition.DeferralReason.NO_HEALTHY_PEERS);
+
+            driveArmedDeficitProvision();
+
+            assertThat(ctm.provisionReplacementCalls())
+                    .as("the deficit dispatched exactly one provision attempt")
+                    .hasSize(1);
+            assertThat(reconciler.inFlightProvisioningCount())
+                    .as("a no-boot no-healthy-peers deferral removes the in-flight placeholder")
+                    .isZero();
+            assertThat(reconciler.inFlightProvisioningSnapshot())
+                    .as("the deficit must stay visible after a deferral")
+                    .isEmpty();
+        }
+
+        /// A real Dispatched boot KEEPS the placeholder: a VM is genuinely coming, so it counts toward
+        /// `effectiveCapacity` and the deficit must NOT re-dispatch while it boots.
+        @Test
+        void dispatch_dispatchedBoot_keepsInFlightPlaceholder() {
+            // RecordingCtm defaults to a Dispatched disposition.
+            driveArmedDeficitProvision();
+
+            assertThat(ctm.provisionReplacementCalls())
+                    .as("the deficit dispatched exactly one provision attempt")
+                    .hasSize(1);
+            assertThat(reconciler.inFlightProvisioningCount())
+                    .as("a real Dispatched boot keeps the in-flight placeholder — a VM is on its way")
+                    .isEqualTo(1);
+        }
+
+        /// A genuine boot FAILURE removes the placeholder (regression guard — the CTM records the failure
+        /// in its own breaker; the reconciler just stops counting a VM that is not coming).
+        @Test
+        void dispatch_genuineProvisionFailure_removesInFlightPlaceholder() {
+            ctm.failNextProvision(Causes.cause("simulated boot failure"));
+
+            driveArmedDeficitProvision();
+
+            assertThat(ctm.provisionReplacementCalls())
+                    .as("the deficit dispatched exactly one provision attempt")
+                    .hasSize(1);
+            assertThat(reconciler.inFlightProvisioningCount())
+                    .as("a genuine boot failure removes the in-flight placeholder (existing behavior)")
+                    .isZero();
+        }
+    }
+
     /// #131 Model C — the kill-sequence observable contract at the reconciler's counting level:
     /// a co-confirmed death (SWIM-FAULTY ∧ liveness-gone) holds the member in SUSPECT — still
     /// counted — for the eviction-backstop window (the churn cure: a blip that refutes within
@@ -1997,6 +2111,12 @@ class LeaderReconcilerTest {
         private final List<NodeRole> provisionReplacementRoles = new CopyOnWriteArrayList<>();
         private final List<DrainReason> drainReasons = new CopyOnWriteArrayList<>();
         private final AtomicInteger reconcileCount = new AtomicInteger(0);
+        // Auto-heal-wedge fix: the disposition the next provisionReplacement resolves to. Defaults
+        // to a success-valued Dispatched (a real boot is coming → the reconciler KEEPS its in-flight
+        // placeholder). Tests flip this to a Deferred (no-boot deferral → placeholder REMOVED) or to
+        // a failure (genuine boot failure → placeholder REMOVED) to exercise the three outcomes.
+        private final AtomicReference<Promise<ProvisionDisposition>> nextProvisionResult =
+            new AtomicReference<>(Promise.success(ProvisionDisposition.dispatched()));
 
         List<NodeId> drainNodeCalls() {
             return List.copyOf(drainNodeCalls);
@@ -2008,6 +2128,16 @@ class LeaderReconcilerTest {
             provisionReplacementCalls.clear();
             provisionReplacementRoles.clear();
             drainReasons.clear();
+        }
+
+        @Contract
+        void deferNextProvision(ProvisionDisposition.DeferralReason reason) {
+            nextProvisionResult.set(Promise.success(ProvisionDisposition.deferred(reason)));
+        }
+
+        @Contract
+        void failNextProvision(Cause cause) {
+            nextProvisionResult.set(cause.promise());
         }
 
         List<NodeId> provisionReplacementCalls() {
@@ -2027,13 +2157,13 @@ class LeaderReconcilerTest {
         }
 
         @Override
-        public Promise<Unit> provisionReplacement(NodeId newNodeId,
-                                                  Option<NodeId> failedPeer,
-                                                  Set<NodeId> clusterMembers,
-                                                  NodeRole intendedRole) {
+        public Promise<ProvisionDisposition> provisionReplacement(NodeId newNodeId,
+                                                                  Option<NodeId> failedPeer,
+                                                                  Set<NodeId> clusterMembers,
+                                                                  NodeRole intendedRole) {
             provisionReplacementCalls.add(newNodeId);
             provisionReplacementRoles.add(intendedRole);
-            return Promise.success(unit());
+            return nextProvisionResult.get();
         }
 
         @Override

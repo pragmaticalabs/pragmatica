@@ -7,6 +7,7 @@ package org.pragmatica.aether.deployment.membership.ntt;
 import org.pragmatica.aether.config.cluster.NodeRole;
 import org.pragmatica.aether.deployment.cluster.ClusterTopologyManager;
 import org.pragmatica.aether.deployment.cluster.DrainReason;
+import org.pragmatica.aether.deployment.cluster.ProvisionDisposition;
 import org.pragmatica.aether.deployment.membership.MembershipConfig;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipFsm;
 import org.pragmatica.aether.environment.ProvisionContext;
@@ -1228,7 +1229,29 @@ public final class LeaderReconciler {
         // fulfillment signal (cleared in runReconcileBody when the id appears in currentMembers).
         // Auto-heal replaces CORE members only, so the intended role is explicitly CORE
         // (Wave 2 / W4 — never inherited from the provisioning host's env).
-        ctm.provisionReplacement(placeholder, none(), currentMembers, NodeRole.CORE).onFailure(cause -> inFlightProvisioning.remove(placeholder));
+        //
+        // Disposition handling (auto-heal-wedge fix): the placeholder was stamped above BEFORE the
+        // call, so effectiveCapacity already counts it. Keep it ONLY when a VM is genuinely coming.
+        //   - Dispatched (success, real boot) → KEEP the placeholder; a VM is on its way.
+        //   - Deferred (success, NO boot: circuit-open or no-healthy-peers) → REMOVE it; nothing is
+        //     coming, so the raw deficit must stay visible for the next tick to re-poke (a retained
+        //     placeholder would mask the deficit and permanently wedge auto-heal once the breaker
+        //     trips). A deferral is NOT a failure — no provisioning failure is recorded.
+        //   - failure (genuine boot failure) → REMOVE it (the CTM already recorded the failure).
+        ctm.provisionReplacement(placeholder, none(), currentMembers, NodeRole.CORE)
+           .onSuccess(disposition -> reconcileInFlightForDisposition(placeholder, disposition))
+           .onFailure(_ -> inFlightProvisioning.remove(placeholder));
+    }
+
+    /// Keep the in-flight placeholder only for a real [`ProvisionDisposition.Dispatched`] boot; a
+    /// no-boot [`ProvisionDisposition.Deferred`] removes it so the unmasked deficit re-pokes on the
+    /// next reconcile tick (the auto-heal-wedge fix — see [`#dispatchSingleProvision`]).
+    @Contract
+    private void reconcileInFlightForDisposition(NodeId placeholder, ProvisionDisposition disposition) {
+        switch (disposition) {
+            case ProvisionDisposition.Deferred _ -> inFlightProvisioning.remove(placeholder);
+            case ProvisionDisposition.Dispatched _ -> {}
+        }
     }
 
     @Contract

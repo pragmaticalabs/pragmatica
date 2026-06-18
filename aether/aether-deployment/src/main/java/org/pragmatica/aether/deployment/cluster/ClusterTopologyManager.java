@@ -63,8 +63,16 @@ public interface ClusterTopologyManager extends TopologyManager {
     ///
     /// Idempotent: if a replacement is observable via the current slot/membership state, the
     /// call is a no-op success. The new peer is provisioned with `clusterMembers` seeded as
-    /// PEERS by the provider boundary. Returns a `Promise<Unit>` that resolves on the
-    /// provision-request acceptance, NOT on the new node becoming present.
+    /// PEERS by the provider boundary. Returns a `Promise<ProvisionDisposition>` that resolves on
+    /// the provision-request acceptance, NOT on the new node becoming present.
+    ///
+    /// The disposition distinguishes a real boot ([`ProvisionDisposition.Dispatched`] — a VM is
+    /// coming) from a NO-BOOT deferral ([`ProvisionDisposition.Deferred`] — circuit-open or
+    /// no-healthy-peers, nothing is coming). The `LeaderReconciler` uses this to decide whether to
+    /// keep its in-flight placeholder: keeping a placeholder for a deferral would mask the deficit
+    /// and wedge auto-heal. A genuine boot FAILURE stays in the `Promise` failure channel (so the
+    /// existing breaker `onFailure(recordProvisioningFailure)` and the reconciler's placeholder
+    /// removal keep working).
     ///
     /// At Phase 1 this delegates to the existing slot-reconcile path
     /// (`NodeLifecycleManager.provisionNode(ProvisionSpec)`). The `failedPeer` argument is
@@ -76,10 +84,10 @@ public interface ClusterTopologyManager extends TopologyManager {
     /// `MemberDescriptor.role`), never inherited from the provisioning host's environment or
     /// hardcoded provider-side. Auto-heal replacements pass `NodeRole.CORE`; worker-pool
     /// provisioning (#241) will pass `WORKER` when it lands.
-    Promise<Unit> provisionReplacement(NodeId newNodeId,
-                                       Option<NodeId> failedPeer,
-                                       Set<NodeId> clusterMembers,
-                                       NodeRole intendedRole);
+    Promise<ProvisionDisposition> provisionReplacement(NodeId newNodeId,
+                                                       Option<NodeId> failedPeer,
+                                                       Set<NodeId> clusterMembers,
+                                                       NodeRole intendedRole);
 
     /// Membership v2 / E2 — drain a specific node. Targets either the operator/scale-down
     /// flow or the overprovision-drain path. `reason` is observability-only at this layer.

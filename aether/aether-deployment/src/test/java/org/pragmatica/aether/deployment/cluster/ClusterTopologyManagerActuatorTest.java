@@ -312,6 +312,57 @@ class ClusterTopologyManagerActuatorTest {
                 .isZero();
     }
 
+    /// Auto-heal-wedge fix — once the circuit is OPEN a suppressed `provisionReplacement` resolves to
+    /// a success-valued `Deferred(CIRCUIT_OPEN)` disposition (NOT a phantom Dispatched, NOT a failure),
+    /// reaches NO `provisionNode`, and records NO new provisioning failure. This is the disposition the
+    /// `LeaderReconciler` keys on to REMOVE its in-flight placeholder so the deficit stays visible — the
+    /// fix that un-wedges auto-heal once a transient failure burst trips the breaker.
+    @Test
+    void provisionReplacement_circuitOpen_resolvesDeferred_withoutBootOrNewFailure() {
+        ctm.activate();
+        lifecycleManager.failProvisions();
+        var members = Set.of(SELF, PEER_A, PEER_B);
+
+        for (var i = 0; i < 3; i++) {
+            ctm.provisionReplacement(NodeId.randomNodeId(), Option.none(), members, NodeRole.CORE).await();
+        }
+        assertThat(ctm.circuitBreakerState().tripped())
+                .as("three failing provisions trip the circuit")
+                .isTrue();
+        var failuresAfterTrip = ctm.circuitBreakerState().consecutiveFailures();
+        var provisionCountAfterTrip = lifecycleManager.provisionCount.get();
+
+        var disposition = ctm.provisionReplacement(NodeId.randomNodeId(), Option.none(), members, NodeRole.CORE).await();
+
+        assertThat(disposition.isSuccess())
+                .as("a circuit-open deferral is a success-valued disposition, not a failure")
+                .isTrue();
+        disposition.onSuccess(value -> assertThat(value)
+                .as("the disposition is a Deferred(CIRCUIT_OPEN), so the reconciler removes its placeholder")
+                .isEqualTo(ProvisionDisposition.deferred(ProvisionDisposition.DeferralReason.CIRCUIT_OPEN)));
+        assertThat(lifecycleManager.provisionCount.get())
+                .as("a circuit-open deferral boots nothing — no new provisionNode call")
+                .isEqualTo(provisionCountAfterTrip);
+        assertThat(ctm.circuitBreakerState().consecutiveFailures())
+                .as("a deferral is NOT a failure — the consecutive-failure count is unchanged")
+                .isEqualTo(failuresAfterTrip);
+    }
+
+    /// Auto-heal-wedge fix — a real boot resolves to a success-valued `Dispatched` disposition (a VM is
+    /// coming), which is what the `LeaderReconciler` keys on to KEEP its in-flight placeholder.
+    @Test
+    void provisionReplacement_realBoot_resolvesDispatched() {
+        ctm.activate();
+        var members = Set.of(SELF, PEER_A, PEER_B);
+
+        var disposition = ctm.provisionReplacement(NodeId.randomNodeId(), Option.none(), members, NodeRole.CORE).await();
+
+        assertThat(disposition.isSuccess()).isTrue();
+        disposition.onSuccess(value -> assertThat(value)
+                .as("a real boot resolves to Dispatched, so the reconciler keeps its placeholder")
+                .isEqualTo(ProvisionDisposition.dispatched()));
+    }
+
     /// #166 — a confirmed `NodeRemoved` membership decision on the active (leader) CTM reaps the
     /// departed node's container so a phantom that would otherwise restart-loop back into
     /// SWIM-HEALTHY cannot resurrect. The reap is idempotent: `terminateNode` is a no-op on an
