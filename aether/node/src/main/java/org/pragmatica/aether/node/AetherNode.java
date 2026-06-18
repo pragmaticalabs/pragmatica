@@ -226,8 +226,6 @@ import org.pragmatica.net.tcp.QuicSslContextFactory;
 import org.pragmatica.net.tcp.Server;
 import org.pragmatica.net.tcp.security.CertificateBundle;
 import org.pragmatica.net.tcp.security.CertificateRenewalScheduler;
-import org.pragmatica.swim.AesGcmGossipEncryptor;
-import org.pragmatica.swim.GossipEncryptor;
 import org.pragmatica.swim.RotatingGossipEncryptor;
 import org.pragmatica.swim.SwimConfig;
 import org.pragmatica.swim.SwimHealth;
@@ -3577,36 +3575,13 @@ public interface AetherNode extends ManageableNode {
         clusterNode.network().send(request.sender(), response);
     }
 
-    @SuppressWarnings("JBCT-RET-01")
+    /// Build the boot-time SWIM gossip encryptor. Delegates to the shared
+    /// [SwimGossipEncryptors] factory so the running node and the boot-time self-address
+    /// reflection probe ([org.pragmatica.aether.SelfAddressResolver]) encrypt gossip with
+    /// byte-identical key material (a divergent encryptor would silently fail to decrypt the
+    /// seed's `WhoAmI` reply).
     private static RotatingGossipEncryptor createGossipEncryptor(AetherNodeConfig config) {
-        var initial = config.certificateProvider().flatMap(provider -> buildDualKeyEncryptor(provider)).or(GossipEncryptor.none());
-
-        return RotatingGossipEncryptor.rotatingGossipEncryptor(initial);
-    }
-
-    @SuppressWarnings("JBCT-RET-01")
-    private static Option<GossipEncryptor> buildDualKeyEncryptor(org.pragmatica.net.tcp.security.CertificateProvider provider) {
-        return provider.currentGossipKey()
-                       .option()
-                       .flatMap(current -> buildEncryptorFromKeys(current,
-                                                                  provider.previousGossipKey(),
-                                                                  provider.nextGossipKey()));
-    }
-
-    /// Builds the gossip encryptor: encrypts under `current`, accepts `current` plus the
-    /// previous-day and next-day keys when present. The next-day key widens the accept window
-    /// across the UTC-midnight boundary so a peer already on the next day's key is decryptable
-    /// here (#256).
-    private static Option<GossipEncryptor> buildEncryptorFromKeys(org.pragmatica.net.tcp.security.GossipKey current,
-                                                                  Option<org.pragmatica.net.tcp.security.GossipKey> previous,
-                                                                  Option<org.pragmatica.net.tcp.security.GossipKey> next) {
-        var additional = java.util.stream.Stream.of(previous, next).flatMap(Option::stream).map(key -> new AesGcmGossipEncryptor.AcceptedKey(key.keyId(),
-                                                                                                                                             key.key())).toList();
-
-        return AesGcmGossipEncryptor.aesGcmGossipEncryptor(current.key(),
-                                                           current.keyId(),
-                                                           additional)
-                                    .option();
+        return SwimGossipEncryptors.fromCertificateProvider(config.certificateProvider());
     }
 
     @SuppressWarnings("JBCT-PAT-01")

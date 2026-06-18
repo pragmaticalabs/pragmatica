@@ -4,6 +4,17 @@ All notable changes to Pragmatica will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [1.0.0-rc2] - Unreleased
+
+### Fixed
+- **Auto-heal replacement nodes advertise a routable address** — a node now resolves its advertise host at boot (explicit `AETHER_ADVERTISE_HOST` / `--advertise-host=` override → SWIM `WhoAmI` source-IP reflection off a seed → loud hostname fallback) and builds its self `NodeInfo` once with that address, instead of `InetAddress.getLocalHost().getHostName()`. On cloud (Hetzner) a CTM-provisioned replacement previously advertised an unresolvable container/VM hostname, so peers' SWIM probes failed DNS resolution, suspicion accrued, and the replacement was killed within ~15s of joining — the cluster flapped and never re-reached a stable size, so auto-heal never completed. The resolved address propagates immutably to SWIM, QUIC, consensus, and the DHT. Bootstrap (self present in 3-part PEERS) is byte-for-byte unchanged.
+
+### Added
+- **SWIM address reflection (`WhoAmI` / `WhoAmIReply`)** — a joining node can ask a seed which source address its datagram was observed from, used to self-resolve a routable advertise address with no provider-specific metadata. CTM replacement user-data additionally exports `AETHER_ADVERTISE_HOST` from the VM's routable IP (`ip route get`) for both container and JVM runtimes.
+
+### Changed
+- **Integration harness: cloud-aware sustained auto-heal window** — the 02-chaos auto-heal assertion now uses a cloud-aware catch-window (a VM replacement needs ~3 min vs. seconds for a container) and requires the recovered member count to be sustained, eliminating transient flap-to-target false passes.
+
 ## [1.0.0-rc1] - Unreleased
 
 ### Added
