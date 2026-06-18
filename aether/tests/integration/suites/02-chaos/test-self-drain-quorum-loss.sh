@@ -349,10 +349,11 @@ test_pick_victims_and_kill_three_simultaneously() {
 
     if [ "${CLOUD_MODE:-false}" = "true" ]; then
         # Cloud: there is no shared docker daemon to issue a single multi-kill against —
-        # each victim is its own VM, powered off via the provider compute API
-        # (cloud_kill_vm). To preserve the "simultaneous" semantics the docker single-RTT
-        # kill provided, fire each poweroff in the BACKGROUND (&) and `wait` for all —
-        # the three provider API calls dispatch concurrently rather than serially.
+        # each victim is its own VM, DELETED via the provider compute API (cloud_kill_vm:
+        # no test revives these victims; survivors self-drain and restore_cluster_baseline
+        # re-scales fresh replacements). To preserve the "simultaneous" semantics the docker
+        # single-RTT kill provided, fire each delete in the BACKGROUND (&) and `wait` for
+        # all — the three provider API calls dispatch concurrently rather than serially.
         local v kill_pids=() kill_fail=0
         for v in $victims; do
             [ -z "$v" ] && continue
@@ -366,10 +367,10 @@ test_pick_victims_and_kill_three_simultaneously() {
             wait "$p" || kill_fail=1
         done
         if [ "$kill_fail" -ne 0 ]; then
-            log_fail "cloud poweroff of one or more victims [${victim_list}] failed (see cloud_kill_vm FAIL lines above)"
+            log_fail "cloud delete of one or more victims [${victim_list}] failed (see cloud_kill_vm FAIL lines above)"
             return 1
         fi
-        log_info "Cloud poweroff issued for all ${victim_count} victims (parallel cloud_kill_vm)"
+        log_info "Cloud delete issued for all ${victim_count} victims (parallel cloud_kill_vm)"
     else
         local kill_cmd kill_out kill_rc
         # Single remote_exec → single SSH RTT → single docker daemon call:

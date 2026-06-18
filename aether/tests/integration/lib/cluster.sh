@@ -1648,12 +1648,31 @@ _cloud_transport_ports() {
     printf '%s %s\n' "$cluster_port" "$swim_port"
 }
 
-# cloud_kill_vm <node_id> — abrupt VM power-off (provider compute API).
+# cloud_kill_vm <node_id> — destroy the victim VM (provider compute API).
 #
-# A hard poweroff (NOT graceful shutdown) so peers observe the node vanish via SWIM
-# timeout → NODE_FAILED → CTM auto-heal, matching the `docker kill` semantics the
-# old SSH path provided. Resolves the VM by server-id (seed OR CTM replacement).
-# Returns non-zero with a clear log if resolution / poweroff fails.
+# This is the AUTO-HEAL kill path: every suite caller (02-chaos/*, 02z-killonly,
+# 12-network swim/quic, 13-edge-cases, self-drain-quorum-loss) expects the node to
+# be GONE and a brand-new replacement to be provisioned by CTM auto-heal — NO test
+# revives the same node after a kill (start_node / cloud_revive_vm have zero suite
+# callers; see start_node's header). So a hard DELETE is the faithful "node gone"
+# model: peers observe the VM vanish via SWIM timeout → NODE_FAILED → CTM auto-heal,
+# AND the account's server quota is freed.
+#
+# Why delete, not poweroff: a powered-off victim LINGERS as a stopped Hetzner server
+# consuming the per-project server quota. Across a run's multiple kill tests these
+# accumulate (a live run showed 4 `off` servers), and once the quota is exhausted the
+# leader's provisionReplacement fails repeatedly (observed priorFailureCount=41) so
+# auto-heal can never rebuild the cluster — it sat at 3/5 for 45 min. Deleting the
+# victim keeps the quota clear so each replacement provision has headroom.
+#
+# Same-node restart (poweroff/keep) is provided by the separate cloud_stop_vm /
+# cloud_revive_vm pair for any test that genuinely needs the original VM back.
+#
+# Idempotent: deleting an already-gone server id (server-id resolution fails because
+# the VM no longer exists) is a no-op-with-warning, NOT a failure — a double-kill or a
+# kill of an already-auto-healed node must not abort the suite. Resolves the VM by
+# server-id (seed OR CTM replacement). Returns non-zero only on a real provider error
+# against a live server.
 cloud_kill_vm() {
     local node_id="${1:-}"
     if [ -z "$node_id" ]; then
@@ -1667,15 +1686,23 @@ cloud_kill_vm() {
                 return 2
             fi
             local sid
-            sid=$(cloud_server_id "$node_id") || {
-                log_fail "cloud_kill_vm: could not resolve server id for '${node_id}' (cannot power off)"
-                return 1
+            sid=$(cloud_server_id "$node_id" 2>/dev/null) || {
+                # No live server resolved → already gone (deleted/replaced). Idempotent
+                # no-op: the post-condition ("victim VM absent") already holds.
+                log_warn "cloud_kill_vm: no server resolves for '${node_id}' — already deleted/replaced (idempotent no-op)"
+                return 0
             }
-            log_info "cloud_kill_vm: powering off ${node_id} (hetzner server ${sid})"
+            log_info "cloud_kill_vm: deleting ${node_id} (hetzner server ${sid})"
             local out rc
-            out=$(hcloud server poweroff "$sid" 2>&1); rc=$?
+            out=$(hcloud server delete "$sid" 2>&1); rc=$?
             if [ "$rc" -ne 0 ]; then
-                log_fail "cloud_kill_vm: hcloud server poweroff ${sid} (node '${node_id}') failed (rc=${rc}): ${out}"
+                # `not found` ⇒ the server was deleted between resolve and delete
+                # (concurrent auto-heal). Treat as success — the VM is gone either way.
+                if printf '%s' "$out" | grep -qiE 'not found|does not exist'; then
+                    log_warn "cloud_kill_vm: server ${sid} (node '${node_id}') already gone at delete time (idempotent no-op)"
+                    return 0
+                fi
+                log_fail "cloud_kill_vm: hcloud server delete ${sid} (node '${node_id}') failed (rc=${rc}): ${out}"
                 return "$rc"
             fi
             return 0
@@ -1687,14 +1714,59 @@ cloud_kill_vm() {
     esac
 }
 
-# cloud_revive_vm <node_id> — power a previously-killed VM back on (provider API).
+# cloud_stop_vm <node_id> — abrupt VM power-off WITHOUT deleting (provider API).
 #
-# Intended for tests that need same-identity rejoin. NOTE: by the time this runs,
-# CTM auto-heal may already have DECOMMISSIONED the node and provisioned a
+# Non-destructive sibling of cloud_kill_vm, paired with cloud_revive_vm: a hard
+# poweroff (NOT graceful shutdown) so peers observe the node vanish via SWIM timeout,
+# while the VM (and its identity) is PRESERVED so cloud_revive_vm can power it back on
+# for a same-node rejoin. Use this — not cloud_kill_vm — in any test that calls
+# start_node / cloud_revive_vm on the SAME node afterwards. (No such suite exists
+# today; this primitive keeps the stop/revive contract available for restart_all_nodes'
+# best-effort seed power-on and any future same-identity-restart test.)
+# Resolves the VM by server-id (seed OR CTM replacement). Idempotent for an
+# already-stopped server. Returns non-zero with a clear log on a real provider error.
+cloud_stop_vm() {
+    local node_id="${1:-}"
+    if [ -z "$node_id" ]; then
+        log_fail "cloud_stop_vm: node id argument is required"
+        return 2
+    fi
+    case "${CLOUD_PROVIDER:-hetzner}" in
+        hetzner)
+            if ! command -v hcloud >/dev/null 2>&1; then
+                log_fail "cloud_stop_vm: hcloud CLI not found (required for provider 'hetzner')"
+                return 2
+            fi
+            local sid
+            sid=$(cloud_server_id "$node_id") || {
+                log_fail "cloud_stop_vm: could not resolve server id for '${node_id}' (cannot power off)"
+                return 1
+            }
+            log_info "cloud_stop_vm: powering off ${node_id} (hetzner server ${sid})"
+            local out rc
+            out=$(hcloud server poweroff "$sid" 2>&1); rc=$?
+            if [ "$rc" -ne 0 ]; then
+                log_fail "cloud_stop_vm: hcloud server poweroff ${sid} (node '${node_id}') failed (rc=${rc}): ${out}"
+                return "$rc"
+            fi
+            return 0
+            ;;
+        *)
+            log_fail "cloud_stop_vm: provider '${CLOUD_PROVIDER}' not implemented (only 'hetzner')"
+            return 2
+            ;;
+    esac
+}
+
+# cloud_revive_vm <node_id> — power a previously-STOPPED VM back on (provider API).
+#
+# Partner of cloud_stop_vm (NOT cloud_kill_vm — kill DELETES the VM, which cannot be
+# revived). Intended for tests that need same-identity rejoin. NOTE: by the time this
+# runs, CTM auto-heal may already have DECOMMISSIONED the node and provisioned a
 # replacement — in which case the revived VM rejoins as a stale identity and the
 # cluster sees a transient N+1 state (same caveat as start_node's docker path).
 # Prefer waiting on CTM auto-heal for normal recovery; use this only when the test
-# explicitly needs the original VM back.
+# explicitly stopped the VM (cloud_stop_vm) and needs the original back.
 cloud_revive_vm() {
     local node_id="${1:-}"
     if [ -z "$node_id" ]; then
@@ -2131,16 +2203,20 @@ kill_node() {
     fi
     log_info "Killing node: ${node_id}"
     if [ "$CLOUD_MODE" = "true" ]; then
-        # Provider-API kill: power off the node's VM (cloud_kill_vm). This replaces
+        # Provider-API kill: DELETE the node's VM (cloud_kill_vm). This replaces
         # the old SSH-based `docker kill` / `pkill` paths, which could NOT reach
         # CTM-provisioned replacement VMs (they lack the operator SSH key →
-        # Permission denied). A VM poweroff is an abrupt kill — peers detect the
-        # departure via SWIM timeout → NODE_FAILED → CTM auto-heal, the same
-        # observable outcome the docker-kill path produced. Provider-agnostic
-        # (cloud_kill_vm dispatches on CLOUD_PROVIDER); runtime (container/jvm) is
-        # irrelevant once we kill the whole VM.
+        # Permission denied). A VM delete is an abrupt, irreversible kill — peers
+        # detect the departure via SWIM timeout → NODE_FAILED → CTM auto-heal,
+        # which provisions a brand-new replacement (every kill_node caller expects
+        # a replacement, not a same-node revive). Deleting (vs powering off) also
+        # frees the provider server quota so the replacement provision has headroom
+        # — a powered-off victim lingers and exhausts the quota across a run's
+        # multiple kills, starving auto-heal. Provider-agnostic (cloud_kill_vm
+        # dispatches on CLOUD_PROVIDER); runtime (container/jvm) is irrelevant once
+        # we destroy the whole VM.
         if ! cloud_kill_vm "$node_id"; then
-            log_fail "kill_node: cloud VM poweroff of '${node_id}' failed"
+            log_fail "kill_node: cloud VM delete of '${node_id}' failed"
             return 1
         fi
     else
@@ -2545,18 +2621,66 @@ restore_cluster_baseline() {
         log_warn "restore_cluster_baseline: scale_cluster ${target} failed (cluster may already be at target — proceeding to wait)"
     fi
 
-    # 5. Hard barrier — at least N-1 healthy cores PRESENT. Operational invariant
-    # (quorum is 3, so 4 has 1 of spare). Post-chaos, the CTM replacement IS alive in
-    # generation within seconds (Auto-heal_restores_to_5 confirms) but the entry-point's
-    # membership view may stay at 4 for a while — the SWIM-fed projection lags. `>= N-1`
-    # accepts the operational invariant and unblocks the downstream cluster B suite
-    # cascade. NOTE: presence is necessary but NOT sufficient — a present node can still
-    # be SYNCING (re-syncing consensus) rather than READY. Step 5b waits for READY.
     local floor=$((target - 1))
-    if ! wait_for "${floor}+ healthy cores present (target=${target})" \
-        "[ \$(cluster_active_core_count) -ge ${floor} ]" 600; then
-        log_fail "restore_cluster_baseline: failed to converge to ${floor}+ healthy cores within 600s (current=$(cluster_active_core_count))"
-        return 1
+
+    # 4b. ACTIVE RECOVERY (cloud) — re-kick the things that UNWEDGE a stuck-below-target
+    # cluster, then wait on a BOUNDED budget instead of the 600s (×TIMEOUT_SCALE=3 ⇒
+    # 1800s on cloud) presence barrier below. Why this exists: on a live Hetzner run a
+    # 2-node burst (Kill_2) left the cluster at 3/5 because the leader's
+    # provisionReplacement kept failing (priorFailureCount=41 — the provider server quota
+    # was exhausted by lingering powered-off victims; Fix 1 addresses the root by deleting
+    # victims). When the cluster is stuck below target, the operator action that recovers
+    # it is exactly `scale_cluster <target>` (forces CTM provisioning) + circuit-breaker
+    # reset (clears the failure latch). The fixed 600s×3 step-5 wait then consumed ~1800s
+    # before the runner could even decide to skip — killing the whole run before suites
+    # 03/05/12/13. Here we (a) issue the active re-kick if we're below floor, (b) wait on
+    # a cloud-aware BOUNDED timeout, and (c) on miss, MARK the cluster degraded and return
+    # 1 PROMPTLY so run-tests.sh's unrecoverability gate quarantines the remaining suites
+    # fast (skip-with-reason) rather than hanging. docker/remote skip this block entirely
+    # and keep the unbounded 600s barrier — byte-identical there.
+    if [ "${CLOUD_MODE:-false}" = "true" ]; then
+        # Bounded base budget for the active-recovery presence wait (pre-TIMEOUT_SCALE).
+        # ~4 min base × cloud TIMEOUT_SCALE(3) ⇒ ~12 min ceiling — generous enough for a
+        # genuine VM-provision heal (~187s measured) plus jitter and a second
+        # provision attempt, but a far cry from the 1800s that killed the run. Override
+        # with AETHER_RESTORE_RECOVERY_TIMEOUT.
+        local recover_base="${AETHER_RESTORE_RECOVERY_TIMEOUT:-240}"
+        local cur
+        cur=$(cluster_active_core_count)
+        if [ "${cur:-0}" -lt "$floor" ] 2>/dev/null; then
+            log_warn "restore_cluster_baseline: cloud cluster below floor (${cur:-0}/${floor}) — active recovery: reset circuit + re-scale to ${target}"
+            # Reset the breaker FIRST (clears the failure latch that blocks the scale's
+            # provisioning), then re-issue the scale to force CTM to provision the deficit.
+            reset_provisioning_circuit || log_warn "restore_cluster_baseline: active-recovery reset_provisioning_circuit failed (proceeding)"
+            scale_cluster "$target" || log_warn "restore_cluster_baseline: active-recovery scale_cluster ${target} failed (proceeding to bounded wait)"
+        fi
+        if ! wait_for "${floor}+ healthy cores present (cloud active recovery, target=${target})" \
+            "[ \$(cluster_active_core_count) -ge ${floor} ]" "$recover_base"; then
+            # Still degraded after bounded active recovery. Do NOT hang on the 1800s
+            # barrier and do NOT escalate further — return degraded so the runner's
+            # post-suite gate (ready/leader check) SKIPS remaining suites quickly. Each
+            # subsequent suite still attempts to run only if a LATER restore recovers;
+            # the runner records skipped suites explicitly.
+            log_fail "restore_cluster_baseline: cloud cluster did not reach ${floor}+ healthy cores within bounded active-recovery budget (current=$(cluster_active_core_count), base=${recover_base}s × scale) — marking DEGRADED and returning so the run continues to the next suite"
+            return 1
+        fi
+        # Below: the cloud path falls through to the SAME step-5b READY / step-6 quiesce /
+        # step-7 phase barriers as docker/remote (those are already cloud-aware via
+        # TIMEOUT_SCALE and bounded at 300/180/180s — none is the 1800s offender), but
+        # SKIPS the unbounded 600s presence wait of step 5 (already satisfied above).
+    else
+        # 5. Hard barrier — at least N-1 healthy cores PRESENT. Operational invariant
+        # (quorum is 3, so 4 has 1 of spare). Post-chaos, the CTM replacement IS alive in
+        # generation within seconds (Auto-heal_restores_to_5 confirms) but the entry-point's
+        # membership view may stay at 4 for a while — the SWIM-fed projection lags. `>= N-1`
+        # accepts the operational invariant and unblocks the downstream cluster B suite
+        # cascade. NOTE: presence is necessary but NOT sufficient — a present node can still
+        # be SYNCING (re-syncing consensus) rather than READY. Step 5b waits for READY.
+        if ! wait_for "${floor}+ healthy cores present (target=${target})" \
+            "[ \$(cluster_active_core_count) -ge ${floor} ]" 600; then
+            log_fail "restore_cluster_baseline: failed to converge to ${floor}+ healthy cores within 600s (current=$(cluster_active_core_count))"
+            return 1
+        fi
     fi
 
     # 5b. READY barrier — wait until N nodes REPORT READY (NodeReportedState=READY)
