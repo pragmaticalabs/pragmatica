@@ -525,8 +525,32 @@ is_cluster_healthy() {
 assert_cluster_healthy() {
     local desc="$1"
     local health
-    health=$(aether_field health status)
+    # Read health via the HTTP mgmt path (api_get → _resolve_live_endpoint), NOT the
+    # CLI (`aether_field health status`). The CLI can land on a node that was just
+    # drained/killed and raise a ConnectException (false negative — Quorum_preserved
+    # regression), whereas api_get rotates to any live core. /api/health returns
+    # {"status":"healthy",...}; parse `status` with the same grep/sed idiom the other
+    # *_http helpers use. Falls back to the CLI only if the HTTP path yields nothing
+    # (keeps behavior on docker/remote where api_get and CLI agree).
+    health=$(cluster_health_status_http)
+    if [ -z "$health" ]; then
+        health=$(aether_field health status)
+    fi
     assert_eq "$health" "healthy" "$desc"
+}
+
+# Raw-HTTP health status — the `status` field of GET /api/health ("healthy" when the
+# node is ready + quorate). HTTP sibling of `aether_field health status`; rotates to
+# a live core via api_get/_resolve_live_endpoint so a killed/drained pinned node does
+# not produce a false negative. Prints the status string (empty on transport failure).
+cluster_health_status_http() {
+    local body
+    body=$(api_get "/api/health" 2>/dev/null) || return 0
+    [ -z "$body" ] && return 0
+    printf '%s' "$body" \
+        | grep -oE '"status"[[:space:]]*:[[:space:]]*"[^"]*"' \
+        | head -1 \
+        | sed 's/.*"status"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/'
 }
 
 is_cluster_ready() {
@@ -1570,6 +1594,363 @@ cleanup_cluster_zombies() {
     return 0
 }
 
+# ===========================================================================
+# Provider-agnostic cloud chaos primitives
+# ---------------------------------------------------------------------------
+# Each VM hosts ONE Aether node; there is no single Docker host on cloud, and
+# CTM-provisioned replacement VMs do NOT carry the operator SSH key — so SSH-based
+# chaos (docker kill / pkill over cloud_ssh) cannot reach them. These primitives
+# drive chaos through the PROVIDER's compute + firewall APIs instead, addressing
+# VMs by server-id (resolved from the `aether-node-id` label via cloud_server_id,
+# which bridges the seed/replacement ULID prefix mismatch).
+#
+# Observation stays on the mgmt API (cloud_running_cores), which is reachable from
+# the runner for every node regardless of SSH key.
+#
+# All primitives dispatch on $CLOUD_PROVIDER (default `hetzner`). Hetzner uses the
+# `hcloud` CLI. A future aws/gcp backend adds a `case` branch, not a rewrite.
+# ===========================================================================
+
+# Hetzner cluster transport ports, read from the cloud TOML `[operations.ports]`
+# (cluster + swim). Partition firewalls must block these two; mgmt (8080) and SSH
+# (22) stay OPEN so the harness can keep observing the isolated node via the API.
+#
+# Resolution order:
+#   1. explicit env overrides CLOUD_CLUSTER_PORT / CLOUD_SWIM_PORT (CI / tests)
+#   2. parse the active cloud TOML (CLOUD_TOML / env/cloud-hetzner*.toml)
+#   3. documented defaults cluster=6000, swim=cluster+100 (=6100)
+# Prints "<cluster_port> <swim_port>" on stdout. Always rc 0 (defaults on miss).
+_cloud_transport_ports() {
+    local cluster_port="${CLOUD_CLUSTER_PORT:-}" swim_port="${CLOUD_SWIM_PORT:-}"
+    if [ -z "$cluster_port" ] || [ -z "$swim_port" ]; then
+        # Find a cloud TOML to read [operations.ports] from. Prefer an explicit
+        # CLOUD_TOML; otherwise the canonical env file next to this lib.
+        local toml="${CLOUD_TOML:-}"
+        if [ -z "$toml" ] || [ ! -f "$toml" ]; then
+            local cand
+            for cand in \
+                "${SCRIPT_DIR:-}/env/cloud-hetzner.toml" \
+                "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." 2>/dev/null && pwd)/env/cloud-hetzner.toml"; do
+                if [ -n "$cand" ] && [ -f "$cand" ]; then toml="$cand"; break; fi
+            done
+        fi
+        if [ -n "$toml" ] && [ -f "$toml" ]; then
+            # Grab the `cluster = NNNN` / `swim = NNNN` lines from the ports block.
+            # The keys are unique enough across the file to grep directly.
+            [ -z "$cluster_port" ] && cluster_port=$(grep -oE '^[[:space:]]*cluster[[:space:]]*=[[:space:]]*[0-9]+' "$toml" 2>/dev/null | head -1 | grep -oE '[0-9]+$')
+            [ -z "$swim_port" ]    && swim_port=$(grep -oE '^[[:space:]]*swim[[:space:]]*=[[:space:]]*[0-9]+' "$toml" 2>/dev/null | head -1 | grep -oE '[0-9]+$')
+        fi
+    fi
+    # Documented defaults: cluster=6000; swim = cluster + 100.
+    [ -z "$cluster_port" ] && cluster_port=6000
+    [ -z "$swim_port" ] && swim_port=$((cluster_port + 100))
+    printf '%s %s\n' "$cluster_port" "$swim_port"
+}
+
+# cloud_kill_vm <node_id> — abrupt VM power-off (provider compute API).
+#
+# A hard poweroff (NOT graceful shutdown) so peers observe the node vanish via SWIM
+# timeout → NODE_FAILED → CTM auto-heal, matching the `docker kill` semantics the
+# old SSH path provided. Resolves the VM by server-id (seed OR CTM replacement).
+# Returns non-zero with a clear log if resolution / poweroff fails.
+cloud_kill_vm() {
+    local node_id="${1:-}"
+    if [ -z "$node_id" ]; then
+        log_fail "cloud_kill_vm: node id argument is required"
+        return 2
+    fi
+    case "${CLOUD_PROVIDER:-hetzner}" in
+        hetzner)
+            if ! command -v hcloud >/dev/null 2>&1; then
+                log_fail "cloud_kill_vm: hcloud CLI not found (required for provider 'hetzner')"
+                return 2
+            fi
+            local sid
+            sid=$(cloud_server_id "$node_id") || {
+                log_fail "cloud_kill_vm: could not resolve server id for '${node_id}' (cannot power off)"
+                return 1
+            }
+            log_info "cloud_kill_vm: powering off ${node_id} (hetzner server ${sid})"
+            local out rc
+            out=$(hcloud server poweroff "$sid" 2>&1); rc=$?
+            if [ "$rc" -ne 0 ]; then
+                log_fail "cloud_kill_vm: hcloud server poweroff ${sid} (node '${node_id}') failed (rc=${rc}): ${out}"
+                return "$rc"
+            fi
+            return 0
+            ;;
+        *)
+            log_fail "cloud_kill_vm: provider '${CLOUD_PROVIDER}' not implemented (only 'hetzner')"
+            return 2
+            ;;
+    esac
+}
+
+# cloud_revive_vm <node_id> — power a previously-killed VM back on (provider API).
+#
+# Intended for tests that need same-identity rejoin. NOTE: by the time this runs,
+# CTM auto-heal may already have DECOMMISSIONED the node and provisioned a
+# replacement — in which case the revived VM rejoins as a stale identity and the
+# cluster sees a transient N+1 state (same caveat as start_node's docker path).
+# Prefer waiting on CTM auto-heal for normal recovery; use this only when the test
+# explicitly needs the original VM back.
+cloud_revive_vm() {
+    local node_id="${1:-}"
+    if [ -z "$node_id" ]; then
+        log_fail "cloud_revive_vm: node id argument is required"
+        return 2
+    fi
+    case "${CLOUD_PROVIDER:-hetzner}" in
+        hetzner)
+            if ! command -v hcloud >/dev/null 2>&1; then
+                log_fail "cloud_revive_vm: hcloud CLI not found (required for provider 'hetzner')"
+                return 2
+            fi
+            local sid
+            sid=$(cloud_server_id "$node_id") || {
+                log_fail "cloud_revive_vm: could not resolve server id for '${node_id}' (cannot power on)"
+                return 1
+            }
+            log_info "cloud_revive_vm: powering on ${node_id} (hetzner server ${sid})"
+            local out rc
+            out=$(hcloud server poweron "$sid" 2>&1); rc=$?
+            if [ "$rc" -ne 0 ]; then
+                log_fail "cloud_revive_vm: hcloud server poweron ${sid} (node '${node_id}') failed (rc=${rc}): ${out}"
+                return "$rc"
+            fi
+            return 0
+            ;;
+        *)
+            log_fail "cloud_revive_vm: provider '${CLOUD_PROVIDER}' not implemented (only 'hetzner')"
+            return 2
+            ;;
+    esac
+}
+
+# Deterministic firewall name for a node's partition. Sanitizes the node id (the
+# trailing ULID can be long but is alnum-safe; replace any non-alnum just in case)
+# so the name is idempotent across calls — create/apply/delete all key on it.
+_cloud_partition_fw_name() {
+    local node_id="${1:-}"
+    local cluster="${BOOTSTRAP_CLUSTER_NAME:-${CLOUD_BOOTSTRAP_CLUSTER:-aether}}"
+    local safe
+    safe=$(printf '%s-%s' "$cluster" "$node_id" | sed 's/[^A-Za-z0-9-]/-/g')
+    printf 'aether-partition-%s' "$safe"
+}
+
+# cloud_partition_node <node_id> — isolate a VM's cluster transport via a provider
+# firewall (network PARTITION chaos), idempotently.
+#
+# Blocks the cluster/QUIC port and the SWIM port (cluster+100) in BOTH directions —
+# tcp AND udp (Aether cluster transport is QUIC = UDP; SWIM uses udp) — so the node
+# can neither reach peers nor be reached on transport. KEEPS the mgmt port (8080)
+# and SSH (22) reachable so the harness can still observe the isolated node via the
+# management API.
+#
+# Hetzner firewall semantics (verified against docs.hetzner.com/cloud/firewalls):
+#   - Firewalls are STATEFUL: a reply to an allowed connection is auto-permitted.
+#   - INBOUND is deny-by-default — only listed ports are reachable. So omitting
+#     cluster+swim from the inbound allow-list blocks peers→node transport.
+#   - OUTBOUND is allow-all UNTIL the first outbound rule is added, after which
+#     outbound also becomes deny-by-default. To block node→peers transport WITHOUT
+#     cutting the node's other egress (DB, app, package mirrors), we add outbound
+#     ALLOW rules spanning every port EXCEPT the two transport ports (ranges
+#     1..cluster-1, cluster+1..swim-1, swim+1..65535) for tcp+udp. The two transport
+#     ports fall in the gaps and are therefore denied. This yields a TRUE
+#     bidirectional transport partition.
+#   - CAVEAT (documented, validated on live cluster): rule changes apply only to NEW
+#     connections — EXISTING long-lived QUIC peer links established before the
+#     firewall was applied stay up until they naturally break. Tests should allow for
+#     SWIM-timeout-driven teardown of the stale links (the same detection window a
+#     real partition incurs) rather than expecting an instant cutover.
+#
+# The firewall is named deterministically per node (_cloud_partition_fw_name) so
+# re-running is a no-op create + idempotent rule/apply. The resolved firewall id is
+# recorded to /tmp/aether-partition-fw-${node_id}.id for cloud_heal_partition.
+cloud_partition_node() {
+    local node_id="${1:-}"
+    if [ -z "$node_id" ]; then
+        log_fail "cloud_partition_node: node id argument is required"
+        return 2
+    fi
+    case "${CLOUD_PROVIDER:-hetzner}" in
+        hetzner)
+            if ! command -v hcloud >/dev/null 2>&1; then
+                log_fail "cloud_partition_node: hcloud CLI not found (required for provider 'hetzner')"
+                return 2
+            fi
+            local sid
+            sid=$(cloud_server_id "$node_id") || {
+                log_fail "cloud_partition_node: could not resolve server id for '${node_id}' (cannot apply firewall)"
+                return 1
+            }
+            local mgmt_port="${CLOUD_MGMT_PORT:-8080}"
+            local ssh_port="${CLOUD_SSH_PORT:-22}"
+            local fw_name
+            fw_name=$(_cloud_partition_fw_name "$node_id")
+
+            # 1. Create the firewall idempotently. `hcloud firewall create` fails if
+            #    the name already exists — treat "already exists" as success and
+            #    resolve the existing id. Rules are set explicitly below (an empty
+            #    rule set would deny-all inbound, also cutting mgmt+ssh).
+            local out rc fw_id
+            out=$(hcloud firewall create --name "$fw_name" 2>&1); rc=$?
+            if [ "$rc" -ne 0 ] && ! printf '%s' "$out" | grep -qiE 'already exists|uniqueness'; then
+                log_fail "cloud_partition_node: hcloud firewall create '${fw_name}' failed (rc=${rc}): ${out}"
+                return "$rc"
+            fi
+            fw_id=$(hcloud firewall describe "$fw_name" -o 'format={{.ID}}' 2>/dev/null)
+            if [ -z "$fw_id" ]; then
+                log_fail "cloud_partition_node: could not resolve firewall id for '${fw_name}' after create"
+                return 1
+            fi
+
+            # 2. Compute the transport ports and the three outbound allow-ranges that
+            #    bracket them (everything except cluster_port and swim_port). `port` in
+            #    a Hetzner rule accepts "N" or "LO-HI"; we use ranges to exclude exactly
+            #    the two transport ports. Guard the degenerate gaps (if a range would be
+            #    empty/inverted it is simply omitted — only happens for nonsensical
+            #    port=1 configs, which the cloud TOML never uses).
+            local ports_line cluster_port swim_port lo hi
+            ports_line=$(_cloud_transport_ports)
+            cluster_port="${ports_line%% *}"
+            swim_port="${ports_line##* }"
+            # Order the two blocked ports so the range math is direction-independent.
+            local p1 p2
+            if [ "$cluster_port" -le "$swim_port" ]; then p1="$cluster_port"; p2="$swim_port"; else p1="$swim_port"; p2="$cluster_port"; fi
+            # Build the outbound allow-ranges: [1, p1-1], [p1+1, p2-1], [p2+1, 65535].
+            local out_ranges=""
+            [ "$p1" -gt 1 ] && out_ranges="${out_ranges} 1-$((p1 - 1))"
+            [ $((p1 + 1)) -le $((p2 - 1)) ] && out_ranges="${out_ranges} $((p1 + 1))-$((p2 - 1))"
+            [ $((p2 + 1)) -le 65535 ] && out_ranges="${out_ranges} $((p2 + 1))-65535"
+
+            # Build the rules JSON. Inbound: allow mgmt+ssh (tcp); transport denied by
+            # omission. Outbound: allow tcp+udp on every range EXCEPT the transport
+            # ports (which become denied once any outbound rule exists).
+            local rules_json rng proto out_rules=""
+            for rng in $out_ranges; do
+                for proto in tcp udp; do
+                    out_rules="${out_rules}  {\"direction\":\"out\",\"protocol\":\"${proto}\",\"port\":\"${rng}\",\"destination_ips\":[\"0.0.0.0/0\",\"::/0\"]},
+"
+                done
+            done
+            rules_json="[
+  {\"direction\":\"in\",\"protocol\":\"tcp\",\"port\":\"${mgmt_port}\",\"source_ips\":[\"0.0.0.0/0\",\"::/0\"]},
+  {\"direction\":\"in\",\"protocol\":\"tcp\",\"port\":\"${ssh_port}\",\"source_ips\":[\"0.0.0.0/0\",\"::/0\"]},
+${out_rules%,
+}
+]"
+            local rules_file
+            rules_file=$(mktemp -t aether-fw-rules.XXXXXX)
+            printf '%s\n' "$rules_json" > "$rules_file"
+            out=$(hcloud firewall replace-rules "$fw_name" --rules-file "$rules_file" 2>&1); rc=$?
+            rm -f "$rules_file"
+            if [ "$rc" -ne 0 ]; then
+                log_fail "cloud_partition_node: hcloud firewall replace-rules '${fw_name}' failed (rc=${rc}): ${out} (blocking cluster ${cluster_port}+swim ${swim_port} in+out, keeping mgmt ${mgmt_port}+ssh ${ssh_port})"
+                return "$rc"
+            fi
+
+            # 3. Apply to the target server idempotently. Re-applying an
+            #    already-applied firewall returns an "already applied" error we treat
+            #    as success.
+            out=$(hcloud firewall apply-to-resource "$fw_name" --type server --server "$sid" 2>&1); rc=$?
+            if [ "$rc" -ne 0 ] && ! printf '%s' "$out" | grep -qiE 'already applied|already_applied|already exists'; then
+                log_fail "cloud_partition_node: hcloud firewall apply-to-resource '${fw_name}' -> server ${sid} failed (rc=${rc}): ${out}"
+                return "$rc"
+            fi
+
+            # Record the id for cleanup (cloud_heal_partition reads this).
+            printf '%s\n' "$fw_id" > "/tmp/aether-partition-fw-${node_id}.id" 2>/dev/null || true
+            log_info "cloud_partition_node: ${node_id} (server ${sid}) partitioned via firewall '${fw_name}' (id ${fw_id}) — blocking cluster ${cluster_port}+swim ${swim_port} in+out (tcp+udp), keeping mgmt ${mgmt_port}+ssh ${ssh_port}"
+            return 0
+            ;;
+        *)
+            log_fail "cloud_partition_node: provider '${CLOUD_PROVIDER}' not implemented (only 'hetzner')"
+            return 2
+            ;;
+    esac
+}
+
+# cloud_heal_partition <node_id> — remove a node's partition firewall (idempotent).
+#
+# Detaches the firewall from the server (if applied) then deletes it. No-op if the
+# firewall does not exist (already healed / never partitioned). Restores full
+# transport connectivity for the node.
+cloud_heal_partition() {
+    local node_id="${1:-}"
+    if [ -z "$node_id" ]; then
+        log_fail "cloud_heal_partition: node id argument is required"
+        return 2
+    fi
+    case "${CLOUD_PROVIDER:-hetzner}" in
+        hetzner)
+            if ! command -v hcloud >/dev/null 2>&1; then
+                log_fail "cloud_heal_partition: hcloud CLI not found (required for provider 'hetzner')"
+                return 2
+            fi
+            local fw_name
+            fw_name=$(_cloud_partition_fw_name "$node_id")
+            local fw_id
+            fw_id=$(hcloud firewall describe "$fw_name" -o 'format={{.ID}}' 2>/dev/null || true)
+            if [ -z "$fw_id" ]; then
+                # No firewall by that name — already healed / never partitioned.
+                rm -f "/tmp/aether-partition-fw-${node_id}.id" 2>/dev/null || true
+                log_info "cloud_heal_partition: no partition firewall '${fw_name}' for ${node_id} (already healed)"
+                return 0
+            fi
+            # Detach from the node's server (if still applied), then delete. Resolve
+            # the server id best-effort — if the VM is gone (CTM replaced it) the
+            # detach is unnecessary and delete still succeeds.
+            local sid out rc
+            sid=$(cloud_server_id "$node_id" 2>/dev/null || true)
+            if [ -n "$sid" ]; then
+                out=$(hcloud firewall remove-from-resource "$fw_name" --type server --server "$sid" 2>&1); rc=$?
+                if [ "$rc" -ne 0 ] && ! printf '%s' "$out" | grep -qiE 'not applied|not_found|not found'; then
+                    log_warn "cloud_heal_partition: detach '${fw_name}' from server ${sid} returned rc=${rc}: ${out} (proceeding to delete)"
+                fi
+            fi
+            out=$(hcloud firewall delete "$fw_name" 2>&1); rc=$?
+            if [ "$rc" -ne 0 ] && ! printf '%s' "$out" | grep -qiE 'not_found|not found'; then
+                log_fail "cloud_heal_partition: hcloud firewall delete '${fw_name}' failed (rc=${rc}): ${out}"
+                return "$rc"
+            fi
+            rm -f "/tmp/aether-partition-fw-${node_id}.id" 2>/dev/null || true
+            log_info "cloud_heal_partition: removed partition firewall '${fw_name}' for ${node_id}"
+            return 0
+            ;;
+        *)
+            log_fail "cloud_heal_partition: provider '${CLOUD_PROVIDER}' not implemented (only 'hetzner')"
+            return 2
+            ;;
+    esac
+}
+
+# cloud_running_cores — enumerate live READY cores via the mgmt API.
+#
+# Provider-agnostic replacement for the single-host `docker ps` core enumeration:
+# on cloud there is no shared Docker daemon, so liveness comes from the cluster's
+# own membership. Reads /api/nodes/lifecycle through _resolve_live_endpoint
+# (api_get) and prints the node-id of every entry whose state is READY, one per
+# line. Empty output (rc 0) when the API is unreachable or no core is READY — the
+# caller decides whether that is fatal.
+#
+# The suites' single-host helpers (running_core_containers / container_for_node)
+# call this in the follow-up rewire.
+cloud_running_cores() {
+    local body
+    body=$(api_get "/api/nodes/lifecycle" 2>/dev/null || true)
+    [ -z "$body" ] && return 0
+    # Lifecycle is a JSON array of {nodeId, state, updatedAt}. Split into one record
+    # per line so each line pairs a nodeId with its state, then keep READY records
+    # and print the nodeId. Tolerates either Jackson field ordering.
+    printf '%s' "$body" \
+        | sed 's/},[[:space:]]*{/}\n{/g' \
+        | grep '"state"[[:space:]]*:[[:space:]]*"READY"' \
+        | grep -o '"nodeId"[[:space:]]*:[[:space:]]*"[^"]*"' \
+        | sed 's/.*"nodeId"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/'
+    return 0
+}
+
 ## DEPRECATED for routine cleanup — prefer `restore_cluster_baseline`. This
 ## helper forces the cluster back to the FIXED compose-node set (5 cores with
 ## original NodeIds), which fights the product model: killed nodes go
@@ -1599,47 +1980,46 @@ cleanup_cluster_zombies() {
 restart_all_nodes() {
     log_info "Restoring cluster to baseline (CLUSTER_NAME=${CLUSTER_NAME:-aether-b-node-})..."
     if [ "$CLOUD_MODE" = "true" ]; then
-        # Two cloud modes are supported (run-tests.sh exports CLOUD_RUNTIME):
-        #   container — VM runs a single `aether-node` Docker container
-        #   jvm       — VM runs `java -jar /opt/aether/aether-node.jar ...` directly
-        # Without this dispatch, JVM-mode VMs (no Docker installed) hit
-        # `bash: docker: command not found` and `restart_all_nodes` reports 5/5
-        # failures — every cluster B chaos suite then cascades into harness-induced
-        # failure rather than exercising the product.
-        local failed=0
+        # Cloud has NO single Docker host and NO docker-compose project — each node
+        # is its own VM. The old SSH-based `docker restart` / JVM pkill+relaunch loop
+        # could not reach CTM-provisioned replacement VMs (no operator SSH key), and
+        # there is nothing to "compose up". Recovery model on cloud:
+        #   1. Power any powered-off seed VMs back on (cloud_revive_vm, best-effort —
+        #      a still-running VM's poweron is a harmless no-op; a CTM-replaced node
+        #      may no longer have a same-id VM, which is fine — its replacement is
+        #      already carrying the load).
+        #   2. Let CTM auto-heal + SWIM converge, then wait on the SAME mgmt-API
+        #      readiness barriers the docker path uses (node count, leader, quiesce,
+        #      ready). The mgmt API is reachable for every node regardless of SSH key.
+        # We deliberately do NOT hard-fail when a seed VM cannot be revived: on cloud
+        # the operational invariant is "N healthy cores" (CTM may satisfy it with
+        # replacements), which the readiness barriers below assert authoritatively.
+        local i node_id
         for i in $(seq 1 "${NODE_COUNT:-5}"); do
-            if [ "${CLOUD_RUNTIME:-container}" = "jvm" ]; then
-                # JVM mode: capture cmdline → kill → relaunch. Mirrors kill_node +
-                # start_node's JVM branches. The captured cmdline is written to
-                # /tmp/aether-jvm-cmd-${node_id}.txt on the local test runner so
-                # destructive tests later in the suite can use it.
-                local cmd_file="/tmp/aether-jvm-cmd-node-${i}.txt"
-                local jvm_cmd
-                jvm_cmd=$(cloud_ssh "node-${i}" "ps -o command= -C java | grep -F 'aether-node.jar' | head -1" 2>&1)
-                local cap_rc=$?
-                if [ "$cap_rc" -ne 0 ] || [ -z "$jvm_cmd" ]; then
-                    log_warn "restart_all_nodes: could not capture JVM cmdline for node-${i} (rc=${cap_rc}): ${jvm_cmd}"
-                    failed=$((failed + 1))
-                    continue
-                fi
-                printf '%s\n' "$jvm_cmd" > "$cmd_file"
-                local kill_out
-                kill_out=$(cloud_ssh "node-${i}" "pkill -KILL -f 'aether-node.jar'" 2>&1) \
-                    || { log_warn "restart_all_nodes: node-${i} JVM kill failed: ${kill_out}"; failed=$((failed + 1)); continue; }
-                local start_out
-                start_out=$(cloud_ssh "node-${i}" "nohup ${jvm_cmd} >/var/log/aether-node.out 2>&1 </dev/null &" 2>&1) \
-                    || { log_warn "restart_all_nodes: node-${i} JVM relaunch failed: ${start_out}"; failed=$((failed + 1)); continue; }
-            else
-                # Container mode: aggregate per-node `docker restart` failures.
-                local restart_out
-                restart_out=$(cloud_ssh "node-${i}" "docker restart aether-node" 2>&1) \
-                    || { log_warn "restart_all_nodes: node-${i} restart failed: ${restart_out}"; failed=$((failed + 1)); }
-            fi
+            node_id=$(to_node_id "node-${i}" 2>/dev/null || true)
+            [ -z "$node_id" ] && continue
+            cloud_revive_vm "$node_id" 2>/dev/null \
+                || log_info "restart_all_nodes: cloud_revive_vm ${node_id} did not power on a VM (already running or CTM-replaced — proceeding)"
         done
-        if [ "$failed" -gt 0 ]; then
-            log_fail "restart_all_nodes: ${failed}/${NODE_COUNT:-5} cloud nodes failed to restart"
+        # Re-pin the mgmt endpoint to a live core, then wait on readiness via the API.
+        _refresh_mgmt_entry_point || log_warn "restart_all_nodes: no live endpoint to re-pin (proceeding with ${CLUSTER_ENDPOINT})"
+        local floor=$(( ${NODE_COUNT:-5} - 1 ))
+        if ! wait_for "${floor}+ healthy cores present (cloud baseline)" \
+            "[ \$(cluster_active_core_count) -ge ${floor} ]" 600; then
+            log_fail "restart_all_nodes: cloud cluster did not reach ${floor}+ healthy cores within 600s (current=$(cluster_active_core_count))"
             return 1
         fi
+        if ! wait_for_leader 120; then
+            log_fail "restart_all_nodes: no leader elected within 120s on cloud baseline restore"
+            return 1
+        fi
+        if ! await_generation_quiesced "${CLUSTER_ENDPOINT}" "current" 180; then
+            log_warn "restart_all_nodes: generation did not quiesce within 180s on cloud (proceeding — readiness barrier is authoritative)"
+        fi
+        if ! wait_for_cluster_ready 120 "${floor}"; then
+            log_warn "restart_all_nodes: cloud cluster not fully ready within 120s (proceeding — downstream suite has its own readiness gate)"
+        fi
+        log_info "restart_all_nodes: cloud cluster recovered (>=${floor} healthy cores, leader elected)"
         return 0
     fi
     # Why: `docker start` on exited containers re-uses identical NodeIds / addresses,
@@ -1750,60 +2130,17 @@ kill_node() {
     fi
     log_info "Killing node: ${node_id}"
     if [ "$CLOUD_MODE" = "true" ]; then
-        # Two cloud modes are supported (run-tests.sh exports CLOUD_RUNTIME):
-        #   container — VM runs a single `aether-node` Docker container
-        #   jvm       — VM runs `java -jar /opt/aether/aether-node.jar ...` directly
-        # Without this dispatch, JVM-mode VMs (which have no Docker installed by
-        # cloud-init's appendJvmInstall path) hit `bash: docker: command not found`,
-        # the kill never happens, and wait_for_node_departure times out at 60s.
-        if [ "${CLOUD_RUNTIME:-container}" = "jvm" ]; then
-            # Capture the running command line on the local test runner (NOT on the
-            # VM — the VM-side process is about to die) so start_node can replay it.
-            # cloud-init launched the JVM with `nohup java -jar ... &` (see
-            # UserDataTemplate::appendJvmRun). `ps -o command= -C java` prints the
-            # full argv of any java process; head -1 picks the aether-node JVM
-            # (cloud nodes run only one java process per VM).
-            local cmd_file="/tmp/aether-jvm-cmd-${node_id}.txt"
-            local jvm_cmd
-            jvm_cmd=$(cloud_ssh "$node_id" "ps -o command= -C java | grep -F 'aether-node.jar' | head -1" 2>&1)
-            local cap_rc=$?
-            if [ $cap_rc -ne 0 ] || [ -z "$jvm_cmd" ]; then
-                log_warn "kill_node: could not capture JVM cmdline for '${node_id}' (rc=${cap_rc}): ${jvm_cmd}. start_node will fail to relaunch."
-                : > "$cmd_file"
-            else
-                printf '%s\n' "$jvm_cmd" > "$cmd_file"
-            fi
-            local kill_out
-            # SIGTERM (default) gives the JVM ~5s to drain SWIM/QUIC; if the test
-            # needs hard-kill semantics (matches SIGKILL Docker behavior), peers
-            # still detect via SWIM timeout. pkill returns 1 when no process matched,
-            # which is a real failure (we expected a running JVM) — surface it.
-            kill_out=$(cloud_ssh "$node_id" "pkill -KILL -f 'aether-node.jar'" 2>&1)
-            local kill_rc=$?
-            if [ $kill_rc -ne 0 ]; then
-                log_fail "kill_node: cloud JVM kill of '${node_id}' failed (rc=${kill_rc}): ${kill_out}"
-                return $kill_rc
-            fi
-        else
-            # Container mode: each VM runs a single container named "aether-node".
-            # The container was launched with `--restart unless-stopped` (older cloud-
-            # init template) or `--restart no` (current). For the unless-stopped case
-            # a plain `docker kill` is auto-restarted within ~2s, faster than SWIM's
-            # failure-detection threshold — peers never observe the gap, no
-            # NODE_LEFT/NODE_FAILED events are emitted, and tests waiting for those
-            # events time out. Disable the restart policy first so the kill is
-            # authoritative; start_node re-enables. Stderr is captured (NOT discarded
-            # — silent stderr is a trap) so a docker permission-denied or SSH failure
-            # aborts the test loudly instead of producing the previous symptom:
-            # container survives, cluster sees no failure, NODE_FAILED events never
-            # appear, test fails with no signal of what went wrong.
-            local kill_out
-            kill_out=$(cloud_ssh "$node_id" "set -e; docker update --restart=no aether-node >/dev/null; docker kill aether-node" 2>&1)
-            local kill_rc=$?
-            if [ $kill_rc -ne 0 ]; then
-                log_fail "kill_node: cloud kill of '${node_id}' failed (rc=${kill_rc}): ${kill_out}"
-                return $kill_rc
-            fi
+        # Provider-API kill: power off the node's VM (cloud_kill_vm). This replaces
+        # the old SSH-based `docker kill` / `pkill` paths, which could NOT reach
+        # CTM-provisioned replacement VMs (they lack the operator SSH key →
+        # Permission denied). A VM poweroff is an abrupt kill — peers detect the
+        # departure via SWIM timeout → NODE_FAILED → CTM auto-heal, the same
+        # observable outcome the docker-kill path produced. Provider-agnostic
+        # (cloud_kill_vm dispatches on CLOUD_PROVIDER); runtime (container/jvm) is
+        # irrelevant once we kill the whole VM.
+        if ! cloud_kill_vm "$node_id"; then
+            log_fail "kill_node: cloud VM poweroff of '${node_id}' failed"
+            return 1
         fi
     else
         # NodeId == container_name (post-migration): the NodeId IS the docker
@@ -1840,43 +2177,17 @@ start_node() {
     local node_id="$1"
     log_info "Starting node: ${node_id}"
     if [ "$CLOUD_MODE" = "true" ]; then
-        if [ "${CLOUD_RUNTIME:-container}" = "jvm" ]; then
-            # Replay the cmdline captured by kill_node on the local test runner.
-            # The /tmp/aether-jvm-cmd-${node_id}.txt side-channel survives VM-side
-            # process death, so even if the VM had been hard-rebooted between kill
-            # and start the runner-side file is still authoritative.
-            local cmd_file="/tmp/aether-jvm-cmd-${node_id}.txt"
-            if [ ! -s "$cmd_file" ]; then
-                log_fail "start_node: cannot relaunch JVM on '${node_id}' — ${cmd_file} is missing or empty (kill_node failed to capture cmdline). Cluster will be permanently short by one node."
-                return 1
-            fi
-            local jvm_cmd
-            jvm_cmd=$(cat "$cmd_file")
-            # Re-execute under nohup with stdout/stderr redirected so SSH can return
-            # promptly. The JVM is daemonized — same end state as cloud-init's
-            # original `nohup ... &`. The remote shell quoting wraps the captured
-            # command verbatim; the cmdline does not contain single quotes (cloud-init
-            # uses `--key=value` form), so single-quote wrapping is safe.
-            local start_out
-            start_out=$(cloud_ssh "$node_id" "nohup ${jvm_cmd} >/var/log/aether-node.out 2>&1 </dev/null &" 2>&1)
-            local start_rc=$?
-            if [ $start_rc -ne 0 ]; then
-                log_fail "start_node: cloud JVM relaunch of '${node_id}' failed (rc=${start_rc}): ${start_out}"
-                return $start_rc
-            fi
-        else
-            # Container mode: re-enable the restart policy that kill_node disabled,
-            # then start. Same reasoning as kill_node: capture stderr so a docker /
-            # SSH failure surfaces in the test output instead of leaving the
-            # container stopped and a downstream "wait for 5 nodes" timing out
-            # cryptically.
-            local start_out
-            start_out=$(cloud_ssh "$node_id" "set -e; docker update --restart=unless-stopped aether-node >/dev/null; docker start aether-node" 2>&1)
-            local start_rc=$?
-            if [ $start_rc -ne 0 ]; then
-                log_fail "start_node: cloud start of '${node_id}' failed (rc=${start_rc}): ${start_out}"
-                return $start_rc
-            fi
+        # Provider-API revive: power the node's VM back on (cloud_revive_vm). Replaces
+        # the old SSH-based JVM-replay / `docker start`, which could not reach
+        # CTM-provisioned replacement VMs. NOTE: CTM auto-heal may already have
+        # DECOMMISSIONED this node and provisioned a replacement by now — in which
+        # case the revived VM rejoins as a stale identity (transient N+1). For normal
+        # chaos recovery prefer waiting on CTM auto-heal (restore_cluster_baseline);
+        # this same-identity revive is for tests that explicitly need the original
+        # VM back. See cloud_revive_vm's header for the full caveat.
+        if ! cloud_revive_vm "$node_id"; then
+            log_fail "start_node: cloud VM poweron of '${node_id}' failed"
+            return 1
         fi
     else
         # NodeId == container_name (post-migration) — see kill_node for rationale.
@@ -2159,14 +2470,17 @@ restore_cluster_baseline() {
 
     # 0. API-reachability gate. Cluster B uses `restart: "no"` so a prior failed test
     # may have left the entry-point's reach-set without a healthy leader. If the
-    # management API doesn't respond, escalate to a docker-level compose cycle
-    # (restart_all_nodes) before giving up. Prior behaviour was to log_warn and
+    # management API doesn't respond, escalate to a full restart (restart_all_nodes)
+    # before giving up. Prior behaviour was to log_warn and
     # return 1, which left cluster B unrecoverable for every subsequent suite in
     # the run -- the 2026-05-22 cascade (02-chaos 0p/6f → 03-scaling 0p/3f → ...)
-    # originated here. The escalation gives the harness one chance to bring the
-    # original five compose containers back before declaring the cluster lost.
+    # originated here. restart_all_nodes is provider-aware: docker/remote run a
+    # compose down/up cycle; cloud powers powered-off VMs back on (cloud_revive_vm)
+    # and waits on CTM auto-heal + mgmt-API readiness (there is no compose project on
+    # cloud — the old `docker compose ... aether-b-network` path is a no-op there and
+    # failed with `No resource found for project aether`).
     if ! cluster_leader >/dev/null 2>&1; then
-        log_warn "restore_cluster_baseline: no leader reachable via management API — escalating to docker compose cycle"
+        log_warn "restore_cluster_baseline: no leader reachable via management API — escalating to full cluster restart (restart_all_nodes)"
         if ! restart_all_nodes; then
             log_warn "restore_cluster_baseline: restart_all_nodes also failed; cluster is unrecoverable for this run"
             return 1
@@ -2175,10 +2489,10 @@ restore_cluster_baseline() {
         # (see its tail). Re-check the leader gate so we don't fall through into the
         # restore steps with a half-converged cluster.
         if ! cluster_leader >/dev/null 2>&1; then
-            log_warn "restore_cluster_baseline: leader still unreachable after compose cycle"
+            log_warn "restore_cluster_baseline: leader still unreachable after restart"
             return 1
         fi
-        log_info "restore_cluster_baseline: docker compose cycle recovered the cluster — continuing restore"
+        log_info "restore_cluster_baseline: full cluster restart recovered the cluster — continuing restore"
     fi
 
     # 0b. Re-pin the management endpoint to a LIVE core. Chaos may have killed the
@@ -2303,7 +2617,7 @@ scale_cluster() {
     # + scaled-in-config Put). 30s rejected legitimate slow-but-eventual-success
     # calls as test failures; 90s lets them complete while still bounding genuinely
     # stuck states (no leader / partition / consensus deadlock).
-    local endpoint url rc http_status
+    local url rc http_status
     local body_file
     body_file=$(mktemp -t scale_cluster.XXXXXX)
     # Capture HTTP status separately from body so we can distinguish transport
@@ -2311,32 +2625,23 @@ scale_cluster() {
     # Pre-fix: curl without -f and without a status check returned rc=0 for
     # `{"error":"quorum unavailable"}`, so callers spun the full timeout waiting
     # for a scale that the server had already refused.
-    if [ "$CLOUD_MODE" = "true" ]; then
-        local leader_ip
-        leader_ip=$(cloud_node_ip "$leader" 2>/dev/null || echo "")
-        if [ -z "$leader_ip" ]; then
-            log_warn "scale_cluster: cannot resolve cloud IP for leader '${leader}'; falling back to MGMT entry point"
-            endpoint="${CLUSTER_ENDPOINT}"
-        else
-            endpoint="http://${leader_ip}:8080"
-        fi
-        url="${endpoint}/api/cluster/scale"
-        # Remote curl writes body to a remote tmp, prints HTTP code on stdout, then echoes
-        # body on a new line. We split locally: first line = code, remainder = body.
-        local combined
-        combined=$(cloud_ssh "$leader" "tmp=\$(mktemp); curl -sk -m 90 -o \$tmp -w '%{http_code}\\n' -X POST -H 'X-API-Key: ${API_KEY}' -H 'Content-Type: application/json' -d '{\"coreCount\":${target},\"expectedVersion\":0}' http://localhost:8080/api/cluster/scale; rc=\$?; cat \$tmp; rm -f \$tmp; exit \$rc")
-        rc=$?
-        http_status=$(printf '%s\n' "$combined" | head -n1)
-        printf '%s\n' "$combined" | tail -n +2 > "$body_file"
-    else
-        local scale_ep
-        scale_ep=$(_resolve_live_endpoint)
-        url="${scale_ep}/api/cluster/scale"
-        http_status=$(curl -sk -m 90 -o "$body_file" -w '%{http_code}' \
-                          -X POST -H "X-API-Key: ${API_KEY}" -H "Content-Type: application/json" \
-                          -d "{\"coreCount\":${target},\"expectedVersion\":0}" "$url")
-        rc=$?
-    fi
+    #
+    # Single transport for ALL environments (docker/remote/cloud): POST to a live
+    # mgmt endpoint resolved by _resolve_live_endpoint. The mgmt API FORWARDS the
+    # scale request to the consensus leader server-side (proven by the
+    # `503 Management forward failed` log line when no leader), so the harness does
+    # NOT need to reach the leader's own port. The previous cloud branch SSH'd to
+    # the leader VM and curled localhost:8080 — that path could not reach a
+    # CTM-provisioned leader (no operator SSH key) and returned `status:000`,
+    # wedging 03-scaling. Dropping it makes cloud use the same forwarding path that
+    # already works for docker/remote.
+    local scale_ep
+    scale_ep=$(_resolve_live_endpoint)
+    url="${scale_ep}/api/cluster/scale"
+    http_status=$(curl -sk -m 90 -o "$body_file" -w '%{http_code}' \
+                      -X POST -H "X-API-Key: ${API_KEY}" -H "Content-Type: application/json" \
+                      -d "{\"coreCount\":${target},\"expectedVersion\":0}" "$url")
+    rc=$?
     local body
     body=$(head -c 500 "$body_file" 2>/dev/null)
     rm -f "$body_file"
@@ -2360,29 +2665,13 @@ leader_api_post() {
     local path="$1"
     local body="${2:-"{}"}"
     if [ "$CLOUD_MODE" = "true" ]; then
-        # Cloud: SSH-tunnel to the leader via bastion
-        local leader
-        leader=$(cluster_leader)
-        if [ -z "$leader" ] || [ "$leader" = "none" ]; then
-            log_warn "No leader available, falling back to api_post" >&2
-            api_post "$path" "$body"
-            return
-        fi
-        local leader_ip
-        leader_ip=$(cloud_node_ip "$leader")
-        # Use SSH tunnel for the request. Capture stderr so SSH transport errors and
-        # curl error bodies surface — `2>/dev/null` previously discarded both, leaving
-        # callers staring at empty stdout with no clue whether SSH timed out, the
-        # leader 401'd, or the path 404'd.
-        local ssh_out ssh_rc
-        ssh_out=$(cloud_ssh "$leader" "curl -sk -X POST -H 'X-API-Key: ${API_KEY}' -H 'Content-Type: application/json' -d '${body}' http://localhost:8080${path}" 2>&1)
-        ssh_rc=$?
-        if [ "$ssh_rc" -ne 0 ]; then
-            log_warn "leader_post: SSH to leader '${leader}' failed (rc=${ssh_rc}): ${ssh_out}"
-            return "$ssh_rc"
-        fi
-        printf '%s' "$ssh_out"
-        return 0
+        # Cloud: post to any live mgmt endpoint and let the server FORWARD to the
+        # consensus leader (same forwarding contract scale_cluster relies on). The
+        # previous SSH-tunnel-to-leader path could not reach a CTM-provisioned leader
+        # VM (no operator SSH key → Permission denied) and is the exact SSH coupling
+        # this work removes. api_post resolves a live core via _resolve_live_endpoint.
+        api_post "$path" "$body"
+        return
     fi
     local leader
     leader=$(cluster_leader)

@@ -11,11 +11,30 @@ LOAD_PIDS=()
 
 # Start background HTTP load against the app endpoint
 # Usage: start_load <rps> <duration_seconds> <method> <path> [body]
+#
+# OWNER PINNING (cloud): APP_ENDPOINT points at ONE slice-owner VM (set by
+# retarget_app_endpoint_to_active_slice — the harness has no load balancer). If a
+# disruption test kills/replaces that owner mid-window, every subsequent tick gets
+# status 000 (connect failure) until APP_ENDPOINT is retargeted, which the
+# error-rate assertion then (correctly) counts as a product failure that is really
+# the missing LB. Disruption tests MUST therefore keep the load's owner alive by
+# exporting it in PICK_EXCLUDE before picking a victim (pick_non_leader honors
+# PICK_EXCLUDE — see lib/cluster.sh) — measuring the product, not the absent LB.
+# Re-resolving the owner per tick is intentionally NOT done here: it would add an
+# API round-trip per request and still cannot route around a single-owner slice.
 start_load() {
     local rps="$1" duration="$2" method="$3" path="$4" body="${5:-}"
     local interval
     interval=$(awk "BEGIN {printf \"%.4f\", 1.0/${rps}}" 2>/dev/null || echo "0.1")
     local end_time=$(($(now_epoch) + duration))
+
+    # Clear any result/failure files left by a PRIOR load window of THIS process
+    # before starting a new one. Scoped to $$ so concurrent runners (parallel
+    # cluster A suites in separate processes) never clobber each other's files, and
+    # so a previous window's stale 404s are not summed into this window's totals
+    # (the 642-stale-404 over-count came from stop_load globbing /tmp/load_*_*.txt
+    # across runs; both ends are now $$-scoped).
+    rm -f "/tmp/load_result_$$.txt" "/tmp/load_failures_$$.txt"
 
     log_info "Starting load: ${rps} rps for ${duration}s — ${method} ${path}"
 
@@ -88,8 +107,11 @@ stop_load() {
         wait "$pid" 2>/dev/null
     done
 
-    # Collect results from temp files
-    for f in /tmp/load_result_*.txt; do
+    # Collect results from temp files. Scope to THIS process ($$) — the previous
+    # /tmp/load_result_*.txt glob summed result files left by EVERY prior run/process,
+    # inflating totals (observed: 642 stale 404s folded into one window's failure
+    # count). start_load now also clears these at the start of each window.
+    for f in "/tmp/load_result_$$.txt"; do
         if [ -f "$f" ]; then
             local line
             line=$(cat "$f")
@@ -107,8 +129,10 @@ stop_load() {
     # Failure forensics: status-code histogram + time window of the failures.
     # Discriminates transport errors (000) from routed-but-rejected (4xx/5xx)
     # and shows whether failures cluster in a cutover window or span the run.
+    # $$-scoped (matches the result-file scoping above) so a prior run's failure
+    # log is never replayed into this window's histogram.
     local ff
-    for ff in /tmp/load_failures_*.txt; do
+    for ff in "/tmp/load_failures_$$.txt"; do
         if [ -f "$ff" ]; then
             log_info "Failure status histogram: $(awk '{print $2}' "$ff" | sort | uniq -c | awk '{printf "%sx%s ", $1, $2}')" >&2
             log_info "Failure window: first=$(head -1 "$ff") last=$(tail -1 "$ff")" >&2

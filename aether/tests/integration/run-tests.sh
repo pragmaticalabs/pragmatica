@@ -602,6 +602,22 @@ teardown() {
             # bootstrap-state.json existence, idempotent, exits 0 if nothing to destroy.
             [ ${#A_SUITES[@]} -gt 0 ] && ("${REPO_ROOT}/../tools/cloud-reaper.sh" --cluster "$CLUSTER_A_NAME" --destroy --force 2>&1 | tail -3 || true)
             [ ${#B_SUITES[@]} -gt 0 ] && ("${REPO_ROOT}/../tools/cloud-reaper.sh" --cluster "$CLUSTER_B_NAME" --destroy --force 2>&1 | tail -3 || true)
+            # Catch-all sweep for CTM-provisioned ORPHANS. The scoped `--cluster <name>`
+            # reaps above filter on `aether-cluster=<name>` (plus same-cluster orphans),
+            # but CTM-provisioned replacement VMs may carry a DIFFERENT or MISSING
+            # `aether-cluster` label value (the seed/replacement prefix mismatch:
+            # cluster reports `aether-cloud-test-b-node-<ULID>` while the VM is labeled
+            # `aether-node-id=aether-b-node-<ULID>` with no matching `aether-cluster`).
+            # Those rows are dropped by the per-cluster orphan filter and survived
+            # teardown last run (4 orphan VMs leaked). A final bare reaper run (no
+            # --cluster) matches ANY `aether-cluster` OR `aether-node-id` label and
+            # closes the gap. Safe here: the integration run owns every aether-labeled
+            # resource in the account, and both cluster reaps already ran — anything
+            # still labeled is an orphan from THIS run. Only fired when a cloud cluster
+            # was actually provisioned this run.
+            if [ ${#A_SUITES[@]} -gt 0 ] || [ ${#B_SUITES[@]} -gt 0 ]; then
+                ("${REPO_ROOT}/../tools/cloud-reaper.sh" --destroy --force 2>&1 | tail -3 || true)
+            fi
             # Re-close PG firewall (5432 → denied) after cluster teardown.
             "${REPO_ROOT}/../tools/pg-firewall.sh" close 2>&1 | tail -1 || true
             ;;
