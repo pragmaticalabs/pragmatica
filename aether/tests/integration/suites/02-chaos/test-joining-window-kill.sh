@@ -72,11 +72,35 @@ source "${SCRIPT_DIR}/../../lib/generation.sh"
 # the smoking-gun reason assertion below pins which one fired.
 DECOMMISSION_BUDGET_S=90
 
-# Maximum time we'll wait for CTM to provision a replacement container after
-# the priming kill. CTM circuit breaker, slot deadlines, leader-forwarding, and
-# remote SSH latency dominate this number — generous to keep the test focused
-# on the JOINING-window assertion, not on CTM provisioning speed.
-REPLACEMENT_DISCOVERY_TIMEOUT_S=90
+# Maximum time we'll wait for CTM to provision a replacement AND for it to surface
+# in membership reporting SYNCING/READY (the JOINING window we must catch the kill
+# in). CTM circuit breaker, slot deadlines, leader-forwarding, and remote SSH
+# latency dominate this number.
+#
+# docker/remote: a replacement is a container spin-up (DockerComputeProvider) that
+#   joins in seconds-to-tens-of-seconds, so the historical 90s base is generous.
+# cloud (`--env cloud`): a replacement is a BRAND-NEW Hetzner VM — provision +
+#   cloud-init + image pull + cluster join measured at ~3-5 min end-to-end. The 90s
+#   base timed out before the VM ever surfaced, so test_catch_replacement_in_joining_window
+#   returned early WITHOUT landing the kill or writing the kill timestamp, which then
+#   cascaded into the "S01 kill timestamp missing" failure in the next test. The
+#   cloud base is raised to 300s to cover real VM boot. Both bases are still scaled
+#   by TIMEOUT_SCALE at the call sites (1 docker, 2 remote, 3 cloud), matching every
+#   other cloud-aware wait in the harness (cf. autoheal_default_timeout in lib/cluster.sh).
+#
+# Override with AETHER_REPLACEMENT_DISCOVERY_TIMEOUT to pin an explicit base.
+replacement_discovery_base_timeout() {
+    if [ -n "${AETHER_REPLACEMENT_DISCOVERY_TIMEOUT:-}" ]; then
+        printf '%s\n' "$AETHER_REPLACEMENT_DISCOVERY_TIMEOUT"
+        return 0
+    fi
+    if [ "${CLOUD_MODE:-false}" = "true" ]; then
+        printf '%s\n' 300
+    else
+        printf '%s\n' 90
+    fi
+}
+REPLACEMENT_DISCOVERY_TIMEOUT_S="$(replacement_discovery_base_timeout)"
 
 # Files we use to ferry state between test functions (each test function runs
 # in its own shell context via run_test, so we cannot rely on environment vars
@@ -288,9 +312,16 @@ test_catch_replacement_in_joining_window() {
     # The endpoint `/api/nodes/lifecycle/<R>` reports the node's own reported state
     # (leader-forwarded). A just-provisioned replacement reports SYNCING first, then
     # READY once it has caught up on consensus.
+    #
+    # Window is cloud-aware: on docker/remote the replacement is a container that
+    # surfaces in seconds (90s base is generous); on cloud it is a brand-new Hetzner
+    # VM whose cloud-init + image pull + join take ~3-5 min, so the same
+    # replacement_discovery_base_timeout() base (300s cloud / 90s otherwise) is used
+    # here. A 90s gate on cloud timed out before R ever reported SYNCING/READY, so the
+    # kill never landed and the next test failed with "S01 kill timestamp missing".
     local pre_kill_state
-    if ! pre_kill_state=$(wait_for_replacement_in_kv "$replacement" 90); then
-        log_fail "Replacement ${replacement} never reported SYNCING/READY in /api/nodes/lifecycle/${replacement} within 90s — CTM provisioned the container but the node never surfaced in membership (consensus stuck? leader churn? node failed to start?). Cannot exercise S01."
+    if ! pre_kill_state=$(wait_for_replacement_in_kv "$replacement" "$(replacement_discovery_base_timeout)"); then
+        log_fail "Replacement ${replacement} never reported SYNCING/READY in /api/nodes/lifecycle/${replacement} within $(replacement_discovery_base_timeout)s — CTM provisioned the container but the node never surfaced in membership (consensus stuck? leader churn? node failed to start?). Cannot exercise S01."
         return 1
     fi
     case "$pre_kill_state" in

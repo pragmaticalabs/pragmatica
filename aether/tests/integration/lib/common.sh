@@ -348,11 +348,25 @@ api_put() {
 _api_call() {
     local method="$1" url="$2" body="${3:-}"
     local response status body_only
+    # Cloud poll-loop hygiene: a just-killed node's pinned endpoint is a DEAD
+    # public IP. With the default `-m 30` (no connect cap), each call to a dead
+    # host stalls the full 30s before failing, so a single wedged subtest's
+    # poll loop (wait_for / wait_for_node_count) burns ~30s/iteration and starves
+    # the rest of cluster-B. On cloud, fast-fail the connect so a dead endpoint
+    # surfaces as a curl failure in ~3s and the caller can rotate to a live node
+    # on the next poll (it re-refreshes MGMT_ENTRY_POINT). docker/local/remote keep
+    # the original `-m 30` with no connect cap — byte-identical behaviour there.
+    local conn_opts=()
+    if [ "${CLOUD_MODE:-false}" = "true" ]; then
+        conn_opts=(--connect-timeout "${CLOUD_API_CONNECT_TIMEOUT:-3}" -m "${CLOUD_API_MAX_TIME:-15}")
+    else
+        conn_opts=(-m 30)
+    fi
     if [ -n "$body" ]; then
-        response=$(curl -sk -m 30 -X "$method" -H "X-API-Key: ${API_KEY}" -H "Content-Type: application/json" \
+        response=$(curl -sk "${conn_opts[@]}" -X "$method" -H "X-API-Key: ${API_KEY}" -H "Content-Type: application/json" \
             -d "$body" -w "\n__API_HTTP_STATUS:%{http_code}__" "$url" 2>&1)
     else
-        response=$(curl -sk -m 30 -X "$method" -H "X-API-Key: ${API_KEY}" \
+        response=$(curl -sk "${conn_opts[@]}" -X "$method" -H "X-API-Key: ${API_KEY}" \
             -w "\n__API_HTTP_STATUS:%{http_code}__" "$url" 2>&1)
     fi
     status=$(printf '%s' "$response" | grep -oE '__API_HTTP_STATUS:[0-9]+__' | sed 's/__API_HTTP_STATUS://;s/__//')
@@ -592,6 +606,24 @@ wait_for() {
     local elapsed=0 rc errfile
     errfile=$(mktemp)
     log_info "Waiting for: ${description} (timeout: ${timeout}s)"
+    # Cloud poll-loop hygiene: predicates round-trip through _resolve_live_endpoint
+    # → _api_call against the PINNED CLUSTER_ENDPOINT. When that endpoint is a
+    # just-killed VM (a dead public IP), every poll re-scans/re-curls it; combined
+    # with connect stalls this stretched a nominal 720s budget to 40+ min wall-clock
+    # and starved the rest of cluster-B. On cloud we (1) resolve+export a live mgmt
+    # endpoint ONCE up front so the per-poll _resolve_live_endpoint hits its
+    # fast happy-path probe (CLUSTER_ENDPOINT live → one `-m 2` curl, no VM scan),
+    # and (2) re-refresh ONLY when a poll's predicate fails — so a dead endpoint is
+    # rotated to a live node on the next iteration rather than retried at full
+    # timeout every poll. The overall scaled deadline is unchanged. _api_call's
+    # cloud connect-timeout (see CLOUD_API_CONNECT_TIMEOUT) bounds the single
+    # straggling call between a refresh and the next predicate. docker/local/remote
+    # take neither branch — byte-identical behaviour there.
+    local cloud_poll="false"
+    if [ "${CLOUD_MODE:-false}" = "true" ]; then
+        cloud_poll="true"
+        _refresh_mgmt_entry_point >/dev/null 2>&1 || true
+    fi
     while [ "$elapsed" -lt "$timeout" ]; do
         # Capture rc without tripping `set -e` from the caller — `eval` as a standalone
         # command would propagate its non-zero exit and abort the entire script when
@@ -611,6 +643,14 @@ wait_for() {
                 log_warn "wait_for predicate emitted shell error (rc=${rc}): $(head -c 300 < "$errfile")"
                 ;;
         esac
+        # On cloud, a non-zero predicate may mean the pinned endpoint just died
+        # (the node it pointed at was killed). Rotate to a live node BEFORE the
+        # next poll so the dead endpoint isn't re-probed at full cost every
+        # iteration. Cheap: succeeds via the `-m 2` happy-path probe when the
+        # current endpoint is still live, scans VMs only when it genuinely died.
+        if [ "$cloud_poll" = "true" ]; then
+            _refresh_mgmt_entry_point >/dev/null 2>&1 || true
+        fi
         sleep "$interval"
         elapsed=$((elapsed + interval))
     done
