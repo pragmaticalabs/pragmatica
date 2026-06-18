@@ -339,4 +339,74 @@ class UserDataTemplateTest {
         assertTrue(script.contains("AETHER_MANAGEMENT_PORT=\"5160\""),
                    "Operator-supplied management port must be exported as AETHER_MANAGEMENT_PORT shell var");
     }
+
+    @Test
+    void render_containerRuntime_resolvesRoutableAdvertiseHostAndPassesItConditionally() {
+        // A CTM auto-heal replacement must advertise the VM's routable IP, not its hostname (which
+        // peers cannot resolve, getting it SWIM-killed). The user-data resolves the host IP on the
+        // VM (outside the container) via the provider-agnostic 'ip route get', never failing the
+        // boot, then passes it into the container as -e AETHER_ADVERTISE_HOST ONLY when non-empty.
+        var config = ClusterBootstrapConfigParser.parse(CLOUD_BASE).unwrap();
+        var source = config.sources().get("eu-1");
+
+        var script = UserDataTemplate.render(config,
+                                             source,
+                                             NodeRole.CORE,
+                                             "node-1",
+                                             0,
+                                             "secret",
+                                             "prod-cluster",
+                                             TomlDocument.EMPTY);
+
+        assertTrue(script.contains("AETHER_ADVERTISE_HOST=\"$(ip route get 1.1.1.1 2>/dev/null | sed -n 's/.*src \\([0-9.]*\\).*/\\1/p' | head -n1)\" || true"),
+                   "Must resolve the VM's routable IPv4 with a provider-agnostic command that never fails the boot");
+        assertTrue(script.contains("if [ -n \"${AETHER_ADVERTISE_HOST}\" ]; then ADVERTISE_ENV=\"-e AETHER_ADVERTISE_HOST=${AETHER_ADVERTISE_HOST}\"; fi"),
+                   "Must build the -e flag only when the resolved host is non-empty (runtime test)");
+        assertTrue(script.contains("    ${ADVERTISE_ENV} \\\n"),
+                   "docker run must expand the conditional advertise-host env so an unset IP adds no flag");
+    }
+
+    @Test
+    void render_jvmRuntime_resolvesRoutableAdvertiseHostAndExportsItConditionally() {
+        // Same routable-IP requirement on the bare-process path: resolve on the VM, then export
+        // AETHER_ADVERTISE_HOST (the node reads it from env via Main.findAdvertiseHostOverride)
+        // ONLY when non-empty, so an unset IP leaves the node's SWIM-reflection chain in charge.
+        var jvmToml = """
+                config_version = "1.0.0"
+
+                [cluster]
+                name = "prod-cluster"
+                version = "1.0.0"
+
+                [runtime.bare-metal]
+                type = "jvm"
+
+                [source.eu-1]
+                type = "cloud"
+                provider = "hetzner"
+                region = "eu-central"
+
+                [source.eu-1.core]
+                count = 3
+                runtime = "bare-metal"
+                """;
+        var config = ClusterBootstrapConfigParser.parse(jvmToml).unwrap();
+        var source = config.sources().get("eu-1");
+
+        var script = UserDataTemplate.render(config,
+                                             source,
+                                             NodeRole.CORE,
+                                             "node-1",
+                                             0,
+                                             "secret",
+                                             "prod-cluster",
+                                             TomlDocument.EMPTY);
+
+        assertTrue(script.contains("AETHER_ADVERTISE_HOST=\"$(ip route get 1.1.1.1 2>/dev/null | sed -n 's/.*src \\([0-9.]*\\).*/\\1/p' | head -n1)\" || true"),
+                   "JVM-mode must also resolve the VM's routable IPv4 with the provider-agnostic command");
+        assertTrue(script.contains("if [ -n \"${AETHER_ADVERTISE_HOST}\" ]; then export AETHER_ADVERTISE_HOST; fi"),
+                   "JVM-mode must export AETHER_ADVERTISE_HOST only when the resolved host is non-empty");
+        assertFalse(script.contains("ADVERTISE_ENV"),
+                    "JVM-mode must not use the container-only ADVERTISE_ENV docker-run construct");
+    }
 }

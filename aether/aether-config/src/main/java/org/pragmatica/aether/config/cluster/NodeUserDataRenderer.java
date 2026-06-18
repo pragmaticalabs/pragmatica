@@ -106,6 +106,7 @@ public sealed interface NodeUserDataRenderer {
                         ports.management(),
                         peersValue);
         appendSshAuthorizedKeys(sb, sshAuthorizedKeys);
+        appendAdvertiseHostResolution(sb);
         if (isContainer) {
             appendDockerInstall(sb);
             appendComposedConfig(sb, composedConfig);
@@ -150,6 +151,32 @@ public sealed interface NodeUserDataRenderer {
         sb.append("AETHER_SSH_KEYS\n");
         sb.append("chown aether:aether /home/aether/.ssh/authorized_keys\n");
         sb.append("chmod 0600 /home/aether/.ssh/authorized_keys\n\n");
+    }
+
+    /// Resolve this VM's ROUTABLE IPv4 on the HOST (outside any container) and expose it as the
+    /// `AETHER_ADVERTISE_HOST` shell var, so a CTM auto-heal replacement advertises an IP its peers
+    /// can route to — not the container/VM hostname, which is unresolvable across hosts and gets the
+    /// node suspected and killed by SWIM (the silent multi-minute flap [SelfAddressResolver] guards).
+    ///
+    /// The leader cannot know the replacement VM's IP at provision time, but the VM trivially can:
+    /// `ip route get 1.1.1.1` reports the source IP the kernel would use to reach an off-link
+    /// destination, which on a public-IP VM is the public IP. Provider-agnostic — no metadata
+    /// endpoint is hardcoded.
+    ///
+    /// ROBUST by construction: `2>/dev/null` + `|| true` so a missing `ip`/`sed` or a routing
+    /// failure never aborts the `set -euo pipefail` boot; an empty result leaves the var unset, and
+    /// the node's own resolution chain (SWIM WhoAmI reflection + loud hostname fallback) takes over.
+    /// Each runtime then passes the var through ONLY when non-empty (a runtime test, since the value
+    /// is resolved on the box, not at render time).
+    ///
+    /// Emitted on BOTH provisioning paths since the renderer is shared, but harmless for bootstrap:
+    /// a bootstrap node carries itself in its 3-part PEERS, so [SelfAddressResolver] short-circuits
+    /// (self PRESENT → peers returned unchanged) and never consults the override.
+    private static void appendAdvertiseHostResolution(StringBuilder sb) {
+        sb.append("# --- Resolve routable advertise host (on the VM, outside any container) ---\n");
+        sb.append("# CTM replacements must advertise the VM's routable IP, not its hostname (which\n");
+        sb.append("# peers cannot resolve). 'ip route get' is provider-agnostic; never fail the boot.\n");
+        sb.append("AETHER_ADVERTISE_HOST=\"$(ip route get 1.1.1.1 2>/dev/null | sed -n 's/.*src \\([0-9.]*\\).*/\\1/p' | head -n1)\" || true\n\n");
     }
 
     private static Option<RuntimeProfile> resolveRuntimeProfile(ClusterBootstrapConfig config,
@@ -219,6 +246,12 @@ public sealed interface NodeUserDataRenderer {
         sb.append("if ! docker image inspect \"${AETHER_IMAGE}\" >/dev/null 2>&1; then\n");
         sb.append("    docker pull \"${AETHER_IMAGE}\"\n");
         sb.append("fi\n");
+        // Pass the resolved routable IP into the container ONLY when non-empty (runtime test —
+        // resolved on the host above). Assembled into a shell var here and expanded unquoted into
+        // the docker run command so an unset host IP contributes no -e flag (the node then falls
+        // back to its own SWIM-reflection chain rather than advertising an unroutable hostname).
+        sb.append("ADVERTISE_ENV=\"\"\n");
+        sb.append("if [ -n \"${AETHER_ADVERTISE_HOST}\" ]; then ADVERTISE_ENV=\"-e AETHER_ADVERTISE_HOST=${AETHER_ADVERTISE_HOST}\"; fi\n");
         sb.append("docker run -d \\\n");
         sb.append("    --name aether-node \\\n");
         sb.append("    --restart no \\\n");
@@ -231,6 +264,7 @@ public sealed interface NodeUserDataRenderer {
         sb.append("    -e CLUSTER_PORT=\"${AETHER_CLUSTER_PORT}\" \\\n");
         sb.append("    -e MANAGEMENT_PORT=\"${AETHER_MANAGEMENT_PORT}\" \\\n");
         sb.append("    -e PEERS=\"${AETHER_PEERS}\" \\\n");
+        sb.append("    ${ADVERTISE_ENV} \\\n");
         appendEnv(sb, clusterName, role, true);
         sb.append("    \"${AETHER_IMAGE}\"\n\n");
     }
@@ -353,6 +387,10 @@ public sealed interface NodeUserDataRenderer {
         // Export the cluster-identity allow-list (and isolated dev-mode) so the JVM picks
         // up the same identity a containerized sibling receives via -e flags.
         appendEnv(sb, clusterName, role, false);
+        // Export the resolved routable IP ONLY when non-empty (runtime test — resolved on the host
+        // above); the node reads AETHER_ADVERTISE_HOST from env. Unset → not exported, and the
+        // node's own SWIM-reflection chain takes over rather than advertising an unroutable hostname.
+        sb.append("if [ -n \"${AETHER_ADVERTISE_HOST}\" ]; then export AETHER_ADVERTISE_HOST; fi\n");
         sb.append("PEERS_ARG=\"\"\n");
         sb.append("if [ -n \"${AETHER_PEERS}\" ]; then PEERS_ARG=\"--peers=${AETHER_PEERS}\"; fi\n");
         sb.append("AETHER_CLUSTER_SECRET=\"${AETHER_CLUSTER_SECRET}\" java ");

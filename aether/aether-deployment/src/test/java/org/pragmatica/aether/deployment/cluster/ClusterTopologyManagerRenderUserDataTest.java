@@ -216,6 +216,27 @@ class ClusterTopologyManagerRenderUserDataTest {
                 .isTrue();
     }
 
+    @Test
+    void provisionReplacement_cloudConfig_resolvesRoutableAdvertiseHostOnTheVm() {
+        // The defect this whole path exists to close: a replacement that advertises its
+        // unresolvable VM hostname gets suspected and SWIM-killed. The rendered user-data must
+        // resolve the VM's ROUTABLE IP on the host (provider-agnostic, never failing the boot) and
+        // pass it through as AETHER_ADVERTISE_HOST ONLY when non-empty, for the container runtime.
+        clusterStore.seedToml(CLOUD_TOML);
+        ctm.activate();
+
+        var result = ctm.provisionReplacement(nodeId("node-r5").unwrap(), Option.some(DEAD_PEER), Set.of(SELF, PEER_A, PEER_B), NodeRole.CORE).await();
+
+        assertThat(result.isSuccess()).isTrue();
+        var script = lifecycleManager.lastSpec().userData().or("");
+        assertThat(script)
+                .as("replacement user-data resolves the VM's routable IPv4 on the host without failing the boot")
+                .contains("AETHER_ADVERTISE_HOST=\"$(ip route get 1.1.1.1 2>/dev/null | sed -n 's/.*src \\([0-9.]*\\).*/\\1/p' | head -n1)\" || true");
+        assertThat(script)
+                .as("replacement user-data passes the routable IP into the container only when resolved")
+                .contains("if [ -n \"${AETHER_ADVERTISE_HOST}\" ]; then ADVERTISE_ENV=\"-e AETHER_ADVERTISE_HOST=${AETHER_ADVERTISE_HOST}\"; fi");
+    }
+
     private static MessageRouter.MutableRouter quietRouter() {
         var router = MessageRouter.mutable();
         router.addRoute(NetworkServiceMessage.ListConnectedNodes.class, _ -> {});
