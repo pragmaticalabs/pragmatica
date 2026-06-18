@@ -168,6 +168,14 @@ case "$ENV_TYPE" in
         # cloud-init (docker run -e / JVM export). Without it, cluster A (security_mode=NONE)
         # rejects blueprint pushes and the 00-smoke gate fails. Override to false to enforce.
         export AETHER_INSECURE_DEV_MODE="${AETHER_INSECURE_DEV_MODE:-true}"
+        # Per-key RBAC keys for 05-security viewer/operator coverage. These match the
+        # VIEWER/OPERATOR api-key section suffixes in env/cloud-hetzner-b.toml (and the
+        # JVM-B variant). lib/common.sh resolves VIEWER_API_KEY=${AETHER_VIEWER_API_KEY:-}
+        # and OPERATOR_API_KEY=${AETHER_OPERATOR_API_KEY:-${API_KEY}} from these — without
+        # them the 3 viewer tests skip and the operator test runs vacuously on the admin
+        # key. Cloud-only: the docker env wires distinct-role keys via docker-compose.
+        export AETHER_VIEWER_API_KEY="aether-integration-viewer-key"
+        export AETHER_OPERATOR_API_KEY="aether-integration-operator-key"
         case "$CLOUD_RUNTIME" in
             container) ;;
             jvm)

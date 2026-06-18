@@ -82,6 +82,21 @@ name = "integration-test"
 roles = ["service"]
 authorization_role = "ADMIN"
 
+# Per-key RBAC roles for 05-security's viewer/operator coverage. The section-header
+# suffix after `api-keys.` IS the literal key value the harness sends as X-API-Key
+# (AETHER_VIEWER_API_KEY / AETHER_OPERATOR_API_KEY in run-tests.sh). authorization_role
+# drives enforcement (ADMIN > OPERATOR > VIEWER); without these blocks VIEWER_API_KEY /
+# OPERATOR_API_KEY are empty and the viewer tests skip + the operator test is vacuous.
+[source.hetzner-eu.node_config.app-http.api-keys.aether-integration-viewer-key]
+name = "integration-viewer"
+roles = ["service"]
+authorization_role = "VIEWER"
+
+[source.hetzner-eu.node_config.app-http.api-keys.aether-integration-operator-key]
+name = "integration-operator"
+roles = ["service"]
+authorization_role = "OPERATOR"
+
 # @PgSql slices read the FLAT [database] datasource (config="database"). databases.X
 # produces nested [database.X] the connector ignores; inject flat [database] via node_config.
 [source.hetzner-eu.node_config.database]
