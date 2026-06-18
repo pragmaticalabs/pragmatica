@@ -54,6 +54,8 @@ import org.pragmatica.swim.SwimMessage.Announce;
 import org.pragmatica.swim.SwimMessage.MembershipUpdate;
 import org.pragmatica.swim.SwimMessage.Ping;
 import org.pragmatica.swim.SwimMessage.PingReq;
+import org.pragmatica.swim.SwimMessage.WhoAmI;
+import org.pragmatica.swim.SwimMessage.WhoAmIReply;
 import org.pragmatica.swim.SwimTransport.SwimMessageHandler;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -550,6 +552,8 @@ public final class SwimProtocol implements SwimMessageHandler {
             case Ack ack -> handleAck(ack);
             case PingReq pingReq -> handlePingReq(sender, pingReq);
             case Announce announce -> handleAnnounce(sender, announce);
+            case WhoAmI w -> handleWhoAmI(sender, w);
+            case WhoAmIReply r -> handleWhoAmIReply(r);
         }
     }
 
@@ -1076,6 +1080,22 @@ public final class SwimProtocol implements SwimMessageHandler {
         var piggyback = piggybackBuffer.peekUpdates(config.maxPiggyback());
         var ack = Ack.ack(selfId, ping.sequence(), piggyback);
         transport.send(sender, ack);
+    }
+
+    /// Reflects the kernel-resolved source address back to a joining node. The seed echoes
+    /// exactly the address it observed `sender` arrive from, so a node behind a container/VM
+    /// hostname can learn the routable address peers actually see.
+    private void handleWhoAmI(InetSocketAddress sender, WhoAmI w) {
+        LOG.trace("SWIM WhoAmI from {}: reflecting observed source address {}", w.from().id(), sender);
+        var reply = WhoAmIReply.whoAmIReply(sender);
+        transport.send(sender, reply);
+    }
+
+    /// Defensive no-op: this SwimProtocol never initiates WhoAmI requests, so a reply has no
+    /// pending request to satisfy. Replies are consumed by a transient client transport (later
+    /// task); the case exists only to keep [#onMessage] exhaustive over the sealed message set.
+    private void handleWhoAmIReply(WhoAmIReply r) {
+        LOG.trace("SWIM unexpected WhoAmIReply (no pending request): {}", r.observedAddress());
     }
 
     private void handleAck(Ack ack) {
