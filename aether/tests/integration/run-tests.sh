@@ -70,7 +70,15 @@ CLUSTER_B_LB_MGMT=""
 
 # Suite assignments (from spec Section 5)
 CLUSTER_A_SUITES=(00 04 06 07 08 09 10 11 14 15)
-CLUSTER_B_SUITES=(02 03 05 12 13)
+# Cluster B runs sequentially with a baseline-restore between suites; a suite that
+# leaves cluster B unrecoverable SKIPS all suites after it. So order by ASCENDING
+# wedge risk, not numerically, to validate as many suites as possible per run:
+#   05 security  — no node churn (safest)
+#   13 edge      — worker/deploy ops incl Gap-C artifact-isolation (observe the known gap early)
+#   12 network   — partition tests, but partitions heal (reversible)
+#   03 scaling   — scale-up exercises the provisionNode path that can stall under churn
+#   02 chaos     — test-kill-multiple is the proven 2-node-burst wedge → runs LAST
+CLUSTER_B_SUITES=(05 13 12 03 02)
 
 # ---------------------------------------------------------------------------
 # Argument parsing
