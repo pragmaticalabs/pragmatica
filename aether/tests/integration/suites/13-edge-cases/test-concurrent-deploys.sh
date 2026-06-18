@@ -14,17 +14,55 @@ BLUEPRINT="org.pragmatica.aether.test:test-echo:1.0.0"
 # the two artifacts are guaranteed disjoint at the route level).
 BLUEPRINT_2="org.pragmatica.aether.test:test-persistence:1.0.0"
 
+# Deploy a blueprint and HARD-ASSERT it succeeded, with a couple of retries.
+#
+# Gap-C attribution: `deploy_blueprint` returns non-zero when the deploy API rejects
+# (e.g. an HTTP 500 from a product-side deploy/corruption bug). The previous flow left
+# the deploy unchecked in test_cluster_ready, so a failed deploy proceeded silently and
+# only surfaced three tests later as a confusing artifact-isolation "persistence=false"
+# — masking a real product deploy bug as a downstream isolation failure. This wrapper
+# attributes the failure HONESTLY: it FAILS at the deploy step, surfacing the deploy
+# API error, instead of letting it leak downstream. It does NOT attempt to fix the
+# product side — only to report the right culprit.
+deploy_blueprint_or_fail() {
+    local artifact="$1"
+    local attempts="${DEPLOY_ASSERT_ATTEMPTS:-3}"
+    local i=1 out rc
+    while [ "$i" -le "$attempts" ]; do
+        if out=$(deploy_blueprint "$artifact" 2>&1); then
+            log_pass "Deploy of ${artifact} accepted (attempt ${i}/${attempts})"
+            return 0
+        fi
+        rc=$?
+        log_warn "Deploy of ${artifact} failed on attempt ${i}/${attempts} (rc=${rc}): $(printf '%s' "$out" | head -c 300)"
+        i=$((i + 1))
+        [ "$i" -le "$attempts" ] && sleep 2
+    done
+    log_fail "GAP-C: deploy of ${artifact} did not succeed after ${attempts} attempts — surfacing the deploy error (a real product deploy failure here would otherwise masquerade as a downstream artifact-isolation 'persistence=false'). Last error: $(printf '%s' "$out" | head -c 300)"
+    return 1
+}
+
 test_cluster_ready() {
     wait_for_cluster_ready 60
     wait_for_all_tasks_active 60 || log_warn "task groups not fully ACTIVE within 60s"
     # ClusterGeneration barrier: any churn inherited from a destructive predecessor
     # suite is committed to a stable generation. No rescale fallback needed.
     await_generation_quiesced "$CLUSTER_ENDPOINT" "current" 60 || log_warn "pre-deploy snapshot not quiesced"
-    push_blueprint "$BLUEPRINT"
-    deploy_blueprint "$BLUEPRINT"
+    # GAP-C: hard-assert each push+deploy succeeds BEFORE any downstream isolation check.
+    # A silent deploy failure here previously surfaced as artifact-isolation
+    # "persistence=false" three tests later (wrong culprit). push_blueprint already
+    # fail-closes; deploy_blueprint_or_fail adds the missing deploy-success assertion.
+    if ! push_blueprint "$BLUEPRINT" >/dev/null; then
+        log_fail "GAP-C: push of ${BLUEPRINT} failed — cannot proceed to deploy"
+        return 1
+    fi
+    deploy_blueprint_or_fail "$BLUEPRINT" || return 1
     await_generation_quiesced "$CLUSTER_ENDPOINT" "current+1" 60 || log_warn "deploy did not quiesce"
-    push_blueprint "$BLUEPRINT_2"
-    deploy_blueprint "$BLUEPRINT_2"
+    if ! push_blueprint "$BLUEPRINT_2" >/dev/null; then
+        log_fail "GAP-C: push of ${BLUEPRINT_2} failed — cannot proceed to deploy"
+        return 1
+    fi
+    deploy_blueprint_or_fail "$BLUEPRINT_2" || return 1
     await_generation_quiesced "$CLUSTER_ENDPOINT" "current+1" 60 || log_warn "second deploy did not quiesce"
     wait_for_slices_active 1 120 || log_warn "Slices not active after deploy"
     log_pass "Cluster ready with both baseline blueprints deployed"

@@ -82,13 +82,38 @@ source "${SCRIPT_DIR}/../../lib/topology.sh"
 # At 5s we get exactly one periodic-emission cycle on the majority side —
 # enough for the gate to receive transition signals but not enough for
 # it to confirm UNREACHABLE-quorum across multiple TTL-aged cycles.
-PARTITION_DURATION_S=5
+#
+# DOCKER: `docker network disconnect` is an INSTANT cutover — SWIM ping-acks and
+# QUIC both fail immediately, so 5s already spans the detection window.
+#
+# CLOUD: provider firewalls (cloud_partition_node) apply to NEW connections only;
+# the established QUIC peer links stay up until SWIM-timeout-driven teardown (see
+# cloud_partition_node's CAVEAT). A 5s window would close before the partition is
+# ever perceived by the majority — the assertion would pass against an un-cut link
+# and prove nothing. We therefore extend the cloud window to the SWIM suspicion +
+# timeout budget so the majority-stability property is asserted across the period
+# during which the partition is actually in effect and detected. The value is the
+# same SWIM-detection base the departure waits use (45s), scaled by TIMEOUT_SCALE
+# (3 on cloud) since this monitoring loop does its own SECONDS arithmetic and is NOT
+# routed through the auto-scaling `wait_for`. This stays well clear of the minority
+# self-drain path: a partitioned cloud minority that does self-drain is the S19
+# contract (test-self-drain-quorum-loss.sh), and either way the property under test
+# here — the 3-node MAJORITY never loses quorum/leader — holds throughout.
+if [ "${CLOUD_MODE:-false}" = "true" ]; then
+    PARTITION_DURATION_S=$(( ${CLOUD_PARTITION_SWIM_WINDOW_S:-45} * ${TIMEOUT_SCALE:-1} ))
+else
+    PARTITION_DURATION_S=5
+fi
 
 # Post-heal recovery budget. SWIM reconvergence + QUIC fresh handshake +
 # periodic observation cycle + KV consensus apply: empirically ~10-20s on
 # remote Docker. 30s gives 10-20s headroom.
 HEAL_BUDGET_S=30
 
+# Docker cluster-network name. Used ONLY on the non-cloud (docker network
+# disconnect/connect) path; on cloud, isolation is enforced via provider firewalls
+# (cloud_partition_node/cloud_heal_partition) and this value is never referenced.
+# Defined unconditionally so a stray reference can never trip `set -u`.
 NETWORK_NAME="aether-${CLUSTER_ID:-b}-network"
 
 MINORITY_FILE="/tmp/s05-minority-ids.$$"
@@ -124,8 +149,25 @@ kv_lifecycle_state() {
 # aether.node-id label. Returns empty string when no container matches.
 # Scoped to the test's CLUSTER_ID so cluster-A containers (also on the
 # same daemon during interleaved suites) are not selected.
+#
+# Cloud: there is no docker daemon and no container label to inspect — each node
+# is its own VM addressed by its runtime node-id (which is what cloud_partition_node
+# / cloud_heal_partition expect). The "container handle" on cloud is therefore the
+# node-id itself; we confirm it is a live member via the mgmt API (cloud_running_cores)
+# and echo it back so the disconnect/connect helpers can hand it to the partition
+# primitives unchanged. Empty (caller fails) if the node is not a live member.
 container_for_node() {
     local nid="$1"
+    if [ "${CLOUD_MODE:-false}" = "true" ]; then
+        local runtime_id member
+        runtime_id=$(to_node_id "$nid")
+        # Accept either the raw id or its runtime translation as a live-membership match.
+        member=$(cloud_running_cores | grep -Fx -- "$runtime_id" || cloud_running_cores | grep -Fx -- "$nid" || true)
+        if [ -n "$member" ]; then
+            printf '%s' "$member"
+        fi
+        return 0
+    fi
     local cluster_filter=""
     if [ -n "${CLUSTER_ID:-}" ]; then
         cluster_filter="--filter label=aether.cluster=${CLUSTER_ID}"
@@ -136,8 +178,22 @@ container_for_node() {
 # Disconnect a container from the cluster network. Container process
 # remains alive but loses all peer reachability. stderr captured (silent
 # stderr is a known trap per project memory).
+#
+# Cloud: there is no docker network — isolation is enforced at the provider
+# firewall (cloud_partition_node), which blocks the cluster/QUIC + SWIM ports
+# in both directions while keeping mgmt (8080) open so the harness can still
+# observe the isolated node. `$container` is the runtime node-id on cloud
+# (container_for_node echoes the id back).
 disconnect_node_from_network() {
     local container="$1"
+    if [ "${CLOUD_MODE:-false}" = "true" ]; then
+        if ! cloud_partition_node "$container"; then
+            log_fail "cloud_partition_node ${container} failed (see FAIL line above)"
+            return 1
+        fi
+        log_info "Partitioned ${container} via provider firewall (cluster+SWIM ports blocked, mgmt kept)"
+        return 0
+    fi
     local out rc
     out=$(remote_exec "docker network disconnect ${NETWORK_NAME} ${container}" 2>&1)
     rc=$?
@@ -153,8 +209,19 @@ disconnect_node_from_network() {
 # container is already connected (e.g. on cleanup after a successful
 # heal step), the daemon returns non-zero with "already connected" —
 # we tolerate that and continue.
+#
+# Cloud: removes the provider partition firewall (cloud_heal_partition), which is
+# itself idempotent (no-op when the firewall is absent / already healed).
 connect_node_to_network() {
     local container="$1"
+    if [ "${CLOUD_MODE:-false}" = "true" ]; then
+        if ! cloud_heal_partition "$container"; then
+            log_warn "cloud_heal_partition ${container} returned non-zero; recovery assertion will surface any real problem"
+            return 1
+        fi
+        log_info "Healed partition for ${container} (provider firewall removed)"
+        return 0
+    fi
     local out rc
     out=$(remote_exec "docker network connect ${NETWORK_NAME} ${container}" 2>&1)
     rc=$?
