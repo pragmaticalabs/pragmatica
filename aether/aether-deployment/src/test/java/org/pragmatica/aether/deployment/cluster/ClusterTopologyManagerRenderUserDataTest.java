@@ -81,6 +81,30 @@ class ClusterTopologyManagerRenderUserDataTest {
             count = 3
             """;
 
+    private static final String CLOUD_TOML_WITH_AUTHORIZED_KEYS = """
+            config_version = "1.0.0"
+
+            [cluster]
+            name = "prod-cluster"
+            version = "1.0.0"
+
+            [operations.ports]
+            cluster = 6000
+            management = 5160
+            app_http = 8070
+
+            [source.eu-1]
+            type = "cloud"
+            provider = "hetzner"
+            region = "eu-central"
+
+            [source.eu-1.core]
+            count = 3
+
+            [infrastructure.ssh]
+            authorized_keys = ["ssh-ed25519 AAAAC3OperatorKey operator@laptop"]
+            """;
+
     private StubSnapshotSource snapshotSource;
     private TopologyObserver observer;
     private RecordingLifecycleManager lifecycleManager;
@@ -214,6 +238,42 @@ class ClusterTopologyManagerRenderUserDataTest {
         assertThat(lifecycleManager.lastSpec().userData().isEmpty())
                 .as("a blank persisted config degrades to no user-data so the provider fallback applies")
                 .isTrue();
+    }
+
+    @Test
+    void provisionReplacement_cloudConfig_injectsOperatorAuthorizedKeysFromPersistedToml() {
+        // rc2 cloud auto-heal regression: a CTM replacement VM must accept the SAME operator SSH
+        // key a bootstrap-minted node does. Bootstrap persists the resolved key CONTENTS into the
+        // cluster config TOML ([infrastructure.ssh].authorized_keys); CTM reads them back and threads
+        // them into the SHARED renderer's cloud-init authorized_keys block.
+        clusterStore.seedToml(CLOUD_TOML_WITH_AUTHORIZED_KEYS);
+        ctm.activate();
+
+        var result = ctm.provisionReplacement(nodeId("node-keyed").unwrap(), Option.none(), Set.of(SELF, PEER_A, PEER_B), NodeRole.CORE).await();
+
+        assertThat(result.isSuccess()).isTrue();
+        var script = lifecycleManager.lastSpec().userData().or("");
+        assertThat(script)
+                .as("replacement user-data installs the operator key into root's authorized_keys")
+                .contains("cat >> /root/.ssh/authorized_keys");
+        assertThat(script)
+                .as("replacement user-data carries the operator public key persisted in the config")
+                .contains("ssh-ed25519 AAAAC3OperatorKey operator@laptop");
+    }
+
+    @Test
+    void provisionReplacement_cloudConfigWithoutKeys_omitsAuthorizedKeysBlock() {
+        // No [infrastructure.ssh].authorized_keys persisted -> no SSH block, exactly as a keyless
+        // bootstrap renders. Guards against an unconditional surface beyond what bootstrap does.
+        clusterStore.seedToml(CLOUD_TOML);
+        ctm.activate();
+
+        var result = ctm.provisionReplacement(nodeId("node-keyless").unwrap(), Option.none(), Set.of(SELF, PEER_A, PEER_B), NodeRole.CORE).await();
+
+        assertThat(result.isSuccess()).isTrue();
+        assertThat(lifecycleManager.lastSpec().userData().or(""))
+                .as("a config without persisted authorized_keys renders no SSH authorized_keys block")
+                .doesNotContain("cat >> /root/.ssh/authorized_keys");
     }
 
     @Test

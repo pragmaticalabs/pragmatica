@@ -408,8 +408,9 @@ public final class ClusterBootstrapConfigParser {
         }
 
         var keyFiles = collectSshKeyFiles(doc);
+        var authorizedKeys = doc.getStringList(INFRA_SSH_SECTION, "authorized_keys").or(List.of());
 
-        return Option.some(SshDeploymentConfig.sshDeploymentConfig(keyFiles));
+        return Option.some(SshDeploymentConfig.sshDeploymentConfig(keyFiles, authorizedKeys));
     }
 
     private static List<String> collectSshKeyFiles(TomlDocument doc) {

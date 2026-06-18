@@ -235,7 +235,12 @@ sealed interface BootstrapPhaseFormation {
         }
 
         var endpoint = buildManagementEndpoint(ctx);
-        var configJson = buildConfigJson(ctx.rawTomlContent());
+        var persistedToml = SshAuthorizedKeysToml.withAuthorizedKeys(ctx.rawTomlContent(),
+                                                                     ctx.sshPublicKeys()
+                                                                        .stream()
+                                                                        .map(SshPublicKey::value)
+                                                                        .toList());
+        var configJson = buildConfigJson(persistedToml);
         var configuredKey = extractConfiguredApiKey(ctx.config());
 
         return retryFormationPost(endpoint + "/api/cluster/config", configJson, "cluster config", configuredKey).onSuccess(_ -> System.out.println("  Cluster config stored in KV-Store"));

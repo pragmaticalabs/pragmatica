@@ -11,6 +11,7 @@ import org.pragmatica.aether.config.cluster.NodeUserDataRenderer;
 import org.pragmatica.aether.config.cluster.ReplacementNodeConfigComposer;
 import org.pragmatica.aether.config.cluster.SourceProfile;
 import org.pragmatica.aether.config.cluster.SourceType;
+import org.pragmatica.aether.config.cluster.SshDeploymentConfig;
 import org.pragmatica.aether.deployment.DeploymentMap;
 import org.pragmatica.aether.environment.AutoHealConfig;
 import org.pragmatica.aether.environment.EnvironmentError;
@@ -626,8 +627,22 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                                                                                  clusterSecretFromEnv().or(""),
                                                                                                  config.cluster().name(),
                                                                                                  composed,
-                                                                                                 List.of(),
+                                                                                                 authorizedKeysFrom(config),
                                                                                                  peersList(context)));
+    }
+
+    /// Operator SSH public keys persisted into the cluster config TOML at bootstrap formation
+    /// (`[infrastructure.ssh] authorized_keys`). Threaded into the SHARED [NodeUserDataRenderer] so a
+    /// CTM auto-heal replacement injects them into its cloud-init `authorized_keys` — giving the
+    /// replacement VM the SAME operator SSH access a bootstrap-minted node receives, by the SAME
+    /// user-data mechanism. Empty when the persisted TOML carries no keys (no `[infrastructure.ssh]`
+    /// section or no `authorized_keys`), which leaves the rendered script free of an SSH block exactly
+    /// as a keyless bootstrap would.
+    private static List<String> authorizedKeysFrom(ClusterBootstrapConfig config) {
+        return config.infrastructure()
+                     .ssh()
+                     .map(SshDeploymentConfig::authorizedKeys)
+                     .or(List.of());
     }
 
     /// The cloud [SourceProfile] backing the given role: the first `CLOUD`-type source whose role
