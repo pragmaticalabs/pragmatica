@@ -772,8 +772,9 @@ case "${CLOUD_PROVIDER:-}" in
 esac
 export CLOUD_PROVIDER
 
-# Hetzner Cloud REST API base. Overridable for testing; the chaos primitives and
-# cloud_public_ip's label fallback share this so there is a single endpoint knob.
+# Hetzner Cloud REST API base. Overridable for testing. No longer consumed by the
+# cloud resolver helpers (cloud_server_id maps IP->id via the `hcloud` CLI, which
+# talks to the API itself); retained as a single knob for any future raw-API probe.
 HCLOUD_API="${HCLOUD_API:-https://api.hetzner.cloud/v1}"
 
 # Management API URL scheme. Defaults to http; switched to https by run-tests.sh
@@ -840,114 +841,22 @@ _registered_by_to_offset() {
 }
 
 
-# Extract the stable join key (trailing ULID) from a node id. CTM-provisioned
-# replacements have a PREFIX MISMATCH between the Hetzner `aether-node-id` label
-# value (e.g. `aether-b-node-01J...`) and the cluster's reported node-id
-# (e.g. `aether-cloud-test-b-node-01J...`) — only the trailing ULID is stable
-# across both. A ULID is 26 Crockford-base32 chars; we take the last `-`-separated
-# token and accept it as the key when it looks ULID-ish (>= 20 alnum chars). For
-# seed ids like `hetzner-eu-core-0` the trailing token is numeric and short, so
-# this returns empty (callers fall back to exact match for those).
-#
-# Prints the ULID on stdout (empty if the id has no ULID-like suffix). Always rc 0.
-_node_id_ulid_suffix() {
-    local id="${1:-}"
-    local tail="${id##*-}"
-    # ULID-ish: at least 20 chars, only Crockford base32 alphanumerics.
-    if [ "${#tail}" -ge 20 ] && printf '%s' "$tail" | grep -qE '^[0-9A-Za-z]+$'; then
-        printf '%s' "$tail"
-    fi
-}
-
-# Resolve ANY cluster node id — bootstrap seed OR CTM-provisioned replacement — to
-# its live Hetzner server via the `aether-node-id` label, returning "id<TAB>ipv4".
-#
-# Resolution order (handles the seed/replacement prefix mismatch documented on
-# _node_id_ulid_suffix):
-#   1. EXACT label match `aether-node-id=<node_id>` — fast path for seeds and for
-#      replacements whose label value happens to equal the reported id.
-#   2. ULID-suffix match — list every `aether-node-id`-labeled server and pick the
-#      one whose label value's trailing ULID equals <node_id>'s trailing ULID. This
-#      bridges `aether-b-node-<ULID>` (label) ↔ `aether-cloud-test-b-node-<ULID>`
-#      (cluster-reported id).
-#
-# No-jq (grep/sed only, matching the harness no-extra-deps idiom). Requires
-# HCLOUD_TOKEN. Prints `id<TAB>ipv4` on stdout + rc 0 on success; rc 1 if no
-# server matches; rc 2 if HCLOUD_TOKEN is unset.
-_hcloud_resolve_server() {
-    local node_id="${1:-}"
-    [ -z "$node_id" ] && return 1
-    if [ -z "${HCLOUD_TOKEN:-}" ]; then
-        return 2
-    fi
-    local hz_api="${HCLOUD_API:-https://api.hetzner.cloud/v1}"
-
-    # --- 1. exact label match -------------------------------------------------
-    local enc body
-    enc=$(printf 'aether-node-id=%s' "$node_id" | sed 's/=/%3D/')
-    body=$(curl -sS -m 10 -H "Authorization: Bearer ${HCLOUD_TOKEN}" \
-                "${hz_api}/servers?label_selector=${enc}&per_page=50" 2>/dev/null || true)
-    local sid ip
-    if [ -n "$body" ]; then
-        sid=$(printf '%s' "$body" \
-            | grep -oE '"id"[[:space:]]*:[[:space:]]*[0-9]+' \
-            | head -1 \
-            | grep -oE '[0-9]+$')
-        ip=$(printf '%s' "$body" \
-            | grep -o '"ipv4"[[:space:]]*:[[:space:]]*{[^}]*"ip"[[:space:]]*:[[:space:]]*"[^"]*"' \
-            | head -1 \
-            | sed 's/.*"ip"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/')
-        if [ -n "$sid" ] && [ -n "$ip" ]; then
-            printf '%s\t%s\n' "$sid" "$ip"
-            return 0
-        fi
-    fi
-
-    # --- 2. ULID-suffix match -------------------------------------------------
-    local want_ulid
-    want_ulid=$(_node_id_ulid_suffix "$node_id")
-    [ -z "$want_ulid" ] && return 1
-    # List every aether-node-id-labeled server (one API call) and walk the array
-    # entry-by-entry. We split on "id": boundaries so each chunk holds one server's
-    # id, label value, and ipv4 together. Bounded by --per-page=50 (test clusters
-    # are small).
-    body=$(curl -sS -m 10 -H "Authorization: Bearer ${HCLOUD_TOKEN}" \
-                "${hz_api}/servers?label_selector=aether-node-id&per_page=50" 2>/dev/null || true)
-    [ -z "$body" ] && return 1
-    # Normalize: one server object per line. The servers array is "servers":[{...},{...}].
-    # Replace `},{` between objects with a newline so each line is one server object.
-    local objs line lbl o_ulid o_id o_ip
-    objs=$(printf '%s' "$body" | sed 's/},[[:space:]]*{/}\n{/g')
-    while IFS= read -r line; do
-        [ -z "$line" ] && continue
-        # The aether-node-id label value for this server object.
-        lbl=$(printf '%s' "$line" \
-            | grep -o '"aether-node-id"[[:space:]]*:[[:space:]]*"[^"]*"' \
-            | head -1 \
-            | sed 's/.*"aether-node-id"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/')
-        [ -z "$lbl" ] && continue
-        o_ulid=$(_node_id_ulid_suffix "$lbl")
-        [ "$o_ulid" = "$want_ulid" ] || continue
-        o_id=$(printf '%s' "$line" \
-            | grep -oE '"id"[[:space:]]*:[[:space:]]*[0-9]+' \
-            | head -1 \
-            | grep -oE '[0-9]+$')
-        o_ip=$(printf '%s' "$line" \
-            | grep -o '"ipv4"[[:space:]]*:[[:space:]]*{[^}]*"ip"[[:space:]]*:[[:space:]]*"[^"]*"' \
-            | head -1 \
-            | sed 's/.*"ip"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/')
-        if [ -n "$o_id" ] && [ -n "$o_ip" ]; then
-            printf '%s\t%s\n' "$o_id" "$o_ip"
-            return 0
-        fi
-    done <<< "$objs"
-    return 1
-}
-
 # Return the Hetzner server ID (numeric) for a cluster node id — seed OR CTM
-# replacement — via the same resolution as cloud_public_ip. Needed by the
-# provider chaos primitives (poweroff / firewall apply) which address servers by
-# id, not IP. Prints the id on stdout + rc 0; logs and returns non-zero on failure.
+# replacement. IP-based and cluster-correct: resolve the node to its routable
+# public IP via cloud_public_ip (cluster-scoped — bootstrap-state for seeds,
+# this cluster's mgmt API for replacements), then map that IP to a server id with
+# the `hcloud` CLI. Needed by the provider chaos primitives (poweroff / firewall
+# apply) which address servers by id, not IP. Prints the id on stdout + rc 0;
+# logs and returns non-zero on failure.
+#
+# Robustness: NEVER parse Hetzner's multi-line pretty-printed JSON with line-based
+# grep (the old _hcloud_resolve_server bug — `"ipv4"`/`"ip"` land on separate
+# lines so the regex never matched, the ip came back empty, and resolution bailed
+# even for bootstrap seeds). `hcloud server list -o columns=id,ipv4 -o noheader`
+# emits one `id<WS>ipv4` row per server with the JSON parsed internally; awk does
+# an exact field match. Cluster disambiguation comes from cloud_public_ip (the IP
+# is unique per VM), not from a global `aether-node-id` label scan (which matched
+# the same seed id across BOTH clusters' VMs — the A/B ambiguity bug).
 #
 # Provider-agnostic shell: dispatches on CLOUD_PROVIDER so an aws/gcp branch slots
 # in later. Hetzner is the only implemented backend today.
@@ -959,19 +868,23 @@ cloud_server_id() {
     fi
     case "${CLOUD_PROVIDER:-hetzner}" in
         hetzner)
-            local row sid rc
-            row=$(_hcloud_resolve_server "$node_id"); rc=$?
-            if [ "$rc" -eq 2 ]; then
-                log_fail "cloud_server_id: HCLOUD_TOKEN unset — cannot resolve server id for '${node_id}'"
+            if ! command -v hcloud >/dev/null 2>&1; then
+                log_fail "cloud_server_id: hcloud CLI not found (required for provider 'hetzner')"
                 return 2
             fi
-            if [ "$rc" -ne 0 ] || [ -z "$row" ]; then
-                log_fail "cloud_server_id: no Hetzner server carries label aether-node-id matching '${node_id}' (exact or trailing-ULID)"
+            local ip
+            ip=$(cloud_public_ip "$node_id") || {
+                log_fail "cloud_server_id: could not resolve a public IP for '${node_id}' (cluster-scoped lookup failed)"
                 return 1
-            fi
-            sid="${row%%$'\t'*}"
+            }
+            # Map IP -> numeric server id. `hcloud -o columns -o noheader` prints
+            # `id<WS>ipv4` per server; awk exact-matches column 2 and prints the id.
+            # No manual JSON parsing — hcloud handles the (multi-line) API body.
+            local sid
+            sid=$(hcloud server list -o columns=id,ipv4 -o noheader 2>/dev/null \
+                    | awk -v ip="$ip" '$2==ip{print $1; exit}')
             if [ -z "$sid" ]; then
-                log_fail "cloud_server_id: resolved server for '${node_id}' but could not parse its numeric id"
+                log_fail "cloud_server_id: no Hetzner server has public IP '${ip}' (node '${node_id}')"
                 return 1
             fi
             printf '%s\n' "$sid"
@@ -1051,29 +964,34 @@ cloud_public_ip() {
     if [ -z "$ip" ]; then
         # bootstrap-state.json only records the nodes provisioned at bootstrap. A
         # CTM-provisioned REPLACEMENT VM (cloud auto-heal) is NOT in that file — its
-        # node-id reaches us from /api/nodes/status, not from bootstrap. Fall back to
-        # the provider API, which is the authoritative live inventory: every Aether VM
-        # (bootstrap OR CTM replacement) carries an `aether-node-id` label.
+        # node-id reaches us from /api/nodes/status, not from bootstrap. Ask THIS
+        # cluster's own management API for the node's advertised transport address.
         #
-        # The lookup is delegated to _hcloud_resolve_server, which handles the
-        # seed/replacement PREFIX MISMATCH: it exact-matches the label first, then
-        # falls back to matching on the trailing ULID (so the cluster-reported id
-        # `aether-cloud-test-b-node-<ULID>` resolves to the VM labeled
-        # `aether-node-id=aether-b-node-<ULID>`). Bounded, no-jq, and only attempted
-        # when the static lookup missed — so the happy path (bootstrap seeds) never
-        # pays an API round-trip. NOTE: resolve by the ORIGINAL node_id, not the
-        # bootstrap-form $target — CTM ids do not carry the `<source>-core-N` shape.
-        if [ "${CLOUD_PROVIDER:-hetzner}" = "hetzner" ] && [ -n "${HCLOUD_TOKEN:-}" ]; then
-            local row
-            if row=$(_hcloud_resolve_server "$node_id"); then
-                ip="${row##*$'\t'}"
-            fi
-            if [ -n "$ip" ]; then
-                printf '%s\n' "$ip"
-                return 0
-            fi
+        # `GET /api/nodes/endpoint/<id>` (harness-resilience spec A1) returns
+        # {"nodeId":..,"address":"host:port","reachable":bool} where `address` is the
+        # node's own view of its cluster-transport endpoint. The advertise-host fix
+        # makes `host` a routable public IP on cloud, so we take the host portion.
+        #
+        # CLUSTER-SCOPED + UNAMBIGUOUS: api_get resolves via _resolve_live_endpoint,
+        # which addresses THIS cluster's live mgmt endpoint — so an A-vs-B
+        # node-id collision (the seed `aether-node-id` label ambiguity) cannot occur:
+        # the answer comes from the cluster that actually owns the node-id. This
+        # replaces the old raw-curl + grep-the-label provider fallback, which (a)
+        # could not parse Hetzner's multi-line pretty-printed JSON and (b) matched a
+        # bare `aether-node-id=<seed-id>` label across BOTH clusters' VMs.
+        #
+        # Resolve by the ORIGINAL node_id (CTM ids do not carry `<source>-core-N`).
+        local ep_body ep_addr
+        ep_body=$(api_get "/api/nodes/endpoint/${node_id}" 2>/dev/null || true)
+        if [ -n "$ep_body" ]; then
+            ep_addr=$(json_value "$ep_body" "address")
+            ip="${ep_addr%%:*}"   # strip ":port"; leave a bare host/IP
         fi
-        log_fail "cloud_public_ip: no entry for '${target}' (input='${node_id}') in ${state_file}${HCLOUD_TOKEN:+ and no Hetzner server carries label aether-node-id matching ${node_id} (exact or trailing-ULID)}"
+        if [ -n "$ip" ]; then
+            printf '%s\n' "$ip"
+            return 0
+        fi
+        log_fail "cloud_public_ip: no entry for '${target}' (input='${node_id}') in ${state_file} and this cluster's /api/nodes/endpoint/${node_id} returned no address"
         return 1
     fi
     printf '%s\n' "$ip"

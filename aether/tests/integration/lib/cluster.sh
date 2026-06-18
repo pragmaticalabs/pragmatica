@@ -1601,8 +1601,9 @@ cleanup_cluster_zombies() {
 # CTM-provisioned replacement VMs do NOT carry the operator SSH key — so SSH-based
 # chaos (docker kill / pkill over cloud_ssh) cannot reach them. These primitives
 # drive chaos through the PROVIDER's compute + firewall APIs instead, addressing
-# VMs by server-id (resolved from the `aether-node-id` label via cloud_server_id,
-# which bridges the seed/replacement ULID prefix mismatch).
+# VMs by server-id (resolved IP-based via cloud_server_id: node-id -> public IP
+# (cluster-scoped, bootstrap-state or mgmt API) -> Hetzner server-id via the hcloud
+# CLI's IP column — handles both bootstrap seeds and CTM replacements).
 #
 # Observation stays on the mgmt API (cloud_running_cores), which is reachable from
 # the runner for every node regardless of SSH key.
