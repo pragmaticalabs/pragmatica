@@ -245,6 +245,57 @@ class ClusterTopologyManagerActuatorTest {
                 .isFalse();
     }
 
+    /// #148 / reconciler-under-load — a confirmed `NodeJoined` membership decision on the active
+    /// (leader) CTM routes to `onNodeReady`, resetting the provisioning circuit. A genuine
+    /// replacement reaching live MEMBER is provisioning-success evidence: it clears the
+    /// consecutive-failure run that a rapid multi-node loss tripped, un-stalling auto-heal — the
+    /// previously-dead wire (`onNodeReady` had zero production callers) the symmetric `NodeRemoved`
+    /// reap edge already had.
+    @Test
+    void onMembershipDecision_nodeJoined_whileActive_resetsTrippedCircuit() {
+        ctm.activate();
+        lifecycleManager.failProvisions();
+        var members = Set.of(SELF, PEER_A, PEER_B);
+
+        for (var i = 0; i < 3; i++) {
+            ctm.provisionReplacement(NodeId.randomNodeId(), Option.none(), members, NodeRole.CORE).await();
+        }
+        assertThat(ctm.circuitBreakerState().tripped()).isTrue();
+
+        ctm.onMembershipDecision(MembershipDecision.nodeJoined(PEER_C, List.of(SELF, PEER_A, PEER_B)));
+
+        assertThat(ctm.circuitBreakerState().tripped())
+                .as("a confirmed core join resets the tripped provisioning circuit")
+                .isFalse();
+        lifecycleManager.allowProvisions();
+        ctm.provisionReplacement(NodeId.randomNodeId(), Option.none(), members, NodeRole.CORE).await();
+        assertThat(lifecycleManager.provisionCount.get())
+                .as("provisioning resumes after the confirmed-join reset (4th provisionNode reached)")
+                .isEqualTo(4);
+    }
+
+    /// #148 / reconciler-under-load — the confirmed-join reset is leader-owned (single-writer
+    /// rule), mirroring the `NodeRemoved` reap gate. An inactive (non-leader) CTM ignores
+    /// membership decisions, so a `NodeJoined` never resets its circuit.
+    @Test
+    void onMembershipDecision_nodeJoined_whileInactive_doesNotResetCircuit() {
+        ctm.activate();
+        lifecycleManager.failProvisions();
+        var members = Set.of(SELF, PEER_A, PEER_B);
+
+        for (var i = 0; i < 3; i++) {
+            ctm.provisionReplacement(NodeId.randomNodeId(), Option.none(), members, NodeRole.CORE).await();
+        }
+        assertThat(ctm.circuitBreakerState().tripped()).isTrue();
+
+        ctm.deactivate();
+        ctm.onMembershipDecision(MembershipDecision.nodeJoined(PEER_C, List.of(SELF, PEER_A, PEER_B)));
+
+        assertThat(ctm.circuitBreakerState().tripped())
+                .as("an inactive (non-leader) CTM never resets — the active leader owns the join edge")
+                .isTrue();
+    }
+
     /// #148 — a successful provision keeps the circuit closed (no false trip).
     @Test
     void provisionReplacement_success_keepsCircuitClosed() {
@@ -408,6 +459,10 @@ class ClusterTopologyManagerActuatorTest {
 
         void failProvisions() {
             failProvision.set(true);
+        }
+
+        void allowProvisions() {
+            failProvision.set(false);
         }
 
         @Override public Promise<ActionResult> executeAction(NodeAction action) {

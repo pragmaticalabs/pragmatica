@@ -295,9 +295,21 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
         log.info("CTM: cluster phase transitioned to {}", newPhase);
     }
 
+    /// A confirmed CORE join is provisioning-success evidence — symmetric to how a confirmed
+    /// departure ([#handleNodeRemoved]) actuates the reap. `NodeJoined` is emitted by the
+    /// `MembershipDeltaProjector` (the SOLE `MembershipDecision` emitter) exactly once per a
+    /// member's FIRST promotion into MEMBER (FSM `everJoined` pairing), core-role only,
+    /// quorum-gated, and idempotent — never on SUSPECT, a flap recovery, or transient churn. So
+    /// resetting the #148 provisioning circuit breaker here cannot be tripped by non-join noise:
+    /// a genuine replacement reaching live membership clears the consecutive-failure count and the
+    /// backoff window, un-stalling auto-heal after a rapid multi-node loss (which the
+    /// single-node-heal case never trips). Repeated resets on repeated real joins are harmless —
+    /// [#onNodeReady]/[#resetProvisioningCircuit] are idempotent. Leader-owned: the `active.get()`
+    /// guard in [#onMembershipDecision] already gates this to the active (leader) CTM.
     @Contract
     private void handleNodeJoined(NodeJoined joined) {
         log.info("CTM: Node {} joined", joined.nodeId());
+        onNodeReady(joined.nodeId());
     }
 
     /// #166 — on confirmed membership-view removal the leader actively reaps the departed node's
