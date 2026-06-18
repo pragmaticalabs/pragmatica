@@ -698,6 +698,109 @@ wait_for_node_count() {
     wait_for "${expected} nodes" "[ \"\$(cluster_member_count)\" -eq ${expected} ]" "$timeout"
 }
 
+# Cloud-aware default catch-window for CTM auto-heal, in seconds (pre-TIMEOUT_SCALE).
+#
+# Docker / remote replacement is a container spin-up (DockerComputeProvider /
+# CTM) that joins in seconds-to-tens-of-seconds, so the historical 180s base is
+# generous. A CLOUD source (`--env cloud`) replaces a killed node with a
+# brand-new VM: measured on Hetzner at ~187s end-to-end (kill→VM-created ≈ +32s,
+# VM→cluster-join ≈ +177s). The 180s base was a coin-flip away from timing out
+# on a healthy heal even before VM-boot jitter, so the cloud base is raised to
+# 300s. Both bases are still scaled by TIMEOUT_SCALE inside the wait loop
+# (1 docker, 2 remote, 3 cloud), matching every other timeout in this lib.
+#
+# Override with AETHER_AUTOHEAL_TIMEOUT to pin an explicit base for either env.
+autoheal_default_timeout() {
+    if [ -n "${AETHER_AUTOHEAL_TIMEOUT:-}" ]; then
+        printf '%s\n' "$AETHER_AUTOHEAL_TIMEOUT"
+        return 0
+    fi
+    if [ "${CLOUD_MODE:-false}" = "true" ]; then
+        printf '%s\n' 300
+    else
+        printf '%s\n' 180
+    fi
+}
+
+# Cloud-aware default sustain window, in seconds (pre-TIMEOUT_SCALE).
+#
+# Auto-heal transiently flaps to the target count during convergence (the
+# replacement joins the snapshot, then a stale member is still being reaped, or
+# SWIM briefly double-counts), so a single instantaneous count==target reading
+# is a FALSE PASS. The sustain window requires the count to hold >= target for
+# this many consecutive seconds before the wait succeeds. Override with
+# AETHER_AUTOHEAL_SUSTAIN.
+autoheal_default_sustain() {
+    if [ -n "${AETHER_AUTOHEAL_SUSTAIN:-}" ]; then
+        printf '%s\n' "$AETHER_AUTOHEAL_SUSTAIN"
+        return 0
+    fi
+    if [ "${CLOUD_MODE:-false}" = "true" ]; then
+        printf '%s\n' 30
+    else
+        printf '%s\n' 15
+    fi
+}
+
+# Wait until cluster_member_count reaches `expected` AND holds >= `expected` for
+# a sustained window, guarding against a transient flap-to-target false pass.
+#
+# Args:
+#   expected  — target member count (required)
+#   timeout   — total deadline in seconds, pre-TIMEOUT_SCALE
+#               (default: autoheal_default_timeout — cloud-aware)
+#   sustain   — required consecutive seconds at >= expected, pre-TIMEOUT_SCALE
+#               (default: 0 — preserves plain wait_for_node_count semantics for
+#                any caller that wants reach-once behavior)
+#
+# Both timeout and sustain are scaled by TIMEOUT_SCALE here (mirroring wait_for /
+# await_generation_quiesced), so this helper polls cluster_member_count directly
+# rather than delegating to wait_for — that keeps the scale applied exactly once
+# and lets the same loop track both the "first reached" and "held for N" phases.
+#
+# Returns 0 once the count has been >= expected continuously for the scaled
+# sustain window; 1 if the scaled deadline elapses first. A sustain of 0 makes
+# the first >= expected reading succeed immediately (identical to a reach-once
+# wait), so existing call sites that omit it are unchanged.
+wait_for_sustained_node_count() {
+    local expected="$1"
+    local base_timeout="${2:-$(autoheal_default_timeout)}"
+    local base_sustain="${3:-0}"
+    local scale="${TIMEOUT_SCALE:-1}"
+    local timeout=$((base_timeout * scale))
+    local sustain=$((base_sustain * scale))
+    local deadline=$(($(date +%s) + timeout))
+    local interval=2
+    # Epoch at which the count first held >= expected; -1 means "not currently
+    # at/above target" (resets on any dip below, so a flap restarts the window).
+    local held_since=-1
+    local count now elapsed_sustained
+    log_info "Waiting for: ${expected} nodes sustained ${sustain}s (timeout: ${timeout}s)"
+    while [ "$(date +%s)" -lt "$deadline" ]; do
+        count=$(cluster_member_count)
+        if [ "$count" -ge "$expected" ] 2>/dev/null; then
+            now=$(date +%s)
+            if [ "$held_since" -lt 0 ]; then
+                held_since="$now"
+            fi
+            elapsed_sustained=$((now - held_since))
+            if [ "$elapsed_sustained" -ge "$sustain" ]; then
+                log_pass "${expected} nodes sustained ${elapsed_sustained}s (count=${count})"
+                return 0
+            fi
+        elif [ "$held_since" -ge 0 ]; then
+            # Dipped below target before the sustain window completed — this is
+            # exactly the transient flap that would have been a false pass under
+            # a reach-once wait. Reset and keep waiting for a stable count.
+            log_info "Count dipped to ${count} (< ${expected}) before sustaining; resetting stability window"
+            held_since=-1
+        fi
+        sleep "$interval"
+    done
+    log_fail "wait_for_sustained_node_count: ${expected} nodes not sustained ${sustain}s within ${timeout}s (last count=${count:-?})"
+    return 1
+}
+
 # Faster variant of wait_for_node_count for tight scaling polls (test-02/03 scale up/down).
 # `cluster_member_count` round-trips through `_resolve_live_endpoint` (one curl probe) and
 # then through `api_get` (a second curl to fetch topology). On Hetzner remote each curl

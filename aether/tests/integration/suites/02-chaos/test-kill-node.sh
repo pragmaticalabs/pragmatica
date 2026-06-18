@@ -73,8 +73,15 @@ test_health_with_4_nodes() {
 test_auto_heal() {
     log_info "Waiting for CTM auto-heal to quiesce at the post-kill generation..."
     # ClusterGeneration barrier: the post-kill generation commits once replacement
-    # is in place and membership is stable. No 5..7 tolerance window needed.
-    wait_for_node_count 5 180 || {
+    # is in place and membership is stable.
+    #
+    # Cloud-aware + sustained: on a CLOUD source the replacement is a brand-new VM
+    # (~187s to provision+boot+join on Hetzner), so the catch-window defaults to a
+    # larger base (autoheal_default_timeout: 300s cloud / 180s docker, both then
+    # scaled by TIMEOUT_SCALE). The count must also hold >= 5 for a sustain window
+    # (autoheal_default_sustain: 30s cloud / 15s docker) so a transient flap to 5
+    # during healing is not mistaken for a completed heal (false pass).
+    wait_for_sustained_node_count 5 "$(autoheal_default_timeout)" "$(autoheal_default_sustain)" || {
         log_fail "Cluster did not quiesce after auto-heal"
         return 1
     }
