@@ -11,6 +11,9 @@ import org.pragmatica.aether.api.ManagementApiResponses.ClusterConfigResponse;
 import org.pragmatica.aether.api.ManagementApiResponses.ClusterStatusNodeInfo;
 import org.pragmatica.aether.api.ManagementApiResponses.ClusterStatusResponse;
 import org.pragmatica.aether.api.ManagementApiResponses.LoadBalancerStatusInfo;
+import org.pragmatica.aether.api.ManagementApiResponses.ProvisionFailureInfo;
+import org.pragmatica.aether.api.ManagementApiResponses.ProvisioningCircuitBreakerInfo;
+import org.pragmatica.aether.api.ManagementApiResponses.ProvisioningDiagnosticsResponse;
 import org.pragmatica.aether.api.ManagementApiResponses.DryRunResponse;
 import org.pragmatica.aether.api.ManagementApiResponses.ScaleClusterResponse;
 import org.pragmatica.aether.api.ManagementApiResponses.ScaleRequest;
@@ -24,11 +27,13 @@ import org.pragmatica.aether.config.cluster.ClusterConfigError;
 import org.pragmatica.aether.config.cluster.DiffAction;
 import org.pragmatica.aether.config.cluster.DiffPlan;
 import org.pragmatica.aether.deployment.cluster.ClusterConfigApplier;
+import org.pragmatica.aether.deployment.cluster.ClusterTopologyManager;
 import org.pragmatica.aether.deployment.membership.view.MembershipView;
 import org.pragmatica.aether.metrics.NodeReportedState;
 import org.pragmatica.aether.management.route.ManagementRoute;
 import org.pragmatica.aether.node.AetherNode;
 import org.pragmatica.aether.node.ManageableNode;
+import org.pragmatica.aether.node.ProvisioningDiagnostics;
 import org.pragmatica.aether.slice.delegation.TaskGroup;
 import org.pragmatica.aether.slice.generation.HealthSignal;
 import org.pragmatica.aether.slice.generation.OperatorIntent;
@@ -83,6 +88,9 @@ public final class ClusterConfigRoutes implements RouteSource {
         return Stream.of(ManagementRoutes.<ClusterConfigResponse> route(ManagementRoute.CLUSTER_CONFIG_GET)
                                          .to(_ -> buildConfigResponse())
                                          .asJson(),
+                         ManagementRoutes.<ProvisioningDiagnosticsResponse> route(ManagementRoute.CLUSTER_PROVISIONING_GET)
+                                         .to(_ -> buildProvisioningResponse())
+                                         .asJson(),
                          ManagementRoutes.<ClusterStatusResponse> route(ManagementRoute.CLUSTER_STATUS)
                                          .to(_ -> buildStatusResponse())
                                          .asJson(),
@@ -112,6 +120,59 @@ public final class ClusterConfigRoutes implements RouteSource {
                                          config.configVersion(),
                                          config.updatedAt());
     }
+
+    /// #336 observability — flatten the assembled provisioning diagnostics into a readable JSON view.
+    /// `provisioningDiagnostics()` is present only on the leader that owns a `ClusterTopologyManager`;
+    /// elsewhere it is empty, in which case an explanatory `leader=false` body is returned (matching how
+    /// sibling routes surface "no data" — a valid body rather than an error).
+    private Promise<ProvisioningDiagnosticsResponse> buildProvisioningResponse() {
+        return Promise.success(nodeSupplier.get()
+                                           .provisioningDiagnostics()
+                                           .map(ClusterConfigRoutes::toProvisioningResponse)
+                                           .or(NOT_LEADER_PROVISIONING));
+    }
+
+    private static ProvisioningDiagnosticsResponse toProvisioningResponse(ProvisioningDiagnostics diagnostics) {
+        var decision = diagnostics.decision();
+        var breaker = diagnostics.circuitBreaker();
+        var deficit = Math.max(0, decision.configuredCoreCount() - decision.effective());
+
+        return new ProvisioningDiagnosticsResponse(true,
+                                                   decision.configuredCoreCount(),
+                                                   decision.countedCoreMembers(),
+                                                   decision.effective(),
+                                                   deficit,
+                                                   decision.armedForProvisioning(),
+                                                   decision.reachedFullMembership(),
+                                                   decision.quorumSafe(),
+                                                   decision.trigger().name(),
+                                                   decision.reason(),
+                                                   decision.deficitAgeMs(),
+                                                   new ProvisioningCircuitBreakerInfo(breaker.consecutiveFailures(),
+                                                                                      breaker.tripped(),
+                                                                                      breaker.nextAllowedMs()),
+                                                   diagnostics.lastProvisionFailure()
+                                                              .map(ClusterConfigRoutes::toFailureInfo));
+    }
+
+    private static ProvisionFailureInfo toFailureInfo(ClusterTopologyManager.LastProvisionFailure failure) {
+        return new ProvisionFailureInfo(failure.cause(), failure.atEpochMs());
+    }
+
+    private static final ProvisioningDiagnosticsResponse NOT_LEADER_PROVISIONING =
+        new ProvisioningDiagnosticsResponse(false,
+                                            0,
+                                            0,
+                                            0,
+                                            0,
+                                            false,
+                                            false,
+                                            false,
+                                            "NONE",
+                                            "Provisioning diagnostics available only on the leader that owns a cluster topology manager",
+                                            0L,
+                                            new ProvisioningCircuitBreakerInfo(0, false, 0L),
+                                            Option.none());
 
     private Promise<ClusterStatusResponse> buildStatusResponse() {
         var node = nodeSupplier.get();

@@ -1786,6 +1786,21 @@ Show the per-slice governor assignment across the cluster — which node current
 aether cluster governors
 ```
 
+### `aether cluster provisioning`
+
+Show leader provisioning diagnostics — why a core-membership deficit is or is not being filled (configured vs counted-core membership, effective capacity, deficit, the arm + reached-full-membership latches, quorum safety, deficit-run age, the precise suppression reason, the provisioning circuit-breaker state, and the most recent provisioning failure). Surfaced only on the leader that owns a Cluster Topology Manager; against any other node it returns a `leader: false` body with zeroed counters and an explanatory reason. Wraps `GET /api/cluster/provisioning`.
+
+```bash
+aether cluster provisioning
+
+# Machine-readable
+aether cluster provisioning --format json
+```
+
+| Option | Description |
+|--------|-------------|
+| `--format` | Output format: `table` (default), `json`, `value`, `csv` |
+
 ### `aether cluster journal`
 
 Dump the target node's transition journal (cluster-topology-overhaul spec, Wave 1) — a bounded per-node ring buffer recording every membership-FSM transition (layer `FSM`) and every transport peer-lifecycle transition (layer `PEER`), plus the dialer expected-vs-actual Hello diagnostic and the boot future-history detection. Wraps `GET /api/cluster/journal`.

@@ -12,7 +12,7 @@ import picocli.CommandLine;
 import picocli.CommandLine.Command;
 
 
-@Command(name = "cluster", description = "Cluster lifecycle management", subcommands = {ClusterInitCommand.class, ClusterBootstrapCommand.class, ClusterScaffoldCommand.class, ClusterListCommand.class, ClusterUseCommand.class, ClusterRemoveCommand.class, ClusterStatusCommand.class, ClusterExportCommand.class, ClusterApplyCommand.class, ClusterDrainCommand.class, ClusterDestroyCommand.class, ClusterScaleCommand.class, ClusterUpgradeCommand.class, ClusterMigrateCommand.class, ClusterTopologyCommand.class, ClusterJournalCommand.class, ClusterGovernorsCommand.class, ClusterGenerationCommand.class, ClusterAwaitQuiescedCommand.class, ClusterCreateKeyCommand.class, ClusterRotateKeyCommand.class, ClusterRevokeKeyCommand.class, ClusterListKeysCommand.class})
+@Command(name = "cluster", description = "Cluster lifecycle management", subcommands = {ClusterInitCommand.class, ClusterBootstrapCommand.class, ClusterScaffoldCommand.class, ClusterListCommand.class, ClusterUseCommand.class, ClusterRemoveCommand.class, ClusterStatusCommand.class, ClusterProvisioningCommand.class, ClusterExportCommand.class, ClusterApplyCommand.class, ClusterDrainCommand.class, ClusterDestroyCommand.class, ClusterScaleCommand.class, ClusterUpgradeCommand.class, ClusterMigrateCommand.class, ClusterTopologyCommand.class, ClusterJournalCommand.class, ClusterGovernorsCommand.class, ClusterGenerationCommand.class, ClusterAwaitQuiescedCommand.class, ClusterCreateKeyCommand.class, ClusterRotateKeyCommand.class, ClusterRevokeKeyCommand.class, ClusterListKeysCommand.class})
 @Contract
 public class ClusterCommand implements Runnable {
     @CommandLine.ParentCommand

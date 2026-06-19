@@ -574,6 +574,31 @@ public sealed interface ManagementApiResponses {
 
     record LoadBalancerStatusInfo(String type, String nodeId, String appEndpoint, String mgmtEndpoint) {}
 
+    /// #336 observability — flattened provisioning-diagnostics view for `GET /api/cluster/provisioning`.
+    /// Assembled from the leader reconcile decision snapshot, the provisioning circuit-breaker state,
+    /// and the last provisioning failure. `leader` is `true` only when this node is the leader and owns
+    /// a `ClusterTopologyManager` (the only node that can answer "why is this deficit not being
+    /// filled?"); when `false` the numeric fields are zeroed and `lastReason` explains the absence.
+    /// `deficit` is `configuredCoreCount - effective` clamped to `>= 0`. `lastProvisionFailure` is empty
+    /// (serialized as `null`) when no provisioning failure has been recorded.
+    record ProvisioningDiagnosticsResponse(boolean leader,
+                                           int configuredCoreCount,
+                                           int countedCoreMembers,
+                                           int effective,
+                                           int deficit,
+                                           boolean armedForProvisioning,
+                                           boolean reachedFullMembership,
+                                           boolean quorumSafe,
+                                           String lastTrigger,
+                                           String lastReason,
+                                           long deficitAgeMs,
+                                           ProvisioningCircuitBreakerInfo circuitBreaker,
+                                           Option<ProvisionFailureInfo> lastProvisionFailure) {}
+
+    record ProvisioningCircuitBreakerInfo(int consecutiveFailures, boolean tripped, long nextAllowedMs) {}
+
+    record ProvisionFailureInfo(String cause, long atEpochMs) {}
+
     record ClusterStatusResponse(String clusterName,
                                  String desiredVersion,
                                  int desiredCoreCount,

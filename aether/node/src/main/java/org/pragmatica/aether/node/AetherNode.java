@@ -1174,8 +1174,7 @@ public interface AetherNode extends ManageableNode {
             @Override
             public Option<ProvisioningDiagnostics> provisioningDiagnostics() {
                 return isLeader()
-                       ? leaderReconciler.lastProvisioningDecision()
-                                         .map(this::assembleProvisioningDiagnostics)
+                       ? Option.some(assembleProvisioningDiagnostics(leaderReconciler.currentProvisioningSnapshot()))
                        : Option.none();
             }
 

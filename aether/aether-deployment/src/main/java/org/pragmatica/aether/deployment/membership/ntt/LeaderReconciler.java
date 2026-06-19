@@ -1539,6 +1539,40 @@ public final class LeaderReconciler {
         return Option.option(lastProvisioningDecision);
     }
 
+    /// #336 observability — a provisioning-decision snapshot built from CURRENT live values, NOT
+    /// gated on a captured reconcile pass. The leader-activation pass is delayed by
+    /// `nttDepartureTimeout × 1.5`, so [`#lastProvisioningDecision`] is empty during the window
+    /// before the first pass even though this node IS the leader; the management API would then
+    /// emit a non-leader (all-zeros) body for a freshly-settled leader. Every gate input is
+    /// queryable live at any time: `configuredCoreCount` from [`#configuredCoreCountSupplier`],
+    /// the counted core members and the [`#effectiveCapacity`] union from
+    /// [`MembershipFsm#coreCountedMembers`] (the same source the pass reads), the live
+    /// [`#armedForProvisioning`] / [`#reachedFullMembership`] latches, [`#quorumThreshold`]-derived
+    /// quorum safety, and the deficit run age via [`#deficitAgeMs`]. The pass-specific
+    /// `reason`/`trigger` are taken from the most-recent captured decision when present; before the
+    /// first pass they fall back to `reason="NOT_EVALUATED"` and `trigger=LEADER_ACTIVATION` (the
+    /// trigger that WILL drive the first pass — `ReconcileTrigger` has no NONE value). Reuses the
+    /// pass's own helpers (no divergent gate re-derivation), uses the injected [`#timeSource`], and
+    /// mutates nothing — a pure read.
+    public ProvisioningDecisionSnapshot currentProvisioningSnapshot() {
+        var now = timeSource.nanoTime();
+        var currentMembers = membershipFsm.coreCountedMembers();
+        var configuredCoreCount = configuredCoreCountSupplier.getAsInt();
+        var effective = effectiveCapacity(currentMembers);
+        var quorumSafe = currentMembers.size() >= quorumThreshold(configuredCoreCount);
+        var captured = Option.option(lastProvisioningDecision);
+
+        return new ProvisioningDecisionSnapshot(captured.map(ProvisioningDecisionSnapshot::trigger).or(ReconcileTrigger.LEADER_ACTIVATION),
+                                                configuredCoreCount,
+                                                currentMembers.size(),
+                                                effective,
+                                                armedForProvisioning.get(),
+                                                reachedFullMembership.get(),
+                                                quorumSafe,
+                                                deficitAgeMs(now),
+                                                captured.map(ProvisioningDecisionSnapshot::reason).or("NOT_EVALUATED"));
+    }
+
     /// #336 observability — immutable snapshot of one reconcile pass's provisioning decision. The
     /// fields mirror the [`#logProvisioningDecision`] trace: the trigger that drove the pass, the
     /// configured vs counted-core membership, effective capacity, the arm + reached-full-membership

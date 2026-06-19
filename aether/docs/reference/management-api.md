@@ -2267,6 +2267,56 @@ Get the current cluster configuration from the KV-Store.
 }
 ```
 
+### GET /api/cluster/provisioning
+
+Provisioning diagnostics — answers "why is a core-membership deficit being or not being filled?" without log-scraping. Combines the leader's end-of-pass reconcile decision snapshot, the provisioning circuit-breaker state, and the most recent provisioning failure. Surfaced only on the leader that owns a Cluster Topology Manager; on any other node a `leader: false` body with zeroed counters and an explanatory `lastReason` is returned (the numeric fields are not meaningful in that case).
+
+`deficit` is `configuredCoreCount - effective`, clamped to `>= 0`. `lastTrigger` is the reconcile trigger that produced the snapshot (`NONE` when not leader). `lastProvisionFailure` is `null` when no provisioning failure has been recorded.
+
+**RBAC:** VIEWER · **Routing:** LEADER
+
+**Response (leader):**
+```json
+{
+  "leader": true,
+  "configuredCoreCount": 5,
+  "countedCoreMembers": 4,
+  "effective": 4,
+  "deficit": 1,
+  "armedForProvisioning": true,
+  "reachedFullMembership": true,
+  "quorumSafe": true,
+  "lastTrigger": "DEFICIT_FOLLOW_UP",
+  "lastReason": "deficit 1; provisioning replacement",
+  "deficitAgeMs": 4200,
+  "circuitBreaker": {
+    "consecutiveFailures": 0,
+    "tripped": false,
+    "nextAllowedMs": 0
+  },
+  "lastProvisionFailure": null
+}
+```
+
+**Response (non-leader / no topology manager):**
+```json
+{
+  "leader": false,
+  "configuredCoreCount": 0,
+  "countedCoreMembers": 0,
+  "effective": 0,
+  "deficit": 0,
+  "armedForProvisioning": false,
+  "reachedFullMembership": false,
+  "quorumSafe": false,
+  "lastTrigger": "NONE",
+  "lastReason": "Provisioning diagnostics available only on the leader that owns a cluster topology manager",
+  "deficitAgeMs": 0,
+  "circuitBreaker": {"consecutiveFailures": 0, "tripped": false, "nextAllowedMs": 0},
+  "lastProvisionFailure": null
+}
+```
+
 ### GET /api/cluster/status
 
 Get aggregated cluster status including node health, slice deployment info, and certificate status.
