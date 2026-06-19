@@ -29,6 +29,7 @@ import org.pragmatica.aether.config.RollbackConfig;
 import org.pragmatica.dht.DHTConfig;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
+import org.pragmatica.lang.Functions;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
@@ -98,7 +99,15 @@ public final class EmberCluster {
     private final Option<ConfigurationProvider> configProvider;
     private final ObservabilityConfig observability;
     private final int coreMax;
-    private final EnvironmentIntegration emberEnvironment;
+    /// TEST SEAM (#336 probe) — decorator applied to the base [EmberComputeProvider] before the
+    /// shared [EnvironmentIntegration] is built. Defaults to identity (production behaviour
+    /// unchanged). A test installs a fault-injecting wrapper via [#withComputeProviderDecorator]
+    /// BEFORE [#start] so the leader's CTM `provisionReplacement` path exercises the wrapper. The
+    /// integration is built lazily (first node creation) so the decorator set after construction
+    /// but before start is honoured.
+    private final AtomicReference<Functions.Fn1<ComputeProvider, ComputeProvider>> computeProviderDecorator =
+        new AtomicReference<>(provider -> provider);
+    private final AtomicReference<EnvironmentIntegration> emberEnvironmentRef = new AtomicReference<>();
 
     private final class EmberComputeProvider implements ComputeProvider {
         @Override
@@ -156,7 +165,25 @@ public final class EmberCluster {
         this.configProvider = configProvider;
         this.observability = observability;
         this.coreMax = coreMax;
-        this.emberEnvironment = EnvironmentIntegration.withCompute(new EmberComputeProvider());
+    }
+
+    /// TEST SEAM (#336 probe) — install a decorator that wraps the base [EmberComputeProvider]
+    /// used by EVERY node in this cluster. MUST be called before [#start] (the shared
+    /// [EnvironmentIntegration] is built lazily on first node creation and then frozen). Used by
+    /// the provisioning-recovery probe to inject a transient burst of `provision` failures that
+    /// trips the CTM #148 circuit breaker, then delegate to the real provider so recovery can be
+    /// observed. Production paths never call this (decorator stays identity).
+    public void withComputeProviderDecorator(Functions.Fn1<ComputeProvider, ComputeProvider> decorator) {
+        computeProviderDecorator.set(decorator);
+    }
+
+    private EnvironmentIntegration emberEnvironment() {
+        return emberEnvironmentRef.updateAndGet(this::resolveEnvironment);
+    }
+
+    private EnvironmentIntegration resolveEnvironment(EnvironmentIntegration existing) {
+        return Option.option(existing)
+                     .or(() -> EnvironmentIntegration.withCompute(computeProviderDecorator.get().apply(new EmberComputeProvider())));
     }
 
     public static EmberCluster emberCluster() {
@@ -589,7 +616,7 @@ public final class EmberCluster {
                                           AppHttpConfig.appHttpConfig(appHttpPort),
                                           ControllerConfig.forgeDefaults(),
                                           configProvider,
-                                          Option.some(emberEnvironment),
+                                          Option.some(emberEnvironment()),
                                           AutoHealConfig.DEFAULT,
                                           observability,
                                           ClusterDeploymentManager.DeploymentAtomicity.ALL_OR_NOTHING,

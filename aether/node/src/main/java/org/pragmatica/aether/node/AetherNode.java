@@ -1166,6 +1166,11 @@ public interface AetherNode extends ManageableNode {
             }
 
             @Override
+            public int observedPeakMembership() {
+                return presenceSampler.peakMembershipCount();
+            }
+
+            @Override
             public Set<NodeId> connectedPeerIds() {
                 // Use activePeers (CONNECTED + EVICTED) to match the quorum-counting
                 // semantics inside QuicClusterNetwork.activeConnectedCount. Without this,

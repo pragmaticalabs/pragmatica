@@ -106,6 +106,13 @@ public interface ManageableNode {
     Fn1<Result<NodeId>, TaskGroup> taskGroupOwnerResolver();
     Map<String, StorageFactory.StorageSetup> storageSetups();
     Option<ClusterTopologyManager> clusterTopologyManager();
+    /// Diagnostic/test observable — the leader `PresenceSampler` peak (monotonic high-water mark
+    /// of the debounced stable member-set size ever observed). The NTT `LeaderReconciler` latches
+    /// its `reachedFullMembership` cold-start guard off THIS value (`peak >= configuredCoreCount`),
+    /// NOT off the faster-latching `MembershipFsm.coreCountedMembers()` count — a probe that must
+    /// wait until provisioning is armed should gate on this reaching the cluster size before
+    /// inducing a deficit. 1 (self) until peers are admitted (K_UP consecutive healthy samples).
+    int observedPeakMembership();
     Option<CertificateRenewalScheduler> certRenewalScheduler();
     /// Runtime TLS posture. `true` when the node's app-HTTP server is bound with TLS
     /// (equivalent to `AetherNodeConfig.tls().isPresent()` — i.e. `AetherConfig.tlsEnabled()`
