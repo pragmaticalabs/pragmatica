@@ -67,6 +67,7 @@ public record Main(String[] args) {
     private record TlsBundle(org.pragmatica.net.tcp.TlsConfig tls, CertificateProvider provider) {}
 
     private void run() {
+        publishConfigPath();
         var aetherConfig = loadConfig();
 
         verifyClusterLabelConsistency(aetherConfig);
@@ -329,6 +330,20 @@ public record Main(String[] args) {
                       .filter(p -> p.toFile()
                                     .exists())
                       .flatMap(this::loadConfigFile);
+    }
+
+    /// #336 — publish the resolved `--config=` path as the `aether.config.path` system property so
+    /// the static `AetherNode` assemble site can parse this node's OWN resolved config (its per-node
+    /// overlay rendered by the CLI with `${env:...}` placeholders resolved to literals) for the CTM
+    /// placeholder-resolution path, WITHOUT threading the path through the 31-stage
+    /// [AetherNodeConfig] builder. Only published when the `--config=` file actually exists; absent
+    /// (forge / tests / config-by-other-means) the CTM degrades to none() and composed overlays pass
+    /// through unchanged.
+    @Contract
+    private void publishConfigPath() {
+        findArg("--config=").map(Path::of).filter(p -> p.toFile()
+                                                        .exists()).map(Path::toAbsolutePath).onPresent(p -> System.setProperty(AetherNode.CONFIG_PATH_PROPERTY,
+                                                                                                                               p.toString()));
     }
 
     private Option<AetherConfig> loadConfigFile(Path path) {

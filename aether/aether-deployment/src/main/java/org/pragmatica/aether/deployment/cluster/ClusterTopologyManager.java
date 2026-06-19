@@ -11,6 +11,7 @@ import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ClusterConfigValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ClusterPhase;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
+import org.pragmatica.config.toml.TomlDocument;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.topology.GenerationSnapshotSource;
 import org.pragmatica.consensus.topology.MembershipDecision;
@@ -52,7 +53,6 @@ public interface ClusterTopologyManager extends TopologyManager {
     record LastProvisionFailure(String cause, long atEpochMs) {}
 
     Option<LastProvisionFailure> lastProvisionFailure();
-
     int resetCircuitBreaker(String reason);
     boolean isAutoHealEnabled();
     boolean setAutoHealEnabled(boolean enabled, String reason);
@@ -159,5 +159,40 @@ public interface ClusterTopologyManager extends TopologyManager {
                                                                          System::currentTimeMillis,
                                                                          drainCommandSink,
                                                                          drainCommandClear);
+    }
+
+    /// #336 production factory — additionally wires the leader's OWN RESOLVED config as
+    /// `resolvedLocalConfig`. The leader runs with its per-node overlay RESOLVED to literals (the CLI
+    /// rendered it from the resolved config at bootstrap); the CTM render path substitutes a
+    /// replacement's leaked `${env:...}` / `${secrets:...}` placeholders (inherited from the
+    /// deliberately-unresolved persisted KV TOML) with the leader's literals at the same TOML path,
+    /// so a CTM-provisioned scale-up / auto-heal node boots with resolved credentials instead of
+    /// crashing on placeholders and never joining. `resolvedLocalConfig` returns [Option#none] for
+    /// non-cloud / forge / tests, in which case the composed overlay passes through unchanged
+    /// (prior behavior). `AetherNode` supplies a memoized supplier that parses the node's own config
+    /// file once via `TomlParser.parseFile`.
+    static ClusterTopologyManager clusterTopologyManager(TopologyObserver observer,
+                                                         NodeLifecycleManager lifecycleManager,
+                                                         AutoHealConfig config,
+                                                         DeploymentMap deploymentMap,
+                                                         GenerationSnapshotSource snapshotSource,
+                                                         Supplier<Option<ClusterConfigValue>> clusterConfigReader,
+                                                         Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> commandApplier,
+                                                         Supplier<ClusterPhase> phaseSupplier,
+                                                         Consumer<NodeId> drainCommandSink,
+                                                         Consumer<NodeId> drainCommandClear,
+                                                         Supplier<Option<TomlDocument>> resolvedLocalConfig) {
+        return ClusterTopologyManagerRecord.clusterTopologyManagerRecord(observer,
+                                                                         lifecycleManager,
+                                                                         config,
+                                                                         deploymentMap,
+                                                                         snapshotSource,
+                                                                         clusterConfigReader,
+                                                                         commandApplier,
+                                                                         phaseSupplier,
+                                                                         System::currentTimeMillis,
+                                                                         drainCommandSink,
+                                                                         drainCommandClear,
+                                                                         resolvedLocalConfig);
     }
 }

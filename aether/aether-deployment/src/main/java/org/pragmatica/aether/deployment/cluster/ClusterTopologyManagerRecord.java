@@ -8,6 +8,7 @@ import org.pragmatica.aether.config.cluster.ClusterBootstrapConfig;
 import org.pragmatica.aether.config.cluster.ClusterBootstrapConfigParser;
 import org.pragmatica.aether.config.cluster.NodeRole;
 import org.pragmatica.aether.config.cluster.NodeUserDataRenderer;
+import org.pragmatica.aether.config.cluster.PlaceholderConfigResolver;
 import org.pragmatica.aether.config.cluster.ReplacementNodeConfigComposer;
 import org.pragmatica.aether.config.cluster.SourceProfile;
 import org.pragmatica.aether.config.cluster.SourceType;
@@ -23,6 +24,7 @@ import org.pragmatica.aether.environment.ProvisionSpec;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ClusterConfigKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
+import org.pragmatica.config.toml.TomlDocument;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ClusterConfigValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ClusterPhase;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
@@ -92,7 +94,8 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                     AtomicBoolean autoHealEnabled,
                                     LongSupplier clock,
                                     Consumer<NodeId> drainCommandSink,
-                                    Consumer<NodeId> drainCommandClear) implements ClusterTopologyManager {
+                                    Consumer<NodeId> drainCommandClear,
+                                    Supplier<Option<TomlDocument>> resolvedLocalConfig) implements ClusterTopologyManager {
     private static final Logger log = LoggerFactory.getLogger(ClusterTopologyManager.class);
     private static final int MINIMUM_CLUSTER_SIZE = 3;
     private static final int MAX_CONSECUTIVE_PROVISIONING_FAILURES = 3;
@@ -137,6 +140,41 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                                                      LongSupplier clock,
                                                                      Consumer<NodeId> drainCommandSink,
                                                                      Consumer<NodeId> drainCommandClear) {
+        return clusterTopologyManagerRecord(observer,
+                                            lifecycleManager,
+                                            config,
+                                            deploymentMap,
+                                            snapshotSource,
+                                            clusterConfigReader,
+                                            commandApplier,
+                                            phaseSupplier,
+                                            clock,
+                                            drainCommandSink,
+                                            drainCommandClear,
+                                            Option::none);
+    }
+
+    /// #336 production factory overload — additionally wires the leader's OWN RESOLVED config as
+    /// `resolvedLocalConfig`. The leader runs with its per-node overlay RESOLVED to literals (the
+    /// CLI rendered it from the resolved config); the CTM render path uses it to substitute the
+    /// literal `${env:...}` / `${secrets:...}` placeholders left in a replacement's composed overlay
+    /// (which is composed from the deliberately-unresolved persisted KV TOML), so a CTM-provisioned
+    /// scale-up / auto-heal node boots with resolved credentials instead of crashing on placeholders.
+    /// Defaults to `Option::none` (placeholders pass through unchanged, preserving prior behavior)
+    /// via the overload above for tests, non-cloud, and legacy callers; only `AetherNode` supplies
+    /// the real value.
+    static ClusterTopologyManagerRecord clusterTopologyManagerRecord(TopologyObserver observer,
+                                                                     NodeLifecycleManager lifecycleManager,
+                                                                     AutoHealConfig config,
+                                                                     DeploymentMap deploymentMap,
+                                                                     GenerationSnapshotSource snapshotSource,
+                                                                     Supplier<Option<ClusterConfigValue>> clusterConfigReader,
+                                                                     Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> commandApplier,
+                                                                     Supplier<ClusterPhase> phaseSupplier,
+                                                                     LongSupplier clock,
+                                                                     Consumer<NodeId> drainCommandSink,
+                                                                     Consumer<NodeId> drainCommandClear,
+                                                                     Supplier<Option<TomlDocument>> resolvedLocalConfig) {
         return new ClusterTopologyManagerRecord(observer,
                                                 lifecycleManager,
                                                 config,
@@ -160,7 +198,10 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                                 : drainCommandSink,
                                                 drainCommandClear == null
                                                 ? _ -> {}
-                                                : drainCommandClear);
+                                                : drainCommandClear,
+                                                resolvedLocalConfig == null
+                                                ? Option::none
+                                                : resolvedLocalConfig);
     }
 
     private long nowMs() {
@@ -636,6 +677,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
         return ReplacementNodeConfigComposer.compose(config,
                                                      source,
                                                      clusterSecretFromEnv()).option()
+                                                    .map(this::resolvePlaceholders)
                                                     .map(composed -> NodeUserDataRenderer.render(config,
                                                                                                  source,
                                                                                                  intendedRole,
@@ -646,6 +688,20 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                                                                                  composed,
                                                                                                  authorizedKeysFrom(config),
                                                                                                  peersList(context)));
+    }
+
+    /// #336 — substitute the literal `${env:...}` / `${secrets:...}` placeholders the composed
+    /// overlay inherited from the deliberately-unresolved persisted KV TOML with the leader's OWN
+    /// resolved values at the same TOML path (via [PlaceholderConfigResolver]). The leader runs with
+    /// its per-node overlay RESOLVED to literals, so a CTM-provisioned replacement boots with real
+    /// credentials instead of crashing on placeholders. Passes `composed` through UNCHANGED when no
+    /// resolved local config is available (non-cloud / forge / tests) — preserving prior behavior —
+    /// or when the resolution itself reports a failure (best-effort: a partial render that still
+    /// carries a placeholder is no worse than the pre-fix behavior the renderer already handled).
+    private TomlDocument resolvePlaceholders(TomlDocument composed) {
+        return resolvedLocalConfig.get()
+                                  .map(resolvedSource -> PlaceholderConfigResolver.resolve(composed, resolvedSource).or(composed))
+                                  .or(composed);
     }
 
     /// Operator SSH public keys persisted into the cluster config TOML at bootstrap formation

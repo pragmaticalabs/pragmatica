@@ -18,6 +18,8 @@ import org.pragmatica.config.DynamicConfigurationProvider;
 import org.pragmatica.config.LayeredConfigProvider;
 import org.pragmatica.config.NamedConfigProvider;
 import org.pragmatica.config.ProviderBasedConfigService;
+import org.pragmatica.config.toml.TomlDocument;
+import org.pragmatica.config.toml.TomlParser;
 import org.pragmatica.aether.controller.ClusterController;
 import org.pragmatica.aether.controller.ControlLoop;
 import org.pragmatica.aether.controller.DecisionTreeController;
@@ -206,6 +208,7 @@ import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Functions.Fn2;
+import org.pragmatica.lang.Lazy;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
@@ -276,6 +279,11 @@ public interface AetherNode extends ManageableNode {
     /// aggregator requests and must stay >= that maxCount so a single fetch covers the full retained
     /// window (the B5a/#239 fix). The default retention maxCount equals this value.
     long CLUSTER_EVENTS_MAX_RETAINED = org.pragmatica.aether.api.ClusterEventAggregator.MAX_RETAINED_EVENTS;
+    /// #336 — system property carrying the absolute path of the config file this node loaded
+    /// (published by [org.pragmatica.aether.Main] where it resolves `--config=`). The CTM
+    /// placeholder-resolution path reads it via [#parseOwnResolvedConfig] to source the leader's own
+    /// resolved overlay. Unset on the forge / test paths, which then degrade to none() gracefully.
+    String CONFIG_PATH_PROPERTY = "aether.config.path";
     String VERSION = BuildInfo.version();
     NodeId self();
     Promise<Unit> start();
@@ -1543,6 +1551,14 @@ public interface AetherNode extends ManageableNode {
                                                                  () -> healthLeaderSupplier.get()
                                                                                            .isPresent());
         Supplier<AetherValue.ClusterPhase> effectivePhaseSupplier = clusterPhaseView::compute;
+        // #336 — the leader's OWN resolved config (its per-node overlay rendered by the CLI with
+        // ${env:...}/${secrets:...} resolved to literals at bootstrap), parsed ONCE (Lazy) from the
+        // node's config file. Threaded into the CTM so the render path can substitute the placeholders
+        // a replacement's composed overlay inherits from the deliberately-unresolved persisted KV TOML
+        // with the leader's literals at the same TOML path — so a CTM-provisioned scale-up / auto-heal
+        // node boots with resolved credentials instead of crashing on placeholders. Returns none()
+        // gracefully when no config path was published (forge/tests) or the file can't be parsed.
+        var resolvedLocalConfig = Lazy.lazy(AetherNode::parseOwnResolvedConfig);
         var clusterTopologyManager = ClusterTopologyManager.clusterTopologyManager((TopologyObserver) clusterNode.topologyManager(),
                                                                                    lifecycleManager,
                                                                                    config.autoHeal(),
@@ -1554,7 +1570,8 @@ public interface AetherNode extends ManageableNode {
                                                                                    target -> requestDrainThroughFsm(drainCommandRegistry,
                                                                                                                     membershipFsmRef,
                                                                                                                     target),
-                                                                                   drainCommandRegistry::clearDrain);
+                                                                                   drainCommandRegistry::clearDrain,
+                                                                                   resolvedLocalConfig::get);
         // E2 Phase 2b (2026-05-28): OrphanSelfDrainChecker deleted; NTT (§6) drives departure
         // detection and the §8 unified drain handles surplus dissolution. Membership v2 finale:
         // the leader-pinned `LifecycleReconciler` (and the FSM it wrote through) are gone — the
@@ -3102,6 +3119,33 @@ public interface AetherNode extends ManageableNode {
 
         return raw.map(AetherNode::provisioningSourceFrom)
                   .or(AetherValue.ProvisioningSource.MANUAL);
+    }
+
+    /// #336 — parse this node's OWN resolved config file (the per-node overlay the CLI rendered at
+    /// bootstrap with `${env:...}` / `${secrets:...}` placeholders resolved to literals) into a
+    /// [TomlDocument], so the leader's CTM render path can substitute the placeholders a replacement's
+    /// composed overlay inherits from the deliberately-unresolved persisted KV TOML with these
+    /// literals at the same TOML path. The config path is published by [org.pragmatica.aether.Main]
+    /// via the `aether.config.path` system property where it resolves the `--config=` argument (the
+    /// node module's established pattern of reading runtime context from props/env at the assemble
+    /// site). Returns [Option#none] gracefully when no path was published (forge / tests / a config
+    /// loaded by other means) or the file cannot be parsed — the CTM then passes composed overlays
+    /// through unchanged, preserving prior behavior.
+    private static Option<TomlDocument> parseOwnResolvedConfig() {
+        return Option.option(System.getProperty(CONFIG_PATH_PROPERTY))
+                     .filter(path -> !path.isBlank())
+                     .map(Path::of)
+                     .filter(path -> path.toFile()
+                                         .exists())
+                     .flatMap(AetherNode::parseConfigFile);
+    }
+
+    private static Option<TomlDocument> parseConfigFile(Path path) {
+        return TomlParser.parseFile(path)
+                         .onFailure(cause -> LOG.warn("#336: failed to parse own resolved config at {} for CTM placeholder resolution: {}",
+                                                      path,
+                                                      cause.message()))
+                         .option();
     }
 
     private static AetherValue.ProvisioningSource provisioningSourceFrom(String raw) {
