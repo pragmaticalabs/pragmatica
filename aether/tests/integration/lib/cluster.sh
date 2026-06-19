@@ -2334,6 +2334,18 @@ force_decommission_node() {
 # silent clobber. Immutable fields (cluster.name) must match the stored config — the
 # config_file is the same TOML the cluster was seeded from, so coreMax is the only diff.
 seed_cluster_config() {
+    # Cloud env: `aether cluster bootstrap` already planted the AUTHORITATIVE cluster
+    # config (cloud source profile + [cloud.credentials] + [database] + [infrastructure.ssh]).
+    # Planting/reconciling the Docker-oriented cluster-config.toml here would CLOBBER it:
+    # CTM then renders scale-up/replacement nodes from a docker stub with no cloud source,
+    # so they provision with no usable config, crash on boot, never join, and the reconciler
+    # over-provisions until the provider hits its server limit (#336). The bootstrap config's
+    # coreMax (9) already covers every cloud-B scale target (max 7), so no reconcile is needed.
+    # seed_cluster_config is the Docker-path equivalent of the cloud bootstrap — skip on cloud.
+    if [ "${ENV_TYPE:-docker}" = "cloud" ]; then
+        log_info "seed_cluster_config: skipped on cloud (bootstrap planted the authoritative config; #336 clobber guard)"
+        return 0
+    fi
     local config_file="${1:-${LIB_DIR}/../cluster-config.toml}"
     local toml_content
     toml_content=$(cat "$config_file")
