@@ -195,6 +195,11 @@ class ClusterConfigApplierTest {
         }
 
         @Override
+        public Option<LastProvisionFailure> lastProvisionFailure() {
+            return Option.none();
+        }
+
+        @Override
         public int resetCircuitBreaker(String reason) {
             return 0;
         }

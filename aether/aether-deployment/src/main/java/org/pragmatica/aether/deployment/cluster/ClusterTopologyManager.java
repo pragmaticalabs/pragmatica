@@ -46,6 +46,13 @@ public interface ClusterTopologyManager extends TopologyManager {
     record CircuitBreakerState(int consecutiveFailures, int trippedAt, long nextAllowedMs, boolean tripped) {}
 
     CircuitBreakerState circuitBreakerState();
+
+    /// #336 observability — the most recent provisioning failure (`cause` message + the epoch-millis
+    /// instant it was recorded), or empty when no provisioning failure has been recorded yet.
+    record LastProvisionFailure(String cause, long atEpochMs) {}
+
+    Option<LastProvisionFailure> lastProvisionFailure();
+
     int resetCircuitBreaker(String reason);
     boolean isAutoHealEnabled();
     boolean setAutoHealEnabled(boolean enabled, String reason);

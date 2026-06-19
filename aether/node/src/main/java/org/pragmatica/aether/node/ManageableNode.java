@@ -113,6 +113,15 @@ public interface ManageableNode {
     /// wait until provisioning is armed should gate on this reaching the cluster size before
     /// inducing a deficit. 1 (self) until peers are admitted (K_UP consecutive healthy samples).
     int observedPeakMembership();
+    /// #336 observability — assembled provisioning diagnostics (the leader reconcile decision
+    /// snapshot + the provisioning circuit-breaker state + the last provisioning failure), or
+    /// empty when this node is not the leader or owns no `ClusterTopologyManager`. Lets the
+    /// management API answer "why is this deficit not being filled?" without log-scraping.
+    /// Default `Option.none()` keeps `ManageableNode` test proxies compiling; the production node
+    /// record supplies the live view.
+    default Option<ProvisioningDiagnostics> provisioningDiagnostics() {
+        return Option.none();
+    }
     Option<CertificateRenewalScheduler> certRenewalScheduler();
     /// Runtime TLS posture. `true` when the node's app-HTTP server is bound with TLS
     /// (equivalent to `AetherNodeConfig.tls().isPresent()` — i.e. `AetherConfig.tlsEnabled()`

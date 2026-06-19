@@ -87,6 +87,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                     AtomicInteger consecutiveProvisioningFailures,
                                     AtomicLong nextProvisioningAllowedMs,
                                     AtomicLong lastProvisioningFailureMs,
+                                    AtomicReference<LastProvisionFailure> lastProvisionFailureRef,
                                     AtomicLong formationAnchorMs,
                                     AtomicBoolean autoHealEnabled,
                                     LongSupplier clock,
@@ -150,6 +151,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                                 new AtomicInteger(0),
                                                 new AtomicLong(0L),
                                                 new AtomicLong(0L),
+                                                new AtomicReference<>(),
                                                 new AtomicLong(clock.getAsLong()),
                                                 new AtomicBoolean(true),
                                                 clock,
@@ -370,6 +372,11 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                        MAX_CONSECUTIVE_PROVISIONING_FAILURES,
                                        nextProvisioningAllowedMs.get(),
                                        failures >= MAX_CONSECUTIVE_PROVISIONING_FAILURES);
+    }
+
+    @Override
+    public Option<LastProvisionFailure> lastProvisionFailure() {
+        return Option.option(lastProvisionFailureRef.get());
     }
 
     @Override
@@ -699,6 +706,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     private void recordProvisioningFailure(Cause cause) {
         var failures = consecutiveProvisioningFailures.incrementAndGet();
 
+        lastProvisionFailureRef.set(new LastProvisionFailure(cause.message(), nowMs()));
         if (failures >= MAX_CONSECUTIVE_PROVISIONING_FAILURES) {
             nextProvisioningAllowedMs.set(nowMs() + autoHealConfig.provisioningTimeout().millis());
             log.warn("CTM v2: provisioning circuit TRIPPED after {} consecutive failures — suspending provisioning for {}ms (last: {})",

@@ -904,6 +904,7 @@ public interface AetherNode extends ManageableNode {
                           EventLoopMetricsCollector eventLoopMetricsCollector,
                           CoreSwimHealthDetector swimHealthDetector,
                           PresenceSampler presenceSampler,
+                          LeaderReconciler leaderReconciler,
                           MembershipFsm membershipFsm,
                           TransitionJournal transitionJournal,
                           Runnable startSwimTrigger,
@@ -1168,6 +1169,20 @@ public interface AetherNode extends ManageableNode {
             @Override
             public int observedPeakMembership() {
                 return presenceSampler.peakMembershipCount();
+            }
+
+            @Override
+            public Option<ProvisioningDiagnostics> provisioningDiagnostics() {
+                return isLeader()
+                       ? leaderReconciler.lastProvisioningDecision()
+                                         .map(this::assembleProvisioningDiagnostics)
+                       : Option.none();
+            }
+
+            private ProvisioningDiagnostics assembleProvisioningDiagnostics(LeaderReconciler.ProvisioningDecisionSnapshot decision) {
+                return new ProvisioningDiagnostics(decision,
+                                                   clusterTopologyManagerInstance.circuitBreakerState(),
+                                                   clusterTopologyManagerInstance.lastProvisionFailure());
             }
 
             @Override
@@ -2746,6 +2761,7 @@ public interface AetherNode extends ManageableNode {
                                   eventLoopMetricsCollector,
                                   swimHealthDetector,
                                   presenceSampler,
+                                  leaderReconciler,
                                   membershipFsm,
                                   transitionJournal,
                                   startSwimTrigger,
@@ -2861,6 +2877,7 @@ public interface AetherNode extends ManageableNode {
                                       eventLoopMetricsCollector,
                                       swimHealthDetector,
                                       presenceSampler,
+                                      leaderReconciler,
                                       membershipFsm,
                                       transitionJournal,
                                       startSwimTrigger,

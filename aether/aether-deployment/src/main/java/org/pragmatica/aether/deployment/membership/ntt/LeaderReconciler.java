@@ -223,6 +223,12 @@ public final class LeaderReconciler {
     /// transient reconnect dip resets it; a genuine departure lets it age past the debounce
     /// window so auto-heal fires.
     private volatile long deficitSinceNanos = UNSET_NANOS;
+    /// #336 observability — the provisioning-decision snapshot captured at the END of the most
+    /// recent reconcile pass (the same context [`#logProvisioningDecision`] traces). Empty (`null`)
+    /// until the first pass runs; surfaced via [`#lastProvisioningDecision`] so the management API
+    /// can expose WHY a deficit is or is not being filled without log-scraping. Pure observability —
+    /// written once per pass, never read by the decision logic.
+    private volatile ProvisioningDecisionSnapshot lastProvisioningDecision = null;
     private final AtomicReference<ScheduledFuture<?>> activationFutureRef = new AtomicReference<>();
     private final AtomicReference<ScheduledFuture<?>> inFlightSweepFutureRef = new AtomicReference<>();
     /// At most one pending deficit-convergence follow-up (H1 / #257 completion — generalizes
@@ -761,6 +767,12 @@ public final class LeaderReconciler {
                                 configuredCoreCount,
                                 quorumSafe,
                                 provisioningPermitted);
+        captureProvisioningDecision(now,
+                                    trigger,
+                                    effective,
+                                    configuredCoreCount,
+                                    quorumSafe,
+                                    provisioningPermitted);
         var peersToProvision = provisioningPermitted
                                ? computePeersToProvision(configuredCoreCount, effective)
                                : Set.<NodeId> of();
@@ -928,6 +940,31 @@ public final class LeaderReconciler {
         }
 
         return "WITHIN_DEBOUNCE";
+    }
+
+    /// #336 observability — capture the END-of-pass provisioning-decision context into
+    /// [`#lastProvisioningDecision`] so the management API can answer "why is this deficit not
+    /// being filled?" without log-scraping. Computes the SAME values [`#logProvisioningDecision`]
+    /// traces — `countedCoreMembers` from [`MembershipFsm#coreCountedMembers`], `reason` from
+    /// [`#suppressionReason`], `deficitAgeMs` from [`#deficitAgeMs`], and the two one-way latches —
+    /// reusing the existing helpers (no divergent re-derivation). Pure side-effect setter: written
+    /// once per pass, read by no decision logic, alters no control flow.
+    @Contract
+    private void captureProvisioningDecision(long now,
+                                             ReconcileTrigger trigger,
+                                             int effective,
+                                             int configuredCoreCount,
+                                             boolean quorumSafe,
+                                             boolean provisioningPermitted) {
+        lastProvisioningDecision = new ProvisioningDecisionSnapshot(trigger,
+                                                                    configuredCoreCount,
+                                                                    membershipFsm.coreCountedMembers().size(),
+                                                                    effective,
+                                                                    armedForProvisioning.get(),
+                                                                    reachedFullMembership.get(),
+                                                                    quorumSafe,
+                                                                    deficitAgeMs(now),
+                                                                    suppressionReason(effective, configuredCoreCount, quorumSafe, provisioningPermitted));
     }
 
     /// Effective cluster capacity = the size of the UNION of confirmed members and in-flight
@@ -1493,4 +1530,27 @@ public final class LeaderReconciler {
     public PresenceSampler presenceSampler() {
         return presenceSampler;
     }
+
+    /// #336 observability — the provisioning-decision context captured at the END of the most
+    /// recent reconcile pass (the same context [`#logProvisioningDecision`] traces), or empty
+    /// when no pass has run yet on this node. Lets the management API surface WHY a deficit is or
+    /// is not being filled without log-scraping.
+    public Option<ProvisioningDecisionSnapshot> lastProvisioningDecision() {
+        return Option.option(lastProvisioningDecision);
+    }
+
+    /// #336 observability — immutable snapshot of one reconcile pass's provisioning decision. The
+    /// fields mirror the [`#logProvisioningDecision`] trace: the trigger that drove the pass, the
+    /// configured vs counted-core membership, effective capacity, the arm + reached-full-membership
+    /// latches, quorum safety, the current deficit run age (`-1` when no deficit), and the precise
+    /// suppression `reason`.
+    public record ProvisioningDecisionSnapshot(ReconcileTrigger trigger,
+                                               int configuredCoreCount,
+                                               int countedCoreMembers,
+                                               int effective,
+                                               boolean armedForProvisioning,
+                                               boolean reachedFullMembership,
+                                               boolean quorumSafe,
+                                               long deficitAgeMs,
+                                               String reason) {}
 }
