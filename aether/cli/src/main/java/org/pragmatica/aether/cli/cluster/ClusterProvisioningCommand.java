@@ -20,22 +20,21 @@ import picocli.CommandLine.Mixin;
 import static org.pragmatica.aether.management.route.ManagementRoute.CLUSTER_PROVISIONING_GET;
 
 
-@Command(name = "provisioning",
-         description = "Show leader provisioning diagnostics (why a core-membership deficit is or is not being filled)")
+@Command(name = "provisioning", description = "Show leader provisioning diagnostics (why a core-membership deficit is or is not being filled)")
 @SuppressWarnings("JBCT-RET-01")
 class ClusterProvisioningCommand implements Callable<Integer> {
     private static final TableSpec TABLE_SPEC = new TableSpec("Provisioning Diagnostics",
-                                                             List.of(new Column("LEADER", "leader", 7),
-                                                                     new Column("CONFIGURED", "configuredCoreCount", 10),
-                                                                     new Column("COUNTED", "countedCoreMembers", 8),
-                                                                     new Column("EFFECTIVE", "effective", 9),
-                                                                     new Column("DEFICIT", "deficit", 7),
-                                                                     new Column("ARMED", "armedForProvisioning", 6),
-                                                                     new Column("FULL", "reachedFullMembership", 6),
-                                                                     new Column("QUORUM", "quorumSafe", 7),
-                                                                     new Column("BREAKER", "circuitBreaker.tripped", 8),
-                                                                     new Column("REASON", "lastReason", 40)),
-                                                             null);
+                                                              List.of(new Column("LEADER", "leader", 7),
+                                                                      new Column("CONFIGURED", "configuredCoreCount", 10),
+                                                                      new Column("COUNTED", "countedCoreMembers", 8),
+                                                                      new Column("EFFECTIVE", "effective", 9),
+                                                                      new Column("DEFICIT", "deficit", 7),
+                                                                      new Column("ARMED", "armedForProvisioning", 6),
+                                                                      new Column("FULL", "reachedFullMembership", 6),
+                                                                      new Column("QUORUM", "quorumSafe", 7),
+                                                                      new Column("BREAKER", "circuitBreaker.tripped", 8),
+                                                                      new Column("REASON", "lastReason", 40)),
+                                                              null);
 
     @CommandLine.ParentCommand
     private ClusterCommand parent;

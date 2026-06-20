@@ -235,11 +235,10 @@ public interface SliceStore {
         // Package-private (not private) so SliceStoreTest can pin the override precedence
         // directly — this ordering is load-bearing and was previously inverted.
         static ConfigurationProvider assembleSliceComposite(Artifact artifact,
-                                                                    ConfigurationProvider intrinsic,
-                                                                    ConfigurationProvider composite) {
+                                                            ConfigurationProvider intrinsic,
+                                                            ConfigurationProvider composite) {
             logShadowedKeys(artifact, intrinsic, composite);
             var labelledIntrinsic = NamedConfigProvider.namedConfigProvider("slice.toml", intrinsic);
-
             // Override precedence: the node-composite (operator KV-overlay ⊕ node.toml) WINS over
             // the slice's intrinsic resources.toml. The slice ships LOCAL defaults that each
             // deployment overrides with environment-specific values (see the resources.toml header

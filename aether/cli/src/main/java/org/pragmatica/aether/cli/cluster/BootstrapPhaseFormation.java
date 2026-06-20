@@ -236,10 +236,7 @@ sealed interface BootstrapPhaseFormation {
 
         var endpoint = buildManagementEndpoint(ctx);
         var persistedToml = SshAuthorizedKeysToml.withAuthorizedKeys(ctx.rawTomlContent(),
-                                                                     ctx.sshPublicKeys()
-                                                                        .stream()
-                                                                        .map(SshPublicKey::value)
-                                                                        .toList());
+                                                                     ctx.sshPublicKeys().stream().map(SshPublicKey::value).toList());
         var configJson = buildConfigJson(persistedToml);
         var configuredKey = extractConfiguredApiKey(ctx.config());
 

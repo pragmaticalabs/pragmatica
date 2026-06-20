@@ -135,7 +135,8 @@ public final class ClusterConfigRoutes implements RouteSource {
     private static ProvisioningDiagnosticsResponse toProvisioningResponse(ProvisioningDiagnostics diagnostics) {
         var decision = diagnostics.decision();
         var breaker = diagnostics.circuitBreaker();
-        var deficit = Math.max(0, decision.configuredCoreCount() - decision.effective());
+        var deficit = Math.max(0,
+                               decision.configuredCoreCount() - decision.effective());
 
         return new ProvisioningDiagnosticsResponse(true,
                                                    decision.configuredCoreCount(),
@@ -159,20 +160,21 @@ public final class ClusterConfigRoutes implements RouteSource {
         return new ProvisionFailureInfo(failure.cause(), failure.atEpochMs());
     }
 
-    private static final ProvisioningDiagnosticsResponse NOT_LEADER_PROVISIONING =
-        new ProvisioningDiagnosticsResponse(false,
-                                            0,
-                                            0,
-                                            0,
-                                            0,
-                                            false,
-                                            false,
-                                            false,
-                                            "NONE",
-                                            "Provisioning diagnostics available only on the leader that owns a cluster topology manager",
-                                            0L,
-                                            new ProvisioningCircuitBreakerInfo(0, false, 0L),
-                                            Option.none());
+    private static final ProvisioningDiagnosticsResponse NOT_LEADER_PROVISIONING = new ProvisioningDiagnosticsResponse(false,
+                                                                                                                       0,
+                                                                                                                       0,
+                                                                                                                       0,
+                                                                                                                       0,
+                                                                                                                       false,
+                                                                                                                       false,
+                                                                                                                       false,
+                                                                                                                       "NONE",
+                                                                                                                       "Provisioning diagnostics available only on the leader that owns a cluster topology manager",
+                                                                                                                       0L,
+                                                                                                                       new ProvisioningCircuitBreakerInfo(0,
+                                                                                                                                                          false,
+                                                                                                                                                          0L),
+                                                                                                                       Option.none());
 
     private Promise<ClusterStatusResponse> buildStatusResponse() {
         var node = nodeSupplier.get();

@@ -302,7 +302,6 @@ sealed interface BootstrapPhaseProvision {
                                                                          String clusterName,
                                                                          int nodeIndexBase) {
         logProvisionRole(sourceName, source.type(), role, Option.some(count));
-
         ZoneProvisioner seam = (nodeId, globalIndex, zone) -> provisionOneInZone(compute,
                                                                                  ctx,
                                                                                  sourceName,
@@ -329,9 +328,9 @@ sealed interface BootstrapPhaseProvision {
                                                               String nodeId,
                                                               int globalIndex,
                                                               String zone) {
-        return buildCloudProvisionSpec(ctx, sourceName, source, role, nodeId, globalIndex, clusterName)
-            .map(spec -> applyZone(spec, zone))
-            .flatMap(spec -> CloudProviderSupport.provisionOne(compute, nodeId, spec).await());
+        return buildCloudProvisionSpec(ctx, sourceName, source, role, nodeId, globalIndex, clusterName).map(spec -> applyZone(spec,
+                                                                                                                              zone))
+                                      .flatMap(spec -> CloudProviderSupport.provisionOne(compute, nodeId, spec).await());
     }
 
     /// Serial per-role-group zone rotation with a cursor shared across the group's nodes:
@@ -378,7 +377,7 @@ sealed interface BootstrapPhaseProvision {
             return seam.provisionInZone(nodeId, globalIndex, "");
         }
 
-        while (cursor[0] < zones.size()) {
+        while (cursor[0]< zones.size()) {
             var zone = zones.get(cursor[0]);
             var attempt = seam.provisionInZone(nodeId, globalIndex, zone);
 
@@ -420,7 +419,8 @@ sealed interface BootstrapPhaseProvision {
 
     private static Result<ProvisionedNode> zonesExhausted(String sourceName, String nodeId, List<String> zones) {
         return new ZoneRotationError("all configured zones exhausted for source " + sourceName
-                                     + " (node " + nodeId + "): " + String.join(", ", zones)).result();
+                                    + " (node " + nodeId
+                                    + "): " + String.join(", ", zones)).result();
     }
 
     record ZoneRotationError(String message) implements Cause {}
@@ -456,7 +456,8 @@ sealed interface BootstrapPhaseProvision {
                                         .flatMap(userData -> ProvisionSpec.provisionSpec(InstanceType.ON_DEMAND,
                                                                                          instanceType,
                                                                                          role.value(),
-                                                                                         context).map(spec -> spec.withUserData(userData)));
+                                                                                         context)
+                                                                          .map(spec -> spec.withUserData(userData)));
     }
 
     private static String renderUserData(BootstrapContext ctx,

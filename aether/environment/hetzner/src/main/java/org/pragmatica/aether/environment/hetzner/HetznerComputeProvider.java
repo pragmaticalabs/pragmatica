@@ -382,8 +382,8 @@ public record HetznerComputeProvider(HetznerClient client, HetznerEnvironmentCon
 
     private static EnvironmentError toProvisionError(String attemptedLocation, Cause cause) {
         return switch (cause) {
-            case HetznerError.ApiError apiError when CAPACITY_UNAVAILABLE_CODE.equals(apiError.code()) ->
-                EnvironmentError.capacityUnavailable(attemptedLocation, new RuntimeException(cause.message()));
+            case HetznerError.ApiError apiError when CAPACITY_UNAVAILABLE_CODE.equals(apiError.code()) -> EnvironmentError.capacityUnavailable(attemptedLocation,
+                                                                                                                                               new RuntimeException(cause.message()));
             default -> EnvironmentError.provisionFailed(new RuntimeException(cause.message()));
         };
     }

@@ -99,14 +99,15 @@ public final class EmberCluster {
     private final Option<ConfigurationProvider> configProvider;
     private final ObservabilityConfig observability;
     private final int coreMax;
+
     /// TEST SEAM (#336 probe) — decorator applied to the base [EmberComputeProvider] before the
     /// shared [EnvironmentIntegration] is built. Defaults to identity (production behaviour
     /// unchanged). A test installs a fault-injecting wrapper via [#withComputeProviderDecorator]
     /// BEFORE [#start] so the leader's CTM `provisionReplacement` path exercises the wrapper. The
     /// integration is built lazily (first node creation) so the decorator set after construction
     /// but before start is honoured.
-    private final AtomicReference<Functions.Fn1<ComputeProvider, ComputeProvider>> computeProviderDecorator =
-        new AtomicReference<>(provider -> provider);
+    private final AtomicReference<Functions.Fn1<ComputeProvider, ComputeProvider>> computeProviderDecorator = new AtomicReference<>(provider -> provider);
+
     private final AtomicReference<EnvironmentIntegration> emberEnvironmentRef = new AtomicReference<>();
 
     private final class EmberComputeProvider implements ComputeProvider {
@@ -182,8 +183,8 @@ public final class EmberCluster {
     }
 
     private EnvironmentIntegration resolveEnvironment(EnvironmentIntegration existing) {
-        return Option.option(existing)
-                     .or(() -> EnvironmentIntegration.withCompute(computeProviderDecorator.get().apply(new EmberComputeProvider())));
+        return Option.option(existing).or(() -> EnvironmentIntegration.withCompute(computeProviderDecorator.get()
+                                                                                                           .apply(new EmberComputeProvider())));
     }
 
     public static EmberCluster emberCluster() {

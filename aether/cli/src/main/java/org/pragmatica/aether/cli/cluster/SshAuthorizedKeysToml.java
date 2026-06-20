@@ -53,8 +53,7 @@ sealed interface SshAuthorizedKeysToml {
         var insertAt = matcher.end();
 
         return rawToml.substring(0, insertAt)
-             + "\n" + renderAuthorizedKeysLine(authorizedKeys)
-             + rawToml.substring(insertAt);
+             + "\n" + renderAuthorizedKeysLine(authorizedKeys) + rawToml.substring(insertAt);
     }
 
     private static String appendNewSection(String rawToml, List<String> authorizedKeys) {
@@ -76,6 +75,7 @@ sealed interface SshAuthorizedKeysToml {
     }
 
     private static String quote(String key) {
-        return "\"" + key.replace("\\", "\\\\").replace("\"", "\\\"") + "\"";
+        return "\"" + key.replace("\\", "\\\\")
+                         .replace("\"", "\\\"") + "\"";
     }
 }

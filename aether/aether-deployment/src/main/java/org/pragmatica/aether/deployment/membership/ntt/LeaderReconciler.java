@@ -767,12 +767,7 @@ public final class LeaderReconciler {
                                 configuredCoreCount,
                                 quorumSafe,
                                 provisioningPermitted);
-        captureProvisioningDecision(now,
-                                    trigger,
-                                    effective,
-                                    configuredCoreCount,
-                                    quorumSafe,
-                                    provisioningPermitted);
+        captureProvisioningDecision(now, trigger, effective, configuredCoreCount, quorumSafe, provisioningPermitted);
         var peersToProvision = provisioningPermitted
                                ? computePeersToProvision(configuredCoreCount, effective)
                                : Set.<NodeId> of();
@@ -964,7 +959,10 @@ public final class LeaderReconciler {
                                                                     reachedFullMembership.get(),
                                                                     quorumSafe,
                                                                     deficitAgeMs(now),
-                                                                    suppressionReason(effective, configuredCoreCount, quorumSafe, provisioningPermitted));
+                                                                    suppressionReason(effective,
+                                                                                      configuredCoreCount,
+                                                                                      quorumSafe,
+                                                                                      provisioningPermitted));
     }
 
     /// Effective cluster capacity = the size of the UNION of confirmed members and in-flight
@@ -1275,9 +1273,8 @@ public final class LeaderReconciler {
         //     placeholder would mask the deficit and permanently wedge auto-heal once the breaker
         //     trips). A deferral is NOT a failure — no provisioning failure is recorded.
         //   - failure (genuine boot failure) → REMOVE it (the CTM already recorded the failure).
-        ctm.provisionReplacement(placeholder, none(), currentMembers, NodeRole.CORE)
-           .onSuccess(disposition -> reconcileInFlightForDisposition(placeholder, disposition))
-           .onFailure(_ -> inFlightProvisioning.remove(placeholder));
+        ctm.provisionReplacement(placeholder, none(), currentMembers, NodeRole.CORE).onSuccess(disposition -> reconcileInFlightForDisposition(placeholder,
+                                                                                                                                              disposition)).onFailure(_ -> inFlightProvisioning.remove(placeholder));
     }
 
     /// Keep the in-flight placeholder only for a real [`ProvisionDisposition.Dispatched`] boot; a
@@ -1562,7 +1559,8 @@ public final class LeaderReconciler {
         var quorumSafe = currentMembers.size() >= quorumThreshold(configuredCoreCount);
         var captured = Option.option(lastProvisioningDecision);
 
-        return new ProvisioningDecisionSnapshot(captured.map(ProvisioningDecisionSnapshot::trigger).or(ReconcileTrigger.LEADER_ACTIVATION),
+        return new ProvisioningDecisionSnapshot(captured.map(ProvisioningDecisionSnapshot::trigger)
+                                                        .or(ReconcileTrigger.LEADER_ACTIVATION),
                                                 configuredCoreCount,
                                                 currentMembers.size(),
                                                 effective,
