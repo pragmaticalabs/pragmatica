@@ -1206,6 +1206,17 @@ retarget_app_endpoint_to_active_slice() {
     local owner
     owner=$(slice_owner_for "$coords" 2>/dev/null || true)
     if [ -z "$owner" ]; then
+        # FACET-1: the blueprint may be transiently UNLOADING (mid-rebalance from a prior
+        # suite's chaos / cross-suite churn) — briefly NO ACTIVE owner. Wait a bounded
+        # window for (re)activation rather than immediately falling back to a stale
+        # endpoint, which makes the load measure the missing LB not the product (the
+        # cloud 100%-404 facet). Blueprint readiness is the TEST's concern (here), not the
+        # generic restore_cluster_baseline gate (which gates only core wholeness).
+        wait_for "ACTIVE owner for ${coords} (blueprint (re)activation)" \
+            "[ -n \"\$(slice_owner_for '${coords}' 2>/dev/null)\" ]" "${probe_timeout}" >/dev/null 2>&1 || true
+        owner=$(slice_owner_for "$coords" 2>/dev/null || true)
+    fi
+    if [ -z "$owner" ]; then
         # Diagnostic dump: surface the slice list so a future failure shows whether
         # /api/slices is empty (deploy didn't propagate), all instances are still
         # LOADING (timing window — caller didn't await ACTIVE), or the artifact
@@ -1352,6 +1363,67 @@ slices_target_total() {
         total=$((total + n))
     done < <(printf '%s' "$slices" | grep -o '"targetInstances"[[:space:]]*:[[:space:]]*[0-9]*' | grep -o '[0-9]*$')
     echo "$total"
+}
+
+# slices_target_total_for <blueprint-coords> / slices_active_instances_for <coords>
+# — blueprint-SCOPED counterparts to slices_target_total / slices_active_instances.
+#
+# WHY: the global pair sums targetInstances / counts ACTIVE across ALL deployed
+# slices. test-self-drain S20 re-pushes ONLY the echo blueprint after a volume
+# wipe, then asserts convergence — but if a sibling blueprint (e.g. persistence,
+# 3 instances) is also present, the global slices_target_total returns echo(3) +
+# persistence(3) = 6 and the assert false-fails at "5/6 active" even though the
+# redeployed blueprint is fully ACTIVE. Scoping the assert to the blueprint that
+# was actually redeployed kills that false fail.
+#
+# Both filter cluster_slices to the slice block whose artifact shares <coords>'s
+# group:artifact prefix, using the SAME awk walk + ${coords%:*} prefix match as
+# slice_owner_for (the blueprint coord org:test-echo:1.0.0 shares the
+# org:test-echo prefix with the slice artifact org:test-echo-echo-slice:1.0.0).
+# Read from the unfiltered cluster_slices (full response shape: slice-level
+# artifact + targetInstances, nested instances[] with state) — the same source
+# slice_owner_for trusts — so the awk sees every field it needs in one body.
+slices_target_total_for() {
+    local coords="$1"
+    local prefix="${coords%:*}"
+    cluster_slices \
+        | awk -v prefix="$prefix" '
+            BEGIN { in_match = 0; total = 0 }
+            /"artifact"[[:space:]]*:[[:space:]]*"/ {
+                line = $0
+                sub(/.*"artifact"[[:space:]]*:[[:space:]]*"/, "", line)
+                sub(/".*/, "", line)
+                in_match = (index(line, prefix) == 1)
+                next
+            }
+            in_match && /"targetInstances"[[:space:]]*:[[:space:]]*[0-9]+/ {
+                line = $0
+                sub(/.*"targetInstances"[[:space:]]*:[[:space:]]*/, "", line)
+                sub(/[^0-9].*/, "", line)
+                total += line + 0
+            }
+            END { print total }
+        '
+}
+
+slices_active_instances_for() {
+    local coords="$1"
+    local prefix="${coords%:*}"
+    cluster_slices \
+        | awk -v prefix="$prefix" '
+            BEGIN { in_match = 0; active = 0 }
+            /"artifact"[[:space:]]*:[[:space:]]*"/ {
+                line = $0
+                sub(/.*"artifact"[[:space:]]*:[[:space:]]*"/, "", line)
+                sub(/".*/, "", line)
+                in_match = (index(line, prefix) == 1)
+                next
+            }
+            in_match && /"state"[[:space:]]*:[[:space:]]*"ACTIVE"/ {
+                active += 1
+            }
+            END { print active }
+        '
 }
 
 push_blueprint() {
@@ -2030,17 +2102,23 @@ cloud_heal_partition() {
 # The suites' single-host helpers (running_core_containers / container_for_node)
 # call this in the follow-up rewire.
 cloud_running_cores() {
-    local body
-    body=$(api_get "/api/nodes/lifecycle" 2>/dev/null || true)
-    [ -z "$body" ] && return 0
-    # Lifecycle is a JSON array of {nodeId, state, updatedAt}. Split into one record
-    # per line so each line pairs a nodeId with its state, then keep READY records
-    # and print the nodeId. Tolerates either Jackson field ordering.
-    printf '%s' "$body" \
-        | sed 's/},[[:space:]]*{/}\n{/g' \
-        | grep '"state"[[:space:]]*:[[:space:]]*"READY"' \
-        | grep -o '"nodeId"[[:space:]]*:[[:space:]]*"[^"]*"' \
-        | sed 's/.*"nodeId"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/'
+    # Enumerate CORE members from the generation snapshot's core.members[] (the
+    # ground-truth membership — includes SYNCING/JOINING members CTM has admitted),
+    # NOT /api/nodes/lifecycle filtered by --state READY. On cloud the READY lifecycle
+    # projection lags the leader's membership view by MINUTES (poller-proven: deficit=0,
+    # actualCoreCount=5, CONVERGED — while --state READY reads 3-4), which false-failed
+    # Pick_3's "5 running core containers" precondition on a genuinely-whole cluster.
+    # core.members[] each carry a bare "nodeId"; communities[] use governorNodeId and
+    # partitions[] ownerNodeId, so a bare "nodeId" match yields exactly the core members
+    # (identical source + idiom to cluster_member_count). Empty output (rc 0) when the API
+    # is unreachable — the caller decides whether that is fatal.
+    local gen
+    gen=$(direct_api_get "/api/cluster/generation" 2>/dev/null || true)
+    [ -z "$gen" ] && return 0
+    printf '%s' "$gen" \
+        | grep -oE '"nodeId"[[:space:]]*:[[:space:]]*"[^"]*"' \
+        | sed 's/.*"nodeId"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/' \
+        | sort -u
     return 0
 }
 
@@ -2456,6 +2534,56 @@ reset_provisioning_circuit() {
     return 0
 }
 
+# Read-only snapshot of the #336 provisioning-diagnostics surface
+# (GET /api/cluster/provisioning). Surfaces the leader's last provisioning
+# decision: reason / circuit-breaker state / membership deficit / latches /
+# last-failure. Mirrors reset_provisioning_circuit's curl idiom (same endpoint
+# family, same 15s hard timeout, same X-API-Key) but as a GET. Echoes the body
+# truncated to ~600 chars on stdout.
+#
+# WHY: restore_cluster_baseline's terminal convergence gate (step 8 below) is a
+# LOUD failure on non-convergence. When it fires we need the operator-visible
+# "why didn't the cluster heal" signal inline in the failure log, not buried in
+# a separate manual probe — this is exactly the observability surface the
+# risk-first/observability-first hardening policy mandates for any
+# provisioning/reconciler diagnosis. Tolerant by design: the endpoint may be
+# unreachable mid-chaos (no leader, killed entry-point), so a transport failure
+# returns empty + log_warn rather than aborting the caller.
+provisioning_snapshot() {
+    local ep body rc
+    ep=$(_resolve_live_endpoint)
+    body=$(curl -sk -m 15 -H "X-API-Key: ${API_KEY}" "${ep}/api/cluster/provisioning" 2>&1)
+    rc=$?
+    if [ "$rc" -ne 0 ]; then
+        log_warn "provisioning_snapshot: GET failed rc=${rc}: $(printf '%s' "$body" | head -c 200)"
+        return 0
+    fi
+    printf '%s' "$body" | head -c 600
+    return 0
+}
+
+# cluster_no_deficit — returns 0 iff the LEADER's provisioning view reports a WHOLE
+# cluster: no missing cores (deficit==0) AND full membership reached. This is the
+# lag-free authority for "all N cores present". The harness's own counts
+# (cluster_active_core_count, ready_core_count) are fed by the SWIM-projection /
+# per-node lifecycle query, which can lag the leader's membership view by 10s-100s of
+# seconds on a genuinely-whole cluster — a present, counted core routinely reads
+# not-yet-READY for a while (see restore step 5b). Gating terminal convergence on the
+# leader's deficit (the #336 provisioning surface) instead of ready_core_count avoids
+# falsely DEGRADING a healthy cluster, and is exactly the signal that matters for the
+# next test's "N running cores" precondition (a killed-not-replaced node shows
+# deficit>0, so the gate correctly waits for CTM auto-heal to bring deficit→0).
+# Quiet (no logging) — called in a wait_for poll loop; provisioning_snapshot is the
+# loud diagnostic for the failure path.
+cluster_no_deficit() {
+    local ep snap
+    ep=$(_resolve_live_endpoint) || return 1
+    snap=$(curl -sk -m 10 -H "X-API-Key: ${API_KEY}" "${ep}/api/cluster/provisioning" 2>/dev/null) || return 1
+    [ -n "$snap" ] || return 1
+    printf '%s' "$snap" | grep -q '"deficit"[[:space:]]*:[[:space:]]*0' \
+        && printf '%s' "$snap" | grep -q '"reachedFullMembership"[[:space:]]*:[[:space:]]*true'
+}
+
 # Operator-controlled toggle of CTM auto-heal (deficit-driven replacement
 # provisioning). Distinct from the failure-driven circuit breaker — operators
 # disable auto-heal during disruption-budget testing, planned maintenance
@@ -2758,7 +2886,47 @@ restore_cluster_baseline() {
         log_warn "restore_cluster_baseline: phase did not reach NORMAL within 180s; subsequent destructive tests may see SWIM cold-boot suppression (UnknownObserved instead of FaultyObserved)"
     fi
 
-    log_info "restore_cluster_baseline: cluster at baseline (${target} healthy cores READY, generation quiesced)"
+    # 8. TERMINAL CONVERGENCE GATE — the REAL exit barrier. Steps 5/5b/6/7 above
+    # are deliberately N-1-tolerant FAST intermediate unblocks (a present-but-not-
+    # quite-full cluster is good enough to stop blocking the cluster-B cascade), but
+    # they NEVER assert the cluster is actually whole: step 5/5b stop at floor=N-1
+    # cores and step 5b's READY wait is a soft log_warn, so a permanently-4-core
+    # cluster passes them silently. Worse, NONE of 5/5b/6/7 looks at the deployed
+    # blueprint — restore could return 0 with slices echoing UNLOADING / under target,
+    # and the final log line falsely claimed "${target} healthy cores READY". The next
+    # suite then ran against a half-recovered cluster (4 cores, partial slices) and
+    # its failures were misattributed to that suite rather than to incomplete recovery.
+    #
+    # This gate converts that SILENT half-recovery into a LOUD, diagnosable failure. It
+    # waits — on a generous, cloud-scaled budget — for the LEADER's authoritative
+    # wholeness signal: NO core deficit (cluster_no_deficit: deficit==0 &&
+    # reachedFullMembership — the lag-free "all ${target} cores present" signal, NOT the
+    # SWIM-laggy ready_core_count which reads N-1 on a healthy cluster). It does NOT
+    # assert per-blueprint slice-ACTIVE: blueprints ACCUMULATE across suites (e.g. 13
+    # leaves test-persistence deployed) and rebalance for 10s+ after any chaos, so a
+    # GLOBAL "all deployed slices ACTIVE" wrongly DEGRADES a healthy cluster on a
+    # mid-rebalancing / non-baseline blueprint. Blueprint readiness is the consuming
+    # test's concern — retarget_app_endpoint_to_active_slice now waits for its own
+    # blueprint's ACTIVE owner (facet 1) rather than relying on this generic gate.
+    # ~300s base × TIMEOUT_SCALE(3 cloud) ⇒ ~15min ceiling — generous enough for genuine
+    # cloud auto-heal (~187s/VM); docker/local scale 1× (~5min). Override base via
+    # AETHER_RESTORE_RECOVERY_TIMEOUT (shared with the step-4b active-recovery budget).
+    local converge_base="${AETHER_RESTORE_RECOVERY_TIMEOUT:-240}"
+    [ "$converge_base" -lt 300 ] 2>/dev/null && converge_base=300
+    if ! wait_for "cluster WHOLE (leader deficit=0, all ${target} cores present) — terminal convergence" \
+        "cluster_no_deficit" \
+        "$converge_base"; then
+        # DEGRADED return (matches steps 4b/5/6's contract): the runner's post-suite
+        # gate quarantines remaining suites. The provisioning snapshot pins WHY the heal
+        # stalled (reason/breaker/deficit/last-failure) so the next cloud stall is
+        # diagnosable in minutes, not hours — #336 observability surface.
+        local snap
+        snap=$(provisioning_snapshot)
+        log_fail "restore_cluster_baseline: cluster did not reach full core membership — cores present=$(cluster_active_core_count)/${target} READY=$(ready_core_count)/${target}, slices ACTIVE=$(slices_active_instances)/$(slices_target_total) (slice counts informational; gate=leader-deficit). provisioning: ${snap}"
+        return 1
+    fi
+
+    log_info "restore_cluster_baseline: cluster at baseline (${target} cores present, leader deficit=0, generation quiesced)"
     return 0
 }
 

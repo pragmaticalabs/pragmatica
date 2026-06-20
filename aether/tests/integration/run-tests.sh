@@ -476,7 +476,7 @@ run_cluster_b_suites() {
         quiesce_start=$(date +%s)
         local _restore_rc=0
         restore_cluster_baseline || _restore_rc=$?
-        local _ready _leader _floor=$((NODE_COUNT - 1))
+        local _ready _leader
         # Read liveness via the curl/api_get path (NOT the aether CLI): a reliability
         # gate must not false-quarantine when the CLI is unavailable for reasons
         # unrelated to cluster health (e.g. macOS Local Network Privacy blocking the
@@ -484,8 +484,18 @@ run_cluster_b_suites() {
         # own hard barriers are already curl-based.
         _ready=$(ready_core_count_http)
         _leader=$(cluster_leader_http || true)
-        if [ "$_restore_rc" -ne 0 ] || [ "${_ready:-0}" -lt "$_floor" ] || [ -z "$_leader" ]; then
-            log_error "Cluster B unrecoverable after suite ${suite} (restore_rc=${_restore_rc}, ready=${_ready:-0}/${NODE_COUNT}, leader='${_leader}') — remaining destructive suites will be SKIPPED to avoid misattributed cascade failures"
+        # WHOLENESS is determined by restore_cluster_baseline's terminal gate (leader
+        # deficit=0 — the lag-free authority), NOT by ready_core_count. On cloud the READY
+        # lifecycle query (aether nodes lifecycle --state READY) routinely reads N-2 for
+        # MINUTES on a genuinely-whole cluster (deficit=0, all members present, breaker
+        # untripped) — the SWIM-fed lifecycle projection lags the leader's membership view.
+        # The old `_ready < _floor` condition therefore SILENTLY FALSE-QUARANTINED the chain
+        # (observed 2026-06-20 on cloud: suite 13 passed, restore_rc=0, deficit=0, poller
+        # showed actualCoreCount=5 throughout — yet ready=3/5 skipped 12/03/02). Quarantine
+        # only on a real restore failure (restore_rc!=0 — its deficit gate caught a genuine
+        # missing core) or no committed leader. `_ready` is retained for log context only.
+        if [ "$_restore_rc" -ne 0 ] || [ -z "$_leader" ]; then
+            log_error "Cluster B unrecoverable after suite ${suite} (restore_rc=${_restore_rc}, leader='${_leader}', ready=${_ready:-0}/${NODE_COUNT} [informational; gate=restore deficit]) — remaining destructive suites will be SKIPPED to avoid misattributed cascade failures"
             aborted=true
         fi
         local quiesce_elapsed=$(( $(date +%s) - quiesce_start ))

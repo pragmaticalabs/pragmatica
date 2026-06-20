@@ -29,44 +29,53 @@ test_kill_two_nodes() {
     fi
     local leader
     leader=$(cluster_leader)
-    local victims
-    victims=$(pick_non_leader "$leader" 2)
-    local victim1 victim2
-    victim1=$(echo "$victims" | head -1)
-    victim2=$(echo "$victims" | tail -1)
 
-    # Capture topology baseline before any kills so the event-driven barriers
-    # below can scope their searches to the post-kill window.
-    local baseline
-    baseline=$(topology_now)
+    # RE-RESOLVE-AT-KILL victim model (replaces the up-front `pick_non_leader 2`
+    # SET + single shared baseline). WHY: the kill→assert window for victim 2 runs
+    # AFTER victim 1's departure, during which CTM auto-heal may DELETE a
+    # not-yet-killed pre-picked victim. If victim 2 is chosen up front and then
+    # auto-heal removes it before we kill it, its NODE_LEFT/NODE_FAILED is invisible
+    # against the single pre-kill baseline → "second victim within 90s" false fails
+    # even though the cluster behaved correctly. We therefore (a) pick each victim
+    # immediately before killing it, (b) capture that victim's departure baseline
+    # PER-KILL right before the kill, and (c) on cloud, treat a victim that already
+    # vanished (no server resolves) as a SATISFIED departure rather than waiting for
+    # a fresh event that will never fire. The CONTRACT ("cluster survives concurrent
+    # loss of 2 nodes") is preserved — true single-RTT simultaneity is already
+    # impossible across separate VMs; what matters is the quorum/survival assertion
+    # below, not the picking mechanism.
+    KILLED_VICTIM1=""
+    KILLED_VICTIM2=""
+
+    # --- Victim 1: pick → per-kill baseline → kill → confirm departure ---
+    local victim1
+    victim1=$(pick_non_leader "$leader" 1) || {
+        log_fail "Pre-kill: could not resolve first non-leader victim"
+        return 1
+    }
     KILLED_VICTIM1="$victim1"
+    if ! _kill_and_confirm_departure "$victim1"; then
+        return 1
+    fi
+
+    # --- Victim 2: re-pick (excluding victim 1) → per-kill baseline → kill ---
+    # Re-derive the leader (a re-election may have moved it after victim 1's
+    # departure) and EXCLUDE victim 1 so a momentary READY-flicker of the
+    # just-killed node can't hand it back as victim 2.
+    if ! wait_for_leader 60; then
+        log_fail "Post-first-kill: cluster has no leader within 60s"
+        return 1
+    fi
+    leader=$(cluster_leader)
+    local victim2
+    victim2=$(PICK_EXCLUDE="${PICK_EXCLUDE:-} ${victim1}" pick_non_leader "$leader" 1) || {
+        log_fail "Pre-kill: could not resolve second non-leader victim (excluding ${victim1})"
+        return 1
+    }
     KILLED_VICTIM2="$victim2"
-
-    log_info "Killing node 1: ${victim1}"
-    kill_node "$victim1"
-
-    # Event-driven barrier between the two kills (replaces `sleep 5`). Emulates
-    # staggered failure where the second kill happens AFTER SWIM has actually
-    # detected the first — fails fast if SWIM regresses past the budget.
-    # Dual-signal: if victim1 never reached core-HEALTHY membership, no
-    # coreMemberIds-delta event fires (correct product behavior), so fall back to
-    # membership-absence (wait_for_node_removed: 404 OR absent from status).
-    if ! wait_for_node_departure "$victim1" "$baseline" 90 \
-        && ! wait_for_node_removed "$victim1" 90; then
-        log_fail "No NODE_LEFT/NODE_FAILED event AND not removed from membership for first victim ${victim1} within 90s"
+    if ! _kill_and_confirm_departure "$victim2"; then
         return 1
     fi
-    log_pass "Departure of ${victim1} observed"
-
-    log_info "Killing node 2: ${victim2}"
-    kill_node "$victim2"
-    # Dual-signal departure for victim2 — same rationale as victim1 above.
-    if ! wait_for_node_departure "$victim2" "$baseline" 90 \
-        && ! wait_for_node_removed "$victim2" 90; then
-        log_fail "No NODE_LEFT/NODE_FAILED event AND not removed from membership for second victim ${victim2} within 90s"
-        return 1
-    fi
-    log_pass "Departure of ${victim2} observed"
 
     # ClusterGeneration commits the post-kill membership view. After quiescence
     # the count reflects whatever CTM has done — just assert quorum.
@@ -75,6 +84,50 @@ test_kill_two_nodes() {
     local count
     count=$(cluster_member_count)
     assert_ge "$count" "3" "Cluster survives with quorum after 2 kills (${count} nodes)"
+}
+
+# Kill one victim with kill-time re-resolution of its departure. Captures the
+# departure baseline immediately before the kill (so the event poll is scoped to
+# THIS kill's post-window, not a stale up-front baseline), then kills and confirms
+# departure. On cloud, if the victim's VM no longer resolves the node is ALREADY
+# gone (CTM auto-heal deleted it during a prior victim's recovery window) — that IS
+# the departure, so we treat it as satisfied and do NOT wait for a fresh event that
+# can never fire. Returns 0 on confirmed/satisfied departure, 1 otherwise.
+_kill_and_confirm_departure() {
+    local victim="$1"
+
+    # Cloud-only fast path: a victim auto-heal already deleted resolves to no
+    # server. cloud_kill_vm itself is idempotent here (returns 0 on "already gone"),
+    # but we must ALSO short-circuit the event-wait — the departure already happened
+    # before our baseline, so polling for a post-baseline NODE_LEFT would time out.
+    if [ "${CLOUD_MODE:-false}" = "true" ]; then
+        if ! cloud_server_id "$victim" >/dev/null 2>&1; then
+            log_info "Victim ${victim} already gone (no server resolves) — CTM auto-heal removed it; treating as satisfied departure"
+            return 0
+        fi
+    fi
+
+    # Per-kill baseline: capture topology NOW, immediately before this kill, so the
+    # event-driven barriers below scope their search to THIS kill's post-window. A
+    # single up-front baseline (the old model) let auto-heal of an earlier victim
+    # consume the only baseline and hide a later victim's departure event.
+    local baseline
+    baseline=$(topology_now)
+
+    log_info "Killing node: ${victim}"
+    kill_node "$victim"
+
+    # Dual-signal departure (same rationale as the original single-baseline model):
+    # if the victim never reached core-HEALTHY membership, no coreMemberIds-delta
+    # event fires (correct product behavior), so fall back to membership-absence
+    # (wait_for_node_removed: 404 OR absent from status).
+    if ! wait_for_node_departure "$victim" "$baseline" 90 \
+        && ! wait_for_node_removed "$victim" 90; then
+        log_fail "No NODE_LEFT/NODE_FAILED event AND not removed from membership for victim ${victim} within 90s"
+        return 1
+    fi
+    log_pass "Departure of ${victim} observed"
+    return 0
 }
 
 test_quorum_maintained() {
