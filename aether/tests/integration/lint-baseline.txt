@@ -21,13 +21,13 @@
 [R1] aether/tests/integration/suites/09-artifacts/test-large-artifact.sh:21 — warn-then-pass-demotion (preceding log_warn at line 20)
 [R1] aether/tests/integration/suites/12-network/test-quic-connectivity.sh:22 — warn-then-pass-demotion (preceding log_warn at line 21)
 [R1] aether/tests/integration/suites/13-edge-cases/test-concurrent-deploys.sh:68 — warn-then-pass-demotion (preceding log_warn at line 67)
-[R1] aether/tests/integration/suites/13-edge-cases/test-stale-route-cleanup.sh:210 — warn-then-pass-demotion (preceding log_warn at line 209)
+[R1] aether/tests/integration/suites/13-edge-cases/test-stale-route-cleanup.sh:209 — warn-then-pass-demotion (preceding log_warn at line 208)
 [R1] aether/tests/integration/suites/13-edge-cases/test-stale-route-cleanup.sh:32 — warn-then-pass-demotion (preceding log_warn at line 31)
 [R2] aether/tests/integration/suites/01-stability/test-soak-4h.sh:95 — wait "$pid" 2>/dev/null || true
 [R2] aether/tests/integration/suites/02-chaos/test-joining-window-kill.sh:144 — 2>/dev/null || true
 [R2] aether/tests/integration/suites/02-chaos/test-joining-window-kill.sh:231 — name=$(remote_exec "docker ps --filter 'label=aether.node-id=${node_id}' ${cluster_filter} --format '{{.Names}}' | head -1" 2>/dev/null || true)
 [R2] aether/tests/integration/suites/02-chaos/test-joining-window-kill.sh:415 — candidates=$(pick_non_leader "$leader" 3 2>/dev/null || true)
-[R2] aether/tests/integration/suites/02-chaos/test-kill-under-load.sh:91 — wait "$pid" 2>/dev/null || true
+[R2] aether/tests/integration/suites/02-chaos/test-kill-under-load.sh:92 — wait "$pid" 2>/dev/null || true
 [R2] aether/tests/integration/suites/03-scaling/test-03-scale-down.sh:115 — wait "$pid" 2>/dev/null || true
 [R2] aether/tests/integration/suites/06-deployment/test-schema-migration.sh:111 — body=$(api_post "/api/schema/retry/${DATASOURCE}" "{}" 2>/dev/null || true)
 [R2] aether/tests/integration/suites/07-cluster-mgmt/test-destroy.sh:35 — # Don't `2>/dev/null || true` — that hides stderr AND ignores rc, so a

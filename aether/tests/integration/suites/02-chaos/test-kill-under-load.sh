@@ -38,10 +38,11 @@ test_kill_during_load() {
     # chaos actually affects during a kill. Management /health/live is a
     # node-local synthetic and doesn't traverse the routing table that
     # gets republished on every cluster generation change.
-    # Point APP_ENDPOINT at the node hosting the ACTIVE echo slice (cluster B base app
-    # port 8080), probing /api/echo/health until routed. Mirrors 08-resources; without
-    # it the load hits the dead LB port 9090 and every request fails.
-    retarget_app_endpoint_to_active_slice "$ECHO_BLUEPRINT" 8080 "/api/echo/health" 90 \
+    # Point APP_ENDPOINT at the node hosting the ACTIVE echo slice (app port is
+    # resolved from APP_PORT inside the helper), probing /api/echo/health until
+    # routed. Mirrors 08-resources; without it the load hits the dead LB port 9090
+    # and every request fails.
+    retarget_app_endpoint_to_active_slice "$ECHO_BLUEPRINT" "/api/echo/health" 90 \
         || log_warn "kill-under-load: could not retarget APP_ENDPOINT to echo owner; load will probe ${APP_ENDPOINT}"
 
     start_load "$LOAD_RPS" "$LOAD_DURATION" GET "/api/echo/health"

@@ -1184,7 +1184,17 @@ first_seed_host_app_port() {
 # Returns 0 on success, 1 if no owner found (caller should fall through). Always
 # leaves APP_ENDPOINT at a usable value (original LB on docker, retargeted on cloud).
 retarget_app_endpoint_to_active_slice() {
-    local coords="$1" port="${2:-8070}" probe_path="${3:-}" probe_timeout="${4:-30}"
+    local coords="$1" probe_path="${2:-}" probe_timeout="${3:-30}"
+    # The app-HTTP port is a property of the cluster config, NOT a per-caller value.
+    # The in-container/logical app port is APP_PORT (8070, lib/common.sh) on every
+    # node in every env. Callers historically passed a literal `8080` here — the
+    # docker cluster-B HOST mapping (host:8080 -> in-container 8070) — but on cloud
+    # 8080 is the MANAGEMENT port, so the cloud branch pinned app load to mgmt and
+    # every request returned 404 ("File not found: <app route>"). Resolving the port
+    # authoritatively from APP_PORT eliminates that whole class: no caller can
+    # re-target the mgmt port. (Docker resolves the host mapping of this in-container
+    # port via host_port_for_container; cloud uses it as the logical port directly.)
+    local app_port="${APP_PORT:-8070}"
     # Exported observation (global, NOT local): the owner NodeId the app load is
     # pinned to. The harness has no LB — callers that kill nodes while this load
     # runs must pass it via PICK_EXCLUDE to pick_non_leader, or the test measures
@@ -1217,7 +1227,7 @@ retarget_app_endpoint_to_active_slice() {
             log_warn "retarget: cloud_public_ip(${owner}) returned empty; APP_ENDPOINT unchanged. (Owner reported by /api/slices is not in bootstrap-state.json — node may have been replaced by CTM and not re-recorded.)"
             return 1
         fi
-        APP_ENDPOINT="http://${owner_ip}:${port}"
+        APP_ENDPOINT="http://${owner_ip}:${app_port}"
     else
         # Docker/remote: resolve the owner's host-mapped app port by CONTAINER-NAME
         # lookup (NodeId == container_name post-migration). `docker port <name> 8070/tcp`
@@ -1225,16 +1235,18 @@ retarget_app_endpoint_to_active_slice() {
         # CTM-provisioned ULID replacements — the old `port + numeric-suffix` derivation
         # returned EMPTY for a ULID-named owner (id ends in a letter), leaving APP_ENDPOINT
         # at the dead LB default and the load probing a dead port (false 100% error rate).
-        # In-container app port is 8070 for every node (DockerConfig DEFAULT_APP_PORT_BASE;
-        # compose maps `<host>:8070`). The `port` parameter is retained for the cloud branch.
+        # In-container app port is APP_PORT (8070) for every node (DockerConfig
+        # DEFAULT_APP_PORT_BASE; compose maps `<host>:8070`). The host-side mapping
+        # varies by cluster (A -> :8070, B -> :8080), which is exactly why the app
+        # port must be resolved from the in-container APP_PORT, never a caller value.
         local owner_app_port
-        owner_app_port=$(host_port_for_container "$owner" 8070)
+        owner_app_port=$(host_port_for_container "$owner" "$app_port")
         if [ -z "$owner_app_port" ]; then
             # ULID replacements publish only the mgmt port (8080), not 8070 — they carry
             # no host-mapped app port at all. At ACTIVE state the slice route has propagated
             # cluster-wide, so any surviving seed with a host-mapped app port serves it. Fall
             # back to the lowest-numbered live seed's host app port rather than guessing.
-            owner_app_port=$(first_seed_host_app_port 8070)
+            owner_app_port=$(first_seed_host_app_port "$app_port")
             if [ -z "$owner_app_port" ]; then
                 log_warn "retarget: owner '${owner}' has no host-mapped app port (8070) and no seed app port resolvable; APP_ENDPOINT unchanged"
                 return 1

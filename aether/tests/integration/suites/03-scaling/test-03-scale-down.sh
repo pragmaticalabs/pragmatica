@@ -97,7 +97,7 @@ test_scale_down_under_load() {
     # 02-chaos/test-kill-under-load.sh. The 7->5 scale-down removes the two
     # CTM-provisioned nodes (6,7), so a retarget to any surviving seed stays valid
     # throughout the load window.
-    retarget_app_endpoint_to_active_slice "$ECHO_BLUEPRINT" 8080 "/api/echo/health" 90 \
+    retarget_app_endpoint_to_active_slice "$ECHO_BLUEPRINT" "/api/echo/health" 90 \
         || log_warn "scale-down-under-load: could not retarget APP_ENDPOINT to echo owner; load will probe ${APP_ENDPOINT}"
 
     start_load "$LOAD_RPS" "$LOAD_DURATION" "GET" "/api/echo/health"

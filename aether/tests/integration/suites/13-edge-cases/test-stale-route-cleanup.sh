@@ -51,12 +51,11 @@ test_app_routes_reachable() {
     # healthy != app route reachable) and pass falsely.
     #
     # Retarget APP_ENDPOINT to a node that currently hosts an ACTIVE echo slice
-    # FIRST. The pinned seed app port (:8080) belongs to a static that prior
-    # destructive tests churned out; the live owner is a ULID replacement on a
-    # different host port (bit Hetzner gate-F1: :8080 dead/000, route wired and
-    # serving 200 on :8081). This mirrors 02-chaos kill-under-load, which never
-    # probes the bare pinned app port for the same reason.
-    retarget_app_endpoint_to_active_slice "$BLUEPRINT" 8080 "/api/echo/health" 90 \
+    # FIRST. The default pinned APP_ENDPOINT may belong to a node that prior
+    # destructive tests churned out; the live owner is a ULID replacement, and the
+    # helper resolves its app port from APP_PORT. This mirrors 02-chaos
+    # kill-under-load, which never probes the bare pinned app port for the same reason.
+    retarget_app_endpoint_to_active_slice "$BLUEPRINT" "/api/echo/health" 90 \
         || log_warn "retarget: APP_ENDPOINT unchanged (no ACTIVE echo owner resolved) — probing pinned ${APP_ENDPOINT}"
     if ! app_route_wired "${APP_ENDPOINT}/api/echo/health" "${API_KEY}"; then
         log_fail "App route ${APP_ENDPOINT}/api/echo/health not wired (expected EchoSlice handler to respond)"
@@ -223,7 +222,7 @@ test_no_502_504_after_cleanup() {
     # gone (gate-F1). Probing a live owner is the correct subject — the assertion
     # is "no stale-route 502/504", which must be measured against a node that
     # should serve cleanly, not a dead pinned port (which would read 000, not 502).
-    retarget_app_endpoint_to_active_slice "$BLUEPRINT" 8080 "/api/echo/health" 90 \
+    retarget_app_endpoint_to_active_slice "$BLUEPRINT" "/api/echo/health" 90 \
         || log_warn "retarget: APP_ENDPOINT unchanged (no surviving ACTIVE echo owner) — probing pinned ${APP_ENDPOINT}"
     local bad_status=0
     for i in $(seq 1 10); do
