@@ -5,7 +5,7 @@
 ---
 
 ## ⚡ TL;DR
-The original "remaining SWIM issue" is **fixed and cloud-proven**, plus a string of related fixes shipped (membership observability endpoint, #290 ADMIN key, scheduled-task pause routing, a ready-lag harness gate). The integration-test goal (**15/15 container**) landed **cluster-A 10/10 cloud-green** and **cluster-B product-green** — but a clean cluster-B chaos sweep in one go is **blocked by Hetzner being in a degraded patch** (capacity flickers + slow VM boots), not by our code. **Next-session GOAL: complete rc2** (4 open issues; proposed order below). Also: a new **SQL-migration-parsing robustness** ticket is drafted for rc2 (scope + considerations below — to discuss).
+The original "remaining SWIM issue" is **fixed and cloud-proven**, plus a string of related fixes shipped (membership observability endpoint, #290 ADMIN key, scheduled-task pause routing, a ready-lag harness gate). The integration-test goal (**15/15 container**) landed **cluster-A 10/10 cloud-green** and **cluster-B product-green** — but a clean cluster-B chaos sweep in one go is **blocked by Hetzner being in a degraded patch** (capacity flickers + slow VM boots), not by our code. **Next-session GOAL: complete rc2** (5 open issues; proposed order below). Also: a new **SQL-migration-parsing robustness** ticket was filed for rc2 as **#337** (scope + considerations below — to discuss).
 
 ---
 
@@ -26,24 +26,25 @@ Cloud, fresh 5-node Hetzner cluster, hard-killed core-2/3/4 simultaneously: both
 ---
 
 ## 🎯 NEXT-SESSION GOAL: complete rc2
-**4 open issues. Proposed order (approved):**
+**6 open issues. Proposed order (approved):**
 
 1. **Stream-replication backfill cluster — `#333` + `#260` + `#261` (ONE coherent fix).** `#260` silent replica divergence (receiver ignores `fromOffset`, no verify/repair) · `#261` backfill never fires for a fresh replica · `#333` replica false-promotes to CAUGHT_UP from a blind source, stuck behind live offset. `#333` is the umbrella; `#260/#261` are facets. **Data-integrity correctness — highest-value class.** Start by investigating it as one piece.
 2. **`#210`** — cloud 12-network SWIM `NODE_LEFT`/`NODE_FAILED` not detected after `kill_node`. Membership-detection; the new `/api/cluster/membership` endpoint is now a diagnosis aid. (Note: a related spurious `SWIM_detection_time` fail appeared in this session's cluster-B run, but only *after* the cluster was externally reaped — that instance was an artifact, not #210 itself.)
-3. **New: SQL-migration-parsing robustness** (drafted below — to be filed in rc2).
+3. **#337** — dialect-aware SQL-migration splitting + execution strategy (PG/MySQL/MariaDB/Oracle/DB2/SQL Server). Makes migrations *correct* across dialects. Converged design in the resolved-design section below.
+4. **#338** — migration recovery & history atomicity (resume for autocommit dialects + atomic DDL/history write). Makes migrations *recoverable*; the deferred half of the #337 design. **Note:** the DDL/history non-atomicity it fixes is a *live PG bug today*, independent of multi-DB.
 
 Finishing the current release before opening rc3's 103 issues is the discipline.
 
 ---
 
 ## 🗂️ Full ticket landscape + ordering (rc3 and beyond)
-**127 open: rc2 = 4 · rc3 = 103 (24 bug / 26 enhancement / 11 tech-debt / 5 streaming / 8 post-ga) · no-milestone = 20.**
+**129 open: rc2 = 6 · rc3 = 103 (24 bug / 26 enhancement / 11 tech-debt / 5 streaming / 8 post-ga) · no-milestone = 20.**
 
 Order by **risk × blast-radius × observability-gap**, grouped into coherent epics (work by subsystem, not issue-by-issue):
 
 | Rank | Epic | Issues |
 |---|---|---|
-| 1 | **rc2 close-out** | `#333`/`#260`/`#261` (stream replication) → `#210` (cloud SWIM detect) |
+| 1 | **rc2 close-out** | `#333`/`#260`/`#261` (stream replication) → `#210` (cloud SWIM detect) → `#337` (dialect-aware migration split+exec) → `#338` (migration recovery & atomicity) |
 | 2 | **Silent prod gaps** (don't-work-in-prod, silently) | `#250` storage demotion/GC wired as **noOp** · `#298` quota/cost cap **stubbed** (← acutely relevant: it's *why* we hit Hetzner server-limits this session) · `#268` resource SPI leaks/use-after-close |
 | 3 | **Reconciler / cloud foundational** | `#336` reconciler-under-load provisioning stall · `#297` orphan-cleanup incomplete (reaper Hetzner-only, firewall/floating-IP no-ops) · `#296` hardcoded core label · `#335` scale-500-after-volume-wipe (no-milestone) |
 | 4 | **Resource-SPI / interceptor / annotation hardening** (big coherent epic) | `#268`–`#281` (`@Http`/`@Notify`/`@Scheduled`/cache/retry/config/secrets resolution) |
@@ -53,24 +54,26 @@ Order by **risk × blast-radius × observability-gap**, grouped into coherent ep
 
 ---
 
-## 🆕 DRAFT TICKET (rc2): Robust SQL-file parsing for migrations
-**Status: DRAFTED, NOT yet filed** — held for your review of the considerations below before I create the GitHub issue (scope may shift). Say the word and I'll file it (rc2).
+## ✅ RESOLVED (2026-06-22): SQL-migration robustness → **dialect-aware**, split across [#337](https://github.com/pragmaticalabs/pragmatica/issues/337) (correctness) + [#338](https://github.com/pragmaticalabs/pragmatica/issues/338) (recoverability)
 
-**Title:** `Migration: robust SQL-file statement-boundary parsing (dollar-quoting/tags, nested comments, escape strings) before GA`
+The 2026-06-21 considerations were discussed and the design converged. **Grounded reframe:** there are *two* SQL splitters — the PEG grammar (`postgres.peg`, build/**lint** tooling) with the `$$`-tag/`RestOfStatement` gaps, **and** the runtime executor `AetherSchemaManager.executeStatements:269-281`, a far cruder `split("\n")`+`split(";")` that is **untested** and is the actual data-integrity bug. **And Aether is multi-DB by design** (`DatabaseType`: PG, MySQL, MariaDB, Oracle, DB2, SQL Server, …) with a documented *engine-agnostic migration engine* — so the splitter must be **dialect-aware**, not PG-only.
 
-**Why rc2 / pre-GA:** migrations are a foundational data-layer operation. Real-world migration files contain functions/triggers/`DO` blocks with **dollar-quoted bodies and internal semicolons**; fragile boundary-detection silently mis-splits them → broken migrations → data-layer breakage at GA.
+**Converged design (authoritative spec now in #337):**
+- **One pure lexer engine + per-dialect `DialectSpec` descriptors** — data, not code; models *zero* statement semantics (statements split + execute verbatim). Two axes: a lexical table + composable boundary primitives (dollar-quote `$tag$` / redefinable-terminator `DELIMITER`·`--#SET TERMINATOR` / batch `GO` / block-`/`).
+- **5 descriptors ≈ 10 engines:** PG-family (PG+Cockroach+Yugabyte), MySQL/MariaDB, Oracle, DB2, SQL Server. **SQLite dropped** — embedded, and its trigger `BEGIN…END` is the only keyword-aware case, so excluding it keeps the engine purely lexical.
+- **Dialect-aware execution folded in (the cheap core):** a 2-mode `TxStrategy` classified **per-file** (Flyway-style) — whole-file-transactional (PG/SQLServer/DB2) vs whole-file-autocommit (MySQL/Oracle, or any file containing a non-transactional stmt like `CONCURRENTLY`). ~2 methods + a tiny strategy, **zero schema change**, no new connector primitives. Closes `CONCURRENTLY`-fails-on-PG-today and MySQL/Oracle fake-rollback.
+- **Dialect selection** from the connector's `DatabaseType` (no content sniffing).
+- **Validation:** differential tests vs the 5 real engines (testcontainers) + fuzz; jOOQ (already in-tree) as a *secondary oracle only* (it normalizes SQL → unfit as the runtime splitter).
 
-**Current state (grounded):** `aether/pg-tools/pg-parser/` (PEG grammar `postgres.peg` + `PostgresParser`) feeds `pg-schema/.../builder/MigrationProcessor.analyzeScript → parseCst → DdlAnalyzer`. Top-level split is `Input <- Statement (';' Statement)* ';'?`; complex statements use `…Passthrough <- RestOfStatement`. **Concrete gaps:** `DollarString <- '$$' (!'$$' .)* '$$'` handles only the **empty tag `$$`**, not tagged `$func$…$func$`; and `RestOfStatement` boundary-finding vs the `;`-splitter is exactly where a `CREATE FUNCTION … $$ BEGIN …; …; END; $$` body gets mis-split at its first internal `;`.
-
-**Core scope:**
-- Statement-boundary lexer hardening: **tagged dollar-quoting** (`$tag$…$tag$`, arbitrary tags), **nested block comments** (`/* /* */ */` — PostgreSQL nests, unlike most dialects), **escape strings** `E'…'` + doubled-quote `''` + `standard_conforming_strings`, line comments, identifiers (`"…"`).
-- Ensure `RestOfStatement`/passthrough **skips over** dollar-quoted/string/comment spans when locating the terminating `;` (so function/trigger/`DO` bodies aren't split).
-- **Source-position tracking** (file:line of each statement / the failing one) for diagnostics.
-- Comprehensive lexical test corpus of the edge cases.
+**Spun out to #338 (the rabbit hole — deferred, tracked):** partial-migration **resume** for autocommit dialects (per-statement checkpoint = history-schema change + skip logic) + **DDL/history-write atomicity** — already non-atomic today (`AetherSchemaManager:265,297` writes history *outside* the migration tx → applied-but-unrecorded on process death; bites PG **now**). #337 = *correct*; #338 = *recoverable*. "Correct-but-not-yet-auto-recoverable" is the agreed shippable rc2 boundary.
 
 ---
 
-## 💡 Considerations on the SQL-parsing work (outside-the-box / low-probability / tangential — TO DISCUSS)
+## 💡 Considerations on the SQL-parsing work — **RESOLVED 2026-06-22** (dispositions below; authoritative design now in #337/#338)
+
+**Disposition:** #1 decouple split/analyze → **core of #337** · #2 non-tx statements → **#337** (per-stmt tags + 2-mode `TxStrategy`) · #3 server-side simple-query → **rejected** (extended-protocol single-stmt + whole-file implicit tx + no per-stmt errors) · #4 differential oracle → **#337 testing** (real engines in testcontainers; jOOQ as secondary oracle) · #5 fuzz → **#337** · #6 distributed coordination → **already solved** (leader Rabia KV lock + `aether_schema_history` checksums — do NOT rebuild) · #7 checksum stability → **#337** (verbatim split keeps checksums stable) · #8 BOM/encoding, #9 COPY-data mode, #10 psql-meta reject-policy → **#337** · #11 linter dry-run gate → **#337 follow-on** · #12 generated-migration round-trip → **#337 test**. **Resume + DDL/history atomicity → spun out to #338.**
+
+_Original considerations (discussion record, now resolved per the dispositions above):_
 
 1. **Decouple SPLIT from ANALYZE.** Splitting a file into statements needs only a *lexer* (track string/dollar/comment state to find top-level `;`); schema *analysis* (the PEG → `DdlAnalyzer` → `SchemaEvent`) is a separate concern. Conflating them forces the grammar to understand every statement form just to split. A robust **lexer splits**, then the parser analyzes what it understands and **passes through the rest verbatim for execution** (a function body it can't model can still be split + run). Check whether these concerns are cleanly separated today — this is probably the single biggest structural lever.
 
