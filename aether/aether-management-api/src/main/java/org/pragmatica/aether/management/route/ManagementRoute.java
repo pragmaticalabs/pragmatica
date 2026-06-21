@@ -53,6 +53,11 @@ public enum ManagementRoute {
     CLUSTER_JOURNAL(GET, "/api/cluster/journal", List.of(), LOCAL),
     CLUSTER_CONFIG_GET(GET, "/api/cluster/config", List.of(), taskGroup(DEPLOYMENT)),
     CLUSTER_PROVISIONING_GET(GET, "/api/cluster/provisioning", List.of(), taskGroup(DEPLOYMENT)),
+    // PER-NODE local view (LOCAL, never leader/owner-forwarded): each survivor answers from its OWN
+    // MembershipFsm + QuorumLossDetector, so an operator can query a specific node and see THAT
+    // node's per-peer SUSPECT/DEAD states + self-drain armed/below-quorum signal. taskGroup/LEADER
+    // would forward and collapse the per-node distinction this endpoint exists to expose.
+    CLUSTER_MEMBERSHIP_GET(GET, "/api/cluster/membership", List.of(), LOCAL),
     CLUSTER_STATUS(GET, "/api/cluster/status", List.of(), LEADER),
     CLUSTER_CONFIG_APPLY(POST, "/api/cluster/config", List.of(), taskGroup(DEPLOYMENT)),
     CLUSTER_SCALE(POST, "/api/cluster/scale", List.of(), LEADER),

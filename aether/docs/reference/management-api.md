@@ -2132,6 +2132,46 @@ Dump the queried node's transition journal (cluster-topology-overhaul spec, Wave
 
 Errors: `layer` values other than `fsm` / `peer` are rejected.
 
+### GET /api/cluster/membership
+
+Membership diagnostics — the responding node's authoritative `MembershipFsm` lifecycle view plus its quorum-loss self-drain readiness. Purpose: diagnose SWIM-under-concurrent-loss situations without log-scraping — per survivor, which peers are SUSPECT/DEAD and whether this node's quorum-loss self-drain window is armed and below threshold. **Per-node local view** (each node serves its own membership state); read-only; **not leader-forwarded** — query an individual node to read *that* node's view (e.g. each survivor's view during a multi-core-loss window).
+
+`requiredThreshold` is the simple-majority quorum threshold `coreCount / 2 + 1` (`0` while the core count is still unknown at bootstrap). `armed` is a cold-start latch: a node that has never observed a quorate count never self-drains. DEAD members are retained in `members[]` for incarnation-fenced rejoin.
+
+**RBAC:** VIEWER · **Routing:** LOCAL
+
+**Response:**
+```json
+{
+  "nodeId": "core-1",
+  "strictCoreMemberCount": 2,
+  "countedCoreMemberCount": 5,
+  "requiredThreshold": 3,
+  "belowThreshold": true,
+  "armed": true,
+  "members": [
+    {"nodeId": "core-1", "state": "Member",  "incarnation": 1, "role": "core", "strictCore": true,  "countsTowardEffective": true},
+    {"nodeId": "core-3", "state": "Suspect", "incarnation": 2, "role": "core", "strictCore": false, "countsTowardEffective": true},
+    {"nodeId": "core-4", "state": "Dead",    "incarnation": 2, "role": "core", "strictCore": false, "countsTowardEffective": false}
+  ]
+}
+```
+
+| Field | Description |
+|-------|-------------|
+| `nodeId` | The node answering — whose local view this is |
+| `strictCoreMemberCount` | Core members in FSM state exactly `Member` — the quorum-loss numerator |
+| `countedCoreMemberCount` | Core members counting toward effective membership (`Member` + `Suspect`) |
+| `requiredThreshold` | Simple-majority quorum threshold `coreCount / 2 + 1` (`0` while core count unknown at bootstrap) |
+| `belowThreshold` | Whether the strict count is currently below threshold |
+| `armed` | Whether this node has ever observed a quorate count (cold-start latch; a never-quorate node never self-drains) |
+| `members[]` | Every tracked peer (DEAD retained for incarnation-fenced rejoin) |
+| `members[].state` | FSM lifecycle state (`Observed` / `Member` / `Suspect` / `Departing` / `Dead`) |
+| `members[].incarnation` | Member incarnation |
+| `members[].role` | `core` / `worker` / `unknown` |
+| `members[].strictCore` | In the strict `Member`-only quorum set |
+| `members[].countsTowardEffective` | In the `Member` + `Suspect` counted set |
+
 ### GET /api/cluster/generation
 
 Get the current cluster generation snapshot as observed by the queried node. The snapshot is a leader-projected view of core members, communities, and DHT partition ownership at a specific epoch; every node caches the latest snapshot it received via pings and serves it locally. This endpoint is always safe to call — when no snapshot has been received yet it returns an empty skeleton with `epoch: null` and `mode: "unknown"` instead of a 503.

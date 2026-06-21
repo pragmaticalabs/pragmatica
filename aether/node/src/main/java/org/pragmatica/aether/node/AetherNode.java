@@ -45,6 +45,7 @@ import org.pragmatica.aether.deployment.membership.ntt.DrainProcedure;
 import org.pragmatica.aether.deployment.membership.ntt.LeaderReconciler;
 import org.pragmatica.aether.deployment.membership.ntt.QuorumCoConfirmation;
 import org.pragmatica.aether.deployment.membership.ntt.QuorumLossDetector;
+import org.pragmatica.aether.deployment.membership.ntt.QuorumLossSnapshot;
 import org.pragmatica.aether.deployment.membership.ntt.PresenceSampler;
 import org.pragmatica.aether.deployment.membership.ntt.QuorumLossIntent;
 import org.pragmatica.aether.deployment.membership.phase.ClusterPhaseView;
@@ -579,6 +580,16 @@ public interface AetherNode extends ManageableNode {
         Option.option(quorumLossDetectorRef.get()).onPresent(detector -> detector.onMemberCountChanged(memberCount));
     }
 
+    /// True iff this transition crosses the exact-`Member` boundary — i.e. the strict core member
+    /// count ([`MembershipFsm#strictCoreMemberCount`], the quorum-loss numerator) changes. Feeding the
+    /// detector on this edge (NOT only on the 15s presence down-hysteresis / DEAD edge) is what lets a
+    /// node recognize quorum loss promptly when several cores enter SUSPECT at once — the design's own
+    /// safety argument (propagateMemberCount javadoc) already assumes this feed; the splitTimeout window
+    /// + refutation-cancel + Fix-C co-confirmation guard against a transient SUSPECT flap.
+    private static boolean crossesMemberBoundary(MembershipTransitionRecord record) {
+        return "Member".equals(record.fromState()) != "Member".equals(record.toState());
+    }
+
     /// Build the Fix C co-confirmation snapshot at the detector's firing instant. The counted
     /// denominator is the FSM's role-scoped MEMBER+SUSPECT set ([`MembershipFsm#coreCountedMembers`],
     /// includes self); the STUCK set is the counted members ABSENT from the strict MEMBER-only count
@@ -914,6 +925,7 @@ public interface AetherNode extends ManageableNode {
                           PresenceSampler presenceSampler,
                           LeaderReconciler leaderReconciler,
                           MembershipFsm membershipFsm,
+                          QuorumLossDetector quorumLossDetector,
                           TransitionJournal transitionJournal,
                           Runnable startSwimTrigger,
                           Option<ManagementServer> managementServer,
@@ -1190,6 +1202,12 @@ public interface AetherNode extends ManageableNode {
                 return new ProvisioningDiagnostics(decision,
                                                    clusterTopologyManagerInstance.circuitBreakerState(),
                                                    clusterTopologyManagerInstance.lastProvisionFailure());
+            }
+
+            @Override
+            public Option<QuorumLossSnapshot> quorumLossSnapshot() {
+                return Option.option(quorumLossDetector)
+                             .map(QuorumLossSnapshot::from);
             }
 
             @Override
@@ -2057,7 +2075,7 @@ public interface AetherNode extends ManageableNode {
         // is in scope.
         var transitionJournal = TransitionJournal.transitionJournal();
 
-        membershipFsm.onTransition(record -> appendFsmTransition(transitionJournal, record));
+        membershipFsm.onTransition(record -> onFsmTransition(transitionJournal, quorumLossDetectorRef, membershipFsm, record));
         // Wave-4 (cluster-topology-overhaul, #245): the MembershipDeltaProjector is the SOLE
         // emitter of MembershipDecision, fed by the FSM's own JOINED/REMOVED delta edge —
         // installed BEFORE the boot seed below so the seeded members' OBSERVED→MEMBER
@@ -2779,6 +2797,7 @@ public interface AetherNode extends ManageableNode {
                                   presenceSampler,
                                   leaderReconciler,
                                   membershipFsm,
+                                  quorumLossDetector,
                                   transitionJournal,
                                   startSwimTrigger,
                                   Option.empty(),
@@ -2895,6 +2914,7 @@ public interface AetherNode extends ManageableNode {
                                       presenceSampler,
                                       leaderReconciler,
                                       membershipFsm,
+                                      quorumLossDetector,
                                       transitionJournal,
                                       startSwimTrigger,
                                       Option.some(managementServer),
@@ -2918,6 +2938,27 @@ public interface AetherNode extends ManageableNode {
     TimeSpan PHASE_WATCH_INTERVAL = TimeSpan.timeSpan(1).seconds();
     /// Wave-1 item 3 (#245 baseline diagnostic) cadence for [#logMembershipBaselineTrace].
     TimeSpan MEMBERSHIP_BASELINE_TRACE_INTERVAL = TimeSpan.timeSpan(30).seconds();
+
+    /// Single FSM-transition fan-out installed at the central transition chokepoint
+    /// ([`MembershipFsm#onTransition`], fired once per ACTUAL per-member state change under the FSM's
+    /// synchronized per-member dispatch monitor). Records the transition into the per-node journal
+    /// (Wave-1 Enrichment A) AND — when the transition crosses the exact-`Member` boundary — re-feeds
+    /// the strict-core count to the quorum-loss detector. This prompt re-feed (NOT only the 15s
+    /// presence down-hysteresis `onNttReconcile` / DEAD `onMembershipDeath` paths) is what arms the
+    /// self-drain window when several cores enter SUSPECT at once, and CANCELS it on a SUSPECT→MEMBER
+    /// refutation. Safe-by-precedent: `onMembershipDeath` already drives the same
+    /// `propagateMemberCount`→`strictCoreMemberCount` chain from inside this same dispatch monitor.
+    @Contract
+    private static void onFsmTransition(TransitionJournal journal,
+                                        AtomicReference<QuorumLossDetector> quorumLossDetectorRef,
+                                        MembershipFsm membershipFsm,
+                                        MembershipTransitionRecord record) {
+        appendFsmTransition(journal, record);
+
+        if (crossesMemberBoundary(record)) {
+            propagateMemberCount(quorumLossDetectorRef, membershipFsm);
+        }
+    }
 
     /// Wave-1 Enrichment A: map one FSM transition observation into the per-node journal.
     @Contract

@@ -8,13 +8,16 @@ import org.pragmatica.aether.api.ManagementApiResponses.AutoHealStatusResponse;
 import org.pragmatica.aether.api.ManagementApiResponses.AutoHealToggleResponse;
 import org.pragmatica.aether.api.ManagementApiResponses.CircuitBreakerResetResponse;
 import org.pragmatica.aether.api.ManagementApiResponses.CircuitBreakerStatusResponse;
+import org.pragmatica.aether.api.ManagementApiResponses.ClusterMembershipResponse;
 import org.pragmatica.aether.api.ManagementApiResponses.FsmMemberDetail;
 import org.pragmatica.aether.api.ManagementApiResponses.GovernorInfo;
 import org.pragmatica.aether.api.ManagementApiResponses.GovernorsResponse;
+import org.pragmatica.aether.api.ManagementApiResponses.MembershipNodeDetail;
 import org.pragmatica.aether.api.ManagementApiResponses.TopologyNodeDetail;
 import org.pragmatica.aether.deployment.cluster.ClusterTopologyManager;
 import org.pragmatica.aether.deployment.membership.fsm.MemberDescriptor;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipFsm;
+import org.pragmatica.aether.deployment.membership.ntt.QuorumLossSnapshot;
 import org.pragmatica.aether.deployment.membership.view.MembershipView;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.utils.Causes;
@@ -39,6 +42,7 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -65,6 +69,7 @@ public final class ClusterTopologyRoutes implements RouteSource {
         Handler<ClusterTopologyStatusResponse> topologyHandler = _ -> buildTopologyStatus();
 
         return Stream.of(ManagementRoutes.<ClusterTopologyStatusResponse> route(ManagementRoute.CLUSTER_TOPOLOGY).toJson(topologyHandler),
+                         ManagementRoutes.<ClusterMembershipResponse> route(ManagementRoute.CLUSTER_MEMBERSHIP_GET).toJson(_ -> buildMembershipResponse()),
                          ManagementRoutes.<GovernorsResponse> route(ManagementRoute.CLUSTER_GOVERNORS).toJson(this::buildGovernorsResponse),
                          ManagementRoutes.<CircuitBreakerStatusResponse> route(ManagementRoute.CLUSTER_CIRCUIT_BREAKER_STATUS).toJson(_ -> buildCircuitBreakerStatus()),
                          ManagementRoutes.<CircuitBreakerResetResponse> route(ManagementRoute.CLUSTER_CIRCUIT_BREAKER_RESET).toJson(_ -> resetCircuitBreaker()),
@@ -138,6 +143,69 @@ public final class ClusterTopologyRoutes implements RouteSource {
 
     private Promise<ClusterTopologyStatusResponse> buildTopologyStatus() {
         return Promise.success(assembleTopologyStatus(nodeSupplier.get()));
+    }
+
+    /// SWIM-under-concurrent-loss observability — assemble THIS node's LOCAL membership view
+    /// (per-peer FSM lifecycle state + the local quorum-loss self-drain signal). Served LOCAL
+    /// (never forwarded), so each survivor answers from its own `MembershipFsm` +
+    /// `QuorumLossSnapshot`. A Leaf: pure assembly off already-computed node state.
+    private Promise<ClusterMembershipResponse> buildMembershipResponse() {
+        return Promise.success(assembleMembershipResponse(nodeSupplier.get()));
+    }
+
+    private static final QuorumLossSnapshot QUORUM_LOSS_UNWIRED = new QuorumLossSnapshot(0, 0, false, false);
+
+    private static ClusterMembershipResponse assembleMembershipResponse(ManageableNode node) {
+        var fsm = node.membershipFsm();
+        var snapshot = node.quorumLossSnapshot().or(QUORUM_LOSS_UNWIRED);
+        var members = buildMembershipMembers(fsm);
+
+        return new ClusterMembershipResponse(node.self().id(),
+                                             fsm.strictCoreMemberCount(),
+                                             fsm.coreCountedMembers().size(),
+                                             snapshot.requiredThreshold(),
+                                             snapshot.belowThreshold(),
+                                             snapshot.armed(),
+                                             members);
+    }
+
+    /// Per-peer membership detail off the node's authoritative `MembershipFsm`: lifecycle state,
+    /// incarnation, descriptor role, strict-core membership, and effective-core membership. Sorted
+    /// by node id so the output is stable across calls. Includes DEAD members (FSM retains them for
+    /// incarnation-fenced rejoin), so a remote operator sees the full per-node membership picture.
+    private static List<MembershipNodeDetail> buildMembershipMembers(MembershipFsm fsm) {
+        var incarnations = fsm.memberIncarnations();
+        var descriptors = fsm.memberDescriptors();
+        var strictCore = fsm.strictCoreMembers();
+        var countedCore = fsm.coreCountedMembers();
+
+        return fsm.memberStates()
+                  .entrySet()
+                  .stream()
+                  .map(entry -> toMembershipNodeDetail(entry.getKey(),
+                                                       entry.getValue(),
+                                                       incarnations,
+                                                       descriptors,
+                                                       strictCore,
+                                                       countedCore))
+                  .sorted(Comparator.comparing(MembershipNodeDetail::nodeId))
+                  .toList();
+    }
+
+    private static MembershipNodeDetail toMembershipNodeDetail(NodeId id,
+                                                               String fsmState,
+                                                               Map<NodeId, Long> incarnations,
+                                                               Map<NodeId, MemberDescriptor> descriptors,
+                                                               Set<NodeId> strictCore,
+                                                               Set<NodeId> countedCore) {
+        var descriptor = descriptors.getOrDefault(id, MemberDescriptor.UNKNOWN);
+
+        return new MembershipNodeDetail(id.id(),
+                                        fsmState,
+                                        incarnations.getOrDefault(id, 0L),
+                                        descriptor.role(),
+                                        strictCore.contains(id),
+                                        countedCore.contains(id));
     }
 
     private static ClusterTopologyStatusResponse assembleTopologyStatus(ManageableNode node) {

@@ -121,6 +121,7 @@ Comprehensive inventory of all Aether Unified Application Runtime capabilities.
 | 41 | Prometheus export | Battle-tested | Micrometer integration with Prometheus scrape endpoint |
 | 42 | Unified invocation observability | Complete | Sampling-based tracing + depth-to-SLF4J bridge + adaptive per-node sampling. Replaces DynamicAspect system. CLI and REST API |
 | 43 | Cluster event aggregator | Complete | Collects topology, leader, quorum, deployment, slice-failure and network events as a sealed `ClusterEvent` (`@Codec`). Events now flow through the replicated `system:cluster-events:1.0.0` partition stream (cross-node visible, owner-gated emit, RF=`max(3,N-2)`, production count/byte/age retention) — replacing the earlier node-local ring buffer + KV materialized view. REST API (`/api/events`), WebSocket feed, CLI. See #205 |
+| 43a | Membership diagnostics surface | Complete | Per-node-local observability of the responding node's authoritative `MembershipFsm` lifecycle view + quorum-loss self-drain readiness: per-peer `state`/`incarnation`/`role`/`strictCore`/`countsTowardEffective`, plus `strictCoreMemberCount`, `countedCoreMemberCount`, `requiredThreshold` (`coreCount/2+1`), `belowThreshold`, `armed` (cold-start latch). Read-only, **not leader-forwarded** — query each survivor to diagnose SWIM-under-concurrent-loss (which peers SUSPECT/DEAD, whether self-drain is armed and below threshold). `GET /api/cluster/membership`, `aether cluster membership` |
 
 ## Resource Provisioning
 

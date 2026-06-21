@@ -599,6 +599,34 @@ public sealed interface ManagementApiResponses {
 
     record ProvisionFailureInfo(String cause, long atEpochMs) {}
 
+    /// SWIM-under-concurrent-loss observability — this node's LOCAL membership view for
+    /// `GET /api/cluster/membership`. PER-NODE (not leader-forwarded): `nodeId` is the answering
+    /// survivor; the counts and `armed`/`belowThreshold` flags are read from THAT node's own
+    /// `MembershipFsm` + `QuorumLossDetector`, so an operator can see, per survivor, whether its
+    /// self-drain window is armed and below the simple-majority threshold. `members` lists every
+    /// peer the FSM tracks (including DEAD, retained for incarnation-fenced rejoin), sorted by
+    /// `nodeId` for stable output. When the local `QuorumLossDetector` is not yet wired the
+    /// threshold/below/armed fields carry sensible zero/false defaults.
+    record ClusterMembershipResponse(String nodeId,
+                                     int strictCoreMemberCount,
+                                     int countedCoreMemberCount,
+                                     int requiredThreshold,
+                                     boolean belowThreshold,
+                                     boolean armed,
+                                     List<MembershipNodeDetail> members) {}
+
+    /// Per-peer membership detail as seen by the answering node's `MembershipFsm`: the lifecycle
+    /// `state` (Observed/Member/Suspect/Departing/Dead), the incarnation high-water mark, the
+    /// descriptor `role`, whether the peer is in the strict (MEMBER-only) core set, and whether it
+    /// counts toward the effective (MEMBER+SUSPECT) core membership used as the quorum/heal-deficit
+    /// denominator.
+    record MembershipNodeDetail(String nodeId,
+                                String state,
+                                long incarnation,
+                                String role,
+                                boolean strictCore,
+                                boolean countsTowardEffective) {}
+
     record ClusterStatusResponse(String clusterName,
                                  String desiredVersion,
                                  int desiredCoreCount,

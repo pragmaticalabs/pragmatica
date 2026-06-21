@@ -1801,6 +1801,34 @@ aether cluster provisioning --format json
 |--------|-------------|
 | `--format` | Output format: `table` (default), `json`, `value`, `csv` |
 
+### `aether cluster membership`
+
+Show the queried node's membership diagnostics — the responding node's authoritative membership-FSM lifecycle view plus its quorum-loss self-drain readiness. Renders a per-peer table (each tracked peer's FSM state, role, incarnation, and whether it is in the strict `Member`-only quorum set and the counted `Member`+`Suspect` set) followed by the summary counts (strict member count, quorum threshold, below-threshold flag, armed latch). Use to diagnose SWIM-under-concurrent-loss — per survivor, which peers are SUSPECT/DEAD and whether this node's self-drain window is armed and below threshold. **Per-node local view** (not leader-forwarded) — target a specific node (`-c <host>`) to read its view. Wraps `GET /api/cluster/membership`.
+
+```bash
+aether cluster membership
+
+# A specific survivor's view during a multi-core-loss window
+aether cluster membership -c <host>
+
+# Machine-readable
+aether cluster membership --format json
+```
+
+| Option | Description |
+|--------|-------------|
+| `--format` | Output format: `table` (default), `json`, `value`, `csv` |
+
+Example output (table):
+```
+NODE    STATE    ROLE  INCARNATION  STRICT-CORE  COUNTED
+core-1  Member   core  1            yes          yes
+core-3  Suspect  core  2            no           yes
+core-4  Dead     core  2            no           no
+
+strict=2  threshold=3  below=true  armed=true
+```
+
 ### `aether cluster journal`
 
 Dump the target node's transition journal (cluster-topology-overhaul spec, Wave 1) — a bounded per-node ring buffer recording every membership-FSM transition (layer `FSM`) and every transport peer-lifecycle transition (layer `PEER`), plus the dialer expected-vs-actual Hello diagnostic and the boot future-history detection. Wraps `GET /api/cluster/journal`.

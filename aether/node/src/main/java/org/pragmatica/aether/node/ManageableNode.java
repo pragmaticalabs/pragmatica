@@ -12,6 +12,7 @@ import org.pragmatica.aether.deployment.cluster.BlueprintService;
 import org.pragmatica.aether.deployment.cluster.ClusterTopologyManager;
 import org.pragmatica.aether.deployment.drain.InFlightRequestTracker;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipFsm;
+import org.pragmatica.aether.deployment.membership.ntt.QuorumLossSnapshot;
 import org.pragmatica.aether.node.journal.TransitionJournal;
 import org.pragmatica.aether.node.lifecycle.NodeLifecycle;
 import org.pragmatica.aether.slice.delegation.TaskGroup;
@@ -121,6 +122,17 @@ public interface ManageableNode {
     /// Default `Option.none()` keeps `ManageableNode` test proxies compiling; the production node
     /// record supplies the live view.
     default Option<ProvisioningDiagnostics> provisioningDiagnostics() {
+        return Option.none();
+    }
+
+    /// SWIM-under-concurrent-loss observability — this node's LOCAL quorum-loss drain-readiness
+    /// view (strict member count, simple-majority threshold, below-threshold flag, armed latch),
+    /// or empty before the per-node `QuorumLossDetector` is wired. PER-NODE local state, never
+    /// leader-forwarded: querying a specific survivor returns THAT node's own detector view, so
+    /// `GET /api/cluster/membership` can answer "is this survivor's self-drain window armed and
+    /// below quorum?" without log-scraping. Default `Option.none()` keeps `ManageableNode` test
+    /// proxies compiling; the production node record supplies the live view.
+    default Option<QuorumLossSnapshot> quorumLossSnapshot() {
         return Option.none();
     }
 
