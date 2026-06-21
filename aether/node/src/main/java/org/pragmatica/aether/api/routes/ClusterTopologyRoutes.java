@@ -199,11 +199,14 @@ public final class ClusterTopologyRoutes implements RouteSource {
                                                                Set<NodeId> strictCore,
                                                                Set<NodeId> countedCore) {
         var descriptor = descriptors.getOrDefault(id, MemberDescriptor.UNKNOWN);
+        // Descriptor role is a blank ("unknown") label on an all-core cluster (no role labels);
+        // surface the FSM's effective core/worker classification so the field is always present.
+        var role = descriptor.isCore() ? "core" : "worker";
 
         return new MembershipNodeDetail(id.id(),
                                         fsmState,
                                         incarnations.getOrDefault(id, 0L),
-                                        descriptor.role(),
+                                        role,
                                         strictCore.contains(id),
                                         countedCore.contains(id));
     }

@@ -252,9 +252,12 @@ sealed interface BootstrapPhaseFormation {
         var endpoint = buildManagementEndpoint(ctx);
         var keyHash = KvStoreApiKeyHasher.hashKey(apiKey);
         var keyId = "ak_" + keyHash.substring(0, 8);
+        // The operator who bootstraps the cluster owns it — their persisted key must be ADMIN, not
+        // the server-side VIEWER default (#290). Without an explicit role the key lands as VIEWER and
+        // cannot call ADMIN/OPERATOR management endpoints (auto-heal toggle, deploy, drain, …).
         var keyJson = "{\"keyId\":\"" + keyId
                     + "\",\"keyHash\":\"" + keyHash
-                    + "\",\"gracePeriodMs\":300000,\"auditAction\":\"CREATED\",\"operatorHint\":\"bootstrap\"}";
+                    + "\",\"authorizationRole\":\"ADMIN\",\"gracePeriodMs\":300000,\"auditAction\":\"CREATED\",\"operatorHint\":\"bootstrap\"}";
         var configuredKey = extractConfiguredApiKey(ctx.config());
 
         return retryFormationPost(endpoint + "/api/cluster/keys", keyJson, "API key", configuredKey).onSuccess(_ -> System.out.printf("  API key stored (keyId=%s)%n",
