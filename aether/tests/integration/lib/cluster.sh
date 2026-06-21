@@ -2855,9 +2855,25 @@ restore_cluster_baseline() {
     # convergence property that can lag under cumulative load; the downstream suite's own
     # readiness gate is the hard backstop, and pick_non_leader fails loudly if it still
     # can't find a candidate.
-    if ! wait_for "${floor}+ cores reporting READY (target=${target})" \
-        "[ \$(ready_core_count) -ge ${floor} ]" 300; then
-        log_warn "restore_cluster_baseline: only $(ready_core_count) core(s) reporting READY within 300s (target=${target}); subsequent pick_non_leader --state READY may find fewer candidates than expected"
+    # 5b. READY barrier (ADVISORY, NON-COUNTING — #17). ready_core_count is the SWIM-fed
+    # `nodes lifecycle --state READY` projection that lags the leader's authoritative
+    # membership by minutes on cloud; step 8 (leader deficit gate) is the REAL barrier.
+    # Poll briefly so the next suite's `pick_non_leader --state READY` has candidates, but
+    # do NOT use wait_for — its timeout emits a COUNTED [FAIL] (lib/common.sh:657) that
+    # misreports READY lag as a product failure (it false-failed cluster-B twice, 900s each,
+    # while step 8 reported deficit=0 immediately after). aether_failover inside
+    # ready_core_count self-resolves a live endpoint, so this loop needs no poll hygiene.
+    local _ready_budget=$(( 120 * ${TIMEOUT_SCALE:-1} )) _ready_waited=0
+    log_info "Advisory wait: ${floor}+ cores reporting READY (target=${target}, budget ${_ready_budget}s, NON-FATAL — leader deficit gate is authoritative)"
+    while [ "$(ready_core_count)" -lt "${floor}" ] && [ "${_ready_waited}" -lt "${_ready_budget}" ]; do
+        sleep 5
+        _ready_waited=$(( _ready_waited + 5 ))
+    done
+    local _ready_now; _ready_now=$(ready_core_count)
+    if [ "${_ready_now}" -lt "${floor}" ]; then
+        log_warn "restore_cluster_baseline: only ${_ready_now} core(s) reporting READY within ${_ready_budget}s (target=${target}); ADVISORY only (ready_core_count lags) — step 8 leader-deficit gate is authoritative; pick_non_leader --state READY may poll longer for a candidate"
+    else
+        log_info "restore_cluster_baseline: ${_ready_now}/${target} cores reporting READY (advisory barrier satisfied in ${_ready_waited}s)"
     fi
 
     # 6. Generation quiescence — ensures any in-flight slice/task reassignment
