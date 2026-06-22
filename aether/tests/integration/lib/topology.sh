@@ -1,13 +1,35 @@
 #!/bin/bash
-# topology.sh — Semantic topology helpers built on /api/events
+# topology.sh — Semantic topology helpers for membership + departure waits
 #
-# Replaces count-polling against /api/cluster/topology with event-driven waits.
-# Rationale: auto-heal is fast; snapshot counts race with it. Events give us
-# a stable, ordered record of what actually happened in the window.
+# Departure oracle: the AUTHORITATIVE, leaderless source for "node X is gone"
+# is the membership projection at GET /api/cluster/membership. Every node serves
+# its own MembershipFsm view (route RBAC=VIEWER, scope=LOCAL — no leader hop), so
+# a single GET against ANY surviving node reports the victim's membership `state`.
+# When the FSM moves the victim to its terminal `Dead` record, the member's entry
+# renders `"state":"Dead"` (the FSM state class simple name) and
+# `"countsTowardEffective":false`. DEAD members are RETAINED in `members[]`
+# (incarnation-fenced rejoin), so departure is detected by the victim's entry
+# being `state=="Dead"` — NOT by the victim being absent from the array.
 #
-# All helpers consume /api/events via `aether events --since <ISO-8601>`.
-# Queries are pinned to a surviving node (via aether_failover → CLI) because
-# each node maintains its own per-node event buffer.
+# Why membership, not /api/events: the per-node in-heap event buffer that the old
+# departure oracle scanned was DELETED when NODE_FAILED emission moved to the
+# ungated MembershipFsm DEAD edge (publishing into the replicated
+# `system:cluster-events:1.0.0` stream). That events path is now LEADER-GATED — if
+# the killed victim was the leader, the NODE_FAILED publish waits for re-election,
+# so an /api/events scan is flaky as a primary departure signal. We keep a cheap
+# /api/events NODE_FAILED/NODE_LEFT scan as a belt-and-suspenders SECONDARY signal,
+# but membership `state=="Dead"` is the primary success condition.
+#
+# Survivor-pinned by construction: membership reads go through api_get →
+# _resolve_live_endpoint, which already skips the just-killed node (cloud: per-VM
+# public-IP scan; docker/remote: mgmt-gateway round-robin / live-port / label
+# discovery). So the membership poll never targets the victim — it reflects a
+# surviving node's own FSM view.
+#
+# The legacy /api/events union helpers below (topology_events_since and the
+# count/observe helpers) remain for the quorum-window + replacement + self-drain
+# waits that still read the cluster-events stream; each node's view is unioned
+# across all node ports there.
 
 LIB_DIR_TOPOLOGY="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${LIB_DIR_TOPOLOGY}/common.sh"
@@ -137,12 +159,49 @@ topology_count_other_node_events() {
     printf '%s\n' "$all_ids" | grep -vFx -- "$exclude_id" | wc -l | tr -d ' '
 }
 
-# Wait until a NODE_LEFT or NODE_FAILED event is observed for the given node
-# since the supplied baseline. Returns 0 on success, 1 on timeout.
+# Extract the membership `state` of one node from a /api/cluster/membership body.
+# The response is { ..., "members":[ {"nodeId":"X","state":"S",...}, ... ] } where
+# each member object is brace-delimited and carries NO nested braces, so we split
+# the array into one object per line, keep only the victim's object, and read its
+# `state`. Prints the state string (e.g. Member / Suspect / Dead) on stdout, empty
+# when the node has no entry. Substring-safe: the nodeId match is anchored on the
+# closing quote (`"nodeId":"<id>"`), so victim "core-4" never matches "core-40".
+# Usage: membership_node_state "$membership_json" core-4
+membership_node_state() {
+    local membership_json="$1" node_id="$2"
+    local obj
+    # One member object per line. MembershipNodeDetail has no nested objects/arrays,
+    # so `{...}` with no inner braces isolates each element cleanly (same split the
+    # 02-chaos replica helpers use). Match the victim by its FLAT, quote-anchored
+    # nodeId so "core-4" does not match "core-40".
+    obj=$(printf '%s' "$membership_json" \
+        | grep -oE '\{[^{}]*\}' \
+        | grep -F "\"nodeId\":\"${node_id}\"" \
+        | head -1)
+    [ -z "$obj" ] && return 0
+    printf '%s' "$obj" \
+        | grep -oE '"state"[[:space:]]*:[[:space:]]*"[^"]*"' \
+        | head -1 \
+        | sed 's/"state"[[:space:]]*:[[:space:]]*"\([^"]*\)"/\1/'
+}
+
+# Wait until the given node is observed DEPARTED since the supplied baseline.
+# Returns 0 on success, 1 on timeout. Signature + timeout/scale behaviour are
+# unchanged from the old /api/events oracle so callers need no edit.
 # Usage: wait_for_node_departure node-3 "$baseline" 60
 #
-# Caller may pass either fixture form (node-N) or runtime form (source-role-N).
-# Events carry the runtime form, so we translate before matching on cloud.
+# PRIMARY (authoritative, leaderless): poll GET /api/cluster/membership on a
+# SURVIVING node (api_get resolves a live endpoint, never the just-killed victim)
+# and succeed when the victim's membership entry reports `state=="Dead"` — the
+# terminal FSM state. DEAD members are retained in `members[]`, so we key on the
+# Dead state, not on absence.
+# SECONDARY (belt-and-suspenders): the legacy /api/events NODE_FAILED/NODE_LEFT
+# union scan. Cheap and kept as a corroborating signal, but it is leader-gated
+# (the stream publish waits for re-election if the victim was leader), so it is
+# NOT relied on as the sole condition.
+#
+# Caller may pass either fixture form (node-N) or runtime form (source-role-N);
+# membership + events carry the runtime form, so we translate before matching.
 # Timeout is scaled by TIMEOUT_SCALE (3 on cloud) so SWIM detection has enough
 # headroom on Hetzner — VMs see ~50-150ms inter-node latency vs docker localhost.
 wait_for_node_departure() {
@@ -151,6 +210,19 @@ wait_for_node_departure() {
     timeout=$((timeout * ${TIMEOUT_SCALE:-1}))
     local deadline=$((SECONDS + timeout))
     while [ $SECONDS -lt $deadline ]; do
+        # PRIMARY: membership state on a surviving node. api_get returns empty stdout
+        # + non-zero rc on transport failure; ignore rc, parse stdout (empty → keep
+        # polling). A victim entry of state "Dead" is the authoritative departure.
+        local membership state
+        membership=$(api_get "/api/cluster/membership" 2>/dev/null) || membership=""
+        if [ -n "$membership" ]; then
+            state=$(membership_node_state "$membership" "$node_id")
+            if [ "$state" = "Dead" ]; then
+                return 0
+            fi
+        fi
+        # SECONDARY: corroborating /api/events scan (cheap, leader-gated). A
+        # NODE_LEFT/NODE_FAILED for the victim is also sufficient.
         local events
         events=$(topology_events_since "$baseline" 2>/dev/null) || events=""
         if [ -n "$events" ]; then
