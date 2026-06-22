@@ -4,8 +4,11 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.deployment.schema;
 
+import org.pragmatica.aether.deployment.schema.MigrationDialects.ExecutionDialect;
 import org.pragmatica.aether.deployment.schema.ParsedMigration.MigrationType;
 import org.pragmatica.aether.deployment.schema.SchemaHistoryRepository.AppliedMigration;
+import org.pragmatica.aether.pg.split.Statement;
+import org.pragmatica.aether.pg.split.StatementSplitter;
 import org.pragmatica.aether.resource.db.SqlConnector;
 import org.pragmatica.aether.slice.blueprint.MigrationEntry;
 import org.pragmatica.lang.Option;
@@ -13,6 +16,7 @@ import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 
+import java.util.Arrays;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
@@ -259,22 +263,67 @@ final class DefaultAetherSchemaManager implements AetherSchemaManager {
 
     private Promise<Integer> executeSingle(ParsedMigration migration, SqlConnector connector, String nodeId) {
         var startNanos = System.nanoTime();
+        var sql = migration.entry().sql();
 
-        return connector.transactional(tx -> executeStatements(tx,
-                                                               migration.entry().sql()))
-                        .flatMap(_ -> recordExecution(migration, connector, nodeId, startNanos))
-                        .map(_ -> 1);
+        return MigrationDialects.dialectFor(connector.config().effectiveType())
+                                .fold(() -> executeNaive(connector, sql),
+                                      dialect -> executeSplit(connector, sql, dialect))
+                                .flatMap(_ -> recordExecution(migration, connector, nodeId, startNanos))
+                                .map(_ -> 1);
     }
 
-    private static Promise<Unit> executeStatements(SqlConnector tx, String sql) {
-        var stripped = java.util.Arrays.stream(sql.split("\n")).filter(line -> !line.strip()
-                                                                                    .startsWith("--")).collect(java.util.stream.Collectors.joining("\n"));
-        var statements = java.util.Arrays.stream(stripped.split(";")).map(String::strip).filter(s -> !s.isEmpty()).toList();
+    /// PostgreSQL-family path: split with the dialect-aware splitter, then run the whole file
+    /// either transactionally or in autocommit depending on its statements. A split failure
+    /// (e.g. an unterminated `$$` body) surfaces its [org.pragmatica.aether.pg.split.SplitError]
+    /// rather than being silently mis-split.
+    private static Promise<Unit> executeSplit(SqlConnector connector, String sql, ExecutionDialect dialect) {
+        return StatementSplitter.split(sql, dialect.spec())
+                                .async()
+                                .flatMap(statements -> runStatements(connector, statements, dialect));
+    }
+
+    /// Flyway-style per-file classification: if any statement is non-transactional (e.g. a
+    /// `CREATE INDEX CONCURRENTLY`), the whole file runs in autocommit; otherwise the whole
+    /// file runs in a single transaction (today's wrapping semantics for PG-family DDL).
+    private static Promise<Unit> runStatements(SqlConnector connector,
+                                               List<Statement> statements,
+                                               ExecutionDialect dialect) {
+        var texts = statements.stream().map(Statement::text).toList();
+        var anyNonTransactional = statements.stream().anyMatch(s -> !dialect.spec().isTransactional(s.text()));
+
+        return dialect.ddlTransactional() && !anyNonTransactional
+               ? runInTransaction(connector, texts)
+               : runAutocommit(connector, texts);
+    }
+
+    private static Promise<Unit> runInTransaction(SqlConnector connector, List<String> statements) {
+        return connector.transactional(tx -> applyAll(tx, statements));
+    }
+
+    private static Promise<Unit> runAutocommit(SqlConnector connector, List<String> statements) {
+        return applyAll(connector, statements);
+    }
+
+    /// Legacy path for unwired (non-PostgreSQL-family) dialects: preserves the exact prior
+    /// behavior — strip line comments, naive `split(";")`, all inside one transaction.
+    private static Promise<Unit> executeNaive(SqlConnector connector, String sql) {
+        return connector.transactional(tx -> executeStatementsNaive(tx, sql));
+    }
+
+    private static Promise<Unit> executeStatementsNaive(SqlConnector tx, String sql) {
+        var stripped = Arrays.stream(sql.split("\n")).filter(line -> !line.strip()
+                                                                         .startsWith("--")).collect(Collectors.joining("\n"));
+        var statements = Arrays.stream(stripped.split(";")).map(String::strip).filter(s -> !s.isEmpty()).toList();
+
+        return applyAll(tx, statements);
+    }
+
+    private static Promise<Unit> applyAll(SqlConnector executor, List<String> statements) {
         var result = Promise.unitPromise();
 
         for (var stmt : statements) {
-            result = result.flatMap(_ -> tx.update(stmt)
-                                           .mapToUnit());
+            result = result.flatMap(_ -> executor.update(stmt)
+                                                 .mapToUnit());
         }
 
         return result;
