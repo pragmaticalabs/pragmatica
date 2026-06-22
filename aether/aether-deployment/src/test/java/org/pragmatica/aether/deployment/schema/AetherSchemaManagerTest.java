@@ -277,11 +277,15 @@ class AetherSchemaManagerTest {
             assertThat(connector.transactions.getFirst().historyInserts).isEqualTo(1);
         }
 
-        /// Increment A (#338): for an autocommit dialect (MySQL) the DDL self-commits, so the
-        /// history row cannot be made atomic with it — it stays a separate write on the BASE
-        /// connector, performed AFTER the migration statements. No transaction is opened.
+        /// Increment B2 (#338): for an autocommit dialect (MySQL) the DDL self-commits, so the
+        /// history row cannot be made atomic with it. The checkpoint-aware path now writes the
+        /// `IN_PROGRESS` history row (the single base-connector INSERT) BEFORE the loop, runs the
+        /// migration statements, and finalizes the row to `SUCCESS` with an UPDATE — so the base
+        /// execution order is HISTORY (the in-progress INSERT) first, then the migration statements.
+        /// No transaction is opened. (The per-statement and finalize UPDATEs are bookkeeping, not
+        /// counted by `baseHistoryInserts`, which tracks only the single INSERT.)
         @Test
-        void migrate_writesHistoryOnBaseConnectorAfterStatements_forMysql() {
+        void migrate_writesInProgressHistoryBeforeStatements_forMysql() {
             var connector = new RecordingConnector(DatabaseType.MYSQL);
             var sql = """
                       CREATE TABLE a (id INT);
@@ -293,7 +297,7 @@ class AetherSchemaManagerTest {
             assertThat(connector.usedTransaction).isFalse();
             assertThat(connector.transactions).isEmpty();
             assertThat(connector.baseHistoryInserts).isEqualTo(1);
-            assertThat(connector.baseExecutionOrder).containsExactly("MIGRATION", "MIGRATION", "HISTORY");
+            assertThat(connector.baseExecutionOrder).containsExactly("HISTORY", "MIGRATION", "MIGRATION");
         }
     }
 

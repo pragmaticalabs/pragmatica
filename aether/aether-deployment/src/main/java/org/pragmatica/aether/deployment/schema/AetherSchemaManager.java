@@ -7,10 +7,13 @@ package org.pragmatica.aether.deployment.schema;
 import org.pragmatica.aether.deployment.schema.MigrationDialects.ExecutionDialect;
 import org.pragmatica.aether.deployment.schema.ParsedMigration.MigrationType;
 import org.pragmatica.aether.deployment.schema.SchemaHistoryRepository.AppliedMigration;
+import org.pragmatica.aether.deployment.schema.SchemaHistoryRepository.MigrationProgress;
+import org.pragmatica.aether.deployment.schema.SchemaHistoryRepository.MigrationStatus;
 import org.pragmatica.aether.pg.split.Statement;
 import org.pragmatica.aether.pg.split.StatementSplitter;
 import org.pragmatica.aether.resource.db.SqlConnector;
 import org.pragmatica.aether.slice.blueprint.MigrationEntry;
+import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
@@ -224,7 +227,7 @@ final class DefaultAetherSchemaManager implements AetherSchemaManager {
                                                       String nodeId) {
         var version = migration.version();
 
-        return Option.option(appliedVersions.get(version)).fold(() -> executeSingle(migration, connector, nodeId),
+        return Option.option(appliedVersions.get(version)).fold(() -> executeResumable(datasource, migration, connector, nodeId),
                                                                 checksum -> checksum != migration.entry()
                                                                                                  .checksum()
                                                                             ? checksumMismatch(datasource,
@@ -261,21 +264,41 @@ final class DefaultAetherSchemaManager implements AetherSchemaManager {
                                                               .checksum());
     }
 
-    /// Applies one migration and records its history row. The history write is performed at the
-    /// point that makes it atomic with the DDL for every transactional execution path:
+    /// Applies one migration FRESH (no resume), recording its history row at the point that makes
+    /// it atomic with the DDL for every transactional execution path:
     /// - the dialect-aware transactional path ([#runInTransaction]) and the legacy naive path
     ///   ([#executeNaive]) fold [#recordExecution] INTO their `transactional(tx -> ...)` block, so
     ///   the DDL and the history row commit as ONE unit — a crash between them rolls both back.
     /// - the autocommit path ([#runAutocommit], MySQL/Oracle, whose DDL self-commits) cannot make
-    ///   the two atomic, so its history row stays a separate write on the base connector AFTER the
-    ///   statements — unchanged from before (Increment B adds an in-progress marker here, not now).
+    ///   the two atomic, so it records an `IN_PROGRESS` checkpoint row, advances it per-statement,
+    ///   and finalizes it to `SUCCESS` — see [#runAutocommit].
+    ///
+    /// Used for fresh non-versioned executions (repeatables, synthetic baselines) where no partial
+    /// row can pre-exist; the versioned gate uses [#executeResumable] instead.
     private Promise<Integer> executeSingle(ParsedMigration migration, SqlConnector connector, String nodeId) {
+        return executeFor("", migration, connector, nodeId, false);
+    }
+
+    /// Versioned-gate execution: identical to [#executeSingle] for the transactional path, but for
+    /// the autocommit path it consults the [SchemaHistoryRepository#queryProgress] checkpoint to
+    /// RESUME a partially-applied migration (skipping the durably-committed statements) instead of
+    /// replaying from statement 1. The `datasource` is carried for the checksum-mismatch cause a
+    /// changed script raises on resume.
+    private Promise<Integer> executeResumable(String datasource, ParsedMigration migration, SqlConnector connector, String nodeId) {
+        return executeFor(datasource, migration, connector, nodeId, true);
+    }
+
+    private Promise<Integer> executeFor(String datasource,
+                                        ParsedMigration migration,
+                                        SqlConnector connector,
+                                        String nodeId,
+                                        boolean resumable) {
         var startNanos = System.nanoTime();
         var sql = migration.entry().sql();
 
         return MigrationDialects.dialectFor(connector.config().effectiveType())
                                 .fold(() -> executeNaive(migration, connector, sql, nodeId, startNanos),
-                                      dialect -> executeSplit(migration, connector, sql, dialect, nodeId, startNanos))
+                                      dialect -> executeSplit(datasource, migration, connector, sql, dialect, nodeId, startNanos, resumable))
                                 .map(_ -> 1);
     }
 
@@ -283,37 +306,43 @@ final class DefaultAetherSchemaManager implements AetherSchemaManager {
     /// either transactionally or in autocommit depending on its statements. A split failure
     /// (e.g. an unterminated `$$` body) surfaces its [org.pragmatica.aether.pg.split.SplitError]
     /// rather than being silently mis-split.
-    private Promise<Unit> executeSplit(ParsedMigration migration,
+    private Promise<Unit> executeSplit(String datasource,
+                                       ParsedMigration migration,
                                        SqlConnector connector,
                                        String sql,
                                        ExecutionDialect dialect,
                                        String nodeId,
-                                       long startNanos) {
+                                       long startNanos,
+                                       boolean resumable) {
         return StatementSplitter.split(sql, dialect.spec())
                                 .async()
-                                .flatMap(statements -> runStatements(migration, connector, statements, dialect, nodeId, startNanos));
+                                .flatMap(statements -> runStatements(datasource, migration, connector, statements, dialect, nodeId, startNanos, resumable));
     }
 
     /// Flyway-style per-file classification: if any statement is non-transactional (e.g. a
     /// `CREATE INDEX CONCURRENTLY`), the whole file runs in autocommit; otherwise the whole
     /// file runs in a single transaction (today's wrapping semantics for PG-family DDL).
-    private Promise<Unit> runStatements(ParsedMigration migration,
+    private Promise<Unit> runStatements(String datasource,
+                                        ParsedMigration migration,
                                         SqlConnector connector,
                                         List<Statement> statements,
                                         ExecutionDialect dialect,
                                         String nodeId,
-                                        long startNanos) {
+                                        long startNanos,
+                                        boolean resumable) {
         var texts = statements.stream().map(Statement::text).toList();
         var anyNonTransactional = statements.stream().anyMatch(s -> !dialect.spec().isTransactional(s.text()));
 
         return dialect.ddlTransactional() && !anyNonTransactional
                ? runInTransaction(migration, connector, texts, nodeId, startNanos)
-               : runAutocommit(migration, connector, texts, nodeId, startNanos);
+               : runAutocommit(datasource, migration, connector, texts, nodeId, startNanos, resumable);
     }
 
     /// Transactional path (PG/DB2/SQL Server): the DDL statements AND the history-row insert run
     /// on the SAME transaction connector `tx`, so they commit atomically — a crash after the DDL
-    /// but before the history insert rolls BOTH back.
+    /// but before the history insert rolls BOTH back. A transactional dialect therefore NEVER
+    /// leaves a partial (`IN_PROGRESS`/`FAILED`) history row — its resume gate is a no-op and its
+    /// semantics are unchanged from Increment A.
     private Promise<Unit> runInTransaction(ParsedMigration migration,
                                            SqlConnector connector,
                                            List<String> statements,
@@ -322,15 +351,151 @@ final class DefaultAetherSchemaManager implements AetherSchemaManager {
         return connector.transactional(tx -> applyAll(tx, statements).flatMap(_ -> recordExecution(migration, tx, nodeId, startNanos)));
     }
 
-    /// Autocommit path (MySQL/Oracle): the DDL self-commits, so the history row cannot be made
-    /// atomic with it — it stays a separate write on the base connector after the statements
-    /// (unchanged; Increment B adds an in-progress/checkpoint marker here).
-    private Promise<Unit> runAutocommit(ParsedMigration migration,
+    /// Autocommit, checkpoint-aware path (MySQL/Oracle, whose DDL self-commits so it cannot be made
+    /// atomic with the history row). FRESH RUN: write an `IN_PROGRESS` checkpoint row
+    /// (`statements_completed = 0`) BEFORE the loop, then for each statement i (0-based) run it on
+    /// the base connector — each self-commits — and AFTER it succeeds advance the checkpoint to
+    /// `i + 1` (a separate auto-commit, so it advances durably); on full success transition the row
+    /// to `SUCCESS` with the complete record (an UPDATE of the same row, never a second INSERT); on
+    /// failure mark the row `FAILED` and propagate the [org.pragmatica.lang.Cause] so #118's retry
+    /// re-enters and RESUMES.
+    ///
+    /// RESUME (`resumable` versioned gate): consults [SchemaHistoryRepository#queryProgress]. A
+    /// `SUCCESS` row means already applied (validate the stored checksum, skip). An `IN_PROGRESS` or
+    /// `FAILED` row with `statements_completed = K` re-validates the stored checksum first (a changed
+    /// script is a modified-after-applied error, not a resume — the split is deterministic only for
+    /// the unchanged script), then skips the first K statements and runs K+1..N continuing the SAME
+    /// checkpoint row. No row means a fresh run.
+    ///
+    /// STATEMENT/CHECKPOINT ORDERING: a statement is executed and only THEN is its checkpoint
+    /// advanced — never the reverse. Skipping an unapplied statement would silently corrupt the
+    /// schema; re-attempting an already-applied statement is the safe failure mode.
+    ///
+    /// INHERENT LIMITATION (shared with Flyway's non-transactional migrations): because an
+    /// autocommit statement and its `updateProgress` checkpoint are SEPARATE auto-commits, a crash
+    /// in the window BETWEEN a statement's own commit and its checkpoint advance leaves the
+    /// checkpoint one short, so on resume that ONE boundary statement is re-attempted. If it is
+    /// idempotent (e.g. `CREATE TABLE IF NOT EXISTS`, `ADD COLUMN IF NOT EXISTS`) the re-attempt is
+    /// harmless; if it is non-idempotent the re-attempt errors and the migration is marked `FAILED`
+    /// for operator intervention. This is inherent to non-transactional migrations — but the rest of
+    /// the already-applied statements are still skipped, far better than replaying from statement 1.
+    private Promise<Unit> runAutocommit(String datasource,
+                                        ParsedMigration migration,
                                         SqlConnector connector,
                                         List<String> statements,
                                         String nodeId,
-                                        long startNanos) {
-        return applyAll(connector, statements).flatMap(_ -> recordExecution(migration, connector, nodeId, startNanos));
+                                        long startNanos,
+                                        boolean resumable) {
+        return resumable
+               ? historyRepo.queryProgress(connector, migration.version(), migration.type())
+                            .flatMap(progress -> runAutocommitFrom(datasource, migration, connector, statements, nodeId, startNanos, progress))
+               : runAutocommitFresh(migration, connector, statements, nodeId, startNanos);
+    }
+
+    /// Routes a versioned autocommit execution by its checkpoint state: no row ⇒ fresh; `SUCCESS` ⇒
+    /// already applied (with the stored-checksum validation); `IN_PROGRESS`/`FAILED` ⇒ resume from
+    /// the recorded `statements_completed` after the stored-checksum validation.
+    private Promise<Unit> runAutocommitFrom(String datasource,
+                                            ParsedMigration migration,
+                                            SqlConnector connector,
+                                            List<String> statements,
+                                            String nodeId,
+                                            long startNanos,
+                                            Option<MigrationProgress> progress) {
+        return progress.fold(() -> runAutocommitFresh(migration, connector, statements, nodeId, startNanos),
+                             checkpoint -> resumeFromCheckpoint(datasource, migration, connector, statements, nodeId, startNanos, checkpoint));
+    }
+
+    private Promise<Unit> resumeFromCheckpoint(String datasource,
+                                               ParsedMigration migration,
+                                               SqlConnector connector,
+                                               List<String> statements,
+                                               String nodeId,
+                                               long startNanos,
+                                               MigrationProgress checkpoint) {
+        return checkpoint.checksum() != migration.entry().checksum()
+               ? checksumMismatch(datasource, migration.version(), checkpoint.checksum(), migration.entry().checksum()).promise()
+               : MigrationStatus.SUCCESS.equals(checkpoint.status())
+                 ? Promise.unitPromise()
+                 : runAutocommitResume(migration, connector, statements, nodeId, startNanos, checkpoint.statementsCompleted());
+    }
+
+    /// Fresh autocommit run: record the `IN_PROGRESS` checkpoint row, then apply every statement
+    /// from index 0 with the per-statement checkpoint advance, then finalize the row to `SUCCESS`.
+    private Promise<Unit> runAutocommitFresh(ParsedMigration migration,
+                                             SqlConnector connector,
+                                             List<String> statements,
+                                             String nodeId,
+                                             long startNanos) {
+        var record = appliedRecord(migration, nodeId, startNanos);
+
+        return historyRepo.recordInProgress(connector, record, statements.size())
+                          .flatMap(_ -> runAutocommitResume(migration, connector, statements, nodeId, startNanos, 0));
+    }
+
+    /// Applies statements from index `skip` onward (the fresh run passes `skip = 0`), advancing the
+    /// checkpoint after each, then finalizes to `SUCCESS`; on any failure marks the row `FAILED` and
+    /// propagates the cause so #118's retry re-enters.
+    private Promise<Unit> runAutocommitResume(ParsedMigration migration,
+                                              SqlConnector connector,
+                                              List<String> statements,
+                                              String nodeId,
+                                              long startNanos,
+                                              int skip) {
+        return applyCheckpointed(migration, connector, statements, skip)
+                .flatMap(_ -> finalizeAutocommit(migration, connector, nodeId, startNanos, statements.size()))
+                .fold(result -> markFailedOnError(migration, connector, result));
+    }
+
+    /// On a failed autocommit run, mark the checkpoint row `FAILED` and THEN re-propagate the
+    /// original cause (so #118's retry re-enters and resumes); a successful run passes through
+    /// untouched. The `markStatus` write is chained, not abandoned, so its own Promise is handled.
+    private Promise<Unit> markFailedOnError(ParsedMigration migration, SqlConnector connector, Result<Unit> result) {
+        return result.fold(cause -> historyRepo.markStatus(connector, migration.version(), migration.type(), MigrationStatus.FAILED)
+                                               .flatMap(_ -> cause.promise()),
+                           Promise::success);
+    }
+
+    private Promise<Unit> applyCheckpointed(ParsedMigration migration,
+                                            SqlConnector connector,
+                                            List<String> statements,
+                                            int skip) {
+        var result = Promise.unitPromise();
+
+        for (var index = skip; index < statements.size(); index++) {
+            result = result.flatMap(chainCheckpointStep(migration, connector, statements.get(index), index));
+        }
+
+        return result;
+    }
+
+    private Fn1<Promise<Unit>, Unit> chainCheckpointStep(ParsedMigration migration,
+                                                         SqlConnector connector,
+                                                         String statement,
+                                                         int index) {
+        return _ -> connector.update(statement)
+                             .flatMap(_ -> historyRepo.updateProgress(connector, migration.version(), migration.type(), index + 1));
+    }
+
+    private Promise<Unit> finalizeAutocommit(ParsedMigration migration,
+                                             SqlConnector connector,
+                                             String nodeId,
+                                             long startNanos,
+                                             int totalStatements) {
+        return historyRepo.finalizeSuccess(connector, appliedRecord(migration, nodeId, startNanos), totalStatements);
+    }
+
+    private static AppliedMigration appliedRecord(ParsedMigration migration, String nodeId, long startNanos) {
+        var elapsedMs = (int)((System.nanoTime() - startNanos) / 1_000_000);
+
+        return appliedMigration(migration.version(),
+                                migration.type(),
+                                migration.description(),
+                                migration.entry().filename(),
+                                migration.entry().checksum(),
+                                nodeId,
+                                System.currentTimeMillis(),
+                                elapsedMs);
     }
 
     /// Legacy path for unwired (non-PostgreSQL-family) dialects: preserves the exact prior
@@ -367,17 +532,7 @@ final class DefaultAetherSchemaManager implements AetherSchemaManager {
                                           SqlConnector connector,
                                           String nodeId,
                                           long startNanos) {
-        var elapsedMs = (int)((System.nanoTime() - startNanos) / 1_000_000);
-        var record = appliedMigration(migration.version(),
-                                      migration.type(),
-                                      migration.description(),
-                                      migration.entry().filename(),
-                                      migration.entry().checksum(),
-                                      nodeId,
-                                      System.currentTimeMillis(),
-                                      elapsedMs);
-
-        return historyRepo.recordMigration(connector, record);
+        return historyRepo.recordMigration(connector, appliedRecord(migration, nodeId, startNanos));
     }
 
     private Promise<SchemaResult> executeUndo(String datasource,
