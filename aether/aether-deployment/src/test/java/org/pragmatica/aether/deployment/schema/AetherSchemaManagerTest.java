@@ -315,6 +315,7 @@ class AetherSchemaManagerTest {
     /// whether the dialect runs in a transaction or in autocommit.
     private static final class RecordingConnector implements SqlConnector {
         private static final String HISTORY_TABLE = "aether_schema_history";
+        private static final String META_TABLE = "aether_schema_history_meta";
 
         private final DatabaseConnectorConfig config;
         private final RecordingConnector parent;
@@ -393,7 +394,16 @@ class AetherSchemaManagerTest {
         /// write (the `INSERT`/`DELETE` against the history table) or a migration-body statement,
         /// and propagates migration statements up to the parent so transactional and autocommit
         /// dialects expose the same observable statement list to the splitter tests.
+        ///
+        /// Schema-evolution bootstrap statements against the meta table
+        /// (`aether_schema_history_meta`) are bookkeeping, not migration body or history rows, so
+        /// they are dropped before classification — its substring would otherwise match the
+        /// history-table prefix and be miscounted as a history-row write.
         private void recordStatement(String sql) {
+            if (sql.contains(META_TABLE)) {
+                return;
+            }
+
             if (sql.contains(HISTORY_TABLE)) {
                 if (sql.stripLeading().toUpperCase().startsWith("INSERT")) {
                     historyInserts++;
