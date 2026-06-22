@@ -693,17 +693,17 @@ public interface AetherNode extends ManageableNode {
     }
 
     /// Periodic backfill re-drive (A4): for every partition where self is a registered, not-yet-CAUGHT_UP
-    /// replica, re-submit `backfill` onto the dedicated backfill executor. Idempotent and bounded — the
-    /// registry enumeration naturally skips CAUGHT_UP partitions, so once everything has caught up this is
-    /// a no-op. Runs off the periodic scheduler tick; backfill itself stays on `backfillExecutor` (its
-    /// dedicated thread), so no competing thread pool is introduced.
+    /// replica — PLUS a CAUGHT_UP non-owner replica still stale against the HRW owner (#333 write-idle
+    /// residual) — re-submit `backfill` onto the dedicated backfill executor. Idempotent and bounded —
+    /// {@link PartitionBackfill#redriveCandidates} enumerates the registry (owner-aware, offset-quiesced),
+    /// so once everything has genuinely caught up this is a no-op. Runs off the periodic scheduler tick;
+    /// backfill itself stays on `backfillExecutor` (its dedicated thread), so no competing thread pool is
+    /// introduced.
     @Contract
-    private static void redriveIncompleteBackfills(ReplicaRegistry registry,
-                                                   NodeId self,
-                                                   PartitionBackfill backfill,
+    private static void redriveIncompleteBackfills(PartitionBackfill backfill,
                                                    Executor backfillExecutor) {
-        registry.incompletePartitionsFor(self).forEach(key -> backfillExecutor.execute(() -> backfill.backfill(key.streamName(),
-                                                                                                               key.partition())));
+        backfill.redriveCandidates().forEach(key -> backfillExecutor.execute(() -> backfill.backfill(key.streamName(),
+                                                                                                     key.partition())));
     }
 
     /// Periodic activation level-heal tick (see [#NDM_ACTIVATION_RECONCILE_INTERVAL]). Gated on a
@@ -2653,9 +2653,7 @@ public interface AetherNode extends ManageableNode {
         // SYNCING forever (the system:cluster-events GET /api/events -> 200 [] deadlock). Re-drive every
         // STREAM_BACKFILL_REDRIVE_INTERVAL onto the SAME backfill executor so the owner-immediate /
         // bounded-wait cold-start promotion is actually reached; CAUGHT_UP partitions are skipped.
-        SharedScheduler.scheduleAtFixedRate(() -> redriveIncompleteBackfills(streamReplicaRegistry,
-                                                                             config.self(),
-                                                                             streamPartitionBackfill,
+        SharedScheduler.scheduleAtFixedRate(() -> redriveIncompleteBackfills(streamPartitionBackfill,
                                                                              streamBackfillExecutor),
                                             STREAM_BACKFILL_REDRIVE_INTERVAL);
         var streamingCoordinator = StreamingCoordinator.streamingCoordinator(streamFailoverHandler,

@@ -105,6 +105,13 @@ public final class PartitionBackfill {
     /// `backfill` is invoked one-shot and retried by the reconcile / on-gap seams, so the bounded wait
     /// must persist across calls — this map is that cross-call memory.
     private final ConcurrentHashMap<PartitionKey, Long> firstNoSourceMs = new ConcurrentHashMap<>();
+    /// Per-partition `confirmedOffset` at which a CAUGHT_UP non-owner replica was last re-verified against
+    /// the HRW owner (#333 write-idle residual). It quiesces {@link #redriveCandidates}: a stale CAUGHT_UP
+    /// non-owner is re-included in the redrive only while its current `confirmedOffset` differs from the
+    /// value recorded here, so the re-verify backfill (one owner pull) fires once per genuinely-new stale
+    /// offset and becomes a no-op once the replica reaches the owner's true tail — never a per-tick probe.
+    /// A failed re-verify leaves `confirmedOffset` unchanged AND unrecorded, so the next tick retries.
+    private final ConcurrentHashMap<PartitionKey, Long> reverifiedAtOffset = new ConcurrentHashMap<>();
 
     private PartitionBackfill(ReplicaRegistry registry,
                               StreamPartitionRecovery partitionRecovery,
@@ -239,6 +246,38 @@ public final class PartitionBackfill {
                              owner -> backfillFromOwner(streamName, partition, owner));
     }
 
+    /// Partitions the periodic re-drive ({@code AetherNode.redriveIncompleteBackfills}) should re-attempt
+    /// `backfill` for: every partition where self is a registered, not-yet-CAUGHT_UP replica, PLUS the
+    /// #333 write-idle residual case — a CAUGHT_UP replica that is NOT the HRW owner and whose
+    /// `confirmedOffset` has not yet been re-verified against the owner. The plain registry filter
+    /// (`state != CAUGHT_UP`) can never catch the residual case: a node that self-promoted to CAUGHT_UP@0
+    /// under an empty/partial member view (cold-start owner-self-promote) may turn out to be a NON-owner
+    /// once the member view populates, holding none of the real owner's history; on a write-idle partition
+    /// nothing re-arms the gap loop, so it would serve stale/empty data forever. Re-arming `backfill`
+    /// routes through `backfillFromOwner`, which pulls the missing prefix and promotes only at the owner's
+    /// true tail. The re-include is owner-aware (HRW computed locally from the member view) and offset-
+    /// quiesced (see {@link #reverifiedAtOffset}), so it fires one owner pull per genuinely-new stale
+    /// offset and never a per-tick probe once the replica is genuinely complete.
+    public List<PartitionKey> redriveCandidates() {
+        return registry.incompletePartitionsFor(self, this::staleCaughtUpNonOwner);
+    }
+
+    /// True when `descriptor` (self's CAUGHT_UP descriptor) needs an owner re-verify: self is NOT the HRW
+    /// owner of the partition AND the current `confirmedOffset` has not already been re-verified at this
+    /// exact offset. The owner check is skipped (no re-arm) when self IS the HRW owner — the genuine
+    /// single-node / owner-self-promote case stays CAUGHT_UP untouched. The offset comparison makes a
+    /// genuinely-complete replica a no-op (its CAUGHT_UP offset was recorded by the promoting backfill)
+    /// while a failed re-verify (offset unchanged, unrecorded) is retried on the next tick.
+    private boolean staleCaughtUpNonOwner(ReplicaDescriptor descriptor) {
+        if (isSelfOwner(descriptor.streamName(), descriptor.partition())) {
+            return false;
+        }
+
+        return Option.option(reverifiedAtOffset.get(partitionKey(descriptor.streamName(), descriptor.partition())))
+                     .map(recorded -> recorded != descriptor.confirmedOffset())
+                     .or(true);
+    }
+
     /// Owner unknown (bootstrap) or no authoritative owner source: fall back to the registry `CAUGHT_UP`
     /// source, else the cold-start no-source path. This is the pre-#333 source-selection behavior.
     private Promise<Long> backfillViaRegistryOrColdStart(String streamName,
@@ -335,6 +374,7 @@ public final class PartitionBackfill {
         }
 
         registry.updateWatermark(streamName, partition, self, watermark);
+        reverifiedAtOffset.put(partitionKey(streamName, partition), watermark);
         log.info("Backfill {}[{}] complete: applied {} events, self CAUGHT_UP at offset {}",
                  streamName,
                  partition,
