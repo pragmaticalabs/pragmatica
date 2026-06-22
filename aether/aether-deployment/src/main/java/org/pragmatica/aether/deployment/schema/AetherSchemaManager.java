@@ -261,14 +261,21 @@ final class DefaultAetherSchemaManager implements AetherSchemaManager {
                                                               .checksum());
     }
 
+    /// Applies one migration and records its history row. The history write is performed at the
+    /// point that makes it atomic with the DDL for every transactional execution path:
+    /// - the dialect-aware transactional path ([#runInTransaction]) and the legacy naive path
+    ///   ([#executeNaive]) fold [#recordExecution] INTO their `transactional(tx -> ...)` block, so
+    ///   the DDL and the history row commit as ONE unit — a crash between them rolls both back.
+    /// - the autocommit path ([#runAutocommit], MySQL/Oracle, whose DDL self-commits) cannot make
+    ///   the two atomic, so its history row stays a separate write on the base connector AFTER the
+    ///   statements — unchanged from before (Increment B adds an in-progress marker here, not now).
     private Promise<Integer> executeSingle(ParsedMigration migration, SqlConnector connector, String nodeId) {
         var startNanos = System.nanoTime();
         var sql = migration.entry().sql();
 
         return MigrationDialects.dialectFor(connector.config().effectiveType())
-                                .fold(() -> executeNaive(connector, sql),
-                                      dialect -> executeSplit(connector, sql, dialect))
-                                .flatMap(_ -> recordExecution(migration, connector, nodeId, startNanos))
+                                .fold(() -> executeNaive(migration, connector, sql, nodeId, startNanos),
+                                      dialect -> executeSplit(migration, connector, sql, dialect, nodeId, startNanos))
                                 .map(_ -> 1);
     }
 
@@ -276,38 +283,65 @@ final class DefaultAetherSchemaManager implements AetherSchemaManager {
     /// either transactionally or in autocommit depending on its statements. A split failure
     /// (e.g. an unterminated `$$` body) surfaces its [org.pragmatica.aether.pg.split.SplitError]
     /// rather than being silently mis-split.
-    private static Promise<Unit> executeSplit(SqlConnector connector, String sql, ExecutionDialect dialect) {
+    private Promise<Unit> executeSplit(ParsedMigration migration,
+                                       SqlConnector connector,
+                                       String sql,
+                                       ExecutionDialect dialect,
+                                       String nodeId,
+                                       long startNanos) {
         return StatementSplitter.split(sql, dialect.spec())
                                 .async()
-                                .flatMap(statements -> runStatements(connector, statements, dialect));
+                                .flatMap(statements -> runStatements(migration, connector, statements, dialect, nodeId, startNanos));
     }
 
     /// Flyway-style per-file classification: if any statement is non-transactional (e.g. a
     /// `CREATE INDEX CONCURRENTLY`), the whole file runs in autocommit; otherwise the whole
     /// file runs in a single transaction (today's wrapping semantics for PG-family DDL).
-    private static Promise<Unit> runStatements(SqlConnector connector,
-                                               List<Statement> statements,
-                                               ExecutionDialect dialect) {
+    private Promise<Unit> runStatements(ParsedMigration migration,
+                                        SqlConnector connector,
+                                        List<Statement> statements,
+                                        ExecutionDialect dialect,
+                                        String nodeId,
+                                        long startNanos) {
         var texts = statements.stream().map(Statement::text).toList();
         var anyNonTransactional = statements.stream().anyMatch(s -> !dialect.spec().isTransactional(s.text()));
 
         return dialect.ddlTransactional() && !anyNonTransactional
-               ? runInTransaction(connector, texts)
-               : runAutocommit(connector, texts);
+               ? runInTransaction(migration, connector, texts, nodeId, startNanos)
+               : runAutocommit(migration, connector, texts, nodeId, startNanos);
     }
 
-    private static Promise<Unit> runInTransaction(SqlConnector connector, List<String> statements) {
-        return connector.transactional(tx -> applyAll(tx, statements));
+    /// Transactional path (PG/DB2/SQL Server): the DDL statements AND the history-row insert run
+    /// on the SAME transaction connector `tx`, so they commit atomically — a crash after the DDL
+    /// but before the history insert rolls BOTH back.
+    private Promise<Unit> runInTransaction(ParsedMigration migration,
+                                           SqlConnector connector,
+                                           List<String> statements,
+                                           String nodeId,
+                                           long startNanos) {
+        return connector.transactional(tx -> applyAll(tx, statements).flatMap(_ -> recordExecution(migration, tx, nodeId, startNanos)));
     }
 
-    private static Promise<Unit> runAutocommit(SqlConnector connector, List<String> statements) {
-        return applyAll(connector, statements);
+    /// Autocommit path (MySQL/Oracle): the DDL self-commits, so the history row cannot be made
+    /// atomic with it — it stays a separate write on the base connector after the statements
+    /// (unchanged; Increment B adds an in-progress/checkpoint marker here).
+    private Promise<Unit> runAutocommit(ParsedMigration migration,
+                                        SqlConnector connector,
+                                        List<String> statements,
+                                        String nodeId,
+                                        long startNanos) {
+        return applyAll(connector, statements).flatMap(_ -> recordExecution(migration, connector, nodeId, startNanos));
     }
 
     /// Legacy path for unwired (non-PostgreSQL-family) dialects: preserves the exact prior
-    /// behavior — strip line comments, naive `split(";")`, all inside one transaction.
-    private static Promise<Unit> executeNaive(SqlConnector connector, String sql) {
-        return connector.transactional(tx -> executeStatementsNaive(tx, sql));
+    /// execution behavior — strip line comments, naive `split(";")`, all inside one transaction —
+    /// and folds the history-row insert into that same transaction so DDL and history are atomic.
+    private Promise<Unit> executeNaive(ParsedMigration migration,
+                                       SqlConnector connector,
+                                       String sql,
+                                       String nodeId,
+                                       long startNanos) {
+        return connector.transactional(tx -> executeStatementsNaive(tx, sql).flatMap(_ -> recordExecution(migration, tx, nodeId, startNanos)));
     }
 
     private static Promise<Unit> executeStatementsNaive(SqlConnector tx, String sql) {

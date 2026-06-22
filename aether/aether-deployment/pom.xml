@@ -13,6 +13,13 @@
     <name>Aether Deployment</name>
     <description>Cluster and node deployment management</description>
 
+    <properties>
+        <!-- Real-PostgreSQL atomicity test (Increment A of #338). TEST scope only; matches the
+             versions used by aether/pg-tools/sql-splitter and aether/ember. -->
+        <testcontainers.version>1.21.4</testcontainers.version>
+        <postgresql-jdbc.version>42.7.5</postgresql-jdbc.version>
+    </properties>
+
     <dependencies>
         <!-- Internal -->
         <dependency>
@@ -130,6 +137,33 @@
             <artifactId>statemachine</artifactId>
             <version>${project.version}</version>
             <type>test-jar</type>
+            <scope>test</scope>
+        </dependency>
+        <!-- Real-PostgreSQL atomicity test (Increment A of #338): Testcontainers + JDBC driver,
+             TEST scope only so neither leaks downstream. The test self-skips (assumeTrue) when no
+             Docker daemon is reachable. -->
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>testcontainers</artifactId>
+            <version>${testcontainers.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>postgresql</artifactId>
+            <version>${testcontainers.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <version>${testcontainers.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.postgresql</groupId>
+            <artifactId>postgresql</artifactId>
+            <version>${postgresql-jdbc.version}</version>
             <scope>test</scope>
         </dependency>
     </dependencies>

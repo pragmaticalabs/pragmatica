@@ -237,6 +237,66 @@ class AetherSchemaManagerTest {
         }
     }
 
+    @Nested
+    class Atomicity {
+
+        /// Increment A (#338): for a transactional dialect the history-row INSERT must run on the
+        /// SAME transaction connector the DDL ran on, so DDL + history commit as one unit. The
+        /// recorder opens exactly one tx connector that carries BOTH the DDL and the history write;
+        /// the base connector performs NO history insert.
+        @Test
+        void migrate_writesHistoryOnTransactionConnector_forPostgres() {
+            var connector = new RecordingConnector(DatabaseType.POSTGRESQL);
+            var sql = """
+                      CREATE TABLE a (id INT);
+                      CREATE TABLE b (id INT);
+                      """;
+
+            migrate(connector, "V1__ddl.sql", sql);
+
+            assertThat(connector.usedTransaction).isTrue();
+            assertThat(connector.baseHistoryInserts).isZero();
+            assertThat(connector.transactions).hasSize(1);
+            var tx = connector.transactions.getFirst();
+            assertThat(tx.historyInserts).isEqualTo(1);
+            assertThat(tx.migrationStatements.stream().map(String::strip).toList()).containsExactly("CREATE TABLE a (id INT)", "CREATE TABLE b (id INT)");
+        }
+
+        /// The legacy naive path (unwired H2) also wraps in a transaction, so its history write
+        /// must likewise land on the transaction connector, not the base connector.
+        @Test
+        void migrate_writesHistoryOnTransactionConnector_forUnwiredH2() {
+            var connector = new RecordingConnector(DatabaseType.H2);
+            var sql = "CREATE TABLE t (id INT);";
+
+            migrate(connector, "V1__ddl.sql", sql);
+
+            assertThat(connector.usedTransaction).isTrue();
+            assertThat(connector.baseHistoryInserts).isZero();
+            assertThat(connector.transactions).hasSize(1);
+            assertThat(connector.transactions.getFirst().historyInserts).isEqualTo(1);
+        }
+
+        /// Increment A (#338): for an autocommit dialect (MySQL) the DDL self-commits, so the
+        /// history row cannot be made atomic with it — it stays a separate write on the BASE
+        /// connector, performed AFTER the migration statements. No transaction is opened.
+        @Test
+        void migrate_writesHistoryOnBaseConnectorAfterStatements_forMysql() {
+            var connector = new RecordingConnector(DatabaseType.MYSQL);
+            var sql = """
+                      CREATE TABLE a (id INT);
+                      CREATE TABLE b (id INT);
+                      """;
+
+            migrate(connector, "V1__ddl.sql", sql);
+
+            assertThat(connector.usedTransaction).isFalse();
+            assertThat(connector.transactions).isEmpty();
+            assertThat(connector.baseHistoryInserts).isEqualTo(1);
+            assertThat(connector.baseExecutionOrder).containsExactly("MIGRATION", "MIGRATION", "HISTORY");
+        }
+    }
+
     private AetherSchemaManager schemaManager() {
         return AetherSchemaManager.aetherSchemaManager(POLICY);
     }
@@ -247,14 +307,30 @@ class AetherSchemaManagerTest {
                        .onFailure(cause -> fail("Migration failed: " + cause.message()));
     }
 
+    /// Recording connector that distinguishes migration-body statements from schema-history
+    /// bookkeeping and tracks WHICH connector each write lands on. A `transactional(...)` call
+    /// opens a fresh child [RecordingConnector] (the transaction connector); the child's recorded
+    /// migration statements are also surfaced on the parent's `migrationStatements`/`usedTransaction`
+    /// so the pre-existing splitter tests keep observing the full statement list regardless of
+    /// whether the dialect runs in a transaction or in autocommit.
     private static final class RecordingConnector implements SqlConnector {
         private static final String HISTORY_TABLE = "aether_schema_history";
 
         private final DatabaseConnectorConfig config;
+        private final RecordingConnector parent;
         private final List<String> migrationStatements = new ArrayList<>();
+        private final List<RecordingConnector> transactions = new ArrayList<>();
+        private final List<String> baseExecutionOrder = new ArrayList<>();
+        private int historyInserts;
+        private int baseHistoryInserts;
         private boolean usedTransaction;
 
         private RecordingConnector(DatabaseType type) {
+            this(type, null);
+        }
+
+        private RecordingConnector(DatabaseType type, RecordingConnector parent) {
+            this.parent = parent;
             this.config = new DatabaseConnectorConfig(none(),
                                                       some(type),
                                                       some("localhost"),
@@ -308,15 +384,37 @@ class AetherSchemaManagerTest {
         @Override
         public <T> Promise<T> transactional(TransactionCallback<T> callback) {
             usedTransaction = true;
-            return callback.execute(this);
+            var tx = new RecordingConnector(config.effectiveType(), this);
+            transactions.add(tx);
+            return callback.execute(tx);
         }
 
-        /// Records only migration-body statements, filtering out the schema-history bootstrap
-        /// and bookkeeping SQL the manager runs on the same connector.
+        /// Records a statement against this connector, classifying it as a history bookkeeping
+        /// write (the `INSERT`/`DELETE` against the history table) or a migration-body statement,
+        /// and propagates migration statements up to the parent so transactional and autocommit
+        /// dialects expose the same observable statement list to the splitter tests.
         private void recordStatement(String sql) {
-            if (!sql.contains(HISTORY_TABLE)) {
-                migrationStatements.add(sql);
+            if (sql.contains(HISTORY_TABLE)) {
+                if (sql.stripLeading().toUpperCase().startsWith("INSERT")) {
+                    historyInserts++;
+                    if (parent == null) {
+                        baseHistoryInserts++;
+                        baseExecutionOrder.add("HISTORY");
+                    }
+                }
+                return;
             }
+
+            migrationStatements.add(sql);
+            if (parent == null) {
+                baseExecutionOrder.add("MIGRATION");
+            } else {
+                parent.recordTransactionMigration(sql);
+            }
+        }
+
+        private void recordTransactionMigration(String sql) {
+            migrationStatements.add(sql);
         }
     }
 }
