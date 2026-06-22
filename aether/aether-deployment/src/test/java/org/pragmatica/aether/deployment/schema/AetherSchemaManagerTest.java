@@ -159,6 +159,58 @@ class AetherSchemaManagerTest {
         }
     }
 
+    @Nested
+    class Db2Family {
+
+        /// DB2 is wired to the dialect-aware splitter: a `--#SET TERMINATOR @`-wrapped procedure
+        /// is emitted as ONE statement (the directive lines are consumed as directives, not `--`
+        /// comments, and the body's internal `;` are kept), and because DB2 DDL is transactional
+        /// the whole file runs in a TRANSACTION.
+        @Test
+        void migrate_keepsProcedureBodyIntactInTransaction_forDb2SetTerminatorProcedure() {
+            var connector = new RecordingConnector(DatabaseType.DB2);
+            var sql = """
+                      --#SET TERMINATOR @
+                      CREATE PROCEDURE p() BEGIN SELECT 1; SELECT 2; END@
+                      --#SET TERMINATOR ;
+                      CREATE TABLE t (id INT);
+                      """;
+
+            migrate(connector, "V1__proc.sql", sql);
+
+            assertThat(connector.migrationStatements).hasSize(2);
+            assertThat(connector.migrationStatements.get(0)).contains("CREATE PROCEDURE p()").contains("SELECT 1;").contains("SELECT 2;").contains("END").doesNotContain("SET TERMINATOR");
+            assertThat(connector.migrationStatements.get(1)).contains("CREATE TABLE t (id INT)");
+            assertThat(connector.usedTransaction).isTrue();
+        }
+    }
+
+    @Nested
+    class SqlServerFamily {
+
+        /// SQL Server is wired to the dialect-aware splitter: `GO`-separated batches each become
+        /// ONE statement (the `GO` lines are consumed, never emitted), the procedure body's
+        /// internal `;` are kept because `semicolonTerminates=false`, and because SQL Server DDL
+        /// is transactional the whole file runs in a TRANSACTION.
+        @Test
+        void migrate_keepsBatchesIntactInTransaction_forSqlServerGoBatches() {
+            var connector = new RecordingConnector(DatabaseType.SQLSERVER);
+            var sql = """
+                      CREATE PROCEDURE p AS BEGIN SELECT 1; SELECT 2; END
+                      GO
+                      CREATE TABLE t (id INT);
+                      GO
+                      """;
+
+            migrate(connector, "V1__proc.sql", sql);
+
+            assertThat(connector.migrationStatements).hasSize(2);
+            assertThat(connector.migrationStatements.get(0)).contains("CREATE PROCEDURE p").contains("SELECT 1;").contains("SELECT 2;").contains("END").doesNotContain("GO");
+            assertThat(connector.migrationStatements.get(1)).contains("CREATE TABLE t (id INT)");
+            assertThat(connector.usedTransaction).isTrue();
+        }
+    }
+
     private AetherSchemaManager schemaManager() {
         return AetherSchemaManager.aetherSchemaManager(POLICY);
     }

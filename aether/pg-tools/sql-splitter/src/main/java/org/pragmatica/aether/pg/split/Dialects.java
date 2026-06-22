@@ -18,7 +18,8 @@ import java.util.regex.Pattern;
 import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.option;
 
-/// Catalog of populated [DialectSpec] descriptors. Ships PostgreSQL and MySQL/MariaDB.
+/// Catalog of populated [DialectSpec] descriptors. Ships PostgreSQL, MySQL/MariaDB, DB2, and
+/// SQL Server (T-SQL).
 public sealed interface Dialects {
     record unused() implements Dialects {}
 
@@ -49,7 +50,7 @@ public sealed interface Dialects {
         new IdentifierRules(true, false, false),
         new CommentRules(true, false, true, true, false),
         new DollarQuoteRules(true),
-        new BoundaryRules(none(), none(), none()),
+        new BoundaryRules(none(), none(), none(), true),
         new CopyDataRules(true, "\\."),
         Dialects::isPostgresTransactional);
 
@@ -66,9 +67,45 @@ public sealed interface Dialects {
         new IdentifierRules(false, true, false),
         new CommentRules(true, true, true, false, true),
         new DollarQuoteRules(false),
-        new BoundaryRules(option(new TerminatorRedefinition("DELIMITER", ";")), none(), none()),
+        new BoundaryRules(option(new TerminatorRedefinition("DELIMITER", ";")), none(), none(), true),
         new CopyDataRules(false, ""),
         Dialects::isMysqlTransactional);
+
+    /// The fully-populated DB2 dialect descriptor.
+    ///
+    /// Strings use SQL-standard `''` doubling with NO backslash escapes. Identifiers are
+    /// double-quoted (`"…"`). Comments are `--` line comments and `/*…*/` block comments that
+    /// do NOT nest. There is no dollar quoting. Statements are terminated by a redefinable
+    /// terminator introduced with the `--#SET TERMINATOR` client directive (defaulting to `;`),
+    /// which — because the directive check runs before line-comment handling — is consumed as a
+    /// directive rather than a `--` comment. There is no batch separator and no `COPY` mode, and
+    /// `;` terminates as usual (`semicolonTerminates=true`). DB2 DDL is transactional.
+    DialectSpec DB2 = new DialectSpec(
+        new StringRules(true, false, false, false, false, false),
+        new IdentifierRules(true, false, false),
+        new CommentRules(true, false, true, false, false),
+        new DollarQuoteRules(false),
+        new BoundaryRules(option(new TerminatorRedefinition("--#SET TERMINATOR", ";")), none(), none(), true),
+        new CopyDataRules(false, ""),
+        Dialects::isDb2Transactional);
+
+    /// The fully-populated SQL Server (T-SQL) dialect descriptor.
+    ///
+    /// Strings use SQL-standard `''` doubling, no backslash escapes, and additionally honor the
+    /// `N'…'` national-character-string prefix. Identifiers are quoted with double quotes (`"…"`)
+    /// AND brackets (`[…]`, where `]]` embeds a literal `]`). Comments are `--` line comments and
+    /// `/*…*/` block comments that DO nest (T-SQL nests). There is no dollar quoting. Statements
+    /// are bounded only by the `GO` batch separator — `semicolonTerminates=false` — so an internal
+    /// `;` inside a `CREATE PROCEDURE … BEGIN …; …; END` body is preserved verbatim and each
+    /// `GO`-batch is emitted as one statement. SQL Server DDL is transactional.
+    DialectSpec SQLSERVER = new DialectSpec(
+        new StringRules(true, false, false, true, false, false),
+        new IdentifierRules(true, false, true),
+        new CommentRules(true, false, true, true, false),
+        new DollarQuoteRules(false),
+        new BoundaryRules(none(), option("GO"), none(), false),
+        new CopyDataRules(false, ""),
+        Dialects::isSqlServerTransactional);
 
     /// Classifies a PostgreSQL statement as transactional or not.
     ///
@@ -88,6 +125,30 @@ public sealed interface Dialects {
     ///
     /// @return always `true`
     static boolean isMysqlTransactional(String statementText) {
+        return true;
+    }
+
+    /// Classifies a DB2 statement as transactional.
+    ///
+    /// DB2 DDL is transactional, so per-statement classification reports every statement
+    /// transactional; the executor then wraps the whole file in a transaction.
+    ///
+    /// @param statementText verbatim statement text
+    ///
+    /// @return always `true`
+    static boolean isDb2Transactional(String statementText) {
+        return true;
+    }
+
+    /// Classifies a SQL Server (T-SQL) statement as transactional.
+    ///
+    /// SQL Server DDL is transactional, so per-statement classification reports every statement
+    /// transactional; the executor then wraps the whole file in a transaction.
+    ///
+    /// @param statementText verbatim statement text
+    ///
+    /// @return always `true`
+    static boolean isSqlServerTransactional(String statementText) {
         return true;
     }
 

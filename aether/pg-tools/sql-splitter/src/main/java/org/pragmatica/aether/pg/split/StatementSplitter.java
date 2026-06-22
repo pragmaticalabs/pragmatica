@@ -23,21 +23,26 @@ import static org.pragmatica.lang.Result.unitResult;
 ///
 /// [#split(String, DialectSpec)] scans the input character-by-character with a state
 /// machine that tracks which lexical span the cursor is inside (normal text; string,
-/// escape-string, and double-quote-string literals; dollar-quoted bodies with a captured
-/// tag; line and block comments (nesting or flat per dialect); double-quote and backtick
-/// quoted identifiers; and `COPY … FROM STDIN` inline data). A statement boundary is
-/// recognized only on a top-level active terminator seen in normal state; terminators inside
-/// any span are opaque. The scan is a thread-confined sequential Leaf — its mutable cursor
-/// never escapes the call — and reports malformed input (an unterminated span at end of
-/// input) as a typed [SplitError] value rather than an exception.
+/// escape-string, national-string (`N'…'`), and double-quote-string literals; dollar-quoted
+/// bodies with a captured tag; line and block comments (nesting or flat per dialect);
+/// double-quote, backtick, and bracket (`[…]`) quoted identifiers; and `COPY … FROM STDIN`
+/// inline data). A statement boundary is recognized either on a top-level active terminator
+/// seen in normal state or, for batch dialects, on a line-anchored batch separator (e.g.
+/// T-SQL `GO`); terminators inside any span are opaque. The scan is a thread-confined
+/// sequential Leaf — its mutable cursor never escapes the call — and reports malformed input
+/// (an unterminated span at end of input) as a typed [SplitError] value rather than an
+/// exception.
 ///
 /// Every lexical primitive is driven by the [DialectSpec] descriptor, so each dialect
 /// enables exactly the spans it needs. PostgreSQL keeps the historical behavior: a
 /// single-char `;` terminator, nesting block comments, double-quote identifiers, and `COPY`
-/// inline data. A dialect that carries a redefinable terminator (e.g. MySQL's `DELIMITER`)
-/// maintains an active terminator string — initialized to the descriptor default, reset by a
-/// line-anchored directive that is consumed without emitting — and splits on that (possibly
-/// multi-character) string instead.
+/// inline data. A dialect that carries a redefinable terminator (e.g. MySQL's `DELIMITER`,
+/// DB2's `--#SET TERMINATOR`) maintains an active terminator string — initialized to the
+/// descriptor default, reset by a line-anchored directive that is consumed without emitting —
+/// and splits on that (possibly multi-character) string instead. A batch dialect (SQL Server)
+/// instead sets `semicolonTerminates=false` so a top-level `;` never ends a statement, and
+/// bounds statements only on the batch separator — each `GO`-batch (procedure body internal
+/// `;` and all) is emitted verbatim.
 public sealed interface StatementSplitter {
     record unused() implements StatementSplitter {}
 
@@ -132,6 +137,9 @@ public sealed interface StatementSplitter {
             if (consumesTerminatorDirective()) {
                 return unitResult();
             }
+            if (consumesBatchSeparator()) {
+                return unitResult();
+            }
             markStatementLine();
 
             if (atActiveTerminator()) {
@@ -142,8 +150,12 @@ public sealed interface StatementSplitter {
 
         /// Whether the cursor sits on the active terminator. PostgreSQL keeps the historical
         /// single-char `;` test; a redefinable-terminator dialect matches the full (possibly
-        /// multi-char) terminator string.
+        /// multi-char) terminator string. Batch dialects (`semicolonTerminates=false`, e.g. SQL
+        /// Server) never terminate on the `;` here — only the batch separator bounds statements.
         private boolean atActiveTerminator() {
+            if (!dialect.boundaries().semicolonTerminates()) {
+                return false;
+            }
             return activeTerminator.length() == 1
                    ? sql.charAt(pos) == activeTerminator.charAt(0)
                    : sql.regionMatches(pos, activeTerminator, 0, activeTerminator.length());
@@ -261,6 +273,73 @@ public sealed interface StatementSplitter {
             return c == '\n' || c == '\r';
         }
 
+        // ----- batch separator (T-SQL GO) --------------------------------------------
+
+        /// Recognizes a batch separator (e.g. T-SQL `GO`, optionally with a trailing repeat
+        /// count `GO 3`) at the start of a line. The keyword must be the sole content of the
+        /// line (case-insensitive, only whitespace before it on the line). When matched the
+        /// accumulated statement is emitted and the WHOLE separator line is consumed WITHOUT
+        /// emitting the keyword. Dialects without a batch separator (PostgreSQL, MySQL, DB2)
+        /// never enter this path.
+        ///
+        /// @return `true` when a batch-separator line was consumed, `false` otherwise
+        private boolean consumesBatchSeparator() {
+            return dialect.boundaries()
+                          .batchSeparator()
+                          .map(this::consumeBatchSeparator)
+                          .or(false);
+        }
+
+        private boolean consumeBatchSeparator(String keyword) {
+            return onlyWhitespaceSinceLineStart() && tryConsumeBatchLine(keyword);
+        }
+
+        /// Matches `KEYWORD [<whitespace> <integer count>] <optional trailing whitespace>` to
+        /// end of line (case-insensitive keyword). On a match, emits the accumulated statement,
+        /// consumes the separator line including its terminating newline, resets the statement
+        /// origin, and returns `true`.
+        private boolean tryConsumeBatchLine(String keyword) {
+            if (!keywordAloneOnLine(keyword)) {
+                return false;
+            }
+            emitStatement(pos);
+            advancePastBatchLine();
+            return true;
+        }
+
+        /// Whether the line at the cursor consists solely of the batch keyword, optionally
+        /// followed by whitespace and a single integer repeat count.
+        private boolean keywordAloneOnLine(String keyword) {
+            if (!keywordMatchesEndOrSpaceAt(keyword)) {
+                return false;
+            }
+            var rest = sql.substring(pos + keyword.length(), lineEndFrom(pos)).strip();
+            return rest.isEmpty() || isPositiveInteger(rest);
+        }
+
+        private boolean keywordMatchesEndOrSpaceAt(String keyword) {
+            var after = pos + keyword.length();
+            return after <= length
+                   && sql.regionMatches(true, pos, keyword, 0, keyword.length())
+                   && (after == length || isLineEnd(sql.charAt(after)) || Character.isWhitespace(sql.charAt(after)));
+        }
+
+        private static boolean isPositiveInteger(String text) {
+            return text.chars().allMatch(Character::isDigit);
+        }
+
+        /// Consumes the batch-separator line including its terminating newline and resets the
+        /// statement origin so the next batch is recognized separately.
+        private void advancePastBatchLine() {
+            pos = lineEndFrom(pos);
+            if (pos < length) {
+                line++;
+                pos++; // consume the separator line's newline
+            }
+            statementStart = pos;
+            statementStartLine = 0; // pending: re-marked on the next statement's first char
+        }
+
         /// A top-level `;` either opens a `COPY … FROM STDIN` data block or ends a statement.
         private Result<Unit> splitOrEnterCopyData() {
             return startsCopyData()
@@ -290,6 +369,9 @@ public sealed interface StatementSplitter {
             if (startsEscapeString(c)) {
                 return consumeEscapeString();
             }
+            if (startsNationalString(c)) {
+                return consumeNationalString();
+            }
             if (c == '\'') {
                 return consumeString();
             }
@@ -298,6 +380,9 @@ public sealed interface StatementSplitter {
             }
             if (startsBacktickIdentifier(c)) {
                 return consumeBacktickIdentifier();
+            }
+            if (startsBracketIdentifier(c)) {
+                return consumeBracketIdentifier();
             }
             if (startsQuotedIdentifier(c)) {
                 return consumeQuotedIdentifier();
@@ -336,6 +421,10 @@ public sealed interface StatementSplitter {
             return dialect.strings().escapeStringPrefix() && (c == 'E' || c == 'e') && peek(1) == '\'';
         }
 
+        private boolean startsNationalString(char c) {
+            return dialect.strings().nationalPrefix() && (c == 'N' || c == 'n') && peek(1) == '\'';
+        }
+
         private boolean startsQuotedIdentifier(char c) {
             return dialect.identifiers().doubleQuote() && c == '"';
         }
@@ -346,6 +435,10 @@ public sealed interface StatementSplitter {
 
         private boolean startsBacktickIdentifier(char c) {
             return dialect.identifiers().backtick() && c == '`';
+        }
+
+        private boolean startsBracketIdentifier(char c) {
+            return dialect.identifiers().bracket() && c == '[';
         }
 
         private boolean startsCopyData() {
@@ -444,6 +537,14 @@ public sealed interface StatementSplitter {
             return new SplitError.UnterminatedString(openedLine).result();
         }
 
+        /// Consumes an `N'…'` national-character string literal (SQL Server). The `N` prefix is
+        /// consumed and the body follows the same `''`-doubling rules as an ordinary `'…'`
+        /// literal (SQL Server does not honor backslash escapes here).
+        private Result<Unit> consumeNationalString() {
+            pos++; // consume the N prefix; the cursor now sits on the opening '
+            return consumeString();
+        }
+
         private Result<Unit> consumeString() {
             var openedLine = line;
 
@@ -523,6 +624,28 @@ public sealed interface StatementSplitter {
                 if (c == '`' && peek(1) == '`') {
                     pos += 2;
                 } else if (c == '`') {
+                    pos++;
+                    return unitResult();
+                } else {
+                    advanceTrackingLine();
+                }
+            }
+            return new SplitError.UnterminatedQuotedIdentifier(openedLine).result();
+        }
+
+        /// Consumes a `[…]` bracket-quoted identifier (SQL Server), with doubled `]]` an embedded
+        /// closing bracket.
+        private Result<Unit> consumeBracketIdentifier() {
+            var openedLine = line;
+
+            pos++; // consume opening [
+
+            while (pos < length) {
+                var c = sql.charAt(pos);
+
+                if (c == ']' && peek(1) == ']') {
+                    pos += 2;
+                } else if (c == ']') {
                     pos++;
                     return unitResult();
                 } else {

@@ -90,16 +90,27 @@ public record DialectSpec(StringRules strings,
     /// @param enabled untagged `$$…$$` and tagged `$tag$…$tag$` dollar quoting is honored
     public record DollarQuoteRules(boolean enabled) {}
 
-    /// Statement-boundary primitives carried as data. PostgreSQL disables all three.
+    /// Statement-boundary primitives carried as data. PostgreSQL disables the optional three
+    /// and keeps `semicolonTerminates` on.
     ///
     /// @param redefinableTerminator trigger that redefines the statement terminator
     ///                              (e.g. `DELIMITER`, `--#SET TERMINATOR`); empty when none
-    /// @param batchSeparator        standalone batch separator keyword (e.g. `GO`); empty when none
+    /// @param batchSeparator        standalone batch separator keyword (e.g. T-SQL `GO`); empty
+    ///                              when none. A line whose sole trimmed content is the keyword
+    ///                              (case-insensitive, optional trailing integer count) is a batch
+    ///                              boundary: the accumulated statement is emitted and the line is
+    ///                              consumed without emitting the keyword.
     /// @param blockLineTerminator   single-character line that terminates a block (e.g. `/`);
     ///                              empty when none
+    /// @param semicolonTerminates   whether a top-level `;` ends a statement. `true` for the
+    ///                              `;`-terminated dialects (PostgreSQL, MySQL, DB2); `false` for
+    ///                              batch dialects (SQL Server / T-SQL) where only the batch
+    ///                              separator bounds statements, so a procedure body's internal
+    ///                              `;` is preserved verbatim
     public record BoundaryRules(Option<TerminatorRedefinition> redefinableTerminator,
                                 Option<String> batchSeparator,
-                                Option<String> blockLineTerminator) {}
+                                Option<String> blockLineTerminator,
+                                boolean semicolonTerminates) {}
 
     /// How a dialect lets a script redefine its statement terminator mid-stream.
     ///
