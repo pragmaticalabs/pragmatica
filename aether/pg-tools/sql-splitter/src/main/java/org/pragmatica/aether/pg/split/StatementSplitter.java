@@ -5,6 +5,7 @@
 
 package org.pragmatica.aether.pg.split;
 
+import org.pragmatica.aether.pg.split.DialectSpec.TerminatorRedefinition;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
@@ -21,19 +22,22 @@ import static org.pragmatica.lang.Result.unitResult;
 /// Pure, dialect-aware SQL statement splitter.
 ///
 /// [#split(String, DialectSpec)] scans the input character-by-character with a state
-/// machine that tracks which lexical span the cursor is inside (normal text, string and
-/// escape-string literals, dollar-quoted bodies with a captured tag, line and nested block
-/// comments, quoted identifiers, and `COPY … FROM STDIN` inline data). A statement boundary
-/// is recognized only on a top-level `;` seen in normal state; terminators inside any span
-/// are opaque. The scan is a thread-confined sequential Leaf — its mutable cursor never
-/// escapes the call — and reports malformed input (an unterminated span at end of input) as
-/// a typed [SplitError] value rather than an exception.
+/// machine that tracks which lexical span the cursor is inside (normal text; string,
+/// escape-string, and double-quote-string literals; dollar-quoted bodies with a captured
+/// tag; line and block comments (nesting or flat per dialect); double-quote and backtick
+/// quoted identifiers; and `COPY … FROM STDIN` inline data). A statement boundary is
+/// recognized only on a top-level active terminator seen in normal state; terminators inside
+/// any span are opaque. The scan is a thread-confined sequential Leaf — its mutable cursor
+/// never escapes the call — and reports malformed input (an unterminated span at end of
+/// input) as a typed [SplitError] value rather than an exception.
 ///
-/// Only the primitives PostgreSQL enables in its [DialectSpec] are honored here. The
-/// boundary primitives (redefinable terminator, batch separator, block line terminator) are
-/// carried by the descriptor but PostgreSQL leaves them off, so the engine does not yet act
-/// on them; a later dialect that enables them slots in as a localized extension keyed off
-/// those descriptor fields.
+/// Every lexical primitive is driven by the [DialectSpec] descriptor, so each dialect
+/// enables exactly the spans it needs. PostgreSQL keeps the historical behavior: a
+/// single-char `;` terminator, nesting block comments, double-quote identifiers, and `COPY`
+/// inline data. A dialect that carries a redefinable terminator (e.g. MySQL's `DELIMITER`)
+/// maintains an active terminator string — initialized to the descriptor default, reset by a
+/// line-anchored directive that is consumed without emitting — and splits on that (possibly
+/// multi-character) string instead.
 public sealed interface StatementSplitter {
     record unused() implements StatementSplitter {}
 
@@ -77,6 +81,7 @@ public sealed interface StatementSplitter {
         private int line = 1;
         private int statementStart;
         private int statementStartLine;
+        private String activeTerminator;
 
         private Scan(String sql, DialectSpec dialect) {
             this.sql = sql;
@@ -84,6 +89,16 @@ public sealed interface StatementSplitter {
             this.length = sql.length();
             this.statementStart = 0;
             this.statementStartLine = 0; // 0 = pending: set on the first significant char
+            this.activeTerminator = initialTerminator(dialect);
+        }
+
+        /// The terminator in force at the start of the scan: the descriptor's redefinable
+        /// default when configured, otherwise the single-char `;` the engine has always used.
+        private static String initialTerminator(DialectSpec dialect) {
+            return dialect.boundaries()
+                          .redefinableTerminator()
+                          .map(TerminatorRedefinition::defaultValue)
+                          .or(";");
         }
 
         /// Drives the scan to completion, short-circuiting on the first malformed span.
@@ -114,12 +129,24 @@ public sealed interface StatementSplitter {
                 pos++;
                 return unitResult();
             }
+            if (consumesTerminatorDirective()) {
+                return unitResult();
+            }
             markStatementLine();
 
-            if (c == ';') {
+            if (atActiveTerminator()) {
                 return splitOrEnterCopyData();
             }
             return descend(c);
+        }
+
+        /// Whether the cursor sits on the active terminator. PostgreSQL keeps the historical
+        /// single-char `;` test; a redefinable-terminator dialect matches the full (possibly
+        /// multi-char) terminator string.
+        private boolean atActiveTerminator() {
+            return activeTerminator.length() == 1
+                   ? sql.charAt(pos) == activeTerminator.charAt(0)
+                   : sql.regionMatches(pos, activeTerminator, 0, activeTerminator.length());
         }
 
         /// Records the current line as the statement's begin-line on its first significant
@@ -128,6 +155,110 @@ public sealed interface StatementSplitter {
             if (statementStartLine == 0) {
                 statementStartLine = line;
             }
+        }
+
+        // ----- redefinable terminator directive --------------------------------------
+
+        /// Recognizes a client terminator-redefinition directive (e.g. `DELIMITER $$`) at a
+        /// statement start. The directive is line-anchored: the cursor must sit on the first
+        /// significant character of a line and no statement text may have accumulated since
+        /// the last terminator. When matched the WHOLE directive line is consumed without
+        /// emitting (it is a client directive, not server SQL) and the active terminator is
+        /// reset to the named token. Dialects without a redefinable terminator (PostgreSQL)
+        /// never enter this path.
+        ///
+        /// @return `true` when a directive line was consumed, `false` otherwise
+        private boolean consumesTerminatorDirective() {
+            return dialect.boundaries()
+                          .redefinableTerminator()
+                          .map(this::consumeTerminatorDirective)
+                          .or(false);
+        }
+
+        private boolean consumeTerminatorDirective(TerminatorRedefinition rule) {
+            return atStatementStartOfLine() && tryConsumeDirectiveLine(rule.keyword());
+        }
+
+        /// Whether the cursor sits at the very start of a statement (no text accumulated yet)
+        /// and at the beginning of a line (only whitespace precedes it on this line).
+        private boolean atStatementStartOfLine() {
+            return statementStartLine == 0 && onlyWhitespaceSinceLineStart();
+        }
+
+        private boolean onlyWhitespaceSinceLineStart() {
+            var cursor = pos - 1;
+
+            while (cursor >= statementStart && sql.charAt(cursor) != '\n') {
+                if (!Character.isWhitespace(sql.charAt(cursor))) {
+                    return false;
+                }
+                cursor--;
+            }
+            return true;
+        }
+
+        /// Matches `KEYWORD <whitespace> <token> <optional trailing whitespace>` to end of line
+        /// (case-insensitive keyword). On a match, consumes the directive line including its
+        /// terminating newline, sets the active terminator to the token, and returns `true`.
+        private boolean tryConsumeDirectiveLine(String keyword) {
+            if (!keywordMatchesAt(keyword)) {
+                return false;
+            }
+            var afterKeyword = pos + keyword.length();
+            var tokenStart = skipInlineWhitespace(afterKeyword);
+
+            if (tokenStart == afterKeyword || tokenStart >= length || isLineEnd(sql.charAt(tokenStart))) {
+                return false;
+            }
+            var tokenEnd = lineEndFrom(tokenStart);
+
+            applyDirective(sql.substring(tokenStart, tokenEnd).stripTrailing(), tokenEnd);
+            return true;
+        }
+
+        private boolean keywordMatchesAt(String keyword) {
+            return pos + keyword.length() <= length
+                   && sql.regionMatches(true, pos, keyword, 0, keyword.length())
+                   && isWhitespaceAt(pos + keyword.length());
+        }
+
+        /// Adopts the new terminator and advances past the directive line (consuming its
+        /// trailing newline so the next statement starts cleanly), without emitting.
+        private void applyDirective(String token, int tokenEnd) {
+            activeTerminator = token;
+            pos = tokenEnd;
+            if (pos < length) {
+                line++;
+                pos++; // consume the directive line's newline
+            }
+            statementStart = pos;
+            statementStartLine = 0; // pending: re-marked on the next statement's first char
+        }
+
+        private int skipInlineWhitespace(int from) {
+            var cursor = from;
+
+            while (cursor < length && isWhitespaceAt(cursor) && !isLineEnd(sql.charAt(cursor))) {
+                cursor++;
+            }
+            return cursor;
+        }
+
+        private int lineEndFrom(int from) {
+            var cursor = from;
+
+            while (cursor < length && sql.charAt(cursor) != '\n') {
+                cursor++;
+            }
+            return cursor;
+        }
+
+        private boolean isWhitespaceAt(int index) {
+            return index < length && Character.isWhitespace(sql.charAt(index));
+        }
+
+        private static boolean isLineEnd(char c) {
+            return c == '\n' || c == '\r';
         }
 
         /// A top-level `;` either opens a `COPY … FROM STDIN` data block or ends a statement.
@@ -139,7 +270,7 @@ public sealed interface StatementSplitter {
 
         private Result<Unit> splitHere() {
             emitStatement(pos);
-            pos++;
+            pos += activeTerminator.length();
             statementStart = pos;
             statementStartLine = 0; // pending: re-marked on the next statement's first char
             return unitResult();
@@ -162,6 +293,12 @@ public sealed interface StatementSplitter {
             if (c == '\'') {
                 return consumeString();
             }
+            if (startsDoubleQuoteString(c)) {
+                return consumeDoubleQuoteString();
+            }
+            if (startsBacktickIdentifier(c)) {
+                return consumeBacktickIdentifier();
+            }
             if (startsQuotedIdentifier(c)) {
                 return consumeQuotedIdentifier();
             }
@@ -172,8 +309,19 @@ public sealed interface StatementSplitter {
         // ----- span predicates -------------------------------------------------------
 
         private boolean startsLineComment(char c) {
-            return (dialect.comments().dashLineComment() && c == '-' && peek(1) == '-')
+            return (dialect.comments().dashLineComment() && c == '-' && peek(1) == '-' && dashCommentSpaceOk())
                    || (dialect.comments().hashLineComment() && c == '#');
+        }
+
+        /// Whether the `--` here may open a line comment under the dialect's dash rule. When
+        /// `dashRequiresSpace` (MySQL) the `--` must be followed by whitespace or end of input,
+        /// so `--x` is not a comment; otherwise (PostgreSQL) any `--` opens a comment.
+        private boolean dashCommentSpaceOk() {
+            if (!dialect.comments().dashRequiresSpace()) {
+                return true;
+            }
+            var after = pos + 2;
+            return after >= length || Character.isWhitespace(sql.charAt(after));
         }
 
         private boolean startsBlockComment(char c) {
@@ -192,6 +340,14 @@ public sealed interface StatementSplitter {
             return dialect.identifiers().doubleQuote() && c == '"';
         }
 
+        private boolean startsDoubleQuoteString(char c) {
+            return dialect.strings().doubleQuoteString() && c == '"';
+        }
+
+        private boolean startsBacktickIdentifier(char c) {
+            return dialect.identifiers().backtick() && c == '`';
+        }
+
         private boolean startsCopyData() {
             return dialect.copyData().enabled() && copyFromStdinEndsHere();
         }
@@ -205,6 +361,14 @@ public sealed interface StatementSplitter {
         }
 
         private Result<Unit> consumeBlockComment() {
+            return dialect.comments().nestedBlock()
+                   ? consumeNestedBlockComment()
+                   : consumeFlatBlockComment();
+        }
+
+        /// PostgreSQL-style depth-counted block comment: nested `/*` raise the depth, each `*/`
+        /// lowers it, and the comment ends when depth returns to zero.
+        private Result<Unit> consumeNestedBlockComment() {
             var openedLine = line;
             var depth = 0;
 
@@ -221,6 +385,23 @@ public sealed interface StatementSplitter {
                 } else {
                     advanceTrackingLine();
                 }
+            }
+            return new SplitError.UnterminatedBlockComment(openedLine).result();
+        }
+
+        /// Flat (non-nesting) block comment: the opening `/*` is consumed and the comment ends
+        /// at the FIRST `*/`, with intervening `/*` treated as ordinary content (MySQL).
+        private Result<Unit> consumeFlatBlockComment() {
+            var openedLine = line;
+
+            pos += 2; // consume the opening /*
+
+            while (pos < length) {
+                if (atBlockClose()) {
+                    pos += 2;
+                    return unitResult();
+                }
+                advanceTrackingLine();
             }
             return new SplitError.UnterminatedBlockComment(openedLine).result();
         }
@@ -296,6 +477,52 @@ public sealed interface StatementSplitter {
                 if (c == '"' && peek(1) == '"') {
                     pos += 2;
                 } else if (c == '"') {
+                    pos++;
+                    return unitResult();
+                } else {
+                    advanceTrackingLine();
+                }
+            }
+            return new SplitError.UnterminatedQuotedIdentifier(openedLine).result();
+        }
+
+        /// Consumes a `"…"` STRING literal (MySQL without `ANSI_QUOTES`), honoring `""`
+        /// doubling and, when the dialect enables it, backslash escapes.
+        private Result<Unit> consumeDoubleQuoteString() {
+            var openedLine = line;
+
+            pos++; // consume opening "
+
+            while (pos < length) {
+                var c = sql.charAt(pos);
+
+                if (dialect.strings().backslashEscapes() && c == '\\' && pos + 1 < length) {
+                    advanceEscapePair();
+                } else if (c == '"' && peek(1) == '"') {
+                    pos += 2;
+                } else if (c == '"') {
+                    pos++;
+                    return unitResult();
+                } else {
+                    advanceTrackingLine();
+                }
+            }
+            return new SplitError.UnterminatedString(openedLine).result();
+        }
+
+        /// Consumes a `` `…` `` quoted identifier (MySQL), with doubled `` `` `` an embedded
+        /// backtick.
+        private Result<Unit> consumeBacktickIdentifier() {
+            var openedLine = line;
+
+            pos++; // consume opening `
+
+            while (pos < length) {
+                var c = sql.charAt(pos);
+
+                if (c == '`' && peek(1) == '`') {
+                    pos += 2;
+                } else if (c == '`') {
                     pos++;
                     return unitResult();
                 } else {

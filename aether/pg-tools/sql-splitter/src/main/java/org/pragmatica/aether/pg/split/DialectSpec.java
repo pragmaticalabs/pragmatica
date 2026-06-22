@@ -12,11 +12,11 @@ import org.pragmatica.lang.Option;
 ///
 /// The descriptor carries the FULL cross-dialect primitive set as data so that adding a
 /// later dialect is mostly a matter of populating fields rather than changing the engine.
-/// In this step only PostgreSQL's primitives are HONORED by [StatementSplitter]; the
-/// boundary primitives (redefinable terminator, batch separator, block line terminator)
-/// are carried as data but PostgreSQL leaves them disabled, so the engine does not act on
-/// them yet. When a later dialect enables them, the engine gains a localized extension
-/// keyed off these same fields — not a redesign.
+/// [StatementSplitter] honors each primitive a dialect enables: PostgreSQL leaves the
+/// boundary primitives off and uses a fixed `;` terminator, while MySQL enables the
+/// redefinable terminator (`DELIMITER`). The batch separator and block line terminator are
+/// carried as data but no shipped dialect enables them yet; when one does, the engine gains
+/// a localized extension keyed off these same fields — not a redesign.
 ///
 /// @param strings     string-literal lexical rules
 /// @param identifiers identifier-quoting rules
@@ -54,11 +54,14 @@ public record DialectSpec(StringRules strings,
     /// @param escapeStringPrefix  `E'…'` escape-string syntax (always backslash-aware)
     /// @param nationalPrefix      `N'…'` national-character-string prefix
     /// @param altQuoting          `q'X…X'` Oracle-style alternative quoting
+    /// @param doubleQuoteString   `"…"` is a STRING literal, not a quoted identifier
+    ///                            (MySQL without `ANSI_QUOTES`); doubling `""` embeds a quote
     public record StringRules(boolean doubledQuoteEscape,
                               boolean backslashEscapes,
                               boolean escapeStringPrefix,
                               boolean nationalPrefix,
-                              boolean altQuoting) {}
+                              boolean altQuoting,
+                              boolean doubleQuoteString) {}
 
     /// Identifier-quoting rules — which delimiter pairs introduce a quoted identifier.
     ///
@@ -69,14 +72,18 @@ public record DialectSpec(StringRules strings,
 
     /// Comment lexical rules.
     ///
-    /// @param dashLineComment  `--` line comment
-    /// @param hashLineComment  `#` line comment (MySQL)
-    /// @param blockComment     `/*…*/` block comment
-    /// @param nestedBlock      block comments nest (PostgreSQL)
+    /// @param dashLineComment   `--` line comment
+    /// @param hashLineComment   `#` line comment (MySQL)
+    /// @param blockComment      `/*…*/` block comment
+    /// @param nestedBlock       block comments nest (PostgreSQL); when `false` the first `*/`
+    ///                          closes the comment regardless of intervening `/*`
+    /// @param dashRequiresSpace `--` opens a line comment only when immediately followed by
+    ///                          whitespace or end-of-line (MySQL); `--x` is not a comment
     public record CommentRules(boolean dashLineComment,
                                boolean hashLineComment,
                                boolean blockComment,
-                               boolean nestedBlock) {}
+                               boolean nestedBlock,
+                               boolean dashRequiresSpace) {}
 
     /// Dollar-quoting rules.
     ///
