@@ -100,11 +100,15 @@ class AetherSchemaManagerTest {
     }
 
     @Nested
-    class NonPostgresFallback {
+    class NonWiredFallback {
 
+        /// H2 is still unmapped in [MigrationDialects#dialectFor], so it must take the legacy
+        /// naive `split(";")` path: the PostgreSQL `$$` body is cut at every internal `;`,
+        /// the whole file runs in a transaction, and behavior is unchanged from before MySQL
+        /// was wired.
         @Test
-        void migrate_splitsDollarBodyAtInternalSemicolon_forMysql() {
-            var connector = new RecordingConnector(DatabaseType.MYSQL);
+        void migrate_splitsDollarBodyAtInternalSemicolon_forUnwiredH2() {
+            var connector = new RecordingConnector(DatabaseType.H2);
             var sql = """
                       CREATE FUNCTION f() RETURNS void AS $$
                       BEGIN
@@ -122,6 +126,36 @@ class AetherSchemaManagerTest {
             assertThat(connector.migrationStatements.get(2)).isEqualTo("END");
             assertThat(connector.migrationStatements.get(3)).isEqualTo("$$ LANGUAGE plpgsql");
             assertThat(connector.usedTransaction).isTrue();
+        }
+    }
+
+    @Nested
+    class MysqlFamily {
+
+        /// MySQL is wired to the dialect-aware splitter: the `DELIMITER`-wrapped stored
+        /// procedure is emitted as ONE statement (directives stripped, internal `;` kept),
+        /// and because MySQL DDL auto-commits the whole file runs in AUTOCOMMIT — no
+        /// transactional wrap.
+        @Test
+        void migrate_keepsProcedureBodyIntactInAutocommit_forMysqlDelimiterProcedure() {
+            var connector = new RecordingConnector(DatabaseType.MYSQL);
+            var sql = """
+                      DELIMITER $$
+                      CREATE PROCEDURE p()
+                      BEGIN
+                        SELECT 1;
+                        SELECT 2;
+                      END$$
+                      DELIMITER ;
+                      CREATE TABLE t (id INT);
+                      """;
+
+            migrate(connector, "V1__proc.sql", sql);
+
+            assertThat(connector.migrationStatements).hasSize(2);
+            assertThat(connector.migrationStatements.get(0)).contains("CREATE PROCEDURE p()").contains("SELECT 1;").contains("SELECT 2;").contains("END").doesNotContain("DELIMITER");
+            assertThat(connector.migrationStatements.get(1)).contains("CREATE TABLE t (id INT)");
+            assertThat(connector.usedTransaction).isFalse();
         }
     }
 

@@ -16,15 +16,17 @@ import static org.pragmatica.lang.Option.some;
 /// Maps a runtime [DatabaseType] to the migration execution descriptor that governs how
 /// [AetherSchemaManager] splits and wraps a migration file.
 ///
-/// Only PostgreSQL-family dialects (`POSTGRESQL`, `COCKROACHDB`) are wired to the
-/// dialect-aware [org.pragmatica.aether.pg.split.StatementSplitter]. Every other database
-/// type resolves to [Option#none()], which keeps the legacy naive `split(";")` execution
-/// path — guaranteeing zero behavior change for unwired dialects.
+/// PostgreSQL-family dialects (`POSTGRESQL`, `COCKROACHDB`) and the MySQL family
+/// (`MYSQL`, `MARIADB`) are wired to the dialect-aware
+/// [org.pragmatica.aether.pg.split.StatementSplitter]. Every still-unmapped database type
+/// resolves to [Option#none()], which keeps the legacy naive `split(";")` execution path —
+/// guaranteeing zero behavior change for unwired dialects.
 ///
-/// The [ExecutionDialect] descriptor carries a `ddlTransactional` flag so that autocommit-DDL
-/// dialects (MySQL, Oracle) slot in later by populating the table with `ddlTransactional=false`
-/// — no engine rework. The flag lives here, not in the splitter's [DialectSpec], which stays
-/// purely lexical.
+/// The [ExecutionDialect] descriptor carries a `ddlTransactional` flag: PostgreSQL-family is
+/// `true` (whole file wrapped in a transaction unless a non-transactional statement forces
+/// autocommit), while MySQL/MariaDB is `false` because their DDL auto-commits — wrapping it in
+/// a transaction is pointless, so the whole file runs in autocommit. The flag lives here, not
+/// in the splitter's [DialectSpec], which stays purely lexical.
 public sealed interface MigrationDialects {
     record unused() implements MigrationDialects {}
 
@@ -38,16 +40,21 @@ public sealed interface MigrationDialects {
     /// PostgreSQL-family descriptor: the splitter's PostgreSQL spec, DDL-transactional.
     ExecutionDialect POSTGRESQL = new ExecutionDialect(Dialects.POSTGRESQL, true);
 
+    /// MySQL/MariaDB descriptor: the splitter's MySQL spec, DDL auto-committing
+    /// (`ddlTransactional=false`), so the whole migration file runs in autocommit.
+    ExecutionDialect MYSQL = new ExecutionDialect(Dialects.MYSQL, false);
+
     /// Resolves the execution descriptor for a database type.
     ///
     /// @param type the effective database type of the migration's connector
     ///
-    /// @return the descriptor for PostgreSQL-family dialects, or [Option#none()] for every
-    ///         other type (legacy naive execution path)
+    /// @return the descriptor for PostgreSQL-family and MySQL-family dialects, or
+    ///         [Option#none()] for every still-unmapped type (legacy naive execution path)
     static Option<ExecutionDialect> dialectFor(DatabaseType type) {
         return switch (type) {
             case POSTGRESQL, COCKROACHDB -> some(POSTGRESQL);
-            case MYSQL, MARIADB, H2, SQLITE, ORACLE, SQLSERVER, DB2 -> none();
+            case MYSQL, MARIADB -> some(MYSQL);
+            case H2, SQLITE, ORACLE, SQLSERVER, DB2 -> none();
         };
     }
 }
