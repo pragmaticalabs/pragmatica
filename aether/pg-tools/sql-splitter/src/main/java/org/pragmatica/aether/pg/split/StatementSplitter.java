@@ -43,6 +43,19 @@ import static org.pragmatica.lang.Result.unitResult;
 /// instead sets `semicolonTerminates=false` so a top-level `;` never ends a statement, and
 /// bounds statements only on the batch separator — each `GO`-batch (procedure body internal
 /// `;` and all) is emitted verbatim.
+///
+/// Oracle adds three more descriptor-gated primitives. (1) A `blockLineTerminator` (`/`): a
+/// line whose sole trimmed content is the token emits the accumulated statement and is consumed
+/// without emitting the token — line-anchored, exactly like a batch separator. (2) Alternative
+/// quoting `q'X…X'` / `Q'X…X'`, an opaque string span whose delimiter is the character after
+/// `q'` (an opening bracket `[ { ( <` closes on its mirror, any other char closes on itself)
+/// followed by the closing `'`. (3) PL/SQL BLOCK MODE: at a statement's first significant
+/// character the engine consults [DialectSpec#startsBlock] on the leading keywords; when the
+/// statement opens a PL/SQL block (`DECLARE`, `BEGIN`, `CREATE … PROCEDURE|FUNCTION|TRIGGER|
+/// PACKAGE|TYPE …`) a per-statement flag suppresses `;` termination for that one statement, so
+/// the block's internal `;` are kept and only a `/`-line ends it. The flag is set at statement
+/// start and cleared on every emit, so the suppression is localized; dialects whose descriptor
+/// leaves the block starter off (PostgreSQL, MySQL, DB2, SQL Server) never enter block mode.
 public sealed interface StatementSplitter {
     record unused() implements StatementSplitter {}
 
@@ -87,6 +100,7 @@ public sealed interface StatementSplitter {
         private int statementStart;
         private int statementStartLine;
         private String activeTerminator;
+        private boolean inPlsqlBlock;
 
         private Scan(String sql, DialectSpec dialect) {
             this.sql = sql;
@@ -140,6 +154,9 @@ public sealed interface StatementSplitter {
             if (consumesBatchSeparator()) {
                 return unitResult();
             }
+            if (consumesBlockLineTerminator()) {
+                return unitResult();
+            }
             markStatementLine();
 
             if (atActiveTerminator()) {
@@ -152,8 +169,10 @@ public sealed interface StatementSplitter {
         /// single-char `;` test; a redefinable-terminator dialect matches the full (possibly
         /// multi-char) terminator string. Batch dialects (`semicolonTerminates=false`, e.g. SQL
         /// Server) never terminate on the `;` here — only the batch separator bounds statements.
+        /// While inside a PL/SQL block (Oracle) the terminator is suppressed too — the block's
+        /// internal `;` are opaque and only the block-line terminator (`/`) ends it.
         private boolean atActiveTerminator() {
-            if (!dialect.boundaries().semicolonTerminates()) {
+            if (!dialect.boundaries().semicolonTerminates() || inPlsqlBlock) {
                 return false;
             }
             return activeTerminator.length() == 1
@@ -162,11 +181,23 @@ public sealed interface StatementSplitter {
         }
 
         /// Records the current line as the statement's begin-line on its first significant
-        /// (non-whitespace) character, so leading blank lines do not skew diagnostics.
+        /// (non-whitespace) character, so leading blank lines do not skew diagnostics. On that
+        /// same first character it also decides PL/SQL block mode for the whole statement: when
+        /// the dialect carries a block-line terminator and its block starter recognizes the
+        /// leading keywords, `;` is suppressed for this statement until a `/`-line ends it.
         private void markStatementLine() {
             if (statementStartLine == 0) {
                 statementStartLine = line;
+                inPlsqlBlock = startsPlsqlBlock();
             }
+        }
+
+        /// Whether the statement beginning at the cursor opens a PL/SQL block under a dialect
+        /// that carries a block-line terminator. Only such dialects (Oracle) ever consult the
+        /// block starter; for every other dialect this is `false` and block mode never engages.
+        private boolean startsPlsqlBlock() {
+            return dialect.boundaries().blockLineTerminator().isPresent()
+                   && dialect.startsBlock(sql.substring(pos, length));
         }
 
         // ----- redefinable terminator directive --------------------------------------
@@ -245,6 +276,7 @@ public sealed interface StatementSplitter {
             }
             statementStart = pos;
             statementStartLine = 0; // pending: re-marked on the next statement's first char
+            inPlsqlBlock = false;   // block mode decided afresh at the next statement's first char
         }
 
         private int skipInlineWhitespace(int from) {
@@ -338,6 +370,45 @@ public sealed interface StatementSplitter {
             }
             statementStart = pos;
             statementStartLine = 0; // pending: re-marked on the next statement's first char
+            inPlsqlBlock = false;   // block mode decided afresh at the next statement's first char
+        }
+
+        // ----- block-line terminator (Oracle /) --------------------------------------
+
+        /// Recognizes a block-line terminator (Oracle `/`) at the start of a line. The token must
+        /// be the sole trimmed content of the line. When matched the accumulated statement (the
+        /// PL/SQL block) is emitted and the WHOLE terminator line is consumed WITHOUT emitting the
+        /// token — line-anchored, exactly like a batch separator. Dialects without a block-line
+        /// terminator (PostgreSQL, MySQL, DB2, SQL Server) never enter this path.
+        ///
+        /// @return `true` when a block-line terminator line was consumed, `false` otherwise
+        private boolean consumesBlockLineTerminator() {
+            return dialect.boundaries()
+                          .blockLineTerminator()
+                          .map(this::consumeBlockLineTerminator)
+                          .or(false);
+        }
+
+        private boolean consumeBlockLineTerminator(String token) {
+            return onlyWhitespaceSinceLineStart() && tryConsumeBlockTerminatorLine(token);
+        }
+
+        /// Matches a line whose sole trimmed content is the block-line terminator token. On a
+        /// match, emits the accumulated statement, consumes the terminator line including its
+        /// terminating newline, resets the statement origin, and returns `true`.
+        private boolean tryConsumeBlockTerminatorLine(String token) {
+            if (!tokenAloneOnLine(token)) {
+                return false;
+            }
+            emitStatement(pos);
+            advancePastBatchLine();
+            return true;
+        }
+
+        /// Whether the line at the cursor consists solely of the block-line terminator token,
+        /// ignoring surrounding whitespace and a trailing carriage return.
+        private boolean tokenAloneOnLine(String token) {
+            return stripCr(sql.substring(pos, lineEndFrom(pos))).strip().equals(token);
         }
 
         /// A top-level `;` either opens a `COPY … FROM STDIN` data block or ends a statement.
@@ -352,6 +423,7 @@ public sealed interface StatementSplitter {
             pos += activeTerminator.length();
             statementStart = pos;
             statementStartLine = 0; // pending: re-marked on the next statement's first char
+            inPlsqlBlock = false;   // block mode decided afresh at the next statement's first char
             return unitResult();
         }
 
@@ -371,6 +443,9 @@ public sealed interface StatementSplitter {
             }
             if (startsNationalString(c)) {
                 return consumeNationalString();
+            }
+            if (startsAltQuoting(c)) {
+                return consumeAltQuoting();
             }
             if (c == '\'') {
                 return consumeString();
@@ -423,6 +498,10 @@ public sealed interface StatementSplitter {
 
         private boolean startsNationalString(char c) {
             return dialect.strings().nationalPrefix() && (c == 'N' || c == 'n') && peek(1) == '\'';
+        }
+
+        private boolean startsAltQuoting(char c) {
+            return dialect.strings().altQuoting() && (c == 'q' || c == 'Q') && peek(1) == '\'';
         }
 
         private boolean startsQuotedIdentifier(char c) {
@@ -543,6 +622,42 @@ public sealed interface StatementSplitter {
         private Result<Unit> consumeNationalString() {
             pos++; // consume the N prefix; the cursor now sits on the opening '
             return consumeString();
+        }
+
+        /// Consumes an Oracle alternative-quoted string `q'X…X'` / `Q'X…X'`. The cursor sits on
+        /// the `q`/`Q`; `pos+1` is the opening `'` and `pos+2` is the delimiter. When the
+        /// delimiter is an opening bracket `[ { ( <` the close is its mirror `] } ) >` followed
+        /// by `'`; otherwise the close is the same delimiter character followed by `'`. The body
+        /// is opaque (any `;`, quotes, or brackets inside are literal). An unterminated span at
+        /// end of input is reported as an [SplitError.UnterminatedString].
+        private Result<Unit> consumeAltQuoting() {
+            var openedLine = line;
+            var delimiter = peek(2);
+            var closer = altQuotingCloser(delimiter);
+
+            pos += 3; // consume q, ', and the delimiter char
+
+            while (pos < length) {
+                if (sql.charAt(pos) == closer && peek(1) == '\'') {
+                    pos += 2; // consume the mirror delimiter and the closing '
+                    return unitResult();
+                }
+                advanceTrackingLine();
+            }
+            return new SplitError.UnterminatedString(openedLine).result();
+        }
+
+        /// The character that, immediately before the closing `'`, ends an alternative-quoted
+        /// string opened with the given delimiter: the mirror of an opening bracket, otherwise
+        /// the delimiter itself.
+        private static char altQuotingCloser(char delimiter) {
+            return switch (delimiter) {
+                case '[' -> ']';
+                case '{' -> '}';
+                case '(' -> ')';
+                case '<' -> '>';
+                default -> delimiter;
+            };
         }
 
         private Result<Unit> consumeString() {
@@ -681,6 +796,7 @@ public sealed interface StatementSplitter {
             }
             statementStart = pos;
             statementStartLine = 0; // pending: re-marked on the next statement's first char
+            inPlsqlBlock = false;   // block mode decided afresh at the next statement's first char
             return unitResult();
         }
 

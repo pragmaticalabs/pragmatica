@@ -17,17 +17,17 @@ import static org.pragmatica.lang.Option.some;
 /// [AetherSchemaManager] splits and wraps a migration file.
 ///
 /// PostgreSQL-family dialects (`POSTGRESQL`, `COCKROACHDB`), the MySQL family
-/// (`MYSQL`, `MARIADB`), `DB2`, and `SQLSERVER` are wired to the dialect-aware
+/// (`MYSQL`, `MARIADB`), `DB2`, `SQLSERVER`, and `ORACLE` are wired to the dialect-aware
 /// [org.pragmatica.aether.pg.split.StatementSplitter]. Every still-unmapped database type
-/// (`H2`, `SQLITE`, `ORACLE`) resolves to [Option#none()], which keeps the legacy naive
+/// (`H2`, `SQLITE`) resolves to [Option#none()], which keeps the legacy naive
 /// `split(";")` execution path — guaranteeing zero behavior change for unwired dialects.
 ///
 /// The [ExecutionDialect] descriptor carries a `ddlTransactional` flag: PostgreSQL-family,
 /// DB2, and SQL Server are `true` (whole file wrapped in a transaction unless a
-/// non-transactional statement forces autocommit), while MySQL/MariaDB is `false` because their
-/// DDL auto-commits — wrapping it in a transaction is pointless, so the whole file runs in
-/// autocommit. The flag lives here, not in the splitter's [DialectSpec], which stays purely
-/// lexical.
+/// non-transactional statement forces autocommit), while MySQL/MariaDB and Oracle are `false`
+/// because their DDL auto-commits — wrapping it in a transaction is pointless, so the whole file
+/// runs in autocommit. The flag lives here, not in the splitter's [DialectSpec], which stays
+/// purely lexical.
 public sealed interface MigrationDialects {
     record unused() implements MigrationDialects {}
 
@@ -51,20 +51,25 @@ public sealed interface MigrationDialects {
     /// SQL Server descriptor: the splitter's SQL Server (T-SQL) spec, DDL-transactional.
     ExecutionDialect SQLSERVER = new ExecutionDialect(Dialects.SQLSERVER, true);
 
+    /// Oracle descriptor: the splitter's Oracle spec, DDL auto-committing
+    /// (`ddlTransactional=false`), so the whole migration file runs in autocommit.
+    ExecutionDialect ORACLE = new ExecutionDialect(Dialects.ORACLE, false);
+
     /// Resolves the execution descriptor for a database type.
     ///
     /// @param type the effective database type of the migration's connector
     ///
-    /// @return the descriptor for PostgreSQL-family, MySQL-family, DB2, and SQL Server
-    ///         dialects, or [Option#none()] for every still-unmapped type (`H2`, `SQLITE`,
-    ///         `ORACLE` — legacy naive execution path)
+    /// @return the descriptor for PostgreSQL-family, MySQL-family, DB2, SQL Server, and Oracle
+    ///         dialects, or [Option#none()] for every still-unmapped type (`H2`, `SQLITE` —
+    ///         legacy naive execution path)
     static Option<ExecutionDialect> dialectFor(DatabaseType type) {
         return switch (type) {
             case POSTGRESQL, COCKROACHDB -> some(POSTGRESQL);
             case MYSQL, MARIADB -> some(MYSQL);
             case DB2 -> some(DB2);
             case SQLSERVER -> some(SQLSERVER);
-            case H2, SQLITE, ORACLE -> none();
+            case ORACLE -> some(ORACLE);
+            case H2, SQLITE -> none();
         };
     }
 }

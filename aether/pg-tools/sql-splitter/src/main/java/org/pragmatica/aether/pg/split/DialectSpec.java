@@ -18,20 +18,25 @@ import org.pragmatica.lang.Option;
 /// carried as data but no shipped dialect enables them yet; when one does, the engine gains
 /// a localized extension keyed off these same fields — not a redesign.
 ///
-/// @param strings     string-literal lexical rules
-/// @param identifiers identifier-quoting rules
-/// @param comments    comment lexical rules
-/// @param dollarQuote dollar-quoting rules
-/// @param boundaries  statement-boundary primitives (terminator/batch/block)
-/// @param copyData    `COPY … FROM STDIN` inline-data handling
-/// @param classifier  dialect-specific transactional classifier for a single statement
+/// @param strings      string-literal lexical rules
+/// @param identifiers  identifier-quoting rules
+/// @param comments     comment lexical rules
+/// @param dollarQuote  dollar-quoting rules
+/// @param boundaries   statement-boundary primitives (terminator/batch/block)
+/// @param copyData     `COPY … FROM STDIN` inline-data handling
+/// @param classifier   dialect-specific transactional classifier for a single statement
+/// @param blockStarter dialect-specific predicate over a statement's leading keywords deciding
+///                     whether the statement begins a PL/SQL block (so internal `;` are opaque
+///                     until a block-line terminator); off for every dialect without a
+///                     [BoundaryRules#blockLineTerminator()]
 public record DialectSpec(StringRules strings,
                           IdentifierRules identifiers,
                           CommentRules comments,
                           DollarQuoteRules dollarQuote,
                           BoundaryRules boundaries,
                           CopyDataRules copyData,
-                          Fn1<Boolean, String> classifier) {
+                          Fn1<Boolean, String> classifier,
+                          Fn1<Boolean, String> blockStarter) {
 
     /// Whether the given statement text runs inside a transaction in this dialect.
     ///
@@ -47,13 +52,30 @@ public record DialectSpec(StringRules strings,
         return classifier.apply(statementText);
     }
 
+    /// Whether the leading keywords of the given statement prefix begin a PL/SQL block whose
+    /// internal `;` must NOT split it (Oracle `DECLARE`/`BEGIN`/`CREATE … PROCEDURE|FUNCTION|
+    /// TRIGGER|PACKAGE|TYPE …`). Block detection is keyword-prefix-based and case-insensitive,
+    /// tolerant of leading comments and whitespace. Dialects without a block-line terminator
+    /// leave this off (always `false`), so they never enter block mode.
+    ///
+    /// @param statementPrefix the statement text accumulated so far (from its first significant
+    ///                        character onward)
+    ///
+    /// @return `true` if the prefix begins a PL/SQL block, `false` otherwise
+    public boolean startsBlock(String statementPrefix) {
+        return blockStarter.apply(statementPrefix);
+    }
+
     /// String-literal lexical rules.
     ///
     /// @param doubledQuoteEscape  `''` inside `'…'` represents a literal quote (SQL standard)
     /// @param backslashEscapes    backslash escapes are honored inside ordinary `'…'`
     /// @param escapeStringPrefix  `E'…'` escape-string syntax (always backslash-aware)
     /// @param nationalPrefix      `N'…'` national-character-string prefix
-    /// @param altQuoting          `q'X…X'` Oracle-style alternative quoting
+    /// @param altQuoting          `q'X…X'` / `Q'X…X'` Oracle-style alternative quoting, where the
+    ///                            character after `q'` is the delimiter (an opening bracket
+    ///                            `[ { ( <` closes on its mirror, any other char closes on itself)
+    ///                            followed by the closing `'`; the body is opaque
     /// @param doubleQuoteString   `"…"` is a STRING literal, not a quoted identifier
     ///                            (MySQL without `ANSI_QUOTES`); doubling `""` embeds a quote
     public record StringRules(boolean doubledQuoteEscape,
@@ -100,8 +122,12 @@ public record DialectSpec(StringRules strings,
     ///                              (case-insensitive, optional trailing integer count) is a batch
     ///                              boundary: the accumulated statement is emitted and the line is
     ///                              consumed without emitting the keyword.
-    /// @param blockLineTerminator   single-character line that terminates a block (e.g. `/`);
-    ///                              empty when none
+    /// @param blockLineTerminator   single-character line that terminates a PL/SQL block (e.g.
+    ///                              Oracle `/`); empty when none. A line whose sole trimmed content
+    ///                              is the token emits the accumulated statement and is consumed
+    ///                              without emitting the token (line-anchored, like the batch
+    ///                              separator). It is how a block opened by [DialectSpec#startsBlock]
+    ///                              — inside which `;` does not split — is terminated.
     /// @param semicolonTerminates   whether a top-level `;` ends a statement. `true` for the
     ///                              `;`-terminated dialects (PostgreSQL, MySQL, DB2); `false` for
     ///                              batch dialects (SQL Server / T-SQL) where only the batch

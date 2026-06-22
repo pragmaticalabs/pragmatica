@@ -18,8 +18,8 @@ import java.util.regex.Pattern;
 import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.option;
 
-/// Catalog of populated [DialectSpec] descriptors. Ships PostgreSQL, MySQL/MariaDB, DB2, and
-/// SQL Server (T-SQL).
+/// Catalog of populated [DialectSpec] descriptors. Ships PostgreSQL, MySQL/MariaDB, DB2,
+/// SQL Server (T-SQL), and Oracle.
 public sealed interface Dialects {
     record unused() implements Dialects {}
 
@@ -38,6 +38,21 @@ public sealed interface Dialects {
         + ").*",
         Pattern.CASE_INSENSITIVE | Pattern.DOTALL);
 
+    /// Pattern recognizing the leading keywords of an Oracle PL/SQL block, after leading
+    /// whitespace and comments have been stripped. A match means the statement's internal `;`
+    /// are opaque and only a `/`-line terminates it. Recognizes anonymous blocks (`DECLARE`,
+    /// `BEGIN`) and the stored-program DDL `CREATE [OR REPLACE] [EDITIONABLE|NONEDITIONABLE]
+    /// (PROCEDURE|FUNCTION|TRIGGER|PACKAGE [BODY]|TYPE [BODY])`. A plain `CREATE TABLE`,
+    /// `INSERT`, `ALTER`, etc. does NOT match. Case-insensitive.
+    Pattern PLSQL_BLOCK_START = Pattern.compile(
+        "^(?:"
+        + "DECLARE\\b"
+        + "|BEGIN\\b"
+        + "|CREATE\\s+(?:OR\\s+REPLACE\\s+)?(?:(?:NON)?EDITIONABLE\\s+)?"
+        + "(?:PROCEDURE|FUNCTION|TRIGGER|PACKAGE(?:\\s+BODY)?|TYPE(?:\\s+BODY)?)\\b"
+        + ").*",
+        Pattern.CASE_INSENSITIVE | Pattern.DOTALL);
+
     /// Strips leading whitespace, `--` line comments, and `/*…*/` block comments so the
     /// transactional classifier sees the first real command keyword.
     Pattern LEADING_NOISE = Pattern.compile(
@@ -52,7 +67,8 @@ public sealed interface Dialects {
         new DollarQuoteRules(true),
         new BoundaryRules(none(), none(), none(), true),
         new CopyDataRules(true, "\\."),
-        Dialects::isPostgresTransactional);
+        Dialects::isPostgresTransactional,
+        Dialects::neverStartsBlock);
 
     /// The fully-populated MySQL/MariaDB dialect descriptor (one spec; MariaDB reuses it).
     ///
@@ -69,7 +85,8 @@ public sealed interface Dialects {
         new DollarQuoteRules(false),
         new BoundaryRules(option(new TerminatorRedefinition("DELIMITER", ";")), none(), none(), true),
         new CopyDataRules(false, ""),
-        Dialects::isMysqlTransactional);
+        Dialects::isMysqlTransactional,
+        Dialects::neverStartsBlock);
 
     /// The fully-populated DB2 dialect descriptor.
     ///
@@ -87,7 +104,8 @@ public sealed interface Dialects {
         new DollarQuoteRules(false),
         new BoundaryRules(option(new TerminatorRedefinition("--#SET TERMINATOR", ";")), none(), none(), true),
         new CopyDataRules(false, ""),
-        Dialects::isDb2Transactional);
+        Dialects::isDb2Transactional,
+        Dialects::neverStartsBlock);
 
     /// The fully-populated SQL Server (T-SQL) dialect descriptor.
     ///
@@ -105,7 +123,30 @@ public sealed interface Dialects {
         new DollarQuoteRules(false),
         new BoundaryRules(none(), option("GO"), none(), false),
         new CopyDataRules(false, ""),
-        Dialects::isSqlServerTransactional);
+        Dialects::isSqlServerTransactional,
+        Dialects::neverStartsBlock);
+
+    /// The fully-populated Oracle dialect descriptor.
+    ///
+    /// Strings use SQL-standard `''` doubling with NO backslash escapes, and additionally honor
+    /// Oracle alternative quoting `q'X…X'` / `Q'X…X'` (no `E'…'`, no `N'…'`, no `"…"` string).
+    /// Identifiers are double-quoted (`"…"`) only — no backtick, no bracket. Comments are `--`
+    /// line comments and `/*…*/` block comments that do NOT nest (Oracle does not nest). There is
+    /// no dollar quoting. Statements are bounded by the `/` block-line terminator AND a top-level
+    /// `;` (`semicolonTerminates=true`): a PL/SQL block (recognized by [#PLSQL_BLOCK_START]) keeps
+    /// its internal `;` and ends only on a `/`-line, while a plain `CREATE TABLE`/`INSERT`/`ALTER`
+    /// terminates on `;` as usual. There is no redefinable terminator, no batch separator, and no
+    /// `COPY` inline-data mode. Oracle DDL auto-commits, so the executor runs the whole file in
+    /// AUTOCOMMIT; the per-statement transactional classifier is therefore unused (always `true`).
+    DialectSpec ORACLE = new DialectSpec(
+        new StringRules(true, false, false, false, true, false),
+        new IdentifierRules(true, false, false),
+        new CommentRules(true, false, true, false, false),
+        new DollarQuoteRules(false),
+        new BoundaryRules(none(), none(), option("/"), true),
+        new CopyDataRules(false, ""),
+        Dialects::isOracleTransactional,
+        Dialects::isOraclePlsqlBlock);
 
     /// Classifies a PostgreSQL statement as transactional or not.
     ///
@@ -150,6 +191,37 @@ public sealed interface Dialects {
     /// @return always `true`
     static boolean isSqlServerTransactional(String statementText) {
         return true;
+    }
+
+    /// Classifies an Oracle statement as transactional.
+    ///
+    /// Oracle DDL auto-commits, so per-statement classification is unused by the executor (which
+    /// runs the whole file in autocommit); every statement is reported transactional.
+    ///
+    /// @param statementText verbatim statement text
+    ///
+    /// @return always `true`
+    static boolean isOracleTransactional(String statementText) {
+        return true;
+    }
+
+    /// Whether the leading keywords of an Oracle statement prefix begin a PL/SQL block, so its
+    /// internal `;` must be kept and only a `/`-line terminates it.
+    ///
+    /// @param statementPrefix the statement text accumulated so far
+    ///
+    /// @return `true` for an anonymous block or stored-program DDL, `false` for plain SQL
+    static boolean isOraclePlsqlBlock(String statementPrefix) {
+        return PLSQL_BLOCK_START.matcher(stripLeadingNoise(statementPrefix)).matches();
+    }
+
+    /// The block starter for dialects without a PL/SQL block mode — they never enter block mode.
+    ///
+    /// @param statementPrefix the statement text accumulated so far (ignored)
+    ///
+    /// @return always `false`
+    static boolean neverStartsBlock(String statementPrefix) {
+        return false;
     }
 
     /// Removes leading whitespace and comments before the first command keyword.

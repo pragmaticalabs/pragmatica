@@ -211,6 +211,32 @@ class AetherSchemaManagerTest {
         }
     }
 
+    @Nested
+    class OracleFamily {
+
+        /// Oracle is wired to the dialect-aware splitter: the PL/SQL procedure is emitted as ONE
+        /// statement (its internal `;` are kept because the leading keywords open a block, and the
+        /// `/`-line that ends the block is consumed, never emitted), the following plain `CREATE
+        /// TABLE` is a separate statement, and because Oracle DDL auto-commits the whole file runs
+        /// in AUTOCOMMIT — no transactional wrap.
+        @Test
+        void migrate_keepsProcedureBodyIntactInAutocommit_forOraclePlsqlProcedure() {
+            var connector = new RecordingConnector(DatabaseType.ORACLE);
+            var sql = """
+                      CREATE OR REPLACE PROCEDURE p AS BEGIN x := 1; y := 2; END;
+                      /
+                      CREATE TABLE t (id NUMBER);
+                      """;
+
+            migrate(connector, "V1__proc.sql", sql);
+
+            assertThat(connector.migrationStatements).hasSize(2);
+            assertThat(connector.migrationStatements.get(0)).contains("CREATE OR REPLACE PROCEDURE p").contains("x := 1;").contains("y := 2;").contains("END;").doesNotContain("CREATE TABLE");
+            assertThat(connector.migrationStatements.get(1)).contains("CREATE TABLE t (id NUMBER)");
+            assertThat(connector.usedTransaction).isFalse();
+        }
+    }
+
     private AetherSchemaManager schemaManager() {
         return AetherSchemaManager.aetherSchemaManager(POLICY);
     }
