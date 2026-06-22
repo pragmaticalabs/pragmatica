@@ -627,6 +627,27 @@ public sealed interface ManagementApiResponses {
                                 boolean strictCore,
                                 boolean countsTowardEffective) {}
 
+    /// #260/#261/#333 regression-sensor surface — the per-partition replica-set state as seen by the
+    /// answering node's `ReplicaRegistry`, with the deterministic HRW owner resolved via the read
+    /// path's owner resolver. The registry is AUTHORITATIVE only on the HRW owner (only the owner
+    /// receives every replica's ack), so `servedByOwner` tells an operator whether `replicas` is the
+    /// complete view; when false, `hrwOwner` names the node to re-query. `ownerHeadOffset` is the
+    /// answering node's local next-expected offset (head + 1) — on the owner it is the true tail used
+    /// to spot a CAUGHT_UP replica whose `confirmedOffset` lags it (#333 write-idle residual).
+    record StreamReplicasResponse(String stream,
+                                  int partition,
+                                  String hrwOwner,
+                                  boolean servedByOwner,
+                                  long ownerHeadOffset,
+                                  long earliestRetainedOffset,
+                                  List<ReplicaStateDetail> replicas) {}
+
+    /// Per-replica state row: `state` is the `ReplicationState` name (`SYNCING` / `CAUGHT_UP` /
+    /// `LAGGING`), `confirmedOffset` the replica's acked watermark, `isHrwOwner` whether this replica
+    /// is the resolved HRW owner. Compare a `CAUGHT_UP` replica's `confirmedOffset` against the
+    /// response's `ownerHeadOffset` to detect the #333 lag residual.
+    record ReplicaStateDetail(String nodeId, String state, long confirmedOffset, boolean isHrwOwner) {}
+
     record ClusterStatusResponse(String clusterName,
                                  String desiredVersion,
                                  int desiredCoreCount,

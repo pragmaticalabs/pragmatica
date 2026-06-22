@@ -4,6 +4,8 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.api.routes;
 
+import org.pragmatica.aether.api.ManagementApiResponses.ReplicaStateDetail;
+import org.pragmatica.aether.api.ManagementApiResponses.StreamReplicasResponse;
 import org.pragmatica.aether.management.route.ManagementRoute;
 import org.pragmatica.aether.node.ManageableNode;
 import org.pragmatica.aether.slice.ReadPreference;
@@ -15,6 +17,8 @@ import org.pragmatica.aether.stream.StreamPartitionManager;
 import org.pragmatica.aether.stream.StreamPartitionManager.PartitionInfo;
 import org.pragmatica.aether.stream.StreamPartitionManager.StreamInfo;
 import org.pragmatica.aether.stream.StreamReadRouter;
+import org.pragmatica.aether.stream.StreamReadRouter.ReplicaSetView;
+import org.pragmatica.aether.stream.StreamReadRouter.ReplicaView;
 import org.pragmatica.aether.stream.consumer.ConsumerGroupCoordinator;
 import org.pragmatica.aether.stream.consumer.ConsumerGroupCoordinator.ConsumerInfo;
 import org.pragmatica.aether.stream.consumer.ConsumerGroupRegistry;
@@ -126,6 +130,11 @@ public final class StreamRoutes implements RouteSource {
                                                    PathParameter.aInteger())
                                          .toResult(this::partitionDetails)
                                          .asJson(),
+                         ManagementRoutes.<StreamReplicasResponse> route(ManagementRoute.STREAM_REPLICAS)
+                                         .withPath(PathParameter.aString(),
+                                                   PathParameter.aInteger())
+                                         .toResult(this::replicaDetails)
+                                         .asJson(),
                          ManagementRoutes.<PublishResponse> route(ManagementRoute.STREAM_PUBLISH)
                                          .withPath(PathParameter.aString())
                                          .withBody(PublishRequest.class)
@@ -188,6 +197,28 @@ public final class StreamRoutes implements RouteSource {
     private Result<PartitionDetail> partitionDetails(String name, Integer partition) {
         return streamManager().partitionInfo(name, partition)
                             .map(PartitionDetail::fromPartitionInfo);
+    }
+
+    /// #260/#261/#333 replica-state observability handler. Assembles the partition's replica-set view
+    /// off the router's `ReplicaRegistry` + HRW owner resolver (a Leaf — pure read of already-computed
+    /// state). Always succeeds: an unknown stream/partition yields an empty replica set with
+    /// `servedByOwner=false`, which is itself the operator-meaningful answer.
+    private Result<StreamReplicasResponse> replicaDetails(String name, Integer partition) {
+        return Result.success(toReplicasResponse(streamReadRouter().replicaSnapshot(name, partition)));
+    }
+
+    private static StreamReplicasResponse toReplicasResponse(ReplicaSetView view) {
+        return new StreamReplicasResponse(view.streamName(),
+                                          view.partition(),
+                                          view.ownerNodeId().or(""),
+                                          view.servedByOwner(),
+                                          view.ownerHeadOffset(),
+                                          view.earliestRetainedOffset(),
+                                          view.replicas().stream().map(StreamRoutes::toReplicaStateDetail).toList());
+    }
+
+    private static ReplicaStateDetail toReplicaStateDetail(ReplicaView replica) {
+        return new ReplicaStateDetail(replica.nodeId(), replica.state(), replica.confirmedOffset(), replica.hrwOwner());
     }
 
     private Result<PublishResponse> publishEvent(String name, PublishRequest request) {

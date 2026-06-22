@@ -1517,6 +1517,29 @@ Show registry metadata for a specific stream version.
 aether stream show orders:order-events:1.0.0
 ```
 
+### `aether stream replicas <stream> <partition>`
+
+Show per-node replica state for a stream partition — the replication/backfill-health sensor for the stream-replication class (#260/#261/#333). Renders a per-replica table (each replica's `STATE` — `SYNCING`/`CAUGHT_UP`/`LAGGING` — its `CONFIRMED` acked offset, and whether it is the partition's HRW owner) and surfaces the partition-level fields (`hrwOwner`, `servedByOwner`, `ownerHeadOffset`, `earliestRetainedOffset`) in `--format json`. Compare a `CAUGHT_UP` replica's `CONFIRMED` against `ownerHeadOffset` to spot the #333 write-idle residual (a replica that reports caught-up but lags the owner's true tail).
+
+`<stream>` is the partition manager's local stream name (for the replicated cluster-event stream this is `system:cluster-events:1.0.0`), not a `namespace:stream:version` address — replica placement is keyed on that name.
+
+**Owner authority:** the answering node's `ReplicaRegistry` holds the complete per-peer watermark view only when that node IS the partition's HRW owner (`servedByOwner: true`). Query is served from a STREAMING-capable node and is owner-aware but **not** owner-forwarded: when `servedByOwner` is `false`, re-query the node named in `hrwOwner` for the authoritative full set. Wraps `GET /api/streams/replicas/{name}/{partition}`.
+
+```bash
+aether stream replicas system:cluster-events:1.0.0 0
+
+# Machine-readable (includes hrwOwner / servedByOwner / ownerHeadOffset)
+aether stream replicas system:cluster-events:1.0.0 0 --format json
+```
+
+Example output (table):
+```
+NODE      STATE      CONFIRMED  HRW-OWNER
+core-1    CAUGHT_UP  255        yes
+core-3    CAUGHT_UP  255        no
+core-4    SYNCING    240        no
+```
+
 ### `aether stream tail <namespace:stream:version> [options]`
 
 Tail events from a stream version. Tailing is **polling-based** (paginated GETs against

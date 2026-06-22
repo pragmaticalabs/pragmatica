@@ -135,6 +135,13 @@ public enum ManagementRoute {
     STREAM_DELETE(DELETE, "/api/streams", List.of("name"), taskGroup(STREAMING)),
     STREAM_CONSUMERS(GET, "/api/streams/consumers", List.of("name"), taskGroup(STREAMING)),
     STREAM_READ(GET, "/api/streams/read", List.of("name", "partition"), taskGroup(STREAMING)),
+    // #260/#261/#333 replica-state observability. taskGroup(STREAMING) lands the request on a
+    // STREAMING-capable node; the handler then resolves the partition's deterministic HRW owner and
+    // assembles the replica-set view from the local `ReplicaRegistry` (authoritative only ON the
+    // owner — see `servedByOwner` in the response). Per-partition-owner management forwarding is not
+    // a `RouteTarget` variant (the owner is computed from name+partition, not a path param), so the
+    // response is owner-aware rather than owner-forwarded.
+    STREAM_REPLICAS(GET, "/api/streams/replicas", List.of("name", "partition"), taskGroup(STREAMING)),
     CONSUMER_GROUP_JOIN(POST, "/api/streams/groups/join", List.of(), taskGroup(STREAMING)),
     CONSUMER_GROUP_LEAVE(POST, "/api/streams/groups/leave", List.of(), taskGroup(STREAMING)),
     CONSUMER_GROUP_STATUS(GET, "/api/streams/groups", List.of("id"), taskGroup(STREAMING)),

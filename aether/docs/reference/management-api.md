@@ -3780,6 +3780,48 @@ GET /api/streams/{name}/{partition}
 }
 ```
 
+### Partition Replica State
+
+```
+GET /api/streams/replicas/{name}/{partition}
+```
+
+**Auth:** ALL_AUTHENTICATED · **Routing:** STREAMING task group
+
+Replication/backfill-health sensor for the stream-replication class (#260/#261/#333). Returns the partition's replica set as seen by the answering node's `ReplicaRegistry`, with the deterministic HRW owner resolved via the read path's owner resolver. Each replica entry carries its replication `state` (`SYNCING` / `CAUGHT_UP` / `LAGGING`), its acked `confirmedOffset`, and whether it `isHrwOwner`. To detect the #333 write-idle residual, compare a `CAUGHT_UP` replica's `confirmedOffset` against the response's `ownerHeadOffset`.
+
+**Owner authority (read this):** the per-peer confirmed-watermark view is advanced by the owner's `DefaultReplicationManager.handleAck`, so the `ReplicaRegistry` is **authoritative only on the partition's HRW owner** — a non-owner mostly knows only itself. The response is therefore **owner-aware, not owner-forwarded**: per-partition-owner forwarding is not a management `RouteTarget` variant (the owner is computed from `name`+`partition`, not a path param), and the stream forward transport carries only event reads. `servedByOwner` is `true` when the answering node IS the resolved owner (then `replicas` is the complete, authoritative set); when `false`, `hrwOwner` names the node to re-query. `name` is the partition manager's local stream name (e.g. `system:cluster-events:1.0.0`).
+
+**Response (served by the owner — authoritative):**
+```json
+{
+  "stream": "system:cluster-events:1.0.0",
+  "partition": 0,
+  "hrwOwner": "core-1",
+  "servedByOwner": true,
+  "ownerHeadOffset": 256,
+  "earliestRetainedOffset": 0,
+  "replicas": [
+    {"nodeId": "core-1", "state": "CAUGHT_UP", "confirmedOffset": 255, "isHrwOwner": true},
+    {"nodeId": "core-3", "state": "CAUGHT_UP", "confirmedOffset": 255, "isHrwOwner": false},
+    {"nodeId": "core-4", "state": "SYNCING",   "confirmedOffset": 240, "isHrwOwner": false}
+  ]
+}
+```
+
+| Field | Description |
+|-------|-------------|
+| `stream` | Partition manager's local stream name |
+| `partition` | Partition number queried |
+| `hrwOwner` | Resolved deterministic HRW owner node id (`""` during the bootstrap window before placement is known) |
+| `servedByOwner` | Whether the answering node is itself the HRW owner — i.e. whether `replicas` is the complete authoritative view |
+| `ownerHeadOffset` | The answering node's local next-expected offset (head + 1); on the owner this is the true tail used to spot a lagging `CAUGHT_UP` replica (#333) |
+| `earliestRetainedOffset` | Earliest offset still retained locally (`-1` when the partition is absent/empty) |
+| `replicas[]` | Every registered replica for the partition, sorted by node id |
+| `replicas[].state` | Replication state: `SYNCING` / `CAUGHT_UP` / `LAGGING` |
+| `replicas[].confirmedOffset` | The replica's acked confirmed watermark |
+| `replicas[].isHrwOwner` | Whether this replica is the resolved HRW owner |
+
 ### Create Stream
 
 ```

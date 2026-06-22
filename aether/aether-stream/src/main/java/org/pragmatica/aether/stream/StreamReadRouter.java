@@ -9,11 +9,13 @@ import org.pragmatica.aether.stream.ForwardingReadRouter.OwnerResolver;
 import org.pragmatica.aether.stream.forward.RawEventDto;
 import org.pragmatica.aether.stream.forward.StreamForwardClient;
 import org.pragmatica.aether.stream.forward.StreamReadForwardMetrics;
+import org.pragmatica.aether.stream.replication.ReplicaDescriptor;
 import org.pragmatica.aether.stream.replication.ReplicaRegistry;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 
+import java.util.Comparator;
 import java.util.List;
 
 
@@ -88,6 +90,61 @@ public final class StreamReadRouter {
         return partitionManager.readLocal(streamName, partition, fromOffset, maxEvents)
                                .async();
     }
+
+    /// Read-only replica-state snapshot for `(streamName, partition)` — the #260/#261/#333
+    /// regression sensor surface. Assembled from THIS node's `replicaRegistry` (the per-peer
+    /// confirmed-watermark + replication-state view advanced by `DefaultReplicationManager.handleAck`)
+    /// plus the local partition `headOffset`/`earliestRetainedOffset`, with the deterministic HRW owner
+    /// resolved via the same `ownerResolver` the read path forwards to.
+    ///
+    /// The registry is AUTHORITATIVE only on the partition's HRW owner: only the owner receives every
+    /// replica's ack and so holds the full peer-watermark view (a non-owner mostly knows itself). The
+    /// snapshot therefore reports `servedByOwner` (true when self IS the resolved owner) so an operator
+    /// can tell a complete view from a partial one; when it is `false`, `hrwOwner` names the node to
+    /// re-query. A Leaf: pure assembly off already-computed router/partition state, no I/O, no
+    /// hot-path cost.
+    public ReplicaSetView replicaSnapshot(String streamName, int partition) {
+        var owner = ownerResolver.resolve(streamName, partition);
+        var descriptors = replicaRegistry.map(registry -> registry.replicasFor(streamName, partition))
+                                         .or(List.of());
+        var replicas = descriptors.stream()
+                                  .map(descriptor -> toReplicaView(descriptor, owner))
+                                  .sorted(Comparator.comparing(ReplicaView::nodeId))
+                                  .toList();
+
+        return new ReplicaSetView(streamName,
+                                  partition,
+                                  owner.map(NodeId::id),
+                                  owner.map(selfNodeId::equals).or(false),
+                                  partitionManager.nextExpectedOffset(streamName, partition),
+                                  partitionManager.earliestRetainedOffset(streamName, partition),
+                                  replicas);
+    }
+
+    private static ReplicaView toReplicaView(ReplicaDescriptor descriptor, Option<NodeId> owner) {
+        return new ReplicaView(descriptor.nodeId().id(),
+                               descriptor.state().name(),
+                               descriptor.confirmedOffset(),
+                               owner.map(descriptor.nodeId()::equals).or(false));
+    }
+
+    /// Module-local carrier for the assembled replica-state snapshot. `ownerNodeId` is empty during the
+    /// bootstrap window (placement not yet known); `servedByOwner` is true only when the answering node
+    /// is itself the resolved HRW owner, in which case `replicas` is the authoritative full set.
+    /// `ownerHeadOffset` is the local partition next-expected offset (head + 1) — on the owner this is
+    /// the true tail used to spot a CAUGHT_UP replica whose `confirmedOffset` lags it (#333).
+    public record ReplicaSetView(String streamName,
+                                 int partition,
+                                 Option<String> ownerNodeId,
+                                 boolean servedByOwner,
+                                 long ownerHeadOffset,
+                                 long earliestRetainedOffset,
+                                 List<ReplicaView> replicas) {}
+
+    /// Per-replica state row: `state` is the `ReplicationState` name (SYNCING / CAUGHT_UP / LAGGING),
+    /// `confirmedOffset` the replica's acked watermark, `hrwOwner` whether this replica is the resolved
+    /// HRW owner of the partition.
+    public record ReplicaView(String nodeId, String state, long confirmedOffset, boolean hrwOwner) {}
 
     private static List<OffHeapRingBuffer.RawEvent> toRawEvents(List<RawEventDto> events, int partition) {
         return events.stream()
