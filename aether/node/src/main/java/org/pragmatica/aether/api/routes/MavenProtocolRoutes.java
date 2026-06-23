@@ -13,7 +13,7 @@ import org.pragmatica.aether.node.ManageableNode;
 import org.pragmatica.http.ContentCategory;
 import org.pragmatica.http.ContentType;
 import org.pragmatica.http.HttpStatus;
-import org.pragmatica.http.server.RequestContext;
+import org.pragmatica.http.HttpRequest;
 import org.pragmatica.http.server.ResponseWriter;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
@@ -80,7 +80,7 @@ public final class MavenProtocolRoutes implements RouteHandler {
     }
 
     @Override
-    public boolean handle(RequestContext ctx, ResponseWriter response) {
+    public boolean handle(HttpRequest ctx, ResponseWriter response) {
         var path = ctx.path();
         var method = ctx.method();
 

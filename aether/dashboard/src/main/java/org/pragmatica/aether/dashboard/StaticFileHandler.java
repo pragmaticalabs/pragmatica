@@ -7,7 +7,7 @@ package org.pragmatica.aether.dashboard;
 import org.pragmatica.http.CommonContentType;
 import org.pragmatica.http.ContentType;
 import org.pragmatica.http.HttpStatus;
-import org.pragmatica.http.server.RequestContext;
+import org.pragmatica.http.HttpRequest;
 import org.pragmatica.http.server.ResponseWriter;
 import org.pragmatica.lang.Option;
 
@@ -75,7 +75,7 @@ public final class StaticFileHandler {
         return new StaticFileHandler(classpathPrefix);
     }
 
-    public void handle(RequestContext request, ResponseWriter response) {
+    public void handle(HttpRequest request, ResponseWriter response) {
         var path = request.path();
 
         if (path.equals("/") || path.equals("/index.html")) {

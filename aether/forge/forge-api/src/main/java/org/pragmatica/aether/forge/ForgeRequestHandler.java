@@ -7,7 +7,7 @@ package org.pragmatica.aether.forge;
 import org.pragmatica.aether.dashboard.StaticFileHandler;
 import org.pragmatica.http.CommonContentType;
 import org.pragmatica.http.HttpStatus;
-import org.pragmatica.http.server.RequestContext;
+import org.pragmatica.http.HttpRequest;
 import org.pragmatica.http.server.ResponseWriter;
 
 import org.slf4j.Logger;
@@ -33,7 +33,7 @@ public final class ForgeRequestHandler {
         return new ForgeRequestHandler(apiHandler, staticHandler);
     }
 
-    public void handle(RequestContext request, ResponseWriter response) {
+    public void handle(HttpRequest request, ResponseWriter response) {
         var path = request.path();
 
         log.debug("Request: {} {}", request.method(), path);

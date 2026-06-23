@@ -19,7 +19,7 @@ import org.pragmatica.http.Headers;
 import org.pragmatica.http.HttpMethod;
 import org.pragmatica.http.HttpStatus;
 import org.pragmatica.http.QueryParams;
-import org.pragmatica.http.server.RequestContext;
+import org.pragmatica.http.HttpRequest;
 import org.pragmatica.http.server.ResponseWriter;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.io.TimeSpan;
@@ -139,8 +139,8 @@ class MavenProtocolRoutesAuthTest {
         };
     }
 
-    private static RequestContext putRequest() {
-        return new RequestContext() {
+    private static HttpRequest putRequest() {
+        return new HttpRequest() {
             @Override
             public String requestId() {
                 return "req_test";

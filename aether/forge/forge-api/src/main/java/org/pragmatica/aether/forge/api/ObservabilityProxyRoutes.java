@@ -51,7 +51,7 @@ public sealed interface ObservabilityProxyRoutes {
                     .to(ctx -> proxyGetWithQuery(cluster,
                                                  http,
                                                  "/api/traces",
-                                                 ctx.queryParams()))
+                                                 ctx.queryParams().asMap()))
                     .asJson();
     }
 

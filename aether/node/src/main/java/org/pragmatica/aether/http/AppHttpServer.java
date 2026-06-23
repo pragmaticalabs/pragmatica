@@ -55,7 +55,7 @@ import org.pragmatica.http.HttpStatus;
 import org.pragmatica.http.ProblemDetail;
 import org.pragmatica.http.server.HttpServer;
 import org.pragmatica.http.server.HttpServerConfig;
-import org.pragmatica.http.server.RequestContext;
+import org.pragmatica.http.HttpRequest;
 import org.pragmatica.http.server.ResponseWriter;
 import org.pragmatica.json.JsonMapper;
 import org.pragmatica.lang.Cause;
@@ -464,7 +464,7 @@ class AppHttpServerAdapter implements AppHttpServer {
 
     private Promise<Unit> startH1Server() {
         var serverConfig = buildServerConfig();
-        java.util.function.BiConsumer<org.pragmatica.http.server.RequestContext, org.pragmatica.http.server.ResponseWriter> handler = config.httpProtocol() == HttpProtocol.BOTH
+        java.util.function.BiConsumer<org.pragmatica.http.HttpRequest, org.pragmatica.http.server.ResponseWriter> handler = config.httpProtocol() == HttpProtocol.BOTH
                                                                                                                                       ? this::handleRequestWithAltSvc
                                                                                                                                       : this::handleRequest;
         var serverPromise = bossGroup.flatMap(bg -> workerGroup.map(wg -> HttpServer.httpServer(serverConfig,
@@ -510,7 +510,7 @@ class AppHttpServerAdapter implements AppHttpServer {
                                                           cause.message()));
     }
 
-    private void handleRequestWithAltSvc(org.pragmatica.http.server.RequestContext request,
+    private void handleRequestWithAltSvc(org.pragmatica.http.HttpRequest request,
                                          org.pragmatica.http.server.ResponseWriter response) {
         response.header("Alt-Svc", "h3=\":" + config.port() + "\"; ma=3600");
         handleRequest(request, response);
@@ -604,7 +604,7 @@ class AppHttpServerAdapter implements AppHttpServer {
     private Promise<Option<HttpServer>> restartH1WithTls(Option<TlsConfig> newTls) {
         var serverConfig = HttpServerConfig.httpServerConfig("app-http", config.port()).withMaxContentLength(config.maxRequestSize());
         var finalConfig = newTls.map(serverConfig::withTls).or(serverConfig);
-        java.util.function.BiConsumer<RequestContext, ResponseWriter> handler = config.httpProtocol() == HttpProtocol.BOTH
+        java.util.function.BiConsumer<HttpRequest, ResponseWriter> handler = config.httpProtocol() == HttpProtocol.BOTH
                                                                                 ? this::handleRequestWithAltSvc
                                                                                 : this::handleRequest;
         var serverPromise = bossGroup.flatMap(bg -> workerGroup.map(wg -> HttpServer.httpServer(finalConfig,
@@ -728,13 +728,13 @@ class AppHttpServerAdapter implements AppHttpServer {
         publishRouteTable();
     }
 
-    private void handleRequest(RequestContext request, ResponseWriter response) {
+    private void handleRequest(HttpRequest request, ResponseWriter response) {
         var requestId = request.requestId();
 
         InvocationContext.runWithRequestId(requestId, () -> handleRequestInScope(request, response, requestId));
     }
 
-    private void handleRequestInScope(RequestContext request, ResponseWriter response, String requestId) {
+    private void handleRequestInScope(HttpRequest request, ResponseWriter response, String requestId) {
         var method = request.method().name();
         var path = request.path();
 
@@ -822,7 +822,7 @@ class AppHttpServerAdapter implements AppHttpServer {
     }
 
     @Contract
-    private void dispatchAuthenticated(RequestContext request,
+    private void dispatchAuthenticated(HttpRequest request,
                                        ResponseWriter response,
                                        RouteTable routeTable,
                                        SecurityContext securityContext,
@@ -849,7 +849,7 @@ class AppHttpServerAdapter implements AppHttpServer {
                                                                                                                                                  requestId)));
     }
 
-    private void dispatchToRoute(RequestContext request,
+    private void dispatchToRoute(HttpRequest request,
                                  ResponseWriter response,
                                  RouteTable routeTable,
                                  String method,
@@ -882,7 +882,7 @@ class AppHttpServerAdapter implements AppHttpServer {
         sendNoRouteFound(response, request, method, requestId);
     }
 
-    private void dispatchLocalRoute(RequestContext request,
+    private void dispatchLocalRoute(HttpRequest request,
                                     ResponseWriter response,
                                     RouteTable routeTable,
                                     String method,
@@ -906,14 +906,14 @@ class AppHttpServerAdapter implements AppHttpServer {
         handleLocalRoute(request, response, localRouteKey, requestId);
     }
 
-    private void dispatchRemoteRoute(RequestContext request,
+    private void dispatchRemoteRoute(HttpRequest request,
                                      ResponseWriter response,
                                      HttpRouteRegistry.RouteInfo route,
                                      String requestId) {
         handleRemoteRoute(request, response, route, requestId);
     }
 
-    private void sendNoRouteFound(ResponseWriter response, RequestContext request, String method, String requestId) {
+    private void sendNoRouteFound(ResponseWriter response, HttpRequest request, String method, String requestId) {
         var routeReady = isRouteReady();
 
         if (!routeReady && httpRoutePublisher.isPresent()) {
@@ -1174,7 +1174,7 @@ class AppHttpServerAdapter implements AppHttpServer {
                                                                                                            CommonContentType.APPLICATION_JSON);
     }
 
-    private void handleLocalRoute(RequestContext request,
+    private void handleLocalRoute(HttpRequest request,
                                   ResponseWriter response,
                                   HttpNodeRouteKey routeKey,
                                   String requestId) {
@@ -1197,7 +1197,7 @@ class AppHttpServerAdapter implements AppHttpServer {
         sendProblem(response, HttpStatus.INTERNAL_SERVER_ERROR, "Local router not found", path, requestId);
     }
 
-    private void invokeLocalRouter(RequestContext request,
+    private void invokeLocalRouter(HttpRequest request,
                                    ResponseWriter response,
                                    SliceRouter router,
                                    HttpNodeRouteKey routeKey,
@@ -1275,7 +1275,7 @@ class AppHttpServerAdapter implements AppHttpServer {
         sendProblem(response, HttpStatus.TOO_MANY_REQUESTS, exceeded.message(), path, requestId);
     }
 
-    private HttpRequestContext toHttpRequestContext(RequestContext request, String requestId) {
+    private HttpRequestContext toHttpRequestContext(HttpRequest request, String requestId) {
         return HttpRequestContext.httpRequestContext(request.path(),
                                                      request.method().name(),
                                                      request.queryParams().asMap(),
@@ -1284,7 +1284,7 @@ class AppHttpServerAdapter implements AppHttpServer {
                                                      requestId);
     }
 
-    private void handleRemoteRoute(RequestContext request,
+    private void handleRemoteRoute(HttpRequest request,
                                    ResponseWriter response,
                                    HttpRouteRegistry.RouteInfo route,
                                    String requestId) {
@@ -1566,10 +1566,48 @@ class AppHttpServerAdapter implements AppHttpServer {
             writer = writer.header(entry.getKey(), entry.getValue());
         }
 
-        var contentType = Option.option(responseData.headers().get("Content-Type")).map(ct -> org.pragmatica.http.ContentType.contentType(ct,
-                                                                                                                                          org.pragmatica.http.ContentCategory.JSON)).or(CommonContentType.APPLICATION_JSON);
+        var contentType = Option.option(responseData.headers().get("Content-Type"))
+                                .map(AppHttpServerAdapter::resolveContentType)
+                                .or(CommonContentType.APPLICATION_JSON);
 
         writer.write(toServerStatus(responseData.statusCode()), responseData.body(), contentType);
+    }
+
+    private static org.pragmatica.http.ContentType resolveContentType(String headerText) {
+        return matchCommonContentType(headerText).or(() -> org.pragmatica.http.ContentType.contentType(headerText, guessCategory(headerText)));
+    }
+
+    private static Option<org.pragmatica.http.ContentType> matchCommonContentType(String headerText) {
+        return java.util.stream.Stream.<org.pragmatica.http.ContentType>of(CommonContentType.values())
+                                      .filter(ct -> ct.headerText().equalsIgnoreCase(headerText))
+                                      .findFirst()
+                                      .map(Option::option)
+                                      .orElseGet(Option::none);
+    }
+
+    private static org.pragmatica.http.ContentCategory guessCategory(String headerText) {
+        var lower = headerText.toLowerCase();
+
+        if (lower.contains("json")) {
+            return org.pragmatica.http.ContentCategory.JSON;
+        }
+        if (lower.startsWith("text/html") || lower.contains("html")) {
+            return org.pragmatica.http.ContentCategory.HTML;
+        }
+        if (lower.contains("xml")) {
+            return org.pragmatica.http.ContentCategory.XML;
+        }
+        if (lower.startsWith("text/")) {
+            return org.pragmatica.http.ContentCategory.TEXT;
+        }
+        if (lower.contains("x-www-form-urlencoded")) {
+            return org.pragmatica.http.ContentCategory.FORM_URLENCODED;
+        }
+        if (lower.contains("multipart/")) {
+            return org.pragmatica.http.ContentCategory.MULTIPART;
+        }
+
+        return org.pragmatica.http.ContentCategory.BINARY;
     }
 
     private void sendPlainError(ResponseWriter response, HttpStatus status, String requestId) {

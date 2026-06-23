@@ -23,7 +23,7 @@ import org.pragmatica.http.routing.JsonCodecAdapter;
 import org.pragmatica.http.routing.RequestContext.RequestContextImpl;
 import org.pragmatica.http.routing.RequestRouter;
 import org.pragmatica.http.routing.Route;
-import org.pragmatica.http.server.RequestContext;
+import org.pragmatica.http.HttpRequest;
 import org.pragmatica.http.server.ResponseWriter;
 
 import java.nio.charset.StandardCharsets;
@@ -118,7 +118,7 @@ public final class ForgeApiHandler {
         addEvent(entry.type(), entry.message());
     }
 
-    public void handle(RequestContext request, ResponseWriter response) {
+    public void handle(HttpRequest request, ResponseWriter response) {
         var path = request.path();
 
         log.debug("API request: {} {}", request.method(), path);
@@ -135,7 +135,7 @@ public final class ForgeApiHandler {
         }
     }
 
-    private void handleRoute(RequestContext request, ResponseWriter response, Route<?> route, String path) {
+    private void handleRoute(HttpRequest request, ResponseWriter response, Route<?> route, String path) {
         var requestId = "forge-" + requestCounter.incrementAndGet();
         var nettyRequest = createNettyRequest(request, route.path());
         var context = RequestContextImpl.requestContext(nettyRequest, route, jsonCodec, requestId);
@@ -145,7 +145,7 @@ public final class ForgeApiHandler {
                                                                                                                                        cause.message()));
     }
 
-    private DefaultFullHttpRequest createNettyRequest(RequestContext request, String routePath) {
+    private DefaultFullHttpRequest createNettyRequest(HttpRequest request, String routePath) {
         var method = switch (request.method()) {
             case GET -> HttpMethod.GET;
             case POST -> HttpMethod.POST;

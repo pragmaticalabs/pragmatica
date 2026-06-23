@@ -80,7 +80,7 @@ import org.pragmatica.http.HttpStatus;
 import org.pragmatica.http.routing.RouteSource;
 import org.pragmatica.http.server.HttpServer;
 import org.pragmatica.http.server.HttpServerConfig;
-import org.pragmatica.http.server.RequestContext;
+import org.pragmatica.http.HttpRequest;
 import org.pragmatica.http.server.ResponseWriter;
 import org.pragmatica.net.tcp.QuicSslContextFactory;
 import org.pragmatica.http.websocket.WebSocketEndpoint;
@@ -333,7 +333,7 @@ class ManagementServerImpl implements ManagementServer {
 
     private Promise<Unit> startH1Server() {
         var serverConfig = buildServerConfig();
-        java.util.function.BiConsumer<RequestContext, ResponseWriter> handler = httpProtocol == HttpProtocol.BOTH
+        java.util.function.BiConsumer<HttpRequest, ResponseWriter> handler = httpProtocol == HttpProtocol.BOTH
                                                                                 ? this::handleRequestWithAltSvc
                                                                                 : this::handleRequest;
         var serverPromise = bossGroup.flatMap(bg -> workerGroup.map(wg -> HttpServer.httpServer(serverConfig,
@@ -397,7 +397,7 @@ class ManagementServerImpl implements ManagementServer {
         return unit();
     }
 
-    private void handleRequestWithAltSvc(RequestContext request, ResponseWriter response) {
+    private void handleRequestWithAltSvc(HttpRequest request, ResponseWriter response) {
         response.header("Alt-Svc", "h3=\":" + port + "\"; ma=3600");
         handleRequest(request, response);
     }
@@ -450,7 +450,7 @@ class ManagementServerImpl implements ManagementServer {
         var eventWsEndpoint = WebSocketEndpoint.webSocketEndpoint("/ws/events", eventWsHandler);
         var config = HttpServerConfig.httpServerConfig("management", port).withMaxContentLength(MAX_CONTENT_LENGTH).withWebSocket(wsEndpoint).withWebSocket(statusWsEndpoint).withWebSocket(eventWsEndpoint);
         var serverConfig = newTls.map(config::withTls).or(config);
-        java.util.function.BiConsumer<RequestContext, ResponseWriter> handler = httpProtocol == HttpProtocol.BOTH
+        java.util.function.BiConsumer<HttpRequest, ResponseWriter> handler = httpProtocol == HttpProtocol.BOTH
                                                                                 ? this::handleRequestWithAltSvc
                                                                                 : this::handleRequest;
         var serverPromise = bossGroup.flatMap(bg -> workerGroup.map(wg -> HttpServer.httpServer(serverConfig,
@@ -674,7 +674,7 @@ class ManagementServerImpl implements ManagementServer {
     }
 
     @SuppressWarnings("JBCT-PAT-01")
-    private void handleRequest(RequestContext ctx, ResponseWriter response) {
+    private void handleRequest(HttpRequest ctx, ResponseWriter response) {
         var startTime = System.nanoTime();
         var path = ctx.path();
         var method = ctx.method();
@@ -724,7 +724,7 @@ class ManagementServerImpl implements ManagementServer {
         dispatchManagementRequest(ctx, instrumented, methodName, startTime);
     }
 
-    private void dispatchManagementRequest(RequestContext ctx,
+    private void dispatchManagementRequest(HttpRequest ctx,
                                            InstrumentedResponseWriter instrumented,
                                            String methodName,
                                            long startTime) {
@@ -752,7 +752,7 @@ class ManagementServerImpl implements ManagementServer {
         recordRequestMetrics(methodName, path, instrumented, startTime);
     }
 
-    private boolean tryForwardToRouteOwner(RequestContext ctx,
+    private boolean tryForwardToRouteOwner(HttpRequest ctx,
                                            InstrumentedResponseWriter response,
                                            String methodName,
                                            long startTime) {
@@ -789,7 +789,7 @@ class ManagementServerImpl implements ManagementServer {
         };
     }
 
-    private boolean tryForwardIfNotLeader(RequestContext ctx,
+    private boolean tryForwardIfNotLeader(HttpRequest ctx,
                                           InstrumentedResponseWriter response,
                                           String methodName,
                                           long startTime) {
@@ -804,7 +804,7 @@ class ManagementServerImpl implements ManagementServer {
         return true;
     }
 
-    private boolean tryForwardIfNotCore(RequestContext ctx,
+    private boolean tryForwardIfNotCore(HttpRequest ctx,
                                         InstrumentedResponseWriter response,
                                         String methodName,
                                         long startTime) {
@@ -820,7 +820,7 @@ class ManagementServerImpl implements ManagementServer {
         return true;
     }
 
-    private boolean tryForwardIfNotOwner(RequestContext ctx,
+    private boolean tryForwardIfNotOwner(HttpRequest ctx,
                                          InstrumentedResponseWriter response,
                                          String methodName,
                                          long startTime,
@@ -846,7 +846,7 @@ class ManagementServerImpl implements ManagementServer {
     /// Forward if the path-param-named node id != local node. The forwarder also re-checks
     /// (locality + connectedness) but we short-circuit here to avoid an unnecessary forwarder
     /// instantiation when the target is local.
-    private boolean tryForwardIfNotTargetNode(RequestContext ctx,
+    private boolean tryForwardIfNotTargetNode(HttpRequest ctx,
                                               InstrumentedResponseWriter response,
                                               String methodName,
                                               long startTime,
@@ -875,7 +875,7 @@ class ManagementServerImpl implements ManagementServer {
         return true;
     }
 
-    private void forwardManagementRequest(RequestContext ctx,
+    private void forwardManagementRequest(HttpRequest ctx,
                                           InstrumentedResponseWriter response,
                                           String methodName,
                                           long startTime) {
@@ -1174,7 +1174,7 @@ class ManagementServerImpl implements ManagementServer {
     /// (`/api/streams/{publish,publish-batch,delete}/system/...`,
     /// `/api/streams/groups/{create,delete}/system/...`) or the legacy colon-form
     /// (`/api/streams/...` with a `system:<stream>:<version>` name segment).
-    private boolean rejectSystemStreamWrite(RequestContext ctx,
+    private boolean rejectSystemStreamWrite(HttpRequest ctx,
                                             ResponseWriter response,
                                             String path,
                                             String methodName) {
@@ -1239,7 +1239,7 @@ class ManagementServerImpl implements ManagementServer {
     private static final String SYSTEM_NAMESPACE_COLON = org.pragmatica.aether.slice.resource.ResourceAddress.SYSTEM_NAMESPACE
                                                        + ":";
 
-    private Result<SecurityContext> validateManagementSecurity(RequestContext ctx,
+    private Result<SecurityContext> validateManagementSecurity(HttpRequest ctx,
                                                                ResponseWriter response,
                                                                String path,
                                                                HttpMethod method) {
@@ -1298,7 +1298,7 @@ class ManagementServerImpl implements ManagementServer {
         AuditLog.managementAccess("mgmt", principal, method, path);
     }
 
-    private static HttpRequestContext toManagementRequestContext(RequestContext ctx, String path) {
+    private static HttpRequestContext toManagementRequestContext(HttpRequest ctx, String path) {
         return HttpRequestContext.httpRequestContext(path,
                                                      ctx.method().name(),
                                                      ctx.queryParams().asMap(),

@@ -131,30 +131,37 @@ HTTP-level concerns stay in the adapters (not the serializer): `null`→204, sta
 
 ## 7. Unified `RequestContext` (transport-agnostic — Lock 1)
 
-One interface, NO Netty in it; one Netty-backed impl in `net/http-server`. Collapses all 4 abstractions.
+**Correction (found while reading the code for A2):** the "4 request abstractions" are not 4 redundant interfaces. Two are **serializable `@Codec` DTOs** that legitimately stay:
+- `HttpRequestContext` (aether) — the request *payload* handed to a slice across `SliceInvoker` (carries `SecurityContext`, may cross the wire to a remote node). DTO, not a context interface.
+- `HttpResponseData` (aether) — the response *payload* (status + headers + body bytes). DTO.
+
+Only **`http.server.RequestContext`** (transport-edge, pre-routing) and **`http.routing.RequestContext`** (post-routing handler context) are genuinely overlapping *interfaces*. `SliceRequestContext` is the adapter from the DTO to the routing interface. Merging a serializable DTO into a Netty-backed interface would break the slice-invocation boundary — so A2 merges the **two interfaces only**.
+
+**A2 = base + extension (forced by the module graph, not a style choice).** `route()`/`fromJson`/`matchPath` reference `Route`/`PathParameter`/`TypeToken` which live in `http-routing`; `http-routing` depends on `http-types`; so a `Route`-referencing interface CANNOT live in `http-types` (cycle). Therefore the shared surface splits in two:
+
+- **`org.pragmatica.http.HttpRequest`** (NEW, in `http-types`) — the common, transport-agnostic, `Route`-free request surface:
 ```java
-public interface RequestContext {
+public interface HttpRequest {
+    String requestId();
     HttpMethod method();
     String path();
-    String requestId();
-    Map<String,String> headers();
-    Map<String,List<String>> queryParams();
-    List<String> pathParams();
-    byte[] bodyBytes();                       // raw (no ByteBuf in the interface)
-    String bodyAsString();
-    <T> Result<T> fromJson(TypeToken<T> t);   // via injected JsonCodec
-    Result<MultipartRequest> multipartRequest();
-    Route<?> route();
-    Option<Principal> principal();            // security surfaced, not baked in
-    // + matchPath/matchQuery default helpers (moved from today's routing.RequestContext)
-    HttpHeaders responseHeaders();            // response header accumulation
+    Headers headers();                 // Headers + QueryParams move to http-types
+    QueryParams queryParams();
+    byte[] body();
+    default String bodyAsString() { ... }
+    default boolean hasBody() { ... }
 }
 ```
-- `bodyBytes()`/`bodyAsString()` replace `ByteBuf body()`. The Netty impl holds the `FullHttpRequest` internally.
-- `matchPath`/`matchQuery` (today on `http.routing.RequestContext`) ride along as default methods.
-- `principal()` returns the authenticated principal if any; the authorization machinery stays in aether.
+- **`org.pragmatica.http.routing.RequestContext extends HttpRequest`** (STAYS in `http-routing`, keeps its name to avoid churning the Route DSL) — adds the handler surface: `route()`, `fromJson`, `pathParams`, `matchPath`/`matchQuery`, `multipartRequest`/`isMultipart`, `responseHeaders`.
 
-**Response side:** keep `ResponseWriter` as the `byte[]` sink; unify `HttpResponseData` into a single response value type (status + headers + `byte[]` body) used by both the slice path and direct handlers.
+This declares the shared surface ONCE (in `HttpRequest`) and removes the duplication — `http.server.RequestContext` is **deleted**, its 9 consumers switch to `HttpRequest`. The routing DSL + its 3 consumers are unchanged (they already use `routing.RequestContext`, now extending the base).
+
+- `Headers`, `QueryParams` move to `http-types` (base needs them; Netty-free value types). `MultipartRequest`/`MultipartParser` stay in `http-routing` (only the rich context uses them).
+- **Security stays on the aether DTO** (`HttpRequestContext.security()`), NOT on either interface.
+
+**Impls:** the Netty `FullHttpRequest`-backed impl stays in `http-routing` (implements the rich `routing.RequestContext`); `net/http-server`'s edge impl now implements `HttpRequest`; aether `SliceRequestContext` implements `routing.RequestContext` as today.
+
+**Response side:** `HttpResponseData` (DTO) and `ResponseWriter` (byte[] sink) are complementary roles, NOT duplication — leave both. The only response cleanup: fix `AppHttpServer.sendResponse`'s hardcoded `ContentCategory.JSON` to derive the category from the actual `Content-Type`.
 
 ---
 

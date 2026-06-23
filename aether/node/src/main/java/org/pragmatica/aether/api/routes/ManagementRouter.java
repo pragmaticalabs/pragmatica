@@ -17,7 +17,7 @@ import org.pragmatica.http.routing.PathUtils;
 import org.pragmatica.http.routing.RequestRouter;
 import org.pragmatica.http.routing.Route;
 import org.pragmatica.http.routing.RouteSource;
-import org.pragmatica.http.server.RequestContext;
+import org.pragmatica.http.HttpRequest;
 import org.pragmatica.http.server.ResponseWriter;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
@@ -31,8 +31,6 @@ import java.util.stream.Collectors;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import io.netty.buffer.ByteBuf;
-import io.netty.buffer.Unpooled;
 import io.netty.handler.codec.http.DefaultHttpHeadersFactory;
 import io.netty.handler.codec.http.HttpHeaders;
 
@@ -60,12 +58,12 @@ public final class ManagementRouter {
         return new ManagementRouter(RequestRouter.with(sources), JsonCodecAdapter.defaultCodec(), Map.copyOf(byName));
     }
 
-    public boolean handle(RequestContext ctx, ResponseWriter response) {
+    public boolean handle(HttpRequest ctx, ResponseWriter response) {
         return parseMethod(ctx.method().name()).flatMap(method -> dispatch(method, ctx, response))
                           .or(false);
     }
 
-    private Option<Boolean> dispatch(HttpMethod method, RequestContext ctx, ResponseWriter response) {
+    private Option<Boolean> dispatch(HttpMethod method, HttpRequest ctx, ResponseWriter response) {
         var matchResult = ManagementRoute.match(method, ctx.path());
 
         if (matchResult.isSuccess()) {
@@ -94,7 +92,7 @@ public final class ManagementRouter {
                             });
     }
 
-    private void handleRoute(Route<?> route, RequestContext serverCtx, ResponseWriter response) {
+    private void handleRoute(Route<?> route, HttpRequest serverCtx, ResponseWriter response) {
         var routingCtx = adaptContext(serverCtx, route);
 
         route.handler().handle(routingCtx).onFailure(cause -> writeError(response, cause, serverCtx)).onSuccess(value -> writeSuccess(value,
@@ -103,14 +101,14 @@ public final class ManagementRouter {
                                                                                                                                       serverCtx));
     }
 
-    private void writeError(ResponseWriter response, org.pragmatica.lang.Cause cause, RequestContext serverCtx) {
+    private void writeError(ResponseWriter response, org.pragmatica.lang.Cause cause, HttpRequest serverCtx) {
         ProblemResponses.writeProblem(response, cause, serverCtx.path(), serverCtx.requestId());
     }
 
     private void writeSuccess(Object value,
                               ContentType contentType,
                               ResponseWriter response,
-                              RequestContext serverCtx) {
+                              HttpRequest serverCtx) {
         if (value instanceof Option<?> opt && opt.isEmpty()) {
             response.noContent();
 
@@ -128,7 +126,7 @@ public final class ManagementRouter {
                           .onSuccess(bytes -> response.write(HttpStatus.OK, bytes, contentType));
     }
 
-    private org.pragmatica.http.routing.RequestContext adaptContext(RequestContext serverCtx, Route<?> route) {
+    private org.pragmatica.http.routing.RequestContext adaptContext(HttpRequest serverCtx, Route<?> route) {
         return ServerRequestContextAdapter.serverRequestContextAdapter(serverCtx, route, jsonCodec);
     }
 
@@ -138,19 +136,17 @@ public final class ManagementRouter {
                      .option();
     }
 
-    private record ServerRequestContextAdapter(RequestContext serverCtx,
+    private record ServerRequestContextAdapter(HttpRequest serverCtx,
                                                Route<?> route,
                                                JsonCodec jsonCodec,
-                                               ByteBuf bodyBuf,
                                                HttpHeaders responseHeaders,
                                                AtomicReference<List<String>> pathParamsRef) implements org.pragmatica.http.routing.RequestContext {
-        static ServerRequestContextAdapter serverRequestContextAdapter(RequestContext serverCtx,
+        static ServerRequestContextAdapter serverRequestContextAdapter(HttpRequest serverCtx,
                                                                        Route<?> route,
                                                                        JsonCodec jsonCodec) {
             return new ServerRequestContextAdapter(serverCtx,
                                                    route,
                                                    jsonCodec,
-                                                   Unpooled.wrappedBuffer(serverCtx.body()),
                                                    DefaultHttpHeadersFactory.headersFactory()
                                                                             .withCombiningHeaders(true)
                                                                             .newHeaders(),
@@ -158,7 +154,12 @@ public final class ManagementRouter {
         }
 
         @Override
-        public String requestPath() {
+        public org.pragmatica.http.HttpMethod method() {
+            return serverCtx.method();
+        }
+
+        @Override
+        public String path() {
             return serverCtx.path();
         }
 
@@ -168,8 +169,8 @@ public final class ManagementRouter {
         }
 
         @Override
-        public ByteBuf body() {
-            return bodyBuf;
+        public byte[] body() {
+            return serverCtx.body();
         }
 
         @Override
@@ -178,8 +179,18 @@ public final class ManagementRouter {
         }
 
         @Override
+        public org.pragmatica.http.QueryParams queryParams() {
+            return serverCtx.queryParams();
+        }
+
+        @Override
+        public org.pragmatica.http.Headers headers() {
+            return serverCtx.headers();
+        }
+
+        @Override
         public <T> Result<T> fromJson(TypeToken<T> literal) {
-            return jsonCodec.deserialize(io.netty.buffer.ByteBufUtil.getBytes(bodyBuf), literal);
+            return jsonCodec.deserialize(serverCtx.body(), literal);
         }
 
         @Override
@@ -192,29 +203,6 @@ public final class ManagementRouter {
             }
 
             return params;
-        }
-
-        @Override
-        public Map<String, List<String>> queryParams() {
-            return serverCtx.queryParams()
-                            .asMap()
-                            .entrySet()
-                            .stream()
-                            .collect(Collectors.toMap(Map.Entry::getKey, Map.Entry::getValue));
-        }
-
-        @Override
-        public Map<String, String> requestHeaders() {
-            return serverCtx.headers()
-                            .asMap()
-                            .entrySet()
-                            .stream()
-                            .collect(Collectors.toMap(Map.Entry::getKey,
-                                                      entry -> entry.getValue()
-                                                                    .isEmpty()
-                                                               ? ""
-                                                               : entry.getValue()
-                                                                      .getFirst()));
         }
 
         @Override
