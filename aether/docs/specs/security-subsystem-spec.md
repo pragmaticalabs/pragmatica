@@ -128,11 +128,11 @@ decisions are only correct *given* them.
 | #206 | Runtime cloud-credential resolution | §7 | STUB/risky → redesign |
 | #253 | Storage encryption key management | §5 | STUB → wire |
 | #287 | `cluster_secret` at rest | §6.6, §10 | PARTIAL → close compose vector |
-| #209 | `cluster_secret`-derived CA / TLS hardening | §3, §4 | DONE (items 2–5 verified) |
-| #88 | Cloud certificate adapters | §4 | **DONE (correction)** |
+| #209 | `cluster_secret`-derived CA / TLS hardening | §3, §4 | PARTIAL (CA done; residual hardening → Phase 5) |
+| #88 | Cloud certificate adapters | §4 | **STUB (CA-echo; real issuance unbuilt)** |
 | #307 | DigitalOcean provider | §7.4 | MISSING (clean error today) |
 | #313 | Single-trust-domain documentation | §1.5, §8 | produced here |
-| #319 | SECURITY.md | §9.4 | produced here (pointer) |
+| #319 | SECURITY.md | §9.4, §12 | Phase-5 deliverable (skeleton + pointer) |
 | #23 | Audit trail | §9.3 | revived |
 
 ---
@@ -358,12 +358,13 @@ Per-provider attestation strategy:
 > new `IdentityIssuer` (§3) is a thin issuer-side wrapper that produces SVID-style identity certs;
 > the cert *material* type stays `CertificateBundle`.
 >
-> **Why.** The SPI already exists and is implemented: `SelfSignedCertificateProvider` (native,
-> CA-from-`cluster_secret`), `Aws/Gcp/Azure CertificateProvider` (federation, **with tests**),
-> a `CloudCertificateProvider` orchestrator, and a `CertificateRenewalScheduler` (renews at ~40% of
-> remaining validity, exponential backoff). CLAUDE.md invariant "extend, don't replace" and the
-> sibling `cloud-integration-spi-spec.md` both mandate reuse. Inventing a parallel SPI would
-> duplicate working, tested code.
+> **Why.** The SPI already exists: `SelfSignedCertificateProvider` (native, CA-from-`cluster_secret`,
+> the one genuine per-node issuer), the `Aws/Gcp/Azure CertificateProvider` federation impls (present
+> with tests, but currently **CA-echo stubs** — see §4.4), a `CloudCertificateProvider` orchestrator,
+> and a `CertificateRenewalScheduler` (renews at ~40% of remaining validity, exponential backoff).
+> CLAUDE.md invariant "extend, don't replace" and the sibling `cloud-integration-spi-spec.md` both
+> mandate reuse: keep the SPI shape and the native issuer, and replace the cloud impls' CA-echo bodies
+> with real issuance (§4.4). Inventing a parallel SPI would duplicate the working native path.
 >
 > **Rejected alternative.** *A fresh `Promise`-returning `CertificateProvider`* — the existing one is
 > synchronous (`Result<CertificateBundle> issueCertificate(...)`). Introducing an async twin would
@@ -417,16 +418,23 @@ The native `IdentityIssuer` issues against the same CA `SelfSignedCertificatePro
 > cluster root, or forces internal mTLS to trust a public CA (widening the set of certs that can
 > impersonate a node).
 
-### 4.4 #88 — cloud cert adapters exist (correction)
+### 4.4 #88 — cloud cert adapters are CA-echo stubs, NOT issuers (verified correction)
 
-> **Verified correction.** The design transcript flagged #88 ("cloud cert adapters") as
-> *"highest-uncertainty closure"* / *"unsubstantiated"*. **This is wrong — the adapters exist.**
-> Confirmed on this branch: `AwsCertificateProvider`, `AzureCertificateProvider`,
-> `GcpCertificateProvider` (each under `aether/environment/<cloud>/.../`, with tests), the
-> `CloudCertificateProvider` orchestrator (`aether/environment-integration/.../`), and
-> `CertificateRenewalScheduler`. Per the work order's "trust the code, not the ticket" rule, #88 is
-> recorded **DONE** in §13. The remaining work is wiring external-facing cert selection into config
-> (§10), not building adapters.
+> **Verified correction (supersedes an earlier optimistic reading).** Adapter *classes* exist
+> (`AwsCertificateProvider:35-37` and `GcpCertificateProvider:34-36` delegate to
+> `CloudCertificateProvider`; `AzureCertificateProvider:73-78` inlines the same), but they do **NOT**
+> issue per-node certificates and call **no** cloud certificate API. `CloudCertificateProvider.issueCertificate(nodeId, hostname)`
+> (`:70-75`) **returns the pre-seeded CA certificate verbatim** as the leaf and **ignores `nodeId`/`hostname`**;
+> the Azure variant fetches the CA material from the Key Vault *secrets* API, not its certificate API.
+> `AwsClient` (`:43`) exposes only `getSecretValue` (`:78`) — there is **no ACM** method anywhere in the
+> tree. The only genuine per-node issuance is `SelfSignedCertificateProvider` (`:106-187` — real BCST
+> keypair, `CN=nodeId`, SAN from hostname), which is *not* a cloud adapter. `CertificateRenewalScheduler`
+> (`:36`) is real, but with a cloud provider it merely re-stamps a fresh `notAfter` on the same CA cert.
+>
+> **Therefore #88 is STUB, not DONE** (§13): the SPI and a CA-distribution path exist, but real
+> cloud-issued or per-node external certs are **unbuilt**. The work is to implement genuine issuance
+> (ACM `RequestCertificate` / GCP Certificate Manager / Azure Key Vault *certificates*), **or** to
+> explicitly scope external-facing certs to the self-signed cluster CA plus a documented BYO-cert path.
 
 ### 4.5 Rotation & PQC posture
 
@@ -504,11 +512,14 @@ interface KeyProvider {                              // modeled on K8s KMS v2 / 
 > carries `(logical, version)`.
 >
 > **Why (verified gap).** `BlockEncryptor.aesGcm(key, keyId)` exists
-> (`integrations/storage/.../BlockEncryptor.java:51`), but production storage runs **unencrypted** —
-> `AetherNode.java:2537` wires `none()` and there is no key source or rotation (only test keys). The
-> infrastructure is present; the missing piece is a key source, which is exactly what `KeyProvider`
-> supplies. Storing the `WrappedKey` in the segment header (not co-located key *material*) means KEK
-> rotation re-wraps without rewriting data.
+> (`integrations/storage/.../BlockEncryptor.java:51`), but production storage runs **unencrypted**: the
+> stream path defaults to an **empty `Option<BlockEncryptor>`** — `SegmentReader.java:43` constructs the
+> reader with `none()`, and `AetherNode.java:2537` is the 2-arg call site that takes that default — so
+> segments are written/read in the clear, with no key source or rotation (only test keys). (The separate
+> no-op constant `BlockEncryptor.NONE` at `BlockEncryptor.java:48` is a *different* mechanism and is not
+> what the prod path uses.) The infrastructure is present; the missing piece is a key source, which is
+> exactly what `KeyProvider` supplies. Storing the `WrappedKey` in the segment header (not co-located key
+> *material*) means KEK rotation re-wraps without rewriting data.
 >
 > **Rejected alternative.** *Leave `none()` in prod* — at-rest encryption absent (the #253 reality).
 > *Derive the DEK from `cluster_secret` per segment* — no per-segment revocation, root rotation
@@ -520,10 +531,13 @@ interface KeyProvider {                              // modeled on K8s KMS v2 / 
 > or **XChaCha20-Poly1305**.
 >
 > **Why (verified).** The current `AesGcmBlockEncryptor` uses plain AES-GCM with a **random 12-byte
-> IV** (`AesGcmBlockEncryptor.java:19-21`). Random 96-bit GCM nonces cap near **2³² messages per key**
-> before collision/forgery risk (NIST SP 800-38D), and a *single* nonce reuse is catastrophic for
-> GCM. A fan-out cluster writing many segments per key reaches that scale; a nonce-misuse-resistant
-> AEAD degrades gracefully instead of failing catastrophically.
+> IV** (`AesGcmBlockEncryptor.java:19-21`). NIST SP 800-38D caps random 96-bit nonces at **2³²
+> invocations per key** — a *birthday* bound driven by nonce-**collision** probability (≈2⁻³³ at 2³²
+> messages). The collision is what breaks GCM: two messages under the same (key, nonce) leak the GHASH
+> authentication key and enable forgery, so the collision bound — not plaintext length — is the real
+> limit, and a *single* reuse is catastrophic. A fan-out cluster writing many segments per key
+> approaches that scale; a nonce-misuse-resistant AEAD (where reuse reveals at most plaintext equality,
+> never the key) degrades gracefully instead of failing catastrophically.
 >
 > **Rejected alternative.** *Plain AES-GCM with random nonces* (status quo) — unsafe at cluster scale.
 > *Strict per-DEK nonce counters* — workable but fragile across restarts/replicas (a counter reset
@@ -656,16 +670,22 @@ record LeaseId(String value) {}
 > **Why.** The node already has a verifiable identity from the identity plane; reusing it to
 > authenticate to the secrets backend avoids a second standing credential. Vault AppRole +
 > response-wrapping is the established pattern where no cloud IAM exists.
+>
+> **Rejected alternative.** *A static per-node backend password/token* — reintroduces secret-zero (a
+> standing long-lived credential that must itself be distributed and protected), the exact anti-pattern
+> the identity plane exists to remove.
 
 > **Decision (slice fix #269).** Wrap the slice `IntrinsicConfigProvider` with
 > `ConfigurationProvider.withSecretResolution(...)` — the exact machinery already used for
 > `node.toml` — threading a `SecretsProvider` into the `SliceStore` record.
 >
-> **Why (verified).** `SliceStore.assembleSliceComposite` (`SliceStore.java:237-251`) layers config
-> with `LayeredConfigProvider.layered(...)` but **never** wraps it in `SecretResolvingConfigurationProvider`;
-> the `LoadedSliceEntry` record (`:140-158`) has no secrets field; intrinsic loading (`:274-294`) does
-> no resolution. Reusing `withSecretResolution` (proven on the node path) is the minimal, consistent
-> fix.
+> **Why (verified).** `SliceStore.assembleSliceComposite` layers config with
+> `LayeredConfigProvider.layered(...)` at `SliceStore.java:251` but **never** wraps it in
+> `SecretResolvingConfigurationProvider`; intrinsic `resources.toml` loading (`getResourceAsStream`,
+> `:298`) does no resolution; the whole file contains zero `withSecretResolution`/`secrets:` references.
+> By contrast node.toml *is* resolved (`AetherNode.java:4284-4288` → `ConfigurationProvider.withSecretResolution`,
+> defined at `ConfigurationProvider.java:87`), so the gap is **specifically the slice layer**. Reusing
+> `withSecretResolution` (proven on the node path) is the minimal, consistent fix.
 >
 > **Rejected alternative.** *A slice-specific resolver* — duplicates working node-side machinery.
 
@@ -676,7 +696,7 @@ record LeaseId(String value) {}
 > INFO. (c) Close the #287 compose vector by resolving `cluster_secret` from a file/secret reference
 > instead of an env var.
 >
-> **Why (verified).** `SliceStore.java:264-270` logs *unresolved* `${secrets:...}` placeholders **and
+> **Why (verified).** `SliceStore.java:265-269` logs *unresolved* `${secrets:...}` placeholders **and
 > the override value** at INFO when a key is shadowed — leaking both the secret path and the actual
 > value. `SecureFiles.java:24-54` already chmod-600s the on-disk secret (DONE), but
 > `DockerComposeGenerator.java:80` still injects `AETHER_CLUSTER_SECRET` as a plaintext env var
@@ -715,8 +735,9 @@ self-contained section is the accepted first-draft form per the work order. It m
 
 ### 7.1 The problem (verified)
 
-`BootstrapOverlayGenerator.java:131-133` emits a literal `[cloud.credentials] api_token` into **every**
-node's composed config (any node may become leader → call `provision()`). Consequences: any
+`BootstrapOverlayGenerator.java:133` (`Map.of("api_token", token)`, in `cloudCredentialsSection` `:125-134`)
+emits a literal `[cloud.credentials] api_token` into **every** node's composed config (any node may
+become leader → call `provision()`). Consequences: any
 single-node compromise leaks a **full-access** token; Hetzner tokens are **unscoped**; leader-gating
 is merely **structural** (`ClusterTopologyManagerRecord.provisionReplacement:483-531` runs only when
 the reconciler's `active.get()` guard is true — there is no explicit `isLeader` check at the call
@@ -765,7 +786,7 @@ interface CloudCredentialResolver {
 ### 7.4 Migration & DigitalOcean (#307)
 
 - **Migration:** stop emitting the literal `[cloud.credentials] api_token`
-  (`BootstrapOverlayGenerator.java:131-133`); emit a *reference* resolved JIT by the leader. Before/after
+  (`BootstrapOverlayGenerator.java:133`); emit a *reference* resolved JIT by the leader. Before/after
   config in §10.
 - **#307 (verified):** `CloudCredentials.java:34` returns `operationNotSupported` for DigitalOcean
   (spec-only; implemented providers are AWS/Azure/GCP/Hetzner/Docker). GA target: implement the DO
@@ -871,42 +892,47 @@ not the bare `Principal`. The spec builds on these types; it does not replace th
 > **Rejected alternative.** *Expose the `ScopedValue` key to slices for convenience* — direct
 > privilege-escalation path.
 
-> **Decision (b) — async + cross-node propagation is the runtime's job, via the existing
-> `ContextPropagation` hook.** The security module supplies a `ContextPropagation` implementation
-> (ServiceLoader-registered) that snapshots the `Principal`/`SecurityContext` in `capture()` and
-> rebinds it in `runWith(...)`. Cross-node, the `Principal` travels as a **signed assertion**
-> (short-lived, bound to the call, under mTLS), is **verified against the identity plane** on the
-> receiving node, and re-bound locally — never trusted raw off the wire.
+> **Decision (b) — async + cross-node propagation is the runtime's job, by EXTENDING the existing
+> `ContextPropagation` hook (not registering a parallel one).** The async snapshot/rebind hook already
+> exists; the work is to *widen what it carries*, then sign + verify across nodes.
 >
-> **Why (verified — resolves the "hand-wavy bit").** A bare `ScopedValue` does **not** survive
-> Promise thread hops: `Promise.AsyncExecutor` (`Promise.java:3150-3172`) submits independent actions
-> to a `newVirtualThreadPerTaskExecutor()`, and a fresh virtual thread does not inherit ScopedValue
-> bindings. **But the snapshot/rebind hook already exists**: `AsyncExecutor.runAsync` calls
-> `ContextPropagation.INSTANCE.capture()` *before* `executor.submit(...)` and
-> `ContextPropagation.INSTANCE.runWith(snapshot, runnable)` *on the worker thread*
-> (`core/.../lang/ContextPropagation.java`, default `NoOp`). So Aether already has exactly the hook
-> request-ID propagation would use; the security module only needs to *provide* the implementation —
-> **no core change required**. (Dependent/sequential Promise actions run on the resolving thread
-> within the dynamic scope, so they need no snapshot.) Cross-node assertions must be verified because
-> the network is an adversary boundary (§1.5).
+> **Why (verified — corrects an earlier "no core change required" overstatement).** A bare `ScopedValue`
+> does **not** survive Promise thread hops: `Promise.AsyncExecutor` (`Promise.java:3150-3172`) submits
+> independent actions to a `newVirtualThreadPerTaskExecutor()`, and a fresh virtual thread does not
+> inherit ScopedValue bindings. The snapshot/rebind hook exists at `Promise.java:3155-3156`
+> (`capture()` before `submit`, `runWith(snapshot, ...)` on the worker). **But two verified facts make
+> "just provide an impl" wrong:** (1) `ContextPropagation` is selected by a **single-winner**
+> `ServiceLoader.load(...).findFirst()` (`ContextPropagation.java:56-58`), and that single slot is
+> **already owned** by `AetherContextPropagation` (`aether/aether-invoke`, registered in `aether/node`'s
+> `META-INF/services`). A second registration would be **silently dropped**, not chained. (2) The existing
+> impl captures only a **`String` principal** (`InvocationContext.java:171`, `ScopedValue<String>`),
+> **not** the rich `SecurityContext` (`SecurityContextHolder.java:11` is a *separate* `ScopedValue` the
+> hook does **not** propagate) — so today, across an async hop, roles/claims are **dropped** and only the
+> principal string survives. The correct fix is therefore to **extend `AetherContextPropagation` /
+> `InvocationContext.ContextSnapshot` to carry the full `SecurityContext`** (a change in `aether-invoke`,
+> not a parallel registration). Note also that `Promise.map`/`flatMap` run **inline** on the completing
+> thread (`Promise.java:121-123`, `:145-147`) with no explicit rebind — they inherit by thread-locality
+> only, a correctness gap to confirm wherever a continuation may execute off the bound thread. Cross-node,
+> the `Principal` travels as a **signed assertion** (short-lived, bound to the call, under mTLS),
+> **verified against the identity plane** on the receiving node, and re-bound locally — never trusted raw
+> off the wire (the network is an adversary boundary, §1.5).
 >
 > **Rejected alternative.** *`ThreadLocal`* — leaks/cleanup burden, not auto-inherited by
 > `StructuredTaskScope`, costly on virtual threads. *Trust a cross-node Principal header raw* —
 > forgeable over a compromised hop.
 
 ```java
-// security module, ServiceLoader-registered as org.pragmatica.lang.ContextPropagation
-public final class PrincipalContextPropagation implements ContextPropagation {
-    static final ScopedValue<SecurityContext> CONTEXT = ScopedValue.newInstance();  // key NOT exported
-    @Override public Object capture() { return CONTEXT.orElse(null); }
-    @Override public Unit runWith(Object snapshot, Runnable action) {
-        if (snapshot instanceof SecurityContext sc) { ScopedValue.where(CONTEXT, sc).run(action); }
-        else { action.run(); }
-        return Unit.unit();
-    }
-}
-// slice-facing, secret-free accessor (exported); never exposes CONTEXT
-public interface SliceSecurityContext { Principal currentPrincipal(); }
+// CORRECT shape: EXTEND the existing single-winner impl — do NOT register a parallel
+// ContextPropagation (ServiceLoader.findFirst() would silently drop it). Widen the snapshot:
+//
+//   aether-invoke: AetherContextPropagation + InvocationContext.ContextSnapshot
+//     - today  : ContextSnapshot carries `String principal`   (InvocationContext.java:171)
+//     - change : carry the full SecurityContext (principal + roles + claims + AuthorizationRole),
+//                capturing from SecurityContextHolder's ScopedValue in capture(),
+//                rebinding it in runWith() — so roles/claims survive the async hop.
+//   The ScopedValue key stays UNEXPORTED (SecurityContextHolder, security module). Slices read only:
+
+public interface SliceSecurityContext { Principal currentPrincipal(); }  // exported, secret-free; never exposes the key
 ```
 
 ### 8.7 OBO / delegation — seam only
@@ -980,12 +1006,28 @@ interface AuditSink { Promise<Unit> record(AuditEvent e); }     // append-only
 >
 > **Rejected alternative.** *Log lines only* — mutable, not tamper-evident, easily lost.
 
+**Worked example — Policy + Audit together (a gated, audited material access).**
+
+```
+operator → POST /api/keys/{id}/rotate              (management plane)
+  → runtime authenticates the API key → Principal{ api-key:ops-7 }, SecurityContext{ role=OPERATOR }
+  → PolicyEngine.evaluate(principal, Action("key.rotate"), ResourceRef("kek", id))
+        → OPERATOR in the *management* scope permits key.rotate → Allow()
+  → KeyProvider rotates the KEK
+  → AuditSink.record(AuditEvent(now, ops-7, key.rotate, kek/id, Allow, prevHash))  → 200
+```
+
+The identical engine *denies* the same action to an application-plane caller: an end-user `Principal`'s
+roles live in the *application* scope, which grants no `key.*` action, so `evaluate(...) → Deny(...)`
+with **no scope bleed** (§9.1) — and the denial is audited too (`AuditSink.record(... Deny(PolicyDenied))`).
+
 ### 9.4 Management surfaces & SECURITY.md (#319)
 
 All new management surfaces (key rotation, lease revoke, attestor config, audit query) MUST follow the
 **REST→CLI→Docs triad** (CLAUDE.md invariant #1): a REST endpoint, a CLI command, and operator docs,
-delivered together. #319 (SECURITY.md) is produced as the public-facing security policy doc pointing
-at this spec's threat model (§1.5).
+delivered together. **#319 (SECURITY.md) is a Phase-5 deliverable** (§12): a public-facing security
+policy doc (skeleton + pointer) surfacing this spec's threat model (§1.5) and the single-trust-domain
+assumption (#313). It is scoped here, not yet drafted.
 
 ---
 
@@ -1019,7 +1061,7 @@ providers      = ["env", "file", "broker"] # resolution chain; federation append
 ### 10.3 Cloud credentials: before → after (#206)
 
 ```toml
-# BEFORE (fanned out to EVERY node — BootstrapOverlayGenerator.java:131-133)
+# BEFORE (fanned out to EVERY node — BootstrapOverlayGenerator.java:133)
 [cloud.credentials]
 api_token = "hcloud_AbCdEf...full-access-literal..."
 
@@ -1060,10 +1102,10 @@ Risk-first ordering; **all phases land in GA** (Decision-2 — order, not scope)
 |---|---|---|
 | 0 — quick wins | slice `${secrets:}` unify; R5 redaction + stop INFO-logging values; #287 compose-env; #307 clean error/resolver | #269, #287, #307 |
 | 1 — this spec | the normative artifact (this document) | #313 #319 #23 (docs) |
-| 2 — identity plane | per-node SVID from CA + mTLS everywhere + `NodeAttestor` (join-token baseline + cloud-IID) | #209 (promote) |
+| 2 — identity plane | per-node SVID from CA + mTLS everywhere + `NodeAttestor` (join-token baseline + cloud-IID); replace #88 CA-echo with real external cert issuance | #209 (CA→`IdentityIssuer`), #88 |
 | 3 — keys plane | `KeyProvider` + envelope + wire `BlockEncryptor` + AEAD-SIV | #253 |
 | 4 — secrets plane | unified pull + lease/revoke + native broker + Vault/cloud federation + #206 redesign | #119, #206 |
-| 5 — hardening | `PolicyEngine`, `AuditSink` (hash-chain), SECURITY.md, trust-domain doc | #319, #313, #23 |
+| 5 — hardening | `PolicyEngine`, `AuditSink` (hash-chain), **SECURITY.md skeleton (#319)**, trust-domain doc (#313), **#209 residual hardening** (default-role/VIEWER review #290, `http://`→`https://` healthcheck, `curl -k` audit) | #319, #313, #23, #209 |
 
 **Envelope-version note.** `ManifestGenerator.ENVELOPE_FORMAT_VERSION` is currently `1000`
 (`ManifestGenerator.java:34`). Bump it (CLAUDE.md invariant #3) **only** if slice-processor codegen
@@ -1074,24 +1116,26 @@ manifest/envelope. Pure runtime wiring that doesn't touch codegen does not requi
 
 ## 13. Reconciliation to Existing Code
 
-Verified against source on `design/security-subsystem` (HEAD `82f9d8da`). Tags: DONE / PARTIAL /
-STUB / MISSING. **Trust the code, not the ticket** — two transcript hypotheses are corrected below.
+Verified against source on `design/security-subsystem` (re-verified). Tags: DONE / PARTIAL /
+STUB / MISSING. **Trust the code, not the ticket** — and the code was re-checked: the transcript's
+caution on #88 ("unverified") and on Principal-carry ("hand-wavy") proved **correct** — both are
+STUB/PARTIAL, not the DONE an earlier draft claimed.
 
 | Capability | Current state | Real anchor (verified) | Target | Tag |
 |---|---|---|---|---|
 | `SecretsProvider` SPI | resolve + metadata + batch + watchRotation; **7** impls (Env, File, Composite, Caching, AWS-SM, GCP-SM, Azure-KV) | `aether/environment-integration/.../SecretsProvider.java:17-43` | extend w/ lease/revoke; add broker + Vault | DONE (extend) |
 | Node `${secrets:}` | eager, SPI-backed, wired | `AetherNode.java:4283-4288`; `integrations/config/.../SecretResolvingConfigurationProvider.java:21` | keep | DONE |
 | CLI `${secrets:}` | env-var-only in prod (1-arg overload → `Option.none()`) | `cli/.../ConfigReferenceResolver.java:27`; `ClusterBootstrapCommand.java:120` | thread SPI provider | PARTIAL |
-| Slice `${secrets:}` (#269) | not resolved; no secrets field; log-leak of unresolved value | `SliceStore.java:237-251`, `:274-294`, `:140-158`, `:264-270` | `withSecretResolution` wrap | STUB |
-| Cloud token fan-out (#206) | literal `api_token` on every node; structural leader-gate | `BootstrapOverlayGenerator.java:131-133`; `ClusterTopologyManagerRecord.provisionReplacement:483-531`; `HetznerEnvironmentIntegrationFactory.java:46,63` | JIT resolver; explicit `isLeader` | STUB/risky |
-| Storage at-rest (#253) | `aesGcm` exists; prod wired `none()`; plain GCM/random IV; no key source | `integrations/storage/.../BlockEncryptor.java:48,51`; `AesGcmBlockEncryptor.java:19`; `AetherNode.java:2537` | wire `KeyProvider`; AEAD-SIV | STUB |
+| Slice `${secrets:}` (#269) | not resolved; no secrets field; log-leak of unresolved value | `SliceStore.java:251` (layering), `:298` (intrinsic load), `:265-269` (log-leak) | `withSecretResolution` wrap | STUB |
+| Cloud token fan-out (#206) | literal `api_token` on every node; structural leader-gate | `BootstrapOverlayGenerator.java:133`; `ClusterTopologyManagerRecord.provisionReplacement:483-531`; `HetznerEnvironmentIntegrationFactory.java:46,63` | JIT resolver; explicit `isLeader` | STUB/risky |
+| Storage at-rest (#253) | `aesGcm` exists; prod defaults to empty `Option` (clear); plain GCM/random IV; no key source | `BlockEncryptor.java:48,51`; `AesGcmBlockEncryptor.java:19`; `SegmentReader.java:43` (`none()` default); `AetherNode.java:2537` (call site) | wire `KeyProvider`; AEAD-SIV | STUB |
 | `cluster_secret` at rest (#287) | chmod-600 DONE; compose env-var leak | `SecureFiles.java:24-54`; `DockerComposeGenerator.java:80` | close compose vector | PARTIAL |
-| CA from `cluster_secret` (#209) | derives CA (salt `aether-ca-seed`, daily rotation); no `curl -k`; `http://` only tests/healthcheck; default role VIEWER | `ClusterTrust:23-70`; `SelfSignedCertificateProvider.java:64,148-157`; `KvStoreApiKeyValidator:145`; `ApiKeySecurityValidator:99` | promote to `IdentityIssuer` | DONE |
-| **Cloud cert adapters (#88)** | **implemented w/ tests + renewal scheduler** (transcript said "unverified" — corrected) | `integrations/net/tcp/.../security/CertificateProvider.java` + `CertificateRenewalScheduler.java`; `aether/environment/{aws,azure,gcp}/.../*CertificateProvider.java`; `environment-integration/.../CloudCertificateProvider.java` | wire external-cert selection in config | **DONE** |
+| CA from `cluster_secret` (#209) | CA derivation DONE (salt `aether-ca-seed`, daily rotation); residual: `http://` healthcheck + default role VIEWER (#290) unaddressed | `ClusterTrust:23-70`; `SelfSignedCertificateProvider.java:64,148-157`; `KvStoreApiKeyValidator:145`; `ApiKeySecurityValidator:99` | promote to `IdentityIssuer`; close residual (Phase 5) | PARTIAL |
+| **Cloud cert adapters (#88)** | adapter classes + renewal scheduler exist, but are **CA-echo** — `issueCertificate` returns the pre-seeded CA cert verbatim, ignores `nodeId`/`hostname`; **no** cloud cert API (no ACM) | `CloudCertificateProvider.java:70-75`; `AzureCertificateProvider.java:73-78`; `AwsClient.java:43,78`; (genuine issuer: `SelfSignedCertificateProvider.java:106-187`) | build real external cert issuance | **STUB** |
 | DigitalOcean (#307) | spec-only; `operationNotSupported` | `CloudCredentials.java:34`; `CloudProviderName.java` | implement resolver | MISSING |
 | Gossip encryption | AES-GCM, multi-key rotation; keys from cert provider (#256 overlap) | `swim/.../AesGcmGossipEncryptor.java:25`; `SwimGossipEncryptors.java:39` | keep | DONE |
 | Request-time RBAC | `Principal`/`SecurityContext`/`Role`/`AuthorizationRole`; ANONYMOUS→VIEWER | `aether/http-handler-api/.../security/{Principal,SecurityContext,AuthorizationRole,Role}.java` | extend via `PolicyEngine` | DONE (extend) |
-| **Principal async carry** | `ContextPropagation` SPI (capture/runWith, ServiceLoader, NoOp) **already wired** in `Promise.AsyncExecutor` (transcript said "hand-wavy" — corrected) | `core/.../lang/ContextPropagation.java`; `Promise.java:3150-3172` | provide impl in security module | **DONE (hook exists)** |
+| **Principal async carry** | snapshot/rebind hook exists, but the single-winner ServiceLoader slot is already owned by `AetherContextPropagation` carrying only a **`String`** principal (not `SecurityContext`); `map`/`flatMap` run inline w/o rebind | `Promise.java:3155-3156,121-123,145-147`; `ContextPropagation.java:56-58`; `InvocationContext.java:171`; `SecurityContextHolder.java:11` | **extend** the existing snapshot to carry `SecurityContext` | **PARTIAL** |
 | Envelope version | `ENVELOPE_FORMAT_VERSION = 1000` | `ManifestGenerator.java:34` | bump iff codegen changes | n/a |
 
 ---
@@ -1116,10 +1160,12 @@ STUB / MISSING. **Trust the code, not the ticket** — two transcript hypotheses
    (§9.1); revisit a capability grammar only if role explosion appears.
 
 4. **Principal async/cross-node mechanics.**
-   **RESOLVED (verified).** Async carry uses the existing `ContextPropagation` hook in
-   `Promise.AsyncExecutor` (§8.6); the security module supplies the impl — no core change. Remaining
-   sub-item: finalize the **signed cross-node assertion format** (recommend a short-lived JWT/CWT
-   bound to the call, verified against the identity plane) during phase 2.
+   **PARTIAL (verified).** The async snapshot/rebind hook exists (`Promise.java:3155-3156`), but the
+   single-winner `ContextPropagation` slot is already owned by `AetherContextPropagation`, which carries
+   only a **`String` principal** — so the fix is to **extend** that snapshot to the full `SecurityContext`
+   (not register a parallel impl, which `findFirst()` would silently drop), and to handle the inline
+   `map`/`flatMap` path (§8.6). Plus: finalize the **signed cross-node assertion format** (recommend a
+   short-lived JWT/CWT bound to the call, verified against the identity plane). → resolve in phase 2.
 
 5. **Revocation — short-TTL-only vs CRL/OCSP for node identities.**
    **Recommendation (§3.6):** short TTL + control-plane deny-list signal as primary; keep CRL/OCSP as
