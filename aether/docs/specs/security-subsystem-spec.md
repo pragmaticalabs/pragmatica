@@ -792,6 +792,17 @@ interface CloudCredentialResolver {
   (spec-only; implemented providers are AWS/Azure/GCP/Hetzner/Docker). GA target: implement the DO
   resolver or keep the clean error — all GA per Decision-2; recommend implementing the resolver.
 
+**Worked example — leader JIT-fetches a Hetzner provision token (no fan-out).**
+
+```
+reconciler decides to scale → provisionReplacement() runs ONLY on the leader (active.get() + explicit isLeader)
+  → CloudCredentialResolver.resolveForProvision(HETZNER, leaderPrincipal)
+        → leader authenticates to the secrets broker with its node identity (§6.5)
+        → broker returns a short-lived, provision-scoped token → CloudCredential{ value, expiry, scopes }
+  → ComputeProvider.provision(...) uses it; the token is never written to any node's config
+  → non-leaders hold NOTHING; on failover the new leader repeats the fetch
+```
+
 ---
 
 ## 8. Runtime ↔ Slice Boundary & Credential-less Consumption
