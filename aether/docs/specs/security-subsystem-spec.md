@@ -79,7 +79,7 @@ it, least-privilege, per-node revocation, and rotation are impossible on every p
 - A hard sandbox against actively malicious in-process bytecode (see §1.5 — explicitly out of scope).
 - On-behalf-of / delegation token exchange (RFC 8693) — seam preserved, not built (§8.7, §14).
 - Post-quantum cryptography *implementation* now — the CA algorithm is made swappable, PQC deferred
-  (§4.5).
+  (§4.5; full inventory + posture §5.7).
 - Multi-region trust federation across distinct trust domains — single trust domain per application
   (#313).
 
@@ -452,6 +452,8 @@ verified in `AesGcmGossipEncryptor` / `SwimGossipEncryptors`).
 > **Rejected alternative.** *Implement PQC now* — premature: tooling/library maturity and interop
 > are still settling, and there is no >10-yr-secret requirement on the table. *Ignore PQC entirely* —
 > leaves no migration seam; rejected in favor of swappability.
+>
+> The full algorithm inventory and the symmetric-vs-asymmetric posture are consolidated in **§5.7**.
 
 ---
 
@@ -573,6 +575,50 @@ READ (SegmentReader):
   blockEncryptor = BlockEncryptor.aesGcmSiv(dek, header.wrappedKey.kekId().toString());
   return decrypt(blockEncryptor, ciphertext);
 ```
+
+### 5.7 Cryptographic algorithm inventory & quantum-resistance posture
+
+Consolidated reference for every cryptographic algorithm the subsystem relies on, with the
+post-quantum (PQC) posture for each. Complements the CA-algorithm decision in §4.5.
+
+| Use | Algorithm (verified) | Class | Anchor | Quantum status |
+|---|---|---|---|---|
+| Storage at-rest | AES-256-GCM, random 96-bit IV (prod defaults to clear today, §5.3/#253) | symmetric AEAD | `AesGcmBlockEncryptor.java:19-21` | ✅ resistant |
+| Gossip / SWIM transport | AES-256-GCM, daily-rotated | symmetric AEAD | `swim/.../AesGcmGossipEncryptor.java:25` | ✅ resistant |
+| Key derivation (CA + KEK seeds) | HKDF-HMAC-SHA-2 (RFC 5869) | symmetric / hash | `SelfSignedCertificateProvider.java:64`; §3.5, §5.1 | ✅ resistant |
+| CA / node-cert signatures | **ECDSA — `SHA256withECDSA`, EC keys** | **asymmetric** | `SelfSignedCertificateProvider.java:61,273` | ⚠️ exposed |
+| mTLS handshake | EC-based key exchange (negotiated by the TLS stack) | **asymmetric** | `ClusterTrust`; the EC certs above | ⚠️ exposed |
+
+**Why this split is the whole story:**
+
+- **Symmetric primitives are already quantum-resistant.** Grover's algorithm yields only a quadratic
+  speedup, halving effective strength: AES-256 → ~128-bit post-quantum security; HMAC-SHA-2 is
+  similarly unaffected at these sizes. So **at-rest, gossip, and all key derivation need no PQC
+  migration.** (The §5.4 move to a nonce-misuse-resistant AEAD is orthogonal — AES-GCM-SIV /
+  XChaCha20-Poly1305 are equally quantum-safe; that change addresses nonce reuse, not quantum.)
+- **Only the asymmetric layer is exposed.** ECDSA signatures and EC(DH) key agreement fall to Shor's
+  algorithm on a cryptographically-relevant quantum computer (CRQC) — affecting exactly the **mTLS
+  handshake** and **certificate signatures**, nothing else.
+
+> **Decision.** Treat **symmetric crypto as PQC-complete today**; keep the **asymmetric CA/handshake
+> algorithm swappable** (§4.1, §4.5) and migrate it to NIST PQC — **ML-KEM (FIPS 203)** for key
+> establishment and **ML-DSA (FIPS 204)** for signatures, in a **hybrid** construction (e.g.
+> X25519+ML-KEM) — **only when** the JDK/TLS + certificate tooling ship interoperable support, **or** a
+> concrete >10-year in-transit-confidentiality requirement appears. Do **not** implement PQC now.
+>
+> **Why.** The only realistic near-term quantum threat here is **harvest-now-decrypt-later (HNDL)**: an
+> adversary recording mTLS traffic today to decrypt once a CRQC exists. That matters only for data that
+> must stay confidential past the CRQC horizon (commonly modeled >10 years); ephemeral intra-cluster
+> control/data traffic does not meet that bar, and the data with genuine long-lived confidentiality —
+> at rest — is already AES-256-protected. So there is no material exposure worth paying immature-tooling
+> and interop cost for today, and the swappable-algorithm seam (one `IdentityIssuer`/`CertificateProvider`
+> SPI, §4.1) keeps the eventual migration a contained change, not a rewrite. Hybrid KEX ensures a flaw
+> in the young PQC primitive cannot regress classical security in the interim.
+>
+> **Rejected alternative.** *Migrate to PQC now* — premature: no >10-yr in-transit requirement on the
+> table and PQC library/interop maturity still settling; shipping a less-battle-tested primitive as the
+> sole defense is its own risk. *Ignore PQC entirely* — leaves no migration seam and exposes long-lived
+> HNDL data later; rejected in favor of swappability + symmetric-already-safe.
 
 ---
 
