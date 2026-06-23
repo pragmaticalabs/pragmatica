@@ -59,6 +59,9 @@ test_seed_marker() {
     printf '%s' "$marker_path" > "$MARKER_PATH_FILE"
 
     local status
+    # Rotate to a live core before the write — the pinned CLUSTER_ENDPOINT may be a
+    # node killed/scaled by a prior step (mirrors the read path in No_data_loss).
+    _refresh_mgmt_entry_point || true
     status=$(curl -sk -o /dev/null -w "%{http_code}" \
         -X PUT \
         -H "X-API-Key: ${API_KEY}" \
@@ -100,7 +103,7 @@ test_scale_down_under_load() {
     retarget_app_endpoint_to_active_slice "$ECHO_BLUEPRINT" "/api/echo/health" 90 \
         || log_warn "scale-down-under-load: could not retarget APP_ENDPOINT to echo owner; load will probe ${APP_ENDPOINT}"
 
-    start_load "$LOAD_RPS" "$LOAD_DURATION" "GET" "/api/echo/health"
+    start_load "$LOAD_RPS" "$LOAD_DURATION" "GET" "/api/echo/health" "" "$ECHO_BLUEPRINT"
     sleep 5
 
     # Scale down to 5

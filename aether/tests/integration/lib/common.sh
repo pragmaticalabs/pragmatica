@@ -260,6 +260,22 @@ _resolve_live_endpoint() {
                 return 0
             fi
         done
+        # Seed IPs (bootstrap-state.json) are all dead/replaced. Enumerate the CURRENT
+        # cluster VMs straight from the cloud provider — CTM auto-heal REPLACEMENT VMs
+        # carry the cluster label but are NOT recorded in bootstrap-state.json, so the
+        # fixed seed loop above can never find them. This is the anchor-free discovery
+        # that makes resolution survive full owner replacement under chaos.
+        if command -v hcloud >/dev/null 2>&1 && [ -n "${BOOTSTRAP_CLUSTER_NAME:-}" ]; then
+            local cur_ip
+            for cur_ip in $(hcloud server list --selector "aether-cluster=${BOOTSTRAP_CLUSTER_NAME}" -o columns=ipv4 -o noheader 2>/dev/null); do
+                [ -z "$cur_ip" ] && continue
+                endpoint="${MGMT_SCHEME:-http}://${cur_ip}:${mgmt_port}"
+                if curl -sfk -m 2 -H "X-API-Key: ${API_KEY}" "${endpoint}/health/live" >/dev/null 2>&1; then
+                    echo "${endpoint}"
+                    return 0
+                fi
+            done
+        fi
         # No surviving VM responded; fall back so the caller surfaces a curl failure.
         echo "${CLUSTER_ENDPOINT}"
         return 1

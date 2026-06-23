@@ -10,7 +10,7 @@ source "${LIB_DIR}/common.sh"
 LOAD_PIDS=()
 
 # Start background HTTP load against the app endpoint
-# Usage: start_load <rps> <duration_seconds> <method> <path> [body]
+# Usage: start_load <rps> <duration_seconds> <method> <path> [body] [reresolve_coords]
 #
 # OWNER PINNING (cloud): APP_ENDPOINT points at ONE slice-owner VM (set by
 # retarget_app_endpoint_to_active_slice — the harness has no load balancer). If a
@@ -20,10 +20,16 @@ LOAD_PIDS=()
 # the missing LB. Disruption tests MUST therefore keep the load's owner alive by
 # exporting it in PICK_EXCLUDE before picking a victim (pick_non_leader honors
 # PICK_EXCLUDE — see lib/cluster.sh) — measuring the product, not the absent LB.
-# Re-resolving the owner per tick is intentionally NOT done here: it would add an
-# API round-trip per request and still cannot route around a single-owner slice.
+#
+# RE-RESOLVE (cloud, optional 6th arg): when the pinned owner cannot be kept alive
+# (scale-down removes it; a kill targets it), pass the slice coords as $6 so the
+# loop re-resolves the CURRENT active owner after 3 consecutive non-2xx ticks. With
+# no LB the loop finds the new owner via slice_owner_for → _resolve_live_endpoint
+# (now cluster-aware) and re-points APP_ENDPOINT, instead of failing every tick for
+# the rest of the window. Callers that omit $6 behave exactly as before.
 start_load() {
-    local rps="$1" duration="$2" method="$3" path="$4" body="${5:-}"
+    local rps="$1" duration="$2" method="$3" path="$4" body="${5:-}" reresolve_coords="${6:-}"
+    local app_port="${APP_PORT:-8070}"
     local interval
     interval=$(awk "BEGIN {printf \"%.4f\", 1.0/${rps}}" 2>/dev/null || echo "0.1")
     local end_time=$(($(now_epoch) + duration))
@@ -39,7 +45,7 @@ start_load() {
     log_info "Starting load: ${rps} rps for ${duration}s — ${method} ${path}"
 
     (
-        local success=0 failure=0
+        local success=0 failure=0 consec_fail=0
         while [ "$(now_epoch)" -lt "$end_time" ]; do
             local status
             if [ "$method" = "GET" ]; then
@@ -53,11 +59,27 @@ start_load() {
             fi
             if [ "$status" -ge 200 ] && [ "$status" -lt 300 ] 2>/dev/null; then
                 success=$((success + 1))
+                consec_fail=0
             else
                 failure=$((failure + 1))
                 # Per-failure forensics: status 000 = transport/connect error
                 # (target node down), 4xx/5xx = node up but request rejected.
                 echo "$(date -u +%H:%M:%S) ${status}" >> "/tmp/load_failures_$$.txt"
+                consec_fail=$((consec_fail + 1))
+                if [ -n "$reresolve_coords" ] && [ "$consec_fail" -ge 3 ]; then
+                    # The pinned slice-owner died under churn; there is no LB, so find the
+                    # CURRENT active owner and re-point. slice_owner_for → api_get →
+                    # _resolve_live_endpoint (now cluster-aware) survives replacement.
+                    local new_owner new_ip
+                    new_owner=$(slice_owner_for "$reresolve_coords" 2>/dev/null || true)
+                    if [ -n "$new_owner" ]; then
+                        if [ "${ENV_TYPE:-docker}" = "cloud" ]; then
+                            new_ip=$(cloud_public_ip "$new_owner" 2>/dev/null || true)
+                            [ -n "$new_ip" ] && APP_ENDPOINT="http://${new_ip}:${app_port}"
+                        fi
+                    fi
+                    consec_fail=0
+                fi
             fi
             sleep "$interval"
         done

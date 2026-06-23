@@ -45,7 +45,7 @@ test_kill_during_load() {
     retarget_app_endpoint_to_active_slice "$ECHO_BLUEPRINT" "/api/echo/health" 90 \
         || log_warn "kill-under-load: could not retarget APP_ENDPOINT to echo owner; load will probe ${APP_ENDPOINT}"
 
-    start_load "$LOAD_RPS" "$LOAD_DURATION" GET "/api/echo/health"
+    start_load "$LOAD_RPS" "$LOAD_DURATION" GET "/api/echo/health" "" "$ECHO_BLUEPRINT"
 
     # Load establishment is genuinely time-based (load.sh ramps RPS via sleep);
     # this is not a chaos-timing sleep, so it stays.

@@ -28,7 +28,7 @@
 [R2] aether/tests/integration/suites/02-chaos/test-joining-window-kill.sh:231 — name=$(remote_exec "docker ps --filter 'label=aether.node-id=${node_id}' ${cluster_filter} --format '{{.Names}}' | head -1" 2>/dev/null || true)
 [R2] aether/tests/integration/suites/02-chaos/test-joining-window-kill.sh:415 — candidates=$(pick_non_leader "$leader" 3 2>/dev/null || true)
 [R2] aether/tests/integration/suites/02-chaos/test-kill-under-load.sh:92 — wait "$pid" 2>/dev/null || true
-[R2] aether/tests/integration/suites/03-scaling/test-03-scale-down.sh:115 — wait "$pid" 2>/dev/null || true
+[R2] aether/tests/integration/suites/03-scaling/test-03-scale-down.sh:118 — wait "$pid" 2>/dev/null || true
 [R2] aether/tests/integration/suites/06-deployment/test-schema-migration.sh:111 — body=$(api_post "/api/schema/retry/${DATASOURCE}" "{}" 2>/dev/null || true)
 [R2] aether/tests/integration/suites/07-cluster-mgmt/test-destroy.sh:35 — # Don't `2>/dev/null || true` — that hides stderr AND ignores rc, so a
 [R2] aether/tests/integration/suites/11-observability/test-events-cluster-ordering.sh:60 — "${node0}/api/events" 2>/dev/null || true)
