@@ -1741,7 +1741,11 @@ public class FactoryClassGenerator {
                || typeName.equals("long")
                || typeName.equals("boolean")
                || typeName.equals("double")
-               || typeName.equals("float");
+               || typeName.equals("float")
+               || typeName.equals("byte")
+               || typeName.equals("short")
+               || typeName.equals("char")
+               || typeName.equals("byte[]");
     }
 
     /// Generate the notifyConfigUpdate static method for config runtime notification.
