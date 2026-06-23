@@ -9,7 +9,7 @@
 - **#338 tail DONE** (`75b86578f`) — **MySQL real-engine-proven**: B1 dialect-aware history ALTER (fresh + existing-cluster) + B2 autocommit lifecycle + B2 resume-from-checkpoint. All 4 green.
 - **#198/#339** — design-discussion doc written (`d23d0e561`, `aether/docs/internal/progress/media-type-versioning-design-discussion.md`); **NOT implemented** — user said "discuss media-type design before implementing." 6 decision points, recommendations each.
 - **Candidate republished** from HEAD (moved `v1.0.0-rc2-candidate` 3d5e96137→d23d0e561 → `release.yml` built+pushed image+jar).
-- **Cloud acceptance:** smoke ✅; **container cluster-A 10/10 ✅**; **container cluster-B 13/15 product-green** (05/13/12 ✅; 03-scaling + 02-chaos fail on **harness cloud-model bugs**, not product); **JVM cluster-A 9/10 ✅** (bootstrap-auth bug found+fixed `security_mode=NONE`, validated end-to-end; only diff = 06-deployment Rolling test, likely timing). JVM-B not run (would reproduce the 2 container harness bugs).
+- **Cloud acceptance:** smoke ✅; **container cluster-A 10/10 ✅**; **container cluster-B**: the **2 cloud-model harness bugs behind 03-scaling + 02-chaos's load/recovery failures are FIXED + cloud-validated** (`1bc9de170` — 03-scaling **3/0**: marker 500→200, scale-down 100%→**0.00%**; 02-chaos **kill-under-load 100%→0.00%**, recovery "healthy-cores" checks 45-min-hang→**0s**) → 05/13/12/03 green; **JVM cluster-A 9/10 ✅** (`security_mode=NONE` bootstrap-auth fix validated end-to-end; only diff = 06-deployment Rolling test, likely timing). **Remaining: 02-chaos S19/S20 self-drain detection** (3rd harness bug — `/api/events`+VM-resolves are cloud-wrong, should use `/api/cluster/membership`; S20 recovery times out downstream — classified, deferred to a focused session). JVM-B not run.
 
 ---
 
@@ -20,6 +20,7 @@
 | `75b86578f` | **#338 tail** — real-MySQL validation of migration recovery + history evolution (`AetherSchemaManagerMysqlTest` + aether-deployment pom heavy-db deps/gating). |
 | `d23d0e561` | **docs** — #198/#339 design discussion. |
 | `97dae9e2a` | **harness fixes** — stream-failover lint (R2 `2>/dev/null` capture), JVM-A bootstrap `security_mode=NONE`. |
+| `1bc9de170` | **harness fix (cloud-model)** — `_resolve_live_endpoint` discovers auto-heal replacements via `hcloud` (label `aether-cluster`); load generator re-targets live owner after 3 consec failures; marker PUT refreshes endpoint. Fixes 03-scaling 100%-error + marker + 02-chaos kill/recovery. **Cloud-validated.** |
 | (tag) | `v1.0.0-rc2-candidate` moved to `d23d0e561`, force-pushed → CI republished candidate. |
 
 **Real-engine proof (native amd64 via `$TARGET_HOST` — see [[project_remote_amd64_test_mechanism]]):**
