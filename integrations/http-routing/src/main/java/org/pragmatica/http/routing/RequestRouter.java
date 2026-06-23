@@ -1,5 +1,6 @@
 package org.pragmatica.http.routing;
 
+import org.pragmatica.http.HttpMethod;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 

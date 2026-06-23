@@ -7,10 +7,13 @@ package org.pragmatica.aether.http.adapter;
 import org.pragmatica.aether.http.adapter.impl.SliceRequestContext;
 import org.pragmatica.aether.http.handler.HttpRequestContext;
 import org.pragmatica.aether.http.handler.HttpResponseData;
-import org.pragmatica.http.routing.ContentType;
-import org.pragmatica.http.routing.HttpMethod;
-import org.pragmatica.http.routing.HttpStatus;
-import org.pragmatica.http.routing.ProblemDetail;
+import org.pragmatica.http.ContentType;
+import org.pragmatica.http.HttpMethod;
+import org.pragmatica.http.HttpStatus;
+import org.pragmatica.http.JsonCodec;
+import org.pragmatica.http.ProblemDetail;
+import org.pragmatica.http.ResponseSerializer;
+import org.pragmatica.http.routing.JsonCodecAdapter;
 import org.pragmatica.http.routing.RequestRouter;
 import org.pragmatica.http.routing.Route;
 import org.pragmatica.http.routing.RouteSource;
@@ -32,7 +35,7 @@ public interface SliceRouter {
     Promise<HttpResponseData> handle(HttpRequestContext request);
 
     static SliceRouter sliceRouter(RouteSource routes, ErrorMapper errorMapper, JsonMapper jsonMapper) {
-        record sliceRouter(RequestRouter requestRouter, ErrorMapper errorMapper, JsonMapper jsonMapper) implements SliceRouter {
+        record sliceRouter(RequestRouter requestRouter, ErrorMapper errorMapper, JsonMapper jsonMapper, JsonCodec jsonCodec) implements SliceRouter {
             private static final Map<String, String> JSON_HEADERS = Map.of("Content-Type",
                                                                            "application/json; charset=UTF-8");
 
@@ -81,15 +84,9 @@ public interface SliceRouter {
 
                 var headers = headersForContentType(contentType);
 
-                if (isTextContent(contentType)) {
-                    var body = value.toString().getBytes(StandardCharsets.UTF_8);
-
-                    return HttpResponseData.httpResponseData(200, headers, body);
-                }
-
-                return jsonMapper.writeAsBytes(value)
-                                 .fold(_ -> HttpResponseData.httpResponseData(500, "Serialization failed"),
-                                       body -> HttpResponseData.httpResponseData(200, headers, body));
+                return ResponseSerializer.serialize(value, contentType, jsonCodec)
+                                         .fold(_ -> HttpResponseData.httpResponseData(500, "Serialization failed"),
+                                               body -> HttpResponseData.httpResponseData(200, headers, body));
             }
 
             private HttpResponseData errorToResponse(Cause cause, HttpRequestContext request) {
@@ -147,14 +144,8 @@ public interface SliceRouter {
             private static Map<String, String> headersForContentType(ContentType contentType) {
                 return Map.of("Content-Type", contentType.headerText());
             }
-
-            private static boolean isTextContent(ContentType contentType) {
-                var headerText = contentType.headerText().toLowerCase();
-
-                return headerText.startsWith("text/") || headerText.contains("plain");
-            }
         }
 
-        return new sliceRouter(RequestRouter.with(routes), errorMapper, jsonMapper);
+        return new sliceRouter(RequestRouter.with(routes), errorMapper, jsonMapper, JsonCodecAdapter.forMapper(jsonMapper));
     }
 }

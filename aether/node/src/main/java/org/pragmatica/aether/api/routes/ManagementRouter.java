@@ -6,9 +6,12 @@ package org.pragmatica.aether.api.routes;
 
 import org.pragmatica.aether.management.route.ManagementRoute;
 import org.pragmatica.aether.management.route.MatchedRoute;
-import org.pragmatica.http.routing.ContentType;
-import org.pragmatica.http.routing.HttpMethod;
-import org.pragmatica.http.routing.JsonCodec;
+import org.pragmatica.http.ContentCategory;
+import org.pragmatica.http.ContentType;
+import org.pragmatica.http.HttpMethod;
+import org.pragmatica.http.HttpStatus;
+import org.pragmatica.http.JsonCodec;
+import org.pragmatica.http.ResponseSerializer;
 import org.pragmatica.http.routing.JsonCodecAdapter;
 import org.pragmatica.http.routing.PathUtils;
 import org.pragmatica.http.routing.RequestRouter;
@@ -114,35 +117,15 @@ public final class ManagementRouter {
             return;
         }
 
-        if (isTextContent(contentType)) {
-            response.okText(value.toString());
+        if (value instanceof String json && contentType.category() == ContentCategory.JSON) {
+            response.write(HttpStatus.OK, json.getBytes(StandardCharsets.UTF_8), contentType);
 
             return;
         }
 
-        if (value instanceof String json) {
-            response.ok(json);
-
-            return;
-        }
-
-        writeJson(value, response, serverCtx);
-    }
-
-    private void writeJson(Object value, ResponseWriter response, RequestContext serverCtx) {
-        jsonCodec.serialize(value).onFailure(cause -> writeError(response, cause, serverCtx)).onSuccess(byteBuf -> extractAndRelease(byteBuf,
-                                                                                                                                     response));
-    }
-
-    private void extractAndRelease(io.netty.buffer.ByteBuf byteBuf, ResponseWriter response) {
-        try {
-            var bytes = new byte[byteBuf.readableBytes()];
-
-            byteBuf.readBytes(bytes);
-            response.ok(new String(bytes, StandardCharsets.UTF_8));
-        } finally {
-            byteBuf.release();
-        }
+        ResponseSerializer.serialize(value, contentType, jsonCodec)
+                          .onFailure(cause -> writeError(response, cause, serverCtx))
+                          .onSuccess(bytes -> response.write(HttpStatus.OK, bytes, contentType));
     }
 
     private org.pragmatica.http.routing.RequestContext adaptContext(RequestContext serverCtx, Route<?> route) {
@@ -153,12 +136,6 @@ public final class ManagementRouter {
         return Result.lift(org.pragmatica.lang.utils.Causes::fromThrowable,
                            () -> HttpMethod.valueOf(method.toUpperCase()))
                      .option();
-    }
-
-    private static boolean isTextContent(ContentType contentType) {
-        var headerText = contentType.headerText().toLowerCase();
-
-        return headerText.startsWith("text/") || headerText.contains("plain");
     }
 
     private record ServerRequestContextAdapter(RequestContext serverCtx,
@@ -202,7 +179,7 @@ public final class ManagementRouter {
 
         @Override
         public <T> Result<T> fromJson(TypeToken<T> literal) {
-            return jsonCodec.deserialize(bodyBuf, literal);
+            return jsonCodec.deserialize(io.netty.buffer.ByteBufUtil.getBytes(bodyBuf), literal);
         }
 
         @Override

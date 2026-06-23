@@ -1,5 +1,7 @@
 package org.pragmatica.http.routing;
 
+import org.pragmatica.http.HttpStatus;
+import org.pragmatica.http.JsonCodec;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.type.TypeToken;
@@ -203,7 +205,7 @@ public interface RequestContext {
 
         @Override
         public <T> Result<T> fromJson(TypeToken<T> literal) {
-            return jsonCodec.deserialize(request.content(), literal);
+            return jsonCodec.deserialize(io.netty.buffer.ByteBufUtil.getBytes(request.content()), literal);
         }
 
         @Override

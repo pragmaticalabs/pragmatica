@@ -5,7 +5,7 @@
 package org.pragmatica.aether.management.route;
 
 import org.pragmatica.aether.slice.delegation.TaskGroup;
-import org.pragmatica.http.routing.HttpMethod;
+import org.pragmatica.http.HttpMethod;
 import org.pragmatica.lang.Result;
 
 import java.util.Arrays;
@@ -20,10 +20,10 @@ import static org.pragmatica.aether.slice.delegation.TaskGroup.SCALING;
 import static org.pragmatica.aether.slice.delegation.TaskGroup.STORAGE;
 import static org.pragmatica.aether.slice.delegation.TaskGroup.STRATEGIES;
 import static org.pragmatica.aether.slice.delegation.TaskGroup.STREAMING;
-import static org.pragmatica.http.routing.HttpMethod.DELETE;
-import static org.pragmatica.http.routing.HttpMethod.GET;
-import static org.pragmatica.http.routing.HttpMethod.POST;
-import static org.pragmatica.http.routing.HttpMethod.PUT;
+import static org.pragmatica.http.HttpMethod.DELETE;
+import static org.pragmatica.http.HttpMethod.GET;
+import static org.pragmatica.http.HttpMethod.POST;
+import static org.pragmatica.http.HttpMethod.PUT;
 
 
 public enum ManagementRoute {

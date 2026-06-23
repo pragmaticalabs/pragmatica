@@ -88,12 +88,12 @@ public record HttpResult<T>(int statusCode, HttpHeaders headers, T body) {
 
     /// Converts to Result, failing if status code indicates error.
     ///
-    /// @return Success with body if 2xx, Failure with HttpError otherwise
+    /// @return Success with body if 2xx, Failure with HttpClientError otherwise
     public Result<T> toResult() {
         if (isSuccess()) {
             return Result.success(body);
         }
-        return new HttpError.RequestFailed(statusCode, statusMessage()).result();
+        return new HttpClientError.RequestFailed(statusCode, statusMessage()).result();
     }
 
     /// Gets human-readable status message.

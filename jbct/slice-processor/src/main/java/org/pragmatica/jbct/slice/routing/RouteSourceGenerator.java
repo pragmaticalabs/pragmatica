@@ -239,8 +239,8 @@ public class RouteSourceGenerator {
         out.println("import org.pragmatica.aether.http.adapter.ErrorMapper;");
         out.println("import org.pragmatica.aether.http.adapter.SliceRouter;");
         out.println("import org.pragmatica.aether.http.adapter.SliceRouterFactory;");
-        out.println("import org.pragmatica.http.routing.HttpError;");
-        out.println("import org.pragmatica.http.routing.HttpStatus;");
+        out.println("import org.pragmatica.http.HttpError;");
+        out.println("import org.pragmatica.http.HttpStatus;");
         out.println("import org.pragmatica.http.routing.PathParameter;");
         out.println("import org.pragmatica.http.routing.QueryParameter;");
         out.println("import org.pragmatica.http.routing.Route;");

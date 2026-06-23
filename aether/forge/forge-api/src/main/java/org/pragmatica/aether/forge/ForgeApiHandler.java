@@ -17,8 +17,8 @@ import org.pragmatica.aether.forge.simulator.SimulatorMode;
 import org.pragmatica.http.CommonContentType;
 import org.pragmatica.http.HttpStatus;
 import org.pragmatica.lang.Option;
-import org.pragmatica.http.routing.ContentCategory;
-import org.pragmatica.http.routing.JsonCodec;
+import org.pragmatica.http.JsonCodec;
+import org.pragmatica.http.ResponseSerializer;
 import org.pragmatica.http.routing.JsonCodecAdapter;
 import org.pragmatica.http.routing.RequestContext.RequestContextImpl;
 import org.pragmatica.http.routing.RequestRouter;
@@ -200,44 +200,33 @@ public final class ForgeApiHandler {
 
     private void sendSuccessResponse(ResponseWriter response, Route<?> route, Object result) {
         var serverContentType = toServerContentType(route.contentType());
-        var category = route.contentType().category();
 
-        if ((category == ContentCategory.HTML || category == ContentCategory.PLAIN_TEXT) && result instanceof String text) {
-            response.write(HttpStatus.OK, text.getBytes(StandardCharsets.UTF_8), serverContentType);
-
-            return;
-        }
-
-        jsonCodec.serialize(result).onSuccess(byteBuf -> {
-            var bytes = new byte[byteBuf.readableBytes()];
-
-            byteBuf.readBytes(bytes);
-            byteBuf.release();
-            response.write(HttpStatus.OK, bytes, serverContentType);
-        }).onFailure(cause -> sendError(response, HttpStatus.INTERNAL_SERVER_ERROR, cause.message()));
+        ResponseSerializer.serialize(result, route.contentType(), jsonCodec)
+                          .onSuccess(bytes -> response.write(HttpStatus.OK, bytes, serverContentType))
+                          .onFailure(cause -> sendError(response, HttpStatus.INTERNAL_SERVER_ERROR, cause.message()));
     }
 
-    private org.pragmatica.http.ContentType toServerContentType(org.pragmatica.http.routing.ContentType routingContentType) {
+    private org.pragmatica.http.ContentType toServerContentType(org.pragmatica.http.ContentType routingContentType) {
         return switch (routingContentType.category()) {
             case JSON -> CommonContentType.APPLICATION_JSON;
-            case PLAIN_TEXT -> CommonContentType.TEXT_PLAIN;
+            case TEXT -> CommonContentType.TEXT_PLAIN;
             case HTML -> CommonContentType.TEXT_HTML;
             case BINARY -> CommonContentType.APPLICATION_OCTET_STREAM;
             default -> CommonContentType.APPLICATION_OCTET_STREAM;
         };
     }
 
-    private org.pragmatica.http.routing.HttpMethod convertMethod(org.pragmatica.http.HttpMethod method) {
+    private org.pragmatica.http.HttpMethod convertMethod(org.pragmatica.http.HttpMethod method) {
         return switch (method) {
-            case GET -> org.pragmatica.http.routing.HttpMethod.GET;
-            case POST -> org.pragmatica.http.routing.HttpMethod.POST;
-            case PUT -> org.pragmatica.http.routing.HttpMethod.PUT;
-            case DELETE -> org.pragmatica.http.routing.HttpMethod.DELETE;
-            case PATCH -> org.pragmatica.http.routing.HttpMethod.PATCH;
-            case HEAD -> org.pragmatica.http.routing.HttpMethod.HEAD;
-            case OPTIONS -> org.pragmatica.http.routing.HttpMethod.OPTIONS;
-            case TRACE -> org.pragmatica.http.routing.HttpMethod.TRACE;
-            case CONNECT -> org.pragmatica.http.routing.HttpMethod.CONNECT;
+            case GET -> org.pragmatica.http.HttpMethod.GET;
+            case POST -> org.pragmatica.http.HttpMethod.POST;
+            case PUT -> org.pragmatica.http.HttpMethod.PUT;
+            case DELETE -> org.pragmatica.http.HttpMethod.DELETE;
+            case PATCH -> org.pragmatica.http.HttpMethod.PATCH;
+            case HEAD -> org.pragmatica.http.HttpMethod.HEAD;
+            case OPTIONS -> org.pragmatica.http.HttpMethod.OPTIONS;
+            case TRACE -> org.pragmatica.http.HttpMethod.TRACE;
+            case CONNECT -> org.pragmatica.http.HttpMethod.CONNECT;
         };
     }
 

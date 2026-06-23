@@ -21,6 +21,13 @@
             <artifactId>core</artifactId>
         </dependency>
 
+        <!-- Shared HTTP value types -->
+        <dependency>
+            <groupId>org.pragmatica-lite</groupId>
+            <artifactId>http-types</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+
         <!-- Netty HTTP -->
         <dependency>
             <groupId>io.netty</groupId>

@@ -6,9 +6,9 @@ package org.pragmatica.aether.api.routes;
 
 import org.pragmatica.http.ContentCategory;
 import org.pragmatica.http.ContentType;
-import org.pragmatica.http.routing.HttpStatus;
-import org.pragmatica.http.routing.HttpStatusAware;
-import org.pragmatica.http.routing.ProblemDetail;
+import org.pragmatica.http.HttpStatus;
+import org.pragmatica.http.HttpStatusAware;
+import org.pragmatica.http.ProblemDetail;
 import org.pragmatica.http.server.ResponseWriter;
 import org.pragmatica.json.JsonMapper;
 import org.pragmatica.lang.Cause;

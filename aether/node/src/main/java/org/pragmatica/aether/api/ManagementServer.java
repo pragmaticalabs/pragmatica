@@ -939,9 +939,9 @@ class ManagementServerImpl implements ManagementServer {
                    .collect(Collectors.toSet());
     }
 
-    private static Option<org.pragmatica.http.routing.HttpMethod> parseRoutingMethod(String raw) {
+    private static Option<org.pragmatica.http.HttpMethod> parseRoutingMethod(String raw) {
         return Result.lift(Causes::fromThrowable,
-                           () -> org.pragmatica.http.routing.HttpMethod.valueOf(raw.toUpperCase()))
+                           () -> org.pragmatica.http.HttpMethod.valueOf(raw.toUpperCase()))
                      .option();
     }
 
@@ -955,7 +955,7 @@ class ManagementServerImpl implements ManagementServer {
     private void sendForwardError(InstrumentedResponseWriter response, String path, String requestId, Cause cause) {
         log.warn("Management forward failed [{}] {}: {}", requestId, path, cause.message());
         ProblemResponses.writeProblem(response,
-                                      org.pragmatica.http.routing.HttpStatus.SERVICE_UNAVAILABLE,
+                                      org.pragmatica.http.HttpStatus.SERVICE_UNAVAILABLE,
                                       "Management forward failed: " + cause.message(),
                                       path,
                                       requestId);
@@ -968,7 +968,7 @@ class ManagementServerImpl implements ManagementServer {
                                         long startTime) {
         log.warn("Management forwarder unavailable [{}] {} {}", requestId, methodName, path);
         ProblemResponses.writeProblem(response,
-                                      org.pragmatica.http.routing.HttpStatus.SERVICE_UNAVAILABLE,
+                                      org.pragmatica.http.HttpStatus.SERVICE_UNAVAILABLE,
                                       "Management forwarding not yet available",
                                       path,
                                       requestId);
@@ -1077,7 +1077,7 @@ class ManagementServerImpl implements ManagementServer {
             }
         }
 
-        var notFoundBody = ProblemResponses.renderProblemBytes(org.pragmatica.http.routing.HttpStatus.NOT_FOUND,
+        var notFoundBody = ProblemResponses.renderProblemBytes(org.pragmatica.http.HttpStatus.NOT_FOUND,
                                                                "No route found for " + context.method()
                                                               + " " + context.path(),
                                                                context.path(),
@@ -1157,7 +1157,7 @@ class ManagementServerImpl implements ManagementServer {
 
     private void writeProbeJson(ResponseWriter response, Object value, HttpStatus httpStatus) {
         probeJsonMapper.writeAsString(value).onSuccess(json -> response.respond(httpStatus, json)).onFailure(cause -> ProblemResponses.writeProblem(response,
-                                                                                                                                                    org.pragmatica.http.routing.HttpStatus.INTERNAL_SERVER_ERROR,
+                                                                                                                                                    org.pragmatica.http.HttpStatus.INTERNAL_SERVER_ERROR,
                                                                                                                                                     cause.message(),
                                                                                                                                                     "/health",
                                                                                                                                                     ""));
@@ -1183,7 +1183,7 @@ class ManagementServerImpl implements ManagementServer {
         }
 
         ProblemResponses.writeProblem(response,
-                                      org.pragmatica.http.routing.HttpStatus.METHOD_NOT_ALLOWED,
+                                      org.pragmatica.http.HttpStatus.METHOD_NOT_ALLOWED,
                                       "Writes to system:* streams are not permitted over HTTP",
                                       path,
                                       ctx.requestId());
@@ -1324,14 +1324,14 @@ class ManagementServerImpl implements ManagementServer {
         ProblemResponses.writeProblem(response, toRoutingStatus(status), cause.message(), path, requestId);
     }
 
-    private static org.pragmatica.http.routing.HttpStatus toRoutingStatus(HttpStatus status) {
-        for (var s : org.pragmatica.http.routing.HttpStatus.values()) {
+    private static org.pragmatica.http.HttpStatus toRoutingStatus(HttpStatus status) {
+        for (var s : org.pragmatica.http.HttpStatus.values()) {
             if (s.code() == status.code()) {
                 return s;
             }
         }
 
-        return org.pragmatica.http.routing.HttpStatus.INTERNAL_SERVER_ERROR;
+        return org.pragmatica.http.HttpStatus.INTERNAL_SERVER_ERROR;
     }
 
     private static String classifyDenialType(Cause cause) {

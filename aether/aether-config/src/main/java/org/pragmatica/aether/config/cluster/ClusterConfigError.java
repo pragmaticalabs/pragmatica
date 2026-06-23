@@ -4,8 +4,8 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.config.cluster;
 
-import org.pragmatica.http.routing.HttpStatus;
-import org.pragmatica.http.routing.HttpStatusAware;
+import org.pragmatica.http.HttpStatus;
+import org.pragmatica.http.HttpStatusAware;
 import org.pragmatica.lang.Cause;
 
 

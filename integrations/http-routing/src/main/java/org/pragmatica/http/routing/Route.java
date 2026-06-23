@@ -1,5 +1,8 @@
 package org.pragmatica.http.routing;
 
+import org.pragmatica.http.CommonContentType;
+import org.pragmatica.http.ContentType;
+import org.pragmatica.http.HttpMethod;
 import org.pragmatica.http.routing.security.RouteSecurityPolicy;
 import org.pragmatica.lang.Functions.*;
 import org.pragmatica.lang.Option;
@@ -12,7 +15,7 @@ import java.util.List;
 import java.util.function.Supplier;
 import java.util.stream.Stream;
 
-import static org.pragmatica.http.routing.HttpMethod.*;
+import static org.pragmatica.http.HttpMethod.*;
 
 /// Type-safe HTTP route definition with support for path parameters, query parameters, and request body.
 ///
@@ -829,11 +832,11 @@ public interface Route<T> extends RouteSource {
         ContentTypeBuilder<T> withSecurity(RouteSecurityPolicy security);
 
         default Route<T> asText() {
-            return as(CommonContentTypes.TEXT_PLAIN);
+            return as(CommonContentType.TEXT_PLAIN);
         }
 
         default Route<T> asJson() {
-            return as(CommonContentTypes.APPLICATION_JSON);
+            return as(CommonContentType.APPLICATION_JSON);
         }
     }
 

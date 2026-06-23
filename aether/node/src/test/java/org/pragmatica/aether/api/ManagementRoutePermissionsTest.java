@@ -24,7 +24,7 @@ class ManagementRoutePermissionsTest {
         @Test
         void allGetRoutes_resolveToViewer() {
             for (var route : ManagementRoute.values()) {
-                if (route.method() == org.pragmatica.http.routing.HttpMethod.GET) {
+                if (route.method() == org.pragmatica.http.HttpMethod.GET) {
                     assertThat(ManagementRoutePermissions.permissionFor(route))
                         .as("GET route %s must be VIEWER-readable", route)
                         .isEqualTo(ALL_AUTHENTICATED);

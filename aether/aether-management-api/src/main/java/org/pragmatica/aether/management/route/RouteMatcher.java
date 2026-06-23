@@ -4,7 +4,7 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.management.route;
 
-import org.pragmatica.http.routing.HttpMethod;
+import org.pragmatica.http.HttpMethod;
 import org.pragmatica.lang.Result;
 
 import java.net.URLDecoder;

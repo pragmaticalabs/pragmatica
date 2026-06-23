@@ -29,10 +29,10 @@ import org.pragmatica.aether.metrics.timeout.TimeoutSubsystem;
 import org.pragmatica.aether.management.route.ManagementRoute;
 import org.pragmatica.aether.metrics.observability.ObservabilityRegistry;
 import org.pragmatica.aether.node.ManageableNode;
-import org.pragmatica.http.routing.ContentCategory;
-import org.pragmatica.http.routing.ContentType;
-import org.pragmatica.http.routing.HttpError;
-import org.pragmatica.http.routing.HttpStatus;
+import org.pragmatica.http.ContentCategory;
+import org.pragmatica.http.ContentType;
+import org.pragmatica.http.HttpError;
+import org.pragmatica.http.HttpStatus;
 import org.pragmatica.http.routing.Route;
 import org.pragmatica.http.routing.RouteSource;
 import org.pragmatica.lang.Cause;
@@ -54,7 +54,7 @@ import static org.pragmatica.http.routing.QueryParameter.aString;
 
 public final class MetricsRoutes implements RouteSource {
     private static final ContentType PROMETHEUS_CONTENT_TYPE = ContentType.contentType("text/plain; version=0.0.4; charset=utf-8",
-                                                                                       ContentCategory.PLAIN_TEXT);
+                                                                                       ContentCategory.TEXT);
 
     private static final String DEV_MODE_ENV = "AETHER_INSECURE_DEV_MODE";
 

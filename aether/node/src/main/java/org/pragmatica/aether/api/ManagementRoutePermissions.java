@@ -6,7 +6,7 @@ package org.pragmatica.aether.api;
 
 import org.pragmatica.aether.http.handler.security.RoutePermission;
 import org.pragmatica.aether.management.route.ManagementRoute;
-import org.pragmatica.http.routing.HttpMethod;
+import org.pragmatica.http.HttpMethod;
 
 import java.util.EnumMap;
 import java.util.List;

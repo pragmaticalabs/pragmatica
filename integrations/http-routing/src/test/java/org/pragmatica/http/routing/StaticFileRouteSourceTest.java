@@ -4,11 +4,11 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.pragmatica.http.routing.ContentCategory.BINARY;
-import static org.pragmatica.http.routing.ContentCategory.HTML;
-import static org.pragmatica.http.routing.ContentCategory.JSON;
-import static org.pragmatica.http.routing.ContentCategory.PLAIN_TEXT;
-import static org.pragmatica.http.routing.HttpMethod.GET;
+import static org.pragmatica.http.ContentCategory.BINARY;
+import static org.pragmatica.http.ContentCategory.HTML;
+import static org.pragmatica.http.ContentCategory.JSON;
+import static org.pragmatica.http.ContentCategory.TEXT;
+import static org.pragmatica.http.HttpMethod.GET;
 import static org.pragmatica.http.routing.StaticFileRouteSource.detectContentType;
 import static org.pragmatica.http.routing.StaticFileRouteSource.staticFiles;
 
@@ -34,14 +34,14 @@ class StaticFileRouteSourceTest {
         void detectsCssContentType() {
             var contentType = detectContentType("/styles/main.css");
             assertThat(contentType.headerText()).isEqualTo("text/css; charset=UTF-8");
-            assertThat(contentType.category()).isEqualTo(PLAIN_TEXT);
+            assertThat(contentType.category()).isEqualTo(TEXT);
         }
 
         @Test
         void detectsJsContentType() {
             var contentType = detectContentType("/scripts/app.js");
             assertThat(contentType.headerText()).isEqualTo("text/javascript; charset=UTF-8");
-            assertThat(contentType.category()).isEqualTo(PLAIN_TEXT);
+            assertThat(contentType.category()).isEqualTo(TEXT);
         }
 
         @Test
@@ -125,14 +125,14 @@ class StaticFileRouteSourceTest {
         void detectsXmlContentType() {
             var contentType = detectContentType("/config.xml");
             assertThat(contentType.headerText()).isEqualTo("application/xml; charset=UTF-8");
-            assertThat(contentType.category()).isEqualTo(PLAIN_TEXT);
+            assertThat(contentType.category()).isEqualTo(TEXT);
         }
 
         @Test
         void detectsTxtContentType() {
             var contentType = detectContentType("/readme.txt");
             assertThat(contentType.headerText()).isEqualTo("text/plain; charset=UTF-8");
-            assertThat(contentType.category()).isEqualTo(PLAIN_TEXT);
+            assertThat(contentType.category()).isEqualTo(TEXT);
         }
 
         @Test

@@ -5,7 +5,7 @@
 package org.pragmatica.aether.management.route;
 
 import org.pragmatica.aether.slice.delegation.TaskGroup;
-import org.pragmatica.http.routing.HttpMethod;
+import org.pragmatica.http.HttpMethod;
 import org.pragmatica.lang.Cause;
 
 

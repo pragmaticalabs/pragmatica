@@ -68,7 +68,7 @@ public final class GitHubReleaseChecker {
 
     private Result<ReleaseInfo> handleResponse(HttpResult<String> response) {
         if (response.statusCode() == 404) {
-            return new org.pragmatica.http.HttpError.RequestFailed(404, "No releases found").result();
+            return new org.pragmatica.http.HttpClientError.RequestFailed(404, "No releases found").result();
         }
         return response.toResult()
                        .flatMap(this::parseReleaseInfo);
@@ -77,7 +77,7 @@ public final class GitHubReleaseChecker {
     private Result<ReleaseInfo> parseReleaseInfo(String json) {
         var versionMatcher = VERSION_PATTERN.matcher(json);
         if (!versionMatcher.find()) {
-            return new org.pragmatica.http.HttpError.InvalidResponse("Could not parse version from release",
+            return new org.pragmatica.http.HttpClientError.InvalidResponse("Could not parse version from release",
                                                                      Option.none()).result();
         }
         var version = versionMatcher.group(1);

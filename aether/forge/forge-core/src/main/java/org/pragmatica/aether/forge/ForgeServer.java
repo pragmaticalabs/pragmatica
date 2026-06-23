@@ -16,7 +16,7 @@ import org.pragmatica.aether.api.StatusWebSocketPublisher;
 import org.pragmatica.aether.api.WebSocketAuthenticator;
 import org.pragmatica.aether.http.security.SecurityValidator;
 import org.pragmatica.aether.forge.api.StatusRoutes;
-import org.pragmatica.http.routing.JsonCodec;
+import org.pragmatica.http.JsonCodec;
 import org.pragmatica.http.routing.JsonCodecAdapter;
 import org.pragmatica.http.server.HttpServer;
 import org.pragmatica.http.server.HttpServerConfig;
@@ -249,17 +249,7 @@ public final class ForgeServer {
         var status = StatusRoutes.buildFullStatus(cluster, metrics, startTime, loadRunner);
 
         return CODEC.serialize(status)
-                    .map(byteBuf -> {
-                             try {
-                             var bytes = new byte[byteBuf.readableBytes()];
-
-                             byteBuf.readBytes(bytes);
-
-                             return new String(bytes, java.nio.charset.StandardCharsets.UTF_8);
-                         } finally {
-                             byteBuf.release();
-                         }
-                         })
+                    .map(bytes -> new String(bytes, java.nio.charset.StandardCharsets.UTF_8))
                     .or("{}");
     }
 
