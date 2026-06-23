@@ -17,10 +17,20 @@
     <properties>
         <!-- Matches integrations/db/postgres-async (Testcontainers) and aether/ember (PG JDBC driver).
              All TEST scope only — the module's MAIN dependency stays core-only. The MySQL driver and
-             Testcontainers MySQL module back the StatementSplitterMysqlDiffTest. -->
+             Testcontainers MySQL module back the StatementSplitterMysqlDiffTest. The Oracle/SQL Server/
+             DB2 Testcontainers modules + JDBC drivers back the @Tag("heavy-db") differential tests,
+             which are excluded from the default build by the surefire excludedGroups below. -->
         <testcontainers.version>1.21.4</testcontainers.version>
         <postgresql-jdbc.version>42.7.5</postgresql-jdbc.version>
         <mysql-jdbc.version>9.2.0</mysql-jdbc.version>
+        <ojdbc.version>23.7.0.25.01</ojdbc.version>
+        <mssql-jdbc.version>12.8.1.jre11</mssql-jdbc.version>
+        <db2-jcc.version>11.5.9.0</db2-jcc.version>
+        <!-- The @Tag("heavy-db") differential tests (Oracle/SQL Server/DB2) are excluded by default
+             and opted into on dedicated amd64 hardware (or CI) by overriding these two properties:
+             mvn test -DheavyDb.excludedGroups= -DheavyDb.includedGroups=heavy-db -->
+        <heavyDb.excludedGroups>heavy-db</heavyDb.excludedGroups>
+        <heavyDb.includedGroups></heavyDb.includedGroups>
     </properties>
 
     <dependencies>
@@ -100,5 +110,63 @@
                 </exclusion>
             </exclusions>
         </dependency>
+
+        <!-- Differential tests against real Oracle, SQL Server, and DB2 engines (Testcontainers).
+             TEST scope only and gated behind @Tag("heavy-db") (excluded by default surefire below),
+             so neither the Testcontainers modules nor the JDBC drivers leak downstream or run in the
+             default build. They need a real engine and the right CPU arch, so they run on dedicated
+             hardware only. -->
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>oracle-free</artifactId>
+            <version>${testcontainers.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>com.oracle.database.jdbc</groupId>
+            <artifactId>ojdbc11</artifactId>
+            <version>${ojdbc.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>mssqlserver</artifactId>
+            <version>${testcontainers.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>com.microsoft.sqlserver</groupId>
+            <artifactId>mssql-jdbc</artifactId>
+            <version>${mssql-jdbc.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>db2</artifactId>
+            <version>${testcontainers.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>com.ibm.db2</groupId>
+            <artifactId>jcc</artifactId>
+            <version>${db2-jcc.version}</version>
+            <scope>test</scope>
+        </dependency>
     </dependencies>
+
+    <build>
+        <plugins>
+            <!-- The Oracle/SQL Server/DB2 differential tests are tagged @Tag("heavy-db"): they need a
+                 real engine and the right CPU arch, so the default `mvn test` excludes them here. The
+                 untagged PostgreSQL and MySQL differential tests still run by default. -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <configuration>
+                    <excludedGroups>${heavyDb.excludedGroups}</excludedGroups>
+                    <groups>${heavyDb.includedGroups}</groups>
+                </configuration>
+            </plugin>
+        </plugins>
+    </build>
 </project>
