@@ -61,6 +61,13 @@ username = "${env:PG_USER}"
 password = "${env:PG_PASSWORD}"
 async_url = "postgresql://${env:PG_HOST}:5432/${env:PG_DB}"
 
+# Mirror the container TOML: enable the slice app-HTTP server + disable security so the
+# bootstrap's storeClusterConfig POST isn't rejected (the bootstrap-generated key isn't in
+# the KV yet). Without this block JVM nodes default to API_KEY mode → cluster-config write 403/401.
+[source.hetzner-eu.node_config.app-http]
+enabled = true
+security_mode = "NONE"
+
 [runtime.default]
 type = "jvm"
 # Cluster version is 1.0.0 (strict semver); the JVM-mode URL deriver would

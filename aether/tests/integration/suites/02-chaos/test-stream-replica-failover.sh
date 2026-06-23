@@ -183,7 +183,9 @@ json_scalar() {
 
 # Resolve the partition's HRW owner NodeId from any replicas view (header field).
 partition_hrw_owner() {
-    json_scalar "$(api_get "/api/streams/replicas/${STREAM_NAME}/${PARTITION}" 2>/dev/null || true)" hrwOwner
+    local body
+    body=$(api_get "/api/streams/replicas/${STREAM_NAME}/${PARTITION}" 2>/dev/null) || body=""
+    json_scalar "$body" hrwOwner
 }
 
 # Predicate (for wait_for): the partition has an owner-authoritative view whose
