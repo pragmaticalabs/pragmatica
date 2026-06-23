@@ -14,10 +14,19 @@
     <description>Cluster and node deployment management</description>
 
     <properties>
-        <!-- Real-PostgreSQL atomicity test (Increment A of #338). TEST scope only; matches the
-             versions used by aether/pg-tools/sql-splitter and aether/ember. -->
+        <!-- Real-PostgreSQL atomicity test (Increment A of #338) and real-MySQL migration test
+             (Increment B of #338). TEST scope only; matches the versions used by
+             aether/pg-tools/sql-splitter and aether/ember. -->
         <testcontainers.version>1.21.4</testcontainers.version>
         <postgresql-jdbc.version>42.7.5</postgresql-jdbc.version>
+        <mysql-jdbc.version>9.2.0</mysql-jdbc.version>
+        <!-- The @Tag("heavy-db") real-MySQL migration test is excluded by default (it needs a real
+             MySQL container and amd64) and opted into on dedicated hardware (or CI) by overriding
+             these two properties:
+             mvn test -DheavyDb.excludedGroups= -DheavyDb.includedGroups=heavy-db
+             The untagged PostgreSQL tests still run by default. -->
+        <heavyDb.excludedGroups>heavy-db</heavyDb.excludedGroups>
+        <heavyDb.includedGroups></heavyDb.includedGroups>
     </properties>
 
     <dependencies>
@@ -166,6 +175,28 @@
             <version>${postgresql-jdbc.version}</version>
             <scope>test</scope>
         </dependency>
+        <!-- Real-MySQL migration test (Increment B of #338): Testcontainers MySQL module + JDBC
+             driver, TEST scope only so neither leaks downstream. The driver's transitive X DevAPI
+             protobuf dependency is unused here and excluded. The test self-skips (assumeTrue) when no
+             Docker daemon is reachable and is gated behind @Tag("heavy-db"). -->
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>mysql</artifactId>
+            <version>${testcontainers.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>com.mysql</groupId>
+            <artifactId>mysql-connector-j</artifactId>
+            <version>${mysql-jdbc.version}</version>
+            <scope>test</scope>
+            <exclusions>
+                <exclusion>
+                    <groupId>com.google.protobuf</groupId>
+                    <artifactId>protobuf-java</artifactId>
+                </exclusion>
+            </exclusions>
+        </dependency>
     </dependencies>
 
     <build>
@@ -177,6 +208,17 @@
                     <compilerArgs combine.children="append">
                         <arg>-Acodec.registry.suffix=Deployment</arg>
                     </compilerArgs>
+                </configuration>
+            </plugin>
+            <!-- The real-MySQL migration test is tagged @Tag("heavy-db"): it needs a real engine and
+                 the right CPU arch, so the default `mvn test` excludes it here. The untagged
+                 PostgreSQL tests still run by default. -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <configuration>
+                    <excludedGroups>${heavyDb.excludedGroups}</excludedGroups>
+                    <groups>${heavyDb.includedGroups}</groups>
                 </configuration>
             </plugin>
         </plugins>
