@@ -257,6 +257,18 @@ public interface Route<T> extends RouteSource {
             return withBody(TypeToken.typeToken(type));
         }
 
+        /// Bind the raw request body as a `String` (for routes that `consume` a text media type).
+        /// Used by slice-processor codegen when `consumes` is TEXT/HTML/XML.
+        BodyBuilder<R, String> withStringBody();
+
+        /// Bind the raw request body as a `byte[]` (for routes that `consume` a binary media type).
+        /// Used by slice-processor codegen when `consumes` is BINARY.
+        BodyBuilder<R, byte[]> withByteBody();
+
+        /// Bind the request body as a parsed [MultipartRequest] (for `multipart/form-data` routes).
+        /// Used by slice-processor codegen when `consumes` is MULTIPART.
+        BodyBuilder<R, MultipartRequest> withMultipartBody();
+
         // Query parameters only (1-5)
         <Q1> QueryBuilder1<R, Q1> withQuery(QueryParameter<Q1> q1);
 
@@ -935,6 +947,23 @@ public interface Route<T> extends RouteSource {
         @Override
         public <B> BodyBuilder<R, B> withBody(TypeToken<B> type) {
             return fn -> to(ctx -> ctx.fromJson(type)
+                                      .async()
+                                      .flatMap(fn));
+        }
+
+        @Override
+        public BodyBuilder<R, String> withStringBody() {
+            return fn -> to(ctx -> fn.apply(ctx.bodyAsString()));
+        }
+
+        @Override
+        public BodyBuilder<R, byte[]> withByteBody() {
+            return fn -> to(ctx -> fn.apply(ctx.body()));
+        }
+
+        @Override
+        public BodyBuilder<R, MultipartRequest> withMultipartBody() {
+            return fn -> to(ctx -> ctx.multipartRequest()
                                       .async()
                                       .flatMap(fn));
         }

@@ -8,6 +8,10 @@ search = "GET /search?query&limit:Integer&offset:Integer"
 update = "PUT /{id:Long}"
 getOrders = "GET /{userId:Long}/orders?status&limit:Integer"
 health = "GET /health"
+exportCsv = { route = "GET /export/{id:Long}", produces = "text/csv" }
+download = { route = "GET /download/{id:Long}", produces = "application/octet-stream" }
+uploadText = { route = "POST /upload-text", consumes = "text/plain" }
+uploadForm = { route = "POST /upload-form", consumes = "multipart/form-data" }
 
 [errors]
 default = 500

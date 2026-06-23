@@ -25,6 +25,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 /// Generates RouteSource and SliceRouterFactory implementation class for a slice.
 ///
@@ -186,7 +187,7 @@ public class RouteSourceGenerator {
         out.println("package " + basePackage + ";");
         out.println();
         // Imports
-        generateImports(out, sliceName, errorMappings, model.methods());
+        generateImports(out, sliceName, errorMappings, model.methods(), routeConfig);
         out.println();
         // Class
         out.println("/**");
@@ -235,7 +236,7 @@ public class RouteSourceGenerator {
         out.println("}");
     }
 
-    private void generateImports(PrintWriter out, String sliceName, List<ErrorTypeMapping> errorMappings, List<MethodModel> methods) {
+    private void generateImports(PrintWriter out, String sliceName, List<ErrorTypeMapping> errorMappings, List<MethodModel> methods, RouteConfig routeConfig) {
         out.println("import org.pragmatica.aether.http.adapter.ErrorMapper;");
         out.println("import org.pragmatica.aether.http.adapter.SliceRouter;");
         out.println("import org.pragmatica.aether.http.adapter.SliceRouterFactory;");
@@ -250,6 +251,16 @@ public class RouteSourceGenerator {
             out.println("import org.pragmatica.aether.http.handler.security.SecurityContext;");
             out.println("import org.pragmatica.aether.http.handler.security.SecurityContextHolder;");
         }
+        if (usesCommonContentType(routeConfig)) {
+            out.println("import org.pragmatica.http.CommonContentType;");
+        }
+        if (usesContentTypeEscapeHatch(routeConfig)) {
+            out.println("import org.pragmatica.http.ContentType;");
+            out.println("import org.pragmatica.http.ContentCategory;");
+        }
+        if (usesMultipartBinding(routeConfig)) {
+            out.println("import org.pragmatica.http.routing.MultipartRequest;");
+        }
         out.println("import org.pragmatica.lang.Cause;");
         out.println("import org.pragmatica.lang.Option;");
         out.println("import org.pragmatica.lang.type.TypeToken;");
@@ -260,6 +271,29 @@ public class RouteSourceGenerator {
         for (var mapping : errorMappings) {
             out.println("import " + mapping.qualifiedName() + ";");
         }
+    }
+
+    /// True when any route declares a non-JSON `produces`/`consumes` that resolves to a
+    /// [org.pragmatica.http.CommonContentType] constant (its emit expression starts with that type).
+    private boolean usesCommonContentType(RouteConfig routeConfig) {
+        return routeConfig.routes().values().stream()
+                          .flatMap(dsl -> Stream.of(dsl.produces(), dsl.consumes()))
+                          .anyMatch(mt -> !mt.isJson() && mt.emitExpression().startsWith("CommonContentType."));
+    }
+
+    /// True when any route's non-JSON `produces` falls back to the
+    /// [org.pragmatica.http.ContentType#contentType(String, org.pragmatica.http.ContentCategory)] escape hatch.
+    private boolean usesContentTypeEscapeHatch(RouteConfig routeConfig) {
+        return routeConfig.routes().values().stream()
+                          .flatMap(dsl -> Stream.of(dsl.produces(), dsl.consumes()))
+                          .anyMatch(mt -> mt.emitExpression().startsWith("ContentType.contentType"));
+    }
+
+    /// True when any body route consumes MULTIPART, requiring the MultipartRequest import.
+    private boolean usesMultipartBinding(RouteConfig routeConfig) {
+        return routeConfig.routes().values().stream()
+                          .filter(dsl -> isBodyMethod(dsl.method()))
+                          .anyMatch(dsl -> "MULTIPART".equals(dsl.consumes().category()));
     }
 
     private void generateRoutesMethod(PrintWriter out,
@@ -321,7 +355,8 @@ public class RouteSourceGenerator {
                                                      method,
                                                      hasMore,
                                                      routeConfig,
-                                                     handlerName));
+                                                     handlerName,
+                                                     sliceElement));
         }
         out.println("        );");
         out.println("    }");
@@ -360,7 +395,9 @@ public class RouteSourceGenerator {
                                MethodModel method,
                                boolean hasMore,
                                RouteConfig routeConfig,
-                               String handlerName) {
+                               String handlerName,
+                               TypeElement sliceElement) {
+        validateMediaTypes(routeDsl, method, sliceElement);
         var routePath = routeDsl.hasPathParams()
                        ? routeDsl.basePath()
                        : routeDsl.cleanPath();
@@ -395,9 +432,9 @@ public class RouteSourceGenerator {
         } else if (hasQuery) {
             generateQueryRoute(out, fullPath, httpMethod, responseType, routeDsl, method, comma, security);
         } else if (hasBody) {
-            generateBodyRoute(out, fullPath, httpMethod, responseType, parameterType, method, comma, security);
+            generateBodyRoute(out, fullPath, httpMethod, responseType, parameterType, routeDsl, method, comma, security);
         } else {
-            generateNoParamsRoute(out, fullPath, httpMethod, responseType, method, comma, security);
+            generateNoParamsRoute(out, fullPath, httpMethod, responseType, routeDsl, method, comma, security);
         }
     }
 
@@ -407,6 +444,52 @@ public class RouteSourceGenerator {
             case RouteSecurityLevel.Public _ -> "SecurityPolicy.publicRoute()";
             case RouteSecurityLevel.Authenticated _ -> "SecurityPolicy.authenticated()";
             case RouteSecurityLevel.Role(var name) -> "SecurityPolicy.roleRequired(\"" + escapeJavaString(name) + "\")";
+        };
+    }
+
+    /// Decision D3: strict compile-time validation of declared `produces`/`consumes` media types
+    /// against the method's Java response/parameter types. Reports hard errors via the messager.
+    /// Delegates the type rules to [MediaTypeTypeChecker] (pure + unit-tested).
+    private void validateMediaTypes(RouteDsl routeDsl, MethodModel method, TypeElement sliceElement) {
+        MediaTypeTypeChecker.checkProduces(routeDsl.produces().category(),
+                                           method.responseType().toString(),
+                                           method.name())
+                            .onPresent(msg -> messager.printMessage(Diagnostic.Kind.ERROR, msg, sliceElement));
+        if (isBodyMethod(routeDsl.method())) {
+            MediaTypeTypeChecker.checkConsumes(routeDsl.consumes().category(),
+                                               consumesParameterType(method),
+                                               method.name())
+                                .onPresent(msg -> messager.printMessage(Diagnostic.Kind.ERROR, msg, sliceElement));
+        }
+    }
+
+    /// Resolve the parameter type used for `consumes` validation, preferring the business
+    /// parameter type when security params are present.
+    private String consumesParameterType(MethodModel method) {
+        if (method.hasSecurityParams()) {
+            var biz = method.businessParameters();
+            return biz.size() == 1 ? biz.getFirst().type().toString() : "";
+        }
+        return method.parameters().isEmpty() ? "" : method.parameterType().toString();
+    }
+
+    /// The output media-type call to emit: `.asJson()` for JSON (byte-identical back-compat),
+    /// otherwise `.as(<producesExpression>)`.
+    private String outputCall(RouteDsl routeDsl) {
+        return routeDsl.produces().isJson()
+               ? ".asJson()"
+               : ".as(" + routeDsl.produces().emitExpression() + ")";
+    }
+
+    /// The request-body binding line to emit for body methods, selected by the `consumes` category.
+    /// JSON keeps `.withBody(new TypeToken<...>(){})`; TEXT/HTML/XML → `.withStringBody()`;
+    /// BINARY → `.withByteBody()`; MULTIPART → `.withMultipartBody()`.
+    private String bodyBindingCall(RouteDsl routeDsl, String parameterType) {
+        return switch (routeDsl.consumes().category()) {
+            case "TEXT", "HTML", "XML" -> ".withStringBody()";
+            case "BINARY" -> ".withByteBody()";
+            case "MULTIPART" -> ".withMultipartBody()";
+            default -> ".withBody(new TypeToken<" + parameterType + ">() {})";
         };
     }
 
@@ -473,6 +556,7 @@ public class RouteSourceGenerator {
                                        String path,
                                        String httpMethod,
                                        String responseType,
+                                       RouteDsl routeDsl,
                                        MethodModel method,
                                        String comma,
                                        String security) {
@@ -486,7 +570,7 @@ public class RouteSourceGenerator {
         } else {
             out.println("                 .to(_ -> delegate." + method.name() + "(new " + method.parameterType() + "()))");
         }
-        out.println("                 .named(\"" + method.name() + "\").withSecurity(" + security + ").asJson()" + comma);
+        out.println("                 .named(\"" + method.name() + "\").withSecurity(" + security + ")" + outputCall(routeDsl) + comma);
     }
 
     private void generatePathRoute(PrintWriter out,
@@ -520,7 +604,7 @@ public class RouteSourceGenerator {
             out.println("                 .to(" + handler + "delegate." + method.name() + "(new " + parameterType + "(" + paramList
                         + ")))");
         }
-        out.println("                 .named(\"" + method.name() + "\").withSecurity(" + security + ").asJson()" + comma);
+        out.println("                 .named(\"" + method.name() + "\").withSecurity(" + security + ")" + outputCall(routeDsl) + comma);
     }
 
     private void generateQueryRoute(PrintWriter out,
@@ -557,7 +641,7 @@ public class RouteSourceGenerator {
             out.println("                 .to(" + handler + "delegate." + method.name() + "(new " + parameterType
                         + "(" + constructorArgs + ")))");
         }
-        out.println("                 .named(\"" + method.name() + "\").withSecurity(" + security + ").asJson()" + comma);
+        out.println("                 .named(\"" + method.name() + "\").withSecurity(" + security + ")" + outputCall(routeDsl) + comma);
     }
 
     private void generateBodyRoute(PrintWriter out,
@@ -565,11 +649,12 @@ public class RouteSourceGenerator {
                                    String httpMethod,
                                    String responseType,
                                    String parameterType,
+                                   RouteDsl routeDsl,
                                    MethodModel method,
                                    String comma,
                                    String security) {
         out.println("            Route.<" + responseType + ">" + httpMethod + "(\"" + path + "\")");
-        out.println("                 .withBody(new TypeToken<" + parameterType + ">() {})");
+        out.println("                 " + bodyBindingCall(routeDsl, parameterType));
         if (method.hasSecurityParams()) {
             var bizParam = method.businessParameters().getFirst();
             var delegateCall = delegateCallWithSecurity(method, Map.of(bizParam.name(), "request"));
@@ -577,7 +662,7 @@ public class RouteSourceGenerator {
         } else {
             out.println("                 .to(request -> delegate." + method.name() + "(request))");
         }
-        out.println("                 .named(\"" + method.name() + "\").withSecurity(" + security + ").asJson()" + comma);
+        out.println("                 .named(\"" + method.name() + "\").withSecurity(" + security + ")" + outputCall(routeDsl) + comma);
     }
 
     private void generatePathBodyRoute(PrintWriter out,
@@ -593,7 +678,7 @@ public class RouteSourceGenerator {
         out.print("            Route.<" + responseType + ">" + httpMethod + "(\"" + path + "\")");
         out.println();
         out.println("                 .withPath(" + pathParamList(pathParams) + ")");
-        out.println("                 .withBody(new TypeToken<" + parameterType + ">() {})");
+        out.println("                 " + bodyBindingCall(routeDsl, parameterType));
         var pathParamNames = pathParams.stream()
                                        .map(PathParam::name)
                                        .toList();
@@ -608,7 +693,7 @@ public class RouteSourceGenerator {
         } else {
             out.println("                 .to((" + handlerParams + ") -> delegate." + method.name() + "(" + constructorExpr + "))");
         }
-        out.println("                 .named(\"" + method.name() + "\").withSecurity(" + security + ").asJson()" + comma);
+        out.println("                 .named(\"" + method.name() + "\").withSecurity(" + security + ")" + outputCall(routeDsl) + comma);
     }
 
     private void generateQueryBodyRoute(PrintWriter out,
@@ -624,7 +709,7 @@ public class RouteSourceGenerator {
         out.print("            Route.<" + responseType + ">" + httpMethod + "(\"" + path + "\")");
         out.println();
         out.println("                 .withQuery(" + queryParamList(queryParams) + ")");
-        out.println("                 .withBody(new TypeToken<" + parameterType + ">() {})");
+        out.println("                 " + bodyBindingCall(routeDsl, parameterType));
         var queryParamNames = queryParams.stream()
                                          .map(QueryParam::name)
                                          .toList();
@@ -639,7 +724,7 @@ public class RouteSourceGenerator {
         } else {
             out.println("                 .to((" + handlerParams + ") -> delegate." + method.name() + "(" + constructorExpr + "))");
         }
-        out.println("                 .named(\"" + method.name() + "\").withSecurity(" + security + ").asJson()" + comma);
+        out.println("                 .named(\"" + method.name() + "\").withSecurity(" + security + ")" + outputCall(routeDsl) + comma);
     }
 
     private void generatePathQueryRoute(PrintWriter out,
@@ -678,7 +763,7 @@ public class RouteSourceGenerator {
             out.println("                 .to((" + handlerParams + ") -> delegate." + method.name() + "(new " + parameterType
                         + "(" + constructorArgs + ")))");
         }
-        out.println("                 .named(\"" + method.name() + "\").withSecurity(" + security + ").asJson()" + comma);
+        out.println("                 .named(\"" + method.name() + "\").withSecurity(" + security + ")" + outputCall(routeDsl) + comma);
     }
 
     private void generatePathQueryBodyRoute(PrintWriter out,
@@ -696,7 +781,7 @@ public class RouteSourceGenerator {
         out.println();
         out.println("                 .withPath(" + pathParamList(pathParams) + ")");
         out.println("                 .withQuery(" + queryParamList(queryParams) + ")");
-        out.println("                 .withBody(new TypeToken<" + parameterType + ">() {})");
+        out.println("                 " + bodyBindingCall(routeDsl, parameterType));
         var pathParamNames = pathParams.stream()
                                        .map(PathParam::name)
                                        .toList();
@@ -715,7 +800,7 @@ public class RouteSourceGenerator {
         } else {
             out.println("                 .to((" + handlerParams + ") -> delegate." + method.name() + "(" + constructorExpr + "))");
         }
-        out.println("                 .named(\"" + method.name() + "\").withSecurity(" + security + ").asJson()" + comma);
+        out.println("                 .named(\"" + method.name() + "\").withSecurity(" + security + ")" + outputCall(routeDsl) + comma);
     }
 
     /// Build a constructor expression that merges path/query lambda args with body record fields.

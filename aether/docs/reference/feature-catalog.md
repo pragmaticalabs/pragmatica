@@ -59,6 +59,7 @@ Comprehensive inventory of all Aether Unified Application Runtime capabilities.
 | # | Feature | Status | Description |
 |---|---------|--------|-------------|
 | 18 | HTTP route registration | Complete | Dynamic per-slice route discovery and registration via KV-Store |
+| 18a | Route media types (`produces`/`consumes`) | Complete | routes.toml inline-table entries declare request/response Content-Type (#339); slice-processor emits the declared output `.as(...)` + consumes-appropriate body binding (string/byte[]/multipart/json), with a strict compile-time check that the media category matches the method's Java types. Binary (`application/octet-stream`) returns `byte[]` verbatim |
 | 19 | Endpoint registry | Complete | Artifact-to-node mapping for slice instance tracking and load balancing |
 | 20 | Service-to-service invocation | Battle-tested | SliceInvoker with HTTP routing, load balancer selection, timeout/retry, metrics |
 | 21 | Version routing | Battle-tested | Traffic splitting between old/new versions during deployments (configurable ratio) |

@@ -28,10 +28,14 @@ import java.util.regex.Pattern;
 /// @param pathTemplate path template with placeholders (e.g., "/users/{id}")
 /// @param pathParams   extracted path parameters
 /// @param queryParams  extracted query parameters
+/// @param consumes     request body media type ([MediaType#JSON] by default)
+/// @param produces     response body media type ([MediaType#JSON] by default)
 public record RouteDsl(String method,
                        String pathTemplate,
                        List<PathParam> pathParams,
-                       List<QueryParam> queryParams) {
+                       List<QueryParam> queryParams,
+                       MediaType consumes,
+                       MediaType produces) {
     public RouteDsl {
         pathParams = List.copyOf(pathParams);
         queryParams = List.copyOf(queryParams);
@@ -49,6 +53,13 @@ public record RouteDsl(String method,
     private static final Cause INVALID_FORMAT = Causes.cause("Invalid route DSL format. Expected: METHOD /path/{param}?query");
 
     public static Result<RouteDsl> parse(String dsl) {
+        return parse(dsl, MediaType.JSON, MediaType.JSON);
+    }
+
+    /// Parse a route DSL string, attaching the resolved `consumes`/`produces` media types.
+    /// The bare-string and array route forms call [#parse(String)], which defaults both to
+    /// [MediaType#JSON] (JSON in, JSON out) — preserving backward compatibility.
+    public static Result<RouteDsl> parse(String dsl, MediaType consumes, MediaType produces) {
         if (dsl == null || dsl.isBlank()) {
             return EMPTY_DSL.result();
         }
@@ -64,7 +75,9 @@ public record RouteDsl(String method,
                              .map(pathParams -> new RouteDsl(method,
                                                              pathPart,
                                                              pathParams,
-                                                             parseQueryParams(queryPart)));
+                                                             parseQueryParams(queryPart),
+                                                             consumes,
+                                                             produces));
     }
 
     private static Result<String> validateMethod(String method) {

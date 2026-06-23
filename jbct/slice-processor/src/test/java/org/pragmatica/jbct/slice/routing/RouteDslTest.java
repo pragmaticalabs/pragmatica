@@ -264,6 +264,48 @@ class RouteDslTest {
     }
 
     @Nested
+    class MediaTypes {
+
+        @Test
+        void parse_defaultsToJson_whenNoMediaTypesGiven() {
+            var result = RouteDsl.parse("POST /upload");
+
+            assertThat(result.isSuccess()).isTrue();
+            result.onSuccess(route -> {
+                assertThat(route.consumes()).isEqualTo(MediaType.JSON);
+                assertThat(route.produces()).isEqualTo(MediaType.JSON);
+            });
+        }
+
+        @Test
+        void parse_attachesProvidedMediaTypes() {
+            var consumes = MediaType.mediaType("text/plain").or(MediaType.JSON);
+            var produces = MediaType.mediaType("text/csv").or(MediaType.JSON);
+
+            var result = RouteDsl.parse("POST /export", consumes, produces);
+
+            assertThat(result.isSuccess()).isTrue();
+            result.onSuccess(route -> {
+                assertThat(route.consumes().category()).isEqualTo("TEXT");
+                assertThat(route.produces().emitExpression()).isEqualTo("CommonContentType.TEXT_CSV");
+            });
+        }
+
+        @Test
+        void parse_preservesPathParams_withMediaTypes() {
+            var produces = MediaType.mediaType("application/octet-stream").or(MediaType.JSON);
+
+            var result = RouteDsl.parse("GET /download/{id:Long}", MediaType.JSON, produces);
+
+            assertThat(result.isSuccess()).isTrue();
+            result.onSuccess(route -> {
+                assertThat(route.pathParams()).hasSize(1);
+                assertThat(route.produces().category()).isEqualTo("BINARY");
+            });
+        }
+    }
+
+    @Nested
     class InvalidInputs {
 
         @Test

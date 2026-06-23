@@ -6,9 +6,11 @@
 package com.example.testslice;
 
 import org.pragmatica.aether.slice.annotation.Slice;
+import org.pragmatica.http.routing.MultipartRequest;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 
+import java.nio.charset.StandardCharsets;
 import java.util.List;
 
 /// Test slice for verifying HTTP route generation.
@@ -34,6 +36,18 @@ public interface TestSlice {
 
     // No parameters
     Promise<HealthResponse> health(HealthRequest request);
+
+    // produces text/csv (String return, path param)
+    Promise<String> exportCsv(ExportRequest request);
+
+    // produces application/octet-stream (byte[] return, path param)
+    Promise<byte[]> download(DownloadRequest request);
+
+    // consumes text/plain (String param)
+    Promise<UploadResponse> uploadText(String body);
+
+    // consumes multipart/form-data (MultipartRequest param)
+    Promise<UploadResponse> uploadForm(MultipartRequest request);
 
     static TestSlice testSlice() {
         return new TestSlice() {
@@ -70,6 +84,26 @@ public interface TestSlice {
             @Override
             public Promise<HealthResponse> health(HealthRequest request) {
                 return Promise.success(new HealthResponse("healthy", System.currentTimeMillis()));
+            }
+
+            @Override
+            public Promise<String> exportCsv(ExportRequest request) {
+                return Promise.success("id,name\n" + request.id() + ",test");
+            }
+
+            @Override
+            public Promise<byte[]> download(DownloadRequest request) {
+                return Promise.success(("blob-" + request.id()).getBytes(StandardCharsets.UTF_8));
+            }
+
+            @Override
+            public Promise<UploadResponse> uploadText(String body) {
+                return Promise.success(new UploadResponse("text-1", body.length()));
+            }
+
+            @Override
+            public Promise<UploadResponse> uploadForm(MultipartRequest request) {
+                return Promise.success(new UploadResponse("form-1", request.fields().size()));
             }
         };
     }

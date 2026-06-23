@@ -100,6 +100,10 @@ public interface EchoService {
         }
     }
 
+    record CsvRequest(String label) {}
+
+    record BinaryRequest(int seed) {}
+
     record EchoResponse(String message, long timestamp) {
         public static Result<EchoResponse> echoResponse(String message) {
             return success(new EchoResponse(message, System.currentTimeMillis()));
@@ -172,6 +176,8 @@ public interface EchoService {
     Promise<PingResponse> ping(PingRequest request);
     Promise<TransformResponse> transform(TransformRequest request);
     Promise<EchoError.ControlledFailure> fail(FailRequest request);
+    Promise<String> csv(CsvRequest request);
+    Promise<byte[]> binary(BinaryRequest request);
 
     static EchoService echoService() {
         return new EchoServiceImpl();
@@ -201,6 +207,22 @@ public interface EchoService {
         @Override
         public Promise<EchoError.ControlledFailure> fail(FailRequest request) {
             return EchoError.toControlledFailure(request.code()).promise();
+        }
+
+        @Override
+        public Promise<String> csv(CsvRequest request) {
+            return Promise.success("label,length\n" + request.label() + "," + request.label().length());
+        }
+
+        @Override
+        public Promise<byte[]> binary(BinaryRequest request) {
+            return Promise.success(deterministicBytes(request.seed()));
+        }
+
+        /// Four deterministic raw bytes derived from the seed, so the test can assert verbatim
+        /// passthrough (never JSON-wrapped): seed, seed+1, seed+2, seed+3 (low byte each).
+        private static byte[] deterministicBytes(int seed) {
+            return new byte[]{(byte) seed, (byte)(seed + 1), (byte)(seed + 2), (byte)(seed + 3)};
         }
 
         @SuppressWarnings("JBCT-SEQ-01")

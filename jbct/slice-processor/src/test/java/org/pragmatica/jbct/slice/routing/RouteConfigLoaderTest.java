@@ -244,4 +244,178 @@ class RouteConfigLoaderTest {
             });
         }
     }
+
+    @Nested
+    class InlineTableMediaTypes {
+
+        @Test
+        void load_defaultsToJson_whenConsumesAndProducesAbsent() throws IOException {
+            var config = writeConfig("routes.toml", """
+                [routes]
+                create = "POST /"
+                getById = ["GET /{id:Long}", "public"]
+                """);
+
+            var result = RouteConfigLoader.load(config);
+
+            assertThat(result.isSuccess()).isTrue();
+            result.onSuccess(rc -> {
+                var create = rc.routes().get("create");
+                assertThat(create.consumes()).isEqualTo(MediaType.JSON);
+                assertThat(create.produces()).isEqualTo(MediaType.JSON);
+                var getById = rc.routes().get("getById");
+                assertThat(getById.consumes()).isEqualTo(MediaType.JSON);
+                assertThat(getById.produces()).isEqualTo(MediaType.JSON);
+                assertThat(rc.effectiveSecurity("getById")).isEqualTo(RouteSecurityLevel.PUBLIC);
+            });
+        }
+
+        @Test
+        void load_parsesInlineTable_withProducesAndConsumes() throws IOException {
+            var config = writeConfig("routes.toml", """
+                [routes]
+                export = { route = "POST /export", consumes = "application/json", produces = "text/csv" }
+                """);
+
+            var result = RouteConfigLoader.load(config);
+
+            assertThat(result.isSuccess()).isTrue();
+            result.onSuccess(rc -> {
+                var export = rc.routes().get("export");
+                assertThat(export.method()).isEqualTo("POST");
+                assertThat(export.pathTemplate()).isEqualTo("/export");
+                assertThat(export.consumes().category()).isEqualTo("JSON");
+                assertThat(export.produces().category()).isEqualTo("TEXT");
+                assertThat(export.produces().emitExpression()).isEqualTo("CommonContentType.TEXT_CSV");
+                assertThat(export.produces().isJson()).isFalse();
+            });
+        }
+
+        @Test
+        void load_parsesInlineTable_withBinaryProduces() throws IOException {
+            var config = writeConfig("routes.toml", """
+                [routes]
+                download = { route = "GET /download/{id:Long}", produces = "application/octet-stream" }
+                """);
+
+            var result = RouteConfigLoader.load(config);
+
+            assertThat(result.isSuccess()).isTrue();
+            result.onSuccess(rc -> {
+                var download = rc.routes().get("download");
+                assertThat(download.produces().category()).isEqualTo("BINARY");
+                assertThat(download.produces().emitExpression()).isEqualTo("CommonContentType.APPLICATION_OCTET_STREAM");
+                assertThat(download.consumes()).isEqualTo(MediaType.JSON);
+            });
+        }
+
+        @Test
+        void load_parsesInlineTable_withTextConsumes() throws IOException {
+            var config = writeConfig("routes.toml", """
+                [routes]
+                upload = { route = "POST /upload", consumes = "text/plain" }
+                """);
+
+            var result = RouteConfigLoader.load(config);
+
+            assertThat(result.isSuccess()).isTrue();
+            result.onSuccess(rc -> {
+                var upload = rc.routes().get("upload");
+                assertThat(upload.consumes().category()).isEqualTo("TEXT");
+                assertThat(upload.produces()).isEqualTo(MediaType.JSON);
+            });
+        }
+
+        @Test
+        void load_parsesInlineTable_withMultipartConsumes() throws IOException {
+            var config = writeConfig("routes.toml", """
+                [routes]
+                form = { route = "POST /form", consumes = "multipart/form-data" }
+                """);
+
+            var result = RouteConfigLoader.load(config);
+
+            assertThat(result.isSuccess()).isTrue();
+            result.onSuccess(rc -> {
+                var form = rc.routes().get("form");
+                assertThat(form.consumes().category()).isEqualTo("MULTIPART");
+            });
+        }
+
+        @Test
+        void load_appliesInlineSecurityOverride() throws IOException {
+            var config = writeConfig("routes.toml", """
+                [security]
+                default = "authenticated"
+
+                [routes]
+                export = { route = "POST /export", produces = "text/csv", security = "public" }
+                """);
+
+            var result = RouteConfigLoader.load(config);
+
+            assertThat(result.isSuccess()).isTrue();
+            result.onSuccess(rc -> {
+                assertThat(rc.routeSecurity()).containsKey("export");
+                assertThat(rc.effectiveSecurity("export")).isEqualTo(RouteSecurityLevel.PUBLIC);
+            });
+        }
+
+        @Test
+        void load_inlineSecurityDefaults_whenSecurityFieldAbsent() throws IOException {
+            var config = writeConfig("routes.toml", """
+                [security]
+                default = "authenticated"
+
+                [routes]
+                export = { route = "POST /export", produces = "text/csv" }
+                """);
+
+            var result = RouteConfigLoader.load(config);
+
+            assertThat(result.isSuccess()).isTrue();
+            result.onSuccess(rc -> {
+                assertThat(rc.routeSecurity()).doesNotContainKey("export");
+                assertThat(rc.effectiveSecurity("export")).isEqualTo(RouteSecurityLevel.AUTHENTICATED);
+            });
+        }
+
+        @Test
+        void load_fails_whenInlineTableMissingRouteField() throws IOException {
+            var config = writeConfig("routes.toml", """
+                [routes]
+                broken = { produces = "text/csv" }
+                """);
+
+            var result = RouteConfigLoader.load(config);
+
+            assertThat(result.isFailure()).isTrue();
+            result.onFailure(cause -> assertThat(cause.message()).contains("must have a 'route' field"));
+        }
+
+        @Test
+        void load_mixesBareStringArrayAndInlineTableForms() throws IOException {
+            var config = writeConfig("routes.toml", """
+                [security]
+                default = "authenticated"
+
+                [routes]
+                bare = "POST /bare"
+                arr = ["GET /arr/{id:Long}", "public"]
+                inline = { route = "POST /inline", produces = "text/csv", security = "public" }
+                """);
+
+            var result = RouteConfigLoader.load(config);
+
+            assertThat(result.isSuccess()).isTrue();
+            result.onSuccess(rc -> {
+                assertThat(rc.routes()).hasSize(3);
+                assertThat(rc.routes().get("bare").produces()).isEqualTo(MediaType.JSON);
+                assertThat(rc.effectiveSecurity("bare")).isEqualTo(RouteSecurityLevel.AUTHENTICATED);
+                assertThat(rc.effectiveSecurity("arr")).isEqualTo(RouteSecurityLevel.PUBLIC);
+                assertThat(rc.routes().get("inline").produces().category()).isEqualTo("TEXT");
+                assertThat(rc.effectiveSecurity("inline")).isEqualTo(RouteSecurityLevel.PUBLIC);
+            });
+        }
+    }
 }

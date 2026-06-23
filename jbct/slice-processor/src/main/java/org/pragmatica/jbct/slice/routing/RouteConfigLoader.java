@@ -11,7 +11,6 @@ import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.utils.Causes;
-
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Collections;
@@ -145,9 +144,44 @@ public final class RouteConfigLoader {
     private static Result<ParsedRoute> parseRouteWithSecurity(TomlDocument toml,
                                                               String key,
                                                               RouteSecurityLevel defaultSecurity) {
-        return toml.getStringList("routes", key)
-                   .map(list -> parseArrayRoute(key, list))
-                   .or(() -> parseStringRoute(toml, key, defaultSecurity));
+        return toml.getInlineTable("routes", key)
+                   .map(table -> parseInlineTableRoute(key, table))
+                   .or(() -> toml.getStringList("routes", key)
+                                 .map(list -> parseArrayRoute(key, list))
+                                 .or(() -> parseStringRoute(toml, key, defaultSecurity)));
+    }
+
+    /// Parse the inline-table route form (decision D2):
+    /// `{ route = "POST /", consumes = "application/json", produces = "text/csv", security = "public" }`.
+    /// `route` is required; `consumes`/`produces` default to [MediaType#JSON]; `security` is an optional override.
+    private static Result<ParsedRoute> parseInlineTableRoute(String key, Map<String, Object> table) {
+        return Option.option(table.get("route"))
+                     .map(Object::toString)
+                     .toResult(Causes.cause("Inline-table route must have a 'route' field: " + key))
+                     .flatMap(routeStr -> buildInlineRoute(key, table, routeStr));
+    }
+
+    private static Result<ParsedRoute> buildInlineRoute(String key, Map<String, Object> table, String routeStr) {
+        return Result.all(resolveMedia(table, "consumes"),
+                          resolveMedia(table, "produces"),
+                          resolveInlineSecurity(table))
+                     .flatMap((consumes, produces, security) ->
+                                  RouteDsl.parse(routeStr, consumes, produces)
+                                          .map(dsl -> new ParsedRoute(key, dsl, security)));
+    }
+
+    private static Result<MediaType> resolveMedia(Map<String, Object> table, String field) {
+        return Option.option(table.get(field))
+                     .map(Object::toString)
+                     .map(MediaType::mediaType)
+                     .or(Result.success(MediaType.JSON));
+    }
+
+    private static Result<Option<RouteSecurityLevel>> resolveInlineSecurity(Map<String, Object> table) {
+        return Option.option(table.get("security"))
+                     .map(Object::toString)
+                     .map(value -> RouteSecurityLevel.parse(value).map(Option::some))
+                     .or(Result.success(Option.none()));
     }
 
     private static Result<ParsedRoute> parseArrayRoute(String key, List<String> parts) {
