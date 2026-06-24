@@ -603,6 +603,39 @@ List HTTP routes across the cluster.
 }
 ```
 
+### GET /api/versions
+
+List the versioned slices deployed on this node and their API version registries (#198 §11.3).
+Route target is `LOCAL` — the response reflects the versioned slices the queried node hosts, read
+from its in-memory route publisher. A node hosting no versioned slice returns `{"slices":[]}`.
+
+Per slice the response carries the version-agnostic `apiPrefix`, the header-mode detection knobs
+(`requireVersionHeader`, and `defaultVersion` — the version served when the version header is
+absent; omitted when no version declares `defaultIfMissing`), and per-version lifecycle metadata:
+`version`, `deprecated`, `sunset` (RFC 3339 date; omitted when none), and `defaultIfMissing` (`true`
+for the version equal to `defaultVersion`).
+
+These are the same lifecycle facts surfaced as response headers on a served request — see the
+`Deprecation`, `Sunset`, and `Link: …; rel="successor-version"` headers (#198 §8.2).
+
+**Response:**
+```json
+{
+  "slices": [
+    {
+      "slice": "org.example:orders:1.0.0",
+      "apiPrefix": "/api/orders",
+      "requireVersionHeader": false,
+      "defaultVersion": 2,
+      "versions": [
+        { "version": 1, "deprecated": true, "sunset": "2026-12-31", "defaultIfMissing": false },
+        { "version": 2, "deprecated": false, "defaultIfMissing": true }
+      ]
+    }
+  ]
+}
+```
+
 ### POST /api/scale
 
 Scale a blueprint-deployed slice to a new instance count. The slice must be part of an active blueprint.

@@ -334,6 +334,34 @@ Routes (cluster-wide):
   POST /orders   [node-1, node-2]  security: api-key
 ```
 
+#### versions
+
+Show the versioned slices deployed on the connected node and their API version registries (#198).
+Lists each slice's `apiPrefix`, the header-mode detection knobs (`requireVersionHeader`,
+`defaultVersion`), and per-version lifecycle metadata (`deprecated`, `sunset`, `defaultIfMissing`):
+
+```bash
+aether versions
+```
+
+Output:
+```
+{
+  "slices": [
+    {
+      "slice": "org.example:orders:1.0.0",
+      "apiPrefix": "/api/orders",
+      "requireVersionHeader": false,
+      "defaultVersion": 2,
+      "versions": [
+        { "version": 1, "deprecated": true, "sunset": "2026-12-31", "defaultIfMissing": false },
+        { "version": 2, "deprecated": false, "defaultIfMissing": true }
+      ]
+    }
+  ]
+}
+```
+
 #### nodes routes
 
 Show HTTP routes on the connected node. Pass `[id]` for a specific node:

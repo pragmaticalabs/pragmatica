@@ -778,4 +778,25 @@ public sealed interface ManagementApiResponses {
     /// written. `nodeId` is the target node. `success=true` is returned only
     /// once the consensus write succeeds.
     record PromoteNodeResponse(boolean success, String nodeId, String previousRole, String newRole, String message) {}
+
+    /// Wire shape for `GET /api/versions` (#198 §11.3) — the version registries of the versioned
+    /// slices THIS node has deployed, read from its local `HttpRoutePublisher`. `slices` is empty when
+    /// the node hosts no versioned slice.
+    record VersionsResponse(List<VersionedSliceView> slices) {}
+
+    /// Per-slice version registry projection in [VersionsResponse]. `slice` is the deployed artifact
+    /// coordinate; `apiPrefix` is the version-agnostic base prefix; `requireVersionHeader` and
+    /// `defaultVersion` are the header-mode detection knobs (`defaultVersion` is `Option.none()` /
+    /// JSON `null` when no version declares `defaultIfMissing`); `versions` lists each declared
+    /// version's lifecycle metadata.
+    record VersionedSliceView(String slice,
+                              String apiPrefix,
+                              boolean requireVersionHeader,
+                              Option<Integer> defaultVersion,
+                              List<VersionView> versions) {}
+
+    /// Per-version lifecycle metadata in [VersionedSliceView]. `sunset` is `Option.none()` (JSON
+    /// `null`) when the version declares no sunset date; `defaultIfMissing` is `true` for the version
+    /// the slice serves when the version header is absent (i.e. it equals the slice's `defaultVersion`).
+    record VersionView(int version, boolean deprecated, Option<String> sunset, boolean defaultIfMissing) {}
 }

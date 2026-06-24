@@ -20,6 +20,9 @@ public interface AetherMetrics {
     Counter consensusBatchCounter();
     PromiseMetrics httpRequest(String method, String path);
     Counter httpRequestCounter(String method, String path, String status);
+    Counter versionedRequestCounter(String slice, String version, String method, String status);
+    Counter deprecatedVersionRequestCounter(String slice, String version);
+    Counter missingVersionHeaderCounter(String slice);
     Counter rollingUpdateStarted();
     Counter rollingUpdateCompleted();
     Counter rollingUpdateRolledBack();
@@ -78,6 +81,25 @@ record AetherMetricsDelegate(ObservabilityRegistry registry) implements AetherMe
     @Override
     public Counter httpRequestCounter(String method, String path, String status) {
         return registry.counter("aether.http.requests", "method", method, "path", path, "status", status);
+    }
+
+    @Override
+    public Counter versionedRequestCounter(String slice, String version, String method, String status) {
+        return registry.counter("http.requests.versioned",
+                                "slice", slice,
+                                "version", version,
+                                "method", method,
+                                "status", status);
+    }
+
+    @Override
+    public Counter deprecatedVersionRequestCounter(String slice, String version) {
+        return registry.counter("api.versioning.deprecated.requests", "slice", slice, "version", version);
+    }
+
+    @Override
+    public Counter missingVersionHeaderCounter(String slice) {
+        return registry.counter("api.versioning.missing.header", "slice", slice);
     }
 
     @Override

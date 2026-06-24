@@ -72,7 +72,9 @@ import org.pragmatica.aether.deployment.DeploymentMap.SliceDeploymentInfo;
 import org.pragmatica.aether.deployment.DeploymentMap.SliceInstanceInfo;
 import org.pragmatica.aether.metrics.observability.HttpRequestObserver;
 import org.pragmatica.aether.metrics.observability.ObservabilityRegistry;
-import org.pragmatica.aether.node.ManageableNode;
+import org.pragmatica.aether.metrics.observability.AetherMetrics;
+import org.pragmatica.aether.http.AetherVersioningMetricsSink;
+import org.pragmatica.lang.Contract;import org.pragmatica.aether.node.ManageableNode;
 import org.pragmatica.aether.stream.StreamPartitionManager;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.http.HttpMethod;
@@ -314,9 +316,25 @@ class ManagementServerImpl implements ManagementServer {
         routeSources.add(StorageRoutes.storageRoutes(nodeSupplier));
         routeSources.add(ApiKeyRoutes.apiKeyRoutes(nodeSupplier));
         routeSources.add(DhtRoutes.dhtRoutes(nodeSupplier));
+        routeSources.add(org.pragmatica.aether.api.routes.VersionRoutes.versionRoutes(nodeSupplier));
         dynamicConfigManager.onPresent(dcm -> routeSources.add(ConfigRoutes.configRoutes(dcm, nodeSupplier)));
         this.router = ManagementRouter.managementRouter(routeSources.toArray(RouteSource[]::new));
         this.legacyRoutes = List.of(MavenProtocolRoutes.mavenProtocolRoutes(nodeSupplier));
+        installVersioningMetricsSink(nodeSupplier, observability);
+    }
+
+    /// #198 §11.1: install the AetherMetrics-backed versioning sink into the node's
+    /// `HttpRoutePublisher` so versioned-request / deprecated / missing-header counters reach the
+    /// Micrometer registry owned here. No-op when the app HTTP server has no publisher.
+    @Contract
+    private static void installVersioningMetricsSink(Supplier<ManageableNode> nodeSupplier,
+                                                     ObservabilityRegistry observability) {
+        var sink = AetherVersioningMetricsSink.aetherVersioningMetricsSink(AetherMetrics.aetherMetrics(observability));
+
+        nodeSupplier.get()
+                    .appHttpServer()
+                    .httpRoutePublisher()
+                    .onPresent(publisher -> publisher.setVersioningMetricsSink(sink));
     }
 
     @Override

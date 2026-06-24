@@ -95,6 +95,10 @@ public enum ManagementRoute {
     NODE_ROUTES(GET, "/api/nodes/routes", List.of(), LEADER),
     NODE_ROUTES_GET(GET, "/api/nodes/routes", List.of("id"), RouteTarget.nodeIdParam(0)),
     ROUTES_LIST(GET, "/api/routes", List.of(), LEADER),
+    // PER-NODE local view (#198 §11.3): each node lists the versioned slices IT has deployed, read
+    // from its own HttpRoutePublisher registry. LOCAL (not LEADER/forwarded) so an operator can query
+    // a specific node and see that node's served version metadata + deprecation/sunset knobs.
+    VERSIONS(GET, "/api/versions", List.of(), LOCAL),
     SLICE_SCALE(POST, "/api/scale", List.of(), taskGroup(SCALING)),
     WORKERS_LIST(GET, "/api/workers", List.of(), LEADER),
     WORKERS_HEALTH(GET, "/api/workers/health", List.of(), LEADER),

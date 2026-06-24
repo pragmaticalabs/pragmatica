@@ -26,6 +26,8 @@ import org.pragmatica.consensus.topology.GenerationSnapshotSource;
 import org.pragmatica.http.routing.RouteMountMode;
 import org.pragmatica.http.routing.RouteMounting;
 import org.pragmatica.http.routing.RouteSource;
+import org.pragmatica.http.routing.SliceVersionRegistry;
+import org.pragmatica.http.routing.VersioningMetricsSink;
 import org.pragmatica.json.JsonMapper;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
@@ -35,6 +37,7 @@ import org.pragmatica.lang.utils.Causes;
 
 import java.util.List;
 import java.util.Map;
+import java.util.LinkedHashMap;
 import java.util.ServiceLoader;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
@@ -60,6 +63,21 @@ public interface HttpRoutePublisher {
     Option<SliceRouter> findLocalRouter(String httpMethod, String pathPrefix);
     Option<LocalRouteInfo> findLocalRoute(String httpMethod, String path);
     Unit updateSecurityOverrides(SecurityOverrides overrides);
+
+    /// Install the #198 §11.1 versioning metrics sink. The management server owns the metrics backend
+    /// and binds it here after node boot; routers created before this call observe the sink lazily via
+    /// the forwarding indirection. Idempotent — the last sink wins.
+    ///
+    /// @param sink the versioning metrics sink
+    /// @return unit
+    Unit setVersioningMetricsSink(VersioningMetricsSink sink);
+
+    /// Snapshot the version registries of every deployed slice that declares API versions (#198
+    /// §11.3), keyed by artifact. Drives the `GET /api/versions` introspection endpoint; unversioned
+    /// slices are omitted.
+    ///
+    /// @return artifact → version registry for each deployed versioned slice
+    Map<Artifact, SliceVersionRegistry> versionRegistries();
 
     record LocalRouteInfo(String httpMethod,
                           String pathPrefix,
@@ -108,6 +126,10 @@ class HttpRoutePublisherImpl implements HttpRoutePublisher {
     private final RouteMetadataExtractor routeMetadataExtractor = RouteMetadataExtractor.routeMetadataExtractor();
 
     private final AtomicReference<SecurityOverrides> activeOverrides = new AtomicReference<>(SecurityOverrides.EMPTY);
+    private final AtomicReference<VersioningMetricsSink> versioningMetricsSink =
+        new AtomicReference<>(VersioningMetricsSink.noop());
+    private final VersioningMetricsSink forwardingSink =
+        VersioningMetricsSink.forwarding(versioningMetricsSink::get);
 
     HttpRoutePublisherImpl(NodeId selfNodeId,
                            ClusterNode<KVCommand<AetherKey>> cluster,
@@ -194,7 +216,12 @@ class HttpRoutePublisherImpl implements HttpRoutePublisher {
                   artifact,
                   factory.getClass().getName());
         var typedFactory = (SliceRouterFactory<Object>) factory;
-        var router = typedFactory.create(sliceInstance, JsonMapper.defaultJsonMapper(), mountMode);
+        var baseRouter = typedFactory.create(sliceInstance, JsonMapper.defaultJsonMapper(), mountMode);
+        // #198 §11.1: bind the slice identity + lazy metrics sink so the router emits the versioned /
+        // deprecated / missing-header counters at dispatch. The sink forwards to the live backend the
+        // management server installs post-boot (forwardingSink), so deploy-time router creation needn't
+        // wait on the metrics registry.
+        var router = baseRouter.withObservability(sliceLabel(artifact), forwardingSink);
 
         sliceRouters.put(artifact, router);
         if (factory instanceof RouteSource routeSource) {
@@ -329,6 +356,36 @@ class HttpRoutePublisherImpl implements HttpRoutePublisher {
     @Override
     public Option<SliceRouter> getSliceRouter(Artifact artifact) {
         return Option.option(sliceRouters.get(artifact));
+    }
+
+    @Override
+    public Unit setVersioningMetricsSink(VersioningMetricsSink sink) {
+        versioningMetricsSink.set(sink);
+
+        return Unit.unit();
+    }
+
+    @Override
+    public Map<Artifact, SliceVersionRegistry> versionRegistries() {
+        var registries = new LinkedHashMap<Artifact, SliceVersionRegistry>();
+
+        sliceRouters.forEach((artifact, router) -> collectVersioned(registries, artifact, router));
+
+        return Map.copyOf(registries);
+    }
+
+    private static void collectVersioned(Map<Artifact, SliceVersionRegistry> registries,
+                                         Artifact artifact,
+                                         SliceRouter router) {
+        var registry = router.versionRegistry();
+
+        if (registry.isVersioned()) {
+            registries.put(artifact, registry);
+        }
+    }
+
+    private static String sliceLabel(Artifact artifact) {
+        return artifact.artifactId().toString();
     }
 
     @Override
