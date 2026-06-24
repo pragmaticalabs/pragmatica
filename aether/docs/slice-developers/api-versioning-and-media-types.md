@@ -354,6 +354,7 @@ Pick the detection mode before you publish v2, since switching modes later is it
 
 ## See Also
 
+- [**Worked example: `examples/catalog`**](../../../examples/catalog/README.md) — a runnable single-slice app that exercises everything in this guide: one artifact serving `v1` (deprecated) + `v2`, `text/csv` export, `application/octet-stream` binary passthrough, `text/csv` import, and the path-vs-header detection switch.
 - [Resource Reference](resource-reference.md) — all Aether resource types and route DSL
 - [Slice Patterns](slice-patterns.md) — structural patterns, error modeling, routing
 - [Management API — `GET /api/versions`](../reference/management-api.md#get-apiversions) — version introspection endpoint
