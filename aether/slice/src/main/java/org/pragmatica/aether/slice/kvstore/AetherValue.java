@@ -17,6 +17,7 @@ import org.pragmatica.aether.slice.stream.StreamRegistryEntry;
 import org.pragmatica.aether.slice.blueprint.ExpandedBlueprint;
 import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.cluster.state.kvstore.EpochBearing;
 import org.pragmatica.hlc.HlcTimestamp;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
@@ -460,7 +461,15 @@ public sealed interface AetherValue {
                                      Epoch communityEpoch,
                                      Epoch observedCoreEpoch,
                                      HlcTimestamp transitionedAt,
-                                     boolean dissolved) implements AetherValue {
+                                     boolean dissolved) implements AetherValue, EpochBearing<Epoch> {
+        /// Ownership fence (#345 piece 1a): the governor's `communityEpoch` is the fencing token, so
+        /// the Rabia applier rejects a deposed governor's strictly-older-epoch announcement. Same-epoch
+        /// re-writes (reannounce / dissolve) are accepted — only `withGovernorChange` bumps the epoch.
+        @Override
+        public Epoch fenceEpoch() {
+            return communityEpoch;
+        }
+
         public GovernorAnnouncementValue {
             members = members == null
                       ? List.of()
@@ -1273,7 +1282,16 @@ public sealed interface AetherValue {
                                       String ownerCommunityId,
                                       Epoch ownerEpoch,
                                       long ownershipTerm,
-                                      HlcTimestamp transferredAt) implements AetherValue {
+                                      HlcTimestamp transferredAt) implements AetherValue, EpochBearing<Epoch> {
+        /// Ownership fence (#345 piece 1a): the owner's `ownerEpoch` is the fencing token, so the
+        /// Rabia applier rejects a deposed owner's strictly-older-epoch ownership write. A
+        /// stale-owner takeover at the same epoch (bumping only `ownershipTerm`,
+        /// `BootstrapModule.rewriteIfOwnerStale`) is accepted.
+        @Override
+        public Epoch fenceEpoch() {
+            return ownerEpoch;
+        }
+
         public DhtPartitionOwnershipValue {
             if (ownerCommunityId == null) {
                 ownerCommunityId = "";

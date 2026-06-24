@@ -74,7 +74,7 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
     }
 
     private Option<V> handlePut(Put<K, V> put) {
-        if (staleLeaderWrite(put)) {
+        if (staleWrite(put)) {
             return Option.option(storage.get(put.key()));
         }
         var oldValue = Option.option(storage.put(put.key(), put.value()));
@@ -82,19 +82,50 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
         return oldValue;
     }
 
+    /// The committed-state fence: a `Put` is rejected (applied to nothing, NO `ValuePut` emitted)
+    /// when it is either a stale `LeaderKey` write (H4 leader fence) or a stale-epoch write to any
+    /// [EpochBearing] value (ownership fence, #345 piece 1a). Both arms are pure functions of the
+    /// committed storage content and the command itself, so every replica decides identically inside
+    /// the consensus applier. Snapshot restore ([#restoreSnapshot]) intentionally bypasses both
+    /// fences: a restored snapshot is the authoritative committed state, not a competing write.
+    private boolean staleWrite(Put<K, V> put) {
+        return staleLeaderWrite(put) || staleEpochWrite(put);
+    }
+
     /// H4 leader fence (cluster-topology-overhaul §Wave 8.2): `LeaderKey` writes are
     /// compare-and-put — applied only when the incoming [LeaderValue#viewSequence()] is strictly
     /// greater than the stored one. The check is deterministic (it depends only on the replicated
     /// storage content and the command itself), so every replica accepts or rejects identically
     /// inside the consensus applier. A rejected write mutates nothing and emits NO `ValuePut`
-    /// notification — a stale leader must never be observed by the election FSMs. Snapshot
-    /// restore ([#restoreSnapshot]) intentionally bypasses this fence: a restored snapshot is the
-    /// authoritative committed state, not a competing write.
+    /// notification — a stale leader must never be observed by the election FSMs.
     private boolean staleLeaderWrite(Put<K, V> put) {
         return put.key() instanceof LeaderKey
                && put.value() instanceof LeaderValue incoming
                && storage.get(put.key()) instanceof LeaderValue stored
                && incoming.viewSequence() <= stored.viewSequence();
+    }
+
+    /// Ownership/governance epoch fence (#345 piece 1a): generalizes the leader fence to ANY
+    /// [EpochBearing] value (governor announcement, DHT partition ownership). When BOTH the incoming
+    /// and the currently-committed value under the key are `EpochBearing`, the write is rejected iff
+    /// its epoch is STRICTLY older than the committed one — a deposed governor/owner cannot commit an
+    /// OLD epoch over a newer one. A first write (no committed value) and any non-`EpochBearing`
+    /// value pass through unchanged. Equal-or-newer epochs are accepted: governor reannouncement and
+    /// dissolution legitimately re-write at the same epoch, and a stale-owner takeover rewrites
+    /// ownership at the same epoch while bumping only its `ownershipTerm` — see [EpochBearing].
+    private boolean staleEpochWrite(Put<K, V> put) {
+        return put.value() instanceof EpochBearing<?> incoming
+               && storage.get(put.key()) instanceof EpochBearing<?> stored
+               && incomingEpochIsStale(incoming, stored);
+    }
+
+    /// Captures the recursive epoch type variable so the [Comparable#compareTo] is fully type-checked
+    /// (never reflective). The cast of the stored epoch is safe: a single key only ever holds one
+    /// `EpochBearing` value type (governor or ownership), so its epoch type matches the incoming one.
+    @SuppressWarnings("unchecked")
+    private static <E extends Comparable<E>> boolean incomingEpochIsStale(EpochBearing<E> incoming,
+                                                                          EpochBearing<?> stored) {
+        return incoming.fenceEpoch().compareTo((E) stored.fenceEpoch()) < 0;
     }
 
     private Option<V> handleRemove(Remove<K> remove) {
