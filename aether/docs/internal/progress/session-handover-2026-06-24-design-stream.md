@@ -26,9 +26,11 @@
      write path → split-brain double-writes possible. Now epic #345 / PR #347 (rc2).
   2. **Persistence is memory-only** — nothing in the prod stream/DHT path survives a full-cluster
      restart; the durable tiers (disk/S3/Pg) exist as code but are wired as no-op. "Committed" = "in
-     RAM." (Tracked by #248/#249/#250/#252/#264; deeper look in progress.)
-- **The fence (correctness) and persistence-wiring (durability) are the two foundations** the durable
-  entity actually needs. Both are wiring/extension work, not build-from-scratch.
+     RAM." Now **epic #349** (path-(a) minimal viable: wire sealer + `LocalDiskTier` + index rebuild,
+     ~10 lines; bundles #248/#249/#250/#252/#264 + completion + integration tests).
+- **Two foundations gate the durable entity:** the **#345 fence** (correctness, PR #347) and **#349
+  persistence wiring** (durability). Both are wiring/extension of existing code, not build-from-scratch.
+  The entity spec's state model was **re-weighted to log-on-stream** (rides #349 path a) — PR #346.
 
 ---
 
@@ -119,15 +121,19 @@ durable-entity spec's "durable KV" needs this caveat (not yet edited — see nex
 
 ## 6. Open threads / next steps
 
-1. **Stream persistence deep-dive** — in progress (the durability foundation; which tier to wire first,
-   sealer wiring, index population; options).
-2. **Persistence-wiring as a foundation** — candidate **storage-productionization epic** bundling
-   #248/#249/#250/#252/#264 (durability sibling to the #345 fence). Not yet filed.
-3. **Edit the durable-entity spec** — add "persistent backing" as an explicit dependency + downgrade
-   "durable" → "HA until persistence wired." Not yet done.
+1. **Stream persistence deep-dive** — ✅ done. Finding: it's complete code broken at one wire
+   (`EvictionListener.NOOP`); the "durable" tier is in-memory DHT; durable reads return empty. Path-(a)
+   (sealer + `LocalDiskTier` + index rebuild) is the ~10-line minimal viable fix.
+2. **Persistence-wiring foundation** — ✅ filed as **epic #349** (bundles #248/#249/#250/#252/#264 +
+   completion reconciliation + integration tests; path-(a) recommendation; durability sibling to #345).
+3. **Durable-entity spec re-weight** — ✅ done (PR #346): state model now prefers **log-on-stream** for
+   durability (rides #349 path a); added #349 as a dependency; "durable" downgraded to "HA until #349".
 4. **Remaining standalone design candidates:** #144 (distributed rate limiting), the API-contract
    cluster #226/#339 (partial), cloud #298/#306 (partial).
-5. **Per-spec open questions** live in each spec's "Open Questions" section.
+5. **To make the entity stack pickup-ready:** file epic #345's pieces 2–7 (serialization queue, durable
+   timers, `DurableEntity` core, workflow facade, saga facade, observability) as discrete sub-issues —
+   not yet done. Otherwise specs carry reconciliation tables + acceptance criteria.
+6. **Per-spec open questions** live in each spec's "Open Questions" section.
 
 ---
 
