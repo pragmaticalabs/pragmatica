@@ -146,6 +146,83 @@ class RouteDslTest {
     }
 
     @Nested
+    class PathSegments {
+
+        @Test
+        void pathSegments_returnsSingleParam_whenNoStaticAfterParam() {
+            var result = RouteDsl.parse("GET /export/{id:Long}");
+
+            assertThat(result.isSuccess()).isTrue();
+            result.onSuccess(route -> {
+                var segments = route.pathSegments();
+                assertThat(segments).hasSize(1);
+                assertThat(segments.getFirst()).isInstanceOf(RouteDsl.PathSegment.Param.class);
+                assertThat(((RouteDsl.PathSegment.Param) segments.getFirst()).param().name()).isEqualTo("id");
+            });
+        }
+
+        @Test
+        void pathSegments_interleavesStaticSegment_betweenTwoParams() {
+            var result = RouteDsl.parse("GET /orders/{orderId:Long}/items/{itemId:Long}");
+
+            assertThat(result.isSuccess()).isTrue();
+            result.onSuccess(route -> {
+                var segments = route.pathSegments();
+                assertThat(segments).hasSize(3);
+                assertThat(((RouteDsl.PathSegment.Param) segments.get(0)).param().name()).isEqualTo("orderId");
+                assertThat(((RouteDsl.PathSegment.Static) segments.get(1)).text()).isEqualTo("items");
+                assertThat(((RouteDsl.PathSegment.Param) segments.get(2)).param().name()).isEqualTo("itemId");
+            });
+        }
+
+        @Test
+        void pathSegments_appendsTrailingStatic_afterParam() {
+            var result = RouteDsl.parse("GET /items/{id:Long}/image");
+
+            assertThat(result.isSuccess()).isTrue();
+            result.onSuccess(route -> {
+                var segments = route.pathSegments();
+                assertThat(segments).hasSize(2);
+                assertThat(((RouteDsl.PathSegment.Param) segments.get(0)).param().name()).isEqualTo("id");
+                assertThat(((RouteDsl.PathSegment.Static) segments.get(1)).text()).isEqualTo("image");
+            });
+        }
+
+        @Test
+        void pathSegments_appendsTrailingStatic_forPathQueryRoute() {
+            var result = RouteDsl.parse("GET /{userId:Long}/orders?status&limit:Integer");
+
+            assertThat(result.isSuccess()).isTrue();
+            result.onSuccess(route -> {
+                var segments = route.pathSegments();
+                assertThat(segments).hasSize(2);
+                assertThat(((RouteDsl.PathSegment.Param) segments.get(0)).param().name()).isEqualTo("userId");
+                assertThat(((RouteDsl.PathSegment.Static) segments.get(1)).text()).isEqualTo("orders");
+            });
+        }
+
+        @Test
+        void pathSegments_returnsConsecutiveParams_withNoStaticBetween() {
+            var result = RouteDsl.parse("GET /transform/{operation:String}/{value:String}");
+
+            assertThat(result.isSuccess()).isTrue();
+            result.onSuccess(route -> {
+                var segments = route.pathSegments();
+                assertThat(segments).hasSize(2);
+                assertThat(segments).allMatch(s -> s instanceof RouteDsl.PathSegment.Param);
+            });
+        }
+
+        @Test
+        void pathSegments_isEmpty_forStaticOnlyPath() {
+            var result = RouteDsl.parse("GET /health");
+
+            assertThat(result.isSuccess()).isTrue();
+            result.onSuccess(route -> assertThat(route.pathSegments()).isEmpty());
+        }
+    }
+
+    @Nested
     class QueryParameters {
 
         @Test

@@ -376,9 +376,26 @@ public class RouteSourceGenerator {
                                       sliceElement);
                 continue;
             }
-            var paramCount = routeDsl.pathParams()
-                                     .size() + routeDsl.queryParams()
-                                                      .size() + (isBodyMethod(routeDsl.method())
+            // withPath elements = real path params + interleaved static spacers; the runtime
+            // withPath overloads top out at MAX_PARAMS elements. Count spacers here so an
+            // interleaved/trailing static segment cannot silently overflow the builder arity.
+            var withPathElements = (int) routeDsl.pathSegments()
+                                                 .stream()
+                                                 .filter(s -> s instanceof RouteDsl.PathSegment.Param
+                                                              || s instanceof RouteDsl.PathSegment.Static)
+                                                 .count();
+            if (withPathElements > MAX_PARAMS) {
+                var routesToml = model.packageName().replace('.', '/') + "/routes.toml";
+                messager.printMessage(Diagnostic.Kind.ERROR,
+                                      "Route '" + handlerName + "' in slice '" + model.simpleName()
+                                      + "' declares " + withPathElements + " path segments (parameters + static"
+                                      + " spacers), but withPath supports at most " + MAX_PARAMS
+                                      + " (check routes.toml: " + routesToml + ")",
+                                      sliceElement);
+                continue;
+            }
+            var paramCount = withPathElements + routeDsl.queryParams()
+                                                        .size() + (isBodyMethod(routeDsl.method())
                                                                  ? 1
                                                                  : 0);
             if (paramCount > MAX_PARAMS) {
@@ -708,21 +725,22 @@ public class RouteSourceGenerator {
                             : method.parameterType().toString();
         out.print("            Route.<" + responseType + ">" + httpMethod + "(\"" + path + "\")");
         out.println();
-        out.println("                 .withPath(" + pathParamList(pathParams) + ")");
-        var paramNames = pathParams.stream()
-                                   .map(PathParam::name)
-                                   .toList();
-        var paramList = String.join(", ", paramNames);
-        var handler = pathParams.size() == 1
-                      ? paramList + " -> "
-                      : "(" + paramList + ") -> ";
+        out.println("                 .withPath(" + withPathArgs(routeDsl) + ")");
+        // Lambda binds every withPath element (spacers -> `_`); the constructor binds real params only.
+        var lambdaNames = withPathLambdaNames(routeDsl);
+        var constructorArgs = pathParams.stream()
+                                        .map(PathParam::name)
+                                        .collect(Collectors.joining(", "));
+        var handler = lambdaNames.size() == 1
+                      ? String.join(", ", lambdaNames) + " -> "
+                      : "(" + String.join(", ", lambdaNames) + ") -> ";
         if (method.hasSecurityParams()) {
-            var constructorExpr = "new " + parameterType + "(" + paramList + ")";
+            var constructorExpr = "new " + parameterType + "(" + constructorArgs + ")";
             var bizParam = method.businessParameters().getFirst();
             var delegateCall = delegateCallWithSecurity(method, Map.of(bizParam.name(), constructorExpr));
             generateSecurityLambda(out, handler, delegateCall);
         } else {
-            out.println("                 .to(" + handler + "delegate." + method.name() + "(new " + parameterType + "(" + paramList
+            out.println("                 .to(" + handler + "delegate." + method.name() + "(new " + parameterType + "(" + constructorArgs
                         + ")))");
         }
         out.println("                 .named(\"" + method.name() + "\").withSecurity(" + security + ")" + trailer);
@@ -798,14 +816,15 @@ public class RouteSourceGenerator {
         var pathParams = routeDsl.pathParams();
         out.print("            Route.<" + responseType + ">" + httpMethod + "(\"" + path + "\")");
         out.println();
-        out.println("                 .withPath(" + pathParamList(pathParams) + ")");
+        out.println("                 .withPath(" + withPathArgs(routeDsl) + ")");
         out.println("                 " + bodyBindingCall(routeDsl, parameterType));
         var pathParamNames = pathParams.stream()
                                        .map(PathParam::name)
                                        .toList();
-        var allParams = new ArrayList<>(pathParamNames);
-        allParams.add("body");
-        var handlerParams = String.join(", ", allParams);
+        // Lambda interleaves spacer slots (`_`); only real path params feed the merged constructor.
+        var lambdaArgs = new ArrayList<>(withPathLambdaNames(routeDsl));
+        lambdaArgs.add("body");
+        var handlerParams = String.join(", ", lambdaArgs);
         var constructorExpr = buildMergedConstructorExpr(parameterType, method, pathParamNames, List.of());
         if (method.hasSecurityParams()) {
             var bizParam = method.businessParameters().getFirst();
@@ -863,7 +882,7 @@ public class RouteSourceGenerator {
                             : method.parameterType().toString();
         out.print("            Route.<" + responseType + ">" + httpMethod + "(\"" + path + "\")");
         out.println();
-        out.println("                 .withPath(" + pathParamList(pathParams) + ")");
+        out.println("                 .withPath(" + withPathArgs(routeDsl) + ")");
         out.println("                 .withQuery(" + queryParamList(queryParams) + ")");
         var pathParamNames = pathParams.stream()
                                        .map(PathParam::name)
@@ -871,10 +890,14 @@ public class RouteSourceGenerator {
         var queryParamNames = queryParams.stream()
                                          .map(QueryParam::name)
                                          .toList();
-        var allParams = new ArrayList<>(pathParamNames);
-        allParams.addAll(queryParamNames);
-        var handlerParams = String.join(", ", allParams);
-        var constructorArgs = String.join(", ", allParams);
+        // Lambda interleaves spacer slots (`_`) among path elements, then appends query params.
+        var lambdaArgs = new ArrayList<>(withPathLambdaNames(routeDsl));
+        lambdaArgs.addAll(queryParamNames);
+        var handlerParams = String.join(", ", lambdaArgs);
+        // Constructor binds real path params + query params only (no spacer slots).
+        var constructorBindings = new ArrayList<>(pathParamNames);
+        constructorBindings.addAll(queryParamNames);
+        var constructorArgs = String.join(", ", constructorBindings);
         if (method.hasSecurityParams()) {
             var constructorExpr = "new " + parameterType + "(" + constructorArgs + ")";
             var bizParam = method.businessParameters().getFirst();
@@ -900,7 +923,7 @@ public class RouteSourceGenerator {
         var queryParams = routeDsl.queryParams();
         out.print("            Route.<" + responseType + ">" + httpMethod + "(\"" + path + "\")");
         out.println();
-        out.println("                 .withPath(" + pathParamList(pathParams) + ")");
+        out.println("                 .withPath(" + withPathArgs(routeDsl) + ")");
         out.println("                 .withQuery(" + queryParamList(queryParams) + ")");
         out.println("                 " + bodyBindingCall(routeDsl, parameterType));
         var pathParamNames = pathParams.stream()
@@ -909,10 +932,11 @@ public class RouteSourceGenerator {
         var queryParamNames = queryParams.stream()
                                          .map(QueryParam::name)
                                          .toList();
-        var allParams = new ArrayList<>(pathParamNames);
-        allParams.addAll(queryParamNames);
-        allParams.add("body");
-        var handlerParams = String.join(", ", allParams);
+        // Lambda interleaves spacer slots (`_`) among path elements, then query params, then body.
+        var lambdaArgs = new ArrayList<>(withPathLambdaNames(routeDsl));
+        lambdaArgs.addAll(queryParamNames);
+        lambdaArgs.add("body");
+        var handlerParams = String.join(", ", lambdaArgs);
         var constructorExpr = buildMergedConstructorExpr(parameterType, method, pathParamNames, queryParamNames);
         if (method.hasSecurityParams()) {
             var bizParam = method.businessParameters().getFirst();
@@ -973,10 +997,41 @@ public class RouteSourceGenerator {
         return "new " + parameterType + "(" + args + ")";
     }
 
-    private String pathParamList(List<PathParam> pathParams) {
-        return pathParams.stream()
-                         .map(p -> "PathParameter." + typeToPathParameter(p.type()) + "()")
-                         .collect(Collectors.joining(", "));
+    /// Emit the `.withPath(...)` argument list interleaving real path parameters with static
+    /// segments in path order. Real params become typed `PathParameter.aXxx()` calls; static
+    /// segments become `PathParameter.spacer("seg")`. This is the full interleaved path — nothing
+    /// after the first parameter is dropped.
+    private String withPathArgs(RouteDsl routeDsl) {
+        return routeDsl.pathSegments()
+                       .stream()
+                       .map(this::segmentArg)
+                       .collect(Collectors.joining(", "));
+    }
+
+    private String segmentArg(RouteDsl.PathSegment segment) {
+        return switch (segment) {
+            case RouteDsl.PathSegment.Param(var param) ->
+                    "PathParameter." + typeToPathParameter(param.type()) + "()";
+            case RouteDsl.PathSegment.Static(var text) ->
+                    "PathParameter.spacer(\"" + escapeJavaString(text) + "\")";
+        };
+    }
+
+    /// The lambda parameter names matching the `.withPath(...)` arity, in path order: each real path
+    /// parameter binds to its name; each static spacer occupies a positional slot bound to `_`
+    /// (consumed by the router, never passed to the handler).
+    private List<String> withPathLambdaNames(RouteDsl routeDsl) {
+        return routeDsl.pathSegments()
+                       .stream()
+                       .map(this::segmentLambdaName)
+                       .toList();
+    }
+
+    private String segmentLambdaName(RouteDsl.PathSegment segment) {
+        return switch (segment) {
+            case RouteDsl.PathSegment.Param(var param) -> param.name();
+            case RouteDsl.PathSegment.Static _ -> "_";
+        };
     }
 
     private String queryParamList(List<QueryParam> queryParams) {

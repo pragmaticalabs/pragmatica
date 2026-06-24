@@ -4,6 +4,7 @@ prefix = "/api/v1/test"
 create = "POST /"
 getById = "GET /{id:Long}"
 getItem = "GET /orders/{orderId:Long}/items/{itemId:Long}"
+getItemImage = { route = "GET /items/{id:Long}/image", produces = "application/octet-stream" }
 search = "GET /search?query&limit:Integer&offset:Integer"
 update = "PUT /{id:Long}"
 getOrders = "GET /{userId:Long}/orders?status&limit:Integer"

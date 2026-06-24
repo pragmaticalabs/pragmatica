@@ -2355,10 +2355,10 @@ class SliceProcessorTest {
         assertThat(manifestFile.isPresent()).isTrue();
         var manifestContent = manifestFile.get().getCharContent(false).toString();
 
-        // Verify envelope version (bumped to 1004 for #198 §7 header-mode: routes() now emits
-        // UN-mounted routes + a create(slice, jsonMapper, RouteMountMode) factory method — output
-        // structure changed).
-        assertThat(manifestContent).contains("envelope.version=1004");
+        // Verify envelope version (bumped to 1005: path-route codegen now emits the FULL interleaved
+        // path — static segments after the first path parameter become PathParameter.spacer("...")
+        // inside withPath(...) instead of being silently truncated — so output structure changed).
+        assertThat(manifestContent).contains("envelope.version=1005");
 
         // Verify stream publisher metadata
         assertThat(manifestContent).contains("stream.publishers.count=1");

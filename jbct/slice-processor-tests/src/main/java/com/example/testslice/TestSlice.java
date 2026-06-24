@@ -25,6 +25,9 @@ public interface TestSlice {
     // Path only (GET with multiple params)
     Promise<ItemResponse> getItem(GetItemRequest request);
 
+    // Path with trailing static segment after the param (GET /items/{id}/image) -> trailing spacer
+    Promise<byte[]> getItemImage(ItemImageRequest request);
+
     // Query only (GET with query params)
     Promise<List<SearchResult>> search(SearchRequest request);
 
@@ -64,6 +67,11 @@ public interface TestSlice {
             @Override
             public Promise<ItemResponse> getItem(GetItemRequest request) {
                 return Promise.success(new ItemResponse(request.itemId(), "Item", 10));
+            }
+
+            @Override
+            public Promise<byte[]> getItemImage(ItemImageRequest request) {
+                return Promise.success(("image-" + request.id()).getBytes(StandardCharsets.UTF_8));
             }
 
             @Override
