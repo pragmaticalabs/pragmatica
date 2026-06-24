@@ -450,14 +450,16 @@ class RouteConfigLoaderTest {
             result.onSuccess(rc -> {
                 assertThat(rc.isVersioned()).isTrue();
                 assertThat(rc.apiPrefix()).isEqualTo("/api/orders");
-                assertThat(rc.prefix()).isEqualTo("/api/orders");
+                // #198 §6.4: prefix is empty for versioned slices; apiPrefix carries the base and the
+                // /v{N}/ segment is composed at registration time, not baked into prefix or path.
+                assertThat(rc.prefix()).isEqualTo("");
                 assertThat(rc.requireVersionHeader()).isFalse();
                 assertThat(rc.versions().keySet()).containsExactly(1, 2);
             });
         }
 
         @Test
-        void load_bindsBindKeyToVersionedMethodAndPath() throws IOException {
+        void load_bindsBindKeyToVersionedMethodAndUnversionedPath() throws IOException {
             var config = writeConfig("routes.toml", """
                 [api]
                 prefix = "/api/orders"
@@ -475,12 +477,17 @@ class RouteConfigLoaderTest {
 
             assertThat(result.isSuccess()).isTrue();
             result.onSuccess(rc -> {
-                // D8: bind key `get` under [v1.routes] resolves to method getV1, path mounts at /v1
+                // D8: bind key `get` under [v1.routes] resolves to method getV1. The path stays
+                // un-versioned (#198 §6.4); the version is carried in routeVersions and mounted later.
                 assertThat(rc.routes()).containsKeys("getV1", "createV1", "getV2", "upsertV2");
-                assertThat(rc.routes().get("getV1").pathTemplate()).isEqualTo("/v1/{id:Long}");
-                assertThat(rc.routes().get("createV1").pathTemplate()).isEqualTo("/v1/");
-                assertThat(rc.routes().get("getV2").pathTemplate()).isEqualTo("/v2/{id:Long}");
-                assertThat(rc.routes().get("upsertV2").pathTemplate()).isEqualTo("/v2/{id:Long}");
+                assertThat(rc.routes().get("getV1").pathTemplate()).isEqualTo("/{id:Long}");
+                assertThat(rc.routes().get("createV1").pathTemplate()).isEqualTo("/");
+                assertThat(rc.routes().get("getV2").pathTemplate()).isEqualTo("/{id:Long}");
+                assertThat(rc.routes().get("upsertV2").pathTemplate()).isEqualTo("/{id:Long}");
+                assertThat(rc.routeVersion("getV1")).isEqualTo(1);
+                assertThat(rc.routeVersion("createV1")).isEqualTo(1);
+                assertThat(rc.routeVersion("getV2")).isEqualTo(2);
+                assertThat(rc.routeVersion("upsertV2")).isEqualTo(2);
                 assertThat(rc.versions().get(1).bindKeyToMethod()).containsEntry("get", "getV1");
                 assertThat(rc.versions().get(2).bindKeyToMethod()).containsEntry("upsert", "upsertV2");
             });
@@ -502,7 +509,8 @@ class RouteConfigLoaderTest {
             result.onSuccess(rc -> {
                 assertThat(rc.routes()).containsKey("fetchById");
                 assertThat(rc.routes()).doesNotContainKey("getV1");
-                assertThat(rc.routes().get("fetchById").pathTemplate()).isEqualTo("/v1/{id:Long}");
+                assertThat(rc.routes().get("fetchById").pathTemplate()).isEqualTo("/{id:Long}");
+                assertThat(rc.routeVersion("fetchById")).isEqualTo(1);
                 assertThat(rc.versions().get(1).bindKeyToMethod()).containsEntry("get", "fetchById");
             });
         }
@@ -647,7 +655,7 @@ class RouteConfigLoaderTest {
         }
 
         @Test
-        void load_propagatesApiPrefixIntoManifestPath_viaPrefix() throws IOException {
+        void load_carriesApiPrefixAndVersionForRegistrationTimeMount() throws IOException {
             var config = writeConfig("routes.toml", """
                 [api]
                 prefix = "/api/orders"
@@ -659,9 +667,58 @@ class RouteConfigLoaderTest {
             var result = RouteConfigLoader.load(config);
 
             assertThat(result.isSuccess()).isTrue();
-            // prefix == apiPrefix so existing route/manifest codegen composes {apiPrefix}/v1/{path}
-            result.onSuccess(rc -> assertThat(rc.prefix() + rc.routes().get("getV1").pathTemplate())
-                                       .isEqualTo("/api/orders/v1/{id:Long}"));
+            // #198 §6.4: the /v{N}/ segment is composed at registration time from apiPrefix + version,
+            // not baked into the path. The loader carries the un-versioned path, the version-agnostic
+            // apiPrefix, and the per-handler version so codegen can mount {apiPrefix}/v{N}/{path}.
+            result.onSuccess(rc -> {
+                assertThat(rc.apiPrefix()).isEqualTo("/api/orders");
+                assertThat(rc.routes().get("getV1").pathTemplate()).isEqualTo("/{id:Long}");
+                assertThat(rc.routeVersion("getV1")).isEqualTo(1);
+                assertThat(rc.apiPrefix() + "/v" + rc.routeVersion("getV1") + rc.routes().get("getV1").pathTemplate())
+                    .isEqualTo("/api/orders/v1/{id:Long}");
+            });
+        }
+
+        @Test
+        void load_carriesEveryVersionRegistryInput_forGeneratedRegistry() throws IOException {
+            // #198 §6.4: the generated {Slice}Routes.versionRegistry() is built from exactly these
+            // loader outputs — apiPrefix, requireVersionHeader, the defaultIfMissing version, and
+            // per-version deprecated/sunset. This pins that the loader supplies all of them.
+            var config = writeConfig("routes.toml", """
+                [api]
+                prefix = "/api/orders"
+                requireVersionHeader = true
+
+                [v1.routes]
+                get = "GET /{id:Long}"
+
+                [v1]
+                deprecated = true
+                sunset = "2026-12-31"
+
+                [v2.routes]
+                get = "GET /{id:Long}"
+
+                [v2]
+                defaultIfMissing = true
+                """);
+
+            var result = RouteConfigLoader.load(config);
+
+            assertThat(result.isSuccess()).isTrue();
+            result.onSuccess(rc -> {
+                assertThat(rc.apiPrefix()).isEqualTo("/api/orders");
+                assertThat(rc.requireVersionHeader()).isTrue();
+                assertThat(rc.versions().keySet()).containsExactly(1, 2);
+                var v1 = rc.versions().get(1);
+                assertThat(v1.deprecated()).isTrue();
+                assertThat(v1.sunset().or("")).isEqualTo("2026-12-31");
+                assertThat(v1.defaultIfMissing()).isFalse();
+                var v2 = rc.versions().get(2);
+                assertThat(v2.deprecated()).isFalse();
+                assertThat(v2.sunset().isEmpty()).isTrue();
+                assertThat(v2.defaultIfMissing()).isTrue();
+            });
         }
     }
 }

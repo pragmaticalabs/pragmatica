@@ -106,12 +106,14 @@ public final class RouteConfigLoader {
                                                            routesPair.routeSecurity())));
     }
 
-    /// Build a versioned [RouteConfig] (#198 §4). Each `[vN.routes]` block is resolved (D8 bind-key
-    /// binding, `/v{N}` path mounting) and its `[vN]` metadata parsed; the resulting routes are
-    /// flattened into the standard `routes` map (keyed by resolved `getV{N}` method names with
-    /// `/v{N}`-prefixed paths) so existing route/manifest codegen composes them as
-    /// `{api.prefix}/v{N}/{path}` with zero special-casing. The version metadata is retained in
-    /// the `versions` map for later phases.
+    /// Build a versioned [RouteConfig] (#198 §4, §6.4). Each `[vN.routes]` block is resolved (D8
+    /// bind-key binding) and its `[vN]` metadata parsed. Routes are flattened into the standard
+    /// `routes` map keyed by resolved `getV{N}` method names, but their paths stay UN-versioned
+    /// (no baked `/v{N}/`): the per-handler version is recorded in `routeVersions` and the mounted
+    /// path `{apiPrefix}/v{N}/{path}` is composed at route-registration time so the same compiled
+    /// slice can be exposed in either path mode or header mode. The `prefix` is left empty for
+    /// versioned slices; `apiPrefix` carries the version-agnostic base prefix. The per-version
+    /// metadata is retained in the `versions` map for later phases.
     private static Result<RouteConfig> buildVersionedConfig(TomlDocument toml,
                                                             ErrorPatternConfig errorsConfig,
                                                             List<Integer> versionNumbers) {
@@ -137,12 +139,16 @@ public final class RouteConfigLoader {
         var flatRoutes = new LinkedHashMap<String, RouteDsl>();
         var flatRouteSecurity = new LinkedHashMap<String, RouteSecurityLevel>();
         var versionMap = new LinkedHashMap<Integer, VersionConfig>();
+        var routeVersions = new LinkedHashMap<String, Integer>();
         for (var version : versions) {
             flatRoutes.putAll(version.routes());
             flatRouteSecurity.putAll(version.routeSecurity());
             versionMap.put(version.version(), version);
+            version.routes()
+                   .keySet()
+                   .forEach(methodName -> routeVersions.put(methodName, version.version()));
         }
-        return RouteConfig.routeConfig(apiPrefix,
+        return RouteConfig.routeConfig("",
                                        flatRoutes,
                                        errorsConfig,
                                        security.securityDefault(),
@@ -150,7 +156,8 @@ public final class RouteConfigLoader {
                                        flatRouteSecurity,
                                        apiPrefix,
                                        requireVersionHeader,
-                                       versionMap);
+                                       versionMap,
+                                       routeVersions);
     }
 
     /// Discover the version numbers declared by `[vN.routes]` blocks, sorted ascending.
@@ -245,8 +252,9 @@ public final class RouteConfigLoader {
     }
 
     /// Parse one bind key in a `[vN.routes]` block: resolve the slice method name (D8: `get` →
-    /// `getV{N}`, unless an inline-table `method = "..."` override) and prepend the `/v{N}` path
-    /// segment to the route path so it mounts under `{api.prefix}/v{N}/...`.
+    /// `getV{N}`, unless an inline-table `method = "..."` override). The route path is kept
+    /// un-versioned; the `/v{N}` segment is composed at route-registration time (#198 §6.4) from
+    /// the recorded per-handler version, not baked into the path here.
     private static Result<VersionedRoute> parseVersionedRoute(TomlDocument toml,
                                                               int version,
                                                               String bindKey,
@@ -258,20 +266,7 @@ public final class RouteConfigLoader {
     private static VersionedRoute toVersionedRoute(int version, ParsedRoute parsed) {
         var methodName = parsed.methodOverride()
                                .or(() -> parsed.name() + "V" + version);
-        var versionedDsl = prependVersionSegment(parsed.dsl(), version);
-        return new VersionedRoute(parsed.name(), methodName, versionedDsl, parsed.security());
-    }
-
-    /// Prepend the `/v{N}` path segment to a route's path template (path-mode routing, #198 §4.3).
-    /// The version segment is a literal (no placeholder), so path-parameter positions are unchanged.
-    private static RouteDsl prependVersionSegment(RouteDsl dsl, int version) {
-        var versionedPath = "/v" + version + dsl.pathTemplate();
-        return new RouteDsl(dsl.method(),
-                            versionedPath,
-                            new ArrayList<>(dsl.pathParams()),
-                            dsl.queryParams(),
-                            dsl.consumes(),
-                            dsl.produces());
+        return new VersionedRoute(parsed.name(), methodName, parsed.dsl(), parsed.security());
     }
 
     /// Load and merge base configuration with slice-specific configuration.

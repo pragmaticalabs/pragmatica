@@ -12,6 +12,7 @@ import org.pragmatica.jbct.slice.model.ResourceQualifierModel;
 import org.pragmatica.jbct.slice.model.SliceModel;
 import org.pragmatica.jbct.slice.model.SliceModel.TransitiveMethod;
 import org.pragmatica.jbct.slice.routing.RouteConfig;
+import org.pragmatica.jbct.slice.routing.RouteDsl;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
@@ -31,7 +32,7 @@ import java.util.Properties;
 import java.util.stream.Collectors;
 
 public class ManifestGenerator {
-    static final int ENVELOPE_FORMAT_VERSION = 1002;
+    static final int ENVELOPE_FORMAT_VERSION = 1003;
 
     private final Filer filer;
     private final DependencyVersionResolver versionResolver;
@@ -315,17 +316,31 @@ public class ManifestGenerator {
         for (int rtIndex = 0; rtIndex < routeEntries.size(); rtIndex++) {
             var rtPrefix = "route." + rtIndex + ".";
             var entry = routeEntries.get(rtIndex);
+            var version = config.routeVersion(entry.getKey());
             props.setProperty(rtPrefix + "method", entry.getValue().method());
-            props.setProperty(rtPrefix + "path", config.prefix().isEmpty()
-                                                  ? entry.getValue().pathTemplate()
-                                                  : config.prefix() + entry.getValue().pathTemplate());
+            props.setProperty(rtPrefix + "path", manifestRoutePath(config, entry.getKey(), entry.getValue()));
             props.setProperty(rtPrefix + "handler", entry.getKey());
+            props.setProperty(rtPrefix + "version", String.valueOf(version));
             props.setProperty(rtPrefix + "security", config.effectiveSecurity(entry.getKey()).toConfigString());
         }
         writeVersionProperties(props, config);
     }
 
-    /// Write the #198 versioning metadata to the manifest (envelope 1002). Unversioned slices emit
+    /// The route's mounted path for the manifest (consumed by the topology/visualization layer).
+    /// Versioned routes (#198 §6.4) compose `{apiPrefix}/v{N}/{path}` — the same path mounted at
+    /// registration time — so the manifest path stays identical to the pre-refactor baked form;
+    /// unversioned routes compose `{prefix}/{path}`.
+    private String manifestRoutePath(RouteConfig config, String handlerName, RouteDsl routeDsl) {
+        var version = config.routeVersion(handlerName);
+        if (version > 0) {
+            return config.apiPrefix() + "/v" + version + routeDsl.pathTemplate();
+        }
+        return config.prefix().isEmpty()
+               ? routeDsl.pathTemplate()
+               : config.prefix() + routeDsl.pathTemplate();
+    }
+
+    /// Write the #198 versioning metadata to the manifest. Unversioned slices emit
     /// `versions.count = 0`. For versioned slices the version-agnostic `[api]` fields and per-version
     /// `deprecated`/`sunset`/`defaultIfMissing` metadata are persisted for later phases (header
     /// emission, version-registry endpoint).

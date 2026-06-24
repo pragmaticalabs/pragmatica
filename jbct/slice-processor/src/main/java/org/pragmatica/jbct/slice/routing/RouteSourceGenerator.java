@@ -254,6 +254,11 @@ public class RouteSourceGenerator {
         // routes() method
         generateRoutesMethod(out, model, routeConfig, sliceElement);
         out.println();
+        // versionRegistry() method (only for versioned slices; unversioned inherits the default)
+        if (routeConfig.isVersioned()) {
+            generateVersionRegistryMethod(out, routeConfig);
+            out.println();
+        }
         // errorMapper() method
         generateErrorMapperMethod(out, errorMappings);
         out.println("}");
@@ -269,6 +274,9 @@ public class RouteSourceGenerator {
         out.println("import org.pragmatica.http.routing.QueryParameter;");
         out.println("import org.pragmatica.http.routing.Route;");
         out.println("import org.pragmatica.http.routing.RouteSource;");
+        if (routeConfig.isVersioned()) {
+            out.println("import org.pragmatica.http.routing.SliceVersionRegistry;");
+        }
         out.println("import org.pragmatica.aether.http.handler.security.SecurityPolicy;");
         if (anyMethodHasSecurityParams(methods)) {
             out.println("import org.pragmatica.aether.http.handler.security.SecurityContext;");
@@ -290,6 +298,9 @@ public class RouteSourceGenerator {
         out.println("import org.pragmatica.json.JsonMapper;");
         out.println();
         out.println("import java.util.stream.Stream;");
+        if (routeConfig.isVersioned()) {
+            out.println("import java.util.List;");
+        }
         // Import error types
         for (var mapping : errorMappings) {
             out.println("import " + mapping.qualifiedName() + ";");
@@ -325,7 +336,12 @@ public class RouteSourceGenerator {
                                       TypeElement sliceElement) {
         out.println("    @Override");
         out.println("    public Stream<Route<?>> routes() {");
-        out.println("        return Stream.of(");
+        // Versioned slices need an explicit type witness so the trailing .map(...) mount step types
+        // cleanly; unversioned slices keep the original Stream.of(...) form (byte-identical output).
+        var streamOpen = routeConfig.isVersioned()
+                         ? "        return Stream.<Route<?>>of("
+                         : "        return Stream.of(";
+        out.println(streamOpen);
         var methodMap = buildMethodMap(model.methods());
         var routeEntries = routeConfig.routes()
                                       .entrySet()
@@ -381,8 +397,60 @@ public class RouteSourceGenerator {
                                                      handlerName,
                                                      sliceElement));
         }
-        out.println("        );");
+        // Path mode (#198 §6.4, the default detection mode): compose {apiPrefix}/v{N}/{path} at
+        // registration time for versioned routes. The same compiled routes can later be mounted in
+        // header mode instead. Unversioned slices emit no mount step (byte-identical output).
+        if (routeConfig.isVersioned()) {
+            out.println("        ).map(__route -> Route.mountInPathMode(__route, \""
+                        + escapeJavaString(routeConfig.apiPrefix()) + "\"));");
+        } else {
+            out.println("        );");
+        }
         out.println("    }");
+    }
+
+    /// Generate the `versionRegistry()` override (#198 §6.4) carrying the version-agnostic
+    /// `apiPrefix`, the `requireVersionHeader` flag, the `defaultIfMissing` version (if any), and
+    /// per-version `deprecated`/`sunset` metadata. The runtime uses this to compose the mounted path
+    /// (path mode, the default) or select the version from a header (header mode, a later step).
+    private void generateVersionRegistryMethod(PrintWriter out, RouteConfig routeConfig) {
+        var versions = new ArrayList<>(routeConfig.versions().values());
+        var defaultVersion = Option.from(versions.stream()
+                                                      .filter(VersionConfig::defaultIfMissing)
+                                                      .map(VersionConfig::version)
+                                                      .findFirst());
+        out.println("    @Override");
+        out.println("    public SliceVersionRegistry versionRegistry() {");
+        out.println("        return SliceVersionRegistry.sliceVersionRegistry(\""
+                    + escapeJavaString(routeConfig.apiPrefix()) + "\",");
+        out.println("                                                        " + routeConfig.requireVersionHeader()
+                    + ",");
+        out.println("                                                        " + defaultVersionExpr(defaultVersion)
+                    + ",");
+        out.println("                                                        List.of(" + versionInfoList(versions)
+                    + "));");
+        out.println("    }");
+    }
+
+    private String defaultVersionExpr(Option<Integer> defaultVersion) {
+        return defaultVersion.map(v -> "Option.some(" + v + ")")
+                             .or("Option.none()");
+    }
+
+    private String versionInfoList(List<VersionConfig> versions) {
+        return versions.stream()
+                       .map(this::versionInfoExpr)
+                       .collect(Collectors.joining(", "));
+    }
+
+    private String versionInfoExpr(VersionConfig version) {
+        return "SliceVersionRegistry.VersionInfo.versionInfo(" + version.version() + ", " + version.deprecated()
+               + ", " + sunsetExpr(version.sunset()) + ")";
+    }
+
+    private String sunsetExpr(Option<String> sunset) {
+        return sunset.map(s -> "Option.some(\"" + escapeJavaString(s) + "\")")
+                     .or("Option.<String>none()");
     }
 
     private void warnOnDuplicateRoutes(RouteConfig routeConfig, SliceModel model, TypeElement sliceElement) {
@@ -390,9 +458,7 @@ public class RouteSourceGenerator {
         for (var entry : routeConfig.routes().entrySet()) {
             var handlerName = entry.getKey();
             var routeDsl = entry.getValue();
-            var fullPath = routeConfig.prefix().isEmpty()
-                           ? routeDsl.pathTemplate()
-                           : routeConfig.prefix() + routeDsl.pathTemplate();
+            var fullPath = duplicateCheckPath(routeConfig, handlerName, routeDsl);
             var identity = routeDsl.method() + " " + fullPath;
             routesByIdentity.computeIfAbsent(identity, _ -> new ArrayList<>()).add(handlerName);
         }
@@ -405,6 +471,19 @@ public class RouteSourceGenerator {
                                       sliceElement);
             }
         }
+    }
+
+    /// The effective mounted path used for overlap detection. Versioned routes compose the same
+    /// `{apiPrefix}/v{N}/{path}` they get at registration time, so distinct versions of the same
+    /// bind key do not falsely register as overlapping; unversioned routes use `{prefix}/{path}`.
+    private String duplicateCheckPath(RouteConfig routeConfig, String handlerName, RouteDsl routeDsl) {
+        var version = routeConfig.routeVersion(handlerName);
+        if (version > 0) {
+            return routeConfig.apiPrefix() + "/v" + version + routeDsl.pathTemplate();
+        }
+        return routeConfig.prefix().isEmpty()
+               ? routeDsl.pathTemplate()
+               : routeConfig.prefix() + routeDsl.pathTemplate();
     }
 
     private Map<String, MethodModel> buildMethodMap(List<MethodModel> methods) {
@@ -424,7 +503,10 @@ public class RouteSourceGenerator {
         var routePath = routeDsl.hasPathParams()
                        ? routeDsl.basePath()
                        : routeDsl.cleanPath();
-        var rawPath = prefix.isEmpty()
+        var version = routeConfig.routeVersion(handlerName);
+        // Versioned routes keep the un-versioned path; the {apiPrefix}/v{N}/ mount is composed at
+        // registration time in routes(). Unversioned routes bake the prefix into the path as before.
+        var rawPath = version > 0 || prefix.isEmpty()
                       ? routePath
                       : prefix + routePath;
         var fullPath = escapeJavaString(rawPath);
@@ -439,26 +521,35 @@ public class RouteSourceGenerator {
                     ? ","
                     : "";
         var security = securityExpression(routeConfig, handlerName);
+        var trailer = versionedTrailer(version) + outputCall(routeDsl) + comma;
         var hasPath = routeDsl.hasPathParams();
         var hasQuery = routeDsl.hasQueryParams();
         var hasBody = isBodyMethod(routeDsl.method());
         if (hasPath && hasQuery && hasBody) {
-            generatePathQueryBodyRoute(out, fullPath, httpMethod, responseType, parameterType, routeDsl, method, comma, security);
+            generatePathQueryBodyRoute(out, fullPath, httpMethod, responseType, parameterType, routeDsl, method, trailer, security);
         } else if (hasPath && hasBody) {
-            generatePathBodyRoute(out, fullPath, httpMethod, responseType, parameterType, routeDsl, method, comma, security);
+            generatePathBodyRoute(out, fullPath, httpMethod, responseType, parameterType, routeDsl, method, trailer, security);
         } else if (hasQuery && hasBody) {
-            generateQueryBodyRoute(out, fullPath, httpMethod, responseType, parameterType, routeDsl, method, comma, security);
+            generateQueryBodyRoute(out, fullPath, httpMethod, responseType, parameterType, routeDsl, method, trailer, security);
         } else if (hasPath && hasQuery) {
-            generatePathQueryRoute(out, fullPath, httpMethod, responseType, routeDsl, method, comma, security);
+            generatePathQueryRoute(out, fullPath, httpMethod, responseType, routeDsl, method, trailer, security);
         } else if (hasPath) {
-            generatePathRoute(out, fullPath, httpMethod, responseType, routeDsl, method, comma, security);
+            generatePathRoute(out, fullPath, httpMethod, responseType, routeDsl, method, trailer, security);
         } else if (hasQuery) {
-            generateQueryRoute(out, fullPath, httpMethod, responseType, routeDsl, method, comma, security);
+            generateQueryRoute(out, fullPath, httpMethod, responseType, routeDsl, method, trailer, security);
         } else if (hasBody) {
-            generateBodyRoute(out, fullPath, httpMethod, responseType, parameterType, routeDsl, method, comma, security);
+            generateBodyRoute(out, fullPath, httpMethod, responseType, parameterType, routeDsl, method, trailer, security);
         } else {
-            generateNoParamsRoute(out, fullPath, httpMethod, responseType, routeDsl, method, comma, security);
+            generateNoParamsRoute(out, fullPath, httpMethod, responseType, routeDsl, method, trailer, security);
         }
+    }
+
+    /// The `.versioned(N)` call to tag a versioned route, or empty string for an unversioned route
+    /// (keeps unversioned generated output byte-identical).
+    private String versionedTrailer(int version) {
+        return version > 0
+               ? ".versioned(" + version + ")"
+               : "";
     }
 
     private String securityExpression(RouteConfig routeConfig, String handlerName) {
@@ -581,7 +672,7 @@ public class RouteSourceGenerator {
                                        String responseType,
                                        RouteDsl routeDsl,
                                        MethodModel method,
-                                       String comma,
+                                       String trailer,
                                        String security) {
         out.println("            Route.<" + responseType + ">" + httpMethod + "(\"" + path + "\")");
         out.println("                 .withoutParameters()");
@@ -593,7 +684,7 @@ public class RouteSourceGenerator {
         } else {
             out.println("                 .to(_ -> delegate." + method.name() + "(new " + method.parameterType() + "()))");
         }
-        out.println("                 .named(\"" + method.name() + "\").withSecurity(" + security + ")" + outputCall(routeDsl) + comma);
+        out.println("                 .named(\"" + method.name() + "\").withSecurity(" + security + ")" + trailer);
     }
 
     private void generatePathRoute(PrintWriter out,
@@ -602,7 +693,7 @@ public class RouteSourceGenerator {
                                    String responseType,
                                    RouteDsl routeDsl,
                                    MethodModel method,
-                                   String comma,
+                                   String trailer,
                                    String security) {
         var pathParams = routeDsl.pathParams();
         var parameterType = method.hasSecurityParams()
@@ -627,7 +718,7 @@ public class RouteSourceGenerator {
             out.println("                 .to(" + handler + "delegate." + method.name() + "(new " + parameterType + "(" + paramList
                         + ")))");
         }
-        out.println("                 .named(\"" + method.name() + "\").withSecurity(" + security + ")" + outputCall(routeDsl) + comma);
+        out.println("                 .named(\"" + method.name() + "\").withSecurity(" + security + ")" + trailer);
     }
 
     private void generateQueryRoute(PrintWriter out,
@@ -636,7 +727,7 @@ public class RouteSourceGenerator {
                                     String responseType,
                                     RouteDsl routeDsl,
                                     MethodModel method,
-                                    String comma,
+                                    String trailer,
                                     String security) {
         var queryParams = routeDsl.queryParams();
         var parameterType = method.hasSecurityParams()
@@ -664,7 +755,7 @@ public class RouteSourceGenerator {
             out.println("                 .to(" + handler + "delegate." + method.name() + "(new " + parameterType
                         + "(" + constructorArgs + ")))");
         }
-        out.println("                 .named(\"" + method.name() + "\").withSecurity(" + security + ")" + outputCall(routeDsl) + comma);
+        out.println("                 .named(\"" + method.name() + "\").withSecurity(" + security + ")" + trailer);
     }
 
     private void generateBodyRoute(PrintWriter out,
@@ -674,7 +765,7 @@ public class RouteSourceGenerator {
                                    String parameterType,
                                    RouteDsl routeDsl,
                                    MethodModel method,
-                                   String comma,
+                                   String trailer,
                                    String security) {
         out.println("            Route.<" + responseType + ">" + httpMethod + "(\"" + path + "\")");
         out.println("                 " + bodyBindingCall(routeDsl, parameterType));
@@ -685,7 +776,7 @@ public class RouteSourceGenerator {
         } else {
             out.println("                 .to(request -> delegate." + method.name() + "(request))");
         }
-        out.println("                 .named(\"" + method.name() + "\").withSecurity(" + security + ")" + outputCall(routeDsl) + comma);
+        out.println("                 .named(\"" + method.name() + "\").withSecurity(" + security + ")" + trailer);
     }
 
     private void generatePathBodyRoute(PrintWriter out,
@@ -695,7 +786,7 @@ public class RouteSourceGenerator {
                                        String parameterType,
                                        RouteDsl routeDsl,
                                        MethodModel method,
-                                       String comma,
+                                       String trailer,
                                        String security) {
         var pathParams = routeDsl.pathParams();
         out.print("            Route.<" + responseType + ">" + httpMethod + "(\"" + path + "\")");
@@ -716,7 +807,7 @@ public class RouteSourceGenerator {
         } else {
             out.println("                 .to((" + handlerParams + ") -> delegate." + method.name() + "(" + constructorExpr + "))");
         }
-        out.println("                 .named(\"" + method.name() + "\").withSecurity(" + security + ")" + outputCall(routeDsl) + comma);
+        out.println("                 .named(\"" + method.name() + "\").withSecurity(" + security + ")" + trailer);
     }
 
     private void generateQueryBodyRoute(PrintWriter out,
@@ -726,7 +817,7 @@ public class RouteSourceGenerator {
                                         String parameterType,
                                         RouteDsl routeDsl,
                                         MethodModel method,
-                                        String comma,
+                                        String trailer,
                                         String security) {
         var queryParams = routeDsl.queryParams();
         out.print("            Route.<" + responseType + ">" + httpMethod + "(\"" + path + "\")");
@@ -747,7 +838,7 @@ public class RouteSourceGenerator {
         } else {
             out.println("                 .to((" + handlerParams + ") -> delegate." + method.name() + "(" + constructorExpr + "))");
         }
-        out.println("                 .named(\"" + method.name() + "\").withSecurity(" + security + ")" + outputCall(routeDsl) + comma);
+        out.println("                 .named(\"" + method.name() + "\").withSecurity(" + security + ")" + trailer);
     }
 
     private void generatePathQueryRoute(PrintWriter out,
@@ -756,7 +847,7 @@ public class RouteSourceGenerator {
                                         String responseType,
                                         RouteDsl routeDsl,
                                         MethodModel method,
-                                        String comma,
+                                        String trailer,
                                         String security) {
         var pathParams = routeDsl.pathParams();
         var queryParams = routeDsl.queryParams();
@@ -786,7 +877,7 @@ public class RouteSourceGenerator {
             out.println("                 .to((" + handlerParams + ") -> delegate." + method.name() + "(new " + parameterType
                         + "(" + constructorArgs + ")))");
         }
-        out.println("                 .named(\"" + method.name() + "\").withSecurity(" + security + ")" + outputCall(routeDsl) + comma);
+        out.println("                 .named(\"" + method.name() + "\").withSecurity(" + security + ")" + trailer);
     }
 
     private void generatePathQueryBodyRoute(PrintWriter out,
@@ -796,7 +887,7 @@ public class RouteSourceGenerator {
                                             String parameterType,
                                             RouteDsl routeDsl,
                                             MethodModel method,
-                                            String comma,
+                                            String trailer,
                                             String security) {
         var pathParams = routeDsl.pathParams();
         var queryParams = routeDsl.queryParams();
@@ -823,7 +914,7 @@ public class RouteSourceGenerator {
         } else {
             out.println("                 .to((" + handlerParams + ") -> delegate." + method.name() + "(" + constructorExpr + "))");
         }
-        out.println("                 .named(\"" + method.name() + "\").withSecurity(" + security + ")" + outputCall(routeDsl) + comma);
+        out.println("                 .named(\"" + method.name() + "\").withSecurity(" + security + ")" + trailer);
     }
 
     /// Build a constructor expression that merges path/query lambda args with body record fields.

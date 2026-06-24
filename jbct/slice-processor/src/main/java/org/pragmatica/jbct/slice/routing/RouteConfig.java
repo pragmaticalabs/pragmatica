@@ -15,17 +15,21 @@ import java.util.Map;
 ///
 /// Contains:
 ///
-///   - `prefix` - URL prefix for all routes of an UNVERSIONED slice (e.g., "/api/v1")
-///   - `routes` - Map of handler method names to parsed route DSL (already version-flattened:
-///     for versioned slices every entry is a resolved `getV{N}` method with a `/v{N}`-prefixed path)
+///   - `prefix` - URL prefix for all routes of an UNVERSIONED slice (e.g., "/api/v1"). Empty for
+///     versioned slices: their per-route paths stay un-versioned and the mounted path is composed
+///     at route-registration time from `apiPrefix` + the per-route version (#198 §6.4).
+///   - `routes` - Map of handler method names to parsed route DSL. For versioned slices every entry
+///     is a resolved `getV{N}` method whose path is the UN-versioned route path (no baked `/v{N}/`)
 ///   - `errors` - Error pattern configuration for status code mapping
 ///   - `securityDefault` - Default security level for routes without explicit override
 ///   - `overridePolicy` - Controls how operators can override security at deploy time
 ///   - `routeSecurity` - Per-route security level overrides
-///   - `apiPrefix` - version-agnostic base prefix from the `[api]` section (#198 §4); replaces `prefix`
-///     for versioned slices and is composed as `{apiPrefix}/v{N}/{path}`
+///   - `apiPrefix` - version-agnostic base prefix from the `[api]` section (#198 §4); used at
+///     registration time to compose `{apiPrefix}/v{N}/{path}` for versioned routes
 ///   - `requireVersionHeader` - header-mode flag from `[api]` (parsed and stored now, used in a later phase)
 ///   - `versions` - per-version metadata keyed by version number (empty for unversioned slices)
+///   - `routeVersions` - per-handler API version (handler method name to version `N`; `0` for
+///     unversioned routes). Carries the version metadata from the flattened routes to codegen.
 ///
 ///
 /// A slice is EITHER unversioned (flat `[routes]` + top-level `prefix`, `versions` empty) OR
@@ -33,7 +37,7 @@ import java.util.Map;
 /// exclusive; mixing them is a compile error reported by [VersionSchemaValidator].
 ///
 /// @param prefix URL prefix for all routes (unversioned slices)
-/// @param routes map of handler name to parsed RouteDsl (version-flattened)
+/// @param routes map of handler name to parsed RouteDsl (versioned routes keep the un-versioned path)
 /// @param errors error pattern configuration
 /// @param securityDefault default security level from [security] section
 /// @param overridePolicy override policy from [security] section
@@ -41,6 +45,7 @@ import java.util.Map;
 /// @param apiPrefix version-agnostic base prefix from the [api] section
 /// @param requireVersionHeader header-mode flag from the [api] section
 /// @param versions per-version metadata keyed by version number
+/// @param routeVersions per-handler API version (`0` for unversioned routes)
 public record RouteConfig(String prefix,
                           Map<String, RouteDsl> routes,
                           ErrorPatternConfig errors,
@@ -49,11 +54,13 @@ public record RouteConfig(String prefix,
                           Map<String, RouteSecurityLevel> routeSecurity,
                           String apiPrefix,
                           boolean requireVersionHeader,
-                          Map<Integer, VersionConfig> versions) {
+                          Map<Integer, VersionConfig> versions,
+                          Map<String, Integer> routeVersions) {
     public RouteConfig {
         routes = Collections.unmodifiableMap(new LinkedHashMap<>(routes));
         routeSecurity = Collections.unmodifiableMap(new LinkedHashMap<>(routeSecurity));
         versions = Collections.unmodifiableMap(new LinkedHashMap<>(versions));
+        routeVersions = Collections.unmodifiableMap(new LinkedHashMap<>(routeVersions));
     }
 
     /// Empty configuration.
@@ -69,6 +76,7 @@ public record RouteConfig(String prefix,
                                Map.of(),
                                "",
                                false,
+                               Map.of(),
                                Map.of());
     }
 
@@ -81,9 +89,10 @@ public record RouteConfig(String prefix,
                                           Map<String, RouteSecurityLevel> routeSecurity,
                                           String apiPrefix,
                                           boolean requireVersionHeader,
-                                          Map<Integer, VersionConfig> versions) {
+                                          Map<Integer, VersionConfig> versions,
+                                          Map<String, Integer> routeVersions) {
         return new RouteConfig(prefix, routes, errors, securityDefault, overridePolicy, routeSecurity,
-                               apiPrefix, requireVersionHeader, versions);
+                               apiPrefix, requireVersionHeader, versions, routeVersions);
     }
 
     /// Factory method with security parameters but no versioning (unversioned slices).
@@ -94,7 +103,7 @@ public record RouteConfig(String prefix,
                                           OverridePolicy overridePolicy,
                                           Map<String, RouteSecurityLevel> routeSecurity) {
         return new RouteConfig(prefix, routes, errors, securityDefault, overridePolicy, routeSecurity,
-                               "", false, Map.of());
+                               "", false, Map.of(), Map.of());
     }
 
     /// Backward-compatible factory method without security parameters.
@@ -109,12 +118,19 @@ public record RouteConfig(String prefix,
                                Map.of(),
                                "",
                                false,
+                               Map.of(),
                                Map.of());
     }
 
     /// Whether this slice declares API versions (`[vN.routes]` blocks).
     public boolean isVersioned() {
         return !versions.isEmpty();
+    }
+
+    /// The API version of a route handler (`0` for unversioned routes).
+    public int routeVersion(String handlerName) {
+        return Option.option(routeVersions.get(handlerName))
+                     .or(0);
     }
 
     /// Resolve the effective security level for a route.
@@ -157,8 +173,9 @@ public record RouteConfig(String prefix,
                               : other.apiPrefix;
         var mergedRequireHeader = other.requireVersionHeader || this.requireVersionHeader;
         var mergedVersions = mergeVersions(this.versions, other.versions);
+        var mergedRouteVersions = mergeMaps(this.routeVersions, other.routeVersions);
         return routeConfig(mergedPrefix, mergedRoutes, mergedErrors, mergedSecDefault, mergedPolicy, mergedRouteSec,
-                           mergedApiPrefix, mergedRequireHeader, mergedVersions);
+                           mergedApiPrefix, mergedRequireHeader, mergedVersions, mergedRouteVersions);
     }
 
     private static <V> Map<String, V> mergeMaps(Map<String, V> base, Map<String, V> overlay) {
