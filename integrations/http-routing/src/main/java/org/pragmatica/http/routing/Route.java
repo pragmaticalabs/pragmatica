@@ -201,6 +201,29 @@ public interface Route<T> extends RouteSource {
                        route.version());
     }
 
+    /// Mount a route in header mode (#198 §7). For a versioned route (`version > 0`) the un-versioned
+    /// compiled path is composed into the bare `{apiPrefix}/{path}` (no `/v{N}/` segment), so every
+    /// declared version of a bind key shares one path and the version is selected from a request
+    /// header at dispatch time (see [VersionSelector]); an unversioned route (`version == 0`) is
+    /// returned unchanged. The version metadata is preserved so the dispatcher can index candidates
+    /// by version.
+    ///
+    /// @param route     the compiled (un-versioned-path) route
+    /// @param apiPrefix the version-agnostic API prefix (e.g. `/api/orders`)
+    /// @return a route whose [#path()] is the header-mode (bare) mounted path
+    static Route<?> mountInHeaderMode(Route<?> route, String apiPrefix) {
+        return route.version() == 0
+               ? route
+               : route(route.method(),
+                       PathUtils.normalize(apiPrefix + route.path()),
+                       route.handler(),
+                       route.contentType(),
+                       route.spacers(),
+                       route.name(),
+                       route.security(),
+                       route.version());
+    }
+
     static Subroutes in(String path) {
         return () -> path;
     }

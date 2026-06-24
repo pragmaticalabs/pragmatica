@@ -76,6 +76,29 @@ public final class RequestRouter {
         return Option.empty();
     }
 
+    /// All candidate routes registered for the given (method, path), in registration order.
+    /// Used by header-mode #198 dispatch, where several declared versions of a bind key share one
+    /// bare path and the dispatcher selects among them by the request's version header (see
+    /// [VersionSelector]). Path matching mirrors [#findRoute]'s prefix walk; spacer disambiguation is
+    /// intentionally NOT applied here — the full candidate set is returned for version indexing.
+    ///
+    /// @param method    the request HTTP method
+    /// @param inputPath the request path
+    /// @return the candidate routes sharing the matched base path, or an empty list when none match
+    public List<Route<?>> findCandidates(HttpMethod method, String inputPath) {
+        var path = inputPath + "/";
+        var methodRoutes = routes.get(method);
+        if (methodRoutes == null) {
+            return List.of();
+        }
+        for (var entry : methodRoutes.headMap(path, true).descendingMap().entrySet()) {
+            if (isSameOrStartOfPath(path, entry.getKey())) {
+                return List.copyOf(entry.getValue());
+            }
+        }
+        return List.of();
+    }
+
     /// Select the best matching route from a list of routes with the same base path.
     /// This handles routes that differ only in their spacer parameters.
     private Option<Route<?>> selectBestRoute(List<Route<?>> candidates, String inputPath) {

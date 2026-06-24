@@ -2221,6 +2221,29 @@ max_request_size = "5MB"    # Default: 10MB. Accepts KB, MB, GB.
 
 Multipart file uploads are supported and subject to the same size limit.
 
+### API Version Detection (#198 §7)
+
+A slice whose `routes.toml` declares API versions (`[api] prefix` + `[vN.routes]`) is exposed in one
+of two detection modes, chosen at the cluster level — the same compiled slice serves either, no
+recompile:
+
+```toml
+[app-http]
+api_versioning_detection = "path"     # Default. Version travels in the URL: {prefix}/v{N}/{path}
+# api_versioning_detection = "header"  # Version travels in a request header; routes mount at {prefix}/{path}
+api_version_header = "API-Version"     # Header name read in header mode (default shown)
+```
+
+- **`path`** (default): `GET {prefix}/v1/{id}` / `GET {prefix}/v2/{id}` — byte-for-byte the prior behavior.
+- **`header`**: all versions share `GET {prefix}/{id}`; the requested version comes from the
+  `api_version_header` request header. Selection (§7): header naming a known version → that version;
+  unknown/non-numeric → `404`; absent with `requireVersionHeader = true` (a per-slice `routes.toml`
+  flag) → `400` naming the header; absent with a `defaultIfMissing` version → that version; absent
+  with no default → highest declared version (latest-wins).
+
+Per-slice override of the detection mode is a planned follow-up; the setting is cluster-level today.
+Unversioned slices are unaffected by the mode.
+
 See [Management API - App HTTP Security](management-api.md#app-http-security) for full details.
 
 ---

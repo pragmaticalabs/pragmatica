@@ -26,7 +26,7 @@ public interface SliceManifest {
     String SLICE_ARTIFACT_ATTR = "Slice-Artifact";
     String SLICE_CLASS_ATTR = "Slice-Class";
     String ENVELOPE_VERSION_ATTR = "Envelope-Version";
-    Set<Integer> SUPPORTED_ENVELOPE_VERSIONS = Set.of(1000, 1001, 1002, 1003);
+    Set<Integer> SUPPORTED_ENVELOPE_VERSIONS = Set.of(1000, 1001, 1002, 1003, 1004);
 
     static Result<SliceManifestInfo> read(URL jarUrl) {
         return readManifest(jarUrl).flatMap(SliceManifest::parseManifest);

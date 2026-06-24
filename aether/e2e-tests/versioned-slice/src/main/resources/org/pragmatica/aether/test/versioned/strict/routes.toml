@@ -1,0 +1,12 @@
+[api]
+prefix = "/api/strict"
+requireVersionHeader = true
+
+[v1.routes]
+get = "GET /{id:Long}"
+
+[v2.routes]
+get = "GET /{id:Long}"
+
+[errors]
+default = 500

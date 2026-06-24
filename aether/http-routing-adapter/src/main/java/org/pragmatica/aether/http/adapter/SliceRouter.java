@@ -16,7 +16,12 @@ import org.pragmatica.http.ResponseSerializer;
 import org.pragmatica.http.routing.JsonCodecAdapter;
 import org.pragmatica.http.routing.RequestRouter;
 import org.pragmatica.http.routing.Route;
+import org.pragmatica.http.routing.RouteMountMode;
+import org.pragmatica.http.routing.RouteMounting;
 import org.pragmatica.http.routing.RouteSource;
+import org.pragmatica.http.routing.SliceVersionRegistry;
+import org.pragmatica.http.routing.VersionSelectionError;
+import org.pragmatica.http.routing.VersionSelector;
 import org.pragmatica.json.JsonMapper;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
@@ -24,7 +29,10 @@ import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 
 import java.nio.charset.StandardCharsets;
+import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.stream.Collectors;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -35,7 +43,20 @@ public interface SliceRouter {
     Promise<HttpResponseData> handle(HttpRequestContext request);
 
     static SliceRouter sliceRouter(RouteSource routes, ErrorMapper errorMapper, JsonMapper jsonMapper) {
-        record sliceRouter(RequestRouter requestRouter, ErrorMapper errorMapper, JsonMapper jsonMapper, JsonCodec jsonCodec) implements SliceRouter {
+        return sliceRouter(routes, errorMapper, jsonMapper, RouteMountMode.pathMode());
+    }
+
+    static SliceRouter sliceRouter(RouteSource routes,
+                                   ErrorMapper errorMapper,
+                                   JsonMapper jsonMapper,
+                                   RouteMountMode mountMode) {
+        var composed = RouteMounting.compose(routes, mountMode);
+        record sliceRouter(RequestRouter requestRouter,
+                           SliceVersionRegistry versionRegistry,
+                           RouteMountMode mountMode,
+                           ErrorMapper errorMapper,
+                           JsonMapper jsonMapper,
+                           JsonCodec jsonCodec) implements SliceRouter {
             private static final Map<String, String> JSON_HEADERS = Map.of("Content-Type",
                                                                            "application/json; charset=UTF-8");
 
@@ -48,9 +69,59 @@ public interface SliceRouter {
             }
 
             private Promise<HttpResponseData> findAndHandleRoute(HttpMethod method, HttpRequestContext request) {
-                return requestRouter.findRoute(method,
-                                               request.path()).map(route -> handleRoute(route, request))
-                                              .or(() -> Promise.success(notFound(request)));
+                return mountMode.isHeaderMode()
+                       ? handleHeaderMode(method, request)
+                       : handlePathMode(method, request);
+            }
+
+            private Promise<HttpResponseData> handlePathMode(HttpMethod method, HttpRequestContext request) {
+                return requestRouter.findRoute(method, request.path())
+                                    .map(route -> handleRoute(route, request))
+                                    .or(() -> Promise.success(notFound(request)));
+            }
+
+            private Promise<HttpResponseData> handleHeaderMode(HttpMethod method, HttpRequestContext request) {
+                // Unversioned slices are unaffected by header mode — route them with the full
+                // spacer-aware path matcher, exactly as in path mode.
+                if (!versionRegistry.isVersioned()) {
+                    return handlePathMode(method, request);
+                }
+
+                var candidates = requestRouter.findCandidates(method, request.path());
+
+                if (candidates.isEmpty()) {
+                    return Promise.success(notFound(request));
+                }
+
+                return selectVersionedRoute(candidates, request).fold(cause -> Promise.success(versionError(cause,
+                                                                                                            request)),
+                                                                      route -> handleRoute(route, request));
+            }
+
+            private Result<Route<?>> selectVersionedRoute(List<Route<?>> candidates, HttpRequestContext request) {
+                var byVersion = candidates.stream()
+                                          .collect(Collectors.toMap(Route::version,
+                                                                    route -> route,
+                                                                    (first, _) -> first));
+                var available = Set.copyOf(byVersion.keySet());
+                var headerValue = headerValue(request);
+
+                return VersionSelector.select(versionRegistry, available, mountMode.headerName(), headerValue)
+                                      .map(byVersion::get);
+            }
+
+            private Option<String> headerValue(HttpRequestContext request) {
+                return Option.option(request.headers().get(mountMode.headerName().toLowerCase()))
+                             .filter(values -> !values.isEmpty())
+                             .map(List::getFirst);
+            }
+
+            private HttpResponseData versionError(Cause cause, HttpRequestContext request) {
+                var status = cause instanceof VersionSelectionError.MissingVersionHeader
+                             ? HttpStatus.BAD_REQUEST
+                             : HttpStatus.NOT_FOUND;
+
+                return problemResponse(status, cause.message(), request);
             }
 
             private Promise<HttpResponseData> handleRoute(Route<?> route, HttpRequestContext request) {
@@ -109,26 +180,23 @@ public interface SliceRouter {
             }
 
             private HttpResponseData notFound(HttpRequestContext request) {
-                var problemDetail = ProblemDetail.problemDetail(HttpStatus.NOT_FOUND,
-                                                                "No route found for " + request.method()
-                                                               + " " + request.path(),
-                                                                request.path(),
-                                                                request.requestId());
-
-                return jsonMapper.writeAsBytes(problemDetail)
-                                 .fold(_ -> plainErrorResponse(HttpStatus.NOT_FOUND, "Not Found"),
-                                       body -> HttpResponseData.httpResponseData(404, JSON_HEADERS, body));
+                return problemResponse(HttpStatus.NOT_FOUND,
+                                       "No route found for " + request.method() + " " + request.path(),
+                                       request);
             }
 
             private HttpResponseData methodNotAllowed(HttpRequestContext request) {
-                var problemDetail = ProblemDetail.problemDetail(HttpStatus.METHOD_NOT_ALLOWED,
-                                                                "Invalid HTTP method: " + request.method(),
-                                                                request.path(),
-                                                                request.requestId());
+                return problemResponse(HttpStatus.METHOD_NOT_ALLOWED,
+                                       "Invalid HTTP method: " + request.method(),
+                                       request);
+            }
+
+            private HttpResponseData problemResponse(HttpStatus status, String detail, HttpRequestContext request) {
+                var problemDetail = ProblemDetail.problemDetail(status, detail, request.path(), request.requestId());
 
                 return jsonMapper.writeAsBytes(problemDetail)
-                                 .fold(_ -> plainErrorResponse(HttpStatus.METHOD_NOT_ALLOWED, "Method Not Allowed"),
-                                       body -> HttpResponseData.httpResponseData(405, JSON_HEADERS, body));
+                                 .fold(_ -> plainErrorResponse(status, status.reasonPhrase()),
+                                       body -> HttpResponseData.httpResponseData(status.code(), JSON_HEADERS, body));
             }
 
             private HttpResponseData plainErrorResponse(HttpStatus status, String message) {
@@ -146,6 +214,11 @@ public interface SliceRouter {
             }
         }
 
-        return new sliceRouter(RequestRouter.with(routes), errorMapper, jsonMapper, JsonCodecAdapter.forMapper(jsonMapper));
+        return new sliceRouter(RequestRouter.with(composed),
+                               composed.versionRegistry(),
+                               mountMode,
+                               errorMapper,
+                               jsonMapper,
+                               JsonCodecAdapter.forMapper(jsonMapper));
     }
 }

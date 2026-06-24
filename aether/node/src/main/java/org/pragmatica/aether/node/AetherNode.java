@@ -156,6 +156,7 @@ import org.pragmatica.aether.worker.group.GroupMembershipTracker;
 import org.pragmatica.aether.worker.metrics.CommunityMetricsSnapshot;
 import org.pragmatica.aether.worker.metrics.CommunityScalingRequest;
 import org.pragmatica.aether.worker.mutation.MutationForwarder;
+import org.pragmatica.aether.config.AppHttpConfig;
 import org.pragmatica.aether.config.BackupConfig;
 import org.pragmatica.aether.config.BuildInfo;
 import org.pragmatica.aether.config.WorkerConfig;
@@ -184,6 +185,7 @@ import org.pragmatica.consensus.net.NodeInfo;
 import org.pragmatica.net.tcp.NodeAddress;
 import org.pragmatica.consensus.topology.GenerationSnapshotSource;
 import org.pragmatica.consensus.topology.TopologyObserver;
+import org.pragmatica.http.routing.RouteMountMode;
 import org.pragmatica.consensus.topology.TopologyConfig;
 import org.pragmatica.consensus.topology.TopologyManagementMessage;
 import org.pragmatica.consensus.topology.ClusterStateNotification;
@@ -1312,7 +1314,10 @@ public interface AetherNode extends ManageableNode {
                                              ((TopologyObserver) clusterNode.topologyManager()).inQuorum());
             }
         }
-        var httpRoutePublisher = HttpRoutePublisher.httpRoutePublisher(config.self(), clusterNode);
+        var httpRoutePublisher = HttpRoutePublisher.httpRoutePublisher(config.self(),
+                                                                       clusterNode,
+                                                                       GenerationSnapshotSource.noop(),
+                                                                       routeMountMode(config.appHttp()));
         var invocationMetrics = InvocationMetricsCollector.invocationMetricsCollector();
         var logLevelRegistry = LogLevelRegistry.logLevelRegistry(clusterNode, kvStore);
         var depthRegistry = ObservabilityDepthRegistry.observabilityDepthRegistry(clusterNode,
@@ -4236,6 +4241,14 @@ public interface AetherNode extends ManageableNode {
                                                                  (artifact, method) -> depthRegistry.getConfig(artifact,
                                                                                                                method)
                                                                                                     .depthThreshold());
+    }
+
+    /// Resolve the cluster-level #198 route-mount mode (§7) from the app-HTTP config. Path mode is
+    /// the default; header mode carries the configured API-version header name into dispatch.
+    private static RouteMountMode routeMountMode(AppHttpConfig appHttp) {
+        return appHttp.apiVersioningDetection().isHeaderMode()
+               ? RouteMountMode.headerMode(appHttp.apiVersionHeaderName())
+               : RouteMountMode.pathMode();
     }
 
     private static SharedLibraryClassLoader createSharedLibraryLoader(AetherNodeConfig config) {

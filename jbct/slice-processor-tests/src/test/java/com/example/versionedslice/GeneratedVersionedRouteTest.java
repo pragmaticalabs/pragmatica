@@ -16,9 +16,12 @@ import java.nio.file.Paths;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-/// Verifies the slice-processor emits #198 API path-mode versioning into the generated
-/// `VersionedSliceRoutes` source: each `[vN.routes]` bind key resolves to a `getV{N}` /
-/// `upsertV{N}` handler (D8) and the route mounts at `{api.prefix}/v{N}/...` (path-mode routing).
+/// Verifies the slice-processor emits #198 §7 deploy-either-way versioning into the generated
+/// `VersionedSliceRoutes` source: `routes()` returns UN-mounted routes (bare path + `.versioned(N)`
+/// metadata, NO baked `/v{N}/` and NO `mountInPathMode` call), each `[vN.routes]` bind key resolves
+/// to a `getV{N}` / `upsertV{N}` handler (D8), the version registry is emitted, and a
+/// `create(slice, jsonMapper, RouteMountMode)` factory method threads the deploy-time mount mode.
+/// Path/header mounting itself is applied by the registration consumer, not baked here.
 class GeneratedVersionedRouteTest {
 
     private static String generated;
@@ -44,9 +47,11 @@ class GeneratedVersionedRouteTest {
     class V1Routes {
 
         @Test
-        void getV1_mountsUnderVersionOnePath() {
+        void getV1_emitsUnmountedBareRouteTaggedVersionOne() {
             assertThat(generated).contains(".named(\"getV1\")");
-            assertThat(generated).contains("Route.<com.example.versionedslice.VersionedSlice.GetResponse>get(\"/api/orders/v1/\")");
+            // Un-mounted: bare "/" path tagged .versioned(1); the /api/orders/v1/ mount is deferred.
+            assertThat(generated).contains("Route.<com.example.versionedslice.VersionedSlice.GetResponse>get(\"/\")");
+            assertThat(generated).contains(".versioned(1)");
         }
 
         @Test
@@ -59,9 +64,10 @@ class GeneratedVersionedRouteTest {
     class V2Routes {
 
         @Test
-        void getV2_mountsUnderVersionTwoPath() {
+        void getV2_emitsUnmountedBareRouteTaggedVersionTwo() {
             assertThat(generated).contains(".named(\"getV2\")");
-            assertThat(generated).contains("Route.<com.example.versionedslice.VersionedSlice.GetResponse>get(\"/api/orders/v2/\")");
+            assertThat(generated).contains("Route.<com.example.versionedslice.VersionedSlice.GetResponse>get(\"/\")");
+            assertThat(generated).contains(".versioned(2)");
         }
 
         @Test
@@ -70,26 +76,34 @@ class GeneratedVersionedRouteTest {
         }
 
         @Test
-        void upsertV2_mountsUnderVersionTwoPathAsPut() {
+        void upsertV2_emitsUnmountedBareRouteAsPut() {
             assertThat(generated).contains(".named(\"upsertV2\")");
-            assertThat(generated).contains("Route.<com.example.versionedslice.VersionedSlice.UpsertResponse>put(\"/api/orders/v2/\")");
+            assertThat(generated).contains("Route.<com.example.versionedslice.VersionedSlice.UpsertResponse>put(\"/\")");
             assertThat(generated).contains("delegate.upsertV2(");
         }
     }
 
     @Nested
-    class VersionSeparation {
+    class DeployEitherWay {
 
         @Test
-        void v1AndV2PathsAreDistinct() {
-            assertThat(generated).contains("/api/orders/v1/");
-            assertThat(generated).contains("/api/orders/v2/");
+        void routesAreNotBakedInPathMode() {
+            // #198 §7: mounting moved OUT of routes() to the registration consumer.
+            assertThat(generated).doesNotContain("mountInPathMode");
+            assertThat(generated).doesNotContain("get(\"/api/orders/v1/\")");
+            assertThat(generated).doesNotContain("get(\"/api/orders/v2/\")");
         }
 
         @Test
-        void noUnversionedFallbackPathIsEmitted() {
-            // every versioned route carries a /vN/ segment; no bare /api/orders/{id} route exists
-            assertThat(generated).doesNotContain("get(\"/api/orders/\")");
+        void factoryThreadsMountModeForDeployTimeDetection() {
+            assertThat(generated).contains("RouteMountMode mountMode");
+            assertThat(generated).contains("SliceRouter.sliceRouter(routes, routes.errorMapper(), jsonMapper, mountMode)");
+        }
+
+        @Test
+        void versionRegistryIsEmittedWithApiPrefix() {
+            assertThat(generated).contains("public SliceVersionRegistry versionRegistry()");
+            assertThat(generated).contains("\"/api/orders\"");
         }
     }
 }

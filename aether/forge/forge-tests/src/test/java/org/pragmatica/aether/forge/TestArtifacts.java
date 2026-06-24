@@ -15,6 +15,7 @@ final class TestArtifacts {
     static final String VERSION = System.getProperty("project.version", "UNKNOWN");
     static final String ECHO_SLICE = "org.pragmatica-lite.aether.test:echo-slice-echo-service:" + VERSION;
     static final String VERSIONED_SLICE = "org.pragmatica-lite.aether.test:versioned-slice-versioned-echo:" + VERSION;
+    static final String STRICT_VERSIONED_SLICE = "org.pragmatica-lite.aether.test:versioned-slice-strict-versioned-echo:" + VERSION;
     static final String URL_SHORTENER = "org.pragmatica.aether.example:url-shortener-url-shortener:" + VERSION;
     static final String ANALYTICS = "org.pragmatica.aether.example:url-shortener-analytics:" + VERSION;
 

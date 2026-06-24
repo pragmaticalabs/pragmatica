@@ -72,6 +72,37 @@ class SliceVersionRegistryTest {
     }
 
     @Test
+    void mountInHeaderMode_returnsRouteUnchanged_whenUnversioned() {
+        var route = Route.route(HttpMethod.GET, "/orders/{id}", HANDLER, CommonContentType.APPLICATION_JSON);
+
+        var mounted = Route.mountInHeaderMode(route, "/api/orders");
+
+        assertThat(mounted.path()).isEqualTo(route.path());
+        assertThat(mounted).isSameAs(route);
+    }
+
+    @Test
+    void mountInHeaderMode_composesBarePath_whenVersioned() {
+        // Header mode mounts the version-agnostic bare path (no /v{N}/); the version travels in a header.
+        var mounted = Route.mountInHeaderMode(versionedRoute("/", 1), "/api/orders");
+
+        assertThat(mounted.path()).isEqualTo("/api/orders/");
+        assertThat(mounted.version()).isEqualTo(1);
+    }
+
+    @Test
+    void mountInHeaderMode_sharesOnePath_acrossVersionsOfSameBindKey() {
+        var v1 = Route.mountInHeaderMode(versionedRoute("/", 1), "/api/orders");
+        var v2 = Route.mountInHeaderMode(versionedRoute("/", 2), "/api/orders");
+
+        // Both versions share one bare path; the dispatcher selects between them by version header.
+        assertThat(v1.path()).isEqualTo("/api/orders/");
+        assertThat(v2.path()).isEqualTo("/api/orders/");
+        assertThat(v1.version()).isEqualTo(1);
+        assertThat(v2.version()).isEqualTo(2);
+    }
+
+    @Test
     void unversionedRegistry_reportsNoVersions() {
         assertThat(SliceVersionRegistry.UNVERSIONED.isVersioned()).isFalse();
         assertThat(SliceVersionRegistry.UNVERSIONED.versions()).isEmpty();

@@ -23,7 +23,10 @@ import org.pragmatica.cluster.node.ClusterNode;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.topology.GenerationSnapshotSource;
+import org.pragmatica.http.routing.RouteMountMode;
+import org.pragmatica.http.routing.RouteMounting;
 import org.pragmatica.http.routing.RouteSource;
+import org.pragmatica.json.JsonMapper;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
@@ -79,7 +82,14 @@ public interface HttpRoutePublisher {
     static HttpRoutePublisher httpRoutePublisher(NodeId selfNodeId,
                                                  ClusterNode<KVCommand<AetherKey>> cluster,
                                                  GenerationSnapshotSource snapshotSource) {
-        return new HttpRoutePublisherImpl(selfNodeId, cluster, snapshotSource);
+        return httpRoutePublisher(selfNodeId, cluster, snapshotSource, RouteMountMode.pathMode());
+    }
+
+    static HttpRoutePublisher httpRoutePublisher(NodeId selfNodeId,
+                                                 ClusterNode<KVCommand<AetherKey>> cluster,
+                                                 GenerationSnapshotSource snapshotSource,
+                                                 RouteMountMode mountMode) {
+        return new HttpRoutePublisherImpl(selfNodeId, cluster, snapshotSource, mountMode);
     }
 }
 
@@ -91,6 +101,7 @@ class HttpRoutePublisherImpl implements HttpRoutePublisher {
     private final NodeId selfNodeId;
     private final ClusterNode<KVCommand<AetherKey>> cluster;
     private final GenerationSnapshotSource snapshotSource;
+    private final RouteMountMode mountMode;
     private final Map<Artifact, HttpRequestHandler> handlers = new ConcurrentHashMap<>();
     private final Map<Artifact, SliceRouter> sliceRouters = new ConcurrentHashMap<>();
     private final Map<Artifact, List<HttpRouteDefinition>> publishedRoutes = new ConcurrentHashMap<>();
@@ -100,10 +111,12 @@ class HttpRoutePublisherImpl implements HttpRoutePublisher {
 
     HttpRoutePublisherImpl(NodeId selfNodeId,
                            ClusterNode<KVCommand<AetherKey>> cluster,
-                           GenerationSnapshotSource snapshotSource) {
+                           GenerationSnapshotSource snapshotSource,
+                           RouteMountMode mountMode) {
         this.selfNodeId = selfNodeId;
         this.cluster = cluster;
         this.snapshotSource = snapshotSource;
+        this.mountMode = mountMode;
     }
 
     @Override
@@ -181,11 +194,15 @@ class HttpRoutePublisherImpl implements HttpRoutePublisher {
                   artifact,
                   factory.getClass().getName());
         var typedFactory = (SliceRouterFactory<Object>) factory;
-        var router = typedFactory.create(sliceInstance);
+        var router = typedFactory.create(sliceInstance, JsonMapper.defaultJsonMapper(), mountMode);
 
         sliceRouters.put(artifact, router);
         if (factory instanceof RouteSource routeSource) {
-            var routes = routeMetadataExtractor.extract(routeSource, artifact.asString());
+            // #198 §7: compose the routes ONCE for this node's detection mode and feed the SAME
+            // composed paths to the wire route-table extractor that the SliceRouter dispatches over,
+            // so both consumers agree on the exposed paths (path mode `/v{N}/` or header mode bare).
+            var composed = RouteMounting.compose(routeSource, mountMode);
+            var routes = routeMetadataExtractor.extract(composed, artifact.asString());
 
             log.debug("Route extraction: {} routes found for slice {} via SliceRouterFactory", routes.size(), artifact);
             if (routes.isEmpty()) {

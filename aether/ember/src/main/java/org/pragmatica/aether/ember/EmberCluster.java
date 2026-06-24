@@ -110,6 +110,15 @@ public final class EmberCluster {
 
     private final AtomicReference<EnvironmentIntegration> emberEnvironmentRef = new AtomicReference<>();
 
+    /// TEST SEAM (#198 §7) — cluster-level API-version detection mode applied to every node's
+    /// [AppHttpConfig]. Defaults to PATH (production behaviour). A test sets HEADER via
+    /// [#withApiVersioningDetection] BEFORE [#start] to deploy a slice in header mode.
+    private final AtomicReference<org.pragmatica.aether.config.ApiVersioningDetection> apiVersioningDetection =
+        new AtomicReference<>(org.pragmatica.aether.config.ApiVersioningDetection.PATH);
+
+    private final AtomicReference<String> apiVersionHeaderName =
+        new AtomicReference<>(AppHttpConfig.DEFAULT_API_VERSION_HEADER);
+
     private final class EmberComputeProvider implements ComputeProvider {
         @Override
         public Promise<InstanceInfo> provision(InstanceType instanceType) {
@@ -176,6 +185,19 @@ public final class EmberCluster {
     /// observed. Production paths never call this (decorator stays identity).
     public void withComputeProviderDecorator(Functions.Fn1<ComputeProvider, ComputeProvider> decorator) {
         computeProviderDecorator.set(decorator);
+    }
+
+    /// TEST SEAM (#198 §7) — select the cluster-level API-version detection mode for every node.
+    /// MUST be called before [#start]. Deploys the same compiled slice in header mode (versions
+    /// share a bare path, selected from the `headerName` request header) instead of path mode.
+    ///
+    /// @param detection  the API-version detection mode
+    /// @param headerName the version header name (header mode)
+    @Contract
+    public void withApiVersioningDetection(org.pragmatica.aether.config.ApiVersioningDetection detection,
+                                           String headerName) {
+        apiVersioningDetection.set(detection);
+        apiVersionHeaderName.set(headerName);
     }
 
     private EnvironmentIntegration emberEnvironment() {
@@ -614,7 +636,9 @@ public final class EmberCluster {
                                           quicTls,
                                           org.pragmatica.aether.config.TtmConfig.ttmConfig(),
                                           RollbackConfig.rollbackConfig(),
-                                          AppHttpConfig.appHttpConfig(appHttpPort),
+                                          AppHttpConfig.appHttpConfig(appHttpPort,
+                                                                      apiVersioningDetection.get(),
+                                                                      apiVersionHeaderName.get()),
                                           ControllerConfig.forgeDefaults(),
                                           configProvider,
                                           Option.some(emberEnvironment()),

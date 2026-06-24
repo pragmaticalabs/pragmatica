@@ -251,6 +251,16 @@ public class RouteSourceGenerator {
         out.println("        return SliceRouter.sliceRouter(routes, routes.errorMapper(), jsonMapper);");
         out.println("    }");
         out.println();
+        // SliceRouterFactory: create(slice, jsonMapper, mountMode) — #198 deploy-either-way (§7).
+        // routes() returns un-mounted routes; the mount mode composes path mode (default) or header
+        // mode at registration time, so the SAME compiled slice serves either mode.
+        out.println("    @Override");
+        out.println("    public SliceRouter create(" + sliceName
+                    + " slice, JsonMapper jsonMapper, RouteMountMode mountMode) {");
+        out.println("        var routes = new " + routesName + "(slice);");
+        out.println("        return SliceRouter.sliceRouter(routes, routes.errorMapper(), jsonMapper, mountMode);");
+        out.println("    }");
+        out.println();
         // routes() method
         generateRoutesMethod(out, model, routeConfig, sliceElement);
         out.println();
@@ -273,6 +283,7 @@ public class RouteSourceGenerator {
         out.println("import org.pragmatica.http.routing.PathParameter;");
         out.println("import org.pragmatica.http.routing.QueryParameter;");
         out.println("import org.pragmatica.http.routing.Route;");
+        out.println("import org.pragmatica.http.routing.RouteMountMode;");
         out.println("import org.pragmatica.http.routing.RouteSource;");
         if (routeConfig.isVersioned()) {
             out.println("import org.pragmatica.http.routing.SliceVersionRegistry;");
@@ -397,15 +408,11 @@ public class RouteSourceGenerator {
                                                      handlerName,
                                                      sliceElement));
         }
-        // Path mode (#198 §6.4, the default detection mode): compose {apiPrefix}/v{N}/{path} at
-        // registration time for versioned routes. The same compiled routes can later be mounted in
-        // header mode instead. Unversioned slices emit no mount step (byte-identical output).
-        if (routeConfig.isVersioned()) {
-            out.println("        ).map(__route -> Route.mountInPathMode(__route, \""
-                        + escapeJavaString(routeConfig.apiPrefix()) + "\"));");
-        } else {
-            out.println("        );");
-        }
+        // #198 deploy-either-way (§7): routes() returns UN-mounted routes (bare path + version
+        // metadata via .versioned(N)). The {apiPrefix}/v{N}/ (path mode) or bare {apiPrefix}/ (header
+        // mode) composition is applied by the registration consumer (SliceRouter / RouteMounting) at
+        // deploy time, so the same compiled slice serves either mode. Unversioned slices are unaffected.
+        out.println("        );");
         out.println("    }");
     }
 

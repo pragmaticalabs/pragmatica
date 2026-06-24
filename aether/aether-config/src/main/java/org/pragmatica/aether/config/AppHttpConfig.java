@@ -20,13 +20,37 @@ public record AppHttpConfig(boolean enabled,
                             int maxRequestSize,
                             SecurityMode securityMode,
                             Option<JwtConfig> jwtConfig,
-                            HttpProtocol httpProtocol) {
+                            HttpProtocol httpProtocol,
+                            ApiVersioningDetection apiVersioningDetection,
+                            String apiVersionHeaderName) {
     public static final int DEFAULT_APP_HTTP_PORT = 8070;
     public static final int DEFAULT_MAX_REQUEST_SIZE = 10 * 1024 * 1024;
+    public static final String DEFAULT_API_VERSION_HEADER = "API-Version";
 
     public AppHttpConfig {
         apiKeys = Map.copyOf(apiKeys);
         maxRequestSize = normalizeMaxRequestSize(maxRequestSize);
+        apiVersionHeaderName = normalizeHeaderName(apiVersionHeaderName);
+    }
+
+    public static Result<AppHttpConfig> appHttpConfig(boolean enabled,
+                                                      int port,
+                                                      Map<String, ApiKeyEntry> apiKeys,
+                                                      int maxRequestSize,
+                                                      SecurityMode securityMode,
+                                                      Option<JwtConfig> jwtConfig,
+                                                      HttpProtocol httpProtocol,
+                                                      ApiVersioningDetection apiVersioningDetection,
+                                                      String apiVersionHeaderName) {
+        return success(new AppHttpConfig(enabled,
+                                         port,
+                                         apiKeys,
+                                         maxRequestSize,
+                                         securityMode,
+                                         jwtConfig,
+                                         httpProtocol,
+                                         apiVersioningDetection,
+                                         apiVersionHeaderName));
     }
 
     public static Result<AppHttpConfig> appHttpConfig(boolean enabled,
@@ -36,7 +60,15 @@ public record AppHttpConfig(boolean enabled,
                                                       SecurityMode securityMode,
                                                       Option<JwtConfig> jwtConfig,
                                                       HttpProtocol httpProtocol) {
-        return success(new AppHttpConfig(enabled, port, apiKeys, maxRequestSize, securityMode, jwtConfig, httpProtocol));
+        return appHttpConfig(enabled,
+                             port,
+                             apiKeys,
+                             maxRequestSize,
+                             securityMode,
+                             jwtConfig,
+                             httpProtocol,
+                             ApiVersioningDetection.PATH,
+                             DEFAULT_API_VERSION_HEADER);
     }
 
     public static AppHttpConfig appHttpConfig() {
@@ -69,6 +101,27 @@ public record AppHttpConfig(boolean enabled,
                              HttpProtocol.H1).unwrap();
     }
 
+    /// Enabled app-HTTP config on the given port with an explicit #198 detection mode (§7) and
+    /// version header name. Used by in-JVM harnesses (Ember/Forge) to deploy a slice in header mode.
+    ///
+    /// @param port                  the app-HTTP port
+    /// @param apiVersioningDetection the API-version detection mode
+    /// @param apiVersionHeaderName   the version header name (header mode)
+    /// @return the config
+    public static AppHttpConfig appHttpConfig(int port,
+                                              ApiVersioningDetection apiVersioningDetection,
+                                              String apiVersionHeaderName) {
+        return appHttpConfig(true,
+                             port,
+                             Map.of(),
+                             DEFAULT_MAX_REQUEST_SIZE,
+                             SecurityMode.NONE,
+                             Option.empty(),
+                             HttpProtocol.H1,
+                             apiVersioningDetection,
+                             apiVersionHeaderName).unwrap();
+    }
+
     public static AppHttpConfig appHttpConfig(int port, Set<String> apiKeys) {
         var mode = apiKeys.isEmpty()
                    ? SecurityMode.NONE
@@ -99,6 +152,12 @@ public record AppHttpConfig(boolean enabled,
         return maxRequestSize > 0
                ? maxRequestSize
                : DEFAULT_MAX_REQUEST_SIZE;
+    }
+
+    private static String normalizeHeaderName(String headerName) {
+        return headerName == null || headerName.isBlank()
+               ? DEFAULT_API_VERSION_HEADER
+               : headerName.trim();
     }
 
     private static Map<String, ApiKeyEntry> wrapSimpleKeys(Set<String> keys) {
