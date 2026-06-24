@@ -23,7 +23,7 @@ A simple integer that identifies the **format version** of the generated envelop
 
 ## Current Version
 
-`ENVELOPE_FORMAT_VERSION = 1001` (defined in `ManifestGenerator.java`)
+`ENVELOPE_FORMAT_VERSION = 1002` (defined in `ManifestGenerator.java`)
 
 ### Version History
 
@@ -39,6 +39,7 @@ A simple integer that identifies the **format version** of the generated envelop
 | 1003 | (re-numbered series) |
 | 1004 | Theme K #1: `SliceNodeValue` and `NodeArtifactValue` gained `transitionedAt: long` field — enables `ClusterDeploymentState.Active` to re-derive `transitionalStateTimestamps` from KV after a leader handoff (avoids 3× stuck-slice timer reset). Wire format readers accept both legacy (no field) and new (with field) atoms; legacy atoms read with `transitionedAt = 0L` and the consumer falls back to `nowMs()`. |
 | 1001 | #339: per-route `produces`/`consumes` media types — generated `RouteSource` emits the declared output `.as(...)` content type and the consumes-appropriate body binding (`.withStringBody()` / `.withByteBody()` / `.withMultipartBody()`) instead of always `.asJson()` / `.withBody(TypeToken)`. Runtime accepts `{1000, 1001}`. |
+| 1002 | #198: API path-mode versioning — `[vN.routes]` blocks plus an `[api] prefix` mount each version at `{api.prefix}/v{N}/{path}` bound to method `getV{N}`, so the generated `RouteSource` emits additional `/vN/` route entries and `getV{N}` handlers. The manifest also gains version metadata (`versions.count`, `api.prefix`, `api.requireVersionHeader`, per-version `deprecated`/`sunset`/`defaultIfMissing`). Unversioned slices (flat `[routes]` + `prefix`) are byte-for-byte unchanged. Runtime accepts `{1000, 1001, 1002}`. |
 
 ## When to Bump
 

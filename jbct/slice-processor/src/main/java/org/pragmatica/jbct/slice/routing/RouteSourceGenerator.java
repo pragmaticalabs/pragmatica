@@ -159,6 +159,7 @@ public class RouteSourceGenerator {
         if (!routeConfig.hasRoutes()) {
             return Result.success(Option.none());
         }
+        validateVersionMethodBindings(routeConfig, model, sliceElement);
         try{
             var routesName = model.simpleName() + "Routes";
             var qualifiedName = model.packageName() + "." + routesName;
@@ -172,6 +173,28 @@ public class RouteSourceGenerator {
             return Causes.cause("Failed to generate routes class: " + e.getClass()
                                                                        .getSimpleName() + ": " + e.getMessage())
                          .result();
+        }
+    }
+
+    /// Decision D8 (#198 §5): for a versioned slice, verify every `(vN, bindKey)` resolves to an
+    /// existing slice method (`getV{N}` or an explicit `method = "..."` override). Reports a
+    /// precise error via the messager; delegates the pure check to [VersionSchemaValidator].
+    private void validateVersionMethodBindings(RouteConfig routeConfig, SliceModel model, TypeElement sliceElement) {
+        if (!routeConfig.isVersioned()) {
+            return;
+        }
+        var methodNames = model.methods()
+                               .stream()
+                               .map(MethodModel::name)
+                               .collect(Collectors.toSet());
+        for (var version : routeConfig.versions().values()) {
+            for (var binding : version.bindKeyToMethod().entrySet()) {
+                VersionSchemaValidator.checkMethodResolved(version.version(),
+                                                           binding.getKey(),
+                                                           binding.getValue(),
+                                                           methodNames.contains(binding.getValue()))
+                                      .onPresent(msg -> messager.printMessage(Diagnostic.Kind.ERROR, msg, sliceElement));
+            }
         }
     }
 

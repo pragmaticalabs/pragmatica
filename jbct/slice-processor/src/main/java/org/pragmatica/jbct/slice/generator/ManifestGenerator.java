@@ -31,7 +31,7 @@ import java.util.Properties;
 import java.util.stream.Collectors;
 
 public class ManifestGenerator {
-    static final int ENVELOPE_FORMAT_VERSION = 1001;
+    static final int ENVELOPE_FORMAT_VERSION = 1002;
 
     private final Filer filer;
     private final DependencyVersionResolver versionResolver;
@@ -321,6 +321,29 @@ public class ManifestGenerator {
                                                   : config.prefix() + entry.getValue().pathTemplate());
             props.setProperty(rtPrefix + "handler", entry.getKey());
             props.setProperty(rtPrefix + "security", config.effectiveSecurity(entry.getKey()).toConfigString());
+        }
+        writeVersionProperties(props, config);
+    }
+
+    /// Write the #198 versioning metadata to the manifest (envelope 1002). Unversioned slices emit
+    /// `versions.count = 0`. For versioned slices the version-agnostic `[api]` fields and per-version
+    /// `deprecated`/`sunset`/`defaultIfMissing` metadata are persisted for later phases (header
+    /// emission, version-registry endpoint).
+    private void writeVersionProperties(Properties props, RouteConfig config) {
+        props.setProperty("versions.count", String.valueOf(config.versions().size()));
+        if (config.versions().isEmpty()) {
+            return;
+        }
+        props.setProperty("api.prefix", config.apiPrefix());
+        props.setProperty("api.requireVersionHeader", String.valueOf(config.requireVersionHeader()));
+        var versions = new ArrayList<>(config.versions().values());
+        for (int i = 0; i < versions.size(); i++) {
+            var vPrefix = "version." + i + ".";
+            var version = versions.get(i);
+            props.setProperty(vPrefix + "number", String.valueOf(version.version()));
+            props.setProperty(vPrefix + "deprecated", String.valueOf(version.deprecated()));
+            props.setProperty(vPrefix + "defaultIfMissing", String.valueOf(version.defaultIfMissing()));
+            version.sunset().onPresent(sunset -> props.setProperty(vPrefix + "sunset", sunset));
         }
     }
 
