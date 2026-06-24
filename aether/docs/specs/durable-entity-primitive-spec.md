@@ -8,7 +8,7 @@
 **Author:** design-stream
 **Epic:** #345
 **Supersedes:** #190 (the Persistent-Workflow draft is carried forward here as the *workflow specialization*, §6)
-**Depends on:** the per-key ownership fence (epic #345, piece 1)
+**Depends on:** the per-key ownership fence (epic #345, piece 1) + persistent storage backing (epic #349)
 **Related:** #265/#261 (streaming substrate option), #268 (resource lifecycle)
 
 ---
@@ -77,7 +77,8 @@ the epoch check (#345) is the missing piece.
 
 - **Easy** — a keyed, single-threaded, durable object exposed as a typed resource handle; no SDK, no
   determinism contract (state-as-truth ⇒ no replay).
-- **Durable** — state replicated + fenced (epic #345).
+- **Durable** — state replicated + fenced (epic #345). *Restart*-durability requires the persistence
+  layer to be wired (epic #349); until then the entity is **HA, not restart-durable** — see §4.4.
 - **Scalable** — entities are partition-placed (HRW); millions spread across the cluster, processed in
   parallel; only same-entity operations serialize. The sole inherent bottleneck is a single hot entity,
   which cannot be parallelized without abandoning single-writer.
@@ -89,9 +90,10 @@ scale by partition placement; G-4 per-key serialization with cross-key paralleli
 per-entity timers; G-6 workflow + saga as specializations; G-7 no SDK, no determinism contract,
 state-as-truth (no replay); G-8 JBCT-native ergonomics (`Promise`/`Result`/sealed types).
 
-**Non-Goals:** the fence itself (epic #345, separate); cross-cluster/multi-region entities; replay/event-
-sourcing as the *default* state model (offered as an evolution, §4.4); a managed-activity model
-(side-effects stay in slice code, §10).
+**Non-Goals:** the fence itself (epic #345, separate); **the persistence wiring itself (epic #349,
+separate)**; cross-cluster/multi-region entities; replay/event-sourcing as a *user-visible* model (the
+fenced log in §4.4 is internal and no-replay); a managed-activity model (side-effects stay in slice
+code, §10).
 
 ### 1.5 Design principles
 
@@ -132,7 +134,7 @@ serves any durable-single-writer need; workflow and saga are convenience facades
 | Per-key serialization queue (serialize same-key, parallel across keys) | ❌ **MISSING** | — |
 | Durable per-instance timers (one-shot, fire-and-delete, survive handover) | ❌ **MISSING** (scheduler is per-slice-method cron) | `ScheduledTaskManager.java:178,333` |
 | Runtime→slice invocation (timer fire, dispatch) | ✅ exists | `SliceInvoker.java:95-96` |
-| Durable KV store (replicated, quorum) | ✅ exists, **LWW/AP, not fenced/linearizable** (→ #345) | `DHTClient.java:39-76`; `MemoryStorageEngine.java:71-75` |
+| Durable KV store (replicated, quorum) | ✅ exists, but **LWW/AP, not fenced** (→ #345) **and in-memory — not restart-durable** (→ #349) | `DHTClient.java:39-76`; `MemoryStorageEngine.java:71-75` |
 
 **Reading:** the *convenience* substrate (resource SPI, FSM library, placement) exists; the *correctness*
 substrate (fence, per-key serialization, durable per-instance timers) is the real net-new work, gated
@@ -175,21 +177,30 @@ commit after handover.
 > **Rejected alternative.** *Single global queue per owner* — serializes unrelated entities, destroying
 > scale. *No serialization* — concurrent same-key updates race even under the fence.
 
-### 4.4 State representation — KV snapshot now, fenced log later
+### 4.4 State representation — fenced KV snapshot vs fenced log (re-weighted for durability)
 
-> **Decision.** Store entity state as a **fenced KV snapshot** (state-as-truth) in v1. Keep a **fenced
-> log** (event-sourced) as a non-breaking evolution behind the same API.
+> **Decision.** The entity API hides the representation. For the **restart-durable** path, **prefer a
+> fenced log on the stream substrate**; a fenced KV snapshot on the DHT remains the simplest
+> **in-memory / HA-only** form for an initial functional cut.
 >
-> **Why.** A KV snapshot is the simplest durable+scalable form and needs only the #345 fence on the
-> existing replicated store — no event-sourcing, no replay, no migration trap (Restate/DBOS hit
-> state-migration issues precisely because they replay). A fenced **log** would add ordering, free
-> audit/event-sourcing, and replay — valuable for sagas and overlapping the streaming-hardening roadmap
-> (#265/#261) — but it is more work and shifts the model. The entity API hides which is used, so the
-> choice is deferred without churn.
+> **Why (updated — persistence reality, epic #349).** Both forms are state-as-truth / no-replay; the
+> deciding factor is *what is actually durable*. The DHT is `MemoryStorageEngine` — **in-memory, lost on
+> a full-cluster restart** — so "fenced KV snapshot on the DHT" is HA but **not restart-durable** until
+> someone builds a *persistent DHT engine* (the single largest storage build, option (c) of epic #349).
+> The **stream substrate, by contrast, has a built, spec-aligned durable path one wire away** (seal →
+> `LocalDiskTier`/S3; #349 path (a)) — so a **fenced log on a stream partition rides that same wiring**,
+> gets restart-durability cheaply, and yields ordering + free audit/event-sourcing, overlapping the
+> streaming-hardening roadmap (#265/#261). The log stays **no-replay**: the entity folds to a snapshot
+> and tails; the governor owns the fold, so there is no determinism or migration burden.
 >
-> **Rejected alternative.** *Log-first* — more upfront work + the streaming substrate isn't a fenced log
-> yet (#261/#345). *Replay/event-sourcing as default* — reintroduces the determinism/migration burden
-> the no-replay model exists to avoid.
+> **Rejected alternative.** *KV-snapshot-on-DHT as the durable default* — quietly assumes a durable DHT
+> that does not exist; making it restart-durable is the biggest build in the storage stack.
+> *Replay/event-sourcing as the user contract* — rejected; the log is an internal durability mechanism,
+> not a determinism contract exposed to authors.
+>
+> **Sequencing.** KV-snapshot (in-memory, HA-only) is acceptable for a first functional cut on the #345
+> fence; the **restart-durable** entity is the fenced log on the durable stream substrate (#349). Both
+> behind one API, so the move costs no author churn.
 
 ### 4.5 Timers
 
@@ -319,6 +330,7 @@ effect-before-commit window without an SDK.
 
 | Piece | Status | Note |
 |---|---|---|
+| **0 — Persistent backing** (epic #349, sibling) | **MISSING — durability foundation** | prod storage is memory-only (no restart durability); the entity is HA until #349 wires it. Log-on-stream (§4.4) rides #349 path (a) |
 | **1 — Per-key ownership fence** (#345) | **MISSING — foundation, rc2** | reject stale-owner write; generalize `rewriteIfOwnerStale` / add `putFenced` |
 | 2 — Per-key serialization queue | MISSING | serialize same-key, parallel across keys |
 | 3 — Durable per-instance timers | MISSING | one-shot, fenced-persisted, handover-recovered |
@@ -327,8 +339,10 @@ effect-before-commit window without an SDK.
 | 6 — Saga facade + run-once step | new | step ledger + journaled step |
 | 7 — Observability / audit stream | new | metrics + opt-in transition/step audit to a stream |
 
-Per-slice cron stays on `ScheduledTaskManager` (independent). The fenced **log** option (§4.4) overlaps
-the streaming roadmap (#265/#261) if chosen later.
+Per-slice cron stays on `ScheduledTaskManager` (independent). **Two foundations gate this stack:** the
+**#345 fence** (correctness) and **#349 persistent backing** (durability). The fenced **log** state
+option (§4.4) is the cheaper durable path — it rides #349 path (a) and overlaps the streaming roadmap
+(#265/#261).
 
 ---
 
@@ -365,8 +379,10 @@ node with no slice-author-visible errors; the fence rejects a stale-owner write 
 
 ## 14. Open Questions
 
-1. **State store v1: KV-snapshot vs fenced-log.** Recommend KV-snapshot first (§4.4); revisit log if
-   audit/event-sourcing or streaming-overlap argue for it.
+1. **State store: KV-snapshot vs fenced-log — re-weighted (§4.4).** Given the persistence reality (DHT
+   is in-memory; epic #349), the **restart-durable** path is a fenced log on the durable stream
+   substrate (rides #349 path a); KV-snapshot is the in-memory/HA-only first cut. Confirm the
+   re-weighting.
 2. **Fence mechanism (in #345):** extend `staleLeaderWrite` to governor/ownership keys vs a general
    `putFenced` on the DHT vs offset-CAS for the log path. Decided in the #345 design.
 3. **Saga compensation semantics:** best-effort reverse vs guaranteed; partial-compensation handling.
