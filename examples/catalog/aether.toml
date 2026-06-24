@@ -1,0 +1,8 @@
+# Aether runtime configuration — catalog example (resource-free)
+[app-http]
+# API version detection mode (cluster-level):
+#   "path"   → clients call /api/catalog/v1/items and /api/catalog/v2/items
+#   "header" → clients call /api/catalog/items with header `API-Version: v1|v2`
+# Switch this single line to flip the whole cluster between modes.
+api_versioning_detection = "path"
+api_version_header = "API-Version"
