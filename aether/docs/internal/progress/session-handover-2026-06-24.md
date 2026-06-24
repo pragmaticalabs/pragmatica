@@ -1,6 +1,6 @@
 # Session Handover — 2026-06-24
 
-**Branch:** `release-1.0.0-rc2` · **HEAD `d1b748826`** · all committed locally, **NOT pushed**, candidate tag **NOT moved**. Massive session: the **HTTP stack unification + #339 media types + #198 API versioning epic landed end-to-end** (10 commits), each phase independently re-verified in-JVM. Remaining = the live-cluster tail (S19/S20 harness fix + cloud 15/15).
+**Branch:** `release-1.0.0-rc2` · **HEAD `017e2cb05`** · **pushed**; candidate tag `v1.0.0-rc2-candidate` moved to `18d557498` (force-pushed → CI rebuilds candidate); **2 docs PRs merged** (#340 security-subsystem spec, #341 placement-aware-hydration spec). Massive session: the **HTTP stack unification + #339 media types + #198 API versioning epic landed end-to-end** (10 commits), each phase independently re-verified in-JVM. Remaining = the live-cluster tail (S19/S20 harness fix + cloud 15/15).
 
 ---
 
@@ -50,7 +50,7 @@
 ---
 
 ## 🎯 NEXT-SESSION (the live-cluster tail — needs real clusters)
-1. **Decide on push + candidate tag.** HEAD `d1b748826` is local-only. To get a fresh CI/native candidate image for cloud acceptance, push `release-1.0.0-rc2` and move `v1.0.0-rc2-candidate` to HEAD (prior-session pattern) — **only when user asks.**
+1. **Push + candidate tag: DONE this session** — `release-1.0.0-rc2` pushed (`017e2cb05`), `v1.0.0-rc2-candidate` moved + force-pushed (CI rebuilds the candidate image). Also merged 2 docs-only PRs (#340 security-subsystem spec → `aether/docs/specs/security-subsystem-spec.md`; #341 placement-aware-hydration spec → `aether/docs/specs/placement-aware-stream-hydration-spec.md`) and annotated the relevant tickets (#265, #319, #269, #206, #253) to reflect the specs landed. (Their CI was red on the stale pre-push base + the known forge cold-start flake — docs-only can't cause build/test failures; the pushed branch is in-JVM-verified.)
 2. **S19/S20 self-drain harness fix** (the one remaining cloud failure from 2026-06-23) — `suites/02-chaos/test-self-drain-quorum-loss.sh`: detect self-drain via `/api/cluster/membership` (not `/api/events` which needs quorum, nor VM-resolves which is the wrong layer). Then diagnose S20 recovery timeout on a LIVE cluster before patching. See [[project_selfdrain_suspect_edge_fix]] + #210.
 3. **Cloud 15/15** (runs LOCALLY: Mac has Java 25 + `HCLOUD_TOKEN` + pg-env) — container + JVM, cluster-A + cluster-B. This is also the epic's REAL regression gate (the 00-smoke/06-deployment/etc. suites exercise slice deployment + HTTP serving, which the foundation rewrote). Discipline: `--skip-teardown` + cluster-scoped reap from the FIRST run, separate A/B, `hcloud` for state, preserve test-PG. See [[project_cloud_acceptance_reaper_discipline]]. Test-PG VM `aether-test-pg`/88.198.147.80 left running.
 
