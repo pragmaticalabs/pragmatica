@@ -89,14 +89,16 @@ public interface SliceStore {
                           resourceFacade,
                           config,
                           nodeComposite,
-                          identityObservabilityAspectFactory());
+                          identityObservabilityAspectFactory(),
+                          noOpObservabilityAspectRelease());
     }
 
     /// Constructor variant that accepts the per-slice system-observability aspect factory.
     ///
     /// The factory maps a slice's `ArtifactBase` to the `Aspect<?>` woven into the slice at the
     /// `SliceFactory` seam (#277). It is invoked once per slice load and the resulting aspect is
-    /// threaded down to the slice factory via the `SliceLoadingContext`.
+    /// threaded down to the slice factory via the `SliceLoadingContext`. The release callback is
+    /// invoked once per slice unload (in `cleanup`) so the node-side registry can drop the live aspect.
     static SliceStore sliceStore(SliceRegistry registry,
                                  List<Repository> repositories,
                                  SharedLibraryClassLoader sharedLibraryLoader,
@@ -104,7 +106,8 @@ public interface SliceStore {
                                  ResourceProviderFacade resourceFacade,
                                  SliceActionConfig config,
                                  Option<ConfigurationProvider> nodeComposite,
-                                 Fn1<Aspect<?>, ArtifactBase> observabilityAspectFactory) {
+                                 Fn1<Aspect<?>, ArtifactBase> observabilityAspectFactory,
+                                 Fn1<Unit, ArtifactBase> observabilityAspectRelease) {
         return new sliceStore(registry,
                               repositories,
                               sharedLibraryLoader,
@@ -113,11 +116,16 @@ public interface SliceStore {
                               config,
                               nodeComposite,
                               observabilityAspectFactory,
+                              observabilityAspectRelease,
                               new ConcurrentHashMap<>());
     }
 
     private static Fn1<Aspect<?>, ArtifactBase> identityObservabilityAspectFactory() {
         return _ -> Aspect.identity();
+    }
+
+    private static Fn1<Unit, ArtifactBase> noOpObservabilityAspectRelease() {
+        return _ -> Unit.unit();
     }
 
     private static ResourceProviderFacade noOpResourceProvider() {
@@ -194,6 +202,7 @@ public interface SliceStore {
                       SliceActionConfig config,
                       Option<ConfigurationProvider> nodeComposite,
                       Fn1<Aspect<?>, ArtifactBase> observabilityAspectFactory,
+                      Fn1<Unit, ArtifactBase> observabilityAspectRelease,
                       ConcurrentHashMap<Artifact, Promise<LoadedSliceEntry>> entries) implements SliceStore {
         private static final Logger log = LoggerFactory.getLogger(sliceStore.class);
         private static final String SLICE_RESOURCES_TOML = "META-INF/resources.toml";
@@ -512,6 +521,7 @@ public interface SliceStore {
             registry.unregister(artifact);
             closeClassLoader(entry.classLoader());
             entries.remove(artifact);
+            observabilityAspectRelease.apply(artifact.base());
             log.debug("Slice {} unloaded", artifact);
 
             return Unit.unit();

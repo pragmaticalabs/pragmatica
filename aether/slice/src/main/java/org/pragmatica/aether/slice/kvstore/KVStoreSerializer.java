@@ -147,6 +147,7 @@ public final class KVStoreSerializer {
             case HttpNodeRouteKey _ -> "http-node-routes";
             case LogLevelKey _ -> "log-level";
             case ObservabilityDepthKey _ -> "obs-depth";
+            case ObservabilityConfigKey _ -> "obs-config";
             case AlertThresholdKey _ -> "alert-threshold";
             case TopicSubscriptionKey _ -> "topic-sub";
             case ScheduledTaskKey _ -> "scheduled-task";
@@ -220,6 +221,7 @@ public final class KVStoreSerializer {
             case AlertThresholdValue v -> serializeAlertThreshold(v);
             case LogLevelValue v -> serializeLogLevel(v);
             case ObservabilityDepthValue v -> serializeObservabilityDepth(v);
+            case ObservabilityConfigValue v -> serializeObsConfig(v);
             case ConfigValue v -> serializeConfig(v);
             case WorkerSliceDirectiveValue v -> serializeWorkerDirective(v);
             case ActivationDirectiveValue v -> v.role();
@@ -368,6 +370,10 @@ public final class KVStoreSerializer {
         return v.artifactBase() + PIPE + v.methodName() + PIPE + v.depthThreshold() + PIPE + v.updatedAt();
     }
 
+    private static String serializeObsConfig(ObservabilityConfigValue v) {
+        return v.artifactBase() + PIPE + v.logging() + PIPE + v.metrics() + PIPE + v.spans() + PIPE + v.tracing() + PIPE + v.depth() + PIPE + v.updatedAt();
+    }
+
     private static String serializeConfig(ConfigValue v) {
         return v.key() + PIPE + v.value() + PIPE + v.updatedAt();
     }
@@ -464,6 +470,7 @@ public final class KVStoreSerializer {
             case "http-node-routes" -> parseHttpNodeRouteEntry(identity, rawValue);
             case "log-level" -> parseLogLevelEntry(identity, rawValue);
             case "obs-depth" -> parseObsDepthEntry(identity, rawValue);
+            case "obs-config" -> parseObsConfigEntry(identity, rawValue);
             case "alert-threshold" -> parseAlertThresholdEntry(identity, rawValue);
             case "topic-sub" -> parseTopicSubEntry(identity, rawValue);
             case "scheduled-task" -> parseScheduledTaskEntry(identity, rawValue);
@@ -667,6 +674,23 @@ public final class KVStoreSerializer {
                                                                                                                                  parts[1],
                                                                                                                                  Integer.parseInt(parts[2]),
                                                                                                                                  Long.parseLong(parts[3]))));
+    }
+
+    private static Result<Map.Entry<AetherKey, AetherValue>> parseObsConfigEntry(String identity, String raw) {
+        var parts = raw.split("\\|", -1);
+
+        if (parts.length != 7) {
+            return parseFailure("obs-config value requires 7 fields, got " + parts.length);
+        }
+
+        return ObservabilityConfigKey.observabilityConfigKey("obs-config/" + identity).map(key -> entry(key,
+                                                                                                        new ObservabilityConfigValue(parts[0],
+                                                                                                                                     Boolean.parseBoolean(parts[1]),
+                                                                                                                                     Boolean.parseBoolean(parts[2]),
+                                                                                                                                     Boolean.parseBoolean(parts[3]),
+                                                                                                                                     Boolean.parseBoolean(parts[4]),
+                                                                                                                                     Integer.parseInt(parts[5]),
+                                                                                                                                     Long.parseLong(parts[6]))));
     }
 
     private static Result<Map.Entry<AetherKey, AetherValue>> parseAlertThresholdEntry(String identity, String raw) {

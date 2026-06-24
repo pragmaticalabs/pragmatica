@@ -390,6 +390,38 @@ public sealed interface AetherKey extends StructuredKey {
         }
     }
 
+    record ObservabilityConfigKey(String artifactBase) implements AetherKey {
+        private static final String PREFIX = "obs-config/";
+
+        @Override
+        public String asString() {
+            return PREFIX + artifactBase;
+        }
+
+        @Override
+        public String toString() {
+            return asString();
+        }
+
+        public static ObservabilityConfigKey forArtifactBase(String artifactBase) {
+            return new ObservabilityConfigKey(artifactBase);
+        }
+
+        public static Result<ObservabilityConfigKey> observabilityConfigKey(String key) {
+            if (!key.startsWith(PREFIX)) {
+                return OBSERVABILITY_CONFIG_KEY_FORMAT_ERROR.apply(key).result();
+            }
+
+            var artifactBase = key.substring(PREFIX.length());
+
+            if (artifactBase.isEmpty()) {
+                return OBSERVABILITY_CONFIG_KEY_FORMAT_ERROR.apply(key).result();
+            }
+
+            return success(new ObservabilityConfigKey(artifactBase));
+        }
+    }
+
     record AlertThresholdKey(String metricName) implements AetherKey {
         private static final String PREFIX = "alert-threshold/";
 
@@ -1117,6 +1149,8 @@ public sealed interface AetherKey extends StructuredKey {
     Fn1<Cause, String> LOG_LEVEL_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid log-level key format: %s");
 
     Fn1<Cause, String> OBSERVABILITY_DEPTH_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid obs-depth key format: %s");
+
+    Fn1<Cause, String> OBSERVABILITY_CONFIG_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid obs-config key format: %s");
 
     Fn1<Cause, String> CONFIG_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid config key format: %s");
 
