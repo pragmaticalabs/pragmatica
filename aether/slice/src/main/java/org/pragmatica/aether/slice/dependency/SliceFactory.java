@@ -140,7 +140,7 @@ public interface SliceFactory {
         return Promise.lift(Causes::fromThrowable,
                             () -> {
                                 method.setAccessible(true);
-                                var args = new Object[]{Aspect.identity(), creationContext};
+                                var args = new Object[]{creationContext.observabilityAspect(), creationContext};
 
                                 log.debug("Calling factory method {} with args: Aspect, SliceCreationContext",
                                           method.getName());

@@ -5,6 +5,7 @@
 package org.pragmatica.aether.slice;
 
 import org.pragmatica.aether.artifact.Artifact;
+import org.pragmatica.aether.artifact.ArtifactBase;
 import org.pragmatica.aether.slice.dependency.DependencyResolver;
 import org.pragmatica.aether.slice.dependency.SliceRegistry;
 import org.pragmatica.aether.slice.repository.Location;
@@ -81,6 +82,29 @@ public interface SliceStore {
                                  ResourceProviderFacade resourceFacade,
                                  SliceActionConfig config,
                                  Option<ConfigurationProvider> nodeComposite) {
+        return sliceStore(registry,
+                          repositories,
+                          sharedLibraryLoader,
+                          invokerFacade,
+                          resourceFacade,
+                          config,
+                          nodeComposite,
+                          identityObservabilityAspectFactory());
+    }
+
+    /// Constructor variant that accepts the per-slice system-observability aspect factory.
+    ///
+    /// The factory maps a slice's `ArtifactBase` to the `Aspect<?>` woven into the slice at the
+    /// `SliceFactory` seam (#277). It is invoked once per slice load and the resulting aspect is
+    /// threaded down to the slice factory via the `SliceLoadingContext`.
+    static SliceStore sliceStore(SliceRegistry registry,
+                                 List<Repository> repositories,
+                                 SharedLibraryClassLoader sharedLibraryLoader,
+                                 SliceInvokerFacade invokerFacade,
+                                 ResourceProviderFacade resourceFacade,
+                                 SliceActionConfig config,
+                                 Option<ConfigurationProvider> nodeComposite,
+                                 Fn1<Aspect<?>, ArtifactBase> observabilityAspectFactory) {
         return new sliceStore(registry,
                               repositories,
                               sharedLibraryLoader,
@@ -88,7 +112,12 @@ public interface SliceStore {
                               resourceFacade,
                               config,
                               nodeComposite,
+                              observabilityAspectFactory,
                               new ConcurrentHashMap<>());
+    }
+
+    private static Fn1<Aspect<?>, ArtifactBase> identityObservabilityAspectFactory() {
+        return _ -> Aspect.identity();
     }
 
     private static ResourceProviderFacade noOpResourceProvider() {
@@ -164,6 +193,7 @@ public interface SliceStore {
                       ResourceProviderFacade resourceFacade,
                       SliceActionConfig config,
                       Option<ConfigurationProvider> nodeComposite,
+                      Fn1<Aspect<?>, ArtifactBase> observabilityAspectFactory,
                       ConcurrentHashMap<Artifact, Promise<LoadedSliceEntry>> entries) implements SliceStore {
         private static final Logger log = LoggerFactory.getLogger(sliceStore.class);
         private static final String SLICE_RESOURCES_TOML = "META-INF/resources.toml";
@@ -181,12 +211,15 @@ public interface SliceStore {
         }
 
         private Promise<LoadedSliceEntry> loadFromLocation(Artifact artifact) {
+            var observabilityAspect = observabilityAspectFactory.apply(artifact.base());
+
             return DependencyResolver.resolveWithContext(artifact,
                                                          compositeRepository(),
                                                          registry,
                                                          sharedLibraryLoader,
                                                          invokerFacade,
                                                          resourceFacade,
+                                                         observabilityAspect,
                                                          Option.some(classLoader -> buildSliceCompositeFromClassLoader(artifact,
                                                                                                                        classLoader)))
                                      .map(resolved -> {

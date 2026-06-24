@@ -54,6 +54,7 @@ import org.pragmatica.aether.deployment.schema.AetherSchemaManager;
 import org.pragmatica.aether.deployment.schema.SchemaOrchestratorService;
 import org.pragmatica.aether.deployment.schema.SchemaPolicy;
 import org.pragmatica.aether.resource.db.DatasourceConnectionProvider;
+import org.pragmatica.aether.artifact.ArtifactBase;
 import org.pragmatica.aether.slice.delegation.TaskGroup;
 import org.pragmatica.aether.deployment.loadbalancer.LoadBalancerManager;
 import org.pragmatica.aether.deployment.node.NodeDeploymentManager;
@@ -865,7 +866,8 @@ public interface AetherNode extends ManageableNode {
                                                deferredInvoker,
                                                resourceProviderSetup.facade(),
                                                config.sliceAction(),
-                                               resourceProviderSetup.nodeComposite());
+                                               resourceProviderSetup.nodeComposite(),
+                                               identityObservabilityAspectFactory());
         var dhtRebalancer = DHTRebalancer.dhtRebalancer(dhtNode, dhtNetwork, config.artifactRepo());
         var dhtTopologyListener = DHTTopologyListener.dhtTopologyListener(dhtNode, dhtRebalancer);
         var dhtAntiEntropy = DHTAntiEntropy.dhtAntiEntropy(dhtNode, dhtNetwork, config.artifactRepo());
@@ -4249,6 +4251,13 @@ public interface AetherNode extends ManageableNode {
         return appHttp.apiVersioningDetection().isHeaderMode()
                ? RouteMountMode.headerMode(appHttp.apiVersionHeaderName())
                : RouteMountMode.pathMode();
+    }
+
+    // Foundation step for #277: supplies an identity system-observability aspect per slice so the
+    // SliceFactory plumbing is exercised end-to-end with zero behavior change. A later step swaps in
+    // the registry-backed factory that returns a live ObservabilityAspect per injection point.
+    private static Fn1<Aspect<?>, ArtifactBase> identityObservabilityAspectFactory() {
+        return _ -> Aspect.identity();
     }
 
     private static SharedLibraryClassLoader createSharedLibraryLoader(AetherNodeConfig config) {

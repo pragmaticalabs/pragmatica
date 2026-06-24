@@ -6,6 +6,7 @@ package org.pragmatica.aether.slice.dependency;
 
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.artifact.Version;
+import org.pragmatica.aether.slice.Aspect;
 import org.pragmatica.aether.slice.ProvisioningContext;
 import org.pragmatica.aether.slice.ResourceProviderFacade;
 import org.pragmatica.aether.slice.SharedLibraryClassLoader;
@@ -75,6 +76,7 @@ public interface DependencyResolver {
                                   sharedLibraryLoader,
                                   invokerFacade,
                                   resourceFacade,
+                                  Aspect.identity(),
                                   Option.none());
     }
 
@@ -91,8 +93,12 @@ public interface DependencyResolver {
                                                      SharedLibraryClassLoader sharedLibraryLoader,
                                                      SliceInvokerFacade invokerFacade,
                                                      ResourceProviderFacade resourceFacade,
+                                                     Aspect<?> observabilityAspect,
                                                      Option<org.pragmatica.lang.Functions.Fn1<Option<org.pragmatica.config.ConfigurationProvider>, ClassLoader>> compositeBuilder) {
-        var loadingContext = SliceLoadingContext.sliceLoadingContext(invokerFacade, resourceFacade, artifact.asString());
+        var loadingContext = SliceLoadingContext.sliceLoadingContext(invokerFacade,
+                                                                     resourceFacade,
+                                                                     artifact.asString(),
+                                                                     observabilityAspect);
 
         compositeBuilder.onPresent(loadingContext::setCompositeBuilder);
 

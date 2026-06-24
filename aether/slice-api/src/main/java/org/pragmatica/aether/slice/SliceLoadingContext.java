@@ -26,6 +26,7 @@ import static org.pragmatica.lang.utils.Causes.cause;
 
 public final class SliceLoadingContext implements SliceCreationContext {
     private final SliceCreationContext delegate;
+    private final Aspect<?> observabilityAspect;
     private final BufferingInvokerFacade bufferingInvoker;
     private final AtomicBoolean materialized = new AtomicBoolean(false);
 
@@ -33,28 +34,40 @@ public final class SliceLoadingContext implements SliceCreationContext {
 
     private final AtomicReference<Option<Fn1<Option<ConfigurationProvider>, ClassLoader>>> compositeBuilder = new AtomicReference<>(Option.none());
 
-    private SliceLoadingContext(SliceCreationContext delegate) {
+    private SliceLoadingContext(SliceCreationContext delegate, Aspect<?> observabilityAspect) {
         this.delegate = delegate;
+        this.observabilityAspect = observabilityAspect;
         this.bufferingInvoker = new BufferingInvokerFacade(delegate.invoker());
     }
 
     public static SliceLoadingContext sliceLoadingContext(SliceCreationContext delegate) {
-        return new SliceLoadingContext(delegate);
+        return new SliceLoadingContext(delegate, Aspect.identity());
     }
 
     public static SliceLoadingContext sliceLoadingContext(SliceInvokerFacade invokerFacade,
                                                           ResourceProviderFacade resourceFacade) {
-        return new SliceLoadingContext(SliceCreationContext.sliceCreationContext(invokerFacade, resourceFacade));
+        return new SliceLoadingContext(SliceCreationContext.sliceCreationContext(invokerFacade, resourceFacade),
+                                       Aspect.identity());
     }
 
     public static SliceLoadingContext sliceLoadingContext(SliceInvokerFacade invokerFacade,
                                                           ResourceProviderFacade resourceFacade,
                                                           String sliceId) {
-        return new SliceLoadingContext(SliceCreationContext.sliceCreationContext(invokerFacade, resourceFacade, sliceId));
+        return new SliceLoadingContext(SliceCreationContext.sliceCreationContext(invokerFacade, resourceFacade, sliceId),
+                                       Aspect.identity());
+    }
+
+    public static SliceLoadingContext sliceLoadingContext(SliceInvokerFacade invokerFacade,
+                                                          ResourceProviderFacade resourceFacade,
+                                                          String sliceId,
+                                                          Aspect<?> observabilityAspect) {
+        return new SliceLoadingContext(SliceCreationContext.sliceCreationContext(invokerFacade, resourceFacade, sliceId),
+                                       observabilityAspect);
     }
 
     public static SliceLoadingContext sliceLoadingContext(SliceInvokerFacade invokerFacade) {
-        return new SliceLoadingContext(SliceCreationContext.sliceCreationContext(invokerFacade, noOpResourceProvider()));
+        return new SliceLoadingContext(SliceCreationContext.sliceCreationContext(invokerFacade, noOpResourceProvider()),
+                                       Aspect.identity());
     }
 
     private static ResourceProviderFacade noOpResourceProvider() {
@@ -69,6 +82,11 @@ public final class SliceLoadingContext implements SliceCreationContext {
     @Override
     public Option<String> sliceId() {
         return delegate.sliceId();
+    }
+
+    @Override
+    public Aspect<?> observabilityAspect() {
+        return observabilityAspect;
     }
 
     @Override

@@ -21,6 +21,10 @@ public interface SliceCreationContext {
         return none();
     }
 
+    default Aspect<?> observabilityAspect() {
+        return Aspect.identity();
+    }
+
     static SliceCreationContext sliceCreationContext(SliceInvokerFacade invoker, ResourceProviderFacade resources) {
         return DefaultSliceCreationContext.defaultSliceCreationContext(invoker,
                                                                        resources,
