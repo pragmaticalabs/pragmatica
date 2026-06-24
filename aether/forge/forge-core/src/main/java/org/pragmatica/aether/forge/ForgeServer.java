@@ -6,6 +6,9 @@ package org.pragmatica.aether.forge;
 
 import org.pragmatica.aether.ember.EmberCluster;
 import org.pragmatica.aether.ember.EmberConfig;
+import org.pragmatica.aether.config.AetherConfig;
+import org.pragmatica.aether.config.AppHttpConfig;
+import org.pragmatica.aether.config.ConfigLoader;
 import org.pragmatica.config.ConfigurationProvider;
 import org.pragmatica.aether.dashboard.StaticFileHandler;
 import org.pragmatica.aether.forge.load.ConfigurableLoadRunner;
@@ -25,6 +28,7 @@ import org.pragmatica.http.HttpOperations;
 import org.pragmatica.http.JdkHttpOperations;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Result;
 import org.pragmatica.lang.io.TimeSpan;
 
 import java.awt.Desktop;
@@ -217,6 +221,9 @@ public final class ForgeServer {
                                                         configProvider,
                                                         forgeConfig.observability(),
                                                         forgeConfig.coreMax());
+
+        applyApiVersioning(clusterInstance);
+
         var entryPointMetrics = EntryPointMetrics.entryPointMetrics();
         Supplier<List<Integer>> portSupplier = forgeConfig.lbEnabled()
                                                ? () -> List.of(forgeConfig.lbPort())
@@ -240,6 +247,24 @@ public final class ForgeServer {
                                                                                                           configurableLoadRunnerInstance));
 
         wsPublisher = Option.some(wsPublisherInstance);
+    }
+
+    /// #198 §7 — make `forge run` honor `[app-http] api_versioning_detection` (+ `api_version_header`)
+    /// from the sibling `aether.toml` (the same file [#buildConfigurationProvider] layers in). The
+    /// detection mode is a cluster-level [EmberCluster] seam that defaults to PATH; production nodes
+    /// already read it via [ConfigLoader], so here we reuse the very same parser for identical
+    /// semantics. When no `aether.toml` is present (or it fails to parse) the cluster keeps its PATH
+    /// + [AppHttpConfig#DEFAULT_API_VERSION_HEADER] defaults — existing path-mode forge runs are
+    /// byte-for-byte unchanged.
+    private void applyApiVersioning(EmberCluster clusterInstance) {
+        startupConfig.forgeConfig()
+                     .map(path -> path.resolveSibling("aether.toml"))
+                     .filter(path -> path.toFile().exists())
+                     .map(ConfigLoader::load)
+                     .flatMap(Result::option)
+                     .map(AetherConfig::appHttp)
+                     .onPresent(appHttp -> clusterInstance.withApiVersioningDetection(appHttp.apiVersioningDetection(),
+                                                                                      appHttp.apiVersionHeaderName()));
     }
 
     private static String serializeStatus(EmberCluster cluster,
