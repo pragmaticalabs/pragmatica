@@ -53,7 +53,7 @@ token; the resource rejects a stale one).
 | Change | What | Value | Milestone |
 |---|---|---|---|
 | **1a** | Generalize `staleLeaderWrite` from `LeaderKey` to *any* epoch-bearing Store-A key (governor, ownership) | **Fixes the latent split-brain bug today**; can ship alone | **rc2** |
-| **1b** | Add the epoch fence to the data-plane write paths (DHT `putVersioned`, stream append) + owner-routed linearizable reads | The **substrate the durable entity needs** | rc3 |
+| **1b** | Add the epoch fence to the data-plane write paths (DHT `putVersioned`, stream append) + owner-routed linearizable reads | The **substrate the durable entity needs** | **rc2** |
 
 ### 1.4 Goals / Non-Goals
 
@@ -275,10 +275,10 @@ new owner — invisible to slice authors, as with all platform-level retries.
 | Phase | Scope | Milestone |
 |---|---|---|
 | **1a** | Generalize `staleLeaderWrite` to governor/ownership keys; chaos test: stale governor's `GovernorAnnouncement`/ownership write rejected post-handover | **rc2** |
-| **1b-i** | `Epoch` in `VersionedEntry` + per-domain high-water + gate `putVersioned`; thread epoch through `put`/`handlePutRequest` | rc3 |
-| **1b-ii** | Stream append epoch gate (`appendToPartition`); thread epoch through publish/forward | rc3 |
-| **1b-iii** | Owner-routed reads + takeover catch-up; typed `StaleEpoch`/`NotCurrentOwner` causes | rc3 |
-| **verify** | Split-brain test (two owners, old rejected on every replica); linearizable read-your-writes across handover; perf: fence adds ≤1 comparison + 1 `long`-pair per write | rc3 |
+| **1b-i** | `Epoch` in `VersionedEntry` + per-domain high-water + gate `putVersioned`; thread epoch through `put`/`handlePutRequest` | rc2 |
+| **1b-ii** | Stream append epoch gate (`appendToPartition`); thread epoch through publish/forward | rc2 |
+| **1b-iii** | Owner-routed reads + takeover catch-up; typed `StaleEpoch`/`NotCurrentOwner` causes | rc2 |
+| **verify** | Split-brain test (two owners, old rejected on every replica); linearizable read-your-writes across handover; perf: fence adds ≤1 comparison + 1 `long`-pair per write | rc2 |
 
 **Acceptance:** a deposed owner's write is rejected on every replica; a read after a committed write
 returns that write or later across a governor handover; within a stable epoch, throughput is unchanged.
@@ -308,6 +308,7 @@ returns that write or later across a governor handover; within a stable epoch, t
 
 ---
 
-*Epic #345, piece 1. 1a (generalize `staleLeaderWrite`) is the rc2 correctness fix; 1b (data-plane fence
-+ owner-routed reads) is the entity substrate. The fence reuses the already-CP `Epoch`; it adds no
+*Epic #345, piece 1 — **all rc2**. 1a (generalize `staleLeaderWrite`) is the standalone correctness fix
+and lands first; 1b (data-plane fence + owner-routed reads) is the entity substrate, pulled into rc2 so
+the full single-writer guarantee ships together. The fence reuses the already-CP `Epoch`; it adds no
 consensus.*
