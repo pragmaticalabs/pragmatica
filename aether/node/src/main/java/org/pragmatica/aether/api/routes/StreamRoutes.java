@@ -297,6 +297,7 @@ public final class StreamRoutes implements RouteSource {
         return switch (value.toUpperCase()) {
             case "ANY_REPLICA", "ANY-REPLICA" -> ReadPreference.ANY_REPLICA;
             case "NEAREST" -> ReadPreference.NEAREST;
+            case "LINEARIZABLE" -> ReadPreference.LINEARIZABLE;
             default -> ReadPreference.GOVERNOR;
         };
     }

@@ -117,6 +117,7 @@ import org.pragmatica.aether.stream.DefaultStreamPublisher;
 import org.pragmatica.aether.stream.StreamError;
 import org.pragmatica.aether.slice.stream.StreamNamespacesService;
 import org.pragmatica.aether.stream.KvStreamOwnerEpochSource;
+import org.pragmatica.aether.stream.KvCommittedStreamOwnerSource;
 import org.pragmatica.aether.stream.StreamPartitionManager;
 import org.pragmatica.aether.stream.StreamReadRouter;
 import org.pragmatica.aether.stream.consumer.ConsumerGroupCoordinator;
@@ -2797,7 +2798,9 @@ public interface AetherNode extends ManageableNode {
                                                                  Option.some(streamForwardClient),
                                                                  config.self(),
                                                                  streamReplicaSetController::ownerFor,
-                                                                 streamReadForwardMetrics);
+                                                                 streamReadForwardMetrics,
+                                                                 Option.some(KvCommittedStreamOwnerSource.kvCommittedStreamOwnerSource(kvStore)),
+                                                                 Option.some(ownershipEpochHighWater));
 
         allEntries.add(MessageRouter.Entry.route(StreamForwardMessage.PublishForward.class,
                                                  streamForwardHandler::onPublishForward));

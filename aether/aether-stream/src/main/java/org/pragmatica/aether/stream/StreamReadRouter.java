@@ -5,6 +5,7 @@
 package org.pragmatica.aether.stream;
 
 import org.pragmatica.aether.slice.ReadPreference;
+import org.pragmatica.aether.slice.fence.OwnershipEpochHighWater;
 import org.pragmatica.aether.stream.ForwardingReadRouter.OwnerResolver;
 import org.pragmatica.aether.stream.forward.RawEventDto;
 import org.pragmatica.aether.stream.forward.StreamForwardClient;
@@ -32,19 +33,25 @@ public final class StreamReadRouter {
     private final NodeId selfNodeId;
     private final OwnerResolver ownerResolver;
     private final StreamReadForwardMetrics metrics;
+    private final Option<CommittedStreamOwnerSource> committedOwnerSource;
+    private final Option<OwnershipEpochHighWater> epochHighWater;
 
     private StreamReadRouter(StreamPartitionManager partitionManager,
                              Option<ReplicaRegistry> replicaRegistry,
                              Option<StreamForwardClient> forwardClient,
                              NodeId selfNodeId,
                              OwnerResolver ownerResolver,
-                             StreamReadForwardMetrics metrics) {
+                             StreamReadForwardMetrics metrics,
+                             Option<CommittedStreamOwnerSource> committedOwnerSource,
+                             Option<OwnershipEpochHighWater> epochHighWater) {
         this.partitionManager = partitionManager;
         this.replicaRegistry = replicaRegistry;
         this.forwardClient = forwardClient;
         this.selfNodeId = selfNodeId;
         this.ownerResolver = ownerResolver;
         this.metrics = metrics;
+        this.committedOwnerSource = committedOwnerSource;
+        this.epochHighWater = epochHighWater;
     }
 
     public static StreamReadRouter streamReadRouter(StreamPartitionManager partitionManager,
@@ -53,7 +60,35 @@ public final class StreamReadRouter {
                                                     NodeId selfNodeId,
                                                     OwnerResolver ownerResolver,
                                                     StreamReadForwardMetrics metrics) {
-        return new StreamReadRouter(partitionManager, replicaRegistry, forwardClient, selfNodeId, ownerResolver, metrics);
+        return new StreamReadRouter(partitionManager,
+                                    replicaRegistry,
+                                    forwardClient,
+                                    selfNodeId,
+                                    ownerResolver,
+                                    metrics,
+                                    Option.none(),
+                                    Option.none());
+    }
+
+    /// #345 item 1e overload: also wires the COMMITTED-owner source + the ownership epoch high-water so a
+    /// `LINEARIZABLE` read routes to the fenced owner and runs the owner-side guards. Non-linearizable
+    /// reads are unaffected.
+    public static StreamReadRouter streamReadRouter(StreamPartitionManager partitionManager,
+                                                    Option<ReplicaRegistry> replicaRegistry,
+                                                    Option<StreamForwardClient> forwardClient,
+                                                    NodeId selfNodeId,
+                                                    OwnerResolver ownerResolver,
+                                                    StreamReadForwardMetrics metrics,
+                                                    Option<CommittedStreamOwnerSource> committedOwnerSource,
+                                                    Option<OwnershipEpochHighWater> epochHighWater) {
+        return new StreamReadRouter(partitionManager,
+                                    replicaRegistry,
+                                    forwardClient,
+                                    selfNodeId,
+                                    ownerResolver,
+                                    metrics,
+                                    committedOwnerSource,
+                                    epochHighWater);
     }
 
     public static StreamReadRouter localOnly(StreamPartitionManager partitionManager) {
@@ -62,7 +97,9 @@ public final class StreamReadRouter {
                                     Option.none(),
                                     NO_SELF,
                                     (_, _) -> Option.none(),
-                                    StreamReadForwardMetrics.NOOP);
+                                    StreamReadForwardMetrics.NOOP,
+                                    Option.none(),
+                                    Option.none());
     }
 
     public Promise<List<OffHeapRingBuffer.RawEvent>> read(String streamName,
@@ -77,10 +114,12 @@ public final class StreamReadRouter {
                                                                                       ownerResolver,
                                                                                       this::readLocal,
                                                                                       StreamReadRouter::toRawEvents,
-                                                                                      metrics).route(streamName,
-                                                                                                     partition,
-                                                                                                     fromOffset,
-                                                                                                     maxEvents);
+                                                                                      metrics,
+                                                                                      committedOwnerSource,
+                                                                                      epochHighWater).route(streamName,
+                                                                                                            partition,
+                                                                                                            fromOffset,
+                                                                                                            maxEvents);
     }
 
     private Promise<List<OffHeapRingBuffer.RawEvent>> readLocal(String streamName,

@@ -403,6 +403,7 @@ public interface StreamConfigParser {
         return switch (value.toLowerCase()) {
             case "nearest" -> ReadPreference.NEAREST;
             case "any-replica", "any_replica", "any", "replica", "follower-only", "follower_only", "follower" -> ReadPreference.ANY_REPLICA;
+            case "linearizable", "linearizable-read", "strong-read" -> ReadPreference.LINEARIZABLE;
             default -> ReadPreference.GOVERNOR;
         };
     }

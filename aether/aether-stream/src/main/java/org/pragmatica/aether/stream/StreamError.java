@@ -6,6 +6,7 @@ package org.pragmatica.aether.stream;
 
 import org.pragmatica.aether.slice.ResourceCapacityExhausted;
 import org.pragmatica.aether.slice.generation.Epoch;
+import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Cause;
 
 
@@ -96,6 +97,49 @@ public sealed interface StreamError extends Cause {
                                                                                                                                                  partition,
                                                                                                                                                  presented,
                                                                                                                                                  current);
+        }
+    }
+
+    /// Linearizable-read owner mismatch (#345 item 1e): a `LINEARIZABLE` read landed on `actual` but the
+    /// committed `StreamPartitionOwnershipValue.owner` for the `(stream, partition)` arc is `expected`, so
+    /// `actual` is NOT the authoritative owner (a stale committed view, or a routing race during a
+    /// reshuffle). The read is rejected unserved so the client re-resolves the owner and retries — the
+    /// read-side analogue of {@link StaleEpochAppend}.
+    record NotCurrentOwner(String streamName, int partition, NodeId expected, NodeId actual) implements StreamError {
+        @Override
+        public String message() {
+            return "Linearizable read rejected for %s[%d]: committed owner is %s but the read landed on %s".formatted(streamName,
+                                                                                                                      partition,
+                                                                                                                      expected,
+                                                                                                                      actual);
+        }
+    }
+
+    /// Linearizable-read epoch fence (#345 item 1e): the read landed on the committed owner, but the
+    /// committed ownership epoch has advanced beyond what the read holder `presented` — the owner is a
+    /// deposed owner whose committed record is now stale relative to the partition high-water `current`.
+    /// Mirrors {@link StaleEpochAppend} on the read path: the read is rejected so the client re-resolves
+    /// and retries against the current owner/epoch.
+    record StaleEpochRead(String streamName, int partition, Epoch presented, Epoch current) implements StreamError {
+        @Override
+        public String message() {
+            return "Stale-epoch linearizable read rejected for %s[%d]: presented owner epoch %s is older than the partition high-water %s".formatted(streamName,
+                                                                                                                                                      partition,
+                                                                                                                                                      presented,
+                                                                                                                                                      current);
+        }
+    }
+
+    /// Linearizable-read catch-up gate (#345 item 1e): the read landed on the committed owner, but this
+    /// freshly-promoted owner has NOT yet applied up to the handover offset (its local watermark /
+    /// CAUGHT_UP signal lags the committed handover), so serving now could miss events the prior owner
+    /// committed. The read is rejected (NOT blocked) so the client retries once the new owner has caught
+    /// up — the new owner reuses the EXISTING failover-recovery catch-up machinery to close the gap.
+    record OwnerCatchupPending(String streamName, int partition) implements StreamError {
+        @Override
+        public String message() {
+            return "Linearizable read rejected for %s[%d]: the committed owner has not yet caught up to the handover offset".formatted(streamName,
+                                                                                                                                       partition);
         }
     }
 }

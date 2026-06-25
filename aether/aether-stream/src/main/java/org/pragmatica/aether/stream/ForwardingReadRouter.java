@@ -5,6 +5,9 @@
 package org.pragmatica.aether.stream;
 
 import org.pragmatica.aether.slice.ReadPreference;
+import org.pragmatica.aether.slice.fence.OwnershipDomain;
+import org.pragmatica.aether.slice.fence.OwnershipEpochHighWater;
+import org.pragmatica.aether.stream.CommittedStreamOwnerSource.CommittedOwner;
 import org.pragmatica.aether.stream.forward.RawEventDto;
 import org.pragmatica.aether.stream.forward.StreamForwardClient;
 import org.pragmatica.aether.stream.forward.StreamReadForwardMetrics;
@@ -15,6 +18,8 @@ import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Unit;
 
 import java.util.List;
 import java.util.concurrent.ThreadLocalRandom;
@@ -27,10 +32,17 @@ import java.util.concurrent.ThreadLocalRandom;
 ///
 /// Routing precedence ({@link #route}):
 ///   1. `GOVERNOR` reads local; `ANY_REPLICA`/`NEAREST` enter replica selection (no registry → local).
-///   2. A REMOTE replica the LOCAL registry marks CAUGHT_UP exists → forward via {@link #attemptPrimary}
+///   2. `LINEARIZABLE` routes strictly to the COMMITTED owner (#345 item 1e): the read goes to
+///      `StreamPartitionOwnershipValue.owner` (the fenced owner), NOT the on-the-fly HRW owner, so it
+///      observes the authoritative log even when a reshuffle has made the two diverge. When self IS the
+///      committed owner the read is served locally only after the owner-side guards pass (still committed
+///      owner, epoch not stale, caught up to the handover); when a remote node is the committed owner the
+///      read is forwarded there via the existing read-forward transport. With no committed record
+///      (legacy / unowned partitions) it falls back to the replica-routed read so nothing breaks.
+///   3. A REMOTE replica the LOCAL registry marks CAUGHT_UP exists → forward via {@link #attemptPrimary}
 ///      (random pick + single retry on a distinct replica).
-///   3. Self is CAUGHT_UP for this partition (local has full coverage) → read local.
-///   4. Self lagging, no locally-known caught-up peer → forward to the deterministic HRW owner (every
+///   4. Self is CAUGHT_UP for this partition (local has full coverage) → read local.
+///   5. Self lagging, no locally-known caught-up peer → forward to the deterministic HRW owner (every
 ///      node computes the same owner; the owner self-promotes to CAUGHT_UP first at cold-start), failing
 ///      soft to a local read when the owner is unknown/self or no forward client is wired.
 public final class ForwardingReadRouter<E> {
@@ -65,6 +77,8 @@ public final class ForwardingReadRouter<E> {
     private final LocalReader<E> localReader;
     private final RemoteDecoder<E> remoteDecoder;
     private final StreamReadForwardMetrics metrics;
+    private final Option<CommittedStreamOwnerSource> committedOwnerSource;
+    private final Option<OwnershipEpochHighWater> epochHighWater;
 
     private ForwardingReadRouter(Option<ReplicaRegistry> registry,
                                  NodeId selfNodeId,
@@ -73,7 +87,9 @@ public final class ForwardingReadRouter<E> {
                                  OwnerResolver ownerResolver,
                                  LocalReader<E> localReader,
                                  RemoteDecoder<E> remoteDecoder,
-                                 StreamReadForwardMetrics metrics) {
+                                 StreamReadForwardMetrics metrics,
+                                 Option<CommittedStreamOwnerSource> committedOwnerSource,
+                                 Option<OwnershipEpochHighWater> epochHighWater) {
         this.registry = registry;
         this.selfNodeId = selfNodeId;
         this.forwardClient = forwardClient;
@@ -82,6 +98,8 @@ public final class ForwardingReadRouter<E> {
         this.localReader = localReader;
         this.remoteDecoder = remoteDecoder;
         this.metrics = metrics;
+        this.committedOwnerSource = committedOwnerSource;
+        this.epochHighWater = epochHighWater;
     }
 
     public static <E> ForwardingReadRouter<E> forwardingReadRouter(Option<ReplicaRegistry> registry,
@@ -99,14 +117,164 @@ public final class ForwardingReadRouter<E> {
                                           ownerResolver,
                                           localReader,
                                           remoteDecoder,
-                                          metrics);
+                                          metrics,
+                                          Option.none(),
+                                          Option.none());
+    }
+
+    /// #345 item 1e overload: wires the COMMITTED-owner source + the ownership epoch high-water so the
+    /// `LINEARIZABLE` arm can route to the fenced owner and run the owner-side guards. The non-linearizable
+    /// arms ignore both and stay byte-for-byte identical to the base overload.
+    public static <E> ForwardingReadRouter<E> forwardingReadRouter(Option<ReplicaRegistry> registry,
+                                                                   NodeId selfNodeId,
+                                                                   Option<StreamForwardClient> forwardClient,
+                                                                   ReadPreference readPreference,
+                                                                   OwnerResolver ownerResolver,
+                                                                   LocalReader<E> localReader,
+                                                                   RemoteDecoder<E> remoteDecoder,
+                                                                   StreamReadForwardMetrics metrics,
+                                                                   Option<CommittedStreamOwnerSource> committedOwnerSource,
+                                                                   Option<OwnershipEpochHighWater> epochHighWater) {
+        return new ForwardingReadRouter<>(registry,
+                                          selfNodeId,
+                                          forwardClient,
+                                          readPreference,
+                                          ownerResolver,
+                                          localReader,
+                                          remoteDecoder,
+                                          metrics,
+                                          committedOwnerSource,
+                                          epochHighWater);
     }
 
     public Promise<List<E>> route(String streamName, int partition, long fromOffset, int maxEvents) {
         return switch (readPreference) {
             case GOVERNOR -> localReader.read(streamName, partition, fromOffset, maxEvents);
             case ANY_REPLICA, NEAREST -> readFromReplicaOrLocal(streamName, partition, fromOffset, maxEvents);
+            case LINEARIZABLE -> readLinearizable(streamName, partition, fromOffset, maxEvents);
         };
+    }
+
+    /// #345 item 1e: route a `LINEARIZABLE` read to the COMMITTED owner of `(streamName, partition)`. The
+    /// committed owner is the fenced `StreamPartitionOwnershipValue.owner`, which during a reshuffle
+    /// diverges from the on-the-fly HRW owner the other arms forward to — routing here is what makes the
+    /// read linearizable. With no committed-owner source wired or no committed record yet (legacy /
+    /// unowned partition) the read degrades to the replica-routed behaviour so nothing breaks.
+    private Promise<List<E>> readLinearizable(String streamName, int partition, long fromOffset, int maxEvents) {
+        return committedOwnerSource.flatMap(source -> source.committedOwner(streamName, partition))
+                                   .map(committed -> routeToCommittedOwner(committed, streamName, partition, fromOffset, maxEvents))
+                                   .or(() -> readFromReplicaOrLocal(streamName, partition, fromOffset, maxEvents));
+    }
+
+    private Promise<List<E>> routeToCommittedOwner(CommittedOwner committed,
+                                                   String streamName,
+                                                   int partition,
+                                                   long fromOffset,
+                                                   int maxEvents) {
+        return committed.owner().equals(selfNodeId)
+               ? serveAsCommittedOwner(committed, streamName, partition, fromOffset, maxEvents)
+               : forwardReadToCommittedOwner(committed.owner(), streamName, partition, fromOffset, maxEvents);
+    }
+
+    /// Self IS the committed owner: serve locally only after the three owner-side guards pass — self is
+    /// still the committed owner, the committed epoch is not stale relative to the partition high-water,
+    /// and self has caught up to the handover (reusing the EXISTING CAUGHT_UP signal). Any guard failure
+    /// rejects the read with a typed cause so the client re-resolves and retries; none blocks the thread.
+    private Promise<List<E>> serveAsCommittedOwner(CommittedOwner committed,
+                                                   String streamName,
+                                                   int partition,
+                                                   long fromOffset,
+                                                   int maxEvents) {
+        return guardOwnerEpoch(committed, streamName, partition).fold(Cause::promise,
+                                                                      _ -> serveIfCaughtUp(streamName,
+                                                                                           partition,
+                                                                                           fromOffset,
+                                                                                           maxEvents));
+    }
+
+    /// Owner-side epoch fence (the read-side analogue of the write-side `StaleEpochAppend` check): reject
+    /// when the committed `ownerEpoch` is STRICTLY older than the `(stream, partition)` domain high-water —
+    /// self is a deposed owner whose committed record is now stale. Fence-free routers ([Option#none])
+    /// always pass.
+    private Result<Unit> guardOwnerEpoch(CommittedOwner committed, String streamName, int partition) {
+        return epochHighWater.fold(Result::unitResult,
+                                   highWater -> rejectIfStaleEpoch(highWater, committed, streamName, partition));
+    }
+
+    private static Result<Unit> rejectIfStaleEpoch(OwnershipEpochHighWater highWater,
+                                                   CommittedOwner committed,
+                                                   String streamName,
+                                                   int partition) {
+        var domain = OwnershipDomain.streamPartition(streamName, partition);
+
+        return highWater.isStale(domain, committed.ownerEpoch())
+               ? new StreamError.StaleEpochRead(streamName,
+                                                partition,
+                                                committed.ownerEpoch(),
+                                                highWater.highWater(domain).or(committed.ownerEpoch())).result()
+               : Result.unitResult();
+    }
+
+    /// Catch-up gate: a freshly-promoted owner must have applied up to the handover before serving. Gate
+    /// on the EXISTING signal — a self replica entry that is registered but NOT yet CAUGHT_UP for the
+    /// partition (the SYNCING state the failover-recovery / backfill path clears on reaching the owner's
+    /// retained history). An owner with no self replica entry at all (a single owner / not-yet-reconciled
+    /// established owner — there is no prior owner to catch up to) is its own authority and serves, exactly
+    /// as when no registry is wired. A registered-but-lagging new owner is rejected with
+    /// `OwnerCatchupPending` so the client retries once it has caught up; the read is never blocked.
+    private Promise<List<E>> serveIfCaughtUp(String streamName, int partition, long fromOffset, int maxEvents) {
+        return registry.fold(() -> localReader.read(streamName, partition, fromOffset, maxEvents),
+                             reg -> serveWhenSelfCovers(reg, streamName, partition, fromOffset, maxEvents));
+    }
+
+    private Promise<List<E>> serveWhenSelfCovers(ReplicaRegistry reg,
+                                                 String streamName,
+                                                 int partition,
+                                                 long fromOffset,
+                                                 int maxEvents) {
+        return selfIsLaggingReplica(reg, streamName, partition)
+               ? new StreamError.OwnerCatchupPending(streamName, partition).promise()
+               : localReader.read(streamName, partition, fromOffset, maxEvents);
+    }
+
+    /// True iff self IS a registered replica for the partition AND has not yet reached CAUGHT_UP — the
+    /// fresh-takeover-still-syncing case the catch-up gate must hold back. An owner with no self replica
+    /// entry is not "lagging"; it serves.
+    private boolean selfIsLaggingReplica(ReplicaRegistry reg, String streamName, int partition) {
+        return reg.replicasFor(streamName, partition)
+                  .stream()
+                  .filter(r -> r.nodeId().equals(selfNodeId))
+                  .anyMatch(r -> !isCaughtUp(r));
+    }
+
+    private Promise<List<E>> forwardReadToCommittedOwner(NodeId owner,
+                                                         String streamName,
+                                                         int partition,
+                                                         long fromOffset,
+                                                         int maxEvents) {
+        return forwardClient.map(client -> forwardReadStrict(client, owner, streamName, partition, fromOffset, maxEvents))
+                            .or(() -> new StreamError.NotCurrentOwner(streamName, partition, owner, selfNodeId).promise());
+    }
+
+    /// LINEARIZABLE forward to the committed owner — UNLIKE {@link #forwardReadToNode}, a remote failure
+    /// is PROPAGATED, never softened to a local read on this non-owner node: a linearizable read may only
+    /// be served by the committed owner, so on a forward failure the client must retry rather than read a
+    /// stale local copy.
+    private Promise<List<E>> forwardReadStrict(StreamForwardClient client,
+                                               NodeId owner,
+                                               String streamName,
+                                               int partition,
+                                               long fromOffset,
+                                               int maxEvents) {
+        LOG.log(System.Logger.Level.DEBUG,
+                "ReadPreference {0}: linearizable owner-forward to {1} for {2}[{3}]",
+                readPreference,
+                owner,
+                streamName,
+                partition);
+
+        return client.readRemote(owner, streamName, partition, fromOffset, maxEvents)
+                     .map(result -> remoteDecoder.decode(result.events(), partition));
     }
 
     private Promise<List<E>> readFromReplicaOrLocal(String streamName, int partition, long fromOffset, int maxEvents) {
