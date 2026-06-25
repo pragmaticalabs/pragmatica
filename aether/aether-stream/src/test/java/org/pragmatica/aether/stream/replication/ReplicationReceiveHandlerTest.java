@@ -5,6 +5,7 @@
 package org.pragmatica.aether.stream.replication;
 
 import org.junit.jupiter.api.Test;
+import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Result;
@@ -37,13 +38,13 @@ class ReplicationReceiveHandlerTest {
         var acks = new ArrayList<ReplicationMessage.ReplicateAck>();
         var gapFires = new AtomicInteger(0);
         // Appender that always succeeds.
-        ReplicationReceiveHandler.RecoveredAppender appender = (_, _, _, _) -> Result.success(0L);
+        ReplicationReceiveHandler.RecoveredAppender appender = (_, _, _, _, _) -> Result.success(0L);
         var handler = replicationReceiveHandler(SELF,
                                                 appender,
                                                 (target, message) -> acks.add((ReplicationMessage.ReplicateAck) message),
                                                 (_, _) -> gapFires.incrementAndGet());
 
-        handler.onReplicateEvents(replicateEvents(GOVERNOR, STREAM, PARTITION, 10L, payloads(3), timestamps(3)));
+        handler.onReplicateEvents(replicateEvents(GOVERNOR, STREAM, PARTITION, 10L, payloads(3), timestamps(3), Epoch.ZERO));
 
         // All 3 applied: ack highest = 10 + 3 - 1 = 12, no repair.
         assertThat(acks).hasSize(1);
@@ -59,7 +60,7 @@ class ReplicationReceiveHandlerTest {
         // Appender fails on the 3rd append (index 2): only [10, 11] land contiguously, [12] is the gap.
         var calls = new AtomicInteger(0);
         ReplicationReceiveHandler.RecoveredAppender appender =
-                (_, _, _, _) -> calls.getAndIncrement() < 2 ? Result.success(0L) : TestError.APPEND_FAILED.result();
+                (_, _, _, _, _) -> calls.getAndIncrement() < 2 ? Result.success(0L) : TestError.APPEND_FAILED.result();
         var handler = replicationReceiveHandler(SELF,
                                                 appender,
                                                 (target, message) -> acks.add((ReplicationMessage.ReplicateAck) message),
@@ -68,7 +69,7 @@ class ReplicationReceiveHandlerTest {
                                                     gapPartition.set(partition);
                                                 });
 
-        handler.onReplicateEvents(replicateEvents(GOVERNOR, STREAM, PARTITION, 10L, payloads(4), timestamps(4)));
+        handler.onReplicateEvents(replicateEvents(GOVERNOR, STREAM, PARTITION, 10L, payloads(4), timestamps(4), Epoch.ZERO));
 
         // Ack only the contiguous prefix end (11), NEVER the batch nominal end (13) — no over-stated
         // watermark, so the replica is not falsely treated as CAUGHT_UP at the batch end.
@@ -84,13 +85,13 @@ class ReplicationReceiveHandlerTest {
         var acks = new ArrayList<ReplicationMessage.ReplicateAck>();
         var gapFires = new AtomicInteger(0);
         // Appender fails immediately: nothing lands.
-        ReplicationReceiveHandler.RecoveredAppender appender = (_, _, _, _) -> TestError.APPEND_FAILED.result();
+        ReplicationReceiveHandler.RecoveredAppender appender = (_, _, _, _, _) -> TestError.APPEND_FAILED.result();
         var handler = replicationReceiveHandler(SELF,
                                                 appender,
                                                 (target, message) -> acks.add((ReplicationMessage.ReplicateAck) message),
                                                 (_, _) -> gapFires.incrementAndGet());
 
-        handler.onReplicateEvents(replicateEvents(GOVERNOR, STREAM, PARTITION, 10L, payloads(2), timestamps(2)));
+        handler.onReplicateEvents(replicateEvents(GOVERNOR, STREAM, PARTITION, 10L, payloads(2), timestamps(2), Epoch.ZERO));
 
         // Nothing applied => no ack (would otherwise ack 10 + 0 - 1 = 9, below fromOffset).
         assertThat(acks).isEmpty();
@@ -106,7 +107,7 @@ class ReplicationReceiveHandlerTest {
         private long head = -1L; // empty ring: next-expected offset is 0
 
         @Override
-        public Result<Long> appendRecovered(String streamName, int partition, byte[] payload, long timestamp) {
+        public Result<Long> appendRecovered(String streamName, int partition, byte[] payload, long timestamp, Epoch ownerEpoch) {
             head++;
 
             return Result.success(head);
@@ -129,7 +130,7 @@ class ReplicationReceiveHandlerTest {
                                                 (_, _) -> gapFires.incrementAndGet());
 
         // Local head empty (next-expected 0); batch starts at 0 — contiguous.
-        handler.onReplicateEvents(replicateEvents(GOVERNOR, STREAM, PARTITION, 0L, payloads(3), timestamps(3)));
+        handler.onReplicateEvents(replicateEvents(GOVERNOR, STREAM, PARTITION, 0L, payloads(3), timestamps(3), Epoch.ZERO));
 
         assertThat(acks).hasSize(1);
         assertThat(acks.getFirst().confirmedOffset()).isEqualTo(2L);
@@ -150,7 +151,7 @@ class ReplicationReceiveHandlerTest {
 
         // Local head empty (next-expected 0) but the batch starts at 5: offsets [0,4] were dropped.
         // Applying now would land owner-offset-5 at local offset 0 — divergence. Reject + repair.
-        handler.onReplicateEvents(replicateEvents(GOVERNOR, STREAM, PARTITION, 5L, payloads(3), timestamps(3)));
+        handler.onReplicateEvents(replicateEvents(GOVERNOR, STREAM, PARTITION, 5L, payloads(3), timestamps(3), Epoch.ZERO));
 
         assertThat(acks).isEmpty();
         assertThat(gapFires.get()).isEqualTo(1);
@@ -170,12 +171,12 @@ class ReplicationReceiveHandlerTest {
                                                 (_, _) -> gapFires.incrementAndGet());
 
         // Reordered: the [3,5] batch arrives first while local head is empty (next-expected 0) — gap.
-        handler.onReplicateEvents(replicateEvents(GOVERNOR, STREAM, PARTITION, 3L, payloads(3), timestamps(3)));
+        handler.onReplicateEvents(replicateEvents(GOVERNOR, STREAM, PARTITION, 3L, payloads(3), timestamps(3), Epoch.ZERO));
         assertThat(gapFires.get()).isEqualTo(1);
         assertThat(acks).isEmpty();
 
         // The missing prefix [0,2] arrives — contiguous, applies, acks 2.
-        handler.onReplicateEvents(replicateEvents(GOVERNOR, STREAM, PARTITION, 0L, payloads(3), timestamps(3)));
+        handler.onReplicateEvents(replicateEvents(GOVERNOR, STREAM, PARTITION, 0L, payloads(3), timestamps(3), Epoch.ZERO));
         assertThat(acks).hasSize(1);
         assertThat(acks.getLast().confirmedOffset()).isEqualTo(2L);
         assertThat(appender.nextExpected(STREAM, PARTITION)).isEqualTo(3L);
@@ -193,11 +194,11 @@ class ReplicationReceiveHandlerTest {
                                                 (_, _) -> gapFires.incrementAndGet());
 
         // Apply [0,2] so local next-expected becomes 3.
-        handler.onReplicateEvents(replicateEvents(GOVERNOR, STREAM, PARTITION, 0L, payloads(3), timestamps(3)));
+        handler.onReplicateEvents(replicateEvents(GOVERNOR, STREAM, PARTITION, 0L, payloads(3), timestamps(3), Epoch.ZERO));
         assertThat(appender.nextExpected(STREAM, PARTITION)).isEqualTo(3L);
 
         // Re-delivery of [0,2]: entirely below local head — nothing to append, no gap, re-ack the end.
-        handler.onReplicateEvents(replicateEvents(GOVERNOR, STREAM, PARTITION, 0L, payloads(3), timestamps(3)));
+        handler.onReplicateEvents(replicateEvents(GOVERNOR, STREAM, PARTITION, 0L, payloads(3), timestamps(3), Epoch.ZERO));
 
         assertThat(gapFires.get()).isZero();
         assertThat(appender.nextExpected(STREAM, PARTITION)).isEqualTo(3L); // no extra appends
@@ -217,10 +218,10 @@ class ReplicationReceiveHandlerTest {
                                                 (_, _) -> gapFires.incrementAndGet());
 
         // Apply [0,2] → local next-expected 3.
-        handler.onReplicateEvents(replicateEvents(GOVERNOR, STREAM, PARTITION, 0L, payloads(3), timestamps(3)));
+        handler.onReplicateEvents(replicateEvents(GOVERNOR, STREAM, PARTITION, 0L, payloads(3), timestamps(3), Epoch.ZERO));
 
         // Overlapping re-delivery [1,4]: prefix [1,2] already present (skip 2), tail [3,4] applies.
-        handler.onReplicateEvents(replicateEvents(GOVERNOR, STREAM, PARTITION, 1L, payloads(4), timestamps(4)));
+        handler.onReplicateEvents(replicateEvents(GOVERNOR, STREAM, PARTITION, 1L, payloads(4), timestamps(4), Epoch.ZERO));
 
         assertThat(gapFires.get()).isZero();
         assertThat(appender.nextExpected(STREAM, PARTITION)).isEqualTo(5L); // applied 3 then 2 more
@@ -235,7 +236,7 @@ class ReplicationReceiveHandlerTest {
         // Local next-expected fixed at 10; appender fails on the 3rd new append.
         var calls = new AtomicInteger(0);
         ReplicationReceiveHandler.RecoveredAppender appender =
-                (_, _, _, _) -> calls.getAndIncrement() < 2 ? Result.success(0L) : TestError.APPEND_FAILED.result();
+                (_, _, _, _, _) -> calls.getAndIncrement() < 2 ? Result.success(0L) : TestError.APPEND_FAILED.result();
         ReplicationReceiveHandler.LocalHead localHead = (_, _) -> 10L;
         var handler = replicationReceiveHandler(SELF,
                                                 appender,
@@ -244,7 +245,7 @@ class ReplicationReceiveHandlerTest {
                                                 (_, _) -> gapFires.incrementAndGet());
 
         // Contiguous from 10; only [10,11] land before the failure at index 2.
-        handler.onReplicateEvents(replicateEvents(GOVERNOR, STREAM, PARTITION, 10L, payloads(4), timestamps(4)));
+        handler.onReplicateEvents(replicateEvents(GOVERNOR, STREAM, PARTITION, 10L, payloads(4), timestamps(4), Epoch.ZERO));
 
         assertThat(acks).hasSize(1);
         assertThat(acks.getFirst().confirmedOffset()).isEqualTo(11L);

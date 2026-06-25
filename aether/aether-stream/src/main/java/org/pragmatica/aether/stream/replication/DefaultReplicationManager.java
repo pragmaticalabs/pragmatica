@@ -4,6 +4,7 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.stream.replication;
 
+import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
@@ -77,12 +78,18 @@ final class DefaultReplicationManager implements ReplicationManager {
 
     @Contract
     @Override
-    public void replicateEvent(String streamName, int partition, long offset, byte[] payload, long timestamp) {
-        batcher.onPresent(b -> b.add(streamName, partition, offset, payload, timestamp)).onEmpty(() -> replicateImmediately(streamName,
-                                                                                                                            partition,
-                                                                                                                            offset,
-                                                                                                                            payload,
-                                                                                                                            timestamp));
+    public void replicateEvent(String streamName,
+                               int partition,
+                               long offset,
+                               byte[] payload,
+                               long timestamp,
+                               Epoch ownerEpoch) {
+        batcher.onPresent(b -> b.add(streamName, partition, offset, payload, timestamp, ownerEpoch)).onEmpty(() -> replicateImmediately(streamName,
+                                                                                                                                        partition,
+                                                                                                                                        offset,
+                                                                                                                                        payload,
+                                                                                                                                        timestamp,
+                                                                                                                                        ownerEpoch));
     }
 
     @Contract
@@ -120,14 +127,19 @@ final class DefaultReplicationManager implements ReplicationManager {
         batcher.onPresent(ReplicationBatcher::close);
     }
 
-    private void replicateImmediately(String streamName, int partition, long offset, byte[] payload, long timestamp) {
+    private void replicateImmediately(String streamName,
+                                      int partition,
+                                      long offset,
+                                      byte[] payload,
+                                      long timestamp,
+                                      Epoch ownerEpoch) {
         var replicas = replicationTargets(streamName, partition);
 
         if (replicas.isEmpty()) {
             return;
         }
 
-        sendToAllReplicas(replicas, streamName, partition, offset, payload, timestamp);
+        sendToAllReplicas(replicas, streamName, partition, offset, payload, timestamp, ownerEpoch);
     }
 
     /// The set of nodes an owner replicates a published event to: the registered replica set MINUS
@@ -180,8 +192,15 @@ final class DefaultReplicationManager implements ReplicationManager {
                                    int partition,
                                    long offset,
                                    byte[] payload,
-                                   long timestamp) {
-        var message = replicateEvents(governorId, streamName, partition, offset, List.of(payload), List.of(timestamp));
+                                   long timestamp,
+                                   Epoch ownerEpoch) {
+        var message = replicateEvents(governorId,
+                                      streamName,
+                                      partition,
+                                      offset,
+                                      List.of(payload),
+                                      List.of(timestamp),
+                                      ownerEpoch);
 
         replicas.forEach(replica -> transport.send(replica, message));
     }

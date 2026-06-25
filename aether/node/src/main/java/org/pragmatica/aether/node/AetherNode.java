@@ -116,6 +116,7 @@ import org.pragmatica.aether.slice.StreamPublisher;
 import org.pragmatica.aether.stream.DefaultStreamPublisher;
 import org.pragmatica.aether.stream.StreamError;
 import org.pragmatica.aether.slice.stream.StreamNamespacesService;
+import org.pragmatica.aether.stream.KvStreamOwnerEpochSource;
 import org.pragmatica.aether.stream.StreamPartitionManager;
 import org.pragmatica.aether.stream.StreamReadRouter;
 import org.pragmatica.aether.stream.consumer.ConsumerGroupCoordinator;
@@ -712,8 +713,7 @@ public interface AetherNode extends ManageableNode {
     /// backfill itself stays on `backfillExecutor` (its dedicated thread), so no competing thread pool is
     /// introduced.
     @Contract
-    private static void redriveIncompleteBackfills(PartitionBackfill backfill,
-                                                   Executor backfillExecutor) {
+    private static void redriveIncompleteBackfills(PartitionBackfill backfill, Executor backfillExecutor) {
         backfill.redriveCandidates().forEach(key -> backfillExecutor.execute(() -> backfill.backfill(key.streamName(),
                                                                                                      key.partition())));
     }
@@ -860,7 +860,8 @@ public interface AetherNode extends ManageableNode {
         var dhtClient = DistributedDHTClient.distributedDHTClient(dhtNode,
                                                                   dhtNetwork,
                                                                   config.artifactRepo(),
-                                                                  KvOwnerEpochSource.kvOwnerEpochSource(kvStore, BootstrapModule.CORE_PARTITION_ID));
+                                                                  KvOwnerEpochSource.kvOwnerEpochSource(kvStore,
+                                                                                                        BootstrapModule.CORE_PARTITION_ID));
         var aetherMaps = AetherMaps.aetherMaps(dhtClient.scoped(DHTConfig.FULL));
         var cacheDhtClient = dhtClient.scoped(config.cache());
         var dhtClientOption = Option.<DHTClient> some(dhtClient);
@@ -1222,8 +1223,7 @@ public interface AetherNode extends ManageableNode {
 
             @Override
             public Option<QuorumLossSnapshot> quorumLossSnapshot() {
-                return Option.option(quorumLossDetector)
-                             .map(QuorumLossSnapshot::from);
+                return Option.option(quorumLossDetector).map(QuorumLossSnapshot::from);
             }
 
             @Override
@@ -2095,7 +2095,10 @@ public interface AetherNode extends ManageableNode {
         // is in scope.
         var transitionJournal = TransitionJournal.transitionJournal();
 
-        membershipFsm.onTransition(record -> onFsmTransition(transitionJournal, quorumLossDetectorRef, membershipFsm, record));
+        membershipFsm.onTransition(record -> onFsmTransition(transitionJournal,
+                                                             quorumLossDetectorRef,
+                                                             membershipFsm,
+                                                             record));
         // Wave-4 (cluster-topology-overhaul, #245): the MembershipDeltaProjector is the SOLE
         // emitter of MembershipDecision, fed by the FSM's own JOINED/REMOVED delta edge —
         // installed BEFORE the boot seed below so the seeded members' OBSERVED→MEMBER
@@ -2480,7 +2483,9 @@ public interface AetherNode extends ManageableNode {
         var streamPartitionManager = StreamPartitionManager.streamPartitionManager(streamMaxMemoryBytes,
                                                                                    EvictionListener.NOOP,
                                                                                    streamReplicationManager,
-                                                                                   clusterNode);
+                                                                                   clusterNode,
+                                                                                   ownershipEpochHighWater,
+                                                                                   KvStreamOwnerEpochSource.kvStreamOwnerEpochSource(kvStore));
 
         streamPartitionManagerRef.set(streamPartitionManager);
         // stream-offheap-budget-spec §4.5c / reconciliation #14: route off-heap budget exhaustion
@@ -2972,7 +2977,6 @@ public interface AetherNode extends ManageableNode {
                                         MembershipFsm membershipFsm,
                                         MembershipTransitionRecord record) {
         appendFsmTransition(journal, record);
-
         if (crossesMemberBoundary(record)) {
             propagateMemberCount(quorumLossDetectorRef, membershipFsm);
         }
@@ -4013,7 +4017,8 @@ public interface AetherNode extends ManageableNode {
         kvRouterBuilder.onRemove(AetherKey.ConsumerGroupKey.class, consumerGroupRegistry::onConsumerGroupRemove);
         // #345 1b: feed the per-ownership-domain epoch high-water table from committed EpochBearing puts.
         // No onRemove — the high-water is monotonic by definition, so ownership/governor removes are intentionally ignored.
-        kvRouterBuilder.onPut(AetherKey.GovernorAnnouncementKey.class, ownershipEpochHighWater::onGovernorAnnouncementPut);
+        kvRouterBuilder.onPut(AetherKey.GovernorAnnouncementKey.class,
+                              ownershipEpochHighWater::onGovernorAnnouncementPut);
         kvRouterBuilder.onPut(AetherKey.DhtPartitionOwnershipKey.class, ownershipEpochHighWater::onDhtOwnershipPut);
         kvRouterBuilder.onPut(AetherKey.StreamPartitionOwnershipKey.class,
                               ownershipEpochHighWater::onStreamPartitionOwnershipPut);
@@ -4268,7 +4273,8 @@ public interface AetherNode extends ManageableNode {
     /// Resolve the cluster-level #198 route-mount mode (§7) from the app-HTTP config. Path mode is
     /// the default; header mode carries the configured API-version header name into dispatch.
     private static RouteMountMode routeMountMode(AppHttpConfig appHttp) {
-        return appHttp.apiVersioningDetection().isHeaderMode()
+        return appHttp.apiVersioningDetection()
+                      .isHeaderMode()
                ? RouteMountMode.headerMode(appHttp.apiVersionHeaderName())
                : RouteMountMode.pathMode();
     }

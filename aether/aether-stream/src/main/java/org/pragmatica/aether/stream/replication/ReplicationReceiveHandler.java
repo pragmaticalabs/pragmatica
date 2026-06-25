@@ -4,6 +4,7 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.stream.replication;
 
+import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Result;
@@ -64,11 +65,17 @@ import static org.pragmatica.aether.stream.replication.ReplicationMessage.Replic
 public final class ReplicationReceiveHandler {
     private static final Logger log = LoggerFactory.getLogger(ReplicationReceiveHandler.class);
 
-    /// Non-replicating, offset-preserving append seam. In production this is
-    /// `StreamPartitionManager::appendRecovered`.
+    /// Non-replicating, offset-preserving append seam carrying the SENDING owner's `ownerEpoch`
+    /// fencing token (#345 item 1d-ii). In production this is `StreamPartitionManager::appendRecovered`,
+    /// which fences the append against the replica's own partition high-water before landing it — a
+    /// deposed owner's batch is rejected at the replica's commit point.
     @FunctionalInterface
     public interface RecoveredAppender {
-        Result<Long> appendRecovered(String streamName, int partition, byte[] payload, long timestamp);
+        Result<Long> appendRecovered(String streamName,
+                                     int partition,
+                                     byte[] payload,
+                                     long timestamp,
+                                     Epoch ownerEpoch);
     }
 
     /// Local next-expected-offset seam: the offset the NEXT contiguous append would be assigned for
@@ -198,7 +205,7 @@ public final class ReplicationReceiveHandler {
                                  List<Long> timestamps,
                                  long localNext) {
         var skip = (int)(localNext - fromOffset);
-        var applied = applyBatch(streamName, partition, localNext, payloads, timestamps, skip);
+        var applied = applyBatch(streamName, partition, localNext, payloads, timestamps, skip, message.ownerEpoch());
         var expected = payloads.size() - skip;
 
         if (applied < expected) {
@@ -227,11 +234,12 @@ public final class ReplicationReceiveHandler {
                            long applyFrom,
                            List<byte[]> payloads,
                            List<Long> timestamps,
-                           int skip) {
+                           int skip,
+                           Epoch ownerEpoch) {
         var applied = 0;
 
         for (var i = skip; i < payloads.size(); i++) {
-            var result = appender.appendRecovered(streamName, partition, payloads.get(i), timestamps.get(i));
+            var result = appender.appendRecovered(streamName, partition, payloads.get(i), timestamps.get(i), ownerEpoch);
 
             if (result.isFailure()) {
                 result.onFailure(cause -> log.warn("ReplicationReceiveHandler: append failed for {}[{}] at offset {}: {}",

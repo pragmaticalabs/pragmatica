@@ -4,6 +4,7 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.stream.replication;
 
+import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.ProtocolMessage;
 import org.pragmatica.messaging.StreamType;
@@ -25,12 +26,18 @@ public sealed interface ReplicationMessage extends ProtocolMessage {
         return StreamType.FORWARD;
     }
 
+    /// A replicated batch of contiguous owner-frame events. `ownerEpoch` is the SENDING owner's
+    /// fencing token (#345 item 1d-ii): the receiving replica fences the batch against its own
+    /// `(streamName, partition)` high-water before landing it, so a deposed owner's replicated batch
+    /// (epoch strictly older than the committed-ownership high-water the replica has observed) is
+    /// rejected at the replica's commit point (§6 enforce-at-replica).
     record ReplicateEvents(NodeId governorId,
                            String streamName,
                            int partition,
                            long fromOffset,
                            List<byte[]> payloads,
-                           List<Long> timestamps) implements ReplicationMessage {
+                           List<Long> timestamps,
+                           Epoch ownerEpoch) implements ReplicationMessage {
         public ReplicateEvents {
             payloads = payloads.stream().map(byte[]::clone).toList();
             timestamps = List.copyOf(timestamps);
@@ -41,8 +48,9 @@ public sealed interface ReplicationMessage extends ProtocolMessage {
                                                       int partition,
                                                       long fromOffset,
                                                       List<byte[]> payloads,
-                                                      List<Long> timestamps) {
-            return new ReplicateEvents(governorId, streamName, partition, fromOffset, payloads, timestamps);
+                                                      List<Long> timestamps,
+                                                      Epoch ownerEpoch) {
+            return new ReplicateEvents(governorId, streamName, partition, fromOffset, payloads, timestamps, ownerEpoch);
         }
 
         @Override

@@ -7,6 +7,7 @@ package org.pragmatica.aether.stream.replication;
 
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.consensus.NodeId;
 
 import java.util.ArrayList;
@@ -35,7 +36,7 @@ class ReplicationMessageTest {
             var payloads = List.of("event1".getBytes(), "event2".getBytes());
             var timestamps = List.of(1000L, 2000L);
 
-            var msg = replicateEvents(GOVERNOR, STREAM, PARTITION, 0L, payloads, timestamps);
+            var msg = replicateEvents(GOVERNOR, STREAM, PARTITION, 0L, payloads, timestamps, Epoch.ZERO);
 
             assertThat(msg.governorId()).isEqualTo(GOVERNOR);
             assertThat(msg.streamName()).isEqualTo(STREAM);
@@ -51,7 +52,7 @@ class ReplicationMessageTest {
             var payloads = new ArrayList<>(List.of(original));
             var timestamps = new ArrayList<>(List.of(1000L));
 
-            var msg = replicateEvents(GOVERNOR, STREAM, PARTITION, 0L, payloads, timestamps);
+            var msg = replicateEvents(GOVERNOR, STREAM, PARTITION, 0L, payloads, timestamps, Epoch.ZERO);
 
             // Mutate original array — should not affect message
             original[0] = 'X';

@@ -5,6 +5,7 @@
 package org.pragmatica.aether.stream;
 
 import org.pragmatica.aether.slice.ResourceCapacityExhausted;
+import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.lang.Cause;
 
 
@@ -80,6 +81,21 @@ public sealed interface StreamError extends Cause {
         @Override
         public String message() {
             return "Event processing failed at %s[%d]@%d: %s".formatted(streamName, partition, offset, reason);
+        }
+    }
+
+    /// Ownership-fence rejection (#345 item 1d-ii, spec §8): an append carries a `presented` owner
+    /// epoch STRICTLY older than the `(stream, partition)` domain high-water `current`, so the writer
+    /// is a deposed owner and the append is rejected at the replica's commit point with NO mutation.
+    /// Unlike the silent CP-applier guard (1a), this DATA-plane reject IS surfaced to the caller, which
+    /// re-resolves the owner and retries against the current owner/epoch.
+    record StaleEpochAppend(String streamName, int partition, Epoch presented, Epoch current) implements StreamError {
+        @Override
+        public String message() {
+            return "Stale-epoch stream append rejected for %s[%d]: presented owner epoch %s is older than the partition high-water %s".formatted(streamName,
+                                                                                                                                                 partition,
+                                                                                                                                                 presented,
+                                                                                                                                                 current);
         }
     }
 }

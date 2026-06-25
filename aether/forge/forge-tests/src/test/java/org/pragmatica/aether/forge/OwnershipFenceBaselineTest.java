@@ -16,10 +16,17 @@ import org.pragmatica.aether.ember.EmberCluster;
 import org.pragmatica.aether.node.AetherNode;
 import org.pragmatica.aether.slice.StreamConfig;
 import org.pragmatica.aether.slice.generation.Epoch;
+import org.pragmatica.aether.slice.kvstore.AetherKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.StreamPartitionOwnershipKey;
+import org.pragmatica.aether.slice.kvstore.AetherValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.StreamPartitionOwnershipValue;
+import org.pragmatica.aether.stream.StreamError;
 import org.pragmatica.aether.stream.StreamPartitionManager;
 import org.pragmatica.aether.stream.replication.ReplicaPlacement;
 import org.pragmatica.aether.stream.replication.ReplicaPlacement.Placement;
+import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.hlc.HlcTimestamp;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
@@ -35,15 +42,21 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
 import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
 
-/// STEP-0 regression baseline for the #345 stream ownership fence.
+/// STEP-0 → 1d-ii regression gate for the #345 stream ownership fence.
 ///
-/// The stream data-plane write path (`StreamPartitionManager.publishLocal` →
-/// `appendToPartition` → `OffHeapRingBuffer.append`) carries NO owner-epoch today, so it
-/// performs NO owner-epoch check. A node that WAS the owner of a partition but has since been
-/// deposed — ownership relocated AND the generation epoch advanced past it — can still commit a
-/// stream append. This test characterizes that behaviour: it constructs a deposed/stale owner
-/// using the REAL deterministic placement + epoch primitives and asserts that its append is
-/// CURRENTLY ACCEPTED (documenting the bug to be fixed).
+/// The stream data-plane write path (`StreamPartitionManager.publishLocal` → `appendToPartition` →
+/// `OffHeapRingBuffer.append`) now carries a writer-supplied owner [Epoch] and fences each append at
+/// the replica's commit point: an append whose epoch is STRICTLY older than the `(stream, partition)`
+/// domain high-water is a deposed owner and is REJECTED with a [StreamError.StaleEpochAppend] (spec
+/// §5b/§6/§8). A node that WAS the owner of a partition but has since been deposed — ownership
+/// relocated AND the generation epoch advanced past it — can no longer commit a stream append.
+///
+/// This test was the STEP-0 baseline (it asserted the deposed owner's append was ACCEPTED, documenting
+/// the pre-fence bug). Phase 1d-ii FLIPS it: the deposed owner's append, stamped with its stale epoch,
+/// is now REJECTED. The high-water that does the fencing advances via the REAL committed-ownership
+/// observe chain (1d-i): the test commits a genuine `StreamPartitionOwnershipValue(owner1, epoch1)`
+/// through the cluster KV, every node's `OwnershipEpochHighWater` observes the resulting `ValuePut`
+/// and advances `StreamPartition(FENCE_STREAM, 0)` to `epoch1` — not a hand-injected high-water.
 ///
 /// Determinism comes from using pure primitives rather than a racy kill-based handover:
 ///
@@ -57,11 +70,10 @@ import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
 /// Cluster FORMATION uses the harness's real await (`currentLeader().isPresent()` + per-node
 /// health) — there are no `Thread.sleep` calls for correctness anywhere.
 ///
-/// Phase 1d of the fence flips the SINGLE baseline assertion in
-/// [`#staleOwnerAppend_afterOwnershipAndEpochAdvance_isCurrentlyAccepted`] from "accepted" to
-/// "rejected with a `StaleEpochAppend` cause"; the within-epoch throughput number recorded by
-/// [`#withinEpochAppendThroughput_onOwnedPartition_recordsBaseline`] lets the fence's per-append
-/// overhead be compared against this pre-fence baseline.
+/// The within-epoch throughput number recorded by
+/// [`#withinEpochAppendThroughput_onOwnedPartition_recordsBaseline`] stays a pre/post-fence comparison
+/// point: its partition has no committed ownership record, so its high-water is the floor and its
+/// floor-stamped appends are never fenced — the fence is inert within a stable epoch.
 ///
 /// See `ownership-fence-spec.md` and `issue-345-implementation-plan.md`.
 @Execution(ExecutionMode.SAME_THREAD)
@@ -107,12 +119,15 @@ class OwnershipFenceBaselineTest {
         Option.option(cluster).onPresent(c -> c.stop().await());
     }
 
-    /// Baseline: a deposed/stale owner's data-plane append is CURRENTLY ACCEPTED because the write
-    /// path takes no epoch and so cannot fence on a stale generation. Phase 1d flips the single
-    /// assertion below.
+    /// 1d-ii fence: a deposed/stale owner's data-plane append, stamped with its now-stale owner epoch,
+    /// is REJECTED with a [StreamError.StaleEpochAppend] because the `(stream, partition)` high-water
+    /// has advanced past it. The advance happens through the REAL committed-ownership observe chain
+    /// (1d-i): a genuine `StreamPartitionOwnershipValue(owner1, epoch1)` is committed through cluster KV
+    /// and every node's `OwnershipEpochHighWater` observes it. This is the STEP-0 baseline flipped from
+    /// accepted → rejected.
     @Test
     @TerminalOperation
-    void staleOwnerAppend_afterOwnershipAndEpochAdvance_isCurrentlyAccepted() {
+    void staleOwnerAppend_afterOwnershipAndEpochAdvance_isRejected() {
         var members = cluster.allNodes().stream().map(AetherNode::self).toList();
         assertThat(members).hasSize(SIZE);
 
@@ -134,12 +149,44 @@ class OwnershipFenceBaselineTest {
         var staleOwnerNode = resolveNode(owner0);
         materialize(staleOwnerNode, FENCE_STREAM);
 
-        var staleAppend = staleOwnerNode.streamPartitionManager()
-                                        .publishLocal(FENCE_STREAM, PARTITION, "stale-write".getBytes(UTF_8), System.currentTimeMillis());
+        // Advance the partition high-water to epoch1 through the REAL committed-ownership observe chain
+        // (1d-i): commit a genuine StreamPartitionOwnershipValue(owner1, epoch1) so every node's
+        // OwnershipEpochHighWater observes the ValuePut and advances StreamPartition(FENCE_STREAM, 0).
+        commitOwnership(owner1, epoch1);
+        await().atMost(WAIT_TIMEOUT)
+               .pollInterval(POLL_INTERVAL)
+               .until(() -> staleAppend(staleOwnerNode, epoch0).isFailure());
 
-        // FENCE (P1): flip to assertRejected (StaleEpochAppend) when the epoch fence lands — see ownership-fence-spec.md §5b/§8, issue-345 Phase 1d
-        staleAppend.onFailure(OwnershipFenceBaselineTest::failStaleAppendRejected)
-                   .onSuccess(offset -> assertThat(offset).isGreaterThanOrEqualTo(0L));
+        // The deposed owner (owner0) appends stamped with its now-stale epoch0 → rejected everywhere.
+        staleAppend(staleOwnerNode, epoch0)
+            .onSuccess(offset -> Assertions.fail("fence: deposed owner's stale-epoch append must be REJECTED, but was accepted at offset " + offset))
+            .onFailure(OwnershipFenceBaselineTest::assertStaleEpochAppend);
+    }
+
+    private Result<Long> staleAppend(AetherNode staleOwnerNode, Epoch staleEpoch) {
+        return staleOwnerNode.streamPartitionManager()
+                             .publishLocal(FENCE_STREAM, PARTITION, "stale-write".getBytes(UTF_8), System.currentTimeMillis(), staleEpoch);
+    }
+
+    /// Commit a real `StreamPartitionOwnershipValue` for `(FENCE_STREAM, PARTITION)` through cluster KV
+    /// on the leader, so the consensus-ordered `ValuePut` propagates to every node's high-water (1d-i
+    /// observe wiring) — the authoritative epoch source, not a hand-injected value.
+    private void commitOwnership(NodeId owner, Epoch epoch) {
+        var key = StreamPartitionOwnershipKey.streamPartitionOwnershipKey(FENCE_STREAM, PARTITION);
+        var value = StreamPartitionOwnershipValue.streamPartitionOwnershipValue(owner, epoch, 1L, HlcTimestamp.ZERO);
+        KVCommand<AetherKey> put = new KVCommand.Put<AetherKey, AetherValue>(key, value);
+
+        leaderNode().<Object>apply(List.of(put))
+                    .await()
+                    .onFailure(OwnershipFenceBaselineTest::failScenario);
+    }
+
+    private AetherNode leaderNode() {
+        return cluster.currentLeader()
+                      .flatMap(cluster::getNode)
+                      .toResult(BaselineError.NODE_UNRESOLVED)
+                      .onFailure(OwnershipFenceBaselineTest::failScenario)
+                      .or(cluster.allNodes().getFirst());
     }
 
     /// Records (does not assert) the within-epoch append throughput on an owned partition, so the
@@ -216,9 +263,10 @@ class OwnershipFenceBaselineTest {
         throw new AssertionError("Stream materialization failed: " + cause.message());
     }
 
-    private static void failStaleAppendRejected(Cause cause) {
-        Assertions.fail("baseline: stale-owner append should be ACCEPTED today (no epoch fence yet), but was rejected: "
-                        + cause.message());
+    private static void assertStaleEpochAppend(Cause cause) {
+        assertThat(cause)
+            .as("deposed owner's append must be rejected with a StaleEpochAppend cause, but got: %s", cause.message())
+            .isInstanceOf(StreamError.StaleEpochAppend.class);
     }
 
     private enum BaselineError implements Cause {

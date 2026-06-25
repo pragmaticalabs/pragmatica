@@ -6,6 +6,9 @@ package org.pragmatica.aether.stream;
 
 import org.pragmatica.aether.slice.ConsistencyMode;
 import org.pragmatica.aether.slice.StreamConfig;
+import org.pragmatica.aether.slice.fence.OwnershipDomain;
+import org.pragmatica.aether.slice.fence.OwnershipEpochHighWater;
+import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.StreamConfigKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
@@ -58,44 +61,99 @@ public final class StreamPartitionManager implements AutoCloseable {
     private final EvictionListener evictionListener;
     private final ReplicationManager replicationManager;
     private final Option<ClusterNode<KVCommand<AetherKey>>> clusterNode;
+    /// Per-`(stream, partition)` epoch high-water gate (#345 item 1d-ii). [Option#none] = fence-free
+    /// (the non-cluster / legacy factories), mirroring the DHT engine's `OwnerEpochGate.noOp`. When
+    /// present, an append whose presented owner epoch is STRICTLY older than the partition high-water
+    /// is rejected at this replica's commit point (before `buffer.append`) with a
+    /// [StreamError.StaleEpochAppend] — a deposed owner is rejected everywhere.
+    private final Option<OwnershipEpochHighWater> epochHighWater;
+    /// Source of THIS node's current owner epoch for stamping a LOCAL publish (`publishLocal`). The
+    /// floor source ([StreamOwnerEpochSource#zero]) leaves non-fenced callers stamping [Epoch#ZERO],
+    /// which a fresh high-water never rejects and which never advances it.
+    private final StreamOwnerEpochSource ownerEpochSource;
     private volatile Consumer<Exhaustion> exhaustionSink = NOOP_SINK;
 
     private StreamPartitionManager(long maxTotalBytes,
                                    EvictionListener evictionListener,
                                    ReplicationManager replicationManager,
-                                   Option<ClusterNode<KVCommand<AetherKey>>> clusterNode) {
+                                   Option<ClusterNode<KVCommand<AetherKey>>> clusterNode,
+                                   Option<OwnershipEpochHighWater> epochHighWater,
+                                   StreamOwnerEpochSource ownerEpochSource) {
         this.maxTotalBytes = maxTotalBytes;
         this.evictionListener = evictionListener;
         this.replicationManager = replicationManager;
         this.clusterNode = clusterNode;
+        this.epochHighWater = epochHighWater;
+        this.ownerEpochSource = ownerEpochSource;
     }
 
     public static StreamPartitionManager streamPartitionManager() {
         return new StreamPartitionManager(DEFAULT_MAX_TOTAL_BYTES,
                                           EvictionListener.NOOP,
                                           ReplicationManager.NONE,
-                                          Option.none());
+                                          Option.none(),
+                                          Option.none(),
+                                          StreamOwnerEpochSource.zero());
     }
 
     public static StreamPartitionManager streamPartitionManager(long maxTotalBytes) {
-        return new StreamPartitionManager(maxTotalBytes, EvictionListener.NOOP, ReplicationManager.NONE, Option.none());
+        return new StreamPartitionManager(maxTotalBytes,
+                                          EvictionListener.NOOP,
+                                          ReplicationManager.NONE,
+                                          Option.none(),
+                                          Option.none(),
+                                          StreamOwnerEpochSource.zero());
     }
 
     public static StreamPartitionManager streamPartitionManager(long maxTotalBytes, EvictionListener evictionListener) {
-        return new StreamPartitionManager(maxTotalBytes, evictionListener, ReplicationManager.NONE, Option.none());
+        return new StreamPartitionManager(maxTotalBytes,
+                                          evictionListener,
+                                          ReplicationManager.NONE,
+                                          Option.none(),
+                                          Option.none(),
+                                          StreamOwnerEpochSource.zero());
     }
 
     public static StreamPartitionManager streamPartitionManager(long maxTotalBytes,
                                                                 EvictionListener evictionListener,
                                                                 ReplicationManager replicationManager) {
-        return new StreamPartitionManager(maxTotalBytes, evictionListener, replicationManager, Option.none());
+        return new StreamPartitionManager(maxTotalBytes,
+                                          evictionListener,
+                                          replicationManager,
+                                          Option.none(),
+                                          Option.none(),
+                                          StreamOwnerEpochSource.zero());
     }
 
     public static StreamPartitionManager streamPartitionManager(long maxTotalBytes,
                                                                 EvictionListener evictionListener,
                                                                 ReplicationManager replicationManager,
                                                                 ClusterNode<KVCommand<AetherKey>> clusterNode) {
-        return new StreamPartitionManager(maxTotalBytes, evictionListener, replicationManager, Option.some(clusterNode));
+        return new StreamPartitionManager(maxTotalBytes,
+                                          evictionListener,
+                                          replicationManager,
+                                          Option.some(clusterNode),
+                                          Option.none(),
+                                          StreamOwnerEpochSource.zero());
+    }
+
+    /// Fence-enabled factory (#345 item 1d-ii): every local and replicated-receive append is
+    /// owner-epoch-fenced against `epochHighWater` (the per-`(stream, partition)` domain high-water,
+    /// CP-seeded and observe-advanced by 1d-i). Local publishes are stamped with this node's current
+    /// owner epoch from `ownerEpochSource`; replicated batches carry the sending owner's epoch on the
+    /// wire. The aether-level wiring supplies both.
+    public static StreamPartitionManager streamPartitionManager(long maxTotalBytes,
+                                                                EvictionListener evictionListener,
+                                                                ReplicationManager replicationManager,
+                                                                ClusterNode<KVCommand<AetherKey>> clusterNode,
+                                                                OwnershipEpochHighWater epochHighWater,
+                                                                StreamOwnerEpochSource ownerEpochSource) {
+        return new StreamPartitionManager(maxTotalBytes,
+                                          evictionListener,
+                                          replicationManager,
+                                          Option.some(clusterNode),
+                                          Option.some(epochHighWater),
+                                          ownerEpochSource);
     }
 
     public static StreamPartitionManager streamPartitionManager(long maxTotalBytes,
@@ -103,7 +161,9 @@ public final class StreamPartitionManager implements AutoCloseable {
         return new StreamPartitionManager(maxTotalBytes,
                                           EvictionListener.NOOP,
                                           ReplicationManager.NONE,
-                                          Option.some(clusterNode));
+                                          Option.some(clusterNode),
+                                          Option.none(),
+                                          StreamOwnerEpochSource.zero());
     }
 
     public long totalAllocatedBytes() {
@@ -506,16 +566,35 @@ public final class StreamPartitionManager implements AutoCloseable {
     }
 
     public Result<Long> publishLocal(String streamName, int partition, byte[] payload, long timestamp) {
+        return publishLocal(streamName,
+                            partition,
+                            payload,
+                            timestamp,
+                            ownerEpochSource.currentOwnerEpoch(streamName, partition));
+    }
+
+    /// Owner-local publish stamped with an explicit `ownerEpoch` fencing token (#345 item 1d-ii). The
+    /// append is fenced against the partition high-water before `buffer.append`; on accept the event is
+    /// replicated to the registered replica set carrying the SAME `ownerEpoch` so every replica fences
+    /// the deposed owner identically. The no-epoch overload above stamps the node's current owner epoch
+    /// from the injected [StreamOwnerEpochSource] (floor [Epoch#ZERO] when unowned/non-fenced).
+    public Result<Long> publishLocal(String streamName,
+                                     int partition,
+                                     byte[] payload,
+                                     long timestamp,
+                                     Epoch ownerEpoch) {
         return resolveStreamEntry(streamName).flatMap(entry -> appendToPartition(entry,
                                                                                  streamName,
                                                                                  partition,
                                                                                  payload,
-                                                                                 timestamp))
+                                                                                 timestamp,
+                                                                                 ownerEpoch))
                                  .onSuccess(offset -> replicationManager.replicateEvent(streamName,
                                                                                         partition,
                                                                                         offset,
                                                                                         payload,
-                                                                                        timestamp));
+                                                                                        timestamp,
+                                                                                        ownerEpoch));
     }
 
     public Promise<Unit> awaitReplication(String streamName, int partition, long offset, int minAcks) {
@@ -528,11 +607,26 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// receiver, not an owner). Offsets are preserved because the ring assigns sequential offsets and
     /// catch-up replays the source's events in order into an empty partition.
     public Result<Long> appendRecovered(String streamName, int partition, byte[] payload, long timestamp) {
+        return appendRecovered(streamName, partition, payload, timestamp, Epoch.ZERO);
+    }
+
+    /// Append a backfilled/replicated event stamped with the SENDING owner's `ownerEpoch` fencing
+    /// token (#345 item 1d-ii). The replica fences this append against its own partition high-water
+    /// before `buffer.append` (§6 enforce-at-replica): a batch from a deposed owner — whose epoch is
+    /// strictly older than the high-water this replica has observed from the committed ownership change
+    /// — is rejected with [StreamError.StaleEpochAppend] and nothing is landed. The no-epoch overload
+    /// above stamps the floor ([Epoch#ZERO]) for callers that carry no epoch (non-fenced backfill).
+    public Result<Long> appendRecovered(String streamName,
+                                        int partition,
+                                        byte[] payload,
+                                        long timestamp,
+                                        Epoch ownerEpoch) {
         return resolveStreamEntry(streamName).flatMap(entry -> appendToPartition(entry,
                                                                                  streamName,
                                                                                  partition,
                                                                                  payload,
-                                                                                 timestamp));
+                                                                                 timestamp,
+                                                                                 ownerEpoch));
     }
 
     /// The offset the NEXT contiguous append would be assigned for `(streamName, partition)` — the
@@ -559,10 +653,36 @@ public final class StreamPartitionManager implements AutoCloseable {
                                            String streamName,
                                            int partition,
                                            byte[] payload,
-                                           long timestamp) {
-        return checkEventSize(entry, payload).flatMap(_ -> resolvePartitionBuffer(streamName, partition))
+                                           long timestamp,
+                                           Epoch ownerEpoch) {
+        return ensureNotStale(streamName, partition, ownerEpoch).flatMap(_ -> checkEventSize(entry, payload))
+                             .flatMap(_ -> resolvePartitionBuffer(streamName, partition))
                              .flatMap(buffer -> buffer.append(payload, timestamp))
                              .onSuccess(_ -> entry.updateActivity());
+    }
+
+    /// The owner-epoch fence (#345 item 1d-ii, spec §5b/§6): reject the append when `ownerEpoch` is
+    /// STRICTLY older than the `(stream, partition)` domain high-water — the writer is a deposed owner.
+    /// Equal-or-newer passes (a genuinely-current owner is never spuriously fenced; its epoch equals
+    /// the high-water). Fence-free managers ([Option#none]) always pass. The high-water advances ONLY
+    /// by observing committed ownership values (1d-i), never from an append.
+    private Result<Unit> ensureNotStale(String streamName, int partition, Epoch ownerEpoch) {
+        return epochHighWater.fold(() -> success(unit()),
+                                   highWater -> rejectIfStale(highWater, streamName, partition, ownerEpoch));
+    }
+
+    private static Result<Unit> rejectIfStale(OwnershipEpochHighWater highWater,
+                                              String streamName,
+                                              int partition,
+                                              Epoch ownerEpoch) {
+        var domain = OwnershipDomain.streamPartition(streamName, partition);
+
+        return highWater.isStale(domain, ownerEpoch)
+               ? new StreamError.StaleEpochAppend(streamName,
+                                                  partition,
+                                                  ownerEpoch,
+                                                  highWater.highWater(domain).or(ownerEpoch)).result()
+               : success(unit());
     }
 
     public Option<OffHeapRingBuffer> partitionBuffer(String streamName, int partition) {

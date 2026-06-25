@@ -5,6 +5,7 @@
 package org.pragmatica.aether.node;
 
 import org.junit.jupiter.api.Test;
+import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.stream.replication.ReplicationMessage;
 import org.pragmatica.aether.stream.replication.ReplicationMessage.BatchSync;
 import org.pragmatica.aether.stream.replication.ReplicationMessage.CatchupRequest;
@@ -40,7 +41,7 @@ class ReplicationMessageCodecTest {
     void replicateEvents_roundTrips_withNonEmptyPayloads() {
         var original = new ReplicateEvents(GOVERNOR, "system:cluster-events:1.0.0", 3, 42L,
                                            List.of(new byte[]{1, 2, 3}, new byte[]{}, new byte[]{9}),
-                                           List.of(100L, 200L, 300L));
+                                           List.of(100L, 200L, 300L), Epoch.ZERO);
 
         ReplicationMessage decoded = CODEC.decode(CODEC.encode(original));
 
@@ -50,6 +51,7 @@ class ReplicationMessageCodecTest {
         assertThat(event.streamName()).isEqualTo("system:cluster-events:1.0.0");
         assertThat(event.partition()).isEqualTo(3);
         assertThat(event.fromOffset()).isEqualTo(42L);
+        assertThat(event.ownerEpoch()).isEqualTo(Epoch.ZERO);
         assertThat(event.timestamps()).containsExactly(100L, 200L, 300L);
         assertThat(event.payloads()).usingElementComparator(Arrays::compare)
                                     .containsExactly(new byte[]{1, 2, 3}, new byte[]{}, new byte[]{9});

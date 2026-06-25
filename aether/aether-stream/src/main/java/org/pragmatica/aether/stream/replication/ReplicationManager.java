@@ -4,6 +4,7 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.stream.replication;
 
+import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Promise;
@@ -28,8 +29,16 @@ public interface ReplicationManager extends AutoCloseable {
 
     EarliestRetainedOffset ALWAYS_PROMOTE = (_, _) -> - 1L;
 
+    /// Replicate one accepted owner-local append to the partition's replica set, carrying the owner's
+    /// `ownerEpoch` fencing token (#345 item 1d-ii) so each replica fences a deposed owner's batch
+    /// against its own partition high-water before landing it.
     @Contract
-    void replicateEvent(String streamName, int partition, long offset, byte[] payload, long timestamp);
+    void replicateEvent(String streamName,
+                        int partition,
+                        long offset,
+                        byte[] payload,
+                        long timestamp,
+                        Epoch ownerEpoch);
 
     @Contract
     void handleAck(ReplicationMessage.ReplicateAck ack);
@@ -86,7 +95,12 @@ public interface ReplicationManager extends AutoCloseable {
         return new ReplicationManager() {
             @Contract
             @Override
-            public void replicateEvent(String streamName, int partition, long offset, byte[] payload, long timestamp) {}
+            public void replicateEvent(String streamName,
+                                       int partition,
+                                       long offset,
+                                       byte[] payload,
+                                       long timestamp,
+                                       Epoch ownerEpoch) {}
 
             @Contract
             @Override

@@ -8,6 +8,7 @@ package org.pragmatica.aether.stream.replication;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.consensus.NodeId;
 
 import java.util.ArrayList;
@@ -49,7 +50,7 @@ class ReplicationManagerTest {
             registry.registerReplica(STREAM, PARTITION, REPLICA_A);
             registry.registerReplica(STREAM, PARTITION, REPLICA_B);
 
-            manager.replicateEvent(STREAM, PARTITION, 0L, PAYLOAD, TIMESTAMP);
+            manager.replicateEvent(STREAM, PARTITION, 0L, PAYLOAD, TIMESTAMP, Epoch.ZERO);
 
             assertThat(sentMessages).hasSize(2);
             assertThat(sentMessages).extracting(SentMessage::target)
@@ -58,7 +59,7 @@ class ReplicationManagerTest {
 
         @Test
         void replicateEvent_noReplicas_noTransportCall() {
-            manager.replicateEvent(STREAM, PARTITION, 0L, PAYLOAD, TIMESTAMP);
+            manager.replicateEvent(STREAM, PARTITION, 0L, PAYLOAD, TIMESTAMP, Epoch.ZERO);
 
             assertThat(sentMessages).isEmpty();
         }
@@ -67,7 +68,7 @@ class ReplicationManagerTest {
         void replicateEvent_sendsCorrectMessage() {
             registry.registerReplica(STREAM, PARTITION, REPLICA_A);
 
-            manager.replicateEvent(STREAM, PARTITION, 5L, PAYLOAD, TIMESTAMP);
+            manager.replicateEvent(STREAM, PARTITION, 5L, PAYLOAD, TIMESTAMP, Epoch.ZERO);
 
             assertThat(sentMessages).hasSize(1);
             var message = (ReplicationMessage.ReplicateEvents) sentMessages.getFirst().message();
@@ -207,7 +208,7 @@ class ReplicationManagerTest {
             var result = manager.awaitReplication(STREAM, PARTITION, 0L, 2).await();
             assertThat(result.isFailure()).isTrue();
 
-            manager.replicateEvent(STREAM, PARTITION, 0L, PAYLOAD, TIMESTAMP);
+            manager.replicateEvent(STREAM, PARTITION, 0L, PAYLOAD, TIMESTAMP, Epoch.ZERO);
             assertThat(sentMessages).hasSize(1);
             assertThat(sentMessages.getFirst().target()).isEqualTo(REPLICA_A);
         }
@@ -270,7 +271,7 @@ class ReplicationManagerTest {
 
         @Test
         void noneManager_replicateEvent_doesNothing() {
-            ReplicationManager.NONE.replicateEvent(STREAM, PARTITION, 0L, PAYLOAD, TIMESTAMP);
+            ReplicationManager.NONE.replicateEvent(STREAM, PARTITION, 0L, PAYLOAD, TIMESTAMP, Epoch.ZERO);
 
             assertThat(ReplicationManager.NONE.registry().replicasFor(STREAM, PARTITION)).isEmpty();
         }
