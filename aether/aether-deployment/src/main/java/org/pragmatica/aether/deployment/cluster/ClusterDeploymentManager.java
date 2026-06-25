@@ -302,6 +302,38 @@ public interface ClusterDeploymentManager {
                                                              Supplier<Set<NodeId>> coreCountedMembersSupplier,
                                                              Supplier<Set<NodeId>> readyNodesSupplier,
                                                              Supplier<Set<NodeId>> drainingNodesSupplier) {
+        return clusterDeploymentManager(self,
+                                        cluster,
+                                        kvStore,
+                                        router,
+                                        initialTopology,
+                                        topologyManager,
+                                        atomicity,
+                                        coreMax,
+                                        reconcileInterval,
+                                        schemaOrchestrator,
+                                        healthSignalSink,
+                                        coreCountedMembersSupplier,
+                                        readyNodesSupplier,
+                                        drainingNodesSupplier,
+                                        node -> Option.none());
+    }
+
+    static ClusterDeploymentManager clusterDeploymentManager(NodeId self,
+                                                             ClusterNode<KVCommand<AetherKey>> cluster,
+                                                             KVStore<AetherKey, AetherValue> kvStore,
+                                                             MessageRouter router,
+                                                             List<NodeId> initialTopology,
+                                                             TopologyManager topologyManager,
+                                                             DeploymentAtomicity atomicity,
+                                                             int coreMax,
+                                                             TimeSpan reconcileInterval,
+                                                             SchemaOrchestratorService schemaOrchestrator,
+                                                             HealthSignalSink healthSignalSink,
+                                                             Supplier<Set<NodeId>> coreCountedMembersSupplier,
+                                                             Supplier<Set<NodeId>> readyNodesSupplier,
+                                                             Supplier<Set<NodeId>> drainingNodesSupplier,
+                                                             Function<NodeId, Option<String>> memberSourceSupplier) {
         var ctx = buildContext(self,
                                cluster,
                                kvStore,
@@ -315,7 +347,8 @@ public interface ClusterDeploymentManager {
                                healthSignalSink,
                                coreCountedMembersSupplier,
                                readyNodesSupplier,
-                               drainingNodesSupplier);
+                               drainingNodesSupplier,
+                               memberSourceSupplier);
 
         return new ClusterDeploymentManagerAdapter(ctx);
     }
@@ -333,7 +366,8 @@ public interface ClusterDeploymentManager {
                                                          HealthSignalSink healthSignalSink,
                                                          Supplier<Set<NodeId>> coreCountedMembersSupplier,
                                                          Supplier<Set<NodeId>> readyNodesSupplier,
-                                                         Supplier<Set<NodeId>> drainingNodesSupplier) {
+                                                         Supplier<Set<NodeId>> drainingNodesSupplier,
+                                                         Function<NodeId, Option<String>> memberSourceSupplier) {
         var ctxHolder = new AtomicReference<ClusterDeploymentContext>();
         Function<Fsm<ClusterDeploymentState, ClusterFsmEvent>, ClusterDeploymentState> initialStateFactory = fsm -> buildContextAndDormant(fsm,
                                                                                                                                            ctxHolder,
@@ -350,7 +384,8 @@ public interface ClusterDeploymentManager {
                                                                                                                                            healthSignalSink,
                                                                                                                                            coreCountedMembersSupplier,
                                                                                                                                            readyNodesSupplier,
-                                                                                                                                           drainingNodesSupplier);
+                                                                                                                                           drainingNodesSupplier,
+                                                                                                                                           memberSourceSupplier);
         var _fsm = Fsm.fsm("cluster-deployment", self.id(), initialStateFactory);
 
         return ctxHolder.get();
@@ -371,7 +406,8 @@ public interface ClusterDeploymentManager {
                                                                  HealthSignalSink healthSignalSink,
                                                                  Supplier<Set<NodeId>> coreCountedMembersSupplier,
                                                                  Supplier<Set<NodeId>> readyNodesSupplier,
-                                                                 Supplier<Set<NodeId>> drainingNodesSupplier) {
+                                                                 Supplier<Set<NodeId>> drainingNodesSupplier,
+                                                                 Function<NodeId, Option<String>> memberSourceSupplier) {
         var ctx = new ClusterDeploymentContext(fsm,
                                                self,
                                                cluster,
@@ -386,7 +422,9 @@ public interface ClusterDeploymentManager {
                                                seedNodes,
                                                atomicity,
                                                coreMax,
-                                               reconcileInterval);
+                                               reconcileInterval,
+                                               System::currentTimeMillis,
+                                               memberSourceSupplier);
 
         ctxHolder.set(ctx);
 

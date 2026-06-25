@@ -8,11 +8,14 @@ import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.deployment.cluster.AllocationPool;
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentState.Active;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.CommunityKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.GovernorAnnouncementKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.WorkerSliceDirectiveKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.CommunityValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.GovernorAnnouncementValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.WorkerSliceDirectiveValue;
+import org.pragmatica.aether.slice.kvstore.CommunityState;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Contract;
@@ -38,14 +41,35 @@ import org.slf4j.LoggerFactory;
 record CommunityPlacementPlanner(Active active) {
     private static final Logger log = LoggerFactory.getLogger(CommunityPlacementPlanner.class);
 
+    /// The authoritative DESIRED community set (worker-membership-spec D1 / §3.3): the committed,
+    /// leader-authored [`CommunityKey`]/[`CommunityValue`] facts, filtered to the live states
+    /// (everything except the terminal `DISSOLVING`/`DISSOLVED`). This is the desired-state source
+    /// of truth — a community exists the moment the leader mints its `CommunityKey`, before any
+    /// governor has announced itself. (The previous source enumerated the governor-OWNED
+    /// [`GovernorAnnouncementKey`], which is the OBSERVED statement; that read is preserved in the
+    /// governor/worker-map methods below.) Slice 2's per-community FSM drives the `ACTIVE` state, so
+    /// `FORMING` is deliberately included here to keep placement working before that lands.
     Set<String> activeCommunityIds() {
         var ids = new LinkedHashSet<String>();
 
-        active.ctx().kvStore().forEach(GovernorAnnouncementKey.class,
-                                       GovernorAnnouncementValue.class,
-                                       (key, value) -> ids.add(key.communityId()));
+        active.ctx().kvStore().forEach(CommunityKey.class,
+                                       CommunityValue.class,
+                                       (key, value) -> collectDesiredCommunity(ids, key, value));
 
         return Set.copyOf(ids);
+    }
+
+    private static void collectDesiredCommunity(Set<String> ids, CommunityKey key, CommunityValue value) {
+        if (isDesiredState(value.state())) {
+            ids.add(key.communityId());
+        }
+    }
+
+    /// A community counts toward the desired set unless it has reached its terminal teardown states
+    /// (`DISSOLVING`/`DISSOLVED`). `FORMING`/`ACTIVE`/`DEGRADED` are all desired (worker-membership-spec
+    /// §3.3); strict-`ACTIVE` filtering waits for slice 2's community FSM.
+    private static boolean isDesiredState(CommunityState state) {
+        return state != CommunityState.DISSOLVING && state != CommunityState.DISSOLVED;
     }
 
     private Option<GovernorAnnouncementValue> communityGovernor(String communityId) {
