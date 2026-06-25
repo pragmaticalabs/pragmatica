@@ -13,6 +13,9 @@ import org.pragmatica.aether.api.ManagementApiResponses.FsmMemberDetail;
 import org.pragmatica.aether.api.ManagementApiResponses.GovernorInfo;
 import org.pragmatica.aether.api.ManagementApiResponses.GovernorsResponse;
 import org.pragmatica.aether.api.ManagementApiResponses.MembershipNodeDetail;
+import org.pragmatica.aether.api.ManagementApiResponses.EpochInfo;
+import org.pragmatica.aether.api.ManagementApiResponses.OwnershipEntry;
+import org.pragmatica.aether.api.ManagementApiResponses.OwnershipResponse;
 import org.pragmatica.aether.api.ManagementApiResponses.TopologyNodeDetail;
 import org.pragmatica.aether.deployment.cluster.ClusterTopologyManager;
 import org.pragmatica.aether.deployment.membership.fsm.MemberDescriptor;
@@ -24,11 +27,16 @@ import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.aether.management.route.ManagementRoute;
 import org.pragmatica.aether.node.ManageableNode;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ActivationDirectiveKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.DhtPartitionOwnershipKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.GovernorAnnouncementKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ProvisioningSlotKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.StreamPartitionOwnershipKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ActivationDirectiveValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.DhtPartitionOwnershipValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.GovernorAnnouncementValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ProvisioningSlotValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.StreamPartitionOwnershipValue;
+import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.NodeInfo;
 import org.pragmatica.consensus.topology.NodeHealth;
@@ -36,10 +44,12 @@ import org.pragmatica.consensus.topology.NodeState;
 import org.pragmatica.consensus.topology.TopologyManager;
 import org.pragmatica.consensus.topology.TopologyObserver;
 import org.pragmatica.http.routing.Handler;
+import org.pragmatica.http.routing.PathParameter;
 import org.pragmatica.http.routing.Route;
 import org.pragmatica.http.routing.RouteSource;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Result;
 
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -70,6 +80,10 @@ public final class ClusterTopologyRoutes implements RouteSource {
 
         return Stream.of(ManagementRoutes.<ClusterTopologyStatusResponse> route(ManagementRoute.CLUSTER_TOPOLOGY).toJson(topologyHandler),
                          ManagementRoutes.<ClusterMembershipResponse> route(ManagementRoute.CLUSTER_MEMBERSHIP_GET).toJson(_ -> buildMembershipResponse()),
+                         ManagementRoutes.<OwnershipResponse> route(ManagementRoute.CLUSTER_OWNERSHIP_GET)
+                                         .withPath(PathParameter.aString())
+                                         .toResult(this::ownershipFor)
+                                         .asJson(),
                          ManagementRoutes.<GovernorsResponse> route(ManagementRoute.CLUSTER_GOVERNORS).toJson(this::buildGovernorsResponse),
                          ManagementRoutes.<CircuitBreakerStatusResponse> route(ManagementRoute.CLUSTER_CIRCUIT_BREAKER_STATUS).toJson(_ -> buildCircuitBreakerStatus()),
                          ManagementRoutes.<CircuitBreakerResetResponse> route(ManagementRoute.CLUSTER_CIRCUIT_BREAKER_RESET).toJson(_ -> resetCircuitBreaker()),
@@ -209,6 +223,89 @@ public final class ClusterTopologyRoutes implements RouteSource {
                                         role,
                                         strictCore.contains(id),
                                         countedCore.contains(id));
+    }
+
+    /// #345 item 1f committed-ownership read. A Condition (routing by `domain`) that delegates to the
+    /// per-domain collector, then wraps the sorted entries. Unknown domain → a clean typed failure
+    /// (mapped to 400 by the JSON error path), never a throw. LOCAL: every entry is read from THIS
+    /// node's committed KV-Store via `forEach`, so `owner`/`epoch` reflect the fenced owner this node
+    /// has applied.
+    private Result<OwnershipResponse> ownershipFor(String domain) {
+        return assembleOwnershipResponse(nodeSupplier.get(), domain);
+    }
+
+    static final String DOMAIN_COMMUNITY = "community";
+    static final String DOMAIN_DHT = "dht";
+    static final String DOMAIN_STREAM = "stream";
+
+    /// Package-visible assembler (mirrors `assembleMembershipResponse`) so the ownership view is unit
+    /// testable off a seeded `KVStore` without the HTTP layer. Routes by `domain`; an unrecognized
+    /// domain yields `OwnershipError.UnknownDomain` (typed `Cause`, not an exception).
+    static Result<OwnershipResponse> assembleOwnershipResponse(ManageableNode node, String domain) {
+        return switch (domain) {
+            case DOMAIN_COMMUNITY -> Result.success(new OwnershipResponse(domain, communityOwnership(node)));
+            case DOMAIN_DHT -> Result.success(new OwnershipResponse(domain, dhtOwnership(node)));
+            case DOMAIN_STREAM -> Result.success(new OwnershipResponse(domain, streamOwnership(node)));
+            default -> new OwnershipError.UnknownDomain(domain).result();
+        };
+    }
+
+    private static List<OwnershipEntry> communityOwnership(ManageableNode node) {
+        var entries = new ArrayList<OwnershipEntry>();
+
+        node.kvStore().forEach(GovernorAnnouncementKey.class,
+                               GovernorAnnouncementValue.class,
+                               (key, value) -> entries.add(new OwnershipEntry(key.communityId(),
+                                                                              value.governorId().id(),
+                                                                              epochInfo(value.fenceEpoch()))));
+
+        return sortedByIdentity(entries);
+    }
+
+    private static List<OwnershipEntry> dhtOwnership(ManageableNode node) {
+        var entries = new ArrayList<OwnershipEntry>();
+
+        node.kvStore().forEach(DhtPartitionOwnershipKey.class,
+                               DhtPartitionOwnershipValue.class,
+                               (key, value) -> entries.add(new OwnershipEntry(key.partitionId(),
+                                                                              value.ownerNodeId().id(),
+                                                                              epochInfo(value.fenceEpoch()))));
+
+        return sortedByIdentity(entries);
+    }
+
+    private static List<OwnershipEntry> streamOwnership(ManageableNode node) {
+        var entries = new ArrayList<OwnershipEntry>();
+
+        node.kvStore().forEach(StreamPartitionOwnershipKey.class,
+                               StreamPartitionOwnershipValue.class,
+                               (key, value) -> entries.add(new OwnershipEntry(key.stream() + ":" + key.partition(),
+                                                                              value.owner().id(),
+                                                                              epochInfo(value.fenceEpoch()))));
+
+        return sortedByIdentity(entries);
+    }
+
+    private static List<OwnershipEntry> sortedByIdentity(List<OwnershipEntry> entries) {
+        return entries.stream()
+                      .sorted(Comparator.comparing(OwnershipEntry::identity))
+                      .toList();
+    }
+
+    private static EpochInfo epochInfo(Epoch epoch) {
+        return new EpochInfo(epoch.rabiaTerm(), epoch.localCounter());
+    }
+
+    /// Typed failure for an unrecognized `domain` path segment — surfaced as a clean bad-request by the
+    /// JSON error path instead of a thrown exception.
+    sealed interface OwnershipError extends Cause {
+        record UnknownDomain(String domain) implements OwnershipError {
+            @Override
+            public String message() {
+                return "Unknown ownership domain '" + domain + "' (expected one of: "
+                       + DOMAIN_COMMUNITY + ", " + DOMAIN_DHT + ", " + DOMAIN_STREAM + ")";
+            }
+        }
     }
 
     private static ClusterTopologyStatusResponse assembleTopologyStatus(ManageableNode node) {

@@ -2205,6 +2205,33 @@ Membership diagnostics — the responding node's authoritative `MembershipFsm` l
 | `members[].strictCore` | In the strict `Member`-only quorum set |
 | `members[].countsTowardEffective` | In the `Member` + `Suspect` counted set |
 
+### GET /api/ownership/{domain}
+
+Committed ownership/fence diagnostics (#345 item 1f) — the owner `NodeId` and current fence `Epoch` of every partition/key in the requested domain, read from the responding node's committed KV-Store. Purpose: let an operator (or the cloud handover test) verify that the ownership fence engaged after a takeover — the committed `epoch` is the live fencing token the Rabia applier compares to reject a deposed owner's strictly-older epoch. **Per-node local view** (each node serves its own committed state); read-only; **not leader/owner-forwarded**. The committed ownership atoms are Rabia-replicated, so a read off any caught-up node reflects the fenced owner.
+
+`{domain}` is one of `community` (governor ownership of a community — identity is the community id, owner is the governor), `dht` (DHT partition ownership — identity is the partition id), or `stream` (stream-partition ownership — identity is `{stream}:{partition}`). Entries are sorted by `identity`; an empty `entries[]` means no ownership of that domain is committed yet. Any other `{domain}` value is rejected with a `400` (`Unknown ownership domain '<value>' …`).
+
+**RBAC:** VIEWER · **Routing:** LOCAL
+
+**Response (`GET /api/ownership/stream`):**
+```json
+{
+  "domain": "stream",
+  "entries": [
+    {"identity": "orders:0", "owner": "core-1", "epoch": {"rabiaTerm": 7, "localCounter": 3}},
+    {"identity": "orders:1", "owner": "core-2", "epoch": {"rabiaTerm": 7, "localCounter": 1}}
+  ]
+}
+```
+
+| Field | Description |
+|-------|-------------|
+| `domain` | The requested domain (`community` / `dht` / `stream`) |
+| `entries[]` | One row per committed ownership atom, sorted by `identity` |
+| `entries[].identity` | Domain-specific partition/key: community id (`community`), partition id (`dht`), or `{stream}:{partition}` (`stream`) |
+| `entries[].owner` | Committed owner `NodeId` (governor id for `community`) |
+| `entries[].epoch` | Committed fence `Epoch` (`fenceEpoch`) as `{rabiaTerm, localCounter}` — the fencing token |
+
 ### GET /api/cluster/generation
 
 Get the current cluster generation snapshot as observed by the queried node. The snapshot is a leader-projected view of core members, communities, and DHT partition ownership at a specific epoch; every node caches the latest snapshot it received via pings and serves it locally. This endpoint is always safe to call — when no snapshot has been received yet it returns an empty skeleton with `epoch: null` and `mode: "unknown"` instead of a 503.

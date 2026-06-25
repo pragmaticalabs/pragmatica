@@ -58,6 +58,12 @@ public enum ManagementRoute {
     // node's per-peer SUSPECT/DEAD states + self-drain armed/below-quorum signal. taskGroup/LEADER
     // would forward and collapse the per-node distinction this endpoint exists to expose.
     CLUSTER_MEMBERSHIP_GET(GET, "/api/cluster/membership", List.of(), LOCAL),
+    // #345 item 1f: per-node committed ownership/fence view. `domain` (community|dht|stream) is a path
+    // param; LOCAL (never leader/owner-forwarded) like membership — each node answers from its OWN
+    // committed KV-Store, so an operator can read the owner NodeId + fence Epoch per partition/key that
+    // THIS node has applied. The committed ownership atoms are Rabia-replicated, so a LOCAL read off any
+    // caught-up node reflects the fenced owner without forwarding.
+    CLUSTER_OWNERSHIP_GET(GET, "/api/ownership", List.of("domain"), LOCAL),
     CLUSTER_STATUS(GET, "/api/cluster/status", List.of(), LEADER),
     CLUSTER_CONFIG_APPLY(POST, "/api/cluster/config", List.of(), taskGroup(DEPLOYMENT)),
     CLUSTER_SCALE(POST, "/api/cluster/scale", List.of(), LEADER),

@@ -1880,6 +1880,35 @@ core-4  Dead     core  2            no           no
 strict=2  threshold=3  below=true  armed=true
 ```
 
+### `aether cluster ownership`
+
+Show the queried node's committed ownership view (#345 item 1f) for a domain — the owner `NodeId` and current fence `Epoch` of every partition/key the responding node has committed in that domain. Renders a per-entry table (`identity`, `owner`, and the fence epoch split into `EPOCH-TERM`/`EPOCH-COUNTER`). Use to verify the ownership fence engaged after a takeover: the committed epoch is the fencing token the Rabia applier uses to reject a deposed owner's strictly-older epoch. **Per-node local view** (not leader/owner-forwarded) — target a specific node (`-c <host>`) to read its committed view. Wraps `GET /api/ownership/{domain}`.
+
+The `<domain>` argument is one of `community` (governor ownership — identity is the community id, owner is the governor), `dht` (DHT partition ownership — identity is the partition id), or `stream` (stream-partition ownership — identity is `{stream}:{partition}`). Any other value is rejected with an error.
+
+```bash
+# Stream-partition ownership + fence epochs
+aether cluster ownership stream
+
+# DHT partition ownership on a specific node
+aether cluster ownership dht -c <host>
+
+# Machine-readable
+aether cluster ownership community --format json
+```
+
+| Option | Description |
+|--------|-------------|
+| `<domain>` | Ownership domain: `community`, `dht`, or `stream` (required positional argument) |
+| `--format` | Output format: `table` (default), `json`, `value`, `csv` |
+
+Example output (table):
+```
+IDENTITY  OWNER   EPOCH-TERM  EPOCH-COUNTER
+orders:0  core-1  7           3
+orders:1  core-2  7           1
+```
+
 ### `aether cluster journal`
 
 Dump the target node's transition journal (cluster-topology-overhaul spec, Wave 1) — a bounded per-node ring buffer recording every membership-FSM transition (layer `FSM`) and every transport peer-lifecycle transition (layer `PEER`), plus the dialer expected-vs-actual Hello diagnostic and the boot future-history detection. Wraps `GET /api/cluster/journal`.
