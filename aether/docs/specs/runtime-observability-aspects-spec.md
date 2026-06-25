@@ -8,6 +8,8 @@
 **Related:** #278/#279/#280 (interceptor *bugs* — separate; this spec does not touch them), #304 (trace waterfall — consumes this seam)
 **Realizes:** RFC-0010 (unified invocation observability — runtime reconfiguration). **Leaves unchanged:** RFC-0008 (compile-time aspect/interceptor framework).
 
+> ⏸️ **2026-06-25 — design in revision (implementation postponed).** Review resolved granularity to **per-injection-point** (§7.2), superseding the per-slice-instance mechanism implied by §6.1. The realized mechanism is an **`AspectFactory`** in factory param-0 that mints + auto-registers one holder per injection point via codegen — **no envelope bump** (GA format = 1000). Implementation is paused pending a deeper codegen design pass (always-generate-wrapper + the per-method weave). **Authoritative current state, decisions, and open questions:** [`aether/docs/internal/progress/277-observability-design-state-2026-06-25.md`](../internal/progress/277-observability-design-state-2026-06-25.md). PR #356 (per-slice foundation) is on hold.
+
 ---
 
 ## Table of Contents
