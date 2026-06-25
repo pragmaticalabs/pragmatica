@@ -357,10 +357,10 @@ class SwimProtocolTombstoneTest {
 
     @Test
     void neverHealthyId_faultyAfterJoinGraceExpiry_isTombstoned_reAddRefused() {
-        // Join-grace (40ms) SHORTER than the suspect-window (100ms): a gossip-introduced
-        // never-HEALTHY SUSPECT reaches its FAULTY edge at the suspect-window — past the short
-        // grace — and IS tombstoned, exactly as today (the 06-02 anti-oscillation contract holds).
-        // The OBSERVED join-grace path (#336/#241) applies only to seeded/announced members.
+        // Join-grace (40ms) SHORTER than the suspect-window (100ms): a gossip-introduced never-HEALTHY
+        // SUSPECT is born OBSERVED (#336/#241) and, once the short grace expires, the running probe
+        // cycle escalates it OBSERVED->SUSPECT->FAULTY; the FAULTY edge lands well past grace and IS
+        // tombstoned, exactly as today (the 06-02 anti-oscillation contract holds).
         var graced = shortGraceProtocol();
         try {
             graced.start();
@@ -524,30 +524,32 @@ class SwimProtocolTombstoneTest {
 
     @Test
     void neverHealthy_faulty_notTombstoned_coldBootReAddAllowed() {
-        // Cold-boot S04 seed: a never-HEALTHY id goes FAULTY via gossip in COLD_BOOT phase.
-        // It must NOT be tombstoned (cold-boot gate), so a subsequent gossip re-add is
-        // allowed — preserving formation. (In NORMAL phase it WOULD be tombstoned; see
-        // neverHealthyId_faultyInNormalPhase_isTombstoned_reAddRefused.)
+        // Cold-boot S04 seed: a gossip-introduced never-HEALTHY id is born OBSERVED (#336/#241) and,
+        // without start() (no probe cycle), the subsequent gossip FAULTY is hearsay the OBSERVED guard
+        // IGNORES — so the member stays OBSERVED, never reaches a FAULTY edge, and is never tombstoned.
+        // A higher-incarnation gossip ALIVE then promotes it, confirming no tombstone refusal stands in
+        // the way. (The cold-boot FAULTY-edge-not-tombstoned gate itself is exercised by
+        // neverHealthyId_cleanedUp_inColdBoot_isNotTombstoned_gossipReAddAllowed, which start()s the
+        // protocol so the probe cycle drives OBSERVED->SUSPECT->FAULTY.)
         var coldBoot = coldBootProtocol();
         var suspectA = new MembershipUpdate(NODE_A, MemberState.SUSPECT, 0, ADDR_A);
         coldBoot.onMessage(ADDR_B, new Ping(NODE_B, 1L, List.of(suspectA)));
         assertThat(coldBoot.everSeenHealthyForTest(NODE_A)).isFalse();
 
-        // Second-hand (gossip) FAULTY needs local transport-down corroboration to drive
-        // the FAULTY edge (P1 death-path co-confirmation) — without it the verdict would
-        // be downgraded to SUSPECT and the FAULTY-edge tombstone gate would never run.
+        // Transport-down corroboration is set, but the gossiped FAULTY is dropped earlier by the
+        // OBSERVED guard (the member is a not-yet-confirmed OBSERVED placeholder), so no FAULTY edge
+        // and no tombstone-gate evaluation occurs.
         coldBoot.recordTransportHint(NODE_A, new TransportObservation.PeerUnreachable(NODE_A, Causes.cause("test peer down")));
         var faultyA = new MembershipUpdate(NODE_A, MemberState.FAULTY, 1, ADDR_A);
         coldBoot.onMessage(ADDR_B, new Ping(NODE_B, 2L, List.of(faultyA)));
 
         assertThat(coldBoot.tombstonedForTest(NODE_A))
-            .as("COLD_BOOT: never-HEALTHY id reaching FAULTY must NOT be tombstoned")
+            .as("COLD_BOOT: a never-HEALTHY OBSERVED id (ignored gossip FAULTY) must NOT be tombstoned")
             .isFalse();
 
-        // Gossip re-add toward ALIVE at a higher incarnation is allowed (no tombstone
-        // block). A higher incarnation is required because canonical SWIM never lets a
-        // same-incarnation ALIVE override FAULTY — the point here is the ABSENCE of a
-        // tombstone refusal, which a proven-healthy id would suffer at incarnation <= 1.
+        // Gossip re-add toward ALIVE at a higher incarnation promotes the OBSERVED member (no tombstone
+        // block). The point here is the ABSENCE of a tombstone refusal, which a proven-healthy-then-dead
+        // id would suffer at incarnation <= 1.
         var reAliveA = new MembershipUpdate(NODE_A, MemberState.ALIVE, 2, ADDR_A);
         coldBoot.onMessage(ADDR_B, new Ping(NODE_B, 3L, List.of(reAliveA)));
         assertThat(coldBoot.members().get(NODE_A).state())

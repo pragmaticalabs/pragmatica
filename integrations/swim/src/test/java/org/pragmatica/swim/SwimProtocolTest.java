@@ -71,9 +71,9 @@ class SwimProtocolTest {
         void addSeedMember_newMember_addedAsObservedNotSuspect() {
             // OBSERVED birth state (#336/#241): a channel re-seed is NOT proof of reachability,
             // so a seeded member is introduced as OBSERVED — known and probe-eligible, but NOT
-            // alive and NOT death-timer-armed. A real probe-ack (or higher-incarnation Alive
-            // gossip) later promotes it to ALIVE; the prior born-SUSPECT-with-armed-timer evicted
-            // live joiners before the leader's probe could confirm them.
+            // alive and NOT death-timer-armed. A real probe-ack (or a gossiped Alive) later
+            // promotes it to ALIVE; the prior born-SUSPECT-with-armed-timer evicted live joiners
+            // before the leader's probe could confirm them.
             protocol.addSeedMember(NODE_A, ADDR_A);
 
             assertThat(protocol.members()).containsKey(NODE_A);
@@ -102,24 +102,86 @@ class SwimProtocolTest {
         }
 
         @Test
-        void observedMember_sameIncarnationAliveGossip_staysObserved_higherIncarnationPromotes() {
-            // statePriority(OBSERVED) is highest, so a LOCAL OBSERVED birth is sticky at equal
-            // incarnation: same-incarnation gossip ALIVE does NOT promote it (promotion needs a
-            // probe-ack or a HIGHER-incarnation Alive gossip, #336/#241). A higher-incarnation
-            // Alive gossip bypasses the equal-incarnation priority check and promotes.
+        void observedMember_sameIncarnationAliveGossip_promotedToAlive() {
+            // OBSERVED is the WEAKEST state (statePriority -1), so a same-incarnation gossiped Alive
+            // (propagated probe-ack evidence) is NOT rejected and promotes the local OBSERVED birth
+            // to ALIVE — promotion no longer requires a higher incarnation (#336/#241). OBSERVED is
+            // NOT sticky.
             protocol.addSeedMember(NODE_A, ADDR_A); // OBSERVED at incarnation 0
 
             var sameIncAlive = new MembershipUpdate(NODE_A, MemberState.ALIVE, 0, ADDR_A);
             protocol.onMessage(ADDR_B, new Ping(NODE_B, 1L, List.of(sameIncAlive)));
+
             assertThat(protocol.members().get(NODE_A).state())
-                .as("same-incarnation gossip ALIVE must NOT promote a local OBSERVED member")
+                .as("a same-incarnation gossip ALIVE promotes a local OBSERVED member to ALIVE")
+                .isEqualTo(MemberState.ALIVE);
+            assertThat(protocol.everSeenHealthyForTest(NODE_A))
+                .as("promotion out of OBSERVED via gossip ALIVE records the peer ever-seen-healthy")
+                .isTrue();
+        }
+
+        @Test
+        void observedMember_gossipedSuspect_ignored_staysObserved() {
+            // OBSERVED ignores gossiped SUSPECT/FAULTY (#336/#241): a not-yet-confirmed local
+            // placeholder is never dislodged by third-party hearsay — our OWN probe-timeout past the
+            // join deadline decides. The member stays OBSERVED with NO armed death-timer.
+            protocol.addSeedMember(NODE_A, ADDR_A); // OBSERVED at incarnation 0
+
+            protocol.onMessage(ADDR_B, new Ping(NODE_B, 1L,
+                                                List.of(new MembershipUpdate(NODE_A, MemberState.SUSPECT, 0, ADDR_A))));
+            assertThat(protocol.members().get(NODE_A).state())
+                .as("a gossiped SUSPECT must NOT dislodge a local OBSERVED member")
                 .isEqualTo(MemberState.OBSERVED);
 
-            var higherIncAlive = new MembershipUpdate(NODE_A, MemberState.ALIVE, 1, ADDR_A);
-            protocol.onMessage(ADDR_B, new Ping(NODE_B, 2L, List.of(higherIncAlive)));
+            protocol.onMessage(ADDR_B, new Ping(NODE_B, 2L,
+                                                List.of(new MembershipUpdate(NODE_A, MemberState.FAULTY, 0, ADDR_A))));
             assertThat(protocol.members().get(NODE_A).state())
-                .as("higher-incarnation gossip ALIVE promotes an OBSERVED member")
-                .isEqualTo(MemberState.ALIVE);
+                .as("a gossiped FAULTY must NOT dislodge a local OBSERVED member either")
+                .isEqualTo(MemberState.OBSERVED);
+
+            assertThat(protocol.suspectTimestampForTest(NODE_A).isEmpty())
+                .as("gossiped SUSPECT/FAULTY must NOT arm a death-timer on an OBSERVED member")
+                .isTrue();
+            assertThat(listener.suspected)
+                .as("no onMemberSuspect fires for an OBSERVED member receiving SUSPECT/FAULTY gossip")
+                .isEmpty();
+            assertThat(listener.faulty)
+                .as("no onMemberFaulty fires for an OBSERVED member receiving FAULTY gossip")
+                .isEmpty();
+        }
+
+        @Test
+        void applyNewMember_gossipSuspectOfUnknown_bornObservedNotSuspect() {
+            // A gossiped SUSPECT for a member we have NEVER seen is hearsay, not confirmation
+            // (#336/#241): introduce it OBSERVED — no armed death-timer, probe-eligible — so our OWN
+            // probe cycle decides. The wire SUSPECT is NOT re-broadcast (OBSERVED never disseminated).
+            var gossipSuspect = new MembershipUpdate(NODE_A, MemberState.SUSPECT, 0, ADDR_A);
+            protocol.onMessage(ADDR_B, Ping.ping(NODE_B, 1L, List.of(gossipSuspect)));
+
+            assertThat(protocol.members().get(NODE_A).state())
+                .as("a gossiped SUSPECT for an UNKNOWN id is born OBSERVED, not SUSPECT")
+                .isEqualTo(MemberState.OBSERVED);
+            assertThat(protocol.suspectTimestampForTest(NODE_A).isEmpty())
+                .as("an OBSERVED birth from gossip-SUSPECT arms NO death-timer")
+                .isTrue();
+            assertThat(listener.joined)
+                .as("the OBSERVED birth fires onMemberJoined (QUIC dial set + listener)")
+                .anyMatch(m -> m.nodeId().equals(NODE_A));
+            assertThat(listener.suspected)
+                .as("no onMemberSuspect fires for a gossip-SUSPECT-of-unknown born OBSERVED")
+                .isEmpty();
+            assertThat(noPiggybackFor(transport, NODE_A))
+                .as("OBSERVED must NOT be re-broadcast — the wire SUSPECT is not disseminated")
+                .isTrue();
+        }
+
+        private static boolean noPiggybackFor(RecordingTransport transport, NodeId nodeId) {
+            return transport.sentMessages.stream()
+                                         .map(SentMessage::message)
+                                         .filter(Ack.class::isInstance)
+                                         .map(Ack.class::cast)
+                                         .flatMap(ack -> ack.piggyback().stream())
+                                         .noneMatch(u -> u.nodeId().equals(nodeId));
         }
 
         private static Ping lastPing(RecordingTransport transport) {
@@ -313,17 +375,17 @@ class SwimProtocolTest {
         }
 
         @Test
-        void handleAnnounce_thirdPartyGossipOfUnknownMember_stillIntroducedAsSuspect() {
-            // ONLY the self-ANNOUNCE datagram carries direct evidence. Third-party gossip
-            // (piggyback in a Ping) about an unknown member has NO direct evidence and is
-            // honored AS GOSSIPED (unchanged path): a SUSPECT gossip stays SUSPECT and is
-            // NOT promoted to ALIVE by the FIX A direct-evidence path.
+        void handleAnnounce_thirdPartyGossipSuspectOfUnknown_introducedAsObservedNotSuspect() {
+            // A self-ANNOUNCE carries direct evidence; third-party SUSPECT gossip about an unknown
+            // member is hearsay. Neither makes the member ALIVE, and a gossiped SUSPECT-of-unknown is
+            // now ALSO born OBSERVED (#336/#241) — no armed death-timer, not yet proven-healthy — so
+            // our own probing decides rather than third-party rumour.
             var gossip = new MembershipUpdate(NODE_A, MemberState.SUSPECT, 0, ADDR_A);
             protocol.onMessage(ADDR_B, Ping.ping(NODE_B, 1L, List.of(gossip)));
 
             assertThat(protocol.members().get(NODE_A).state())
-                .as("third-party SUSPECT gossip of an unknown member must stay SUSPECT (no direct evidence)")
-                .isEqualTo(MemberState.SUSPECT);
+                .as("third-party SUSPECT gossip of an unknown member is born OBSERVED, not SUSPECT")
+                .isEqualTo(MemberState.OBSERVED);
             assertThat(protocol.everSeenHealthyForTest(NODE_A))
                 .as("third-party gossip is not reachability proof")
                 .isFalse();
@@ -976,6 +1038,65 @@ class SwimProtocolTest {
             return (int) transport.sentMessages.stream()
                                                .filter(m -> m.target().equals(addr) && m.message() instanceof Ping)
                                                .count();
+        }
+    }
+
+    /// Gossip-SUSPECT-of-unknown in NORMAL phase (#336/#241 gossip-path regression, review Finding A).
+    /// A gossiped SUSPECT for a member never seen is hearsay: it is born OBSERVED (no armed
+    /// death-timer), so within its join-grace it can NOT be FAULTY'd — the SUSPECT-expiry sweep has
+    /// no timestamp to act on and the local probe-timeout escalation is gated behind the join
+    /// deadline. The member only escalates OBSERVED->SUSPECT->FAULTY once the deadline passes.
+    @Nested
+    class GossipSuspectOfUnknownObservedBirth {
+
+        @Test
+        void normalPhase_gossipSuspectOfUnknown_withinGrace_bornObserved_neverFaultyWithinGrace()
+            throws InterruptedException {
+            // NORMAL phase (isBooting=false), no live transport (default veto id->false), join-grace
+            // far longer than the test. A gossiped SUSPECT for an UNKNOWN id is born OBSERVED with NO
+            // armed suspect-window, so the expiry sweep can never reach FAULTY, and the running probe
+            // cycle's timeout escalation is gated behind the (60s) join deadline. The member stays
+            // OBSERVED and is NOT FAULTY'd within grace — the reopened #336 failure stays closed for
+            // the gossip path.
+            var config = swimConfig(timeSpan(20).millis(),    // period
+                                    timeSpan(10).millis(),    // probeTimeout
+                                    3,                        // indirectProbes
+                                    timeSpan(40).millis(),    // suspectTimeout (short)
+                                    8,                        // maxPiggyback
+                                    timeSpan(10).millis(),    // startupDelay
+                                    "",                       // clusterName
+                                    0,                        // swimPortOffset
+                                    timeSpan(60).seconds());  // joinGrace (≫ test window)
+            var localTransport = new RecordingTransport();
+            var localListener = new RecordingListener();
+            var localProtocol = SwimProtocol.swimProtocol(config, localTransport, localListener,
+                                                          SELF_ID, SELF_ADDR, () -> false)
+                                            .fold(cause -> null, v -> v);
+
+            var gossipSuspect = new MembershipUpdate(NODE_A, MemberState.SUSPECT, 0, ADDR_A);
+            localProtocol.onMessage(ADDR_B, Ping.ping(NODE_B, 1L, List.of(gossipSuspect)));
+
+            assertThat(localProtocol.members().get(NODE_A).state())
+                .as("gossip-SUSPECT-of-unknown in NORMAL phase is born OBSERVED")
+                .isEqualTo(MemberState.OBSERVED);
+            assertThat(localProtocol.suspectTimestampForTest(NODE_A).isEmpty())
+                .as("OBSERVED birth arms NO suspect-window — the expiry sweep can never FAULTY it within grace")
+                .isTrue();
+
+            // Drive the protocol across MANY suspect-windows (>> 40ms, << 60s grace): with no armed
+            // timer and within grace, nothing escalates OBSERVED, so it never reaches FAULTY.
+            localProtocol.start();
+            try {
+                Thread.sleep(400L);
+                assertThat(localListener.faulty)
+                    .as("a within-grace OBSERVED member must NOT be FAULTY'd (the #336 gossip-path regression)")
+                    .isEmpty();
+                assertThat(localProtocol.members().get(NODE_A).state())
+                    .as("the member remains OBSERVED throughout the within-grace window")
+                    .isEqualTo(MemberState.OBSERVED);
+            } finally {
+                localProtocol.stop();
+            }
         }
     }
 

@@ -65,18 +65,17 @@ class SwimObservationStreamTest {
 
         @BeforeEach
         void setUp() {
-            // Tight timings so the suspect-window expiry runs within the test budget.
-            // startupDelay reduced to ~50ms so the first tick runs immediately. joinGrace is
-            // kept at 600ms but no longer affects this gossip-SUSPECT path: the NORMAL-phase
-            // join-grace DEFER is gone (#336/#241 — freshly-joined members are now held in the
-            // OBSERVED birth state, not deferred-SUSPECT), and cold-boot maps a never-HEALTHY
-            // peer's FAULTY edge to UnknownObserved regardless of grace.
+            // Tight timings so the suspect-window expiry runs within the test budget. startupDelay
+            // ~50ms so the first tick runs immediately. joinGrace 0: a gossip-SUSPECT-of-unknown is
+            // born OBSERVED (#336/#241) and, with no grace, escalates OBSERVED->SUSPECT->FAULTY on the
+            // first probe-timeout; cold-boot then maps a never-HEALTHY peer's FAULTY edge to
+            // UnknownObserved.
             var config = swimConfig(timeSpan(50).millis(),
                                     timeSpan(20).millis(),
                                     3,
                                     timeSpan(150).millis(),
                                     8,
-                                    timeSpan(50).millis()).withJoinGrace(timeSpan(600).millis());
+                                    timeSpan(50).millis()).withJoinGrace(timeSpan(0).millis());
             transport = new RecordingTransport();
             listener = new RecordingListener();
             observations = new RecordingObservationSink();
@@ -87,18 +86,22 @@ class SwimObservationStreamTest {
 
         @Test
         void coldBoot_neverSeenHealthy_suspectThenFaulty_emitsUnknownNotFaulty() {
-            // Inject a SUSPECT for NODE_A via gossip — peer has never been HEALTHY.
+            // Inject a SUSPECT for NODE_A via gossip — peer has never been HEALTHY. A gossiped SUSPECT
+            // for an UNKNOWN id is hearsay (#336/#241): NODE_A is born OBSERVED (no SuspectObserved at
+            // birth), and only our OWN probe-timeout past the join deadline (joinGrace 0 here)
+            // escalates it OBSERVED->SUSPECT->FAULTY. In COLD_BOOT a never-HEALTHY peer's FAULTY edge
+            // is suppressed to UnknownObserved (cold-boot gate).
             var suspectUpdate = new MembershipUpdate(NODE_A, MemberState.SUSPECT, 0, ADDR_A);
             protocol.onMessage(ADDR_B, new Ping(NODE_B, 1L, List.of(suspectUpdate)));
 
-            assertThat(observations.byType(SwimObservation.SuspectObserved.class))
-                .as("Suspect must still be emitted on the SUSPECT edge")
-                .hasSize(1);
+            assertThat(protocol.members().get(NODE_A).state())
+                .as("a gossiped SUSPECT for an unknown id is born OBSERVED, not SUSPECT (#336/#241)")
+                .isEqualTo(MemberState.OBSERVED);
 
             protocol.start();
             try {
-                // The SUSPECT->FAULTY edge fires at the suspect-window expiry; in COLD_BOOT a
-                // never-HEALTHY peer's FAULTY edge is suppressed to UnknownObserved (cold-boot gate).
+                // The SUSPECT->FAULTY edge fires once the probe cycle escalates the OBSERVED member;
+                // in COLD_BOOT a never-HEALTHY peer's FAULTY edge is suppressed to UnknownObserved.
                 await().atMost(Duration.ofSeconds(3))
                        .until(() -> !observations.byType(SwimObservation.UnknownObserved.class).isEmpty()
                                     || !observations.byType(SwimObservation.FaultyObserved.class).isEmpty());

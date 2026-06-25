@@ -402,9 +402,9 @@ public final class SwimProtocol implements SwimMessageHandler {
     /// probe-eligible, but NOT alive and NOT death-timer-armed. No suspicion is armed at birth
     /// (the prior born-SUSPECT-with-armed-timer evicted live joiners before the leader's probe
     /// could confirm them), and OBSERVED is never disseminated (no `addMemberUpdate`). The next
-    /// tick probes it ([#isProbable] is true for OBSERVED); a real probe-ack (or higher-incarnation
-    /// Alive gossip) promotes it to ALIVE/HEALTHY, while a sustained probe-timeout past the join
-    /// deadline escalates it to SUSPECT ([#markSuspect]). OBSERVED does NOT set `everSeenHealthy`
+    /// tick probes it ([#isProbable] is true for OBSERVED); a real probe-ack (or a gossiped Alive)
+    /// promotes it to ALIVE/HEALTHY, while a sustained probe-timeout past the join deadline
+    /// escalates it to SUSPECT ([#markSuspect]). OBSERVED does NOT set `everSeenHealthy`
     /// and does NOT emit `HealthyObserved`, so a previously-dead id re-seeded onto the channel is
     /// never re-admitted as HEALTHY off a bare add.
     ///
@@ -1229,9 +1229,10 @@ public final class SwimProtocol implements SwimMessageHandler {
             // (canonical SWIM positive liveness), NOT third-party gossip. Introduce it in the
             // LOCAL-ONLY `OBSERVED` birth state (#336/#241) — no suspect-timer armed at birth, so
             // it never races a later probe-ack toward FAULTY, yet not counted ALIVE/HEALTHY until a
-            // real probe-ack confirms it (or a higher-incarnation Alive gossip arrives). Third-party
-            // gossip (`applyUpdate`/`applyNewMember`) is UNCHANGED — it still introduces unknown
-            // gossiped members in the gossiped state (SUSPECT/FAULTY/ALIVE), never OBSERVED.
+            // real probe-ack confirms it (or a gossiped Alive arrives). Third-party gossip
+            // (`applyUpdate`/`applyNewMember`) introduces an unknown ALIVE member ALIVE and an
+            // unknown FAULTY member via its co-confirmation path, but an unknown SUSPECT is hearsay
+            // and is ALSO born OBSERVED ([#applyNewSuspectMember]) — only our own probing escalates it.
             //
             // #231 invariant preserved: the OBSERVED introduction is routed THROUGH the
             // tombstone gate (`introduceAnnouncedObserved` -> `blockedByTombstone`), never
@@ -1308,9 +1309,9 @@ public final class SwimProtocol implements SwimMessageHandler {
     /// (so the join-deadline escalation runs if it never acks), and `notifyMemberJoined` fires (QUIC
     /// dial set + listener). Deliberately NOT counted ALIVE/HEALTHY yet: it does NOT set
     /// `everSeenHealthy`, does NOT emit `HealthyObserved`, and is NOT disseminated (`addMemberUpdate`
-    /// drops OBSERVED) — a real probe-ack ([#markAliveIfNeeded]) or a higher-incarnation Alive gossip
-    /// promotes it to ALIVE. Distinct from gossip introduction ([#applyNewSuspectMember]), which
-    /// honours the gossiped state.
+    /// drops OBSERVED) — a real probe-ack ([#markAliveIfNeeded]) or a gossiped Alive promotes it to
+    /// ALIVE. Like the gossip-SUSPECT-of-unknown path ([#applyNewSuspectMember]), an unconfirmed
+    /// member is born OBSERVED; an unknown ALIVE/FAULTY gossip is still honoured in its gossiped state.
     private void introduceAnnouncedObserved(Announce announce, InetSocketAddress probeAddress) {
         if (blockedByTombstone(announce.nodeInfo().id(), announce.incarnation())) {
             return;
@@ -1489,7 +1490,7 @@ public final class SwimProtocol implements SwimMessageHandler {
             if (isTombstoned(update.nodeId(), update.incarnation())) {
                 return;
             }
-            applyNewMember(update, gossipSender);
+            applyNewMember(update);
         }
     }
 
@@ -1532,17 +1533,14 @@ public final class SwimProtocol implements SwimMessageHandler {
         addMemberUpdate(MembershipUpdate.membershipUpdate(selfId, MemberState.ALIVE, bumped, selfAddress));
     }
 
-    private void applyNewMember(MembershipUpdate update, NodeId accuser) {
+    private void applyNewMember(MembershipUpdate update) {
         var member = SwimMember.swimMember(update.nodeId(), update.state(), update.incarnation(), update.address());
         members.put(update.nodeId(), member);
         memberFirstSeenAt.putIfAbsent(update.nodeId(), System.currentTimeMillis());
-        if (update.state() != MemberState.FAULTY) {
-            addMemberUpdate(update);
-        }
 
         switch (update.state()) {
             case ALIVE -> applyNewAliveMember(member);
-            case SUSPECT -> applyNewSuspectMember(member, accuser);
+            case SUSPECT -> applyNewSuspectMember(member);
             case FAULTY -> applyNewFaultyMember(member);
             // Defensive: OBSERVED is a LOCAL-ONLY birth state and is never serialized
             // ([#addMemberUpdate] drops it), so a gossiped OBSERVED update is impossible.
@@ -1551,6 +1549,22 @@ public final class SwimProtocol implements SwimMessageHandler {
                                       + "local-only birth state and must never arrive on the wire",
                                       update.nodeId().id());
         }
+
+        // Re-broadcast based on the LOCAL stored state, NOT the raw wire update (#336/#241 wire-leak,
+        // Finding B): a gossiped SUSPECT-of-unknown is birthed OBSERVED ([#applyNewSuspectMember]) and
+        // the guarded [#addMemberUpdate(SwimMember)] overload drops OBSERVED, so an unconfirmed member
+        // is never disseminated. FAULTY is not re-broadcast here (unchanged) — the FAULTY edge owns its
+        // own co-confirmation/dissemination path.
+        if (update.state() != MemberState.FAULTY) {
+            rebroadcastStoredMember(update.nodeId());
+        }
+    }
+
+    /// Re-broadcast a freshly-introduced member by its LOCAL stored state via the guarded
+    /// [#addMemberUpdate(SwimMember)] overload (which drops OBSERVED), so a SUSPECT-wire-update
+    /// birthed OBSERVED is NOT propagated. A no-op if the member is already gone.
+    private void rebroadcastStoredMember(NodeId nodeId) {
+        option(members.get(nodeId)).onPresent(this::addMemberUpdate);
     }
 
     private void applyNewAliveMember(SwimMember member) {
@@ -1558,14 +1572,18 @@ public final class SwimProtocol implements SwimMessageHandler {
         recordHealthyAndEmit(member.nodeId(), member.incarnation());
     }
 
-    private void applyNewSuspectMember(SwimMember member, NodeId accuser) {
-        // First-sight SUSPECT must register a timestamp so the suspect-window
-        // expiry tick eventually transitions the member to FAULTY (or
-        // UnknownObserved under cold-boot suppression). The gossip sender is the
-        // originating accuser of the local suspicion (Wave-6 dogpile).
-        beginSuspicion(member.nodeId(), accuser);
-        listener.onMemberSuspect(member);
-        emitSuspect(member.nodeId(), member.incarnation());
+    /// A gossiped SUSPECT for a member we have NEVER seen is hearsay, not confirmation (#336/#241):
+    /// introduce it in the LOCAL-ONLY OBSERVED birth state — identical lifecycle to a seeded/announced
+    /// OBSERVED member (no `beginSuspicion`, no armed death-timer; the first-sighting was stamped by
+    /// [#applyNewMember], so the join-deadline escalation still runs; probe-eligible). Our OWN
+    /// probe-timeout past the join deadline ([#markSuspect]) decides, so a live-but-slow joiner is
+    /// never killed on third-party hearsay within grace. The member is stored OBSERVED, so the
+    /// re-broadcast in [#applyNewMember] drops it (the wire SUSPECT is NOT propagated). `notifyMemberJoined`
+    /// fires (QUIC dial set + listener), exactly as for an ALIVE first-sight join.
+    private void applyNewSuspectMember(SwimMember member) {
+        var observed = member.withState(MemberState.OBSERVED);
+        members.put(observed.nodeId(), observed);
+        notifyMemberJoined(observed);
     }
 
     /// Wave-6 H8: a member first learned as FAULTY still gets the residency stamp so it
@@ -1586,10 +1604,20 @@ public final class SwimProtocol implements SwimMessageHandler {
         emitFaultyOrUnknown(member.nodeId(), member.incarnation());
     }
 
-    /// Enforce SWIM state priority at same incarnation: FAULTY > SUSPECT > ALIVE.
-    /// At equal incarnation, only allow state progression (ALIVE->SUSPECT->FAULTY), not regression.
+    /// Enforce SWIM state priority at same incarnation: FAULTY > SUSPECT > ALIVE > OBSERVED.
+    /// At equal incarnation, only allow state progression, not regression. A resident OBSERVED
+    /// member is special-cased (see inline): a gossiped `Alive` promotes it, any other gossiped
+    /// state is ignored (our own probe-timeout decides), #336/#241.
     private void applyExistingMember(SwimMember existing, MembershipUpdate update, NodeId accuser) {
         if (update.incarnation() < existing.incarnation()) {
+            return;
+        }
+
+        // OBSERVED is a not-yet-confirmed local placeholder: a gossiped Alive (propagated probe-ack
+        // evidence) promotes it (falls through to the normal merge below); a gossiped SUSPECT/FAULTY is
+        // NOT adopted — our own probe-timeout past the join deadline decides (A1 / #126 co-confirmation),
+        // so a fresh joiner is never killed on third-party hearsay.
+        if (existing.state() == MemberState.OBSERVED && update.state() != MemberState.ALIVE) {
             return;
         }
 
@@ -1642,24 +1670,24 @@ public final class SwimProtocol implements SwimMessageHandler {
         return update.state() == MemberState.ALIVE && existing.state() != MemberState.ALIVE;
     }
 
-    /// State priority for SWIM at EQUAL incarnation: FAULTY(2) > SUSPECT(1) > ALIVE(0); a
-    /// same-incarnation update is rejected in [#applyExistingMember] only when it has a strictly
+    /// State priority for SWIM at EQUAL incarnation: FAULTY(2) > SUSPECT(1) > ALIVE(0) > OBSERVED(-1);
+    /// a same-incarnation update is rejected in [#applyExistingMember] only when it has a strictly
     /// LOWER priority than the resident state (no regression).
     ///
-    /// OBSERVED(3) is given the HIGHEST value deliberately, so a LOCAL OBSERVED birth state is
-    /// "sticky" at equal incarnation: a same-incarnation gossip ALIVE/SUSPECT/FAULTY (all lower
-    /// priority) is rejected and the member stays OBSERVED. This matches the design goal — an
-    /// OBSERVED member is promoted to ALIVE ONLY by a real probe-ack ([#markAliveIfNeeded]) or a
-    /// HIGHER-incarnation Alive gossip (which bypasses this equal-incarnation check entirely), and
-    /// is escalated out of OBSERVED only by the local join-deadline path ([#markSuspect]). It is
-    /// never superseded by same-incarnation hearsay, so a freshly-observed joiner cannot be flipped
-    /// SUSPECT/FAULTY by a stale third-party rumour before this node probes it (#336/#241).
+    /// OBSERVED is the WEAKEST/most-easily-superseded state (-1) — a LOCAL not-yet-confirmed
+    /// placeholder, NOT sticky. At equal incarnation a gossiped `Alive`(0) outranks OBSERVED(-1) and
+    /// is NOT rejected, so propagated probe-ack evidence promotes the member out of OBSERVED.
+    /// Conversely a (malformed) gossiped OBSERVED(-1) is rejected against every real resident state,
+    /// so it can never overwrite a healthy ALIVE/SUSPECT/FAULTY. OBSERVED is promoted to ALIVE by a
+    /// real probe-ack ([#markAliveIfNeeded]) OR a gossiped `Alive`, and escalated out of OBSERVED only
+    /// by the local join-deadline path ([#markSuspect]); a gossiped SUSPECT/FAULTY is explicitly
+    /// ignored for an OBSERVED member in [#applyExistingMember] (#336/#241).
     private static int statePriority(MemberState state) {
         return switch (state) {
             case ALIVE -> 0;
             case SUSPECT -> 1;
             case FAULTY -> 2;
-            case OBSERVED -> 3;
+            case OBSERVED -> -1;
         };
     }
 
@@ -1756,8 +1784,8 @@ public final class SwimProtocol implements SwimMessageHandler {
 
     private void addMemberUpdate(SwimMember member) {
         // Wire-leak guard (#336/#241): OBSERVED is a LOCAL-ONLY birth state — a node must never
-        // disseminate an unconfirmed member. Single serialization chokepoint, so OBSERVED is
-        // dropped regardless of caller.
+        // disseminate an unconfirmed member. BOTH addMemberUpdate overloads guard OBSERVED, so it
+        // can never reach the piggyback-buffer serialization chokepoint regardless of caller.
         if (member.state() == MemberState.OBSERVED) {
             return;
         }
@@ -1765,6 +1793,12 @@ public final class SwimProtocol implements SwimMessageHandler {
     }
 
     private void addMemberUpdate(MembershipUpdate update) {
+        // Wire-leak guard (#336/#241): the sibling overload of the OBSERVED drop. Today's callers
+        // ([#refreshSelfAlive] / [#handleSelfUpdate]) only ever pass self-ALIVE updates, but guarding
+        // here too makes the pair the single OBSERVED-proof serialization chokepoint (Finding B/C).
+        if (update.state() == MemberState.OBSERVED) {
+            return;
+        }
         piggybackBuffer.addUpdate(update);
     }
 

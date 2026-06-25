@@ -45,10 +45,12 @@ public record SwimMember(NodeId nodeId, MemberState state, long incarnation, Ine
     ///
     /// `OBSERVED` is a LOCAL-ONLY birth state for a freshly seeded/announced member: known
     /// and probe-eligible, but NOT yet alive and NOT death-timer-armed, until a real probe-ack
-    /// (or a higher-incarnation Alive gossip) promotes it to `ALIVE` or a sustained probe-timeout
-    /// past the join deadline escalates it to `SUSPECT` (#336/#241). It is never disseminated on
-    /// the SWIM wire — `SwimProtocol.addMemberUpdate` drops any OBSERVED member at the single
-    /// serialization chokepoint — so peers never learn it. Appended last for cleanliness.
+    /// (or a gossiped `Alive`) promotes it to `ALIVE` or a sustained probe-timeout past the join
+    /// deadline escalates it to `SUSPECT` (#336/#241). It is the WEAKEST membership state, so a
+    /// same-incarnation gossiped `Alive` supersedes it (it is NOT sticky). It is never disseminated
+    /// on the SWIM wire — BOTH `SwimProtocol.addMemberUpdate` overloads drop any OBSERVED member
+    /// before the piggyback-buffer serialization chokepoint — so peers never learn it. Appended
+    /// last for cleanliness.
     @Codec
     public enum MemberState {
         ALIVE,

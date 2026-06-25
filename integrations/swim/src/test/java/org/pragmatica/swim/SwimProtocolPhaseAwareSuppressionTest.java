@@ -448,10 +448,10 @@ class SwimProtocolPhaseAwareSuppressionTest {
         @Test
         void normalPhase_neverHealthyMember_afterGraceExpiry_emitsFaulty_andTombstoned() {
             // Join-grace (80ms) SHORTER than the suspect-window (150ms): a gossip-introduced
-            // never-HEALTHY SUSPECT reaches its FAULTY edge at the suspect-window — well past the
-            // short grace — so FaultyObserved is emitted (no UNKNOWN suppression) and it is
-            // tombstoned. The 06-02 anti-oscillation contract is preserved; the OBSERVED join-grace
-            // path (#336/#241) applies only to seeded/announced members, not to gossip suspicions.
+            // never-HEALTHY SUSPECT is born OBSERVED (#336/#241) and, once the short grace expires,
+            // the probe cycle escalates it OBSERVED->SUSPECT->FAULTY; the FAULTY edge lands well past
+            // grace, so FaultyObserved is emitted (no UNKNOWN suppression) and it is tombstoned. The
+            // 06-02 anti-oscillation contract is preserved.
             var transport = new RecordingTransport();
             var listener = new RecordingListener();
             var observations = new RecordingObservationSink();
@@ -464,9 +464,9 @@ class SwimProtocolPhaseAwareSuppressionTest {
                                        .unwrap();
             protocol.addObservationListener(observations);
 
-            // First sighting (stamps firstSeen) as SUSPECT — never observed HEALTHY. The
-            // suspect-window (150ms) outlasts the 80ms grace, so the FAULTY edge fires past
-            // grace.
+            // First sighting (stamps firstSeen) — a gossip SUSPECT of an unknown id is born OBSERVED,
+            // never observed HEALTHY. Past the 80ms grace the probe cycle escalates it OBSERVED->
+            // SUSPECT->FAULTY, the FAULTY edge landing past grace.
             var suspectUpdate = new MembershipUpdate(NODE_A, MemberState.SUSPECT, 0, ADDR_A);
             protocol.onMessage(ADDR_B, new Ping(NODE_B, 1L, List.of(suspectUpdate)));
 
