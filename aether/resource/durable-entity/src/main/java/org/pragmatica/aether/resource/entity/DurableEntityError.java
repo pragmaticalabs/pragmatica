@@ -53,4 +53,29 @@ public sealed interface DurableEntityError extends Cause {
             return "Durable entity timers are not yet supported for key: " + key;
         }
     }
+
+    /// A fenced write was rejected because this node's owner epoch is stale — it has been deposed
+    /// as owner of the entity's ownership arc since the operation began (split-brain handover; spec
+    /// §4.2, §6). The write committed nowhere; the caller must re-resolve the current owner and
+    /// retry there. `presentedEpoch` renders the rejected stamp (`term:counter`), carried straight
+    /// from the underlying [org.pragmatica.dht.DHTError.StaleEpochWrite]; the committed high-water
+    /// that out-ranked it is strictly newer and is observable via the ownership triad endpoint.
+    record StaleOwner(String key, String presentedEpoch) implements DurableEntityError {
+        @Override
+        public String message() {
+            return "Durable entity write for key '" + key + "' rejected: this node's owner epoch "
+                   + presentedEpoch + " is stale (deposed) — a newer owner has taken over the partition";
+        }
+    }
+
+    /// A fenced write or read failed for an infrastructure reason other than a stale-owner fence
+    /// rejection (e.g. a quorum/transport failure on the durable backing, or a serialization
+    /// failure of the entity state). Wraps the originating [Cause] so the caller can inspect it;
+    /// distinct from [StaleOwner] so a deposition is never confused with a transport fault.
+    record StorageFailed(String key, Cause cause) implements DurableEntityError {
+        @Override
+        public String message() {
+            return "Durable entity storage operation failed for key '" + key + "': " + cause.message();
+        }
+    }
 }
