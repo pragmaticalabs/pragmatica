@@ -68,16 +68,67 @@ class SwimProtocolTest {
         }
 
         @Test
-        void addSeedMember_newMember_addedAsSuspect() {
-            // Resurrection guard (#231): a channel re-seed is NOT proof of reachability,
-            // so a seeded member is introduced as SUSPECT (probe-on-arrival), not ALIVE.
-            // A real probe-ack or QUIC PeerConnected later promotes it to ALIVE.
+        void addSeedMember_newMember_addedAsObservedNotSuspect() {
+            // OBSERVED birth state (#336/#241): a channel re-seed is NOT proof of reachability,
+            // so a seeded member is introduced as OBSERVED — known and probe-eligible, but NOT
+            // alive and NOT death-timer-armed. A real probe-ack (or higher-incarnation Alive
+            // gossip) later promotes it to ALIVE; the prior born-SUSPECT-with-armed-timer evicted
+            // live joiners before the leader's probe could confirm them.
             protocol.addSeedMember(NODE_A, ADDR_A);
 
             assertThat(protocol.members()).containsKey(NODE_A);
-            assertThat(protocol.members().get(NODE_A).state()).isEqualTo(MemberState.SUSPECT);
+            assertThat(protocol.members().get(NODE_A).state()).isEqualTo(MemberState.OBSERVED);
             assertThat(listener.joined).hasSize(1);
             assertThat(listener.joined.getFirst().nodeId()).isEqualTo(NODE_A);
+        }
+
+        @Test
+        void observedMember_probeAcked_promotedToAlive() {
+            // The exit from OBSERVED on positive evidence: a verified probe-ack promotes the
+            // member to ALIVE (and records it ever-seen-healthy).
+            protocol.addSeedMember(NODE_A, ADDR_A);
+            assertThat(protocol.members().get(NODE_A).state()).isEqualTo(MemberState.OBSERVED);
+
+            protocol.probeOnceForTest();
+            var probePing = lastPing(transport);
+            protocol.onMessage(ADDR_A, Ack.ack(NODE_A, probePing.sequence(), List.of()));
+
+            assertThat(protocol.members().get(NODE_A).state())
+                .as("a verified probe-ack promotes an OBSERVED member to ALIVE")
+                .isEqualTo(MemberState.ALIVE);
+            assertThat(protocol.everSeenHealthyForTest(NODE_A))
+                .as("promotion records the peer ever-seen-healthy")
+                .isTrue();
+        }
+
+        @Test
+        void observedMember_sameIncarnationAliveGossip_staysObserved_higherIncarnationPromotes() {
+            // statePriority(OBSERVED) is highest, so a LOCAL OBSERVED birth is sticky at equal
+            // incarnation: same-incarnation gossip ALIVE does NOT promote it (promotion needs a
+            // probe-ack or a HIGHER-incarnation Alive gossip, #336/#241). A higher-incarnation
+            // Alive gossip bypasses the equal-incarnation priority check and promotes.
+            protocol.addSeedMember(NODE_A, ADDR_A); // OBSERVED at incarnation 0
+
+            var sameIncAlive = new MembershipUpdate(NODE_A, MemberState.ALIVE, 0, ADDR_A);
+            protocol.onMessage(ADDR_B, new Ping(NODE_B, 1L, List.of(sameIncAlive)));
+            assertThat(protocol.members().get(NODE_A).state())
+                .as("same-incarnation gossip ALIVE must NOT promote a local OBSERVED member")
+                .isEqualTo(MemberState.OBSERVED);
+
+            var higherIncAlive = new MembershipUpdate(NODE_A, MemberState.ALIVE, 1, ADDR_A);
+            protocol.onMessage(ADDR_B, new Ping(NODE_B, 2L, List.of(higherIncAlive)));
+            assertThat(protocol.members().get(NODE_A).state())
+                .as("higher-incarnation gossip ALIVE promotes an OBSERVED member")
+                .isEqualTo(MemberState.ALIVE);
+        }
+
+        private static Ping lastPing(RecordingTransport transport) {
+            return transport.sentMessages.stream()
+                                         .map(SentMessage::message)
+                                         .filter(Ping.class::isInstance)
+                                         .map(Ping.class::cast)
+                                         .reduce((first, second) -> second)
+                                         .orElseThrow();
         }
 
         @Test
@@ -198,8 +249,9 @@ class SwimProtocolTest {
 
     /// Self-ANNOUNCE = direct liveness evidence (canonical SWIM). A node announcing
     /// ITSELF is positive proof it is alive, so an unknown member learned from a
-    /// self-ANNOUNCE datagram is introduced as ALIVE (no suspect-timer armed at birth),
-    /// reaching HEALTHY immediately. Third-party gossip is UNCHANGED (still SUSPECT), and
+    /// self-ANNOUNCE datagram is introduced in the LOCAL-ONLY OBSERVED birth state
+    /// (#336/#241) — no suspect-timer armed at birth, but NOT counted ALIVE/HEALTHY until a
+    /// real probe-ack confirms it. Third-party gossip is UNCHANGED (honoured as gossiped), and
     /// a tombstoned (proven-dead) id is still refused (#231 anti-resurrection).
     @Nested
     class AnnounceDirectLiveness {
@@ -219,33 +271,33 @@ class SwimProtocolTest {
         }
 
         @Test
-        void handleAnnounce_nonTombstonedSelfAnnounce_introducedAsAlive() {
+        void handleAnnounce_selfAnnounceOfUnknown_introducedAsObservedNotAlive() {
             protocol.onMessage(ADDR_A, Announce.announce(nodeInfoFor(NODE_A, ADDR_A), "", 0L));
 
             assertThat(protocol.members()).containsKey(NODE_A);
             assertThat(protocol.members().get(NODE_A).state())
-                .as("self-ANNOUNCE is direct liveness evidence — introduce as ALIVE, not SUSPECT")
-                .isEqualTo(MemberState.ALIVE);
+                .as("self-ANNOUNCE introduces the member as OBSERVED (#336/#241) — not counted ALIVE until a probe-ack confirms it")
+                .isEqualTo(MemberState.OBSERVED);
         }
 
         @Test
-        void handleAnnounce_nonTombstonedSelfAnnounce_setsEverSeenHealthyAndEmitsHealthy() {
+        void handleAnnounce_selfAnnounceOfUnknown_doesNotSetEverSeenHealthyNorEmitHealthy() {
             protocol.onMessage(ADDR_A, Announce.announce(nodeInfoFor(NODE_A, ADDR_A), "", 0L));
 
             assertThat(protocol.everSeenHealthyForTest(NODE_A))
-                .as("direct liveness evidence marks the peer ever-healthy")
-                .isTrue();
+                .as("OBSERVED birth is not yet proven-healthy — a probe-ack sets ever-seen-healthy later")
+                .isFalse();
             assertThat(observations.byType(SwimObservation.HealthyObserved.class))
-                .as("ALIVE introduction must emit HealthyObserved")
-                .isNotEmpty();
+                .as("OBSERVED introduction must NOT emit HealthyObserved at birth")
+                .isEmpty();
         }
 
         @Test
-        void handleAnnounce_nonTombstonedSelfAnnounce_armsNoSuspectTimer() {
+        void handleAnnounce_selfAnnounceOfUnknown_armsNoSuspectTimer() {
             protocol.onMessage(ADDR_A, Announce.announce(nodeInfoFor(NODE_A, ADDR_A), "", 0L));
 
             assertThat(protocol.suspectTimestampForTest(NODE_A).isEmpty())
-                .as("ALIVE introduction must NOT arm a decay-to-FAULTY suspect timer at birth")
+                .as("OBSERVED introduction must NOT arm a decay-to-FAULTY suspect timer at birth")
                 .isTrue();
         }
 
@@ -458,17 +510,20 @@ class SwimProtocolTest {
 
         @Test
         void piggybackDissemination_memberUpdate_propagatedViaPiggyback() {
-            protocol.addSeedMember(NODE_A, ADDR_A);
-            protocol.addSeedMember(NODE_B, ADDR_B);
+            // A seeded member is OBSERVED — LOCAL-ONLY and never disseminated (#336/#241); only a
+            // member in a disseminable state (ALIVE/SUSPECT/FAULTY) rides the piggyback. Introduce
+            // NODE_A via gossip ALIVE so it is buffered for dissemination.
+            var aliveA = new MembershipUpdate(NODE_A, MemberState.ALIVE, 1L, ADDR_A);
+            protocol.onMessage(ADDR_B, new Ping(NODE_B, 1L, List.of(aliveA)));
+            transport.sentMessages.clear();
 
-            // Respond to any ping — the ack should contain piggybacked membership info
-            var ping = new Ping(NODE_A, 1L, List.of());
-            protocol.onMessage(ADDR_A, ping);
+            // Respond to a ping — the ack should carry the buffered membership update.
+            protocol.onMessage(ADDR_A, new Ping(NODE_A, 2L, List.of()));
 
             assertThat(transport.sentMessages).isNotEmpty();
 
             var ack = (Ack) transport.sentMessages.getFirst().message();
-            // The piggyback should contain updates about newly added members
+            // The piggyback should contain updates about the disseminable member
             assertThat(ack.piggyback()).isNotEmpty();
         }
 
@@ -493,9 +548,9 @@ class SwimProtocolTest {
 
             localProtocol.addSeedMember(NODE_A, ADDR_A);
 
-            // Seed introduces NODE_A as SUSPECT (probe-on-arrival). Drive it to ALIVE
-            // via positive gossip first so the subsequent SUSPECT gossip is a genuine
-            // ALIVE->SUSPECT edge (not a same-state no-op against the seeded SUSPECT).
+            // Seed introduces NODE_A as OBSERVED (#336/#241). Drive it to ALIVE via positive
+            // gossip first so the subsequent SUSPECT gossip is a genuine ALIVE->SUSPECT edge
+            // (not a no-op against the seeded OBSERVED state).
             var aliveGossip = new MembershipUpdate(NODE_A, MemberState.ALIVE, 1L, ADDR_A);
             localProtocol.onMessage(ADDR_B, new Ping(NODE_B, 0L, List.of(aliveGossip)));
             assertThat(localProtocol.members().get(NODE_A).state()).isEqualTo(MemberState.ALIVE);

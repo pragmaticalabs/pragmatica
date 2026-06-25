@@ -66,11 +66,11 @@ class SwimObservationStreamTest {
         @BeforeEach
         void setUp() {
             // Tight timings so the suspect-window expiry runs within the test budget.
-            // startupDelay reduced to ~50ms so the first tick runs immediately.
-            // joinGrace shortened from the 12s default to 600ms: since 188e0b522 a
-            // never-HEALTHY peer's SUSPECT→FAULTY is DEFERRED while within join-grace
-            // (expireSuspectIfOverdue), so the cold-boot UNKNOWN emission only fires
-            // once grace has expired.
+            // startupDelay reduced to ~50ms so the first tick runs immediately. joinGrace is
+            // kept at 600ms but no longer affects this gossip-SUSPECT path: the NORMAL-phase
+            // join-grace DEFER is gone (#336/#241 — freshly-joined members are now held in the
+            // OBSERVED birth state, not deferred-SUSPECT), and cold-boot maps a never-HEALTHY
+            // peer's FAULTY edge to UnknownObserved regardless of grace.
             var config = swimConfig(timeSpan(50).millis(),
                                     timeSpan(20).millis(),
                                     3,
@@ -86,7 +86,7 @@ class SwimObservationStreamTest {
         }
 
         @Test
-        void coldBoot_neverSeenHealthy_suspectDeferredWithinGrace_thenEmitsUnknownNotFaulty() throws InterruptedException {
+        void coldBoot_neverSeenHealthy_suspectThenFaulty_emitsUnknownNotFaulty() {
             // Inject a SUSPECT for NODE_A via gossip — peer has never been HEALTHY.
             var suspectUpdate = new MembershipUpdate(NODE_A, MemberState.SUSPECT, 0, ADDR_A);
             protocol.onMessage(ADDR_B, new Ping(NODE_B, 1L, List.of(suspectUpdate)));
@@ -97,32 +97,17 @@ class SwimObservationStreamTest {
 
             protocol.start();
             try {
-                // WITHIN join-grace (600ms): the suspect-window expiry (150ms) is DEFERRED
-                // for a never-HEALTHY peer (188e0b522, expireSuspectIfOverdue) — the member
-                // stays SUSPECT (probe-eligible) and NO FAULTY edge fires, so neither
-                // UnknownObserved nor FaultyObserved is emitted.
-                Thread.sleep(300L);
-                assertThat(protocol.members().get(NODE_A).state())
-                    .as("Within join-grace: never-HEALTHY peer's SUSPECT->FAULTY must be deferred")
-                    .isEqualTo(MemberState.SUSPECT);
-                assertThat(observations.byType(SwimObservation.UnknownObserved.class))
-                    .as("Within join-grace: no FAULTY edge fires, so no UnknownObserved yet")
-                    .isEmpty();
-                assertThat(observations.byType(SwimObservation.FaultyObserved.class))
-                    .as("Within join-grace: no FAULTY edge fires at all")
-                    .isEmpty();
-
-                // AFTER grace expiry the deferred expiry resumes: the FAULTY edge fires and
-                // cold-boot suppression (never-HEALTHY in COLD_BOOT) emits UnknownObserved.
+                // The SUSPECT->FAULTY edge fires at the suspect-window expiry; in COLD_BOOT a
+                // never-HEALTHY peer's FAULTY edge is suppressed to UnknownObserved (cold-boot gate).
                 await().atMost(Duration.ofSeconds(3))
                        .until(() -> !observations.byType(SwimObservation.UnknownObserved.class).isEmpty()
                                     || !observations.byType(SwimObservation.FaultyObserved.class).isEmpty());
 
                 assertThat(observations.byType(SwimObservation.FaultyObserved.class))
-                    .as("never-HEALTHY peer must NOT emit FaultyObserved during suspect-window expiry")
+                    .as("never-HEALTHY peer in COLD_BOOT must NOT emit FaultyObserved")
                     .isEmpty();
                 assertThat(observations.byType(SwimObservation.UnknownObserved.class))
-                    .as("never-HEALTHY peer's FAULTY transition must be suppressed and emit UnknownObserved")
+                    .as("never-HEALTHY peer's FAULTY transition is suppressed and emits UnknownObserved")
                     .hasSize(1);
                 assertThat(observations.byType(SwimObservation.UnknownObserved.class).getFirst().peer()).isEqualTo(NODE_A);
                 assertThat(protocol.everSeenHealthyForTest(NODE_A))

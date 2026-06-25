@@ -172,17 +172,16 @@ class SwimPortOffsetAndHealthOfTest {
         }
 
         @Test
-        void healthOf_suspectSeedBeforeAnyEdgeEmit_returnsUnknown() {
-            // Resurrection guard (#231): addSeedMember now introduces the peer as
-            // SUSPECT (probe-on-arrival), not ALIVE — a channel re-seed is not
-            // reachability proof. With no HealthyObserved edge emitted yet, healthOf
-            // falls back to the live members map, where a non-ALIVE member maps to
-            // UNKNOWN. The swimHealthGate (QUIC) then awaits a real probe-ack before
-            // treating the peer as healthy.
+        void healthOf_observedSeedBeforeAnyEdgeEmit_returnsUnknown() {
+            // OBSERVED birth state (#336/#241): addSeedMember introduces the peer as OBSERVED
+            // (known + probe-eligible, not yet alive) — a channel re-seed is not reachability
+            // proof. With no HealthyObserved edge emitted yet, healthOf falls back to the live
+            // members map, where a non-ALIVE member maps to UNKNOWN. The swimHealthGate (QUIC)
+            // then awaits a real probe-ack before treating the peer as healthy.
             protocol.addSeedMember(NODE_A, new InetSocketAddress("10.0.0.5", 9100));
 
             assertThat(protocol.healthOf(NODE_A))
-                .as("SUSPECT seed must be UNKNOWN before the first edge emit")
+                .as("OBSERVED seed must be UNKNOWN before the first edge emit")
                 .isEqualTo(SwimHealth.UNKNOWN);
         }
 
