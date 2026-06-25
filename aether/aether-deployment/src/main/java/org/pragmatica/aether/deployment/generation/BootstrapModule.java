@@ -398,15 +398,32 @@ record BootstrapModuleRecord(BooleanSupplier isLeaderSupplier,
         return Epoch.epoch(rabiaTermSupplier.get(), 0L);
     }
 
-    private KVCommand<AetherKey> buildCorePartitionCommand(NodeId owner, Epoch epoch, long ownershipTerm) {
+    private KVCommand<AetherKey> buildCorePartitionCommand(NodeId owner, Epoch committedEpoch, long ownershipTerm) {
         var value = DhtPartitionOwnershipValue.dhtPartitionOwnershipValue(owner,
                                                                           BootstrapModule.CORE_COMMUNITY_ID,
-                                                                          epoch,
+                                                                          ownerEpoch(committedEpoch, ownershipTerm),
                                                                           ownershipTerm,
                                                                           hlcClock.now());
 
         return new KVCommand.Put<AetherKey, AetherValue>(DhtPartitionOwnershipKey.dhtPartitionOwnershipKey(BootstrapModule.CORE_PARTITION_ID),
                                                          value);
+    }
+
+    /// The committed `ownerEpoch` (#345 DHT parity, mirroring the stream writer's
+    /// `StreamPartitionOwnershipWriter.ownerEpoch`): the committed generation term (the dominant
+    /// component, which advances on a leader re-election / governor handover) paired with the
+    /// per-partition `ownershipTerm` as the local counter (which advances on EVERY owner change,
+    /// including a same-term stale-owner takeover with no re-election). This couples
+    /// `ownerEpoch.localCounter == ownershipTerm`, so a deposed-but-alive core owner — whose
+    /// committed epoch carried the OLD `ownershipTerm` — is strictly dominated by its successor's
+    /// epoch and is fenced, even when no leader change occurred (the same-term gap that minting
+    /// `Epoch.epoch(rabiaTerm, 0)` left open). Still a pure function of committed state (committed
+    /// generation term + the takeover counter derived from the committed record), so two replicas
+    /// presented identical committed state mint the IDENTICAL value. `ownershipTerm` (NOT
+    /// `generationCounter`) is the local counter by design: it is committed state, whereas the
+    /// generation counter is a per-node time-based value that would break determinism.
+    private static Epoch ownerEpoch(Epoch committedEpoch, long ownershipTerm) {
+        return Epoch.epoch(committedEpoch.rabiaTerm(), ownershipTerm);
     }
 
     @Contract

@@ -164,7 +164,10 @@ class KVStoreAetherEpochFenceTest {
 
         @Test
         void sameEpochStaleOwnerRewrite_applied() {
-            // BootstrapModule.rewriteIfOwnerStale rewrites at the SAME epoch, bumping only ownershipTerm.
+            // Applier tolerance: a same-epoch write that bumps only ownershipTerm is NOT strictly older,
+            // so the fence accepts it. (The #345 DHT-parity writer now advances the ownerEpoch's local
+            // counter on every takeover, so it no longer mints same-epoch takeovers — but the applier
+            // must still accept a same-epoch higher-ownershipTerm value to stay strictly-older-only.)
             apply(OWN_KEY, ownership(OWNER_A, Epoch.epoch(4, 0), 1L));
             apply(OWN_KEY, ownership(OWNER_B, Epoch.epoch(4, 0), 2L));
 

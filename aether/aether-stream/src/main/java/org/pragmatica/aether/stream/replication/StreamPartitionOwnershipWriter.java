@@ -50,9 +50,9 @@ import java.util.function.Supplier;
 /// This closes the same-term-reshuffle gap: a deposed-but-alive owner whose committed epoch carried the
 /// OLD `ownershipTerm` is strictly dominated by its successor's `(rabiaTerm, ownershipTerm+1)` epoch and
 /// is therefore fenced, even when no leader change occurred. `ownerEpoch.localCounter == ownershipTerm`
-/// by construction. (The DHT ownership writer in `BootstrapModule.currentEpoch` still mints
-/// `Epoch.epoch(rabiaTerm, 0)` and carries the same latent same-term gap — DHT parity is tracked
-/// separately.)
+/// by construction. (The DHT ownership writer in `BootstrapModule.buildCorePartitionCommand` closes the
+/// same same-term gap the same way, via its own `ownerEpoch(committedEpoch, ownershipTerm)` helper —
+/// #345 DHT parity.)
 ///
 /// ## Why leader-only / deterministic
 /// Only the leader emits (the [#writeOwnershipChange] driver is gated by `isLeaderSupplier`),

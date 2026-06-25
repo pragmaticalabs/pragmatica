@@ -1315,9 +1315,11 @@ public sealed interface AetherValue {
                                       long ownershipTerm,
                                       HlcTimestamp transferredAt) implements AetherValue, EpochBearing<Epoch> {
         /// Ownership fence (#345 piece 1a): the owner's `ownerEpoch` is the fencing token, so the
-        /// Rabia applier rejects a deposed owner's strictly-older-epoch ownership write. A
-        /// stale-owner takeover at the same epoch (bumping only `ownershipTerm`,
-        /// `BootstrapModule.rewriteIfOwnerStale`) is accepted.
+        /// Rabia applier rejects a deposed owner's strictly-older-epoch ownership write. The writer
+        /// (`BootstrapModule.buildCorePartitionCommand`) couples `ownerEpoch.localCounter ==
+        /// ownershipTerm` (#345 DHT parity), so a stale-owner takeover advances the `ownerEpoch` (via
+        /// the bumped `ownershipTerm` local counter) and STRICTLY dominates the deposed owner's epoch —
+        /// even within the same generation term, closing the same-term-takeover fence gap.
         @Override
         public Epoch fenceEpoch() {
             return ownerEpoch;
