@@ -45,10 +45,10 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 /// #241 (worker-membership-spec D1 / §3.3): the placement planner's DESIRED community set is the
-/// committed [`CommunityKey`]/[`CommunityValue`] facts — a community exists the moment the leader
-/// mints its key (FORMING), before any governor has announced. Terminal teardown states
-/// (`DISSOLVING`/`DISSOLVED`) are excluded; `FORMING`/`ACTIVE`/`DEGRADED` are all desired (the
-/// per-community FSM that drives strict `ACTIVE` is slice 2).
+/// committed [`CommunityKey`]/[`CommunityValue`] facts, gated on the strictly `ACTIVE` state. Slice
+/// 2's per-community FSM drives a community to `ACTIVE` once observed live membership reaches the
+/// viability floor, so `FORMING` (not yet viable), `DEGRADED` (lost quorum), and terminal
+/// `DISSOLVING`/`DISSOLVED` are all excluded from placement.
 class CommunityPlacementPlannerTest {
     private static final NodeId SELF = new NodeId("node-self");
 
@@ -90,27 +90,38 @@ class CommunityPlacementPlannerTest {
     }
 
     @Test
-    void activeCommunityIds_committedFormingCommunity_isIncludedInDesiredSet() {
-        seedCommunity("src-w-0", CommunityState.FORMING);
+    void activeCommunityIds_committedActiveCommunity_isIncludedInDesiredSet() {
+        seedCommunity("src-w-0", CommunityState.ACTIVE);
 
         assertThat(planner().activeCommunityIds())
-                .as("a committed FORMING community is desired before any governor announces")
+                .as("a committed ACTIVE community is desired")
                 .containsExactly("src-w-0");
     }
 
     @Test
-    void activeCommunityIds_activeAndDegraded_areIncluded() {
-        seedCommunity("a-w-0", CommunityState.ACTIVE);
-        seedCommunity("b-w-0", CommunityState.DEGRADED);
+    void activeCommunityIds_formingAndDegraded_areExcluded() {
+        seedCommunity("forming-w-0", CommunityState.FORMING);
+        seedCommunity("degraded-w-0", CommunityState.DEGRADED);
 
         assertThat(planner().activeCommunityIds())
-                .as("ACTIVE and DEGRADED communities are both desired")
-                .containsExactlyInAnyOrder("a-w-0", "b-w-0");
+                .as("FORMING (not yet viable) and DEGRADED (lost quorum) are excluded under strict-ACTIVE gating")
+                .isEmpty();
+    }
+
+    @Test
+    void activeCommunityIds_onlyActiveAmongMixedStates_isIncluded() {
+        seedCommunity("forming-w-0", CommunityState.FORMING);
+        seedCommunity("active-w-0", CommunityState.ACTIVE);
+        seedCommunity("degraded-w-0", CommunityState.DEGRADED);
+
+        assertThat(planner().activeCommunityIds())
+                .as("only the ACTIVE community survives strict-ACTIVE gating")
+                .containsExactly("active-w-0");
     }
 
     @Test
     void activeCommunityIds_dissolvedCommunity_isExcluded() {
-        seedCommunity("live-w-0", CommunityState.FORMING);
+        seedCommunity("live-w-0", CommunityState.ACTIVE);
         seedCommunity("dead-w-0", CommunityState.DISSOLVED);
 
         assertThat(planner().activeCommunityIds())

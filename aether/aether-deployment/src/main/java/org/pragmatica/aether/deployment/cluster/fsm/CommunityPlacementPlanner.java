@@ -42,13 +42,13 @@ record CommunityPlacementPlanner(Active active) {
     private static final Logger log = LoggerFactory.getLogger(CommunityPlacementPlanner.class);
 
     /// The authoritative DESIRED community set (worker-membership-spec D1 / §3.3): the committed,
-    /// leader-authored [`CommunityKey`]/[`CommunityValue`] facts, filtered to the live states
-    /// (everything except the terminal `DISSOLVING`/`DISSOLVED`). This is the desired-state source
-    /// of truth — a community exists the moment the leader mints its `CommunityKey`, before any
-    /// governor has announced itself. (The previous source enumerated the governor-OWNED
+    /// leader-authored [`CommunityKey`]/[`CommunityValue`] facts, filtered to the strictly `ACTIVE`
+    /// state. Slice 2's per-community FSM (leader-evaluated in `reconcile()`) now drives a community
+    /// to `ACTIVE` once its observed live membership reaches the viability floor, so placement gates
+    /// on `ACTIVE` and excludes the still-`FORMING`, transiently-`DEGRADED`, and terminal
+    /// `DISSOLVING`/`DISSOLVED` communities. (The previous source enumerated the governor-OWNED
     /// [`GovernorAnnouncementKey`], which is the OBSERVED statement; that read is preserved in the
-    /// governor/worker-map methods below.) Slice 2's per-community FSM drives the `ACTIVE` state, so
-    /// `FORMING` is deliberately included here to keep placement working before that lands.
+    /// governor/worker-map methods below.)
     Set<String> activeCommunityIds() {
         var ids = new LinkedHashSet<String>();
 
@@ -65,11 +65,11 @@ record CommunityPlacementPlanner(Active active) {
         }
     }
 
-    /// A community counts toward the desired set unless it has reached its terminal teardown states
-    /// (`DISSOLVING`/`DISSOLVED`). `FORMING`/`ACTIVE`/`DEGRADED` are all desired (worker-membership-spec
-    /// §3.3); strict-`ACTIVE` filtering waits for slice 2's community FSM.
+    /// A community counts toward the desired set only once the per-community FSM has driven it to
+    /// `ACTIVE` (worker-membership-spec §3.3). `FORMING` (not yet viable), `DEGRADED` (lost quorum),
+    /// and the terminal `DISSOLVING`/`DISSOLVED` teardown states are all excluded.
     private static boolean isDesiredState(CommunityState state) {
-        return state != CommunityState.DISSOLVING && state != CommunityState.DISSOLVED;
+        return state == CommunityState.ACTIVE;
     }
 
     private Option<GovernorAnnouncementValue> communityGovernor(String communityId) {

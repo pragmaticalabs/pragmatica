@@ -1448,6 +1448,13 @@ public sealed interface AetherValue {
                                       System.currentTimeMillis(),
                                       none());
         }
+
+        /// Per-community FSM transition (worker-membership-spec §3.3): the leader re-stamps only the
+        /// `state` on an edge, preserving every other committed field. Mirrors
+        /// [NodeArtifactValue#withState] — a copy via the canonical constructor.
+        public CommunityValue withState(CommunityState newState) {
+            return new CommunityValue(sourceName, role, targetSize, newState, createdAt, dissolvedAt);
+        }
     }
 
     /// Canonical field order: `(spawnedAtMs, assignedNodeId, occupantEpoch, supersededNodeId)`.
