@@ -268,6 +268,7 @@ import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
+import java.util.function.Function;
 import java.util.function.IntSupplier;
 import java.util.function.Predicate;
 import java.util.function.Supplier;
@@ -1398,6 +1399,13 @@ public interface AetherNode extends ManageableNode {
         var cdmDrainingNodesRef = new AtomicReference<Supplier<Set<NodeId>>>(Set::of);
         Supplier<Set<NodeId>> stableCdmDrainingNodesSupplier = () -> cdmDrainingNodesRef.get()
                                                                                         .get();
+        // #241 (worker-membership-spec §4.1 / D2): the CDM resolves a joining worker's membership
+        // source at role-assignment time to mint/reuse its per-source community. Reads the last-wins
+        // MemberDescriptor.source from the membership FSM (retained even across DEAD/rejoin), through
+        // the same shared membershipFsmRef the other CDM suppliers deref. Absent → none() → "default".
+        Function<NodeId, Option<String>> cdmMemberSourceSupplier = nodeId -> Option.option(membershipFsmRef.get())
+                                                                                   .flatMap(fsm -> fsm.memberDescriptor(nodeId))
+                                                                                   .map(MemberDescriptor::source);
         var clusterDeploymentManager = ClusterDeploymentManager.clusterDeploymentManager(config.self(),
                                                                                          clusterNode,
                                                                                          kvStore,
@@ -1411,7 +1419,8 @@ public interface AetherNode extends ManageableNode {
                                                                                          stableHealthSink,
                                                                                          cdmCoreCountedMembersSupplier,
                                                                                          stableCdmReadyNodesSupplier,
-                                                                                         stableCdmDrainingNodesSupplier);
+                                                                                         stableCdmDrainingNodesSupplier,
+                                                                                         cdmMemberSourceSupplier);
         var loadBalancerManager = config.environment().flatMap(EnvironmentIntegration::loadBalancer).map(provider -> LoadBalancerManager.loadBalancerManager(config.self(),
                                                                                                                                                              kvStore,
                                                                                                                                                              clusterNode.topologyManager(),

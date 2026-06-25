@@ -435,6 +435,104 @@ class KVStoreSerializerTest {
                                  assertThat(wdv.targetCommunity().isPresent()).isFalse();
                              });
         }
+
+        @Test
+        void roundTrip_communityValue_preservesAllFields() {
+            var entries = new LinkedHashMap<AetherKey, AetherValue>();
+            var key = CommunityKey.communityKey("orders:worker");
+            var value = CommunityValue.communityValue("orders",
+                                                      "WORKER",
+                                                      5,
+                                                      CommunityState.ACTIVE,
+                                                      1710072000000L,
+                                                      Option.none());
+            entries.put(key, value);
+
+            KVStoreSerializer.toToml(entries, TEST_PHASE, TEST_TIMESTAMP)
+                             .flatMap(KVStoreSerializer::fromToml)
+                             .onFailureRun(Assertions::fail)
+                             .onSuccess(restored -> {
+                                 assertThat(restored).hasSize(1);
+                                 assertThat(restored).containsKey(key);
+                                 var cv = (CommunityValue) restored.get(key);
+                                 assertThat(cv.sourceName()).isEqualTo("orders");
+                                 assertThat(cv.role()).isEqualTo("WORKER");
+                                 assertThat(cv.targetSize()).isEqualTo(5);
+                                 assertThat(cv.state()).isEqualTo(CommunityState.ACTIVE);
+                                 assertThat(cv.createdAt()).isEqualTo(1710072000000L);
+                                 assertThat(cv.dissolvedAt().isPresent()).isFalse();
+                             });
+        }
+
+        @Test
+        void roundTrip_communityValueDissolved_preservesDissolvedAt() {
+            var entries = new LinkedHashMap<AetherKey, AetherValue>();
+            var key = CommunityKey.communityKey("orders:worker");
+            var value = CommunityValue.communityValue("orders",
+                                                      "WORKER",
+                                                      5,
+                                                      CommunityState.DISSOLVED,
+                                                      1710072000000L,
+                                                      Option.some(1710072500000L));
+            entries.put(key, value);
+
+            KVStoreSerializer.toToml(entries, TEST_PHASE, TEST_TIMESTAMP)
+                             .flatMap(KVStoreSerializer::fromToml)
+                             .onFailureRun(Assertions::fail)
+                             .onSuccess(restored -> {
+                                 var cv = (CommunityValue) restored.get(key);
+                                 assertThat(cv.state()).isEqualTo(CommunityState.DISSOLVED);
+                                 assertThat(cv.dissolvedAt()).isEqualTo(Option.some(1710072500000L));
+                                 assertThat(cv).isEqualTo(value);
+                             });
+        }
+
+        @Test
+        void roundTrip_activationDirectiveWithCommunity_preservesRoleCommunityAndHint() {
+            var original = AetherValue.ActivationDirectiveValue.worker("orders:worker", "10.0.0.1:7201");
+
+            var serialized = KVStoreSerializer.serializeActivationDirective(original);
+
+            KVStoreSerializer.parseActivationEntry("node-1", serialized)
+                             .onFailureRun(Assertions::fail)
+                             .onSuccess(entry -> {
+                                 var value = (AetherValue.ActivationDirectiveValue) entry.getValue();
+                                 assertThat(value.role()).isEqualTo("WORKER");
+                                 assertThat(value.communityId()).isEqualTo("orders:worker");
+                                 assertThat(value.governorHint()).isEqualTo("10.0.0.1:7201");
+                                 assertThat(value).isEqualTo(original);
+                             });
+        }
+
+        @Test
+        void roundTrip_activationDirectiveNoCommunity_preservesEmptyFields() {
+            var original = AetherValue.ActivationDirectiveValue.core();
+
+            var serialized = KVStoreSerializer.serializeActivationDirective(original);
+
+            KVStoreSerializer.parseActivationEntry("node-1", serialized)
+                             .onFailureRun(Assertions::fail)
+                             .onSuccess(entry -> {
+                                 var value = (AetherValue.ActivationDirectiveValue) entry.getValue();
+                                 assertThat(value.role()).isEqualTo("CORE");
+                                 assertThat(value.communityId()).isEmpty();
+                                 assertThat(value.governorHint()).isEmpty();
+                                 assertThat(value).isEqualTo(original);
+                             });
+        }
+
+        @Test
+        void parseActivationEntry_legacyBareRole_defaultsEmptyCommunityFields() {
+            KVStoreSerializer.parseActivationEntry("node-1", "WORKER")
+                             .onFailureRun(Assertions::fail)
+                             .onSuccess(entry -> {
+                                 var value = (AetherValue.ActivationDirectiveValue) entry.getValue();
+                                 assertThat(value.role()).isEqualTo("WORKER");
+                                 assertThat(value.communityId()).isEmpty();
+                                 assertThat(value.governorHint()).isEmpty();
+                                 assertThat(value).isEqualTo(AetherValue.ActivationDirectiveValue.worker());
+                             });
+        }
     }
 
     @Nested

@@ -42,6 +42,7 @@ import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ActivationDirectiveKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.AppBlueprintKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ClusterConfigKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.CommunityKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeArtifactKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeRoutesKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SchemaMigrationLockKey;
@@ -55,6 +56,7 @@ import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ActivationDirectiveValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.AppBlueprintValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ClusterConfigValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.CommunityValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeArtifactValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SchemaMigrationLockValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SchemaStatus;
@@ -154,6 +156,18 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
         private static final Logger log = LoggerFactory.getLogger(Active.class);
         private static final int MAX_RETRIES = 5;
         private static final long MAX_RETRY_DELAY_SECONDS = 30;
+        /// The default per-community target size used when minting a FORMING community at WORKER
+        /// role-assignment time (worker-membership-spec §4.1 step 5). The community-growth comparator
+        /// (slice 2) will source the real per-source target from the desired cluster topology; until
+        /// then a sensible single-community cap is stamped so the community has a non-zero target.
+        private static final int DEFAULT_COMMUNITY_TARGET_SIZE = 100;
+        /// The deterministic, single-community-per-source suffix (worker-membership-spec A10): one
+        /// community `<source>-w-0` per source keeps community ids stable across rejoins (no
+        /// renumbering). The growth-comparator slice introduces additional `-w-N` slots.
+        private static final String WORKER_COMMUNITY_SUFFIX = "-w-0";
+        /// The fallback source label for a joining worker whose membership `source` is absent or
+        /// blank (worker-membership-spec D2).
+        private static final String DEFAULT_SOURCE = "default";
 
         // --- move-only extraction seams (package-private helpers operating on this Active) ---
         StuckTransitionalRemediator stuckRemediator() {
@@ -653,17 +667,69 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                 submitActivationDirective(addedNode, ActivationDirectiveValue.core());
             } else {
                 log.info("Assigning node {} as worker (core count at max: {})", addedNode, ctx.coreMax());
-                submitActivationDirective(addedNode, ActivationDirectiveValue.worker());
+                assignWorkerRole(addedNode);
             }
+        }
+
+        /// Community-aware WORKER role assignment (worker-membership-spec §4.1 / §3.3): resolve the
+        /// joining node's source (defaulting to `"default"` when absent/blank, D2), derive the
+        /// deterministic single community id `<source>-w-0` (A10-stable), and atomically commit —
+        /// in one batch — a FORMING [`CommunityKey`] Put (only when the community does not yet exist;
+        /// reuse otherwise, no renumber) together with the community-assigned WORKER
+        /// [`ActivationDirectiveKey`] Put. The directive carries an empty governor hint because a
+        /// FORMING community has no governor yet (§4.1 step 5).
+        private void assignWorkerRole(NodeId addedNode) {
+            var source = resolveSource(addedNode);
+            var communityId = source + WORKER_COMMUNITY_SUFFIX;
+            var commands = new ArrayList<KVCommand<AetherKey>>();
+
+            if (!communityExists(communityId)) {
+                log.info("Minting FORMING community '{}' for source '{}' (worker {})", communityId, source, addedNode);
+                commands.add(mintCommunityCommand(communityId, source));
+            }
+
+            commands.add(workerDirectiveCommand(addedNode, communityId));
+            submitActivationCommands(addedNode, commands);
+        }
+
+        /// The joining node's membership source label, normalized to the `"default"` fallback when
+        /// the descriptor is absent or its source is blank (worker-membership-spec D2).
+        private String resolveSource(NodeId addedNode) {
+            return ctx.memberSource(addedNode)
+                      .filter(source -> !source.isBlank())
+                      .or(DEFAULT_SOURCE);
+        }
+
+        private boolean communityExists(String communityId) {
+            return ctx.kvStore()
+                      .get(CommunityKey.communityKey(communityId))
+                      .filter(CommunityValue.class::isInstance)
+                      .isPresent();
+        }
+
+        private KVCommand<AetherKey> mintCommunityCommand(String communityId, String source) {
+            return new KVCommand.Put<>(CommunityKey.communityKey(communityId),
+                                       CommunityValue.communityValue(source,
+                                                                     ActivationDirectiveValue.WORKER,
+                                                                     DEFAULT_COMMUNITY_TARGET_SIZE));
+        }
+
+        private KVCommand<AetherKey> workerDirectiveCommand(NodeId targetNode, String communityId) {
+            return new KVCommand.Put<>(ActivationDirectiveKey.activationDirectiveKey(targetNode),
+                                       ActivationDirectiveValue.worker(communityId, ""));
         }
 
         private void submitActivationDirective(NodeId targetNode, ActivationDirectiveValue directive) {
             var command = new KVCommand.Put<AetherKey, AetherValue>(ActivationDirectiveKey.activationDirectiveKey(targetNode),
                                                                     directive);
 
-            ctx.cluster().apply(List.of(command)).onFailure(cause -> log.error("Failed to submit activation directive for {}: {}",
-                                                                               targetNode,
-                                                                               cause.message()));
+            submitActivationCommands(targetNode, List.of(command));
+        }
+
+        private void submitActivationCommands(NodeId targetNode, List<KVCommand<AetherKey>> commands) {
+            ctx.cluster().apply(commands).onFailure(cause -> log.error("Failed to submit activation directive for {}: {}",
+                                                                       targetNode,
+                                                                       cause.message()));
         }
 
         private boolean shouldPromoteToCore(int currentCoreCount) {
