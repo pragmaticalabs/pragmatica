@@ -1291,7 +1291,7 @@ retarget_app_endpoint_to_active_slice() {
 # polled node hadn't caught up to the freshly-committed NodeRoutesKey.
 #
 # Distinguishes via response body: sendNoRouteFound emits a problem+json document
-# whose `title` field contains "No route found for ". AppHttpServer also returns
+# whose `detail` field contains "No route found for " (title is "Not Found"). AppHttpServer also returns
 # 503 when its registry has the route but the local snapshot lags — that is
 # correctly treated as "not ready, retry".
 #
@@ -1309,7 +1309,7 @@ app_route_wired() {
         503) return 1 ;;
         5*) return 1 ;;
         404)
-            if printf '%s' "$body" | grep -q '"title":"No route found for '; then
+            if printf '%s' "$body" | grep -q '"detail":"No route found for '; then
                 return 1
             fi
             return 0
