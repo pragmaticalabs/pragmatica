@@ -91,6 +91,7 @@ import org.pragmatica.aether.metrics.ClusterSyncScheduler;
 import org.pragmatica.aether.metrics.DrainCommandRegistry;
 import org.pragmatica.aether.metrics.MinuteAggregator;
 import org.pragmatica.aether.metrics.PeriodicObservationConfig;
+import org.pragmatica.aether.slice.fence.OwnershipEpochHighWater;
 import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.slice.generation.HealthSignal;
 import org.pragmatica.aether.slice.generation.HealthSignalSink;
@@ -1323,6 +1324,7 @@ public interface AetherNode extends ManageableNode {
         var depthRegistry = ObservabilityDepthRegistry.observabilityDepthRegistry(clusterNode,
                                                                                   kvStore,
                                                                                   config.observability());
+        var ownershipEpochHighWater = OwnershipEpochHighWater.ownershipEpochHighWater(kvStore);
         var traceStore = InvocationTraceStore.invocationTraceStore();
         var observabilityInterceptor = config.observability().depthThreshold() < 0
                                        ? ObservabilityInterceptor.noOp()
@@ -1820,6 +1822,7 @@ public interface AetherNode extends ManageableNode {
                                                 alertManager,
                                                 depthRegistry,
                                                 logLevelRegistry,
+                                                ownershipEpochHighWater,
                                                 dynamicConfigManager,
                                                 ttmManager,
                                                 rabiaMetricsCollector,
@@ -3918,6 +3921,7 @@ public interface AetherNode extends ManageableNode {
                                                                     AlertManager alertManager,
                                                                     ObservabilityDepthRegistry depthRegistry,
                                                                     LogLevelRegistry logLevelRegistry,
+                                                                    OwnershipEpochHighWater ownershipEpochHighWater,
                                                                     Option<DynamicConfigManager> dynamicConfigManager,
                                                                     TTMManager ttmManager,
                                                                     RabiaMetricsCollector rabiaMetricsCollector,
@@ -3995,6 +3999,10 @@ public interface AetherNode extends ManageableNode {
                                                              .onRemove(AetherKey.ConfigKey.class, dcm::onConfigRemove));
         kvRouterBuilder.onPut(AetherKey.ConsumerGroupKey.class, consumerGroupRegistry::onConsumerGroupPut);
         kvRouterBuilder.onRemove(AetherKey.ConsumerGroupKey.class, consumerGroupRegistry::onConsumerGroupRemove);
+        // #345 1b: feed the per-ownership-domain epoch high-water table from committed EpochBearing puts.
+        // No onRemove — the high-water is monotonic by definition, so ownership/governor removes are intentionally ignored.
+        kvRouterBuilder.onPut(AetherKey.GovernorAnnouncementKey.class, ownershipEpochHighWater::onGovernorAnnouncementPut);
+        kvRouterBuilder.onPut(AetherKey.DhtPartitionOwnershipKey.class, ownershipEpochHighWater::onDhtOwnershipPut);
         entries.addAll(kvRouterBuilder.build().asRouteEntries());
         entries.add(MessageRouter.Entry.route(ClusterStateNotification.class, nodeDeploymentManager::onQuorumStateChange));
         entries.add(MessageRouter.Entry.route(ClusterStateNotification.class, controlLoop::onQuorumStateChange));
