@@ -58,6 +58,8 @@ import org.pragmatica.aether.slice.delegation.TaskGroup;
 import org.pragmatica.aether.deployment.loadbalancer.LoadBalancerManager;
 import org.pragmatica.aether.deployment.node.NodeDeploymentManager;
 import org.pragmatica.aether.dht.AetherMaps;
+import org.pragmatica.aether.dht.HighWaterOwnerEpochGate;
+import org.pragmatica.aether.dht.KvOwnerEpochSource;
 import org.pragmatica.aether.endpoint.EndpointRegistry;
 import org.pragmatica.aether.endpoint.TopicSubscriptionRegistry;
 import org.pragmatica.aether.http.AppHttpServer;
@@ -392,7 +394,13 @@ public interface AetherNode extends ManageableNode {
         Serializer serializer = nodeCodec;
         Deserializer deserializer = nodeCodec;
         var kvStore = new KVStore<AetherKey, AetherValue>(delegateRouter, serializer, deserializer);
-        var dhtStorage = MemoryStorageEngine.memoryStorageEngine();
+        // #345 1c: the per-ownership-domain epoch high-water (data-plane half of the ownership
+        // fence) must exist BEFORE the DHT storage engine, because the engine's owner-epoch gate is
+        // backed by it. The SAME instance is threaded into assembleNode for its KV-router
+        // notification wiring and the ManageableNode accessor — one high-water per node.
+        var ownershipEpochHighWater = OwnershipEpochHighWater.ownershipEpochHighWater(kvStore);
+        var dhtStorage = MemoryStorageEngine.memoryStorageEngine(HighWaterOwnerEpochGate.highWaterOwnerEpochGate(ownershipEpochHighWater,
+                                                                                                                 BootstrapModule.CORE_PARTITION_ID));
         var dhtRing = ConsistentHashRing.<NodeId> consistentHashRing();
 
         dhtRing.addNode(config.self());
@@ -515,6 +523,7 @@ public interface AetherNode extends ManageableNode {
                                                              deserializer,
                                                              nodeCodec,
                                                              dhtNode,
+                                                             ownershipEpochHighWater,
                                                              leaderTerm,
                                                              hlcClock,
                                                              snapshotSource,
@@ -781,6 +790,7 @@ public interface AetherNode extends ManageableNode {
                                                    Deserializer deserializer,
                                                    SliceCodec nodeCodec,
                                                    DHTNode dhtNode,
+                                                   OwnershipEpochHighWater ownershipEpochHighWater,
                                                    AtomicLong leaderTerm,
                                                    HlcClock hlcClock,
                                                    GenerationSnapshotSource snapshotSource,
@@ -847,7 +857,10 @@ public interface AetherNode extends ManageableNode {
                 return live;
             }
         };
-        var dhtClient = DistributedDHTClient.distributedDHTClient(dhtNode, dhtNetwork, config.artifactRepo());
+        var dhtClient = DistributedDHTClient.distributedDHTClient(dhtNode,
+                                                                  dhtNetwork,
+                                                                  config.artifactRepo(),
+                                                                  KvOwnerEpochSource.kvOwnerEpochSource(kvStore, BootstrapModule.CORE_PARTITION_ID));
         var aetherMaps = AetherMaps.aetherMaps(dhtClient.scoped(DHTConfig.FULL));
         var cacheDhtClient = dhtClient.scoped(config.cache());
         var dhtClientOption = Option.<DHTClient> some(dhtClient);
@@ -1324,7 +1337,6 @@ public interface AetherNode extends ManageableNode {
         var depthRegistry = ObservabilityDepthRegistry.observabilityDepthRegistry(clusterNode,
                                                                                   kvStore,
                                                                                   config.observability());
-        var ownershipEpochHighWater = OwnershipEpochHighWater.ownershipEpochHighWater(kvStore);
         var traceStore = InvocationTraceStore.invocationTraceStore();
         var observabilityInterceptor = config.observability().depthThreshold() < 0
                                        ? ObservabilityInterceptor.noOp()

@@ -110,9 +110,15 @@ public final class DHTNode {
         return storage.put(key, value);
     }
 
-    /// Put a value to local storage with version tracking.
+    /// Put a value to local storage with version tracking at the unfenced epoch floor.
     public Promise<Boolean> putLocalVersioned(byte[] key, byte[] value, long version) {
         return storage.putVersioned(key, value, version);
+    }
+
+    /// Put a value to local storage with version tracking and the writer's owner epoch as the
+    /// fencing token (#345 piece 1c).
+    public Promise<Boolean> putLocalVersioned(byte[] key, byte[] value, long version, long epochTerm, long epochCounter) {
+        return storage.putVersioned(key, value, version, epochTerm, epochCounter);
     }
 
     /// Remove a value from local storage.
@@ -173,10 +179,15 @@ public final class DHTNode {
     }
 
     /// Handle a put request (for message routing integration).
+    ///
+    /// Threads the put's owner epoch (`epochTerm`/`epochCounter`) into the versioned store so THIS
+    /// replica enforces the fence against its own per-partition high-water (#345 piece 1c). A
+    /// stale-epoch reject surfaces as a failed `putVersioned` promise → `PutResponse(success=false,
+    /// superseded=false)`, exactly the deposed-owner rejection the client re-resolves against.
     @Contract
     public void handlePutRequest(DHTMessage.PutRequest request,
                                  Consumer<DHTMessage.PutResponse> responseHandler) {
-        storage.putVersioned(request.key(), request.value(), request.version())
+        storage.putVersioned(request.key(), request.value(), request.version(), request.epochTerm(), request.epochCounter())
                .onSuccess(written -> responseHandler.accept(new DHTMessage.PutResponse(request.requestId(),
                                                                                         nodeId,
                                                                                         true,
@@ -241,10 +252,11 @@ public final class DHTNode {
                                                                                             java.util.List.of())));
     }
 
-    /// Apply migration data by merging received entries into local storage using versioned puts.
+    /// Apply migration data by merging received entries into local storage using versioned puts,
+    /// preserving each entry's owner epoch (#345 piece 1c) so the fencing token survives transfer.
     @Contract
     public void applyMigrationData(java.util.List<DHTMessage.KeyValue> entries) {
-        entries.forEach(kv -> storage.putVersioned(kv.key(), kv.value(), kv.version()));
+        entries.forEach(kv -> storage.putVersioned(kv.key(), kv.value(), kv.version(), kv.epochTerm(), kv.epochCounter()));
     }
 
     /// Compute a CRC32 digest over sorted key-value entries.

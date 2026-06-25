@@ -165,7 +165,7 @@ class DHTNodeTest {
         @Test
         void handlePutRequest_validData_storesAndSendsSuccessResponse() {
             var captured = new AtomicReference<PutResponse>();
-            var request = new PutRequest("req-2", NODE_ID, key("k1"), value("v1"), 0L);
+            var request = new PutRequest("req-2", NODE_ID, key("k1"), value("v1"), 0L, 0L, 0L);
 
             node.handlePutRequest(request, captured::set);
 
@@ -182,7 +182,7 @@ class DHTNodeTest {
         @Test
         void handlePutRequest_versionedWrite_supersededFalseWhenWritten() {
             var captured = new AtomicReference<PutResponse>();
-            var request = new PutRequest("req-v1", NODE_ID, key("vk1"), value("vv1"), 100L);
+            var request = new PutRequest("req-v1", NODE_ID, key("vk1"), value("vv1"), 100L, 0L, 0L);
 
             node.handlePutRequest(request, captured::set);
 
@@ -194,10 +194,10 @@ class DHTNodeTest {
         @Test
         void handlePutRequest_staleVersion_supersededTrueWhenRejected() {
             var first = new AtomicReference<PutResponse>();
-            node.handlePutRequest(new PutRequest("req-v2a", NODE_ID, key("vk2"), value("vv2a"), 200L), first::set);
+            node.handlePutRequest(new PutRequest("req-v2a", NODE_ID, key("vk2"), value("vv2a"), 200L, 0L, 0L), first::set);
 
             var second = new AtomicReference<PutResponse>();
-            node.handlePutRequest(new PutRequest("req-v2b", NODE_ID, key("vk2"), value("vv2b"), 100L), second::set);
+            node.handlePutRequest(new PutRequest("req-v2b", NODE_ID, key("vk2"), value("vv2b"), 100L, 0L, 0L), second::set);
 
             assertThat(second.get()).isNotNull();
             assertThat(second.get().success()).isTrue();
@@ -206,10 +206,10 @@ class DHTNodeTest {
 
         @Test
         void applyMigrationData_usesVersionedPut_doesNotPoisonStorage() {
-            node.applyMigrationData(List.of(new KeyValue(key("mk1"), value("migrated"), 50L)));
+            node.applyMigrationData(List.of(new KeyValue(key("mk1"), value("migrated"), 50L, 0L, 0L)));
 
             var captured = new AtomicReference<PutResponse>();
-            node.handlePutRequest(new PutRequest("req-m1", NODE_ID, key("mk1"), value("updated"), 100L), captured::set);
+            node.handlePutRequest(new PutRequest("req-m1", NODE_ID, key("mk1"), value("updated"), 100L, 0L, 0L), captured::set);
 
             assertThat(captured.get()).isNotNull();
             assertThat(captured.get().success()).isTrue();
@@ -244,7 +244,7 @@ class DHTNodeTest {
         void applyMigrationData_olderVersion_doesNotOverwrite() {
             node.putLocalVersioned(key("mdk2"), value("original"), 200L).await();
 
-            node.applyMigrationData(List.of(new KeyValue(key("mdk2"), value("stale"), 100L)));
+            node.applyMigrationData(List.of(new KeyValue(key("mdk2"), value("stale"), 100L, 0L, 0L)));
 
             node.getLocal(key("mdk2"))
                 .await()
