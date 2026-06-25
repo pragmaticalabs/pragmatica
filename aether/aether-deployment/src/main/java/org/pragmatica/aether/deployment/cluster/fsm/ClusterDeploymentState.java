@@ -43,6 +43,7 @@ import org.pragmatica.aether.slice.kvstore.AetherKey.ActivationDirectiveKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.AppBlueprintKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ClusterConfigKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.CommunityKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.GovernorAnnouncementKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeArtifactKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeRoutesKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SchemaMigrationLockKey;
@@ -57,6 +58,7 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.ActivationDirectiveValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.AppBlueprintValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ClusterConfigValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.CommunityValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.GovernorAnnouncementValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeArtifactValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SchemaMigrationLockValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SchemaStatus;
@@ -65,6 +67,7 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.SliceNodeValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceTargetValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.StreamMetadataValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.VersionRoutingValue;
+import org.pragmatica.aether.slice.kvstore.CommunityState;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValueRemove;
@@ -168,6 +171,10 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
         /// The fallback source label for a joining worker whose membership `source` is absent or
         /// blank (worker-membership-spec D2).
         private static final String DEFAULT_SOURCE = "default";
+        /// Minimum observed live members for a community to be VIABLE = the DHT replication factor
+        /// (worker-membership-spec §3.3 / §7). The per-community FSM promotes FORMING/DEGRADED →
+        /// ACTIVE at or above this floor and demotes ACTIVE → DEGRADED below it.
+        private static final int COMMUNITY_VIABILITY_FLOOR = 3;
 
         // --- move-only extraction seams (package-private helpers operating on this Active) ---
         StuckTransitionalRemediator stuckRemediator() {
@@ -1588,11 +1595,78 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
             }
 
             log.debug("Reconciliation complete: {} of {} blueprints required adjustment", reconciled, blueprints.size());
+            evaluateCommunityStates();
             cleanupOrphanedSliceEntries();
             cleanupStaleNodeRoutes();
             cleanupStaleNodeArtifactEntries();
             cleanupStaleSliceEntries();
             detectStuckTransitionalStates();
+        }
+
+        /// Per-community FSM evaluation (worker-membership-spec §3.3): the leader walks every committed
+        /// community, recomputes its desired `state` from observed live membership, and commits ONE
+        /// batch of `Put`s for exactly the communities whose state changed. Edge-driven — an unchanged
+        /// state emits NO command. Reached only from `reconcile()`, which is leader-guarded by the
+        /// `deactivated` check, so this evaluation runs on the leader alone.
+        @Contract
+        private void evaluateCommunityStates() {
+            var batch = new ArrayList<KVCommand<AetherKey>>();
+
+            ctx.kvStore().forEach(CommunityKey.class,
+                                  CommunityValue.class,
+                                  (key, value) -> collectCommunityTransition(batch, key, value));
+            if (!batch.isEmpty()) {
+                ctx.cluster().apply(batch).onFailure(cause -> log.error("Failed to apply {} community state transition(s): {}",
+                                                                        batch.size(),
+                                                                        cause.message()));
+            }
+        }
+
+        private void collectCommunityTransition(List<KVCommand<AetherKey>> batch,
+                                                CommunityKey key,
+                                                CommunityValue value) {
+            var next = nextCommunityState(value.state(), communityLiveMembers(key.communityId()));
+
+            if (next != value.state()) {
+                log.info("Community '{}' {} -> {} ({} live member(s), floor {})",
+                         key.communityId(),
+                         value.state(),
+                         next,
+                         communityLiveMembers(key.communityId()),
+                         COMMUNITY_VIABILITY_FLOOR);
+                batch.add(new KVCommand.Put<>(key, value.withState(next)));
+            }
+        }
+
+        /// Observed live membership of a community = its governor announcement's member count
+        /// (worker-membership-spec §3.3). No announcement (no governor yet) reads as `0`, which keeps
+        /// a FORMING community below the floor and demotes an ACTIVE community to DEGRADED.
+        private int communityLiveMembers(String communityId) {
+            return ctx.kvStore()
+                      .get(GovernorAnnouncementKey.forCommunity(communityId))
+                      .filter(GovernorAnnouncementValue.class::isInstance)
+                      .map(GovernorAnnouncementValue.class::cast)
+                      .map(GovernorAnnouncementValue::memberCount)
+                      .or(0);
+        }
+
+        /// Pure per-community state edge (worker-membership-spec §3.3). FORMING/DEGRADED promote to
+        /// ACTIVE once observed live membership reaches the viability floor; ACTIVE demotes to DEGRADED
+        /// below it. The terminal teardown states (DISSOLVING/DISSOLVED) are leader-decision/scale-down
+        /// concerns (Phase C) and are left unchanged here.
+        private static CommunityState nextCommunityState(CommunityState current, int liveMembers) {
+            return switch (current) {
+                case FORMING -> liveMembers >= COMMUNITY_VIABILITY_FLOOR
+                                ? CommunityState.ACTIVE
+                                : CommunityState.FORMING;
+                case ACTIVE -> liveMembers < COMMUNITY_VIABILITY_FLOOR
+                               ? CommunityState.DEGRADED
+                               : CommunityState.ACTIVE;
+                case DEGRADED -> liveMembers >= COMMUNITY_VIABILITY_FLOOR
+                                 ? CommunityState.ACTIVE
+                                 : CommunityState.DEGRADED;
+                case DISSOLVING, DISSOLVED -> current;
+            };
         }
 
         private boolean reconcileBlueprint(Blueprint blueprint,

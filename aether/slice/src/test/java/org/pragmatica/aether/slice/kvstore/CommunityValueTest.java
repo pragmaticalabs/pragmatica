@@ -95,4 +95,35 @@ class CommunityValueTest {
             }
         }
     }
+
+    @Nested
+    class WithState {
+        @Test
+        void withState_swapsStateAndPreservesEveryOtherField() {
+            var original = CommunityValue.communityValue("orders",
+                                                         "WORKER",
+                                                         5,
+                                                         CommunityState.FORMING,
+                                                         1710072000000L,
+                                                         Option.some(1710072500000L));
+
+            var updated = original.withState(CommunityState.ACTIVE);
+
+            assertThat(updated.state()).isEqualTo(CommunityState.ACTIVE);
+            assertThat(updated.sourceName()).isEqualTo(original.sourceName());
+            assertThat(updated.role()).isEqualTo(original.role());
+            assertThat(updated.targetSize()).isEqualTo(original.targetSize());
+            assertThat(updated.createdAt()).isEqualTo(original.createdAt());
+            assertThat(updated.dissolvedAt()).isEqualTo(original.dissolvedAt());
+        }
+
+        @Test
+        void withState_leavesOriginalUnchanged() {
+            var original = CommunityValue.communityValue("orders", "WORKER", 3);
+
+            original.withState(CommunityState.DEGRADED);
+
+            assertThat(original.state()).isEqualTo(CommunityState.FORMING);
+        }
+    }
 }
