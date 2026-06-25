@@ -4015,6 +4015,8 @@ public interface AetherNode extends ManageableNode {
         // No onRemove — the high-water is monotonic by definition, so ownership/governor removes are intentionally ignored.
         kvRouterBuilder.onPut(AetherKey.GovernorAnnouncementKey.class, ownershipEpochHighWater::onGovernorAnnouncementPut);
         kvRouterBuilder.onPut(AetherKey.DhtPartitionOwnershipKey.class, ownershipEpochHighWater::onDhtOwnershipPut);
+        kvRouterBuilder.onPut(AetherKey.StreamPartitionOwnershipKey.class,
+                              ownershipEpochHighWater::onStreamPartitionOwnershipPut);
         entries.addAll(kvRouterBuilder.build().asRouteEntries());
         entries.add(MessageRouter.Entry.route(ClusterStateNotification.class, nodeDeploymentManager::onQuorumStateChange));
         entries.add(MessageRouter.Entry.route(ClusterStateNotification.class, controlLoop::onQuorumStateChange));

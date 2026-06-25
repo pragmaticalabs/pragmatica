@@ -11,9 +11,11 @@ import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.slice.kvstore.AetherKey.DhtPartitionOwnershipKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.GovernorAnnouncementKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.StreamPartitionOwnershipKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.DhtPartitionOwnershipValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.GovernorAnnouncementValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceTargetValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.StreamPartitionOwnershipValue;
 import org.pragmatica.aether.artifact.ArtifactBase;
 import org.pragmatica.aether.artifact.Version;
 import org.pragmatica.cluster.state.kvstore.KVCommand.Put;
@@ -41,6 +43,7 @@ class KVStoreAetherEpochFenceTest {
     private static final NodeId OWNER_B = NodeId.nodeId("owner-b").unwrap();
     private static final GovernorAnnouncementKey GOV_KEY = GovernorAnnouncementKey.forCommunity("prod:us-east-1");
     private static final DhtPartitionOwnershipKey OWN_KEY = DhtPartitionOwnershipKey.dhtPartitionOwnershipKey("core");
+    private static final StreamPartitionOwnershipKey STREAM_KEY = StreamPartitionOwnershipKey.streamPartitionOwnershipKey("orders", 3);
 
     private static Serializer stubSerializer() {
         return new Serializer() {
@@ -63,6 +66,10 @@ class KVStoreAetherEpochFenceTest {
 
     private static DhtPartitionOwnershipValue ownership(NodeId id, Epoch epoch, long ownershipTerm) {
         return DhtPartitionOwnershipValue.dhtPartitionOwnershipValue(id, "core", epoch, ownershipTerm, HlcTimestamp.ZERO);
+    }
+
+    private static StreamPartitionOwnershipValue streamOwnership(NodeId id, Epoch epoch, long ownershipTerm) {
+        return StreamPartitionOwnershipValue.streamPartitionOwnershipValue(id, epoch, ownershipTerm, HlcTimestamp.ZERO);
     }
 
     private KVStore<AetherKey, AetherValue> store;
@@ -174,6 +181,49 @@ class KVStoreAetherEpochFenceTest {
             assertThat(stored(OWN_KEY))
                 .as("a deposed owner's older-epoch ownership write must be rejected — even with a higher ownershipTerm")
                 .isEqualTo(ownership(OWNER_B, Epoch.epoch(5, 0), 3L));
+        }
+    }
+
+    /// #345 item 1d-i: the SAME generalized applier fence (1a) protects `StreamPartitionOwnershipValue`
+    /// for free, because it fences ANY `EpochBearing` value. No fence code is added for streams — this
+    /// proves the new value is already fenced by virtue of implementing `EpochBearing`.
+    @Nested
+    class StreamPartitionOwnershipFence {
+        @Test
+        void firstOwnership_applied() {
+            apply(STREAM_KEY, streamOwnership(OWNER_A, Epoch.epoch(1, 0), 1L));
+
+            assertThat(stored(STREAM_KEY)).isEqualTo(streamOwnership(OWNER_A, Epoch.epoch(1, 0), 1L));
+        }
+
+        @Test
+        void newerEpochTransfer_applied() {
+            apply(STREAM_KEY, streamOwnership(OWNER_A, Epoch.epoch(1, 0), 1L));
+            apply(STREAM_KEY, streamOwnership(OWNER_B, Epoch.epoch(2, 0), 2L));
+
+            assertThat(stored(STREAM_KEY))
+                .as("a reshuffle owner change bumps ownerEpoch and must commit")
+                .isEqualTo(streamOwnership(OWNER_B, Epoch.epoch(2, 0), 2L));
+        }
+
+        @Test
+        void sameEpochOwnershipTermBump_applied() {
+            apply(STREAM_KEY, streamOwnership(OWNER_A, Epoch.epoch(4, 0), 1L));
+            apply(STREAM_KEY, streamOwnership(OWNER_B, Epoch.epoch(4, 0), 2L));
+
+            assertThat(stored(STREAM_KEY))
+                .as("a takeover at the same epoch (ownershipTerm+1) must NOT be fenced")
+                .isEqualTo(streamOwnership(OWNER_B, Epoch.epoch(4, 0), 2L));
+        }
+
+        @Test
+        void staleOwnerOlderEpoch_rejected() {
+            apply(STREAM_KEY, streamOwnership(OWNER_B, Epoch.epoch(5, 0), 3L));
+            apply(STREAM_KEY, streamOwnership(OWNER_A, Epoch.epoch(2, 0), 99L));
+
+            assertThat(stored(STREAM_KEY))
+                .as("a deposed stream-partition owner's older-epoch write must be rejected by the applier — even with a higher ownershipTerm")
+                .isEqualTo(streamOwnership(OWNER_B, Epoch.epoch(5, 0), 3L));
         }
     }
 

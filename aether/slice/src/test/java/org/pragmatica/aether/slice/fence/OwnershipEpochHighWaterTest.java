@@ -12,11 +12,14 @@ import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.DhtPartitionOwnershipKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.GovernorAnnouncementKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.StreamPartitionOwnershipKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.DhtPartitionOwnershipValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.GovernorAnnouncementValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.StreamPartitionOwnershipValue;
 import org.pragmatica.cluster.state.kvstore.KVCommand.Put;
 import org.pragmatica.cluster.state.kvstore.KVStore;
+import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.hlc.HlcTimestamp;
 import org.pragmatica.lang.Option;
@@ -100,6 +103,27 @@ class OwnershipEpochHighWaterTest {
             assertThat(table.highWater(OwnershipDomain.dhtPartition("a"))).isEqualTo(Option.none());
             assertThat(table.highWater(OwnershipDomain.community("b"))).isEqualTo(Option.none());
             assertThat(table.highWater(OwnershipDomain.community("a"))).isEqualTo(Option.some(Epoch.epoch(4, 0)));
+        }
+
+        @Test
+        void advance_streamPartition_monotonicAndIsolatedPerPartition() {
+            var table = emptyHighWater();
+            var p3 = OwnershipDomain.streamPartition("orders", 3);
+            var p4 = OwnershipDomain.streamPartition("orders", 4);
+
+            table.advance(p3, Epoch.epoch(1, 0));
+            table.advance(p3, Epoch.epoch(3, 0));
+            table.advance(p3, Epoch.epoch(2, 0));
+
+            assertThat(table.highWater(p3))
+                .as("stream-partition high-water advances monotonically — an older epoch is ignored")
+                .isEqualTo(Option.some(Epoch.epoch(3, 0)));
+            assertThat(table.highWater(p4))
+                .as("each (stream, partition) arc is an independent domain")
+                .isEqualTo(Option.none());
+            assertThat(table.highWater(OwnershipDomain.streamPartition("other", 3)))
+                .as("a different stream at the same partition index is a different domain")
+                .isEqualTo(Option.none());
         }
 
         @Test
@@ -215,6 +239,57 @@ class OwnershipEpochHighWaterTest {
 
             assertThat(table.highWater(OwnershipDomain.community("c1"))).isEqualTo(Option.some(Epoch.epoch(5, 0)));
             assertThat(table.highWater(OwnershipDomain.dhtPartition("p1"))).isEqualTo(Option.some(Epoch.epoch(7, 2)));
+        }
+
+        @Test
+        void seedFromKvStore_committedStreamPartitionOwnership_rebuildsHighWater() {
+            var streamOwnership = StreamPartitionOwnershipValue.streamPartitionOwnershipValue(NODE,
+                                                                                              Epoch.epoch(9, 4),
+                                                                                              2L,
+                                                                                              HlcTimestamp.ZERO);
+
+            apply(StreamPartitionOwnershipKey.streamPartitionOwnershipKey("orders", 3), streamOwnership);
+
+            var table = OwnershipEpochHighWater.ownershipEpochHighWater(store);
+
+            assertThat(table.highWater(OwnershipDomain.streamPartition("orders", 3)))
+                .as("the stream-partition arc seeds its high-water from committed KV on restart")
+                .isEqualTo(Option.some(Epoch.epoch(9, 4)));
+        }
+    }
+
+    @Nested
+    class Observe {
+        private static ValuePut<StreamPartitionOwnershipKey, StreamPartitionOwnershipValue> streamPut(String stream,
+                                                                                                      int partition,
+                                                                                                      Epoch epoch) {
+            var key = StreamPartitionOwnershipKey.streamPartitionOwnershipKey(stream, partition);
+            var value = StreamPartitionOwnershipValue.streamPartitionOwnershipValue(NODE, epoch, 1L, HlcTimestamp.ZERO);
+
+            return new ValuePut<>(new Put<>(key, value), Option.none());
+        }
+
+        @Test
+        void onStreamPartitionOwnershipPut_committedPut_advancesHighWater() {
+            var table = emptyHighWater();
+
+            table.onStreamPartitionOwnershipPut(streamPut("orders", 3, Epoch.epoch(6, 1)));
+
+            assertThat(table.highWater(OwnershipDomain.streamPartition("orders", 3)))
+                .as("observing a committed stream-ownership Put advances the StreamPartition domain")
+                .isEqualTo(Option.some(Epoch.epoch(6, 1)));
+        }
+
+        @Test
+        void onStreamPartitionOwnershipPut_olderEpochAfterNewer_isIgnored() {
+            var table = emptyHighWater();
+
+            table.onStreamPartitionOwnershipPut(streamPut("orders", 3, Epoch.epoch(6, 0)));
+            table.onStreamPartitionOwnershipPut(streamPut("orders", 3, Epoch.epoch(4, 0)));
+
+            assertThat(table.highWater(OwnershipDomain.streamPartition("orders", 3)))
+                .as("the observe path is monotonic — an older committed epoch never lowers the high-water")
+                .isEqualTo(Option.some(Epoch.epoch(6, 0)));
         }
     }
 }

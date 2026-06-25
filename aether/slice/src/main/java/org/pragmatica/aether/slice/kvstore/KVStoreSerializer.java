@@ -178,6 +178,7 @@ public final class KVStoreSerializer {
             case ApiKeyKey _ -> "api-key";
             case ApiKeyAuditKey _ -> "api-key-audit";
             case DhtPartitionOwnershipKey _ -> "dht-partition-ownership";
+            case StreamPartitionOwnershipKey _ -> "stream-partition-ownership";
             case SpokesmanKey _ -> "spokesman";
             case ProvisioningSlotKey _ -> "provisioning-slot";
             case ClusterPhaseKey _ -> "cluster-phase";
@@ -248,6 +249,7 @@ public final class KVStoreSerializer {
             case ApiKeyValue v -> serializeApiKey(v);
             case ApiKeyAuditValue v -> serializeApiKeyAudit(v);
             case DhtPartitionOwnershipValue v -> serializeDhtPartitionOwnership(v);
+            case StreamPartitionOwnershipValue v -> serializeStreamPartitionOwnership(v);
             case SpokesmanValue v -> serializeSpokesman(v);
             case ProvisioningSlotValue v -> serializeProvisioningSlot(v);
             case ClusterPhaseValue v -> v.phase().name();
@@ -301,6 +303,15 @@ public final class KVStoreSerializer {
                                                                                      .localCounter() + PIPE + v.ownershipTerm() + PIPE + v.transferredAt()
                                                                                                                                           .packed() + PIPE + v.transferredAt()
                                                                                                                                                               .nodeId();
+    }
+
+    private static String serializeStreamPartitionOwnership(StreamPartitionOwnershipValue v) {
+        return v.owner()
+                .id() + PIPE + v.ownerEpoch()
+                                .rabiaTerm() + PIPE + v.ownerEpoch()
+                                                       .localCounter() + PIPE + v.ownershipTerm() + PIPE + v.transferredAt()
+                                                                                                            .packed() + PIPE + v.transferredAt()
+                                                                                                                                .nodeId();
     }
 
     private static String serializeSpokesman(SpokesmanValue v) {

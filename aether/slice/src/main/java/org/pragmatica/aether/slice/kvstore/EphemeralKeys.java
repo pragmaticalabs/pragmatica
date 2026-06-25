@@ -24,6 +24,7 @@ public sealed interface EphemeralKeys {
                                                                  StorageStatusKey.class,
                                                                  ConsumerGroupKey.class,
                                                                  DhtPartitionOwnershipKey.class,
+                                                                 StreamPartitionOwnershipKey.class,
                                                                  SpokesmanKey.class,
                                                                  ProvisioningSlotKey.class,
                                                                  ClusterPhaseKey.class);
@@ -41,6 +42,7 @@ public sealed interface EphemeralKeys {
                                             "storage-status",
                                             "consumer-group",
                                             "dht-partition-ownership",
+                                            "stream-partition-ownership",
                                             "spokesman",
                                             "provisioning-slot",
                                             "cluster-phase");

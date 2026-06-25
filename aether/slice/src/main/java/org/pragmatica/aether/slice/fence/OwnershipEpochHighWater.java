@@ -8,9 +8,11 @@ import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.DhtPartitionOwnershipKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.GovernorAnnouncementKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.StreamPartitionOwnershipKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.DhtPartitionOwnershipValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.GovernorAnnouncementValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.StreamPartitionOwnershipValue;
 import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.lang.Option;
@@ -84,6 +86,7 @@ public final class OwnershipEpochHighWater {
     private void seedFromKvStore() {
         kvStore.forEach(GovernorAnnouncementKey.class, GovernorAnnouncementValue.class, this::seedGovernor);
         kvStore.forEach(DhtPartitionOwnershipKey.class, DhtPartitionOwnershipValue.class, this::seedDhtPartition);
+        kvStore.forEach(StreamPartitionOwnershipKey.class, StreamPartitionOwnershipValue.class, this::seedStreamPartition);
         log.info("Seeded {} ownership-domain epoch high-water marks from KV-Store", highWaterMarks.size());
     }
 
@@ -93,6 +96,10 @@ public final class OwnershipEpochHighWater {
 
     private void seedDhtPartition(DhtPartitionOwnershipKey key, DhtPartitionOwnershipValue value) {
         advance(OwnershipDomain.dhtPartition(key.partitionId()), value.fenceEpoch());
+    }
+
+    private void seedStreamPartition(StreamPartitionOwnershipKey key, StreamPartitionOwnershipValue value) {
+        advance(OwnershipDomain.streamPartition(key.stream(), key.partition()), value.fenceEpoch());
     }
 
     @MessageReceiver
@@ -116,6 +123,19 @@ public final class OwnershipEpochHighWater {
         advance(OwnershipDomain.dhtPartition(key.partitionId()), value.fenceEpoch());
         log.debug("DHT partition ownership epoch observed from cluster: {} -> {}",
                   key.partitionId(),
+                  value.fenceEpoch());
+    }
+
+    @MessageReceiver
+    @SuppressWarnings("JBCT-RET-01")
+    public void onStreamPartitionOwnershipPut(ValuePut<StreamPartitionOwnershipKey, StreamPartitionOwnershipValue> valuePut) {
+        var key = valuePut.cause().key();
+        var value = valuePut.cause().value();
+
+        advance(OwnershipDomain.streamPartition(key.stream(), key.partition()), value.fenceEpoch());
+        log.debug("Stream partition ownership epoch observed from cluster: {}/{} -> {}",
+                  key.stream(),
+                  key.partition(),
                   value.fenceEpoch());
     }
 

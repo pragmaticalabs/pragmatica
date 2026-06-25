@@ -1319,6 +1319,46 @@ public sealed interface AetherValue {
         }
     }
 
+    /// Per-`(stream, partition)` ownership record (#345 item 1d-i) — the stream-side mirror of
+    /// [DhtPartitionOwnershipValue], and the first persisted slice of #265's reshuffle ring.
+    /// Stream-partition ownership was previously pure HRW recomputed on the fly with no persisted
+    /// record and no fencing token; this record gives the partition's owner an `ownerEpoch` that the
+    /// leader advances on every owner change, so the append fence (1d-ii) can reject a deposed owner.
+    ///
+    /// There is no `ownerCommunityId` — streams have no community arc (that field is DHT-specific). The
+    /// `ownerEpoch` is sourced from the committed generation epoch (`Epoch.epoch(rabiaTerm, 0)`); the
+    /// `ownershipTerm` is a monotonic per-partition takeover counter, bumped on each owner change.
+    record StreamPartitionOwnershipValue(NodeId owner,
+                                         Epoch ownerEpoch,
+                                         long ownershipTerm,
+                                         HlcTimestamp transferredAt) implements AetherValue, EpochBearing<Epoch> {
+        /// Ownership fence (#345 piece 1a): the owner's `ownerEpoch` is the fencing token, so the Rabia
+        /// applier rejects a deposed owner's strictly-older-epoch ownership write for free (it fences
+        /// ANY `EpochBearing` value). A stale-owner takeover at the same epoch (bumping only
+        /// `ownershipTerm`) is accepted, mirroring `DhtPartitionOwnershipValue`.
+        @Override
+        public Epoch fenceEpoch() {
+            return ownerEpoch;
+        }
+
+        public StreamPartitionOwnershipValue {
+            if (ownerEpoch == null) {
+                ownerEpoch = Epoch.ZERO;
+            }
+
+            if (transferredAt == null) {
+                transferredAt = HlcTimestamp.ZERO;
+            }
+        }
+
+        public static StreamPartitionOwnershipValue streamPartitionOwnershipValue(NodeId owner,
+                                                                                  Epoch ownerEpoch,
+                                                                                  long ownershipTerm,
+                                                                                  HlcTimestamp transferredAt) {
+            return new StreamPartitionOwnershipValue(owner, ownerEpoch, ownershipTerm, transferredAt);
+        }
+    }
+
     @Codec
     enum SpokesmanStatus {
         ASSIGNED,
