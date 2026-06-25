@@ -65,6 +65,18 @@ import static org.pragmatica.lang.Option.some;
 /// itself (self appears among the to-add set for that partition), so the seam is naturally
 /// idempotent — a steady-state reconcile fires it for nothing.
 ///
+/// ## Owner-reconciled driver seam (1d-iii)
+/// On the same partition loop, after `place(...)`, the controller invokes the injected
+/// `onOwnerReconciled` callback `(streamName, partition)` for EVERY partition that has a placement.
+/// The default is a no-op; in production AetherNode binds it to the leader-only
+/// {@link StreamPartitionOwnershipWriter}, which makes the stream ownership fence live: on a genuine
+/// HRW owner change the leader emits a consensus-committed `StreamPartitionOwnershipValue` with an
+/// advanced epoch, so a deposed-but-alive owner's stale-epoch append is fenced. The seam fires on
+/// every node's controller, but the writer self-limits — its `isLeaderSupplier` gate short-circuits
+/// to {@link Option#none} on a follower BEFORE any committed-state read, and its `decide` returns
+/// {@link Option#none} for an unchanged owner — so only the leader, and only for moved partitions,
+/// produces a write.
+///
 /// ## Concurrency & quorum
 /// All reconciles are serialized on a single-thread executor, so the registry diff is never
 /// interleaved. While the consensus engine is `PASSIVE` (out of quorum) reconciles are suppressed
@@ -88,6 +100,7 @@ public final class ReplicaSetController implements AutoCloseable {
     private final IntSupplier clusterSizeSupplier;
     private final StreamCatalog catalog;
     private final BiConsumer<String, Integer> onBecameReplica;
+    private final BiConsumer<String, Integer> onOwnerReconciled;
     private final Executor executor;
     private final boolean ownsExecutor;
     private final AtomicBoolean passive = new AtomicBoolean(false);
@@ -108,6 +121,7 @@ public final class ReplicaSetController implements AutoCloseable {
                                  IntSupplier clusterSizeSupplier,
                                  StreamCatalog catalog,
                                  BiConsumer<String, Integer> onBecameReplica,
+                                 BiConsumer<String, Integer> onOwnerReconciled,
                                  Executor executor,
                                  boolean ownsExecutor) {
         this.registry = registry;
@@ -116,6 +130,7 @@ public final class ReplicaSetController implements AutoCloseable {
         this.clusterSizeSupplier = clusterSizeSupplier;
         this.catalog = catalog;
         this.onBecameReplica = onBecameReplica;
+        this.onOwnerReconciled = onOwnerReconciled;
         this.executor = executor;
         this.ownsExecutor = ownsExecutor;
     }
@@ -142,6 +157,28 @@ public final class ReplicaSetController implements AutoCloseable {
                                                             IntSupplier clusterSizeSupplier,
                                                             StreamCatalog catalog,
                                                             BiConsumer<String, Integer> onBecameReplica) {
+        return replicaSetController(registry,
+                                    self,
+                                    membersSupplier,
+                                    clusterSizeSupplier,
+                                    catalog,
+                                    onBecameReplica,
+                                    (_, _) -> {});
+    }
+
+    /// Production factory with an explicit catch-up seam (A4) AND an owner-reconciled driver seam
+    /// (1d-iii). Owns a dedicated single-thread executor. The `onOwnerReconciled` callback fires
+    /// once per `(stream, partition)` inside the reconcile partition loop, on EVERY node's controller;
+    /// the bound driver (the leader-only [StreamPartitionOwnershipWriter]) self-limits to the leader
+    /// and to genuinely-moved partitions, so a follower's reconcile and an unchanged partition emit
+    /// nothing.
+    public static ReplicaSetController replicaSetController(ReplicaRegistry registry,
+                                                            NodeId self,
+                                                            Supplier<List<NodeId>> membersSupplier,
+                                                            IntSupplier clusterSizeSupplier,
+                                                            StreamCatalog catalog,
+                                                            BiConsumer<String, Integer> onBecameReplica,
+                                                            BiConsumer<String, Integer> onOwnerReconciled) {
         var executor = Executors.newSingleThreadExecutor(runnable -> {
             var thread = new Thread(runnable, "replica-set-controller");
 
@@ -156,12 +193,14 @@ public final class ReplicaSetController implements AutoCloseable {
                                         clusterSizeSupplier,
                                         catalog,
                                         onBecameReplica,
+                                        onOwnerReconciled,
                                         executor,
                                         true);
     }
 
     /// Test/advanced factory: caller supplies the executor (e.g. a same-thread executor for
-    /// deterministic unit tests) and is responsible for its lifecycle.
+    /// deterministic unit tests) and is responsible for its lifecycle. Uses a no-op owner-reconciled
+    /// driver seam.
     public static ReplicaSetController replicaSetController(ReplicaRegistry registry,
                                                             NodeId self,
                                                             Supplier<List<NodeId>> membersSupplier,
@@ -175,6 +214,29 @@ public final class ReplicaSetController implements AutoCloseable {
                                         clusterSizeSupplier,
                                         catalog,
                                         onBecameReplica,
+                                        (_, _) -> {},
+                                        executor,
+                                        false);
+    }
+
+    /// Test/advanced factory with an explicit owner-reconciled driver seam (1d-iii): caller supplies
+    /// the executor (e.g. a same-thread executor for deterministic unit tests) and is responsible for
+    /// its lifecycle.
+    public static ReplicaSetController replicaSetController(ReplicaRegistry registry,
+                                                            NodeId self,
+                                                            Supplier<List<NodeId>> membersSupplier,
+                                                            IntSupplier clusterSizeSupplier,
+                                                            StreamCatalog catalog,
+                                                            BiConsumer<String, Integer> onBecameReplica,
+                                                            BiConsumer<String, Integer> onOwnerReconciled,
+                                                            Executor executor) {
+        return new ReplicaSetController(registry,
+                                        self,
+                                        membersSupplier,
+                                        clusterSizeSupplier,
+                                        catalog,
+                                        onBecameReplica,
+                                        onOwnerReconciled,
                                         executor,
                                         false);
     }
@@ -241,10 +303,22 @@ public final class ReplicaSetController implements AutoCloseable {
         for (var partition = 0; partition < spec.partitions(); partition++) {
             var p = partition;
 
-            ReplicaPlacement.place(spec.name(), partition, members, rf).onPresent(placement -> reconcilePartition(spec.name(),
+            ReplicaPlacement.place(spec.name(), partition, members, rf).onPresent(placement -> reconcilePlacement(spec.name(),
                                                                                                                   p,
                                                                                                                   placement));
         }
+    }
+
+    /// Per-partition reconcile: keep the local registry in agreement with the desired replica set, then
+    /// fire the 1d-iii owner-reconciled driver for this `(stream, partition)`. The driver fires on EVERY
+    /// node (this method runs on every node's controller) and for EVERY partition with a placement; the
+    /// bound [StreamPartitionOwnershipWriter] self-limits — it returns nothing on a follower (its
+    /// internal `isLeaderSupplier` gate short-circuits BEFORE any committed-state read) and nothing for
+    /// an unchanged owner (its `decide` returns [Option#none]). So a full reshuffle emits at most one
+    /// consensus write per genuinely-moved partition, only from the leader.
+    private void reconcilePlacement(String streamName, int partition, Placement placement) {
+        reconcilePartition(streamName, partition, placement);
+        onOwnerReconciled.accept(streamName, partition);
     }
 
     private void reconcilePartition(String streamName, int partition, Placement placement) {

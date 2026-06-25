@@ -17,6 +17,7 @@ import org.pragmatica.lang.Option;
 import java.util.function.BooleanSupplier;
 import java.util.function.Supplier;
 
+
 /// Leader-only, idempotent, deterministic writer of per-`(stream, partition)` ownership records
 /// (#345 item 1d-i) — the stream-side mirror of the DHT ownership writer in `BootstrapModule`
 /// (`decideCoreOwnership` / `rewriteIfOwnerStale` / `buildCorePartitionCommand`).
@@ -35,14 +36,23 @@ import java.util.function.Supplier;
 ///   - **HRW owner differs from the committed owner** → emit a `Put` for the new owner with an
 ///     advanced `ownerEpoch` and `ownershipTerm + 1`.
 ///
-/// ## Epoch-advance semantics (mirrors the DHT writer)
-/// The `ownerEpoch` is sourced PURELY from the committed generation — `Epoch.epoch(rabiaTerm, 0)`,
-/// the same `currentEpoch()` the DHT writer uses (`BootstrapModule.currentEpoch`). It is NOT a
-/// per-partition free-running counter, so the decision and the epoch are a pure function of committed
-/// state (committed ownership + HRW owner + committed generation term). Two replicas presented the
-/// same committed state therefore reach the IDENTICAL decision and write the IDENTICAL value — the
-/// CP-applier fence then deduplicates / orders them. `ownershipTerm` is the monotonic per-partition
-/// takeover counter, bumped on each owner change exactly as the DHT writer bumps it.
+/// ## Epoch-advance semantics
+/// The `ownerEpoch` is `Epoch.epoch(rabiaTerm, ownershipTerm)`: the committed generation term as the
+/// dominant component, paired with the per-partition `ownershipTerm` as the local counter. Both are a
+/// pure function of committed state — the generation term from the committed generation, the
+/// `ownershipTerm` read from (and bumped relative to) the committed `StreamPartitionOwnershipValue` —
+/// so two replicas presented the same committed state reach the IDENTICAL decision and write the
+/// IDENTICAL value; the CP-applier fence then deduplicates / orders them. The epoch advances on BOTH
+/// axes of an ownership transfer:
+///   - a **leader re-election / governor handover** bumps `rabiaTerm` (the dominant component), and
+///   - **every owner change — including a same-term HRW reshuffle (node join, no re-election)** — bumps
+///     `ownershipTerm` (the local counter).
+/// This closes the same-term-reshuffle gap: a deposed-but-alive owner whose committed epoch carried the
+/// OLD `ownershipTerm` is strictly dominated by its successor's `(rabiaTerm, ownershipTerm+1)` epoch and
+/// is therefore fenced, even when no leader change occurred. `ownerEpoch.localCounter == ownershipTerm`
+/// by construction. (The DHT ownership writer in `BootstrapModule.currentEpoch` still mints
+/// `Epoch.epoch(rabiaTerm, 0)` and carries the same latent same-term gap — DHT parity is tracked
+/// separately.)
 ///
 /// ## Why leader-only / deterministic
 /// Only the leader emits (the [#writeOwnershipChange] driver is gated by `isLeaderSupplier`),
@@ -60,7 +70,9 @@ public interface StreamPartitionOwnershipWriter {
     /// Compute the ownership-change command for a single `(stream, partition)`, or [Option#none] when
     /// the HRW owner already matches the committed owner (idempotent). Pure: no side effects, no clock
     /// reads beyond `hlcClock.now()` for the advisory `transferredAt` stamp (which is not part of the
-    /// fence). `committedEpoch` is the committed generation epoch the new `ownerEpoch` is sourced from.
+    /// fence). `committedEpoch` supplies the committed generation term (its `rabiaTerm`) that becomes the
+    /// dominant component of the new `ownerEpoch`; the epoch's local counter is the `ownershipTerm` this
+    /// decision writes, so the epoch advances on every owner change as well as on a generation bump.
     Option<KVCommand<AetherKey>> decide(String stream,
                                         int partition,
                                         Option<StreamPartitionOwnershipValue> committed,
@@ -132,7 +144,8 @@ record StreamPartitionOwnershipWriterRecord(BooleanSupplier isLeaderSupplier,
                                                                NodeId owner,
                                                                Epoch committedEpoch,
                                                                StreamPartitionOwnershipValue current) {
-        return current.owner().equals(owner)
+        return current.owner()
+                      .equals(owner)
                ? Option.none()
                : Option.some(buildCommand(stream, partition, owner, committedEpoch, current.ownershipTerm() + 1L));
     }
@@ -144,15 +157,27 @@ record StreamPartitionOwnershipWriterRecord(BooleanSupplier isLeaderSupplier,
     private KVCommand<AetherKey> buildCommand(String stream,
                                               int partition,
                                               NodeId owner,
-                                              Epoch epoch,
+                                              Epoch committedEpoch,
                                               long ownershipTerm) {
         var value = StreamPartitionOwnershipValue.streamPartitionOwnershipValue(owner,
-                                                                                epoch,
+                                                                                ownerEpoch(committedEpoch, ownershipTerm),
                                                                                 ownershipTerm,
                                                                                 hlcClock.now());
 
         return new KVCommand.Put<AetherKey, AetherValue>(StreamPartitionOwnershipKey.streamPartitionOwnershipKey(stream,
                                                                                                                  partition),
                                                          value);
+    }
+
+    /// The committed `ownerEpoch`: the leader's committed generation term (the dominant component, which
+    /// advances on a leader re-election / governor handover) paired with the per-partition `ownershipTerm`
+    /// as the local counter (which advances on EVERY owner change, including a same-term HRW reshuffle).
+    /// This couples `ownerEpoch.localCounter == ownershipTerm`, so a deposed-but-alive owner — whose
+    /// committed epoch carried the OLD `ownershipTerm` — is strictly dominated by its successor's epoch
+    /// and is fenced, even when no leader change occurred. Still a pure function of committed state
+    /// (committed generation term + the takeover counter read from the committed record), so two replicas
+    /// presented identical committed state mint the IDENTICAL value.
+    private static Epoch ownerEpoch(Epoch committedEpoch, long ownershipTerm) {
+        return Epoch.epoch(committedEpoch.rabiaTerm(), ownershipTerm);
     }
 }

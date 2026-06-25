@@ -99,7 +99,9 @@ class StreamPartitionOwnershipWriterTest {
             assertThat(keyOf(command)).isEqualTo(StreamPartitionOwnershipKey.streamPartitionOwnershipKey(STREAM,
                                                                                                          PARTITION));
             assertThat(valueOf(command).owner()).isEqualTo(OWNER_A);
-            assertThat(valueOf(command).ownerEpoch()).isEqualTo(Epoch.epoch(COMMITTED_TERM, 0));
+            assertThat(valueOf(command).ownerEpoch())
+                .as("ownerEpoch couples the committed generation term with the initial ownershipTerm 1 as its local counter")
+                .isEqualTo(Epoch.epoch(COMMITTED_TERM, 1));
             assertThat(valueOf(command).ownershipTerm())
                 .as("a first-ever ownership record starts at ownershipTerm 1")
                 .isEqualTo(1L);
@@ -107,7 +109,7 @@ class StreamPartitionOwnershipWriterTest {
 
         @Test
         void decide_ownerUnchanged_isNoOp() {
-            var current = ownership(OWNER_A, Epoch.epoch(COMMITTED_TERM, 0), 1L);
+            var current = ownership(OWNER_A, Epoch.epoch(COMMITTED_TERM, 1), 1L);
 
             assertThat(writer.decide(STREAM, PARTITION, Option.some(current), OWNER_A, Epoch.epoch(COMMITTED_TERM, 0)))
                 .as("HRW owner equals committed owner — no consensus write")
@@ -116,7 +118,7 @@ class StreamPartitionOwnershipWriterTest {
 
         @Test
         void decide_ownerChanged_emitsPutWithAdvancedEpochAndBumpedTerm() {
-            var current = ownership(OWNER_A, Epoch.epoch(7L, 0), 4L);
+            var current = ownership(OWNER_A, Epoch.epoch(COMMITTED_TERM, 4), 4L);
 
             var command = require(writer.decide(STREAM,
                                                 PARTITION,
@@ -128,16 +130,41 @@ class StreamPartitionOwnershipWriterTest {
                 .as("the new owner is the HRW owner")
                 .isEqualTo(OWNER_B);
             assertThat(valueOf(command).ownerEpoch())
-                .as("ownerEpoch advances to the committed generation epoch")
-                .isEqualTo(Epoch.epoch(COMMITTED_TERM, 0));
+                .as("ownerEpoch advances to (committedTerm, bumped ownershipTerm) — the local counter is the takeover counter")
+                .isEqualTo(Epoch.epoch(COMMITTED_TERM, 5));
+            assertThat(valueOf(command).ownerEpoch().isStrictlyAfter(current.ownerEpoch()))
+                .as("the successor's epoch STRICTLY dominates the deposed owner's committed epoch — even at the SAME generation "
+                    + "term (the same-term HRW reshuffle gap is closed by the ownershipTerm local counter)")
+                .isTrue();
             assertThat(valueOf(command).ownershipTerm())
                 .as("ownershipTerm is bumped by one on owner change")
                 .isEqualTo(5L);
         }
 
         @Test
+        void decide_ownerChanged_sameTermReshuffle_stillAdvancesEpoch() {
+            // Same committed generation term as the writer's rabiaTerm (COMMITTED_TERM): a node-join HRW
+            // reshuffle with NO leader re-election. The epoch must still advance via the ownershipTerm
+            // local counter, so the deposed-but-alive owner is fenced.
+            var current = ownership(OWNER_A, Epoch.epoch(COMMITTED_TERM, 1), 1L);
+
+            var command = require(writer.decide(STREAM,
+                                                PARTITION,
+                                                Option.some(current),
+                                                OWNER_B,
+                                                Epoch.epoch(COMMITTED_TERM, 0)));
+
+            assertThat(valueOf(command).ownerEpoch())
+                .as("same-term reshuffle still advances the epoch via the ownershipTerm local counter")
+                .isEqualTo(Epoch.epoch(COMMITTED_TERM, 2));
+            assertThat(valueOf(command).ownerEpoch().isStrictlyAfter(current.ownerEpoch()))
+                .as("(term, 2) strictly dominates the deposed owner's (term, 1) at the SAME term — fence holds")
+                .isTrue();
+        }
+
+        @Test
         void decide_sameCommittedState_isDeterministicOnFenceFields() {
-            var current = ownership(OWNER_A, Epoch.epoch(7L, 0), 4L);
+            var current = ownership(OWNER_A, Epoch.epoch(COMMITTED_TERM, 4), 4L);
 
             var first = writer.decide(STREAM, PARTITION, Option.some(current), OWNER_B, Epoch.epoch(COMMITTED_TERM, 0));
             var second = writer.decide(STREAM, PARTITION, Option.some(current), OWNER_B, Epoch.epoch(COMMITTED_TERM, 0));
@@ -177,13 +204,13 @@ class StreamPartitionOwnershipWriterTest {
             var command = require(writer.writeOwnershipChange(STREAM, PARTITION));
 
             assertThat(valueOf(command).owner()).isEqualTo(OWNER_A);
-            assertThat(valueOf(command).ownerEpoch()).isEqualTo(Epoch.epoch(COMMITTED_TERM, 0));
+            assertThat(valueOf(command).ownerEpoch()).isEqualTo(Epoch.epoch(COMMITTED_TERM, 1));
             assertThat(valueOf(command).ownershipTerm()).isEqualTo(1L);
         }
 
         @Test
         void writeOwnershipChange_leaderOwnerUnchanged_emitsNothing() {
-            var current = ownership(OWNER_A, Epoch.epoch(COMMITTED_TERM, 0), 1L);
+            var current = ownership(OWNER_A, Epoch.epoch(COMMITTED_TERM, 1), 1L);
             var writer = writer(LEADER,
                                 committed(Option.some(current)),
                                 hrw(Option.some(OWNER_A)));
@@ -195,7 +222,7 @@ class StreamPartitionOwnershipWriterTest {
 
         @Test
         void writeOwnershipChange_leaderOwnerChanged_emitsTakeoverPut() {
-            var current = ownership(OWNER_A, Epoch.epoch(7L, 0), 2L);
+            var current = ownership(OWNER_A, Epoch.epoch(COMMITTED_TERM, 2), 2L);
             var writer = writer(LEADER,
                                 committed(Option.some(current)),
                                 hrw(Option.some(OWNER_B)));
@@ -203,7 +230,10 @@ class StreamPartitionOwnershipWriterTest {
             var command = require(writer.writeOwnershipChange(STREAM, PARTITION));
 
             assertThat(valueOf(command).owner()).isEqualTo(OWNER_B);
-            assertThat(valueOf(command).ownerEpoch()).isEqualTo(Epoch.epoch(COMMITTED_TERM, 0));
+            assertThat(valueOf(command).ownerEpoch()).isEqualTo(Epoch.epoch(COMMITTED_TERM, 3));
+            assertThat(valueOf(command).ownerEpoch().isStrictlyAfter(current.ownerEpoch()))
+                .as("the takeover epoch strictly dominates the deposed owner's committed epoch")
+                .isTrue();
             assertThat(valueOf(command).ownershipTerm()).isEqualTo(3L);
         }
 
