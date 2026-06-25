@@ -27,6 +27,7 @@
         <module>interceptors</module>
         <module>services</module>
         <module>notification</module>
+        <module>durable-entity</module>
     </modules>
 
     <properties>
