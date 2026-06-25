@@ -158,6 +158,7 @@ public final class KVStoreSerializer {
             case ActivationDirectiveKey _ -> "activation";
             case GossipKeyRotationKey _ -> "gossip-key-rotation";
             case GovernorAnnouncementKey _ -> "governor-announcement";
+            case CommunityKey _ -> "community";
             case NodeArtifactKey _ -> "node-artifact";
             case NodeRoutesKey _ -> "node-routes";
             case SchemaVersionKey _ -> "schema-version";
@@ -222,11 +223,12 @@ public final class KVStoreSerializer {
             case ObservabilityDepthValue v -> serializeObservabilityDepth(v);
             case ConfigValue v -> serializeConfig(v);
             case WorkerSliceDirectiveValue v -> serializeWorkerDirective(v);
-            case ActivationDirectiveValue v -> v.role();
+            case ActivationDirectiveValue v -> serializeActivationDirective(v);
             case GossipKeyRotationValue v -> serializeGossipKeyRotation(v);
             case JoinDeadlineValue v -> v.deadlineMs() + PIPE + v.setAt();
             case DrainDeadlineValue v -> v.deadlineMs() + PIPE + v.setAt();
             case GovernorAnnouncementValue v -> serializeGovernorAnnouncement(v);
+            case CommunityValue v -> serializeCommunity(v);
             case NodeArtifactValue v -> serializeNodeArtifact(v);
             case NodeRoutesValue v -> serializeNodeRoutes(v);
             case AppBlueprintValue _ -> "";
@@ -414,6 +416,26 @@ public final class KVStoreSerializer {
                 .id() + PIPE + v.memberCount() + PIPE + memberIds + PIPE + v.tcpAddress() + PIPE + v.announcedAt();
     }
 
+    /// Pipe-delimited community wire form `(sourceName|role|targetSize|state|createdAt|dissolvedAt)`.
+    /// Mirrors [#serializeDhtPartitionOwnership]'s empty-field canonicalization: the optional
+    /// `dissolvedAt` renders as the empty string when absent (`none()`), symmetric with
+    /// [#parseCommunityEntry].
+    private static String serializeCommunity(CommunityValue v) {
+        return v.sourceName() + PIPE + v.role() + PIPE + v.targetSize() + PIPE + v.state()
+                                                                                  .name() + PIPE + v.createdAt() + PIPE + v.dissolvedAt()
+                                                                                                                           .map(String::valueOf)
+                                                                                                                           .or("");
+    }
+
+    /// Pipe-delimited activation wire form `(role|communityId|governorHint)`. Replaces the prior
+    /// bare-`role()` form so the additive community fields round-trip symmetrically with
+    /// [#parseActivationEntry]. Empty community fields canonicalize to empty strings, mirroring
+    /// [#serializeDhtPartitionOwnership]'s empty-field idiom. Package-visible for direct round-trip
+    /// testing (the `activation` section is ephemeral, so it never flows through `toToml`).
+    static String serializeActivationDirective(ActivationDirectiveValue v) {
+        return v.role() + PIPE + v.communityId() + PIPE + v.governorHint();
+    }
+
     private static String serializeClusterConfig(ClusterConfigValue v) {
         return v.clusterName() + PIPE + v.version() + PIPE + v.coreCount() + PIPE + v.coreMin() + PIPE + v.coreMax() + PIPE + v.deploymentType() + PIPE + v.configVersion() + PIPE + v.updatedAt() + PIPE + v.tomlContent()
                                                                                                                                                                                                              .replace("|",
@@ -474,6 +496,7 @@ public final class KVStoreSerializer {
             case "activation" -> parseActivationEntry(identity, rawValue);
             case "gossip-key-rotation" -> parseGossipKeyRotationEntry(identity, rawValue);
             case "governor-announcement" -> parseGovernorAnnouncementEntry(identity, rawValue);
+            case "community" -> parseCommunityEntry(identity, rawValue);
             case "node-artifact" -> parseNodeArtifactEntry(identity, rawValue);
             case "node-routes" -> parseNodeRoutesEntry(identity, rawValue);
             case "schema-version" -> parseSchemaVersionEntry(identity, rawValue);
@@ -812,9 +835,28 @@ public final class KVStoreSerializer {
                                                                                                                                         val)));
     }
 
-    private static Result<Map.Entry<AetherKey, AetherValue>> parseActivationEntry(String identity, String raw) {
+    /// Inverse of [#serializeActivationDirective]. Tolerates TWO wire forms by field count
+    /// (standard trailing-field backward-compat, spec §7): the 3-field CURRENT form
+    /// `(role|communityId|governorHint)`, and the legacy 1-field bare-`role` form written before
+    /// the community fields existed (community fields default empty via the role-only constructor).
+    /// Package-visible for direct round-trip testing (the `activation` section is ephemeral).
+    static Result<Map.Entry<AetherKey, AetherValue>> parseActivationEntry(String identity, String raw) {
+        var parts = raw.split("\\|", -1);
+
+        if (parts.length != 1 && parts.length != 3) {
+            return parseFailure("activation value requires 1 or 3 fields, got " + parts.length);
+        }
+
         return ActivationDirectiveKey.activationDirectiveKey("activation/" + identity).map(key -> entry(key,
-                                                                                                        new ActivationDirectiveValue(raw)));
+                                                                                                        buildActivationDirectiveValue(parts)));
+    }
+
+    private static ActivationDirectiveValue buildActivationDirectiveValue(String[] parts) {
+        if (parts.length == 1) {
+            return new ActivationDirectiveValue(parts[0]);
+        }
+
+        return new ActivationDirectiveValue(parts[0], parts[1], parts[2]);
     }
 
     private static Result<Map.Entry<AetherKey, AetherValue>> parseGovernorAnnouncementEntry(String identity,
@@ -850,6 +892,33 @@ public final class KVStoreSerializer {
                                                                    members,
                                                                    parts[3],
                                                                    Long.parseLong(parts[4]));
+    }
+
+    /// Inverse of [#serializeCommunity]. Wire form (6 fields, pipe-delimited):
+    /// `sourceName|role|targetSize|state|createdAt|dissolvedAt`. The optional `dissolvedAt` field
+    /// is reconstructed as `none()` when empty, mirroring the empty-Option idiom used across the
+    /// serializer (e.g. provisioning-slot's `assignedNodeId`).
+    private static Result<Map.Entry<AetherKey, AetherValue>> parseCommunityEntry(String identity, String raw) {
+        var parts = raw.split("\\|", -1);
+
+        if (parts.length != 6) {
+            return parseFailure("community value requires 6 fields, got " + parts.length);
+        }
+
+        return CommunityKey.parseCommunityKey("community/" + identity).map(key -> entry(key, buildCommunityValue(parts)));
+    }
+
+    private static CommunityValue buildCommunityValue(String[] parts) {
+        var dissolvedAt = parts[5].isEmpty()
+                          ? Option.<Long> none()
+                          : Option.some(Long.parseLong(parts[5]));
+
+        return new CommunityValue(parts[0],
+                                  parts[1],
+                                  Integer.parseInt(parts[2]),
+                                  CommunityState.valueOf(parts[3]),
+                                  Long.parseLong(parts[4]),
+                                  dissolvedAt);
     }
 
     private static Result<Map.Entry<AetherKey, AetherValue>> parseNodeArtifactEntry(String identity, String raw) {

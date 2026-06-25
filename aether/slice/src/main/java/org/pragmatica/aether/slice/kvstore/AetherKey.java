@@ -943,6 +943,41 @@ public sealed interface AetherKey extends StructuredKey {
         }
     }
 
+    /// Desired-state community identity (worker-membership-spec §2, D1): a leader-minted, stable,
+    /// committed KV fact keyed on the immutable `communityId`. Mirrors [GovernorAnnouncementKey]
+    /// (the governor-owned *observed* statement for the same community) at the key level.
+    record CommunityKey(String communityId) implements AetherKey {
+        private static final String PREFIX = "community/";
+
+        @Override
+        public String asString() {
+            return PREFIX + communityId;
+        }
+
+        @Override
+        public String toString() {
+            return asString();
+        }
+
+        public static CommunityKey communityKey(String communityId) {
+            return new CommunityKey(communityId);
+        }
+
+        public static Result<CommunityKey> parseCommunityKey(String key) {
+            if (!key.startsWith(PREFIX)) {
+                return COMMUNITY_KEY_FORMAT_ERROR.apply(key).result();
+            }
+
+            var communityId = key.substring(PREFIX.length());
+
+            if (communityId.isEmpty()) {
+                return COMMUNITY_KEY_FORMAT_ERROR.apply(key).result();
+            }
+
+            return success(new CommunityKey(communityId));
+        }
+    }
+
     record AbTestKey(String testId) implements AetherKey {
         private static final String PREFIX = "ab-test/";
 
@@ -1088,6 +1123,8 @@ public sealed interface AetherKey extends StructuredKey {
     Fn1<Cause, String> NODE_ROUTES_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid node-routes key format: %s");
 
     Fn1<Cause, String> GOVERNOR_ANNOUNCEMENT_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid governor-announcement key format: %s");
+
+    Fn1<Cause, String> COMMUNITY_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid community key format: %s");
 
     Fn1<Cause, String> GOSSIP_KEY_ROTATION_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid gossip-key-rotation key format: %s");
 

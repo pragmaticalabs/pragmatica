@@ -413,16 +413,47 @@ public sealed interface AetherValue {
         }
     }
 
-    record ActivationDirectiveValue(String role) implements AetherValue {
+    /// Worker/core activation directive (worker-membership-spec §4 line 79): the leader-authored,
+    /// node-keyed role assignment. Extended additively with `communityId` + `governorHint` so a
+    /// WORKER directive carries its community assignment and a governor address hint through the
+    /// already-canonical directive path — community assignment happens at the same moment as role
+    /// assignment. Both are empty for a CORE directive (and for a community-less WORKER).
+    ///
+    /// Optional-field idiom mirrors [DhtPartitionOwnershipValue.ownerCommunityId]: empty-string is
+    /// the canonical "absent" form, normalized in the compact constructor so a `null` from a
+    /// wire/codec edge collapses to `""` (preserving `equals` with the role-only constructors).
+    record ActivationDirectiveValue(String role, String communityId, String governorHint) implements AetherValue {
         public static final String CORE = "CORE";
         public static final String WORKER = "WORKER";
 
+        public ActivationDirectiveValue {
+            if (communityId == null) {
+                communityId = "";
+            }
+
+            if (governorHint == null) {
+                governorHint = "";
+            }
+        }
+
+        /// Backward-compatible role-only constructor — pre-existing call sites pass a bare role;
+        /// `communityId`/`governorHint` default empty (CORE or community-less WORKER semantics).
+        public ActivationDirectiveValue(String role) {
+            this(role, "", "");
+        }
+
         public static ActivationDirectiveValue core() {
-            return new ActivationDirectiveValue(CORE);
+            return new ActivationDirectiveValue(CORE, "", "");
         }
 
         public static ActivationDirectiveValue worker() {
-            return new ActivationDirectiveValue(WORKER);
+            return new ActivationDirectiveValue(WORKER, "", "");
+        }
+
+        /// Community-assigned WORKER directive — carries the committed `communityId` and a governor
+        /// address hint alongside the WORKER role (§4 line 79).
+        public static ActivationDirectiveValue worker(String communityId, String governorHint) {
+            return new ActivationDirectiveValue(WORKER, communityId, governorHint);
         }
     }
 
@@ -1306,6 +1337,59 @@ public sealed interface AetherValue {
         ASSIGNED,
         ACTIVE,
         FAILED
+    }
+
+    /// Desired-state community record (worker-membership-spec §2 line 78): the leader-authored
+    /// target for a committed [AetherKey.CommunityKey]. `state` is the per-community FSM state
+    /// (leader-evaluated, §3.3). `dissolvedAt` is present only once the community reaches the
+    /// `DISSOLVED` terminal fact; absent (`none()`) for every live state.
+    ///
+    /// Mirrors [DhtPartitionOwnershipValue] for optional-field canonicalization: empty Option /
+    /// empty string are the canonical "absent" forms, normalized in the compact constructor so a
+    /// `null` from a wire/codec edge collapses to the same value (and the same `equals`).
+    record CommunityValue(String sourceName,
+                          String role,
+                          int targetSize,
+                          CommunityState state,
+                          long createdAt,
+                          Option<Long> dissolvedAt) implements AetherValue {
+        public CommunityValue {
+            if (sourceName == null) {
+                sourceName = "";
+            }
+
+            if (role == null) {
+                role = "";
+            }
+
+            if (state == null) {
+                state = CommunityState.FORMING;
+            }
+
+            if (dissolvedAt == null) {
+                dissolvedAt = Option.none();
+            }
+        }
+
+        public static CommunityValue communityValue(String sourceName,
+                                                    String role,
+                                                    int targetSize,
+                                                    CommunityState state,
+                                                    long createdAt,
+                                                    Option<Long> dissolvedAt) {
+            return new CommunityValue(sourceName, role, targetSize, state, createdAt, dissolvedAt);
+        }
+
+        /// FORMING mint — the leader creating a fresh community (growth policy demands a new slot,
+        /// §3.3): stamps `createdAt = now`, `state = FORMING`, `dissolvedAt = none()`.
+        public static CommunityValue communityValue(String sourceName, String role, int targetSize) {
+            return new CommunityValue(sourceName,
+                                      role,
+                                      targetSize,
+                                      CommunityState.FORMING,
+                                      System.currentTimeMillis(),
+                                      none());
+        }
     }
 
     /// Canonical field order: `(spawnedAtMs, assignedNodeId, occupantEpoch, supersededNodeId)`.
