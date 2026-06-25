@@ -5,6 +5,7 @@
 package org.pragmatica.aether.deployment.cluster;
 
 import org.pragmatica.aether.artifact.Artifact;
+import org.pragmatica.aether.config.CommunitySizing;
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentContext;
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.ActivationDirectivePutReceived;
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.ActivationDirectiveRemoveReceived;
@@ -334,6 +335,40 @@ public interface ClusterDeploymentManager {
                                                              Supplier<Set<NodeId>> readyNodesSupplier,
                                                              Supplier<Set<NodeId>> drainingNodesSupplier,
                                                              Function<NodeId, Option<String>> memberSourceSupplier) {
+        return clusterDeploymentManager(self,
+                                        cluster,
+                                        kvStore,
+                                        router,
+                                        initialTopology,
+                                        topologyManager,
+                                        atomicity,
+                                        coreMax,
+                                        reconcileInterval,
+                                        schemaOrchestrator,
+                                        healthSignalSink,
+                                        coreCountedMembersSupplier,
+                                        readyNodesSupplier,
+                                        drainingNodesSupplier,
+                                        memberSourceSupplier,
+                                        CommunitySizing.DEFAULT);
+    }
+
+    static ClusterDeploymentManager clusterDeploymentManager(NodeId self,
+                                                             ClusterNode<KVCommand<AetherKey>> cluster,
+                                                             KVStore<AetherKey, AetherValue> kvStore,
+                                                             MessageRouter router,
+                                                             List<NodeId> initialTopology,
+                                                             TopologyManager topologyManager,
+                                                             DeploymentAtomicity atomicity,
+                                                             int coreMax,
+                                                             TimeSpan reconcileInterval,
+                                                             SchemaOrchestratorService schemaOrchestrator,
+                                                             HealthSignalSink healthSignalSink,
+                                                             Supplier<Set<NodeId>> coreCountedMembersSupplier,
+                                                             Supplier<Set<NodeId>> readyNodesSupplier,
+                                                             Supplier<Set<NodeId>> drainingNodesSupplier,
+                                                             Function<NodeId, Option<String>> memberSourceSupplier,
+                                                             CommunitySizing communitySizing) {
         var ctx = buildContext(self,
                                cluster,
                                kvStore,
@@ -348,7 +383,8 @@ public interface ClusterDeploymentManager {
                                coreCountedMembersSupplier,
                                readyNodesSupplier,
                                drainingNodesSupplier,
-                               memberSourceSupplier);
+                               memberSourceSupplier,
+                               communitySizing);
 
         return new ClusterDeploymentManagerAdapter(ctx);
     }
@@ -367,7 +403,8 @@ public interface ClusterDeploymentManager {
                                                          Supplier<Set<NodeId>> coreCountedMembersSupplier,
                                                          Supplier<Set<NodeId>> readyNodesSupplier,
                                                          Supplier<Set<NodeId>> drainingNodesSupplier,
-                                                         Function<NodeId, Option<String>> memberSourceSupplier) {
+                                                         Function<NodeId, Option<String>> memberSourceSupplier,
+                                                         CommunitySizing communitySizing) {
         var ctxHolder = new AtomicReference<ClusterDeploymentContext>();
         Function<Fsm<ClusterDeploymentState, ClusterFsmEvent>, ClusterDeploymentState> initialStateFactory = fsm -> buildContextAndDormant(fsm,
                                                                                                                                            ctxHolder,
@@ -385,7 +422,8 @@ public interface ClusterDeploymentManager {
                                                                                                                                            coreCountedMembersSupplier,
                                                                                                                                            readyNodesSupplier,
                                                                                                                                            drainingNodesSupplier,
-                                                                                                                                           memberSourceSupplier);
+                                                                                                                                           memberSourceSupplier,
+                                                                                                                                           communitySizing);
         var _fsm = Fsm.fsm("cluster-deployment", self.id(), initialStateFactory);
 
         return ctxHolder.get();
@@ -407,7 +445,8 @@ public interface ClusterDeploymentManager {
                                                                  Supplier<Set<NodeId>> coreCountedMembersSupplier,
                                                                  Supplier<Set<NodeId>> readyNodesSupplier,
                                                                  Supplier<Set<NodeId>> drainingNodesSupplier,
-                                                                 Function<NodeId, Option<String>> memberSourceSupplier) {
+                                                                 Function<NodeId, Option<String>> memberSourceSupplier,
+                                                                 CommunitySizing communitySizing) {
         var ctx = new ClusterDeploymentContext(fsm,
                                                self,
                                                cluster,
@@ -424,7 +463,8 @@ public interface ClusterDeploymentManager {
                                                coreMax,
                                                reconcileInterval,
                                                System::currentTimeMillis,
-                                               memberSourceSupplier);
+                                               memberSourceSupplier,
+                                               communitySizing);
 
         ctxHolder.set(ctx);
 
