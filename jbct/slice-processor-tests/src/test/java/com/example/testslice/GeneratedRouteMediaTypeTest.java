@@ -97,4 +97,43 @@ class GeneratedRouteMediaTypeTest {
             assertThat(generated).contains(".withBody(new TypeToken<com.example.testslice.UpdateRequest>() {})");
         }
     }
+
+    /// Regression gate for the routing API package move in commit `76a2a6b91`:
+    /// `HttpError`/`HttpStatus`/`ContentType` moved `org.pragmatica.http.routing` →
+    /// `org.pragmatica.http` (module `integrations/net/http-types`). The slice-processor MUST emit
+    /// the new FQN so deployed slice JARs reference a class that resolves on the node/runtime
+    /// classpath via `SliceClassLoader`. A generator regressing to the OLD FQN produces a JAR that
+    /// throws `ClassNotFoundException` at route-publication → every slice 404s. The error-mapping
+    /// route `create` (mapped to `TestSliceError.*`) makes the errorMapper reference `HttpError`
+    /// and `HttpStatus`, so these imports are load-bearing, not dead.
+    @Nested
+    class RoutingApiFqn {
+
+        @Test
+        void httpErrorImport_usesNewHttpPackage_notRoutingPackage() {
+            assertThat(generated).contains("import org.pragmatica.http.HttpError;");
+            assertThat(generated).doesNotContain("import org.pragmatica.http.routing.HttpError;");
+            assertThat(generated).doesNotContain("org.pragmatica.http.routing.HttpError");
+        }
+
+        @Test
+        void httpStatusImport_usesNewHttpPackage_notRoutingPackage() {
+            assertThat(generated).contains("import org.pragmatica.http.HttpStatus;");
+            assertThat(generated).doesNotContain("import org.pragmatica.http.routing.HttpStatus;");
+            assertThat(generated).doesNotContain("org.pragmatica.http.routing.HttpStatus");
+        }
+
+        @Test
+        void errorMapperBody_referencesHttpErrorAndHttpStatus_makingImportsLoadBearing() {
+            assertThat(generated).contains("public ErrorMapper errorMapper()");
+            assertThat(generated).contains("HttpError.httpError(HttpStatus.");
+        }
+
+        @Test
+        void noRoutingApiClass_isReferencedViaOldPackage() {
+            assertThat(generated).doesNotContain("org.pragmatica.http.routing.ContentType");
+            assertThat(generated).doesNotContain("org.pragmatica.http.routing.CommonContentType");
+            assertThat(generated).doesNotContain("org.pragmatica.http.routing.ContentCategory");
+        }
+    }
 }
