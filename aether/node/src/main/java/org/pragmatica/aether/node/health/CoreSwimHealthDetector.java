@@ -416,6 +416,19 @@ public final class CoreSwimHealthDetector implements SwimMembershipListener {
         return protocol().map(SwimProtocol::currentHealth);
     }
 
+    /// Read-only snapshot of the currently ALIVE SWIM members. Additive, hot-path-free
+    /// projection over the underlying [`SwimProtocol`] membership map — returns an empty
+    /// list before the protocol is running. Feeds the worker-side governor announcer, whose
+    /// `onMembershipChange` re-reads this set on every SWIM observation edge.
+    public List<SwimMember> aliveMembers() {
+        return protocol().map(SwimProtocol::members)
+                       .map(members -> members.values()
+                                              .stream()
+                                              .filter(member -> member.state() == SwimMember.MemberState.ALIVE)
+                                              .toList())
+                       .or(List.of());
+    }
+
     private Option<SwimProtocol> protocol() {
         return switch (context.fsm()
                               .current()) {

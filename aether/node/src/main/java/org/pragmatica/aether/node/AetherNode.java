@@ -165,7 +165,9 @@ import org.pragmatica.aether.update.AbTestManager;
 import org.pragmatica.aether.update.DeploymentManager;
 import org.pragmatica.aether.worker.bootstrap.WorkerBootstrap;
 import org.pragmatica.aether.worker.deployment.WorkerDeploymentManager;
+import org.pragmatica.aether.worker.governor.CommunityMembershipFilter;
 import org.pragmatica.aether.worker.governor.DecisionRelay;
+import org.pragmatica.aether.worker.governor.GovernorAnnouncer;
 import org.pragmatica.aether.worker.governor.GovernorMesh;
 import org.pragmatica.aether.worker.group.GroupMembershipTracker;
 import org.pragmatica.aether.worker.metrics.CommunityMetricsSnapshot;
@@ -2133,6 +2135,14 @@ public interface AetherNode extends ManageableNode {
         var selfId = config.self();
         var rotatingEncryptor = createGossipEncryptor(config);
         var gossipKeyRotationHandler = GossipKeyRotationHandler.gossipKeyRotationHandler(rotatingEncryptor);
+        // Worker-mode activation needs the SWIM detector to feed the governor announcer
+        // (GAP 2). The detector is a local declared further down (after the SWIM config is
+        // built), but this registration lambda is constructed here — so capture it through a
+        // holder seeded immediately after the detector is created. The ActivationDirectiveKey
+        // ValuePut handler only fires long after seeding, so the holder is always populated by
+        // read time. A holder (not a reorder) keeps the router-build / replay-burst ordering
+        // documented below intact.
+        var swimHealthDetectorHolder = new AtomicReference<CoreSwimHealthDetector>();
         var activationKvRouter = KVNotificationRouter.<AetherKey, AetherValue> builder(AetherKey.class).onPut(AetherKey.ActivationDirectiveKey.class,
                                                                                                               (ValuePut<AetherKey.ActivationDirectiveKey, AetherValue.ActivationDirectiveValue> put) -> handleActivationDirective(put,
                                                                                                                                                                                                                                   selfId,
@@ -2144,6 +2154,7 @@ public interface AetherNode extends ManageableNode {
                                                                                                                                                                                                                                   kvStore,
                                                                                                                                                                                                                                   sliceStore,
                                                                                                                                                                                                                                   sliceInvoker,
+                                                                                                                                                                                                                                  swimHealthDetectorHolder::get,
                                                                                                                                                                                                                                   growthLog)).onPut(AetherKey.GossipKeyRotationKey.class,
                                                                                                                                                                                                                                                     gossipKeyRotationHandler::onGossipKeyRotationPut).build();
         // Gossip-key delivery (§5.8 AMENDED): the GossipKeyRotationKey subscription above is the
@@ -2214,6 +2225,8 @@ public interface AetherNode extends ManageableNode {
                                                                                swimIsBootingSupplier,
                                                                                faultyLeaderEvictor,
                                                                                swimTransportConnected);
+
+        swimHealthDetectorHolder.set(swimHealthDetector);
         // Single `(NodeId, incarnation)` authority: the metrics readiness epoch is sourced from
         // the SWIM self-incarnation, floored at a captured boot value so it never reports below
         // boot-millis during the pre-announce window (before `announceJoin` seeds the SWIM counter).
@@ -3976,12 +3989,14 @@ public interface AetherNode extends ManageableNode {
                                                   KVStore<AetherKey, AetherValue> kvStore,
                                                   SliceStore sliceStore,
                                                   SliceInvoker sliceInvoker,
+                                                  Supplier<CoreSwimHealthDetector> swimHealthDetectorSupplier,
                                                   Logger growthLog) {
         if (!put.cause().key().nodeId().equals(selfId)) {
             return;
         }
 
         var role = put.cause().value().role();
+        var communityId = put.cause().value().communityId();
 
         if (AetherValue.ActivationDirectiveValue.CORE.equals(role)) {
             growthLog.info("Received core activation directive from CDM");
@@ -3997,6 +4012,8 @@ public interface AetherNode extends ManageableNode {
                                kvStore,
                                sliceStore,
                                sliceInvoker,
+                               communityId,
+                               swimHealthDetectorSupplier.get(),
                                growthLog);
         }
     }
@@ -4011,6 +4028,8 @@ public interface AetherNode extends ManageableNode {
                                            KVStore<AetherKey, AetherValue> kvStore,
                                            SliceStore sliceStore,
                                            SliceInvoker sliceInvoker,
+                                           String communityId,
+                                           CoreSwimHealthDetector swimHealthDetector,
                                            Logger log) {
         clusterNode.authorizeObservation();
         switchableCluster.switchTo(forwardingClusterNode);
@@ -4026,20 +4045,45 @@ public interface AetherNode extends ManageableNode {
                                                                                       sliceStore,
                                                                                       mutationForwarder,
                                                                                       List.of(),
-                                                                                      () -> groupMembershipTracker.myGroup()
-                                                                                                                  .communityId());
+                                                                                      () -> communityId);
         var workerHlc = HlcClock.hlcClock(selfId);
         var workerTcpAddress = resolveSelfTcpAddress(config);
-        var governorAnnouncer = org.pragmatica.aether.worker.governor.GovernorAnnouncer.governorAnnouncer(selfId,
-                                                                                                          clusterNode,
-                                                                                                          workerHlc,
-                                                                                                          () -> groupMembershipTracker.myGroup()
-                                                                                                                                      .communityId(),
-                                                                                                          () -> workerTcpAddress,
-                                                                                                          () -> Epoch.ZERO);
+        // GAP 1.5 (announce → consensus): the announcer must apply through the forwarding
+        // cluster node, NOT the raw RabiaNode. A worker is observation-only and cannot drive
+        // consensus locally; forwardingClusterNode relays cluster.apply to a core peer (the
+        // leader), so the GovernorAnnouncementKey Put reaches consensus instead of being a
+        // dropped local apply.
+        var governorAnnouncer = GovernorAnnouncer.governorAnnouncer(selfId,
+                                                                    forwardingClusterNode,
+                                                                    workerHlc,
+                                                                    () -> communityId,
+                                                                    () -> workerTcpAddress,
+                                                                    () -> Epoch.ZERO);
 
         governorAnnouncer.start();
+        // GAP 2 (SWIM → governor): SWIM observations are edge-triggered, so on every edge we
+        // re-read the full ALIVE set and hand the community-filtered slice to the announcer.
+        // CommunityMembershipFilter scopes by the committed ActivationDirectiveValue.communityId
+        // (kvStore), NOT SwimMember source-labels: labels are absent for gossip-learned members
+        // and would silently drop community peers, whereas the committed directive is
+        // authoritative consensus state. Source-scoping (one community per source) is the
+        // single-community-per-source form; communityId-scoping is the refinement once the
+        // growth comparator splits a source into multiple communities.
+        swimHealthDetector.addObservationListener(observation -> announceCommunityMembership(governorAnnouncer,
+                                                                                             swimHealthDetector,
+                                                                                             kvStore,
+                                                                                             communityId));
         log.info("Worker {} subsystems created, ready for SWIM-based community formation", selfId.id());
+    }
+
+    @SuppressWarnings({"JBCT-RET-01"})
+    private static void announceCommunityMembership(GovernorAnnouncer governorAnnouncer,
+                                                    CoreSwimHealthDetector swimHealthDetector,
+                                                    KVStore<AetherKey, AetherValue> kvStore,
+                                                    String communityId) {
+        governorAnnouncer.onMembershipChange(CommunityMembershipFilter.communityAliveMembers(swimHealthDetector.aliveMembers(),
+                                                                                             kvStore,
+                                                                                             communityId));
     }
 
     private static String resolveSelfTcpAddress(AetherNodeConfig config) {
