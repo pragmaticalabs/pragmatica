@@ -63,8 +63,9 @@ public sealed interface DurableEntityError extends Cause {
     record StaleOwner(String key, String presentedEpoch) implements DurableEntityError {
         @Override
         public String message() {
-            return "Durable entity write for key '" + key + "' rejected: this node's owner epoch "
-                   + presentedEpoch + " is stale (deposed) — a newer owner has taken over the partition";
+            return "Durable entity write for key '" + key
+                 + "' rejected: this node's owner epoch " + presentedEpoch
+                 + " is stale (deposed) — a newer owner has taken over the partition";
         }
     }
 

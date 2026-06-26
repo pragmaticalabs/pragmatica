@@ -10,6 +10,7 @@ import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.dht.storage.OwnerEpochGate;
 import org.pragmatica.lang.Contract;
 
+
 /// Binds the DHT data-plane fence ([OwnerEpochGate], Apache-2.0 `integrations/dht`) to the
 /// per-ownership-domain [OwnershipEpochHighWater] (BSL-1.1 `aether/slice`) — the cross-module seam of
 /// #345 piece 1c. The DHT engine carries the owner epoch only as two primitive `long`s; this class is
@@ -36,7 +37,8 @@ public final class HighWaterOwnerEpochGate implements OwnerEpochGate {
 
     /// Gate fencing the DHT puts of the given ownership-arc `partitionId` (today: `"core"`) against
     /// `highWater`.
-    public static HighWaterOwnerEpochGate highWaterOwnerEpochGate(OwnershipEpochHighWater highWater, String partitionId) {
+    public static HighWaterOwnerEpochGate highWaterOwnerEpochGate(OwnershipEpochHighWater highWater,
+                                                                  String partitionId) {
         return new HighWaterOwnerEpochGate(highWater, partitionId);
     }
 

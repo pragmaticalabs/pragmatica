@@ -4,8 +4,9 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.resource.entity;
 
+import org.pragmatica.aether.dht.EntityPartitionArc;
+import org.pragmatica.aether.dht.PartitionOwnerEpochSource;
 import org.pragmatica.dht.DHTError;
-import org.pragmatica.dht.OwnerEpochSource;
 import org.pragmatica.dht.storage.StorageEngine;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Functions.Fn1;
@@ -15,68 +16,71 @@ import org.pragmatica.lang.Unit;
 import org.pragmatica.serialization.Deserializer;
 import org.pragmatica.serialization.Serializer;
 
-import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.concurrent.atomic.AtomicLong;
 
 
-/// Fenced, owner-stamped [DurableEntity] backed by a DHT [StorageEngine] (plan Phase 2b-i — the
-/// spec's "first functional cut on the #345 fence"). State for a key is committed as a fenced DHT
-/// entry: every write is stamped with this node's current owner [Epoch] (via [OwnerEpochSource]) and
-/// rejected at the storage engine's commit point if that epoch is stale — so a deposed owner cannot
-/// double-write across a governor handover (spec §4.2, §6).
+/// Per-`(keyspace, partition)` fenced, owner-stamped [DurableEntity] backed by a DHT [StorageEngine]
+/// (plan Phase 2b-ii — true per-key single-writer correctness). The sibling of the coarse 2b-i
+/// [FencedDurableEntity], differing in ONE dimension: the ownership arc each write is fenced against.
 ///
-/// ## What this cut delivers vs defers
+/// ## What this cut adds over 2b-i
+/// [FencedDurableEntity] stamps and fences every write at the single `"core"` governor arc, whose epoch
+/// advances only on a GOVERNOR change. It therefore MISSES a deposed partition owner on a
+/// same-generation reshuffle — an owner change with no governor handover. This entity instead routes
+/// each key to its own `(keyspace, partition)` ownership arc:
 ///
-///   - **Fenced single-writer correctness.** Commits go through [StorageEngine#putVersioned] with the
-///     owner epoch; a stale-owner stamp is rejected with [DHTError.StaleEpochWrite], surfaced here as
-///     [DurableEntityError.StaleOwner]. This is the split-brain guarantee spec §6 requires.
-///   - **Per-key serialization.** Same-key operations are totally ordered via the same lock-free
-///     tail-chaining idiom as [InMemoryDurableEntity]; different keys proceed in parallel.
+///   - the key's partition is derived once via [EntityPartitionArc] and embedded in the DHT key bytes;
+///   - the write is stamped with the partition's CURRENT owner epoch (via [PartitionOwnerEpochSource],
+///     reading the committed `StreamPartitionOwnershipValue.ownerEpoch`);
+///   - the storage engine's [org.pragmatica.aether.dht.PartitionOwnerEpochGate] re-derives the SAME arc
+///     from the key bytes and rejects the write if its epoch is strictly older than the partition's
+///     committed high-water.
+///
+/// So a deposed partition owner whose `"core"` epoch is still current — which 2b-i would WAVE THROUGH —
+/// is REJECTED here with [DurableEntityError.StaleOwner], because its per-partition epoch is dominated
+/// by the partition's advanced high-water (which advanced on the reshuffle with NO governor change).
+///
+/// ## What it shares with 2b-i
+///   - **Per-key serialization.** Same [PerKeySerialExecutor] tail-chaining: same-key operations are
+///     totally ordered, different keys proceed in parallel — so the read — fence-stamp — commit cycle
+///     for a key is single-threaded and race-free without locks.
 ///   - **HA, not restart-durable.** The engine is the in-memory `MemoryStorageEngine`; restart
-///     durability is the fenced-log slice (spec §4.4 / plan Phase 3), behind this same API.
-///   - **Single-replica, local-owner.** This cut commits to ONE engine and assumes it runs on the
-///     owner; cross-node owner-routing of updates and quorum replication are later sub-slices (2b-ii)
-///     — no general owner-routed invocation mechanism exists yet to run a mutator on a remote owner.
+///     durability is the fenced-log slice (plan Phase 3) behind this same API.
+///   - **Single-replica, local-owner.** Commits to ONE engine and assumes it runs on the owner;
+///     cross-node owner-routing of updates and quorum replication are later sub-slices (#277).
 ///
-/// ## State representation
-///
-/// A key `K` is mapped to the DHT key bytes `keyspace + "/" + key` (UTF-8). The state `S` is encoded
-/// with the injected [Serializer] and decoded with the [Deserializer]. A monotonic process-wide
-/// version sequencer supplies the within-epoch HLC-LWW `version`; under the per-key tail each commit
-/// for a key gets a strictly higher version than its predecessor, so the last committed write wins.
-///
-/// @param <K> entity key type — rendered to bytes via `String.valueOf` for the DHT key (first cut)
+/// @param <K> entity key type — rendered to bytes via `String.valueOf` for the DHT key
 /// @param <S> entity state type — an application-defined immutable value, encoded via [Serializer]
-final class FencedDurableEntity<K, S> implements DurableEntity<K, S> {
+final class PartitionFencedDurableEntity<K, S> implements DurableEntity<K, S> {
     private final StorageEngine storage;
-    private final OwnerEpochSource ownerEpoch;
+    private final PartitionOwnerEpochSource ownerEpoch;
+    private final EntityPartitionArc arc;
     private final Serializer serializer;
     private final Deserializer deserializer;
-    private final String keyspace;
     private final AtomicLong versionSequencer;
     private final PerKeySerialExecutor<K> perKey;
 
-    private FencedDurableEntity(StorageEngine storage,
-                                OwnerEpochSource ownerEpoch,
-                                Serializer serializer,
-                                Deserializer deserializer,
-                                String keyspace) {
+    private PartitionFencedDurableEntity(StorageEngine storage,
+                                         PartitionOwnerEpochSource ownerEpoch,
+                                         EntityPartitionArc arc,
+                                         Serializer serializer,
+                                         Deserializer deserializer) {
         this.storage = storage;
         this.ownerEpoch = ownerEpoch;
+        this.arc = arc;
         this.serializer = serializer;
         this.deserializer = deserializer;
-        this.keyspace = keyspace;
         this.versionSequencer = new AtomicLong();
         this.perKey = PerKeySerialExecutor.perKeySerialExecutor();
     }
 
-    static <K, S> DurableEntity<K, S> fencedDurableEntity(StorageEngine storage,
-                                                          OwnerEpochSource ownerEpoch,
-                                                          Serializer serializer,
-                                                          Deserializer deserializer,
-                                                          String keyspace) {
-        return new FencedDurableEntity<>(storage, ownerEpoch, serializer, deserializer, keyspace);
+    static <K, S> DurableEntity<K, S> partitionFencedDurableEntity(StorageEngine storage,
+                                                                   PartitionOwnerEpochSource ownerEpoch,
+                                                                   EntityPartitionArc arc,
+                                                                   Serializer serializer,
+                                                                   Deserializer deserializer) {
+        return new PartitionFencedDurableEntity<>(storage, ownerEpoch, arc, serializer, deserializer);
     }
 
     @Override
@@ -133,16 +137,19 @@ final class FencedDurableEntity<K, S> implements DurableEntity<K, S> {
                       .mapError(cause -> storageFailed(key, cause));
     }
 
-    /// Encode `next` and commit it under the owner-epoch fence, returning `next` on success. A stale
-    /// owner stamp is rejected by [StorageEngine#putVersioned] with [DHTError.StaleEpochWrite] and
-    /// translated to [DurableEntityError.StaleOwner]; any other backing failure becomes
-    /// [DurableEntityError.StorageFailed].
+    /// Encode `next` and commit it under the KEY'S PARTITION owner-epoch fence, returning `next` on
+    /// success. The stamp is the partition's current committed owner epoch; the engine's
+    /// [org.pragmatica.aether.dht.PartitionOwnerEpochGate] rejects a strictly-older stamp with
+    /// [DHTError.StaleEpochWrite], translated here to [DurableEntityError.StaleOwner]. Any other backing
+    /// failure becomes [DurableEntityError.StorageFailed].
     private Promise<S> commit(K key, S next) {
+        var epoch = ownerEpoch.currentOwnerEpoch(arc.partitionOf(String.valueOf(key)));
+
         return storage.putVersioned(dhtKey(key),
                                     serializer.encode(next),
                                     versionSequencer.incrementAndGet(),
-                                    ownerEpoch.currentEpochTerm(),
-                                    ownerEpoch.currentEpochCounter()).map(_ -> next)
+                                    epoch.rabiaTerm(),
+                                    epoch.localCounter()).map(_ -> next)
                                    .mapError(cause -> translateCommitFailure(key, cause));
     }
 
@@ -172,7 +179,7 @@ final class FencedDurableEntity<K, S> implements DurableEntity<K, S> {
     }
 
     private byte[] dhtKey(K key) {
-        return (keyspace + "/" + key).getBytes(StandardCharsets.UTF_8);
+        return arc.dhtKey(String.valueOf(key));
     }
 
     private static <S> Promise<S> keyAlreadyExists(Object key) {

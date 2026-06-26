@@ -36,21 +36,15 @@
             <groupId>org.pragmatica-lite</groupId>
             <artifactId>dht</artifactId>
         </dependency>
-        <dependency>
-            <groupId>org.pragmatica-lite</groupId>
-            <artifactId>serialization-api</artifactId>
-        </dependency>
-
-        <!-- Test only: the real high-water-backed epoch gate to prove stale-owner rejection in-JVM. -->
+        <!-- Per-partition entity fence (#345 2b-ii): EntityPartitionArc + PartitionOwnerEpochGate/Source
+             over the per-(keyspace,partition) OwnershipEpochHighWater (brings slice transitively). -->
         <dependency>
             <groupId>org.pragmatica-lite.aether</groupId>
             <artifactId>aether-dht</artifactId>
-            <scope>test</scope>
         </dependency>
         <dependency>
-            <groupId>org.pragmatica-lite.aether</groupId>
-            <artifactId>slice</artifactId>
-            <scope>test</scope>
+            <groupId>org.pragmatica-lite</groupId>
+            <artifactId>serialization-api</artifactId>
         </dependency>
 
         <dependency>

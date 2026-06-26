@@ -12,6 +12,7 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.DhtPartitionOwnershipValu
 import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.dht.OwnerEpochSource;
 
+
 /// Reads this node's CURRENT owner epoch for its DHT ownership arc from the committed CP record, to
 /// stamp outgoing DHT puts with a fencing token (#345 piece 1c). The committed
 /// `DhtPartitionOwnershipValue.ownerEpoch` (Rabia-backed, leader-fenced — the authoritative epoch) is
