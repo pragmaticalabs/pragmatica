@@ -140,10 +140,11 @@ import org.pragmatica.aether.stream.replication.ReplicationReceiveHandler;
 import org.pragmatica.aether.stream.replication.SelfWatermark;
 import org.pragmatica.aether.stream.replication.StreamPartitionRecovery;
 import org.pragmatica.aether.stream.replication.WatermarkTracker;
-import org.pragmatica.aether.stream.EvictionListener;
 import org.pragmatica.aether.stream.segment.RetentionEnforcer;
 import org.pragmatica.aether.stream.segment.SegmentIndex;
 import org.pragmatica.aether.stream.segment.SegmentReader;
+import org.pragmatica.aether.stream.segment.SegmentSealer;
+import org.pragmatica.aether.stream.segment.StorageSegmentSink;
 import org.pragmatica.aether.slice.dependency.SliceRegistry;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.StreamPartitionOwnershipKey;
@@ -2550,8 +2551,10 @@ public interface AetherNode extends ManageableNode {
                                                                                                               .map(spm -> spm.earliestRetainedOffset(streamName,
                                                                                                                                                      partition))
                                                                                                               .or(-1L));
+        var streamSegmentIndex = new SegmentIndex();
+        var streamStorage = streamStorageSetup.instance();
         var streamPartitionManager = StreamPartitionManager.streamPartitionManager(streamMaxMemoryBytes,
-                                                                                   EvictionListener.NOOP,
+                                                                                   SegmentSealer.segmentSealer(StorageSegmentSink.storageSegmentSink(streamStorage, streamSegmentIndex)),
                                                                                    streamReplicationManager,
                                                                                    clusterNode,
                                                                                    ownershipEpochHighWater,
@@ -2626,9 +2629,7 @@ public interface AetherNode extends ManageableNode {
         // backoff until both legs commit, so a commit timeout in the post-leader-gain window no longer
         // leaves the stream unregistered (which made /api/events|alerts|traces return 200 []).
         // deleted alongside the audit publisher and RecentCommandsBuffer.
-        var streamSegmentIndex = new SegmentIndex();
         var streamWatermarkTracker = WatermarkTracker.watermarkTracker();
-        var streamStorage = streamStorageSetup.instance();
         var streamSegmentReader = SegmentReader.segmentReader(streamStorage, streamSegmentIndex);
         var streamRetentionEnforcer = RetentionEnforcer.retentionEnforcer(streamStorage,
                                                                           streamSegmentIndex,
