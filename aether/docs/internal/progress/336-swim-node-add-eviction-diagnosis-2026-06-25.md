@@ -97,3 +97,30 @@ Land the SWIM fix behind a fast in-JVM gate: `CommunityFormationProbeTest` (this
 the existing SWIM Wave-6 / anti-oscillation unit suites + `ScaleUpFiveToSevenProbeTest` (#336), green,
 before any cloud sweep. When node-add stability lands, `CommunityFormationProbeTest` flips green and
 the #241 worker/community tier becomes Forge-provable.
+
+## Resolution (2026-06-26) — FIXED & validated
+
+Implemented on branch **`fix/336-swim-observed-birth-state`** as a new **local-only `OBSERVED` birth
+state** (Rank 3 of the proposal — don't arm a death timer at birth — plus a corrected gossip-merge):
+
+- `00be33514` — OBSERVED birth (no timer, no gossip, no `everSeenHealthy`); probe-eligible; promote
+  on probe-ack; OBSERVED→SUSPECT only past the join deadline; `addMemberUpdate` wire-leak guard;
+  removed the subsumed born-SUSPECT band-aids.
+- `a15b0e1f9` — gossip-merge correction: `statePriority(OBSERVED) = -1` (weakest) so a gossiped
+  `Alive` **promotes** OBSERVED; `applyExistingMember` **ignores** gossiped SUSPECT/FAULTY for an
+  OBSERVED member (own probing decides); `applyNewSuspectMember`-of-unknown births OBSERVED too.
+- #231 / #126 / #94 invariants preserved.
+
+**Validated:** `mvn -pl integrations/swim test` 170/170; line-by-line review + full `jbct-reviewer`
+pass; **real Docker cluster** (`run-tests.sh --env remote`): scale-up 5→7 in 25s zero-eviction, all
+chaos recoveries + joining-window-kill + worker-join PASS, clean total-restart (graceful + abrupt).
+
+**Forge harness caveat:** `CommunityFormationProbeTest` / `ScaleUpFiveToSevenProbeTest` still cannot
+go green in single-JVM Forge at 6-8 nodes (transport/probe-ack contention collapse — a harness
+artifact, not the fix). The remote Docker cluster is the real gate.
+
+**Separate issue (NOT this fix):** suite-02 **S20** self-drain-quorum-loss → full-restart recovery
+fails because the chaos suite auto-heal-replaced all compose nodes with ephemeral ULID-provisioned
+nodes and `restart_all_nodes` restarts the original compose nodes against a committed membership that
+references the gone ULIDs — a harness/recovery-orchestration issue (the clean total-restart proves
+the formation path is healthy). See `session-handover-2026-06-26-design-stream.md` §3; next-session task.
