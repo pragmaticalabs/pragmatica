@@ -1709,6 +1709,153 @@ as the newest version, `false` when a stale-version write was suppressed.
 
 ---
 
+## Storage (Hierarchical Storage Engine)
+
+Operator-facing inspection and snapshot control for the node's Hierarchical Storage
+Engine instances (#207) — the content-addressed block stores that back content,
+artifact, and stream storage. Each instance exposes its tier topology
+(`MEMORY` / `LOCAL_DISK` / `REMOTE`), per-tier capacity utilisation, a
+`ReadinessState` (`LOADING_SNAPSHOT` / `SNAPSHOT_LOADED` / `READY`), and metadata
+snapshot epoch/timestamp.
+
+The `/api/storage*` routes are **per-node diagnostics** served node-locally (the
+receiving node's own instances). The `/api/cluster/storage*` routes are
+**leader-aggregated**: the leader publishes every node's storage status into the
+KV-Store and returns the cluster-wide rollup.
+
+### GET /api/storage
+
+List the storage instances on the connected node with their tier utilisation and
+readiness.
+
+**Routing:** LOCAL (node-local; not forwarded). **RBAC:** VIEWER.
+
+**Response:**
+```json
+{
+  "instances": [
+    {
+      "name": "content",
+      "tiers": [
+        {"level": "MEMORY",     "usedBytes": 1048576,  "maxBytes": 134217728,   "utilizationPct": 0.8},
+        {"level": "LOCAL_DISK", "usedBytes": 52428800, "maxBytes": 10737418240, "utilizationPct": 0.5}
+      ],
+      "readiness": {"state": "READY", "isReadReady": true, "isWriteReady": true}
+    }
+  ]
+}
+```
+
+- `utilizationPct`: `usedBytes / maxBytes` as a percentage rounded to one decimal (`0.0` when `maxBytes` is 0).
+- `readiness.isReadReady` / `isWriteReady`: whether the instance's `StorageReadinessGate` currently admits reads / writes.
+
+### GET /api/storage/{name}
+
+Detail for a single named storage instance on the connected node, including the
+latest metadata-snapshot marker. Returns a failure when no instance with that name
+exists on the node.
+
+**Routing:** LOCAL. **RBAC:** VIEWER.
+
+**Response:**
+```json
+{
+  "name": "content",
+  "tiers": [
+    {"level": "MEMORY",     "usedBytes": 1048576,  "maxBytes": 134217728,   "utilizationPct": 0.8},
+    {"level": "LOCAL_DISK", "usedBytes": 52428800, "maxBytes": 10737418240, "utilizationPct": 0.5}
+  ],
+  "snapshot": {"lastEpoch": 42, "lastTimestampMs": 1716280000000},
+  "readiness": {"state": "READY", "isReadReady": true, "isWriteReady": true}
+}
+```
+
+- `snapshot.lastEpoch` / `lastTimestampMs`: epoch and epoch-millis of the most recent metadata snapshot taken by the instance's `SnapshotManager` (`0` when none has been taken yet).
+
+### POST /api/storage/snapshot/{name}
+
+Force an immediate metadata snapshot of the named storage instance (calls the
+instance's `SnapshotManager.forceSnapshot()`). Returns the epoch and timestamp of
+the snapshot just taken.
+
+**Routing:** routed to the `STORAGE` task-group owner. **RBAC:** ADMIN (default for unlisted mutations).
+
+**Request:** empty body (`{}`).
+
+**Response:**
+```json
+{
+  "name": "content",
+  "epoch": 43,
+  "timestampMs": 1716280001234
+}
+```
+
+### GET /api/cluster/storage
+
+Cluster-wide rollup of every node's storage instances. The leader first publishes
+each node's current storage status into the KV-Store, then groups the statuses by
+instance name and reports per-instance totals plus a per-node breakdown.
+
+**Routing:** LEADER (forwarded to the current leader). **RBAC:** VIEWER.
+
+**Response:**
+```json
+{
+  "instances": [
+    {
+      "name": "content",
+      "nodeCount": 3,
+      "totalUsedBytes": 157286400,
+      "totalMaxBytes": 32212254720,
+      "nodes": [
+        {
+          "nodeId": "node-1",
+          "tiers": [
+            {"level": "MEMORY",     "usedBytes": 1048576,  "maxBytes": 134217728,   "utilizationPct": 0.8},
+            {"level": "LOCAL_DISK", "usedBytes": 52428800, "maxBytes": 10737418240, "utilizationPct": 0.5}
+          ],
+          "readiness": {"state": "READY", "isReadReady": true, "isWriteReady": true}
+        }
+      ]
+    }
+  ]
+}
+```
+
+- `totalUsedBytes` / `totalMaxBytes`: sums across every tier of every node hosting the instance.
+
+### GET /api/cluster/storage/{name}
+
+Cluster-wide detail for a single named instance — the per-node breakdown including
+each node's snapshot marker. Returns a failure when no node reports an instance with
+that name.
+
+**Routing:** LEADER. **RBAC:** VIEWER.
+
+**Response:**
+```json
+{
+  "name": "content",
+  "nodeCount": 3,
+  "totalUsedBytes": 157286400,
+  "totalMaxBytes": 32212254720,
+  "nodes": [
+    {
+      "nodeId": "node-1",
+      "tiers": [
+        {"level": "MEMORY",     "usedBytes": 1048576,  "maxBytes": 134217728,   "utilizationPct": 0.8},
+        {"level": "LOCAL_DISK", "usedBytes": 52428800, "maxBytes": 10737418240, "utilizationPct": 0.5}
+      ],
+      "snapshot": {"lastEpoch": 42, "lastTimestampMs": 1716280000000},
+      "readiness": {"state": "READY", "isReadReady": true, "isWriteReady": true}
+    }
+  ]
+}
+```
+
+---
+
 ## Observability Depth
 
 ### GET /api/observability/depth
@@ -3205,6 +3352,11 @@ Conclude the A/B test and promote the winning variant. Requires leader node.
 | DELETE | `/api/observability/depth/{artifact}/{method}` | Observability Depth |
 | GET | `/api/dht/replication-map` | DHT |
 | POST | `/api/dht/inject` | DHT (dev-mode only) |
+| GET | `/api/storage` | Storage (per-node) |
+| GET | `/api/storage/{name}` | Storage (per-node) |
+| POST | `/api/storage/snapshot/{name}` | Storage |
+| GET | `/api/cluster/storage` | Storage (cluster-wide) |
+| GET | `/api/cluster/storage/{name}` | Storage (cluster-wide) |
 | GET | `/api/logging/levels` | Log Level Management |
 | POST | `/api/logging/levels` | Log Level Management |
 | DELETE | `/api/logging/levels/{logger}` | Log Level Management |

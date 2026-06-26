@@ -2217,6 +2217,55 @@ node and union the results.
 
 ---
 
+## Storage
+
+Inspect and snapshot the node's Hierarchical Storage Engine instances (#207) — the
+content-addressed block stores backing content, artifact, and stream storage.
+Wraps the [`/api/storage`](management-api.md#storage-hierarchical-storage-engine)
+Management-API surface.
+
+### `aether storage list [--node <id>]`
+
+List storage instances with their tier utilisation and readiness. By default
+returns the **cluster-wide** rollup (per-instance totals + a per-node breakdown,
+via the leader, `GET /api/cluster/storage`). With `--node <id>` it returns a single
+node's local view (`GET /api/storage`).
+
+Options:
+- `--node <id>` — target a specific node's local storage view instead of the cluster rollup.
+
+```bash
+aether storage list
+aether storage list --node node-1
+aether storage list --format json
+```
+
+### `aether storage status <name> [--node <id>]`
+
+Show one named instance's tier topology, snapshot marker, and readiness. By default
+returns the cluster-wide per-node breakdown (`GET /api/cluster/storage/{name}`);
+with `--node <id>` it returns that node's local detail (`GET /api/storage/{name}`).
+
+Options:
+- `--node <id>` — target a specific node's local view instead of the cluster rollup.
+
+```bash
+aether storage status content
+aether storage status content --node node-1
+```
+
+### `aether storage snapshot <name>`
+
+Force an immediate metadata snapshot of the named instance
+(`POST /api/storage/snapshot/{name}`). Prints the epoch and timestamp of the
+snapshot just taken. Routed to the `STORAGE` task-group owner.
+
+```bash
+aether storage snapshot content
+```
+
+---
+
 ## Exit Codes
 
 | Code | Meaning |
