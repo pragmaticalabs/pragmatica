@@ -23,7 +23,7 @@ import static org.pragmatica.lang.Promise.unitPromise;
 /// State lives in `state` (an in-memory map). Operations serialize per key via a shared
 /// [PerKeySerialExecutor]: same-key operations run in strict submission order (so the read-modify-write
 /// on `state` is race-free without any explicit lock), while different keys proceed concurrently. See
-/// [PerKeySerialExecutor] for the lock-free `ConcurrentHashMap.compute` + `Promise`-chaining idiom.
+/// [PerKeySerialExecutor] for the lock-free `AtomicReference.getAndSet` tail-swap + `Promise`-chaining idiom.
 ///
 /// @param <K> entity key type
 /// @param <S> entity state type (immutable)

@@ -8,8 +8,8 @@ import org.pragmatica.lang.Functions.Fn0;
 import org.pragmatica.lang.Promise;
 
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicReference;
 
-import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Promise.promise;
 import static org.pragmatica.lang.Promise.unitPromise;
 
@@ -20,27 +20,40 @@ import static org.pragmatica.lang.Promise.unitPromise;
 /// operations on DIFFERENT keys proceed concurrently. No `synchronized`, no raw locks, no raw threads.
 ///
 /// ## How it works
-/// A `tails` map holds, per key, that key's current serialization tail [Promise]. [#submit] chains the
-/// new operation onto the key's tail inside [ConcurrentHashMap#compute]:
+/// A `tails` map holds, per key, an [AtomicReference] to that key's current serialization tail [Promise].
+/// [#submit] publishes a fresh tail and appends the new operation onto the previous tail with a single
+/// wait-free [AtomicReference#getAndSet] — the only mutation on the hot path:
 ///
-///   - **Same-key total order.** `tails.compute` is an atomic read-modify-write under the bin lock, so
-///     the new tail is appended after the current one — same-key operations run strictly in order, and
-///     each operation's read-modify-write on its backing state is therefore race-free without any
-///     explicit lock.
-///   - **Cross-key parallelism.** Different keys occupy different map entries (different bins), so their
-///     tails advance independently and concurrently.
-///   - **Non-poisoning.** [Promise#fold] runs the next operation regardless of the previous operation's
-///     outcome (it ignores the prior [org.pragmatica.lang.Result]), so a failed operation does not block
-///     or fail later operations on the same key.
+///   - **Same-key total order.** `getAndSet` atomically installs this operation's result-promise as the
+///     new tail and returns the previous tail in one indivisible step, so concurrent same-key submits are
+///     linearized into a single chain — each operation runs strictly after its predecessor resolves, and
+///     each operation's read-modify-write on its backing state is therefore race-free without any explicit
+///     lock. There is no read-modify-write window for two submits to observe the same predecessor.
+///   - **Cross-key parallelism.** Different keys occupy different map entries, each with its own
+///     [AtomicReference], so their tails advance independently and concurrently.
+///   - **Non-poisoning.** The successor is wired onto the predecessor via [Promise#fold] (not `flatMap`),
+///     which runs regardless of the predecessor's outcome and ignores its [org.pragmatica.lang.Result], so
+///     a failed operation does not block or fail later operations on the same key.
 ///
-/// Each operation is [#launch]ed on the Promise executor — never run inside the `compute` bin lock — so
-/// the lock holds only for the cheap tail-append while the actual operation runs later on an executor
-/// thread. The tail is erased to [Promise]`<Object>` purely to sequence heterogeneous operations; the
-/// per-call result type is recovered by [#castResult].
+/// The hot path takes NO lock while allocating or chaining a [Promise]: the previous tail is swapped out by
+/// an atomic `getAndSet`, and the operation is chained onto it (and launched on the Promise executor)
+/// entirely off any map lock. The single [ConcurrentHashMap] touch per call is a lock-free
+/// [ConcurrentHashMap#get]; [ConcurrentHashMap#computeIfAbsent] runs only once per key, to create that
+/// key's [AtomicReference]. Each predecessor link is released the moment its dependent [Promise#fold]
+/// action fires and resolves the published tail, so the chain never retains completed links (O(N) memory,
+/// not O(N²)).
+///
+/// Idle-key cleanup of the `tails` map is intentionally NOT addressed here — it is a separate concern, left
+/// to a future bounded-eviction pass; the map grows with the number of distinct keys, as before.
+///
+/// The tail is erased to [Promise]`<Object>` purely to sequence heterogeneous operations; the per-call
+/// result type is recovered by [#castResult].
 ///
 /// @param <K> key type — used only as a map key (equals/hashCode); never mutated
 final class PerKeySerialExecutor<K> {
-    private final ConcurrentHashMap<K, Promise<Object>> tails;
+    private static final Promise<Object> SEED = erase(unitPromise());
+
+    private final ConcurrentHashMap<K, AtomicReference<Promise<Object>>> tails;
 
     private PerKeySerialExecutor() {
         this.tails = new ConcurrentHashMap<>();
@@ -50,23 +63,32 @@ final class PerKeySerialExecutor<K> {
         return new PerKeySerialExecutor<>();
     }
 
-    /// Chain `operation` onto `key`'s serialization tail and return this operation's own outcome. The
-    /// `tails.compute` call atomically appends the operation after the key's current tail, so same-key
-    /// operations are totally ordered while different keys proceed in parallel.
+    /// Append `operation` onto `key`'s serialization tail and return this operation's own outcome. A single
+    /// wait-free `getAndSet` publishes this operation's result-promise as the new tail and returns the
+    /// previous tail, so same-key operations are totally ordered while different keys proceed in parallel.
     <R> Promise<R> submit(K key, Fn0<Promise<R>> operation) {
-        return castResult(tails.compute(key, (_, previous) -> chainOnto(previous, operation)));
+        var published = Promise.<Object>promise();
+        var previous = tailRef(key).getAndSet(published);
+
+        return castResult(chainOnto(previous, operation, published));
     }
 
-    /// Build the new tail: run `operation` once `previous` resolves, regardless of its outcome.
-    /// [Promise#fold] (not `flatMap`) keeps a failed predecessor from short-circuiting the successor, and
-    /// [#launch] moves the operation off the [ConcurrentHashMap#compute] bin lock onto the Promise
-    /// executor so the lock holds only for the cheap tail-append.
-    private static <R> Promise<Object> chainOnto(Promise<Object> previous, Fn0<Promise<R>> operation) {
-        return seed(previous).fold(_ -> launch(operation));
+    private AtomicReference<Promise<Object>> tailRef(K key) {
+        return tails.computeIfAbsent(key, _ -> new AtomicReference<>(SEED));
     }
 
-    private static Promise<Object> seed(Promise<Object> previous) {
-        return option(previous).or(erase(unitPromise()));
+    /// Wire `operation` onto `previous` OUTSIDE any lock: once `previous` resolves (success or failure),
+    /// launch `operation` on the Promise executor and forward its result onto the already-published tail.
+    /// Both links are dependent [Promise#fold] actions — run synchronously in the predecessor's resolution
+    /// drain, exactly once and in order — and `fold` (not `flatMap`) keeps a failed predecessor from
+    /// short-circuiting the successor.
+    private static <R> Promise<Object> chainOnto(Promise<Object> previous,
+                                                 Fn0<Promise<R>> operation,
+                                                 Promise<Object> published) {
+        previous.fold(_ -> launch(operation))
+                .fold(published::resolve);
+
+        return published;
     }
 
     private static <R> Promise<Object> launch(Fn0<Promise<R>> operation) {
