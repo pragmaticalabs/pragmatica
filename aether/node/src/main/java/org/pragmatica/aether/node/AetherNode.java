@@ -109,8 +109,6 @@ import org.pragmatica.aether.metrics.network.NetworkMetricsHandler;
 import org.pragmatica.aether.repository.RepositoryFactory;
 import org.pragmatica.aether.slice.*;
 import org.pragmatica.aether.storage.DelegatedStorageAdapter;
-import org.pragmatica.aether.storage.DhtStorageTier;
-import org.pragmatica.storage.MemoryTier;
 import org.pragmatica.storage.StorageInstance;
 import org.pragmatica.aether.slice.StreamPublisher;
 import org.pragmatica.aether.stream.DefaultStreamPublisher;
@@ -167,6 +165,7 @@ import org.pragmatica.aether.worker.mutation.MutationForwarder;
 import org.pragmatica.aether.config.AppHttpConfig;
 import org.pragmatica.aether.config.BackupConfig;
 import org.pragmatica.aether.config.BuildInfo;
+import org.pragmatica.aether.config.StorageConfig;
 import org.pragmatica.aether.config.WorkerConfig;
 import org.pragmatica.cluster.metrics.DeploymentMetricsMessage;
 import org.pragmatica.cluster.metrics.ClusterSyncMessage;
@@ -669,7 +668,6 @@ public interface AetherNode extends ManageableNode {
     }
 
     long DEFAULT_STREAM_RETENTION_MS = 24 * 60 * 60 * 1000L;
-    long DEFAULT_STREAM_MEMORY_BYTES = 16 * 1024 * 1024L;
     /// A4 catch-up: number of events pulled per forward-read page during partition backfill.
     int STREAM_CATCHUP_BATCH_SIZE = 256;
     /// A4 periodic backfill re-drive interval. `reconcilePartition` fires `onBecameReplica → backfill`
@@ -689,14 +687,31 @@ public interface AetherNode extends ManageableNode {
     /// and is a no-op on every healthy node thereafter.
     TimeSpan NDM_ACTIVATION_RECONCILE_INTERVAL = TimeSpan.timeSpan(5).seconds();
 
-    private static StorageInstance createStreamStorage(Option<DHTClient> dhtClient) {
-        var memoryTier = MemoryTier.memoryTier(DEFAULT_STREAM_MEMORY_BYTES);
+    /// Per-node, restart-stable data dir for the disk-backed stream storage. Derived as a sibling of
+    /// the node's artifact disk path (the artifacts/content convention, `StorageConfig.diskPath()`)
+    /// suffixed with the node id, so that (a) it lives under the same durable `${data.dir}` mount in
+    /// production, (b) it is distinct per node — critical for a multi-node `EmberCluster` running in a
+    /// single JVM, which would otherwise share one segment dir and collide on the `latest` snapshot
+    /// link and content-addressed blocks — and (c) it is stable across a same-node restart because the
+    /// node id is stable, so sealed segments are reclaimed on reboot.
+    private static Path streamDataDir(AetherNodeConfig config) {
+        var artifactsConfig = Option.option(config.storageConfig().get("artifacts")).or(StorageConfig.storageConfig());
 
-        return dhtClient.map(client -> DhtStorageTier.dhtStorageTier(client, "stream-segments"))
-                        .map(dht -> StorageInstance.storageInstance("streams",
-                                                                    List.of(memoryTier, dht)))
-                        .or(StorageInstance.storageInstance("streams",
-                                                            List.of(memoryTier)));
+        return Path.of(artifactsConfig.diskPath())
+                   .resolveSibling("stream-segments")
+                   .resolve(config.self().id());
+    }
+
+    /// Fold the `streams` StorageSetup into the (immutable) map produced by `StorageFactory.createAll`
+    /// so that downstream consumers — storage-status routes today, the snapshot scheduler later —
+    /// treat stream storage uniformly with artifacts/content.
+    private static Map<String, StorageFactory.StorageSetup> withStreamSetup(Map<String, StorageFactory.StorageSetup> base,
+                                                                            StorageFactory.StorageSetup streamSetup) {
+        var merged = new HashMap<>(base);
+
+        merged.put(streamSetup.name(), streamSetup);
+
+        return Map.copyOf(merged);
     }
 
     /// Build a named daemon thread for a single-thread executor's `ThreadFactory`. Extracted so the
@@ -903,9 +918,17 @@ public interface AetherNode extends ManageableNode {
         var aetherMaps = AetherMaps.aetherMaps(dhtClient.scoped(DHTConfig.FULL));
         var cacheDhtClient = dhtClient.scoped(config.cache());
         var dhtClientOption = Option.<DHTClient> some(dhtClient);
-        var storageSetups = StorageFactory.createAll(config.storageConfig(),
-                                                     config.self().id(),
-                                                     dhtClientOption);
+        var baseStorageSetups = StorageFactory.createAll(config.storageConfig(),
+                                                         config.self().id(),
+                                                         dhtClientOption);
+        // Stream storage is a first-class, disk-backed snapshot-capable StorageSetup (memory -> disk
+        // -> DHT) keyed under "streams". It is built here (not via `createAll`, which is config-map
+        // driven) so it can be folded into `storageSetups` — a later snapshot scheduler iterates that
+        // map — while its `instance()` is reused as `streamStorage` at the stream wiring site below.
+        var streamStorageSetup = StorageFactory.defaultStreamStorage(dhtClientOption,
+                                                                     streamDataDir(config),
+                                                                     config.self().id());
+        var storageSetups = withStreamSetup(baseStorageSetups, streamStorageSetup);
         var artifactStorage = Option.option(storageSetups.get("artifacts")).map(StorageFactory.StorageSetup::instance).or(StorageFactory.defaultArtifactStorage(dhtClientOption));
         var artifactStore = ArtifactStore.artifactStore(dhtClient, artifactStorage);
         var repositoryFactory = RepositoryFactory.repositoryFactory(artifactStore);
@@ -2605,7 +2628,7 @@ public interface AetherNode extends ManageableNode {
         // deleted alongside the audit publisher and RecentCommandsBuffer.
         var streamSegmentIndex = new SegmentIndex();
         var streamWatermarkTracker = WatermarkTracker.watermarkTracker();
-        var streamStorage = createStreamStorage(dhtClientOption);
+        var streamStorage = streamStorageSetup.instance();
         var streamSegmentReader = SegmentReader.segmentReader(streamStorage, streamSegmentIndex);
         var streamRetentionEnforcer = RetentionEnforcer.retentionEnforcer(streamStorage,
                                                                           streamSegmentIndex,
