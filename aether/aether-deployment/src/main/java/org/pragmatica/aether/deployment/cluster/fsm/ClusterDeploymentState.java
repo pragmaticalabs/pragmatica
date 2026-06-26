@@ -159,11 +159,6 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
         private static final Logger log = LoggerFactory.getLogger(Active.class);
         private static final int MAX_RETRIES = 5;
         private static final long MAX_RETRY_DELAY_SECONDS = 30;
-        /// The default per-community target size used when minting a FORMING community at WORKER
-        /// role-assignment time (worker-membership-spec §4.1 step 5). The community-growth comparator
-        /// (slice 2) will source the real per-source target from the desired cluster topology; until
-        /// then a sensible single-community cap is stamped so the community has a non-zero target.
-        private static final int DEFAULT_COMMUNITY_TARGET_SIZE = 100;
         /// The deterministic, single-community-per-source suffix (worker-membership-spec A10): one
         /// community `<source>-w-0` per source keeps community ids stable across rejoins (no
         /// renumbering). The growth-comparator slice introduces additional `-w-N` slots.
@@ -171,10 +166,6 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
         /// The fallback source label for a joining worker whose membership `source` is absent or
         /// blank (worker-membership-spec D2).
         private static final String DEFAULT_SOURCE = "default";
-        /// Minimum observed live members for a community to be VIABLE = the DHT replication factor
-        /// (worker-membership-spec §3.3 / §7). The per-community FSM promotes FORMING/DEGRADED →
-        /// ACTIVE at or above this floor and demotes ACTIVE → DEGRADED below it.
-        private static final int COMMUNITY_VIABILITY_FLOOR = 3;
 
         // --- move-only extraction seams (package-private helpers operating on this Active) ---
         StuckTransitionalRemediator stuckRemediator() {
@@ -718,7 +709,7 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
             return new KVCommand.Put<>(CommunityKey.communityKey(communityId),
                                        CommunityValue.communityValue(source,
                                                                      ActivationDirectiveValue.WORKER,
-                                                                     DEFAULT_COMMUNITY_TARGET_SIZE));
+                                                                     ctx.communitySizing().targetSize()));
         }
 
         private KVCommand<AetherKey> workerDirectiveCommand(NodeId targetNode, String communityId) {
@@ -1625,15 +1616,17 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
         private void collectCommunityTransition(List<KVCommand<AetherKey>> batch,
                                                 CommunityKey key,
                                                 CommunityValue value) {
-            var next = nextCommunityState(value.state(), communityLiveMembers(key.communityId()));
+            var floor = ctx.communitySizing().viabilityFloor();
+            var liveMembers = communityLiveMembers(key.communityId());
+            var next = nextCommunityState(value.state(), liveMembers, floor);
 
             if (next != value.state()) {
                 log.info("Community '{}' {} -> {} ({} live member(s), floor {})",
                          key.communityId(),
                          value.state(),
                          next,
-                         communityLiveMembers(key.communityId()),
-                         COMMUNITY_VIABILITY_FLOOR);
+                         liveMembers,
+                         floor);
                 batch.add(new KVCommand.Put<>(key, value.withState(next)));
             }
         }
@@ -1651,18 +1644,18 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
         }
 
         /// Pure per-community state edge (worker-membership-spec §3.3). FORMING/DEGRADED promote to
-        /// ACTIVE once observed live membership reaches the viability floor; ACTIVE demotes to DEGRADED
+        /// ACTIVE once observed live membership reaches the viability `floor`; ACTIVE demotes to DEGRADED
         /// below it. The terminal teardown states (DISSOLVING/DISSOLVED) are leader-decision/scale-down
         /// concerns (Phase C) and are left unchanged here.
-        private static CommunityState nextCommunityState(CommunityState current, int liveMembers) {
+        private static CommunityState nextCommunityState(CommunityState current, int liveMembers, int floor) {
             return switch (current) {
-                case FORMING -> liveMembers >= COMMUNITY_VIABILITY_FLOOR
+                case FORMING -> liveMembers >= floor
                                 ? CommunityState.ACTIVE
                                 : CommunityState.FORMING;
-                case ACTIVE -> liveMembers < COMMUNITY_VIABILITY_FLOOR
+                case ACTIVE -> liveMembers < floor
                                ? CommunityState.DEGRADED
                                : CommunityState.ACTIVE;
-                case DEGRADED -> liveMembers >= COMMUNITY_VIABILITY_FLOOR
+                case DEGRADED -> liveMembers >= floor
                                  ? CommunityState.ACTIVE
                                  : CommunityState.DEGRADED;
                 case DISSOLVING, DISSOLVED -> current;

@@ -6,6 +6,7 @@ package org.pragmatica.aether.node;
 
 import org.pragmatica.aether.config.AppHttpConfig;
 import org.pragmatica.aether.config.BackupConfig;
+import org.pragmatica.aether.config.CommunitySizing;
 import org.pragmatica.aether.config.HttpProtocol;
 import org.pragmatica.config.ConfigurationProvider;
 import org.pragmatica.aether.config.RollbackConfig;
@@ -74,9 +75,17 @@ public record AetherNodeConfig(TopologyConfig topology,
                                Option<MembershipConfig> membership,
                                StreamingConfig streaming,
                                ClusterFormationConfig clusterFormation) {
-    public record DeploymentDefaults(TimeSpan canaryEvaluationInterval, List<CanaryStageConfig> defaultCanaryStages) {
+    /// Cluster-wide deployment defaults. `canaryEvaluationInterval` / `defaultCanaryStages` drive
+    /// progressive rollout; `communitySizing` is the leader's per-community target size and viability
+    /// floor (worker-membership-spec §3.3 / §4.1) read by the cluster deployment FSM. A test/dev
+    /// deployment overrides `communitySizing` here to run small communities under the production
+    /// default (target 100, floor 3).
+    public record DeploymentDefaults(TimeSpan canaryEvaluationInterval,
+                                     List<CanaryStageConfig> defaultCanaryStages,
+                                     CommunitySizing communitySizing) {
         public static final DeploymentDefaults DEFAULT = new DeploymentDefaults(timeSpan(30).seconds(),
-                                                                                DeploymentConfig.defaultCanaryStages());
+                                                                                DeploymentConfig.defaultCanaryStages(),
+                                                                                CommunitySizing.DEFAULT);
     }
 
     public static final int DEFAULT_MANAGEMENT_PORT = 8080;

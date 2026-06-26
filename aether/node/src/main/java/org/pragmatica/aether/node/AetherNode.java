@@ -1457,7 +1457,8 @@ public interface AetherNode extends ManageableNode {
                                                                                          cdmCoreCountedMembersSupplier,
                                                                                          stableCdmReadyNodesSupplier,
                                                                                          stableCdmDrainingNodesSupplier,
-                                                                                         cdmMemberSourceSupplier);
+                                                                                         cdmMemberSourceSupplier,
+                                                                                         config.deploymentDefaults().communitySizing());
         var loadBalancerManager = config.environment().flatMap(EnvironmentIntegration::loadBalancer).map(provider -> LoadBalancerManager.loadBalancerManager(config.self(),
                                                                                                                                                              kvStore,
                                                                                                                                                              clusterNode.topologyManager(),

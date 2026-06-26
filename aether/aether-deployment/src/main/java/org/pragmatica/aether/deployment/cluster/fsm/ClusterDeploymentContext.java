@@ -4,6 +4,7 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.deployment.cluster.fsm;
 
+import org.pragmatica.aether.config.CommunitySizing;
 import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager.DeploymentAtomicity;
 import org.pragmatica.aether.deployment.schema.SchemaOrchestratorService;
 import org.pragmatica.aether.slice.generation.HealthSignalSink;
@@ -55,6 +56,12 @@ public final class ClusterDeploymentContext {
     /// `AetherNode` to `membershipFsmRef`; defaults to `node -> none()` in the legacy constructors
     /// so existing call sites (and tests) keep the community-less behaviour.
     private final Function<NodeId, Option<String>> memberSourceSupplier;
+    /// Per-community sizing policy (worker-membership-spec §3.3 / §4.1): the `targetSize` stamped on a
+    /// minted FORMING community and the `viabilityFloor` that gates its FORMING/DEGRADED → ACTIVE
+    /// transition. Threaded from the node/deployment config so a small test/dev topology can run
+    /// communities under the default size; legacy constructors default it to
+    /// [CommunitySizing#DEFAULT] (target 100, floor 3) so existing call sites are unchanged.
+    private final CommunitySizing communitySizing;
     private final ClusterDeploymentState dormant;
     private final ClusterDeploymentState stopped;
 
@@ -143,6 +150,44 @@ public final class ClusterDeploymentContext {
                                     TimeSpan reconcileInterval,
                                     LongSupplier clock,
                                     Function<NodeId, Option<String>> memberSourceSupplier) {
+        this(fsm,
+             self,
+             cluster,
+             kvStore,
+             router,
+             topologyManager,
+             schemaOrchestrator,
+             healthSignalSink,
+             coreCountedMembersSupplier,
+             readyNodesSupplier,
+             drainingNodesSupplier,
+             seedNodes,
+             atomicity,
+             coreMax,
+             reconcileInterval,
+             clock,
+             memberSourceSupplier,
+             CommunitySizing.DEFAULT);
+    }
+
+    public ClusterDeploymentContext(Fsm<ClusterDeploymentState, ClusterFsmEvent> fsm,
+                                    NodeId self,
+                                    ClusterNode<KVCommand<AetherKey>> cluster,
+                                    KVStore<AetherKey, AetherValue> kvStore,
+                                    MessageRouter router,
+                                    TopologyManager topologyManager,
+                                    SchemaOrchestratorService schemaOrchestrator,
+                                    HealthSignalSink healthSignalSink,
+                                    Supplier<Set<NodeId>> coreCountedMembersSupplier,
+                                    Supplier<Set<NodeId>> readyNodesSupplier,
+                                    Supplier<Set<NodeId>> drainingNodesSupplier,
+                                    Set<NodeId> seedNodes,
+                                    DeploymentAtomicity atomicity,
+                                    int coreMax,
+                                    TimeSpan reconcileInterval,
+                                    LongSupplier clock,
+                                    Function<NodeId, Option<String>> memberSourceSupplier,
+                                    CommunitySizing communitySizing) {
         this.fsm = fsm;
         this.self = self;
         this.cluster = cluster;
@@ -160,6 +205,7 @@ public final class ClusterDeploymentContext {
         this.reconcileInterval = reconcileInterval;
         this.clock = clock;
         this.memberSourceSupplier = memberSourceSupplier;
+        this.communitySizing = communitySizing;
         this.dormant = new ClusterDeploymentState.Dormant(this);
         this.stopped = new ClusterDeploymentState.Stopped(this);
     }
@@ -253,6 +299,14 @@ public final class ClusterDeploymentContext {
     /// `"default"` source. A blank source is surfaced as-is and normalized by the caller.
     public Option<String> memberSource(NodeId nodeId) {
         return memberSourceSupplier.apply(nodeId);
+    }
+
+    /// Per-community sizing policy (worker-membership-spec §3.3 / §4.1): the `targetSize` stamped on a
+    /// minted FORMING community and the `viabilityFloor` gating its promotion to ACTIVE. Read by the
+    /// `Active` state in place of the former hardcoded constants; defaults to
+    /// [CommunitySizing#DEFAULT] (target 100, floor 3).
+    public CommunitySizing communitySizing() {
+        return communitySizing;
     }
 
     public Set<NodeId> seedNodes() {
