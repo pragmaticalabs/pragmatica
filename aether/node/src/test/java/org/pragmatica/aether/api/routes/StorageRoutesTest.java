@@ -11,6 +11,7 @@ import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.node.AetherNode;
 import org.pragmatica.aether.node.StorageFactory.StorageSetup;
 import org.pragmatica.storage.MemoryTier;
+import org.pragmatica.storage.MetadataStore;
 import org.pragmatica.storage.SnapshotManager;
 import org.pragmatica.storage.StorageInstance;
 import org.pragmatica.storage.StorageReadinessGate;
@@ -47,8 +48,8 @@ class StorageRoutesTest {
         var snapshot2 = countingSnapshotManager(new AtomicInteger(0));
 
         setups = Map.of(
-            "artifacts", new StorageSetup("artifacts", instance1, snapshot1, gate1),
-            "streams", new StorageSetup("streams", instance2, snapshot2, gate2)
+            "artifacts", new StorageSetup("artifacts", instance1, snapshot1, gate1, MetadataStore.inMemoryMetadataStore("artifacts")),
+            "streams", new StorageSetup("streams", instance2, snapshot2, gate2, MetadataStore.inMemoryMetadataStore("streams"))
         );
 
         var nodeProxy = createNodeProxy(setups);

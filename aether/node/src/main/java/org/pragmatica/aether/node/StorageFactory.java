@@ -51,12 +51,14 @@ public final class StorageFactory {
     public record StorageSetup(String name,
                                StorageInstance instance,
                                SnapshotManager snapshotManager,
-                               StorageReadinessGate readinessGate) {
+                               StorageReadinessGate readinessGate,
+                               MetadataStore metadataStore) {
         public static StorageSetup storageSetup(String name,
                                                 StorageInstance instance,
                                                 SnapshotManager snapshotManager,
-                                                StorageReadinessGate readinessGate) {
-            return new StorageSetup(name, instance, snapshotManager, readinessGate);
+                                                StorageReadinessGate readinessGate,
+                                                MetadataStore metadataStore) {
+            return new StorageSetup(name, instance, snapshotManager, readinessGate, metadataStore);
         }
     }
 
@@ -165,7 +167,7 @@ public final class StorageFactory {
         restoreAndSignalReady(STREAMS_NAME, snapshotManager, metadataStore, readinessGate);
         log.info("Storage 'streams' created: {} tier(s), data dir={}", tiers.size(), snapshotDir.getParent());
 
-        return StorageSetup.storageSetup(STREAMS_NAME, instance, snapshotManager, readinessGate);
+        return StorageSetup.storageSetup(STREAMS_NAME, instance, snapshotManager, readinessGate, metadataStore);
     }
 
     private static Result<StorageSetup> createOne(String name,
@@ -216,7 +218,7 @@ public final class StorageFactory {
         restoreAndSignalReady(name, snapshotManager, metadataStore, readinessGate);
         log.info("Storage '{}' created: {} tier(s), snapshot path={}", name, tiers.size(), config.snapshotPath());
 
-        return StorageSetup.storageSetup(name, instance, snapshotManager, readinessGate);
+        return StorageSetup.storageSetup(name, instance, snapshotManager, readinessGate, metadataStore);
     }
 
     private static SnapshotConfig buildSnapshotConfig(StorageConfig config, String nodeId) {

@@ -679,6 +679,10 @@ public interface AetherNode extends ManageableNode {
     /// re-attempt once the owner becomes CAUGHT_UP. Kept well under the backfill source-wait bound (20s)
     /// so several attempts occur within one wait window; CAUGHT_UP partitions are skipped (no-op).
     TimeSpan STREAM_BACKFILL_REDRIVE_INTERVAL = TimeSpan.timeSpan(5).seconds();
+    /// Cadence for the metadata snapshot driver (A3b). Drives `SnapshotManager.maybeSnapshot()` across
+    /// every storage setup; the manager self-gates on its mutation-count / time-interval trigger, so
+    /// this tick only needs to be frequent enough to bound the post-trigger snapshot latency.
+    TimeSpan METADATA_SNAPSHOT_INTERVAL = TimeSpan.timeSpan(10).seconds();
     /// Cadence for the NodeDeploymentManager activation level-heal. On a cold-start
     /// `restart_all_nodes` the single CAS-latched `ClusterStateNotification.ACTIVE` edge can be
     /// dropped while the message-router delegate is being rebuilt, leaving NDM stuck in `Dormant`
@@ -737,6 +741,10 @@ public interface AetherNode extends ManageableNode {
     private static void redriveIncompleteBackfills(PartitionBackfill backfill, Executor backfillExecutor) {
         backfill.redriveCandidates().forEach(key -> backfillExecutor.execute(() -> backfill.backfill(key.streamName(),
                                                                                                      key.partition())));
+    }
+
+    private static void snapshotAllSetups(Map<String, StorageFactory.StorageSetup> storageSetups) {
+        storageSetups.values().forEach(setup -> setup.snapshotManager().maybeSnapshot());
     }
 
     /// 1d-iii owner-reconciled driver: fire the leader-only [StreamPartitionOwnershipWriter] for a
@@ -2552,6 +2560,13 @@ public interface AetherNode extends ManageableNode {
                                                                                                                                                      partition))
                                                                                                               .or(-1L));
         var streamSegmentIndex = new SegmentIndex();
+
+        // A3b restore-at-boot: the streams MetadataStore was already restored from its latest disk
+        // snapshot when `streamStorageSetup` was assembled (StorageFactory.restoreAndSignalReady), so
+        // the durable `streams/` refs are present here. Rebuild the in-memory offset→segment index from
+        // them so sealed segments are readable immediately after a same-node restart, before any new
+        // append re-populates the index.
+        streamSegmentIndex.rebuildFromRefs(streamStorageSetup.metadataStore());
         var streamStorage = streamStorageSetup.instance();
         var streamPartitionManager = StreamPartitionManager.streamPartitionManager(streamMaxMemoryBytes,
                                                                                    SegmentSealer.segmentSealer(StorageSegmentSink.storageSegmentSink(streamStorage, streamSegmentIndex)),
@@ -2777,6 +2792,11 @@ public interface AetherNode extends ManageableNode {
         SharedScheduler.scheduleAtFixedRate(() -> redriveIncompleteBackfills(streamPartitionBackfill,
                                                                              streamBackfillExecutor),
                                             STREAM_BACKFILL_REDRIVE_INTERVAL);
+        // A3b snapshot driver: `SnapshotManager.maybeSnapshot()` has no other caller — without this tick
+        // no metadata snapshot is ever taken and nothing survives a restart. Iterate ALL storage setups
+        // (streams + artifacts/content), so every MetadataStore's refs are persisted; maybeSnapshot
+        // self-gates on its mutation-count / interval trigger, so a 10s tick is cheap when not due.
+        SharedScheduler.scheduleAtFixedRate(() -> snapshotAllSetups(storageSetups), METADATA_SNAPSHOT_INTERVAL);
         var streamingCoordinator = StreamingCoordinator.streamingCoordinator(streamFailoverHandler,
                                                                              streamRetentionEnforcer,
                                                                              streamPartitionManager,
