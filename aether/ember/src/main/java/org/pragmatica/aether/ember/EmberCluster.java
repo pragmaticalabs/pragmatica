@@ -26,6 +26,7 @@ import org.pragmatica.consensus.topology.TopologyConfig;
 import org.pragmatica.consensus.topology.TopologyManagementMessage;
 import org.pragmatica.aether.config.AppHttpConfig;
 import org.pragmatica.aether.config.RollbackConfig;
+import org.pragmatica.aether.config.StorageConfig;
 import org.pragmatica.dht.DHTConfig;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
@@ -38,6 +39,7 @@ import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.concurrent.CancellableTask;
 import org.pragmatica.aether.slice.SliceActionConfig;
 
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -119,6 +121,13 @@ public final class EmberCluster {
     private final AtomicReference<String> apiVersionHeaderName =
         new AtomicReference<>(AppHttpConfig.DEFAULT_API_VERSION_HEADER);
 
+    /// TEST SEAM (streaming A-WAL) — opt-in writable, restart-stable per-node data dir. Defaults to
+    /// [Option#none] (production + existing tests: nodes fall back to the default read-only `/data`
+    /// stream path → WAL off, streaming non-crash-durable). A test sets a writable base dir (e.g. a
+    /// JUnit `@TempDir`) via [#withDataBaseDir] BEFORE [#start] to turn the disk tier and the
+    /// per-partition stream WAL on; see [#perNodeStorageConfig].
+    private final AtomicReference<Option<Path>> dataBaseDir = new AtomicReference<>(Option.none());
+
     private final class EmberComputeProvider implements ComputeProvider {
         @Override
         public Promise<InstanceInfo> provision(InstanceType instanceType) {
@@ -198,6 +207,18 @@ public final class EmberCluster {
                                            String headerName) {
         apiVersioningDetection.set(detection);
         apiVersionHeaderName.set(headerName);
+    }
+
+    /// TEST SEAM (streaming A-WAL) — set the writable, restart-stable base data dir for EVERY node in
+    /// this cluster (opt-in). MUST be called before [#start]. Each node then gets a `storageConfig`
+    /// `artifacts` [StorageConfig] keyed by its STABLE node id, so a `stop()`→`start()` restart reuses
+    /// the same dir and the stream WAL/segments survive. Production paths never call this (the default
+    /// empty `storageConfig` keeps the read-only `/data` fallback → WAL off). See [#perNodeStorageConfig].
+    ///
+    /// @param baseDir writable base dir (e.g. a JUnit `@TempDir`) under which each node gets `<baseDir>/<nodeId>`
+    @Contract
+    public void withDataBaseDir(Path baseDir) {
+        dataBaseDir.set(Option.option(baseDir));
     }
 
     private EnvironmentIntegration emberEnvironment() {
@@ -651,7 +672,7 @@ public final class EmberCluster {
                                           Option.empty(),
                                           AetherNodeConfig.DeploymentDefaults.DEFAULT,
                                           org.pragmatica.aether.config.HttpProtocol.H1,
-                                          java.util.Map.of(),
+                                          perNodeStorageConfig(nodeId),
                                           Option.empty(),
                                           Option.empty(),
 
@@ -664,6 +685,33 @@ public final class EmberCluster {
         Runnable jvmExit = () -> handleSelfDrain(nodeId.id());
 
         return AetherNode.aetherNode(config, jvmExit).unwrap();
+    }
+
+    /// Per-node `storageConfig` map for [#createNode]. When a writable base dir was set via
+    /// [#withDataBaseDir] (opt-in), each node gets an `artifacts` [StorageConfig] whose `diskPath` is
+    /// `<baseDir>/<nodeId>/storage` — turning the artifact disk tier AND the per-partition stream WAL
+    /// (`<...>/stream-segments/<nodeId>/wal`) writable so streaming runs crash-durable. The id-keyed
+    /// dir is restart-stable: [#start] after [#stop] regenerates the same `<nodeIdPrefix>-<i>` ids, so
+    /// each node reuses its dir and the WAL/segments survive the restart. Empty map ⇒ default
+    /// behaviour (read-only `/data` fallback → WAL off), so non-opted-in callers are unaffected.
+    private Map<String, StorageConfig> perNodeStorageConfig(NodeId nodeId) {
+        return dataBaseDir.get()
+                          .map(base -> artifactsStorageConfig(base, nodeId))
+                          .or(Map.of());
+    }
+
+    private static Map<String, StorageConfig> artifactsStorageConfig(Path base, NodeId nodeId) {
+        var nodeDir = base.resolve(nodeId.id());
+        var defaults = StorageConfig.storageConfig();
+        var config = StorageConfig.storageConfig(defaults.memoryMaxBytes(),
+                                                 defaults.diskMaxBytes(),
+                                                 nodeDir.resolve("storage").toString(),
+                                                 nodeDir.resolve("metadata-snapshots").toString(),
+                                                 defaults.snapshotMutationThreshold(),
+                                                 defaults.snapshotMaxInterval(),
+                                                 defaults.snapshotRetentionCount());
+
+        return Map.of("artifacts", config);
     }
 
     private void handleSelfDrain(String nodeIdStr) {
