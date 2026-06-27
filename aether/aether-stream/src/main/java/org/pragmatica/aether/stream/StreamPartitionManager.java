@@ -631,13 +631,13 @@ public final class StreamPartitionManager implements AutoCloseable {
                                                                                  payload,
                                                                                  timestamp,
                                                                                  ownerEpoch))
+                                 .flatMap(offset -> durablyLog(streamName, partition, offset, payload, timestamp))
                                  .onSuccess(offset -> replicationManager.replicateEvent(streamName,
                                                                                         partition,
                                                                                         offset,
                                                                                         payload,
                                                                                         timestamp,
-                                                                                        ownerEpoch))
-                                 .flatMap(offset -> durablyLog(streamName, partition, offset, payload, timestamp));
+                                                                                        ownerEpoch));
     }
 
     /// Gate the publish ack on WAL fsync (streaming-persistence W3). With no WAL configured for
