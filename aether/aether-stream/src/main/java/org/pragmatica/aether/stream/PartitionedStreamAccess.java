@@ -166,6 +166,75 @@ public final class PartitionedStreamAccess<T> implements StreamAccess<T> {
                                              minSyncReplicas);
     }
 
+    /// A4+A5: durable owner-routed overload — mirrors the owner-routed publish overload above and ADDS
+    /// the durability machinery (tiered cold reads + cursor store). When a {@link CursorStore} is present
+    /// the consumer-offset {@link #commit} is checkpointed through it so offsets survive a same-node
+    /// restart; when a {@link TieredStreamReader} is present a post-restart read against an empty hot ring
+    /// is served from sealed cold segments. With both `none()` this is byte-identical to the owner-routed
+    /// overload above. NOTE the cursor arg-order: the writer is invoked with `(stream, group, …)` but
+    /// {@link CursorStore#commit} takes `(group, stream, …)` — hence the swap in the writer lambda.
+    public static <T> PartitionedStreamAccess<T> streamAccess(StreamPartitionManager partitionManager,
+                                                              Serializer serializer,
+                                                              Deserializer deserializer,
+                                                              String streamName,
+                                                              int partitionCount,
+                                                              Option<Function<T, Object>> partitionKeyExtractor,
+                                                              Option<StreamForwardClient> forwardClient,
+                                                              NodeId selfNodeId,
+                                                              Option<Fn0<Option<NodeId>>> ownerResolver,
+                                                              Option<Function<Integer, Option<NodeId>>> partitionOwnerResolver,
+                                                              int minSyncReplicas,
+                                                              Option<TieredStreamReader> tieredReader,
+                                                              Option<CursorStore> cursorStore) {
+        var cursorWriter = cursorStore.map(cs -> (CursorCheckpointWriter) (stream, group, partition, offset) -> cs.commit(group, stream, partition, offset))
+                                      .or(NOOP_WRITER);
+
+        return new PartitionedStreamAccess<>(partitionManager,
+                                             serializer,
+                                             deserializer,
+                                             streamName,
+                                             partitionCount,
+                                             partitionKeyExtractor,
+                                             cursorWriter,
+                                             tieredReader,
+                                             cursorStore,
+                                             ReadPreference.GOVERNOR,
+                                             Option.none(),
+                                             forwardClient,
+                                             selfNodeId,
+                                             ownerResolver,
+                                             partitionOwnerResolver,
+                                             StreamReadForwardMetrics.NOOP,
+                                             minSyncReplicas);
+    }
+
+    /// A4+A5: durable plain overload — the same cursor/tiered durability wiring as the owner-routed
+    /// overload above but for the `StreamAccessFactory.plainAccess` fallback (no self identity / minimal
+    /// runtime). Delegates with no-owner defaults so the cursor-writer derivation lives in exactly one
+    /// place.
+    public static <T> PartitionedStreamAccess<T> streamAccess(StreamPartitionManager partitionManager,
+                                                              Serializer serializer,
+                                                              Deserializer deserializer,
+                                                              String streamName,
+                                                              int partitionCount,
+                                                              Option<Function<T, Object>> partitionKeyExtractor,
+                                                              Option<TieredStreamReader> tieredReader,
+                                                              Option<CursorStore> cursorStore) {
+        return streamAccess(partitionManager,
+                            serializer,
+                            deserializer,
+                            streamName,
+                            partitionCount,
+                            partitionKeyExtractor,
+                            Option.none(),
+                            EMPTY_SELF,
+                            Option.none(),
+                            Option.none(),
+                            0,
+                            tieredReader,
+                            cursorStore);
+    }
+
     /// Fix #3: read-forwarding overload for REPLICATED single-/multi-partition streams that carry no
     /// tiered/segment store (system streams, e.g. `system:cluster-events`). Wires the replica registry
     /// + forward client + self node id and pins a replica-routed `readPreference` (typically

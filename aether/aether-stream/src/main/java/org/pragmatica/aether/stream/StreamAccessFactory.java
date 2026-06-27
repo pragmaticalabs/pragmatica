@@ -10,6 +10,8 @@ import org.pragmatica.aether.slice.StreamAccess;
 import org.pragmatica.aether.slice.StreamConfig;
 import org.pragmatica.aether.stream.StreamPublisherFactory.GovernorResolver;
 import org.pragmatica.aether.stream.forward.StreamForwardClient;
+import org.pragmatica.aether.stream.segment.CursorStore;
+import org.pragmatica.aether.stream.segment.TieredStreamReader;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
@@ -75,6 +77,10 @@ public final class StreamAccessFactory implements ResourceFactory<StreamAccess, 
                                                ProvisioningContext context) {
         var keyExtractor = extractPartitionKeyFunction(context);
         var self = context.extension(NodeId.class).option();
+        // A4/A5: durable consumer cursors + tiered cold reads are wired fail-soft from optional runtime
+        // extensions (absent in tests / minimal runtimes => the access behaves exactly as before).
+        var cursorStore = context.extension(CursorStore.class).option();
+        var tieredReader = context.extension(TieredStreamReader.class).option();
         // A6: when the runtime supplies a forward client + owner-resolver + self identity, wire
         // owner-routed publish (non-owner producers write-forward to the partition owner). Otherwise
         // fall back to the plain local-publish access (tests / minimal runtimes).
@@ -84,8 +90,10 @@ public final class StreamAccessFactory implements ResourceFactory<StreamAccess, 
                                                         config,
                                                         context,
                                                         keyExtractor,
-                                                        selfNodeId))
-                   .or(() -> plainAccess(manager, serializer, deserializer, config, keyExtractor));
+                                                        selfNodeId,
+                                                        tieredReader,
+                                                        cursorStore))
+                   .or(() -> plainAccess(manager, serializer, deserializer, config, keyExtractor, tieredReader, cursorStore));
     }
 
     @SuppressWarnings("unchecked")
@@ -95,7 +103,9 @@ public final class StreamAccessFactory implements ResourceFactory<StreamAccess, 
                                                       StreamConfig config,
                                                       ProvisioningContext context,
                                                       Option<Function<T, Object>> keyExtractor,
-                                                      NodeId self) {
+                                                      NodeId self,
+                                                      Option<TieredStreamReader> tieredReader,
+                                                      Option<CursorStore> cursorStore) {
         var forwardClient = context.extension(StreamForwardClient.class).option();
         var governor = context.extension(GovernorResolver.class).option();
         var ownerResolver = governor.map(GovernorResolver::resolver);
@@ -116,7 +126,9 @@ public final class StreamAccessFactory implements ResourceFactory<StreamAccess, 
                                                     self,
                                                     ownerResolver,
                                                     partitionOwnerResolver,
-                                                    config.minSyncReplicas());
+                                                    config.minSyncReplicas(),
+                                                    tieredReader,
+                                                    cursorStore);
     }
 
     @SuppressWarnings("unchecked")
@@ -124,13 +136,17 @@ public final class StreamAccessFactory implements ResourceFactory<StreamAccess, 
                                                 Serializer serializer,
                                                 Deserializer deserializer,
                                                 StreamConfig config,
-                                                Option<Function<T, Object>> keyExtractor) {
+                                                Option<Function<T, Object>> keyExtractor,
+                                                Option<TieredStreamReader> tieredReader,
+                                                Option<CursorStore> cursorStore) {
         return PartitionedStreamAccess.streamAccess(manager,
                                                     serializer,
                                                     deserializer,
                                                     config.name(),
                                                     config.partitions(),
-                                                    keyExtractor);
+                                                    keyExtractor,
+                                                    tieredReader,
+                                                    cursorStore);
     }
 
     @SuppressWarnings({"unchecked", "rawtypes"})

@@ -140,11 +140,13 @@ import org.pragmatica.aether.stream.replication.ReplicationReceiveHandler;
 import org.pragmatica.aether.stream.replication.SelfWatermark;
 import org.pragmatica.aether.stream.replication.StreamPartitionRecovery;
 import org.pragmatica.aether.stream.replication.WatermarkTracker;
+import org.pragmatica.aether.stream.segment.CursorStore;
 import org.pragmatica.aether.stream.segment.RetentionEnforcer;
 import org.pragmatica.aether.stream.segment.SegmentIndex;
 import org.pragmatica.aether.stream.segment.SegmentReader;
 import org.pragmatica.aether.stream.segment.SegmentSealer;
 import org.pragmatica.aether.stream.segment.StorageSegmentSink;
+import org.pragmatica.aether.stream.segment.TieredStreamReader;
 import org.pragmatica.aether.slice.dependency.SliceRegistry;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.StreamPartitionOwnershipKey;
@@ -2568,6 +2570,11 @@ public interface AetherNode extends ManageableNode {
         // append re-populates the index.
         streamSegmentIndex.rebuildFromRefs(streamStorageSetup.metadataStore());
         var streamStorage = streamStorageSetup.instance();
+        // A4/A5: per-node durable cursor store + tiered reader over the same disk-backed stream storage;
+        // registered as SPI extensions below so StreamAccessFactory persists consumer offsets and serves
+        // post-restart reads from sealed cold segments.
+        var streamCursorStore = CursorStore.cursorStore(streamStorage);
+        var streamTieredReader = TieredStreamReader.tieredStreamReader(streamSegmentIndex, streamStorage);
         var streamPartitionManager = StreamPartitionManager.streamPartitionManager(streamMaxMemoryBytes,
                                                                                    SegmentSealer.segmentSealer(StorageSegmentSink.storageSegmentSink(streamStorage, streamSegmentIndex)),
                                                                                    streamReplicationManager,
@@ -2877,6 +2884,8 @@ public interface AetherNode extends ManageableNode {
                                         taskGroupOwnerResolver,
                                         streamReplicaSetController::ownerFor,
                                         streamPartitionManager,
+                                        streamCursorStore,
+                                        streamTieredReader,
                                         serializer,
                                         deserializer,
                                         config.self());
@@ -4546,6 +4555,8 @@ public interface AetherNode extends ManageableNode {
                                                         Fn1<Result<NodeId>, TaskGroup> ownerResolver,
                                                         Fn2<Option<NodeId>, String, Integer> partitionOwnerResolver,
                                                         StreamPartitionManager streamPartitionManager,
+                                                        CursorStore streamCursorStore,
+                                                        TieredStreamReader streamTieredReader,
                                                         Serializer serializer,
                                                         Deserializer deserializer,
                                                         NodeId self) {
@@ -4554,6 +4565,8 @@ public interface AetherNode extends ManageableNode {
                                                                                             ownerResolver,
                                                                                             partitionOwnerResolver,
                                                                                             streamPartitionManager,
+                                                                                            streamCursorStore,
+                                                                                            streamTieredReader,
                                                                                             serializer,
                                                                                             deserializer,
                                                                                             self));
@@ -4564,11 +4577,15 @@ public interface AetherNode extends ManageableNode {
                                                        Fn1<Result<NodeId>, TaskGroup> ownerResolver,
                                                        Fn2<Option<NodeId>, String, Integer> partitionOwnerResolver,
                                                        StreamPartitionManager streamPartitionManager,
+                                                       CursorStore streamCursorStore,
+                                                       TieredStreamReader streamTieredReader,
                                                        Serializer serializer,
                                                        Deserializer deserializer,
                                                        NodeId self) {
         spi.registerExtension(StreamForwardClient.class, forwardClient);
         spi.registerExtension(StreamPartitionManager.class, streamPartitionManager);
+        spi.registerExtension(CursorStore.class, streamCursorStore);
+        spi.registerExtension(TieredStreamReader.class, streamTieredReader);
         spi.registerExtension(Serializer.class, serializer);
         spi.registerExtension(Deserializer.class, deserializer);
         // A6: self identity so the app StreamAccessFactory can wire owner-routed publish (compare the
