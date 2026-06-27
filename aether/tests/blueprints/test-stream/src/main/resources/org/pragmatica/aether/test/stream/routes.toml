@@ -1,0 +1,14 @@
+prefix = "/api/stream"
+
+[security]
+# Test fixture: public routes so the forge baseline test can drive publish/read without auth setup.
+default = "public"
+override_policy = "strengthen_only"
+
+[routes]
+publish = "POST /publish"
+read = "POST /read"
+
+[errors]
+default = 500
+HTTP_400 = ["*Invalid*"]

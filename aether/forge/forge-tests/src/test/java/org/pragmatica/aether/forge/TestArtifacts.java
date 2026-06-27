@@ -19,5 +19,11 @@ final class TestArtifacts {
     static final String URL_SHORTENER = "org.pragmatica.aether.example:url-shortener-url-shortener:" + VERSION;
     static final String ANALYTICS = "org.pragmatica.aether.example:url-shortener-analytics:" + VERSION;
 
+    /// Minimal stream-only blueprint (no database), used by `StreamFanoutConsumerTest` for the
+    /// #265 STEP 0 streaming fan-out baseline. Unlike platform artifacts above, the
+    /// `aether/tests/blueprints/test-*` blueprints carry a fixed `1.0.0` artifact version
+    /// (independent of the platform `project.version`), so the coordinate is hardcoded.
+    static final String STREAM_SLICE = "org.pragmatica.aether.test:test-stream-stream-slice:1.0.0";
+
     private TestArtifacts() {}
 }

@@ -67,7 +67,7 @@ mvn_quiet compile test-compile -Pwith-e2e -pl aether/e2e-tests,aether/forge/forg
 # Step 5: Build test blueprints
 echo ""
 echo "Step 5/6: Build test blueprints..."
-for bp in aether/tests/blueprints/test-echo aether/tests/blueprints/test-persistence aether/tests/blueprints/test-full; do
+for bp in aether/tests/blueprints/test-echo aether/tests/blueprints/test-persistence aether/tests/blueprints/test-full aether/tests/blueprints/test-stream; do
     mvn_quiet -f "$bp/pom.xml" install -DskipTests
 done
 

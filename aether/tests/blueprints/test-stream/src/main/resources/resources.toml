@@ -1,0 +1,19 @@
+# Application-level (blueprint) resources for test-stream.
+#
+# Packaged into the blueprint JAR as META-INF/resources.toml by the JBCT
+# maven-plugin (GenerateBlueprintMojo / PackageBlueprintMojo). At deploy
+# time, BlueprintService stores this content in the KV-Store; each node's
+# slice loader resolves @ResourceQualifier(config = "streams.test-events")
+# lookups (see @EventStreamPublisher / @EventStreamReader) against it.
+#
+# Controlled configuration for the #265 STEP 0 fan-out baseline:
+#   - partitions = 1        -> one clean, globally-ordered log (monotonic offsets).
+#   - retention  = count    -> count-based eviction (never time-based) so a slow
+#     consumer is never evicted mid-test; retention-value is far larger than any
+#     test event count, so nothing is ever dropped (no spurious CursorExpired).
+
+[streams.test-events]
+partitions = 1
+retention = "count"
+retention-value = "100000"
+max-event-size = "64KB"
