@@ -13,7 +13,7 @@ import java.util.regex.Pattern;
 
 /// Checks GitHub Releases for the latest JBCT version.
 public final class GitHubReleaseChecker {
-    private static final String GITHUB_API_URL = "https://api.github.com/repos/siy/jbct-cli/releases/latest";
+    private static final String GITHUB_API_URL = "https://api.github.com/repos/pragmaticalabs/pragmatica/releases/latest";
     private static final Pattern VERSION_PATTERN = Pattern.compile("\"tag_name\"\\s*:\\s*\"v?([^\"]+)\"");
     private static final Pattern ASSET_URL_PATTERN = Pattern.compile("\"browser_download_url\"\\s*:\\s*\"([^\"]+jbct[^\"]*\\.jar)\"");
     private static final Duration API_TIMEOUT = Duration.ofSeconds(30);
