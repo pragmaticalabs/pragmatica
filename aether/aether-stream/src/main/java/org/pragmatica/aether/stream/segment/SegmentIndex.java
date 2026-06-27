@@ -87,6 +87,19 @@ public final class SegmentIndex {
                      .or(List.of());
     }
 
+    /// The highest offset durably sealed into segments for `(streamName, partition)` — the maximum
+    /// `endOffset` across that partition's sealed segments — or `-1` when nothing is sealed. Used to
+    /// bound WAL replay on partition recovery (streaming-persistence W4): the recovered ring skips
+    /// records at or below this offset (served by the tiered reader) and replays only the un-sealed tail.
+    public long lastSealedOffset(String streamName, int partition) {
+        return option(partitions.get(PartitionKey.partitionKey(streamName, partition))).map(SegmentIndex::maxEndOffset)
+                     .or(-1L);
+    }
+
+    private static long maxEndOffset(ConcurrentSkipListMap<Long, SegmentRef> map) {
+        return map.values().stream().mapToLong(SegmentRef::endOffset).max().orElse(-1L);
+    }
+
     public Set<PartitionKey> listPartitionKeys() {
         return Set.copyOf(partitions.keySet());
     }

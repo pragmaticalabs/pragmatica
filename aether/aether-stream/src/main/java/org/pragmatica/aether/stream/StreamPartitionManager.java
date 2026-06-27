@@ -15,6 +15,7 @@ import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.StreamConfigValue;
 import org.pragmatica.aether.stream.replication.ReplicationManager;
 import org.pragmatica.aether.stream.wal.PartitionWal;
+import org.pragmatica.aether.stream.wal.PartitionWal.WalRecord;
 import org.pragmatica.cluster.node.ClusterNode;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
@@ -80,6 +81,13 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// ring-create time, and an OWNER publish (`publishLocal`) does not ack until the event is
     /// fsync-durable in that WAL. The replica-receive path (`appendRecovered`) never writes the WAL.
     private final Option<Path> walBaseDir;
+    /// Source of the durable last-sealed offset per `(stream, partition)` (streaming-persistence W4).
+    /// Bounds WAL replay when a partition ring is (re)built: sealed segments already serve
+    /// `[0, lastSealedOffset]`, so a recovered ring is seeded above that bound and replays only the
+    /// un-sealed WAL tail at its original offsets. The floor source ([LastSealedOffsetSource#none] →
+    /// `-1`) leaves Forge/unit/legacy callers replaying the whole log from offset 0; the aether-level
+    /// wiring binds it to the node's [org.pragmatica.aether.stream.segment.SegmentIndex].
+    private final LastSealedOffsetSource lastSealedOffset;
     private volatile Consumer<Exhaustion> exhaustionSink = NOOP_SINK;
 
     private StreamPartitionManager(long maxTotalBytes,
@@ -88,7 +96,8 @@ public final class StreamPartitionManager implements AutoCloseable {
                                    Option<ClusterNode<KVCommand<AetherKey>>> clusterNode,
                                    Option<OwnershipEpochHighWater> epochHighWater,
                                    StreamOwnerEpochSource ownerEpochSource,
-                                   Option<Path> walBaseDir) {
+                                   Option<Path> walBaseDir,
+                                   LastSealedOffsetSource lastSealedOffset) {
         this.maxTotalBytes = maxTotalBytes;
         this.evictionListener = evictionListener;
         this.replicationManager = replicationManager;
@@ -96,6 +105,7 @@ public final class StreamPartitionManager implements AutoCloseable {
         this.epochHighWater = epochHighWater;
         this.ownerEpochSource = ownerEpochSource;
         this.walBaseDir = walBaseDir;
+        this.lastSealedOffset = lastSealedOffset;
     }
 
     public static StreamPartitionManager streamPartitionManager() {
@@ -105,7 +115,8 @@ public final class StreamPartitionManager implements AutoCloseable {
                                           Option.none(),
                                           Option.none(),
                                           StreamOwnerEpochSource.zero(),
-                                          Option.none());
+                                          Option.none(),
+                                          LastSealedOffsetSource.none());
     }
 
     public static StreamPartitionManager streamPartitionManager(long maxTotalBytes) {
@@ -115,7 +126,8 @@ public final class StreamPartitionManager implements AutoCloseable {
                                           Option.none(),
                                           Option.none(),
                                           StreamOwnerEpochSource.zero(),
-                                          Option.none());
+                                          Option.none(),
+                                          LastSealedOffsetSource.none());
     }
 
     public static StreamPartitionManager streamPartitionManager(long maxTotalBytes, EvictionListener evictionListener) {
@@ -125,7 +137,8 @@ public final class StreamPartitionManager implements AutoCloseable {
                                           Option.none(),
                                           Option.none(),
                                           StreamOwnerEpochSource.zero(),
-                                          Option.none());
+                                          Option.none(),
+                                          LastSealedOffsetSource.none());
     }
 
     public static StreamPartitionManager streamPartitionManager(long maxTotalBytes,
@@ -137,7 +150,8 @@ public final class StreamPartitionManager implements AutoCloseable {
                                           Option.none(),
                                           Option.none(),
                                           StreamOwnerEpochSource.zero(),
-                                          Option.none());
+                                          Option.none(),
+                                          LastSealedOffsetSource.none());
     }
 
     public static StreamPartitionManager streamPartitionManager(long maxTotalBytes,
@@ -150,7 +164,8 @@ public final class StreamPartitionManager implements AutoCloseable {
                                           Option.some(clusterNode),
                                           Option.none(),
                                           StreamOwnerEpochSource.zero(),
-                                          Option.none());
+                                          Option.none(),
+                                          LastSealedOffsetSource.none());
     }
 
     /// Fence-enabled factory (#345 item 1d-ii): every local and replicated-receive append is
@@ -164,28 +179,44 @@ public final class StreamPartitionManager implements AutoCloseable {
                                                                 ClusterNode<KVCommand<AetherKey>> clusterNode,
                                                                 OwnershipEpochHighWater epochHighWater,
                                                                 StreamOwnerEpochSource ownerEpochSource,
-                                                                Option<Path> walBaseDir) {
+                                                                Option<Path> walBaseDir,
+                                                                LastSealedOffsetSource lastSealedOffset) {
         return new StreamPartitionManager(maxTotalBytes,
                                           evictionListener,
                                           replicationManager,
                                           Option.some(clusterNode),
                                           Option.some(epochHighWater),
                                           ownerEpochSource,
-                                          walBaseDir);
+                                          walBaseDir,
+                                          lastSealedOffset);
     }
 
     /// Test/standalone factory wiring a per-partition crash-durable WAL root (streaming-persistence
     /// W3/W6) with the no-op eviction / no-replication / no-cluster / fence-free defaults. When
     /// `walBaseDir` is [Option#none] this is byte-identical to {@link #streamPartitionManager(long)};
-    /// when present every partition opens a [PartitionWal] and an owner publish is fsync-gated.
+    /// when present every partition opens a [PartitionWal] and an owner publish is fsync-gated. The
+    /// last-sealed source is the floor ([LastSealedOffsetSource#none] → `-1`), so a rebuilt partition
+    /// replays its whole WAL from offset 0 (no sealed segments in this standalone path).
     public static StreamPartitionManager streamPartitionManager(long maxTotalBytes, Option<Path> walBaseDir) {
+        return streamPartitionManager(maxTotalBytes, walBaseDir, LastSealedOffsetSource.none());
+    }
+
+    /// Test/standalone factory wiring BOTH a per-partition WAL root (W3/W6) and an explicit last-sealed
+    /// source (streaming-persistence W4) with the no-op eviction / no-replication / no-cluster /
+    /// fence-free defaults. On partition (re)build each ring seeds above `lastSealedOffset` and replays
+    /// only the un-sealed WAL tail at its original offsets — letting a "restart" be simulated by building
+    /// a second manager on the same `walBaseDir`. A `-1` source replays the full log from offset 0.
+    public static StreamPartitionManager streamPartitionManager(long maxTotalBytes,
+                                                                Option<Path> walBaseDir,
+                                                                LastSealedOffsetSource lastSealedOffset) {
         return new StreamPartitionManager(maxTotalBytes,
                                           EvictionListener.NOOP,
                                           ReplicationManager.NONE,
                                           Option.none(),
                                           Option.none(),
                                           StreamOwnerEpochSource.zero(),
-                                          walBaseDir);
+                                          walBaseDir,
+                                          lastSealedOffset);
     }
 
     public static StreamPartitionManager streamPartitionManager(long maxTotalBytes,
@@ -196,7 +227,8 @@ public final class StreamPartitionManager implements AutoCloseable {
                                           Option.some(clusterNode),
                                           Option.none(),
                                           StreamOwnerEpochSource.zero(),
-                                          Option.none());
+                                          Option.none(),
+                                          LastSealedOffsetSource.none());
     }
 
     public long totalAllocatedBytes() {
@@ -337,7 +369,8 @@ public final class StreamPartitionManager implements AutoCloseable {
                                       evictionListener,
                                       bytes -> reserveForGrowth(config, bytes),
                                       this::release,
-                                      walBaseDir)
+                                      walBaseDir,
+                                      lastSealedOffset)
                           .onFailure(_ -> release(floorBytes))
                           .flatMap(entry -> publishFreshEntry(config, entry, commitMode));
     }
@@ -587,7 +620,8 @@ public final class StreamPartitionManager implements AutoCloseable {
                                       evictionListener,
                                       bytes -> reserveForGrowth(config, bytes),
                                       this::release,
-                                      walBaseDir)
+                                      walBaseDir,
+                                      lastSealedOffset)
                           .onSuccess(StreamEntry::markCommitted)
                           .onFailure(_ -> hydrationFailed(config, floorBytes))
                           .or((StreamEntry) null);
@@ -1027,17 +1061,21 @@ public final class StreamPartitionManager implements AutoCloseable {
         /// retry-classification (StreamError §1) is preserved rather than buried in an `allOf` composite.
         /// On full success the rings are paired with their per-partition WAL (`walBaseDir`, W6) into a
         /// committed-ready entry; a WAL-open failure closes the built rings and propagates with its own
-        /// cause (it is NOT collapsed to `STREAM_MEMORY_EXCEEDED`).
+        /// cause (it is NOT collapsed to `STREAM_MEMORY_EXCEEDED`). When a partition has a WAL the
+        /// un-sealed tail is replayed back into its fresh ring at the ORIGINAL offsets (streaming-
+        /// persistence W4), bounded by `lastSealedOffset` so already-sealed records (served by the tiered
+        /// reader) are NOT re-added; a replay failure likewise closes the built rings and propagates.
         static Result<StreamEntry> fromConfig(StreamConfig config,
                                               EvictionListener listener,
                                               LongPredicate reserve,
                                               LongConsumer release,
-                                              Option<Path> walBaseDir) {
+                                              Option<Path> walBaseDir,
+                                              LastSealedOffsetSource lastSealedOffset) {
             var results = buildPartitions(config, listener, reserve, release);
 
             return Result.allOf(results)
                          .mapError(_ -> StreamError.General.STREAM_MEMORY_EXCEEDED)
-                         .flatMap(buffers -> openEntryWals(config, buffers, walBaseDir))
+                         .flatMap(buffers -> openEntryWals(config, buffers, walBaseDir, lastSealedOffset))
                          .onFailure(_ -> closeBuilt(results));
         }
 
@@ -1071,17 +1109,89 @@ public final class StreamPartitionManager implements AutoCloseable {
             return new StreamEntry(config, buffers, wals, now, new AtomicLong(now), new AtomicBoolean(false));
         }
 
-        /// Pair the freshly-built rings with a per-partition [PartitionWal] (streaming-persistence W6).
-        /// A [Option#none] `walBaseDir` yields a partition-aligned list of [Option#none] (no WAL ⇒
-        /// unchanged behavior); a present base dir opens `<base>/<stream>/<partition>.wal` for each
-        /// partition. A WAL-open failure closes the WALs already opened and propagates, leaving the
-        /// caller to free the rings.
+        /// Pair the freshly-built rings with a per-partition [PartitionWal] (streaming-persistence W6)
+        /// and replay each WAL's un-sealed tail back into its ring (W4). A [Option#none] `walBaseDir`
+        /// yields a partition-aligned list of [Option#none] (no WAL ⇒ unchanged behavior); a present base
+        /// dir opens `<base>/<stream>/<partition>.wal` for each partition and recovers its tail. A WAL-open
+        /// or replay failure closes the WALs already opened and propagates, leaving the caller to free the
+        /// rings.
         private static Result<StreamEntry> openEntryWals(StreamConfig config,
                                                          List<OffHeapRingBuffer> buffers,
-                                                         Option<Path> walBaseDir) {
-            return openWals(config, walBaseDir).map(wals -> entryOf(config,
+                                                         Option<Path> walBaseDir,
+                                                         LastSealedOffsetSource lastSealedOffset) {
+            return openWals(config, walBaseDir).flatMap(wals -> recoverWals(config, buffers, wals, lastSealedOffset))
+                                               .map(wals -> entryOf(config,
                                                                     buffers.toArray(OffHeapRingBuffer[]::new),
                                                                     wals));
+        }
+
+        /// Replay every partition's un-sealed WAL tail into its fresh ring (streaming-persistence W4),
+        /// returning the same partition-aligned WAL list on success so the entry can be assembled. Runs
+        /// ONCE at build time, before the partition is published/serving, so the ring is empty and the
+        /// replayed events land at their original offsets. On any partition's replay failure the WALs are
+        /// closed and the failure propagates (the rings are freed by the caller).
+        private static Result<List<Option<PartitionWal>>> recoverWals(StreamConfig config,
+                                                                      List<OffHeapRingBuffer> buffers,
+                                                                      List<Option<PartitionWal>> wals,
+                                                                      LastSealedOffsetSource lastSealedOffset) {
+            var results = new ArrayList<Result<Unit>>(buffers.size());
+
+            for (int i = 0; i < buffers.size(); i++) {
+                results.add(recoverPartition(config.name(), i, buffers.get(i), wals.get(i), lastSealedOffset));
+            }
+
+            return Result.allOf(results).map(_ -> wals).onFailure(_ -> wals.forEach(StreamEntry::closeWal));
+        }
+
+        /// Replay one partition's WAL tail into its ring, or a no-op when the partition has no WAL
+        /// ([Option#none]). The fresh ring is seeded above the durable last-sealed offset and only records
+        /// with `offset > lastSealedOffset` are appended (PartitionWal.replay already filters them).
+        private static Result<Unit> recoverPartition(String streamName,
+                                                     int partition,
+                                                     OffHeapRingBuffer ring,
+                                                     Option<PartitionWal> wal,
+                                                     LastSealedOffsetSource lastSealedOffset) {
+            return wal.map(w -> replayTail(streamName, partition, ring, w, lastSealedOffset))
+                      .or(() -> success(unit()));
+        }
+
+        /// Seed the fresh ring above the partition's durable last-sealed offset (so reads at or below it
+        /// cleanly miss and fall through to the tiered reader), then append the WAL's un-sealed tail in
+        /// order. The ring assigns `base + 1, base + 2, …`, exactly matching the records' original
+        /// offsets. A `base` of `-1` (nothing sealed) leaves the fresh ring un-seeded and replays the
+        /// whole log from offset 0.
+        private static Result<Unit> replayTail(String streamName,
+                                               int partition,
+                                               OffHeapRingBuffer ring,
+                                               PartitionWal wal,
+                                               LastSealedOffsetSource lastSealedOffset) {
+            var base = lastSealedOffset.lastSealedOffset(streamName, partition);
+            var records = new ArrayList<WalRecord>();
+
+            return seedRing(ring, base).flatMap(_ -> wal.replay(base, records::add))
+                                       .flatMap(_ -> appendTail(ring, records));
+        }
+
+        /// Position the fresh ring so the next append is `base + 1` when sealed segments already cover
+        /// `[0, base]`; a no-op when nothing is sealed (`base < 0`).
+        private static Result<Unit> seedRing(OffHeapRingBuffer ring, long base) {
+            return base >= 0
+                   ? ring.seedHead(base)
+                   : success(unit());
+        }
+
+        /// Append the recovered records into the ring in scan order (their original offsets), failing the
+        /// recovery if any append fails. The events are the un-sealed tail, which fits the fresh ring;
+        /// a normal `append` is used (no quiet/recovered variant exists), so a recovered event may
+        /// re-trigger the eviction→seal listener — idempotent for the tail being recovered.
+        private static Result<Unit> appendTail(OffHeapRingBuffer ring, List<WalRecord> records) {
+            var results = records.stream().map(record -> appendRecord(ring, record)).toList();
+
+            return Result.allOf(results).mapToUnit();
+        }
+
+        private static Result<Long> appendRecord(OffHeapRingBuffer ring, WalRecord record) {
+            return ring.append(record.payload(), record.timestampMillis());
         }
 
         private static Result<List<Option<PartitionWal>>> openWals(StreamConfig config, Option<Path> walBaseDir) {
