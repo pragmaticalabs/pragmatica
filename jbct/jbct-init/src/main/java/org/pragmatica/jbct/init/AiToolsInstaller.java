@@ -4,6 +4,8 @@ import org.pragmatica.http.HttpOperations;
 import org.pragmatica.jbct.shared.GitHubContentFetcher;
 import org.pragmatica.jbct.shared.HttpClients;
 import org.pragmatica.jbct.shared.PathValidation;
+import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.utils.Causes;
@@ -19,9 +21,12 @@ import java.util.ArrayList;
 import java.util.List;
 
 /// Installs AI tools (Claude Code skills and agents) to project's .claude/ directory.
-/// Uses offline cache at ~/.jbct/cache/ai-tools/ for faster installs.
+/// Uses an offline cache at ~/.jbct/cache/ai-tools/ for faster installs, refreshing it
+/// whenever the latest commit on the source repository differs from the cached one.
+/// Files already present in the user's global ~/.claude/ are skipped (resolved globally).
 public final class AiToolsInstaller {
     private static final Path CACHE_DIR = Path.of(System.getProperty("user.home"), ".jbct", "cache", "ai-tools");
+    private static final Path GLOBAL_CLAUDE_DIR = Path.of(System.getProperty("user.home"), ".claude");
     private static final String VERSION_FILE = ".sha";
     private static final String REPO = "siy/coding-technology";
     private static final String BRANCH = "main";
@@ -39,18 +44,34 @@ public final class AiToolsInstaller {
         return new AiToolsInstaller(projectDir.resolve(".claude"));
     }
 
-    /// Install AI tools from cache or fetch from GitHub.
+    /// Install AI tools from cache (refreshed to the latest commit) into the project.
     ///
-    /// @return List of installed files
-    public Result<List<Path>> install() {
+    /// @return Outcome listing installed files and files skipped as already-global
+    public Result<AiToolsOutcome> install() {
         return ensureCachePopulated().flatMap(_ -> copyFromCache());
     }
 
     private Result<Unit> ensureCachePopulated() {
-        if (isCacheValid()) {
-            return Result.unitResult();
-        }
-        return populateCache();
+        var http = HttpClients.httpOperations();
+        return GitHubContentFetcher.getLatestCommitSha(http, REPO, BRANCH)
+                                   .fold(this::useExistingCache, latestSha -> refreshCacheIfStale(http, latestSha));
+    }
+
+    private Result<Unit> refreshCacheIfStale(HttpOperations http, String latestSha) {
+        return isCacheCurrent(latestSha)
+               ? Result.unitResult()
+               : downloadToCache(http, latestSha);
+    }
+
+    private Result<Unit> useExistingCache(Cause cause) {
+        return isCacheValid()
+               ? Result.unitResult()
+               : cause.result();
+    }
+
+    private boolean isCacheCurrent(String latestSha) {
+        return isCacheValid() && readCachedSha().filter(sha -> sha.equals(latestSha))
+                                                .isPresent();
     }
 
     private boolean isCacheValid() {
@@ -64,10 +85,17 @@ public final class AiToolsInstaller {
         return Files.exists(skillsDir) && Files.exists(agentsDir);
     }
 
-    private Result<Unit> populateCache() {
-        var http = HttpClients.httpOperations();
-        return GitHubContentFetcher.getLatestCommitSha(http, REPO, BRANCH)
-                                   .flatMap(sha -> downloadToCache(http, sha));
+    private Option<String> readCachedSha() {
+        var versionFile = CACHE_DIR.resolve(VERSION_FILE);
+        if (!Files.exists(versionFile)) {
+            return Option.none();
+        }
+        try {
+            return Option.option(Files.readString(versionFile)
+                                      .trim());
+        } catch (IOException e) {
+            return Option.none();
+        }
     }
 
     private Result<Unit> downloadToCache(HttpOperations http, String sha) {
@@ -93,7 +121,7 @@ public final class AiToolsInstaller {
     }
 
     private Result<Unit> saveVersion(String sha) {
-        try{
+        try {
             Files.createDirectories(CACHE_DIR);
             var versionFile = CACHE_DIR.resolve(VERSION_FILE);
             Files.writeString(versionFile, sha);
@@ -104,51 +132,56 @@ public final class AiToolsInstaller {
         }
     }
 
-    private Result<List<Path>> copyFromCache() {
+    private Result<AiToolsOutcome> copyFromCache() {
         if (!Files.exists(CACHE_DIR)) {
             return Causes.cause("AI tools cache not found. Run 'jbct update' with network access first.")
                          .result();
         }
-        var installedFiles = new ArrayList<Path>();
-        try{
+        var installed = new ArrayList<Path>();
+        var skipped = new ArrayList<Path>();
+        try {
             Files.createDirectories(claudeDir);
-            // Copy skills
-            var sourceSkills = CACHE_DIR.resolve("skills");
-            var targetSkills = claudeDir.resolve("skills");
-            if (Files.exists(sourceSkills)) {
-                copyDirectory(sourceSkills, targetSkills, installedFiles);
-            }
-            // Copy agents
-            var sourceAgents = CACHE_DIR.resolve("agents");
-            var targetAgents = claudeDir.resolve("agents");
-            if (Files.exists(sourceAgents)) {
-                copyDirectory(sourceAgents, targetAgents, installedFiles);
-            }
-            return Result.success(installedFiles);
+            copyTree(CACHE_DIR.resolve("skills"), claudeDir.resolve("skills"), installed, skipped);
+            copyTree(CACHE_DIR.resolve("agents"), claudeDir.resolve("agents"), installed, skipped);
+            return Result.success(AiToolsOutcome.aiToolsOutcome(installed, skipped));
         } catch (Exception e) {
             return Causes.cause("Failed to copy from cache: " + e.getMessage())
                          .result();
         }
     }
 
-    private void copyDirectory(Path source, Path target, List<Path> installedFiles) throws IOException {
+    private void copyTree(Path source, Path target, List<Path> installed, List<Path> skipped) throws IOException {
+        if (!Files.exists(source)) {
+            return;
+        }
         Files.walkFileTree(source,
                            new SimpleFileVisitor<>() {
             @Override
             public FileVisitResult preVisitDirectory(Path dir, BasicFileAttributes attrs) throws IOException {
-                               var targetDir = target.resolve(source.relativize(dir));
-                               Files.createDirectories(targetDir);
+                               Files.createDirectories(target.resolve(source.relativize(dir)));
                                return FileVisitResult.CONTINUE;
                            }
 
             @Override
             public FileVisitResult visitFile(Path file, BasicFileAttributes attrs) throws IOException {
-                               var targetFile = target.resolve(source.relativize(file));
-                               Files.copy(file, targetFile, StandardCopyOption.REPLACE_EXISTING);
-                               installedFiles.add(targetFile);
+                               copyOrSkip(file, target.resolve(source.relativize(file)), installed, skipped);
                                return FileVisitResult.CONTINUE;
                            }
         });
+    }
+
+    private void copyOrSkip(Path sourceFile, Path targetFile, List<Path> installed, List<Path> skipped) throws IOException {
+        var relativePath = claudeDir.relativize(targetFile);
+        if (existsGlobally(relativePath)) {
+            skipped.add(relativePath);
+            return;
+        }
+        Files.copy(sourceFile, targetFile, StandardCopyOption.REPLACE_EXISTING);
+        installed.add(targetFile);
+    }
+
+    private static boolean existsGlobally(Path relativePath) {
+        return Files.exists(GLOBAL_CLAUDE_DIR.resolve(relativePath));
     }
 
     /// Get the Claude directory.
