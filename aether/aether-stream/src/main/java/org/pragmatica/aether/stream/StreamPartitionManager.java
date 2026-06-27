@@ -856,6 +856,49 @@ public final class StreamPartitionManager implements AutoCloseable {
         return current;
     }
 
+    /// Periodically reclaim WAL disk by truncating each partition's write-ahead log up to its DURABLE
+    /// last-sealed offset (streaming-persistence W5). For every live stream and each partition that has a
+    /// [PartitionWal], `base = lastSealedOffset.lastSealedOffset(stream, partition)` is computed and, when
+    /// `base >= 0`, `wal.truncate(base)` discards records with `offset <= base`. Those records are already
+    /// durable in cold segments (served post-restart by the tiered reader), so dropping them from the WAL
+    /// loses nothing — recovery serves them from segments and the un-sealed tail (`offset > base`) stays in
+    /// the WAL. Driving off the DURABLE sealed bound (rather than hooking the void eviction→seal listener)
+    /// avoids any "truncated before the segment was durable" window. Best-effort: a `truncate` failure on
+    /// one partition is logged and never aborts the others; a `-1` bound (nothing sealed) is a no-op for
+    /// that partition; the no-WAL path ([Option#none] `walBaseDir`) holds no [PartitionWal] and is untouched.
+    @Contract
+    public void truncateWalsToSealed() {
+        streams.forEach(this::truncateStreamWals);
+    }
+
+    @Contract
+    private void truncateStreamWals(String streamName, StreamEntry entry) {
+        var wals = entry.wals();
+
+        for (int partition = 0; partition < wals.size(); partition++) {
+            truncatePartitionToSealed(streamName, partition, wals.get(partition));
+        }
+    }
+
+    @Contract
+    private void truncatePartitionToSealed(String streamName, int partition, Option<PartitionWal> wal) {
+        wal.onPresent(w -> truncateWalToSealed(streamName, partition, w));
+    }
+
+    @Contract
+    private void truncateWalToSealed(String streamName, int partition, PartitionWal wal) {
+        var base = lastSealedOffset.lastSealedOffset(streamName, partition);
+
+        if (base >= 0) {
+            wal.truncate(base)
+               .onFailure(cause -> log.warn("WAL truncate to sealed offset {} failed for {}/{}: {}",
+                                            base,
+                                            streamName,
+                                            partition,
+                                            cause.message()));
+        }
+    }
+
     @Contract
     @Override
     public void close() {

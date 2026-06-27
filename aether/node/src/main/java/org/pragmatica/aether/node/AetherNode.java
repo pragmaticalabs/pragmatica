@@ -685,6 +685,12 @@ public interface AetherNode extends ManageableNode {
     /// every storage setup; the manager self-gates on its mutation-count / time-interval trigger, so
     /// this tick only needs to be frequent enough to bound the post-trigger snapshot latency.
     TimeSpan METADATA_SNAPSHOT_INTERVAL = TimeSpan.timeSpan(10).seconds();
+    /// Cadence for the WAL disk-reclamation driver (streaming-persistence W5). Periodically truncates
+    /// every partition's write-ahead log up to its DURABLE last-sealed offset, dropping records already
+    /// persisted in cold segments so the WAL does not grow unbounded. `truncate` is threshold-lazy
+    /// (cheap when nothing new has sealed), so a modest 30s tick keeps the WAL bounded without contending
+    /// with the publish fsync path.
+    TimeSpan WAL_TRUNCATE_INTERVAL = TimeSpan.timeSpan(30).seconds();
     /// Cadence for the NodeDeploymentManager activation level-heal. On a cold-start
     /// `restart_all_nodes` the single CAS-latched `ClusterStateNotification.ACTIVE` edge can be
     /// dropped while the message-router delegate is being rebuilt, leaving NDM stuck in `Dormant`
@@ -2806,6 +2812,13 @@ public interface AetherNode extends ManageableNode {
         // (streams + artifacts/content), so every MetadataStore's refs are persisted; maybeSnapshot
         // self-gates on its mutation-count / interval trigger, so a 10s tick is cheap when not due.
         SharedScheduler.scheduleAtFixedRate(() -> snapshotAllSetups(storageSetups), METADATA_SNAPSHOT_INTERVAL);
+        // W5 WAL disk-reclamation driver: truncate every partition's write-ahead log up to its DURABLE
+        // last-sealed offset so the WAL does not grow unbounded. Records <= lastSealedOffset are already in
+        // durable cold segments (served post-restart by the tiered reader), so dropping them from the WAL
+        // loses nothing; the un-sealed tail stays in the WAL. truncate is threshold-lazy, so this tick is
+        // cheap when nothing new has sealed. Driven off the durable sealed bound (not the void
+        // eviction->seal listener) to avoid any truncated-before-durable window.
+        SharedScheduler.scheduleAtFixedRate(streamPartitionManager::truncateWalsToSealed, WAL_TRUNCATE_INTERVAL);
         var streamingCoordinator = StreamingCoordinator.streamingCoordinator(streamFailoverHandler,
                                                                              streamRetentionEnforcer,
                                                                              streamPartitionManager,
