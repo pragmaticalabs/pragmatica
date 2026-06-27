@@ -226,6 +226,7 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.io.FileOps;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.aether.environment.ComputeProvider;
 import org.pragmatica.aether.environment.DiscoveryProvider;
@@ -713,6 +714,24 @@ public interface AetherNode extends ManageableNode {
         return Path.of(artifactsConfig.diskPath())
                    .resolveSibling("stream-segments")
                    .resolve(config.self().id());
+    }
+
+    /// The per-node stream WAL directory (`<streamDataDir>/wal`) when it is writable, else `none()`.
+    /// Probing with a create mirrors the disk-tier degradation: on a read-only mount (e.g. Forge's
+    /// `/data`) the WAL is disabled and streaming runs non-crash-durable (in-memory tail only), so the
+    /// optional-WAL path leaves existing in-memory deployments and tests unchanged.
+    private static Option<Path> resolveStreamWalDir(AetherNodeConfig config) {
+        var walDir = streamDataDir(config).resolve("wal");
+
+        return FileOps.createDirectories(walDir)
+                      .fold(cause -> walDisabled(walDir, cause), _ -> Option.some(walDir));
+    }
+
+    private static Option<Path> walDisabled(Path walDir, Cause cause) {
+        LOG.warn("Stream WAL disabled ({} not writable): {} — streaming runs non-crash-durable (in-memory tail)",
+                 walDir,
+                 cause.message());
+        return Option.none();
     }
 
     /// Fold the `streams` StorageSetup into the (immutable) map produced by `StorageFactory.createAll`
@@ -2587,7 +2606,7 @@ public interface AetherNode extends ManageableNode {
                                                                                    clusterNode,
                                                                                    ownershipEpochHighWater,
                                                                                    KvStreamOwnerEpochSource.kvStreamOwnerEpochSource(kvStore),
-                                                                                   Option.none(),
+                                                                                   resolveStreamWalDir(config),
                                                                                    streamSegmentIndex::lastSealedOffset);
 
         streamPartitionManagerRef.set(streamPartitionManager);
