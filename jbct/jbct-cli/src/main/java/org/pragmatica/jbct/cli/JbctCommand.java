@@ -21,6 +21,7 @@ import picocli.CommandLine.Option;
  AddEventCommand.class,
  AddPersistenceCommand.class,
  UpdateCommand.class,
+ MigrateCommand.class,
  VerifySliceCommand.class})
 public class JbctCommand implements Runnable {
     @Option(names = {"-v", "--verbose"}, description = "Enable verbose output")
