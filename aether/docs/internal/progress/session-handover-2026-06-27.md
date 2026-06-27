@@ -37,3 +37,14 @@ User directive: **working end-to-end streaming persistence, no gaps, no unsuppor
 - Local **rc2 jbct binaries refreshed** this session (`mvn install -DskipTests -Djbct.skip=true -pl jbct/jbct-maven-plugin,jbct/slice-processor,aether/pg-tools/pg-codegen -am`) — earlier worktree agents had rebuilt the rc1 toolchain (harmless, different version coordinate).
 - **Worktree-base trap bit a 4th time** — `isolation:"worktree"` branches from `origin/main` (180 commits behind rc2). Mitigation used: ran all coding agents NON-isolated on the rc2 tree. See `feedback_worktree_isolation_pattern`.
 - `mvn install` fires HetznerCloudIT with HCLOUD_TOKEN set → always `env -u HCLOUD_TOKEN`; forge via `integration-test -Dit.test=…`, never `verify`; `-am` re-tests dep modules (a flaky `LeaderManagerTest` crash) → omit `-am` when deps already installed. aether/** = BSL-1.1; single-line commits, no trailers.
+
+## jbct toolchain fixes (same session, after the streaming work — all pushed)
+Root cause: the jbct scaffolding referenced the **original personal GitHub repos** (`siy/*`) which moved to the `pragmaticalabs` org, so live version/release lookups silently failed and fell back to a hardcoded stale `0.20.0`. Fixed + extended (6 commits `abefd624c`→`223c4fddf`, all on `origin/release-1.0.0-rc2`):
+- `abefd624c` — `GitHubVersionResolver` (jbct scaffolding versions): `siy/pragmatica` → `pragmaticalabs/pragmatica`, fallback `0.20.0` → `1.0.0-rc1`. (`ProjectInitializer` already resolved live — both regular + slice paths; the bug was purely the wrong repo + stale fallback.)
+- `3cd7813f3` — `GitHubReleaseChecker` (`jbct upgrade` CLI self-update): `siy/jbct-cli` → `pragmaticalabs/pragmatica` (its release carries the `jbct.jar` asset).
+- `6510e6287` — `PersistenceAdder` now generates the `[database]` + `[database.pool_config]` config in `resources.toml` (was missing → scaffolded `@PgSql` persistence had no datasource). Imports/coordinates/`V###__name.sql` schema naming were already correct vs `comprehensive-persistence`.
+- `f736b9889` — **new `jbct migrate [--version X]`** command (`MigrateCommand` + `VersionMigrator`): rewrites the project pom's `pragmatica-lite`/`aether`/`jbct`/`platform` version properties to latest (default) or a specific version. There was no such command before.
+- `858d66e35` — AI-tools install (`AiToolsInstaller` init + `AiToolsUpdater` update): **skip per-project install of any skill/agent already present in global `~/.claude/`**; and the installer now SHA-compares the source repo each run (was serving a stale cache indefinitely). Repo `siy/coding-technology` is correct (a real repo) — left unchanged.
+- `223c4fddf` — invariant comment on `DEFAULT_VERSION`: must track the latest published release; bump-on-discrepancy.
+Local rc2 jbct binaries rebuilt + reinstalled with all of the above (`MigrateCommand` confirmed in the installed jar).
+
