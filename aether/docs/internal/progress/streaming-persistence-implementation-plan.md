@@ -62,7 +62,29 @@ Add `StreamPersistenceRestartTest` (sibling of A0; model on `StreamOwnershipDriv
 
 ---
 
-## Deferred + DOCUMENTED gaps (the "ship with a plan" set)
+## PHASE A-WAL — crash-durability (write-ahead log)
+
+**User directive (2026-06-27): every ACKED event must survive `kill -9`.** Sealed segments cover *evicted* events; the un-sealed ring tail is volatile. A per-partition WAL makes the tail crash-durable: append+fsync BEFORE ack, replay on recovery, truncate as events seal. Green-field (no existing WAL). Integration points mapped (see investigation) — all in `aether/aether-stream` + `AetherNode`.
+
+**Durability contract:** publish resolves (acks) only after the event is in the partition WAL and fsync'd. EVENTUAL = WAL-fsync then local-ring ack; sync-replica = WAL-fsync + replica acks. Crash + restart ⇒ WAL replay restores the ring tail; sealed segments restore the rest; no acked event lost. **Perf: group-commit** — batch concurrent appends into one fsync (per-event fsync would gate throughput; the user wants decent perf).
+
+### Increments (gated; aether-stream unit test green each)
+- **W1 — ring seed-offset primitive.** `OffHeapRingBuffer.append` only assigns `head+1` (`:329-330`); there is no write-at-offset. Add an offset-preserving seed primitive (e.g. `seedAppend(offset,payload,ts)` / `seedHead`) used by replay ONLY, so a ring resuming at `lastSealedOffset+1` keeps WAL/segment/cursor offsets aligned. **The load-bearing primitive.** Test: seed at K → `headOffset()==K`, `read(K)` returns it.
+- **W2 — `PartitionWal` durable log.** New `…/stream/wal/PartitionWal.java`. Append-only file per `(stream,partition)` under `<streamDataDir>/wal/<stream>/<partition>.wal`. Record `[u32 len][u64 offset][u64 ts][u32 crc32][payload]`. `append(offset,payload,ts)` (buffered + **group-commit fsync**), `replayFrom(minOffset)` (skip ≤minOffset; torn final record dropped via len+crc), `truncate(uptoOffset)`, `close()`. Tests: append→replay roundtrip, torn-write recovery, truncate.
+- **W3 — append before ack.** `StreamPartitionManager.publishLocal:586-598` — after `appendToPartition` yields the offset (`:592`), before replication: WAL append + fsync completes inside the synchronous Result (pre-ack for BOTH modes — EVENTUAL `PartitionedStreamAccess:508`, sync `:513`). Thread the `PartitionWal` handle via `StreamEntry`.
+- **W4 — recovery on partition create.** Partitions materialize lazily (`StreamEntry.buildPartitions:980-988`), so replay is per-partition there, not a global boot step. Open-or-recover the WAL; replay records with `offset > lastSealedOffset` (from `SegmentIndex`) into the ring via the W1 seed primitive, before the ring is published. Anchor after `AetherNode.java:2571` rebuild.
+- **W5 — truncate on seal.** `StorageSegmentSink.seal:64-67` success continuation (segment durably on disk): truncate the partition WAL up to `segment.endOffset()`.
+- **W6 — WAL lifecycle.** Open/recover in `buildPartitions`, close in `StreamEntry.close:1062`, delete on `destroyStream`.
+- **W7 — cursor crash-durability.** Ensure `CursorStore` commits fsync (crash-durable), not just buffered.
+- **Harness — EmberCluster.** Writable per-node data dir (`storageConfig` `artifacts.diskPath` → test temp dir; currently `Map.of()` → default `/data` read-only, `EmberCluster.java:654`), preserved across `stop()`→`start()`; an ungraceful (`kill -9`-equivalent) stop for the crash test.
+- **A6 (crash variant) — the gate.** `StreamCrashDurabilityTest`: 5 nodes, writable dirs; produce N + commit cursor → UNGRACEFUL kill → restart preserving IDs+dirs → assert ALL N readable + cursor survived (zero loss). Plus a graceful-restart variant.
+
+### Load-bearing risks
+1. **W1 seed primitive** — offset alignment of replayed tail vs sealed segments vs cursors; the whole story desyncs if replay assigns sequential offsets (the existing `appendRecovered`/`buffer.append` bug, `StreamPartitionManager:608` / `PartitionBackfill:292`).
+2. **W2 torn-write recovery** — a crash mid-append must leave the WAL replayable (last partial record dropped by len+crc, not corrupting earlier records).
+3. **W3 group-commit correctness** — fsync must cover the appending event before its ack resolves, while still batching across concurrent publishers.
+
+
 
 Each gets a feature-catalog note (status → Partial/Planned) with why + the covering phase:
 1. **Failover-to-different-node durability** — segments are node-local on disk in Phase A → **Phase B / #265** (replicated segments + placement-aware hydration).
