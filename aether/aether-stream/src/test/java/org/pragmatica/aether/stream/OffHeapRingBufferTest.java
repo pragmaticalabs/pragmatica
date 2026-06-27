@@ -524,4 +524,171 @@ class OffHeapRingBufferTest {
             }
         }
     }
+
+    @Nested
+    class SeedOffset {
+
+        private static final long BASE = 500L;
+
+        @Test
+        void seedHead_positionsHeadAndTail_onFreshRing() {
+            buffer.seedHead(BASE)
+                  .onFailure(_ -> org.junit.jupiter.api.Assertions.fail("Expected success"));
+
+            assertThat(buffer.headOffset()).isEqualTo(BASE);
+            assertThat(buffer.tailOffset()).isEqualTo(BASE + 1);
+            assertThat(buffer.eventCount()).isEqualTo(0L);
+            assertThat(buffer.lastSealedOffset()).isEqualTo(BASE);
+        }
+
+        @Test
+        void append_assignsBasePlusOne_afterSeed() {
+            buffer.seedHead(BASE);
+
+            buffer.append("e0".getBytes(), 1000L)
+                  .onFailure(_ -> org.junit.jupiter.api.Assertions.fail("Expected success"))
+                  .onSuccess(offset -> assertThat(offset).isEqualTo(BASE + 1));
+        }
+
+        @Test
+        void append_assignsSequentialOffsets_afterSeed() {
+            buffer.seedHead(BASE);
+
+            buffer.append("e0".getBytes(), 1000L);
+            buffer.append("e1".getBytes(), 1001L);
+
+            buffer.append("e2".getBytes(), 1002L)
+                  .onFailure(_ -> org.junit.jupiter.api.Assertions.fail("Expected success"))
+                  .onSuccess(offset -> assertThat(offset).isEqualTo(BASE + 3));
+
+            assertThat(buffer.headOffset()).isEqualTo(BASE + 3);
+            assertThat(buffer.tailOffset()).isEqualTo(BASE + 1);
+            assertThat(buffer.eventCount()).isEqualTo(3L);
+        }
+
+        @Test
+        void read_returnsPayloadsInOrder_afterSeedAndAppend() {
+            buffer.seedHead(BASE);
+            buffer.append("e0".getBytes(), 1000L);
+            buffer.append("e1".getBytes(), 1001L);
+            buffer.append("e2".getBytes(), 1002L);
+
+            buffer.read(BASE + 1, 10)
+                  .onFailure(_ -> org.junit.jupiter.api.Assertions.fail("Expected success"))
+                  .onSuccess(events -> {
+                      assertThat(events).hasSize(3);
+                      assertThat(events.get(0).offset()).isEqualTo(BASE + 1);
+                      assertThat(events.get(0).data()).isEqualTo("e0".getBytes());
+                      assertThat(events.get(1).offset()).isEqualTo(BASE + 2);
+                      assertThat(events.get(1).data()).isEqualTo("e1".getBytes());
+                      assertThat(events.get(2).offset()).isEqualTo(BASE + 3);
+                      assertThat(events.get(2).data()).isEqualTo("e2".getBytes());
+                  });
+        }
+
+        @Test
+        void read_returnsCursorExpired_atBaseAfterSeed() {
+            buffer.seedHead(BASE);
+
+            buffer.read(BASE, 10)
+                  .onSuccess(_ -> org.junit.jupiter.api.Assertions.fail("Expected failure"))
+                  .onFailure(cause -> assertThat(cause).isInstanceOf(StreamError.CursorExpired.class));
+        }
+
+        @Test
+        void read_returnsCursorExpired_belowBaseAfterSeed() {
+            buffer.seedHead(BASE);
+
+            buffer.read(0, 10)
+                  .onSuccess(_ -> org.junit.jupiter.api.Assertions.fail("Expected failure"))
+                  .onFailure(cause -> assertThat(cause).isInstanceOf(StreamError.CursorExpired.class));
+        }
+
+        @Test
+        void read_returnsCursorExpired_atBaseAfterSeedAndAppend() {
+            buffer.seedHead(BASE);
+            buffer.append("e0".getBytes(), 1000L);
+
+            buffer.read(BASE, 10)
+                  .onSuccess(_ -> org.junit.jupiter.api.Assertions.fail("Expected failure"))
+                  .onFailure(cause -> assertThat(cause).isInstanceOf(StreamError.CursorExpired.class));
+        }
+
+        @Test
+        void seedHead_zeroBase_nextAppendIsOffsetOne() {
+            buffer.seedHead(0L)
+                  .onFailure(_ -> org.junit.jupiter.api.Assertions.fail("Expected success"));
+
+            assertThat(buffer.headOffset()).isEqualTo(0L);
+            assertThat(buffer.tailOffset()).isEqualTo(1L);
+
+            buffer.append("e0".getBytes(), 1000L)
+                  .onFailure(_ -> org.junit.jupiter.api.Assertions.fail("Expected success"))
+                  .onSuccess(offset -> assertThat(offset).isEqualTo(1L));
+
+            buffer.read(0, 10)
+                  .onSuccess(_ -> org.junit.jupiter.api.Assertions.fail("Expected failure"))
+                  .onFailure(cause -> assertThat(cause).isInstanceOf(StreamError.CursorExpired.class));
+
+            buffer.read(1, 10)
+                  .onFailure(_ -> org.junit.jupiter.api.Assertions.fail("Expected success"))
+                  .onSuccess(events -> {
+                      assertThat(events).hasSize(1);
+                      assertThat(events.getFirst().offset()).isEqualTo(1L);
+                      assertThat(events.getFirst().data()).isEqualTo("e0".getBytes());
+                  });
+        }
+
+        @Test
+        void seedHead_largeBase_alignsOffsetsAndReads() {
+            var largeBase = 1_000_000L;
+
+            buffer.seedHead(largeBase);
+            buffer.append("e0".getBytes(), 1000L);
+            buffer.append("e1".getBytes(), 1001L);
+            buffer.append("e2".getBytes(), 1002L);
+
+            assertThat(buffer.headOffset()).isEqualTo(largeBase + 3);
+            assertThat(buffer.tailOffset()).isEqualTo(largeBase + 1);
+
+            buffer.read(largeBase + 1, 10)
+                  .onFailure(_ -> org.junit.jupiter.api.Assertions.fail("Expected success"))
+                  .onSuccess(events -> {
+                      assertThat(events).hasSize(3);
+                      assertThat(events.get(0).data()).isEqualTo("e0".getBytes());
+                      assertThat(events.get(2).offset()).isEqualTo(largeBase + 3);
+                      assertThat(events.get(2).data()).isEqualTo("e2".getBytes());
+                  });
+
+            buffer.read(largeBase, 10)
+                  .onSuccess(_ -> org.junit.jupiter.api.Assertions.fail("Expected failure"))
+                  .onFailure(cause -> assertThat(cause).isInstanceOf(StreamError.CursorExpired.class));
+        }
+
+        @Test
+        void seedHead_returnsSeedRejected_whenRingNotFresh() {
+            buffer.append("first".getBytes(), 1000L);
+
+            buffer.seedHead(BASE)
+                  .onSuccess(_ -> org.junit.jupiter.api.Assertions.fail("Expected failure"))
+                  .onFailure(cause -> assertThat(cause).isInstanceOf(StreamError.SeedRejected.class));
+        }
+
+        @Test
+        void seedHead_returnsSeedRejected_whenBaseNegative() {
+            buffer.seedHead(-1L)
+                  .onSuccess(_ -> org.junit.jupiter.api.Assertions.fail("Expected failure"))
+                  .onFailure(cause -> assertThat(cause).isInstanceOf(StreamError.SeedRejected.class));
+        }
+
+        @Test
+        void seedHead_returnsBufferClosed_whenClosed() {
+            var localBuffer = offHeapRingBuffer(10, 256);
+            localBuffer.close();
+
+            localBuffer.seedHead(BASE)
+                       .onSuccess(_ -> org.junit.jupiter.api.Assertions.fail("Expected failure"))
+                       .onFailure(cause -> assertThat(cause).isEqualTo(StreamError.General.BUFFER_CLOSED));
+        }
+    }
 }

@@ -62,6 +62,18 @@ public sealed interface StreamError extends Cause {
         }
     }
 
+    /// Ring seed-offset precondition rejection (spec PHASE A-WAL §W1): {@link OffHeapRingBuffer#seedHead}
+    /// requires a FRESH ring (`headOffset() == -1`, no appends yet) and a non-negative `base`. The seed
+    /// is a replay-only positioning op; this rejects a misuse — a non-fresh ring or a negative `base` —
+    /// without mutating the ring. `currentHead` is the ring head at the rejected call (`-1` for a fresh
+    /// ring whose only fault was a negative `base`).
+    record SeedRejected(long base, long currentHead) implements StreamError {
+        @Override
+        public String message() {
+            return "Ring seed rejected (base=%d, head=%d): requires fresh ring, base>=0".formatted(base, currentHead);
+        }
+    }
+
     record StreamNotFound(String streamName) implements StreamError {
         @Override
         public String message() {
@@ -124,9 +136,9 @@ public sealed interface StreamError extends Cause {
         @Override
         public String message() {
             return "Stale-epoch linearizable read rejected for %s[%d]: presented owner epoch %s is older than the partition high-water %s".formatted(streamName,
-                                                                                                                                                      partition,
-                                                                                                                                                      presented,
-                                                                                                                                                      current);
+                                                                                                                                                     partition,
+                                                                                                                                                     presented,
+                                                                                                                                                     current);
         }
     }
 

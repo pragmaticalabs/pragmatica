@@ -9,6 +9,7 @@ import org.pragmatica.aether.slice.RetentionPolicy;
 import org.pragmatica.aether.slice.TierAwareRetention;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Unit;
 
 import java.lang.foreign.Arena;
 import java.lang.foreign.MemorySegment;
@@ -23,6 +24,7 @@ import java.util.function.LongPredicate;
 import java.util.function.Supplier;
 
 import static org.pragmatica.lang.Result.success;
+import static org.pragmatica.lang.Result.unitResult;
 
 
 public final class OffHeapRingBuffer implements AutoCloseable {
@@ -388,6 +390,38 @@ public final class OffHeapRingBuffer implements AutoCloseable {
         notifyAppendListeners(lastOffset);
 
         return success(lastOffset);
+    }
+
+    /// Position a FRESH ring (no appends yet, `headOffset() == -1`) so the NEXT append is assigned
+    /// offset `base + 1`, leaving the ring logically EMPTY — it stores nothing (no data bytes, no
+    /// index slot touched). Replay-only positioning op (spec PHASE A-WAL §W1): when sealed segments
+    /// already cover `[0, base]`, a recovered ring resumes ABOVE `base` instead of restarting at 0,
+    /// so WAL / segment / cursor offsets stay aligned. NOT a normal write — `append`'s `head + 1`
+    /// assignment is unchanged.
+    ///
+    /// The post-seed header is made indistinguishable from a ring that organically reached `base`
+    /// then had EVERYTHING evicted: head = `base`; tail (earliest retained) = `base + 1`, so reads
+    /// at or below `base` cleanly MISS as below-earliest `CursorExpired` (never reading an unwritten
+    /// slot); event count = 0; sealed high-water = `base` (all of `[0, base]` is sealed, none of it
+    /// retained). The data write position stays 0 — the first real append writes at data position 0,
+    /// exactly as on a fresh ring. Rejected with NO mutation on a non-fresh ring, a negative `base`,
+    /// or a closed buffer.
+    public Result<Unit> seedHead(long base) {
+        if (closed.get()) {
+            return StreamError.General.BUFFER_CLOSED.result();
+        }
+
+        var currentHead = headOffset();
+
+        if (base < 0 || currentHead != -1) {
+            return new StreamError.SeedRejected(base, currentHead).result();
+        }
+
+        controlSegment.set(ValueLayout.JAVA_LONG, HEADER_HEAD_OFFSET, base);
+        controlSegment.set(ValueLayout.JAVA_LONG, HEADER_TAIL_OFFSET, base + 1);
+        lastSealedOffset = base;
+
+        return unitResult();
     }
 
     /// Grow the data region until it can hold a write of `writeLen` bytes at the current logical
