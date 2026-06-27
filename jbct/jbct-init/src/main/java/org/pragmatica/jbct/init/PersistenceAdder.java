@@ -6,6 +6,7 @@ import org.pragmatica.lang.utils.Causes;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.regex.Pattern;
 
@@ -15,6 +16,7 @@ import java.util.regex.Pattern;
 public final class PersistenceAdder {
     private static final Pattern PG_CODEGEN_PRESENT = Pattern.compile("<artifactId>pg-codegen</artifactId>");
     private static final Pattern RESOURCE_API_PRESENT = Pattern.compile("<artifactId>resource-api</artifactId>");
+    private static final Pattern DATABASE_SECTION_PRESENT = Pattern.compile("(?m)^\\s*\\[database(\\]|\\.)");
 
     private final Path projectDir;
     private final String basePackage;
@@ -49,7 +51,8 @@ public final class PersistenceAdder {
     public Result<List<Path>> addPersistence() {
         return updatePom()
                   .flatMap(_ -> createDirectories())
-                  .flatMap(_ -> createFiles());
+                  .flatMap(_ -> createFiles())
+                  .flatMap(this::ensureDatabaseConfig);
     }
 
     public String persistencePackage() {
@@ -112,6 +115,40 @@ public final class PersistenceAdder {
             return Causes.cause("Failed to update pom.xml: " + e.getMessage())
                          .result();
         }
+    }
+
+    /// Ensure src/main/resources/resources.toml declares a [database] section.
+    /// Creates the file when absent, appends the section when present without one,
+    /// and is a no-op when a [database] table already exists (idempotent).
+    private Result<List<Path>> ensureDatabaseConfig(List<Path> createdFiles) {
+        var resourcesToml = projectDir.resolve("src/main/resources/resources.toml");
+        try {
+            if (!Files.exists(resourcesToml)) {
+                Files.writeString(resourcesToml, DATABASE_CONFIG_TEMPLATE);
+                return Result.success(append(createdFiles, resourcesToml));
+            }
+            var content = Files.readString(resourcesToml);
+            if (DATABASE_SECTION_PRESENT.matcher(content).find()) {
+                return Result.success(createdFiles);
+            }
+            Files.writeString(resourcesToml, content + sectionSeparator(content) + DATABASE_CONFIG_TEMPLATE);
+            return Result.success(append(createdFiles, resourcesToml));
+        } catch (Exception e) {
+            return Causes.cause("Failed to update resources.toml: " + e.getMessage())
+                         .result();
+        }
+    }
+
+    private static List<Path> append(List<Path> files, Path added) {
+        var result = new ArrayList<>(files);
+        result.add(added);
+        return result;
+    }
+
+    private static String sectionSeparator(String content) {
+        return content.endsWith("\n")
+               ? "\n"
+               : "\n\n";
     }
 
     private String addAnnotationProcessor(String pomContent) {
@@ -204,5 +241,29 @@ public final class PersistenceAdder {
         --     email     TEXT      NOT NULL UNIQUE,
         --     created   TIMESTAMPTZ NOT NULL DEFAULT now()
         -- );
+        """;
+
+    private static final String DATABASE_CONFIG_TEMPLATE = """
+        # Database configuration for @PgSql persistence.
+        # These are placeholder values for local development. At deploy time they are
+        # overridden from the node's aether.toml / environment.
+        [database]
+        type = "POSTGRESQL"
+        name = "primary"
+        host = "localhost"
+        port = 5432
+        database = "appdb"
+        username = "postgres"
+        password = "postgres"
+        async_url = "postgresql://localhost:5432/appdb"
+
+        [database.pool_config]
+        min_connections = 4
+        max_connections = 20
+        idle_timeout = "10m"
+        connection_timeout = "5s"
+        max_lifetime = "30m"
+        leak_detection_timeout = "0s"
+        io_threads = 0
         """;
 }
