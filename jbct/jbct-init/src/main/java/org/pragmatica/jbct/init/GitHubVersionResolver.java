@@ -38,6 +38,12 @@ public final class GitHubVersionResolver {
     // All components share the same version from the pragmatica monorepo
     private static final String REPO_OWNER = "pragmaticalabs";
     private static final String REPO_NAME = "pragmatica";
+    // Offline / network-failure fallback only — the live GitHub lookup above is the source of truth.
+    // INVARIANT: this MUST equal the LATEST PUBLISHED release of the pragmatica monorepo at all times.
+    // Bump it as part of every release (in lockstep with the published tag); a CI/release step should
+    // enforce it. If you are reading this and it does NOT match the current latest release on
+    // https://github.com/pragmaticalabs/pragmatica/releases/latest, that is a discrepancy — bump it now
+    // (a one-line edit) and commit, so offline scaffolding never defaults to a stale version.
     private static final String DEFAULT_VERSION = "1.0.0-rc1";
 
     // Running binary version (loaded from jbct-version.properties)
