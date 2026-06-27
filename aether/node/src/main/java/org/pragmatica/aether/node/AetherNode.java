@@ -2580,7 +2580,8 @@ public interface AetherNode extends ManageableNode {
                                                                                    streamReplicationManager,
                                                                                    clusterNode,
                                                                                    ownershipEpochHighWater,
-                                                                                   KvStreamOwnerEpochSource.kvStreamOwnerEpochSource(kvStore));
+                                                                                   KvStreamOwnerEpochSource.kvStreamOwnerEpochSource(kvStore),
+                                                                                   Option.none());
 
         streamPartitionManagerRef.set(streamPartitionManager);
         // stream-offheap-budget-spec §4.5c / reconciliation #14: route off-heap budget exhaustion

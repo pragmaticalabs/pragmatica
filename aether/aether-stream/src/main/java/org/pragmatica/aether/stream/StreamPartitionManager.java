@@ -14,6 +14,7 @@ import org.pragmatica.aether.slice.kvstore.AetherKey.StreamConfigKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.StreamConfigValue;
 import org.pragmatica.aether.stream.replication.ReplicationManager;
+import org.pragmatica.aether.stream.wal.PartitionWal;
 import org.pragmatica.cluster.node.ClusterNode;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
@@ -24,9 +25,11 @@ import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.TerminalOperation;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.io.FileOps;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.messaging.MessageReceiver;
 
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -71,6 +74,12 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// floor source ([StreamOwnerEpochSource#zero]) leaves non-fenced callers stamping [Epoch#ZERO],
     /// which a fresh high-water never rejects and which never advances it.
     private final StreamOwnerEpochSource ownerEpochSource;
+    /// Per-partition crash-durable write-ahead log root (streaming-persistence W3/W6). [Option#none]
+    /// = no WAL ⇒ exactly the pre-WAL behavior (Forge/unit/legacy factories). When present, each
+    /// partition opens its own [PartitionWal] under `<walBaseDir>/<streamName>/<partition>.wal` at
+    /// ring-create time, and an OWNER publish (`publishLocal`) does not ack until the event is
+    /// fsync-durable in that WAL. The replica-receive path (`appendRecovered`) never writes the WAL.
+    private final Option<Path> walBaseDir;
     private volatile Consumer<Exhaustion> exhaustionSink = NOOP_SINK;
 
     private StreamPartitionManager(long maxTotalBytes,
@@ -78,13 +87,15 @@ public final class StreamPartitionManager implements AutoCloseable {
                                    ReplicationManager replicationManager,
                                    Option<ClusterNode<KVCommand<AetherKey>>> clusterNode,
                                    Option<OwnershipEpochHighWater> epochHighWater,
-                                   StreamOwnerEpochSource ownerEpochSource) {
+                                   StreamOwnerEpochSource ownerEpochSource,
+                                   Option<Path> walBaseDir) {
         this.maxTotalBytes = maxTotalBytes;
         this.evictionListener = evictionListener;
         this.replicationManager = replicationManager;
         this.clusterNode = clusterNode;
         this.epochHighWater = epochHighWater;
         this.ownerEpochSource = ownerEpochSource;
+        this.walBaseDir = walBaseDir;
     }
 
     public static StreamPartitionManager streamPartitionManager() {
@@ -93,7 +104,8 @@ public final class StreamPartitionManager implements AutoCloseable {
                                           ReplicationManager.NONE,
                                           Option.none(),
                                           Option.none(),
-                                          StreamOwnerEpochSource.zero());
+                                          StreamOwnerEpochSource.zero(),
+                                          Option.none());
     }
 
     public static StreamPartitionManager streamPartitionManager(long maxTotalBytes) {
@@ -102,7 +114,8 @@ public final class StreamPartitionManager implements AutoCloseable {
                                           ReplicationManager.NONE,
                                           Option.none(),
                                           Option.none(),
-                                          StreamOwnerEpochSource.zero());
+                                          StreamOwnerEpochSource.zero(),
+                                          Option.none());
     }
 
     public static StreamPartitionManager streamPartitionManager(long maxTotalBytes, EvictionListener evictionListener) {
@@ -111,7 +124,8 @@ public final class StreamPartitionManager implements AutoCloseable {
                                           ReplicationManager.NONE,
                                           Option.none(),
                                           Option.none(),
-                                          StreamOwnerEpochSource.zero());
+                                          StreamOwnerEpochSource.zero(),
+                                          Option.none());
     }
 
     public static StreamPartitionManager streamPartitionManager(long maxTotalBytes,
@@ -122,7 +136,8 @@ public final class StreamPartitionManager implements AutoCloseable {
                                           replicationManager,
                                           Option.none(),
                                           Option.none(),
-                                          StreamOwnerEpochSource.zero());
+                                          StreamOwnerEpochSource.zero(),
+                                          Option.none());
     }
 
     public static StreamPartitionManager streamPartitionManager(long maxTotalBytes,
@@ -134,7 +149,8 @@ public final class StreamPartitionManager implements AutoCloseable {
                                           replicationManager,
                                           Option.some(clusterNode),
                                           Option.none(),
-                                          StreamOwnerEpochSource.zero());
+                                          StreamOwnerEpochSource.zero(),
+                                          Option.none());
     }
 
     /// Fence-enabled factory (#345 item 1d-ii): every local and replicated-receive append is
@@ -147,13 +163,29 @@ public final class StreamPartitionManager implements AutoCloseable {
                                                                 ReplicationManager replicationManager,
                                                                 ClusterNode<KVCommand<AetherKey>> clusterNode,
                                                                 OwnershipEpochHighWater epochHighWater,
-                                                                StreamOwnerEpochSource ownerEpochSource) {
+                                                                StreamOwnerEpochSource ownerEpochSource,
+                                                                Option<Path> walBaseDir) {
         return new StreamPartitionManager(maxTotalBytes,
                                           evictionListener,
                                           replicationManager,
                                           Option.some(clusterNode),
                                           Option.some(epochHighWater),
-                                          ownerEpochSource);
+                                          ownerEpochSource,
+                                          walBaseDir);
+    }
+
+    /// Test/standalone factory wiring a per-partition crash-durable WAL root (streaming-persistence
+    /// W3/W6) with the no-op eviction / no-replication / no-cluster / fence-free defaults. When
+    /// `walBaseDir` is [Option#none] this is byte-identical to {@link #streamPartitionManager(long)};
+    /// when present every partition opens a [PartitionWal] and an owner publish is fsync-gated.
+    public static StreamPartitionManager streamPartitionManager(long maxTotalBytes, Option<Path> walBaseDir) {
+        return new StreamPartitionManager(maxTotalBytes,
+                                          EvictionListener.NOOP,
+                                          ReplicationManager.NONE,
+                                          Option.none(),
+                                          Option.none(),
+                                          StreamOwnerEpochSource.zero(),
+                                          walBaseDir);
     }
 
     public static StreamPartitionManager streamPartitionManager(long maxTotalBytes,
@@ -163,7 +195,8 @@ public final class StreamPartitionManager implements AutoCloseable {
                                           ReplicationManager.NONE,
                                           Option.some(clusterNode),
                                           Option.none(),
-                                          StreamOwnerEpochSource.zero());
+                                          StreamOwnerEpochSource.zero(),
+                                          Option.none());
     }
 
     public long totalAllocatedBytes() {
@@ -303,7 +336,8 @@ public final class StreamPartitionManager implements AutoCloseable {
         return StreamEntry.fromConfig(config,
                                       evictionListener,
                                       bytes -> reserveForGrowth(config, bytes),
-                                      this::release)
+                                      this::release,
+                                      walBaseDir)
                           .onFailure(_ -> release(floorBytes))
                           .flatMap(entry -> publishFreshEntry(config, entry, commitMode));
     }
@@ -552,7 +586,8 @@ public final class StreamPartitionManager implements AutoCloseable {
         return StreamEntry.fromConfig(config,
                                       evictionListener,
                                       bytes -> reserveForGrowth(config, bytes),
-                                      this::release)
+                                      this::release,
+                                      walBaseDir)
                           .onSuccess(StreamEntry::markCommitted)
                           .onFailure(_ -> hydrationFailed(config, floorBytes))
                           .or((StreamEntry) null);
@@ -578,6 +613,13 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// replicated to the registered replica set carrying the SAME `ownerEpoch` so every replica fences
     /// the deposed owner identically. The no-epoch overload above stamps the node's current owner epoch
     /// from the injected [StreamOwnerEpochSource] (floor [Epoch#ZERO] when unowned/non-fenced).
+    ///
+    /// Crash durability (streaming-persistence W3): when a per-partition WAL is configured the ring
+    /// assigns the offset first, then the event is appended to that partition's [PartitionWal] and the
+    /// publish does NOT resolve as success until the WAL `append` is fsync-durable. A crash after the
+    /// ring append but before fsync loses the event AND fails the publish (the caller was never acked,
+    /// so it retries) — only WAL-durable events ack. With no WAL configured this is a no-op gate and
+    /// behavior is exactly as before.
     public Result<Long> publishLocal(String streamName,
                                      int partition,
                                      byte[] payload,
@@ -594,7 +636,26 @@ public final class StreamPartitionManager implements AutoCloseable {
                                                                                         offset,
                                                                                         payload,
                                                                                         timestamp,
-                                                                                        ownerEpoch));
+                                                                                        ownerEpoch))
+                                 .flatMap(offset -> durablyLog(streamName, partition, offset, payload, timestamp));
+    }
+
+    /// Gate the publish ack on WAL fsync (streaming-persistence W3). With no WAL configured for
+    /// `(streamName, partition)` this returns the offset unchanged. With a WAL present, the record is
+    /// appended and the GROUP-COMMIT fsync is awaited at this durability barrier — the event is acked
+    /// only once it survives `kill -9`. [TerminalOperation]: the blocking await IS the durability
+    /// contract (publish does not resolve until fsync), and the WAL's group-commit batches concurrent
+    /// publishers into a single fsync so the barrier does not serialize throughput.
+    @TerminalOperation
+    private Result<Long> durablyLog(String streamName, int partition, long offset, byte[] payload, long timestamp) {
+        return walFor(streamName, partition).map(wal -> wal.append(offset, payload, timestamp).await().map(_ -> offset))
+                                            .or(() -> success(offset));
+    }
+
+    /// The configured [PartitionWal] for `(streamName, partition)`, or [Option#none] when no WAL base
+    /// dir is wired (the steady-state legacy/Forge path) or the partition is out of range.
+    private Option<PartitionWal> walFor(String streamName, int partition) {
+        return option(streams.get(streamName)).flatMap(entry -> entry.walFor(partition));
     }
 
     public Promise<Unit> awaitReplication(String streamName, int partition, long offset, int minAcks) {
@@ -809,8 +870,16 @@ public final class StreamPartitionManager implements AutoCloseable {
         return StreamInfo.streamInfo(name, entry.partitions().length, totalEvents, totalBytes);
     }
 
+    /// Close a genuinely-removed stream (destroy / config-remove / idle-reap) and reclaim its budget,
+    /// then DELETE its per-partition WAL files — the stream is gone, so its crash-recovery log must go
+    /// too. Deletion lives HERE (not in {@link #releaseEntry}/{@link StreamEntry#close}) on purpose:
+    /// `releaseEntry` is also called by the put-if-absent loser, whose WAL paths COLLIDE with the
+    /// winner's (same `<base>/<stream>/<partition>.wal`); deleting there would erase the winner's log.
+    /// Process-shutdown `close()` likewise must keep the files for a later replay. Only true removal
+    /// deletes.
     private Result<Unit> closeAndRelease(StreamEntry entry) {
         releaseEntry(entry);
+        entry.deleteWals();
 
         return success(unit());
     }
@@ -945,6 +1014,7 @@ public final class StreamPartitionManager implements AutoCloseable {
 
     record StreamEntry(StreamConfig config,
                        OffHeapRingBuffer[] partitions,
+                       List<Option<PartitionWal>> wals,
                        long createdAt,
                        AtomicLong lastActivityRef,
                        AtomicBoolean configCommitted) implements AutoCloseable {
@@ -955,18 +1025,20 @@ public final class StreamPartitionManager implements AutoCloseable {
         /// The aggregated failure is collapsed back to the canonical `STREAM_MEMORY_EXCEEDED` enum (every
         /// partition failure is that same cause) so the downstream identity / `transientCapacity()`
         /// retry-classification (StreamError §1) is preserved rather than buried in an `allOf` composite.
-        /// On full success a committed-ready entry is returned.
+        /// On full success the rings are paired with their per-partition WAL (`walBaseDir`, W6) into a
+        /// committed-ready entry; a WAL-open failure closes the built rings and propagates with its own
+        /// cause (it is NOT collapsed to `STREAM_MEMORY_EXCEEDED`).
         static Result<StreamEntry> fromConfig(StreamConfig config,
                                               EvictionListener listener,
                                               LongPredicate reserve,
-                                              LongConsumer release) {
+                                              LongConsumer release,
+                                              Option<Path> walBaseDir) {
             var results = buildPartitions(config, listener, reserve, release);
 
             return Result.allOf(results)
-                         .map(buffers -> entryOf(config,
-                                                 buffers.toArray(OffHeapRingBuffer[]::new)))
-                         .onFailure(_ -> closeBuilt(results))
-                         .mapError(_ -> StreamError.General.STREAM_MEMORY_EXCEEDED);
+                         .mapError(_ -> StreamError.General.STREAM_MEMORY_EXCEEDED)
+                         .flatMap(buffers -> openEntryWals(config, buffers, walBaseDir))
+                         .onFailure(_ -> closeBuilt(results));
         }
 
         private static List<Result<OffHeapRingBuffer>> buildPartitions(StreamConfig config,
@@ -991,10 +1063,72 @@ public final class StreamPartitionManager implements AutoCloseable {
             return results;
         }
 
-        private static StreamEntry entryOf(StreamConfig config, OffHeapRingBuffer[] buffers) {
+        private static StreamEntry entryOf(StreamConfig config,
+                                           OffHeapRingBuffer[] buffers,
+                                           List<Option<PartitionWal>> wals) {
             var now = System.currentTimeMillis();
 
-            return new StreamEntry(config, buffers, now, new AtomicLong(now), new AtomicBoolean(false));
+            return new StreamEntry(config, buffers, wals, now, new AtomicLong(now), new AtomicBoolean(false));
+        }
+
+        /// Pair the freshly-built rings with a per-partition [PartitionWal] (streaming-persistence W6).
+        /// A [Option#none] `walBaseDir` yields a partition-aligned list of [Option#none] (no WAL ⇒
+        /// unchanged behavior); a present base dir opens `<base>/<stream>/<partition>.wal` for each
+        /// partition. A WAL-open failure closes the WALs already opened and propagates, leaving the
+        /// caller to free the rings.
+        private static Result<StreamEntry> openEntryWals(StreamConfig config,
+                                                         List<OffHeapRingBuffer> buffers,
+                                                         Option<Path> walBaseDir) {
+            return openWals(config, walBaseDir).map(wals -> entryOf(config,
+                                                                    buffers.toArray(OffHeapRingBuffer[]::new),
+                                                                    wals));
+        }
+
+        private static Result<List<Option<PartitionWal>>> openWals(StreamConfig config, Option<Path> walBaseDir) {
+            return walBaseDir.map(baseDir -> openAllWals(config, baseDir))
+                             .or(() -> success(noWals(config.partitions())));
+        }
+
+        private static Result<List<Option<PartitionWal>>> openAllWals(StreamConfig config, Path baseDir) {
+            var results = new ArrayList<Result<Option<PartitionWal>>>(config.partitions());
+
+            for (int i = 0; i < config.partitions(); i++) {
+                results.add(openPartitionWal(baseDir, config.name(), i).map(Option::some));
+            }
+
+            return Result.allOf(results).onFailure(_ -> closeOpenedWals(results));
+        }
+
+        private static Result<PartitionWal> openPartitionWal(Path baseDir, String streamName, int partition) {
+            return PartitionWal.open(baseDir.resolve(streamName).resolve(partition + ".wal"));
+        }
+
+        private static List<Option<PartitionWal>> noWals(int count) {
+            var wals = new ArrayList<Option<PartitionWal>>(count);
+
+            for (int i = 0; i < count; i++) {
+                wals.add(Option.none());
+            }
+
+            return wals;
+        }
+
+        @Contract
+        private static void closeOpenedWals(List<Result<Option<PartitionWal>>> results) {
+            results.forEach(r -> r.onSuccess(StreamEntry::closeWal));
+        }
+
+        @Contract
+        private static void closeWal(Option<PartitionWal> wal) {
+            wal.onPresent(PartitionWal::close);
+        }
+
+        /// The [PartitionWal] for `partition`, or [Option#none] when no WAL is configured (or the
+        /// partition index is out of range). The list is always partition-aligned with `partitions`.
+        Option<PartitionWal> walFor(int partition) {
+            return partition >= 0 && partition < wals.size()
+                   ? wals.get(partition)
+                   : Option.none();
         }
 
         /// On a partial-build failure, close every partition buffer that DID allocate (the others never
@@ -1059,12 +1193,34 @@ public final class StreamPartitionManager implements AutoCloseable {
                    : EvictionPolicy.DROP_OLDEST;
         }
 
+        /// Close every partition ring and its WAL channel (flush + fsync + close). Process-shutdown
+        /// safe: this only closes channels and KEEPS the WAL files on disk for a later replay — file
+        /// deletion happens exclusively on genuine stream removal via {@link #deleteWals}.
         @Contract
         @Override
         public void close() {
             for (var buffer : partitions) {
                 buffer.close();
             }
+
+            wals.forEach(StreamEntry::closeWal);
+        }
+
+        /// Delete every partition's WAL file — called ONLY when the stream is genuinely removed
+        /// (destroy / config-remove / idle-reap), never on process shutdown or a put-if-absent loser.
+        /// The channels are already closed by {@link #close}; deletion is best-effort and a failure is
+        /// logged, not propagated.
+        @Contract
+        void deleteWals() {
+            wals.forEach(StreamEntry::deleteWalFile);
+        }
+
+        @Contract
+        private static void deleteWalFile(Option<PartitionWal> wal) {
+            wal.onPresent(w -> FileOps.deleteIfExists(w.path())
+                                      .onFailure(cause -> log.warn("Failed to delete WAL file {}: {}",
+                                                                   w.path(),
+                                                                   cause.message())));
         }
     }
 }
