@@ -1539,7 +1539,11 @@ public class FactoryClassGenerator {
     }
 
     private void generateTypeCodecEntry(PrintWriter out, CodecTypeEntry entry, String comma) {
-        var name = entry.simpleName();
+        // Fully-qualify type references: the codec() body lives inside the slice adapter record, which
+        // implements the host slice interface. The host's nested Request/Response are inherited member
+        // types that shadow single-type imports (JLS 6.5.5.2), so a simple name for an injected slice's
+        // Request/Response would silently resolve to the host's types. FQN is always valid and avoids this.
+        var name = entry.qualifiedName();
         var fqn = entry.qualifiedName();
         switch (entry.kind()) {
             case RECORD -> generateRecordTypeCodec(out, entry, comma);
@@ -1559,7 +1563,9 @@ public class FactoryClassGenerator {
     }
 
     private void generateRecordTypeCodec(PrintWriter out, CodecTypeEntry entry, String comma) {
-        var name = entry.simpleName();
+        // Fully-qualify the type reference (see generateTypeCodecEntry): a simple name here would be
+        // shadowed by the host slice's inherited nested Request/Response member types (JLS 6.5.5.2).
+        var name = entry.qualifiedName();
         var fqn = entry.qualifiedName();
         var components = entry.components();
         out.println("                    new SliceCodec.TypeCodec<" + name + ">(" + name + ".class,");

@@ -1,0 +1,9 @@
+prefix = "/api/collision"
+
+[routes]
+buy = "GET /buy/{id:Long}"
+cancel = "GET /cancel/{id:Long}"
+
+[errors]
+default = 500
+HTTP_503 = ["*StoreUnavailable*"]
