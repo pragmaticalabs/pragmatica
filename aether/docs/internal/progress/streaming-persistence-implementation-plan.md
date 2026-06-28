@@ -97,6 +97,24 @@ Each gets a feature-catalog note (status → Partial/Planned) with why + the cov
 
 ---
 
+## A6 — RESOLVED (2026-06-28)
+
+`StreamCrashDurabilityTest.fullClusterRestart_recoversAllAckedEvents_viaWalReplay` is GREEN (10+ consecutive in-JVM runs, ~68s each).
+
+**Corrected root cause** (NOT read-routing alone, NOT a `PartitionBackfill` race). On a simultaneous full-cluster cold restart the cluster reaches quorum (3/5) at ~14s and flips `COLD_BOOT→NORMAL`, but SWIM's first probe-acks lag the QUIC attach — so the `QuorumLossDetector`'s SWIM-alive effective count momentarily decays below threshold and HEALTHY nodes **self-drain** before convergence. Terminal-removal makes them unrecoverable → cluster wedges at 3/5 → with RF=1 the data-holding HRW owner is stranded / reassigned to an empty-WAL survivor → reads return 0. The prior "owner replays WAL @49" evidence was the PRE-restart promotion, misread as post-restart recovery. Ownership is HRW-from-membership (not KV) so no KV persistence is needed — the fix is to stop the premature self-fence.
+
+**Fix (4 parts, one shared bounded cold-boot window ≈75s):**
+1. **`QuorumLossDetector` cold-boot gate (root).** `emitIntent` suppressed while `swimIsBootingSupplier` is active; a genuine minority still self-fences once the window elapses. (`QuorumLossDetector` + `AetherNode` injection.)
+2. **SWIM cold-boot convergence window.** `AetherNode.swimIsBootingSupplier` stays true for `COLD_BOOT_CONVERGENCE_WINDOW_MS` (75s) past boot — covering the transport 60s force-dial — so never-HEALTHY seeds stay UNKNOWN (not evicted) until they connect (reuses the existing tested COLD_BOOT FAULTY-suppression branch).
+3. **`NEAREST` reads made LOCAL-FIRST** (`ForwardingReadRouter`). Read local; forward to the HRW owner ONLY on a local miss. Closes the original `GOVERNOR`-never-forwards gap (a post-restart non-owner read reaches the WAL-recovered owner) WITHOUT forwarding away from a node that holds the data (the `StreamFanoutConsumerTest` regression).
+4. **Test full-membership gate.** `StreamCrashDurabilityTest` waits for leader `/api/health` `nodeCount`=N before publish/read.
+
+**Regression net (all green):** aether-stream 528, aether-deployment 744 (+ `QuorumLossDetectorTest.ColdBootSuppression`), integrations/swim 170, `AetherNodeColdBootWindowTest`, forge `StreamCrashDurabilityTest` (10+ runs) + `StreamFanoutConsumerTest`.
+
+**Deferred (noted, not blocking A6):** NEAREST forwards on every empty tail-poll for a NON-replica node that holds no data (perf follow-up; a registered replica reads local). A genuine stable cold-boot minority self-fences after the 75s window rather than immediately.
+
+---
+
 ## Validation discipline
 - Per-increment: focused build (`build-runner`), existing `aether/aether-stream` + `integrations/storage` unit tests green.
 - End-to-end: the Forge restart test (A6) is the gate; in-JVM first, never a cloud primary surface.
