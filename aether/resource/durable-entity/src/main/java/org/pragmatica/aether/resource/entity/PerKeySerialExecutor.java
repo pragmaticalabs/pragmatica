@@ -67,7 +67,7 @@ final class PerKeySerialExecutor<K> {
     /// wait-free `getAndSet` publishes this operation's result-promise as the new tail and returns the
     /// previous tail, so same-key operations are totally ordered while different keys proceed in parallel.
     <R> Promise<R> submit(K key, Fn0<Promise<R>> operation) {
-        var published = Promise.<Object>promise();
+        var published = Promise.<Object> promise();
         var previous = tailRef(key).getAndSet(published);
 
         return castResult(chainOnto(previous, operation, published));
@@ -82,11 +82,11 @@ final class PerKeySerialExecutor<K> {
     /// Both links are dependent [Promise#fold] actions — run synchronously in the predecessor's resolution
     /// drain, exactly once and in order — and `fold` (not `flatMap`) keeps a failed predecessor from
     /// short-circuiting the successor.
+    @SuppressWarnings("JBCT-RET-07")
     private static <R> Promise<Object> chainOnto(Promise<Object> previous,
                                                  Fn0<Promise<R>> operation,
                                                  Promise<Object> published) {
-        previous.fold(_ -> launch(operation))
-                .fold(published::resolve);
+        previous.fold(_ -> launch(operation)).fold(published::resolve);
 
         return published;
     }
