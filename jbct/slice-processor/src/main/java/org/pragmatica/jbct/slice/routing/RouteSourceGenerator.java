@@ -312,8 +312,16 @@ public class RouteSourceGenerator {
         if (routeConfig.isVersioned()) {
             out.println("import java.util.List;");
         }
-        // Import error types
+        // Import error types -- skip simple-name collisions. When two error types share a simple
+        // name, the error switch (generateErrorMapperMethod) references them by fully-qualified
+        // name, so two single-type imports of the same simple name would only fail to compile.
+        var errorSimpleNameCounts = errorMappings.stream()
+                                                 .collect(Collectors.groupingBy(ErrorTypeMapping::simpleName,
+                                                                                Collectors.counting()));
         for (var mapping : errorMappings) {
+            if (errorSimpleNameCounts.get(mapping.simpleName()) > 1) {
+                continue;
+            }
             out.println("import " + mapping.qualifiedName() + ";");
         }
     }
