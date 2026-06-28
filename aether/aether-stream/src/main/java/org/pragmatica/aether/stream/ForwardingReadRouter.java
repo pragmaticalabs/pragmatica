@@ -31,7 +31,9 @@ import java.util.concurrent.ThreadLocalRandom;
 /// ({@link PartitionedStreamAccess}) and the raw-event reader ({@link StreamReadRouter}) cannot drift.
 ///
 /// Routing precedence ({@link #route}):
-///   1. `GOVERNOR` reads local; `ANY_REPLICA`/`NEAREST` enter replica selection (no registry → local).
+///   1. `GOVERNOR` reads local. `NEAREST` is LOCAL-FIRST: read local when self covers the partition
+///      (caught-up replica, or no registry), else forward to the HRW owner — never to a lagging remote.
+///      `ANY_REPLICA` enters remote-preferring replica selection (no registry → local).
 ///   2. `LINEARIZABLE` routes strictly to the COMMITTED owner (#345 item 1e): the read goes to
 ///      `StreamPartitionOwnershipValue.owner` (the fenced owner), NOT the on-the-fly HRW owner, so it
 ///      observes the authoritative log even when a reshuffle has made the two diverge. When self IS the
@@ -150,9 +152,35 @@ public final class ForwardingReadRouter<E> {
     public Promise<List<E>> route(String streamName, int partition, long fromOffset, int maxEvents) {
         return switch (readPreference) {
             case GOVERNOR -> localReader.read(streamName, partition, fromOffset, maxEvents);
-            case ANY_REPLICA, NEAREST -> readFromReplicaOrLocal(streamName, partition, fromOffset, maxEvents);
+            case NEAREST -> readLocalFirstThenOwner(streamName, partition, fromOffset, maxEvents);
+            case ANY_REPLICA -> readFromReplicaOrLocal(streamName, partition, fromOffset, maxEvents);
             case LINEARIZABLE -> readLinearizable(streamName, partition, fromOffset, maxEvents);
         };
+    }
+
+    /// `NEAREST` routing: LOCAL-FIRST, forward only on a local MISS. If self is a registered caught-up
+    /// replica it is authoritative — read LOCAL (no forward even at the tail, so steady-state polling stays
+    /// cheap). Otherwise read local and return it WHEN NON-EMPTY (the node holds the partition's data even
+    /// though placement/registry hasn't marked it a replica — e.g. an in-memory stream whose owner-routed
+    /// publish landed locally; the fan-out case), forwarding to the deterministic HRW owner ONLY when the
+    /// local read is empty (the genuine non-replica / post-restart-recovery consumer — the A6 case),
+    /// failing soft to local when the owner is unknown/self or no forward client is wired. Never forwards
+    /// to a remote replica that may lag — that is the {@link #readFromReplicaOrLocal} (`ANY_REPLICA`) path.
+    private Promise<List<E>> readLocalFirstThenOwner(String streamName, int partition, long fromOffset, int maxEvents) {
+        return registry.fold(() -> localReader.read(streamName, partition, fromOffset, maxEvents),
+                             reg -> selfCoversPartition(reg, streamName, partition)
+                                    ? localReader.read(streamName, partition, fromOffset, maxEvents)
+                                    : localThenForwardIfEmpty(streamName, partition, fromOffset, maxEvents));
+    }
+
+    /// Read local; forward to the HRW owner ONLY when the local read came back empty. Keeps a node that
+    /// actually holds the data serving it (no needless forward), while a genuinely data-less node forwards
+    /// to recover the log from the owner.
+    private Promise<List<E>> localThenForwardIfEmpty(String streamName, int partition, long fromOffset, int maxEvents) {
+        return localReader.read(streamName, partition, fromOffset, maxEvents)
+                          .flatMap(local -> local.isEmpty()
+                                            ? forwardToOwner(streamName, partition, fromOffset, maxEvents)
+                                            : Promise.success(local));
     }
 
     /// #345 item 1e: route a `LINEARIZABLE` read to the COMMITTED owner of `(streamName, partition)`. The
@@ -162,7 +190,11 @@ public final class ForwardingReadRouter<E> {
     /// unowned partition) the read degrades to the replica-routed behaviour so nothing breaks.
     private Promise<List<E>> readLinearizable(String streamName, int partition, long fromOffset, int maxEvents) {
         return committedOwnerSource.flatMap(source -> source.committedOwner(streamName, partition))
-                                   .map(committed -> routeToCommittedOwner(committed, streamName, partition, fromOffset, maxEvents))
+                                   .map(committed -> routeToCommittedOwner(committed,
+                                                                           streamName,
+                                                                           partition,
+                                                                           fromOffset,
+                                                                           maxEvents))
                                    .or(() -> readFromReplicaOrLocal(streamName, partition, fromOffset, maxEvents));
     }
 
@@ -171,7 +203,8 @@ public final class ForwardingReadRouter<E> {
                                                    int partition,
                                                    long fromOffset,
                                                    int maxEvents) {
-        return committed.owner().equals(selfNodeId)
+        return committed.owner()
+                        .equals(selfNodeId)
                ? serveAsCommittedOwner(committed, streamName, partition, fromOffset, maxEvents)
                : forwardReadToCommittedOwner(committed.owner(), streamName, partition, fromOffset, maxEvents);
     }
@@ -243,7 +276,8 @@ public final class ForwardingReadRouter<E> {
     private boolean selfIsLaggingReplica(ReplicaRegistry reg, String streamName, int partition) {
         return reg.replicasFor(streamName, partition)
                   .stream()
-                  .filter(r -> r.nodeId().equals(selfNodeId))
+                  .filter(r -> r.nodeId()
+                                .equals(selfNodeId))
                   .anyMatch(r -> !isCaughtUp(r));
     }
 
@@ -274,7 +308,8 @@ public final class ForwardingReadRouter<E> {
                 partition);
 
         return client.readRemote(owner, streamName, partition, fromOffset, maxEvents)
-                     .map(result -> remoteDecoder.decode(result.events(), partition));
+                     .map(result -> remoteDecoder.decode(result.events(),
+                                                         partition));
     }
 
     private Promise<List<E>> readFromReplicaOrLocal(String streamName, int partition, long fromOffset, int maxEvents) {

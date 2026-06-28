@@ -10,6 +10,7 @@ import org.pragmatica.aether.slice.StreamAccess;
 import org.pragmatica.aether.slice.StreamConfig;
 import org.pragmatica.aether.stream.StreamPublisherFactory.GovernorResolver;
 import org.pragmatica.aether.stream.forward.StreamForwardClient;
+import org.pragmatica.aether.stream.replication.ReplicaRegistry;
 import org.pragmatica.aether.stream.segment.CursorStore;
 import org.pragmatica.aether.stream.segment.TieredStreamReader;
 import org.pragmatica.consensus.NodeId;
@@ -93,7 +94,13 @@ public final class StreamAccessFactory implements ResourceFactory<StreamAccess, 
                                                         selfNodeId,
                                                         tieredReader,
                                                         cursorStore))
-                   .or(() -> plainAccess(manager, serializer, deserializer, config, keyExtractor, tieredReader, cursorStore));
+                   .or(() -> plainAccess(manager,
+                                         serializer,
+                                         deserializer,
+                                         config,
+                                         keyExtractor,
+                                         tieredReader,
+                                         cursorStore));
     }
 
     @SuppressWarnings("unchecked")
@@ -109,6 +116,11 @@ public final class StreamAccessFactory implements ResourceFactory<StreamAccess, 
         var forwardClient = context.extension(StreamForwardClient.class).option();
         var governor = context.extension(GovernorResolver.class).option();
         var ownerResolver = governor.map(GovernorResolver::resolver);
+        // A6 read-forwarding: thread the node-level replica registry (when the runtime exposes it) so the
+        // app-stream NEAREST read path can forward a NON-replica read to the partition's HRW owner instead
+        // of reading its own empty local partition. Absent (minimal runtimes / tests) => NEAREST degrades
+        // to a local read.
+        var replicaRegistry = context.extension(ReplicaRegistry.class).option();
         // #47: bind the stream name into the partition-aware HRW owner-resolver so app-stream publishes
         // route to the same HRW owner the ReplicaSetController places the replica set on (one placement
         // authority). Absent => owner-routed access keeps the prior arg-less (leader) resolver.
@@ -128,7 +140,8 @@ public final class StreamAccessFactory implements ResourceFactory<StreamAccess, 
                                                     partitionOwnerResolver,
                                                     config.minSyncReplicas(),
                                                     tieredReader,
-                                                    cursorStore);
+                                                    cursorStore,
+                                                    replicaRegistry);
     }
 
     @SuppressWarnings("unchecked")
