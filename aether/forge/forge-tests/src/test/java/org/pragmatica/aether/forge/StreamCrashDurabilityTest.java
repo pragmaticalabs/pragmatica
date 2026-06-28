@@ -7,7 +7,6 @@ package org.pragmatica.aether.forge;
 
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInstance;
 import org.junit.jupiter.api.io.TempDir;
@@ -66,14 +65,6 @@ import org.pragmatica.aether.ember.EmberCluster;
 /// events-survive assertion is the required A6 proof.
 @Execution(ExecutionMode.SAME_THREAD)
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
-@Disabled("Tracked-red repro. The WAL crash-durability mechanism is proven (append+fsync before ack, "
-          + "WAL bytes byte-identical across restart, replay-into-ring serves all events when the owner "
-          + "promotes correctly). Intermittently red on a SEPARATE pre-existing bug: a PartitionBackfill "
-          + "owner-promotion-under-empty-view race after full-cluster restart — the HRW owner can self-promote "
-          + "CAUGHT_UP at a low watermark before its member view settles and is exempt from the redrive "
-          + "(ReplicaRegistry.java:79-81, PartitionBackfill redriveCandidates/staleCaughtUpNonOwner), serving 0. "
-          + "This is the S20-class full-cluster-restart recovery path. Re-enable + verify green once that lands. "
-          + "See streaming-persistence-implementation-plan.md §A6.")
 class StreamCrashDurabilityTest {
     private static final int BASE_PORT = 13500;
     private static final int BASE_MGMT_PORT = 13600;
@@ -95,6 +86,7 @@ class StreamCrashDurabilityTest {
     private static final Pattern EVENT_OBJECT = Pattern.compile("\\{[^{}]*\"offset\"[^{}]*}");
     private static final Pattern OFFSET_FIELD = Pattern.compile("\"offset\"\\s*:\\s*(\\d+)");
     private static final Pattern PAYLOAD_FIELD = Pattern.compile("\"payload\"\\s*:\\s*\"([^\"]*)\"");
+    private static final Pattern NODE_COUNT_FIELD = Pattern.compile("\"nodeCount\"\\s*:\\s*(\\d+)");
 
     Path baseDir;
 
@@ -197,6 +189,15 @@ class StreamCrashDurabilityTest {
         await().atMost(WAIT_TIMEOUT)
                .pollInterval(POLL_INTERVAL)
                .until(this::allNodesHealthy);
+
+        // A6: gate on FULL membership. allNodesHealthy() only checks each node's LOCAL quorum flag, which
+        // turns true at quorum (3/5). After a full-cluster restart the cold-boot convergence window must
+        // let ALL NODES nodes re-form before we publish (pre-restart) or read (post-restart): with RF=1
+        // the deterministic HRW owner of test-events[0] must be a rejoined node holding the WAL, not an
+        // empty-WAL survivor picked because a straggler was prematurely evicted.
+        await().atMost(WAIT_TIMEOUT)
+               .pollInterval(POLL_INTERVAL)
+               .until(() -> allNodesAreMembers(NODES));
 
         // Re-deploy: Forge KV is in-memory, so a full-cluster restart wiped the stream config. This
         // re-puts the deterministic `test-events` config -> owner re-materializes partition 0 ->
@@ -427,6 +428,32 @@ class StreamCrashDurabilityTest {
                    .await()
                    .map(r -> r.statusCode() == 200 && r.body().contains("\"quorum\":true"))
                    .or(false);
+    }
+
+    /// A6 full-membership gate: poll the LEADER's `/api/health` and require quorum AND a member count
+    /// that has reached the full expected set. `nodeCount` is the cluster-wide membership count the
+    /// bootstrap formation phase also gates on (see `BootstrapPhaseFormation.healthMeetsFloor`).
+    private boolean allNodesAreMembers(int expected) {
+        var leaderPort = cluster.getLeaderManagementPort().or(anyMgmtPort());
+        var request = HttpRequest.newBuilder()
+                                 .uri(URI.create("http://localhost:" + leaderPort + "/api/health"))
+                                 .GET()
+                                 .timeout(Duration.ofSeconds(5))
+                                 .build();
+        return http.sendString(request)
+                   .await()
+                   .map(r -> r.statusCode() == 200 && healthHasFullMembership(r.body(), expected))
+                   .or(false);
+    }
+
+    private static boolean healthHasFullMembership(String body, int expected) {
+        if (!body.contains("\"quorum\":true")) {
+            return false;
+        }
+
+        var matcher = NODE_COUNT_FIELD.matcher(body);
+
+        return matcher.find() && Integer.parseInt(matcher.group(1)) >= expected;
     }
 
     // --- HTTP ---------------------------------------------------------------
