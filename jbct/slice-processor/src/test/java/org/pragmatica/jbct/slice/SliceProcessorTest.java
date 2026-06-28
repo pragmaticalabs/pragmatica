@@ -538,6 +538,76 @@ class SliceProcessorTest {
     }
 
     @Test
+    void should_fully_qualify_codec_types_for_injected_slice_with_colliding_nested_records() throws Exception {
+        // Regression for codec-generation shadowing bug: the host slice's adapter record `implements`
+        // the host interface, whose nested Request/Response are inherited member types. By JLS 6.5.5.2
+        // they shadow single-type imports, so a SIMPLE name for an injected slice's nested Request/Response
+        // in the generated codec() body silently resolves to the HOST's types -> wrong-arity constructor /
+        // missing accessor compile errors. The fix emits fully-qualified names for codec type references.
+        // The two slices below use nested Request/Response with DIFFERENT arity so any regression is a hard
+        // compile failure that compile-testing's succeeded() will catch.
+        var quote = JavaFileObjects.forSourceString("pricing.Quote",
+                                                    """
+            package pricing;
+
+            import org.pragmatica.lang.Promise;
+
+            public interface Quote {
+                Promise<Response> price(Request request);
+
+                record Request(String event) {}
+                record Response(String event, long amountMinor) {}
+            }
+            """);
+
+        var source = JavaFileObjects.forSourceString("test.Reservation",
+                                                     """
+            package test;
+
+            import org.pragmatica.aether.slice.annotation.Slice;
+            import org.pragmatica.lang.Promise;
+            import pricing.Quote;
+
+            @Slice
+            public interface Reservation {
+                Promise<Response> reserve(Request request);
+
+                record Request(String seat, String customer) {}
+                record Response(String booking, long total, String currency) {}
+
+                static Reservation reservation(Quote quote) {
+                    return null;
+                }
+            }
+            """);
+
+        var sources = commonSources();
+        sources.add(quote);
+        sources.add(source);
+
+        Compilation compilation = javac()
+                                       .withProcessors(new SliceProcessor())
+                                       .compile(sources);
+
+        assertCompilation(compilation).succeeded();
+
+        var factoryContent = compilation.generatedSourceFile("test.ReservationFactory")
+                                        .get()
+                                        .getCharContent(false)
+                                        .toString();
+
+        // The injected slice's codec entries must be fully qualified, not the bare simple name that
+        // would be shadowed by the host's inherited Reservation.Request/Response member types.
+        assertThat(factoryContent).contains("new SliceCodec.TypeCodec<pricing.Quote.Response>(pricing.Quote.Response.class,");
+        assertThat(factoryContent).contains("return new pricing.Quote.Response(");
+        assertThat(factoryContent).contains("new SliceCodec.TypeCodec<pricing.Quote.Request>(pricing.Quote.Request.class,");
+        assertThat(factoryContent).contains("return new pricing.Quote.Request(");
+        // The buggy bare form must never be emitted.
+        assertThat(factoryContent).doesNotContain("new SliceCodec.TypeCodec<Response>(Response.class,");
+        assertThat(factoryContent).doesNotContain("new SliceCodec.TypeCodec<Request>(Request.class,");
+    }
+
+    @Test
     void should_generate_correct_type_tokens_for_slice_methods() throws Exception {
         var request = JavaFileObjects.forSourceString("test.dto.CreateUserRequest",
                                                       """
