@@ -49,10 +49,11 @@ public final class VersionRoutes implements RouteSource {
 
     private VersionsResponse buildVersionsResponse() {
         return new VersionsResponse(deployedRegistries().entrySet()
-                                                        .stream()
-                                                        .map(entry -> toSliceView(entry.getKey(), entry.getValue()))
-                                                        .sorted(Comparator.comparing(VersionedSliceView::slice))
-                                                        .toList());
+                                                      .stream()
+                                                      .map(entry -> toSliceView(entry.getKey(),
+                                                                                entry.getValue()))
+                                                      .sorted(Comparator.comparing(VersionedSliceView::slice))
+                                                      .toList());
     }
 
     private Map<Artifact, SliceVersionRegistry> deployedRegistries() {
@@ -74,7 +75,8 @@ public final class VersionRoutes implements RouteSource {
     private static List<VersionView> toVersionViews(SliceVersionRegistry registry) {
         return registry.versions()
                        .stream()
-                       .map(info -> toVersionView(info, registry.defaultVersion()))
+                       .map(info -> toVersionView(info,
+                                                  registry.defaultVersion()))
                        .toList();
     }
 
@@ -86,6 +88,7 @@ public final class VersionRoutes implements RouteSource {
     }
 
     private static boolean isDefault(int version, Option<Integer> defaultVersion) {
-        return defaultVersion.map(value -> value == version).or(false);
+        return defaultVersion.map(value -> value == version)
+                             .or(false);
     }
 }

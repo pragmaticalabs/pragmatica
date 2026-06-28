@@ -97,7 +97,11 @@ public final class SegmentIndex {
     }
 
     private static long maxEndOffset(ConcurrentSkipListMap<Long, SegmentRef> map) {
-        return map.values().stream().mapToLong(SegmentRef::endOffset).max().orElse(-1L);
+        return map.values()
+                  .stream()
+                  .mapToLong(SegmentRef::endOffset)
+                  .max()
+                  .orElse(-1L);
     }
 
     public Set<PartitionKey> listPartitionKeys() {

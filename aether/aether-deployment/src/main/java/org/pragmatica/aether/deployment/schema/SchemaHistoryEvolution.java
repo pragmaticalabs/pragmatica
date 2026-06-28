@@ -8,6 +8,7 @@ import org.pragmatica.aether.resource.db.DatabaseType;
 
 import java.util.List;
 
+
 /// Internally-versioned, self-evolving schema for the `aether_schema_history` table (#338-B1).
 ///
 /// The history table carries its OWN internal schema version, tracked in the tiny fixed meta table
@@ -61,7 +62,6 @@ public sealed interface SchemaHistoryEvolution {
 
     /// v1: the original 8-column history table, created `IF NOT EXISTS` (dialect-independent).
     Step STEP_V1 = Step.step(1, SchemaHistoryEvolution::stepOne);
-
     /// v2: add `status` + `statements_completed`, dialect-aware (#338-B2 consumes these columns).
     Step STEP_V2 = Step.step(2, SchemaHistoryEvolution::stepTwo);
 
@@ -105,17 +105,10 @@ public sealed interface SchemaHistoryEvolution {
     ///   both accept — keeping the meta-gated evolution path usable everywhere the history table runs.
     private static List<String> stepTwo(DatabaseType type) {
         return switch (type) {
-            case ORACLE, DB2 -> List.of(
-                "ALTER TABLE aether_schema_history ADD ("
-                + "status VARCHAR(16) DEFAULT 'SUCCESS' NOT NULL, "
-                + "statements_completed INTEGER DEFAULT 0 NOT NULL)");
-            case SQLSERVER -> List.of(
-                "ALTER TABLE aether_schema_history ADD "
-                + "status VARCHAR(16) NOT NULL DEFAULT 'SUCCESS', "
-                + "statements_completed INTEGER NOT NULL DEFAULT 0");
-            case POSTGRESQL, COCKROACHDB, MYSQL, MARIADB, H2, SQLITE -> List.of(
-                "ALTER TABLE aether_schema_history ADD COLUMN status VARCHAR(16) NOT NULL DEFAULT 'SUCCESS'",
-                "ALTER TABLE aether_schema_history ADD COLUMN statements_completed INTEGER NOT NULL DEFAULT 0");
+            case ORACLE, DB2 -> List.of("ALTER TABLE aether_schema_history ADD (" + "status VARCHAR(16) DEFAULT 'SUCCESS' NOT NULL, " + "statements_completed INTEGER DEFAULT 0 NOT NULL)");
+            case SQLSERVER -> List.of("ALTER TABLE aether_schema_history ADD " + "status VARCHAR(16) NOT NULL DEFAULT 'SUCCESS', " + "statements_completed INTEGER NOT NULL DEFAULT 0");
+            case POSTGRESQL, COCKROACHDB, MYSQL, MARIADB, H2, SQLITE -> List.of("ALTER TABLE aether_schema_history ADD COLUMN status VARCHAR(16) NOT NULL DEFAULT 'SUCCESS'",
+                                                                                "ALTER TABLE aether_schema_history ADD COLUMN statements_completed INTEGER NOT NULL DEFAULT 0");
         };
     }
 }

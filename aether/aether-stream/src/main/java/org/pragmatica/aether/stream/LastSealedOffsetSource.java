@@ -24,6 +24,6 @@ public interface LastSealedOffsetSource {
     /// The floor source (`-1` — nothing sealed) for non-cluster stream paths, legacy callers, and
     /// tests. With it, a recovered ring is never seeded and replays its full WAL from offset 0.
     static LastSealedOffsetSource none() {
-        return (_, _) -> -1L;
+        return (_, _) -> - 1L;
     }
 }

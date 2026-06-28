@@ -27,7 +27,6 @@ public interface SchemaHistoryRepository {
     Promise<Unit> recordMigration(SqlConnector connector, AppliedMigration migration);
     Promise<Unit> removeMigration(SqlConnector connector, int version, MigrationType type);
     Promise<Option<Long>> queryRepeatableChecksum(SqlConnector connector, String description);
-
     /// Autocommit-checkpoint write (#338-B2): UPSERT an `IN_PROGRESS` history row for the
     /// migration's `(version, type)` with `statements_completed = 0` before the autocommit loop
     /// begins. The descriptive fields (`description`/`script`/`checksum`/`applied_by`) and the
@@ -44,14 +43,12 @@ public interface SchemaHistoryRepository {
     /// Autocommit-checkpoint state change (#338-B2): `UPDATE status = ?` for the row identified by
     /// `(version, type)`. Used to mark a partially-applied migration `FAILED` on error.
     Promise<Unit> markStatus(SqlConnector connector, int version, MigrationType type, String status);
-
     /// Autocommit-success finalize (#338-B2): transitions the existing `IN_PROGRESS` row for
     /// `(version, type)` to `SUCCESS`, filling the complete record (`checksum`, `applied_at`,
     /// `execution_ms`) and setting `statements_completed = totalStatements`. This is an `UPDATE` of
     /// the row [#recordInProgress] already inserted — NOT a second `INSERT` (which would conflict on
     /// the `(version, type)` PK). The transactional path uses [#recordMigration] instead.
     Promise<Unit> finalizeSuccess(SqlConnector connector, AppliedMigration migration, int totalStatements);
-
     /// Autocommit-resume gate read (#338-B2): returns the checkpoint state for `(version, type)` —
     /// its `status`, `statements_completed`, and stored `checksum` — or [Option#none()] when no row
     /// exists (a fresh run). A `SUCCESS` row means the migration is already fully applied; an
@@ -117,7 +114,8 @@ final class DefaultSchemaHistoryRepository implements SchemaHistoryRepository {
     private static final String INSERT_META_SQL = "INSERT INTO " + SchemaHistoryEvolution.META_TABLE
                                                 + " (schema_version) VALUES (?)";
 
-    private static final String UPDATE_META_SQL = "UPDATE " + SchemaHistoryEvolution.META_TABLE + " SET schema_version = ?";
+    private static final String UPDATE_META_SQL = "UPDATE " + SchemaHistoryEvolution.META_TABLE
+                                                + " SET schema_version = ?";
 
     private static final RowMapper<Integer> SCHEMA_VERSION_MAPPER = row -> row.getInt("schema_version");
 
@@ -193,7 +191,8 @@ final class DefaultSchemaHistoryRepository implements SchemaHistoryRepository {
         var result = Promise.unitPromise();
 
         for (var statement : renderStatements(steps, type)) {
-            result = result.flatMap(_ -> connector.update(statement).mapToUnit());
+            result = result.flatMap(_ -> connector.update(statement)
+                                                  .mapToUnit());
         }
 
         return result;
@@ -201,14 +200,18 @@ final class DefaultSchemaHistoryRepository implements SchemaHistoryRepository {
 
     private static List<String> renderStatements(List<Step> steps, DatabaseType type) {
         return steps.stream()
-                    .flatMap(step -> step.ddl().render(type).stream())
+                    .flatMap(step -> step.ddl()
+                                         .render(type)
+                                         .stream())
                     .toList();
     }
 
     private Promise<Unit> persistSchemaVersion(SqlConnector connector, int previousVersion) {
         return previousVersion == 0
-               ? connector.update(INSERT_META_SQL, SchemaHistoryEvolution.LATEST_VERSION).mapToUnit()
-               : connector.update(UPDATE_META_SQL, SchemaHistoryEvolution.LATEST_VERSION).mapToUnit();
+               ? connector.update(INSERT_META_SQL, SchemaHistoryEvolution.LATEST_VERSION)
+                          .mapToUnit()
+               : connector.update(UPDATE_META_SQL, SchemaHistoryEvolution.LATEST_VERSION)
+                          .mapToUnit();
     }
 
     @Override
@@ -235,21 +238,25 @@ final class DefaultSchemaHistoryRepository implements SchemaHistoryRepository {
     /// `execution_ms = 0` and `statements_completed = 0`; [#finalizeSuccess] fills the final values.
     @Override
     public Promise<Unit> recordInProgress(SqlConnector connector, AppliedMigration migration, int totalStatements) {
-        return removeMigration(connector, migration.version(), migration.type())
-                .flatMap(_ -> connector.update(INSERT_PROGRESS_SQL,
-                                               migration.version(),
-                                               migration.type().name(),
-                                               migration.description(),
-                                               migration.script(),
-                                               migration.checksum(),
-                                               migration.appliedBy(),
-                                               migration.appliedAt(),
-                                               MigrationStatus.IN_PROGRESS))
-                        .mapToUnit();
+        return removeMigration(connector,
+                               migration.version(),
+                               migration.type()).flatMap(_ -> connector.update(INSERT_PROGRESS_SQL,
+                                                                               migration.version(),
+                                                                               migration.type().name(),
+                                                                               migration.description(),
+                                                                               migration.script(),
+                                                                               migration.checksum(),
+                                                                               migration.appliedBy(),
+                                                                               migration.appliedAt(),
+                                                                               MigrationStatus.IN_PROGRESS))
+                              .mapToUnit();
     }
 
     @Override
-    public Promise<Unit> updateProgress(SqlConnector connector, int version, MigrationType type, int statementsCompleted) {
+    public Promise<Unit> updateProgress(SqlConnector connector,
+                                        int version,
+                                        MigrationType type,
+                                        int statementsCompleted) {
         return connector.update(UPDATE_PROGRESS_SQL,
                                 statementsCompleted,
                                 version,

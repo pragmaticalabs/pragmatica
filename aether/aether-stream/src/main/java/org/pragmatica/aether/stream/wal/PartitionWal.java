@@ -31,6 +31,7 @@ import static org.pragmatica.lang.Promise.promise;
 import static org.pragmatica.lang.Result.unitResult;
 import static org.pragmatica.lang.Unit.unit;
 
+
 /// Crash-durable, append-only write-ahead log for ONE `(stream, partition)`
 /// (streaming-persistence Phase A-WAL, step W2).
 ///
@@ -81,30 +82,31 @@ import static org.pragmatica.lang.Unit.unit;
 /// durable last-sealed offset (W4), so no double-apply — the watermark is purely a reclamation hint.
 public final class PartitionWal implements AutoCloseable {
     private static final Logger log = LoggerFactory.getLogger(PartitionWal.class);
-
     /// Fixed framing header: u32 payloadLen + u64 offset + u64 timestampMillis + u32 crc32.
     private static final int HEADER_BYTES = 4 + 8 + 8 + 4;
     /// CRC pre-image header (offset + timestampMillis); payload is appended after it.
     private static final int CRC_HEADER_BYTES = 8 + 8;
     /// File-size watermark past which a `truncate` triggers a compaction rewrite (else O(1) lazy).
     private static final long COMPACTION_THRESHOLD_BYTES = 8L * 1024 * 1024;
+
     private static final Consumer<WalRecord> NO_OP = _ -> {};
 
     private static final Fn1<Cause, Throwable> APPEND_FAILED = t -> new WalError.AppendFailed(t.getMessage());
+
     private static final Fn1<Cause, Throwable> TRUNCATE_FAILED = t -> new WalError.TruncateFailed(t.getMessage());
+
     private static final Fn1<Cause, Throwable> CLOSE_FAILED = t -> new WalError.CloseFailed(t.getMessage());
 
     private final Path file;
     private final Object writeLock = new Object();
     private final Object syncLock = new Object();
-
     private volatile FileChannel channel;
-    private long nextSeq;                          // guarded by writeLock
-    private volatile long writtenSeq;              // published under writeLock AFTER the write completes
-    private volatile long syncedSeq;               // published under syncLock AFTER force(false)
-    private volatile long writePosition;           // end of valid data; guarded by writeLock
-    private volatile long lastOffset;              // last appended offset (-1 when none)
-    private volatile long truncatedUpto = -1;      // in-memory discard watermark
+    private long nextSeq;  // guarded by writeLock
+    private volatile long writtenSeq;  // published under writeLock AFTER the write completes
+    private volatile long syncedSeq;  // published under syncLock AFTER force(false)
+    private volatile long writePosition;  // end of valid data; guarded by writeLock
+    private volatile long lastOffset;  // last appended offset (-1 when none)
+    private volatile long truncatedUpto = -1;  // in-memory discard watermark
     private volatile long lastCompactedUpto = -1;  // last physical compaction point
     private volatile boolean closed;
 
@@ -118,8 +120,7 @@ public final class PartitionWal implements AutoCloseable {
     /// Open-or-create the WAL for `file`, positioned for further appends AFTER its last VALID
     /// record (a torn trailing record is physically truncated). Creates parent directories.
     public static Result<PartitionWal> open(Path file) {
-        return FileOps.createDirectories(file.toAbsolutePath().getParent())
-                      .flatMap(_ -> recover(file));
+        return FileOps.createDirectories(file.toAbsolutePath().getParent()).flatMap(_ -> recover(file));
     }
 
     /// Append a record and GROUP-COMMIT fsync. The returned `Promise` resolves ONLY after this
@@ -153,9 +154,10 @@ public final class PartitionWal implements AutoCloseable {
     @Override
     public void close() {
         closed = true;
-        Result.lift(CLOSE_FAILED, () -> channel.force(false))
-              .flatMap(_ -> Result.lift(CLOSE_FAILED, () -> channel.close()))
-              .onFailure(cause -> log.warn("PartitionWal close issue for {}: {}", file, cause.message()));
+        Result.lift(CLOSE_FAILED, () -> channel.force(false)).flatMap(_ -> Result.lift(CLOSE_FAILED,
+                                                                                       () -> channel.close())).onFailure(cause -> log.warn("PartitionWal close issue for {}: {}",
+                                                                                                                                           file,
+                                                                                                                                           cause.message()));
     }
 
     public Path path() {
@@ -168,7 +170,6 @@ public final class PartitionWal implements AutoCloseable {
     }
 
     // === append path ===
-
     private Result<Unit> appendDurably(long offset, byte[] payload, long timestampMillis) {
         return writeRecord(offset, payload, timestampMillis).flatMap(this::groupCommit);
     }
@@ -179,14 +180,15 @@ public final class PartitionWal implements AutoCloseable {
             var position = writePosition;
             var frame = ByteBuffer.wrap(frameBytes(offset, payload, timestampMillis));
 
-            return writeFrameAt(frame, position)
-                       .map(_ -> publishWrite(seq, offset, position + frame.capacity()));
+            return writeFrameAt(frame, position).map(_ -> publishWrite(seq, offset, position + frame.capacity()));
         }
     }
 
     private Result<Unit> writeFrameAt(ByteBuffer frame, long position) {
-        return Result.lift(APPEND_FAILED, () -> channel.write(frame, position))
-                     .flatMap(written -> requireFullWrite(written, frame.capacity()));
+        return Result.lift(APPEND_FAILED,
+                           () -> channel.write(frame, position))
+                     .flatMap(written -> requireFullWrite(written,
+                                                          frame.capacity()));
     }
 
     private static Result<Unit> requireFullWrite(int written, int expected) {
@@ -200,43 +202,50 @@ public final class PartitionWal implements AutoCloseable {
         writePosition = newPosition;
         lastOffset = offset;
         writtenSeq = seq;
+
         return seq;
     }
 
     private Result<Unit> groupCommit(long mySeq) {
-        return syncedSeq >= mySeq ? unitResult() : forceUpTo(mySeq);
+        return syncedSeq >= mySeq
+               ? unitResult()
+               : forceUpTo(mySeq);
     }
 
     private Result<Unit> forceUpTo(long mySeq) {
         synchronized (syncLock) {
-            return syncedSeq >= mySeq ? unitResult() : forceAndPublish();
+            return syncedSeq >= mySeq
+                   ? unitResult()
+                   : forceAndPublish();
         }
     }
 
     private Result<Unit> forceAndPublish() {
         var target = writtenSeq;
 
-        return Result.lift(APPEND_FAILED, () -> channel.force(false))
+        return Result.lift(APPEND_FAILED,
+                           () -> channel.force(false))
                      .onSuccess(_ -> syncedSeq = target);
     }
 
     // === replay path ===
-
     private Result<ByteBuffer> readRegion() {
         return FileOps.readBytes(file).map(PartitionWal::wrapBigEndian);
     }
 
     private Unit replayScan(ByteBuffer buf, long afterOffset, Consumer<WalRecord> consumer) {
         scan(buf, Math.max(afterOffset, truncatedUpto), consumer);
+
         return unit();
     }
 
     // === truncate / compaction path ===
-
     private Result<Unit> advanceWatermark(long uptoOffset) {
         truncatedUpto = Math.max(truncatedUpto, uptoOffset);
 
-        return shouldCompact() ? compact() : unitResult();
+        return shouldCompact()
+               ? compact()
+               : unitResult();
     }
 
     private boolean shouldCompact() {
@@ -260,9 +269,8 @@ public final class PartitionWal implements AutoCloseable {
     }
 
     private Result<Unit> swapIn(byte[] survivors, long uptoOffset) {
-        return writeTempSynced(survivors)
-                   .flatMap(_ -> renameTempOverFile())
-                   .flatMap(_ -> reopenAfterCompaction(survivors.length, uptoOffset));
+        return writeTempSynced(survivors).flatMap(_ -> renameTempOverFile())
+                              .flatMap(_ -> reopenAfterCompaction(survivors.length, uptoOffset));
     }
 
     private Result<Unit> writeTempSynced(byte[] survivors) {
@@ -270,12 +278,16 @@ public final class PartitionWal implements AutoCloseable {
     }
 
     private Result<Unit> renameTempOverFile() {
-        return Result.lift(TRUNCATE_FAILED, () -> Files.move(tempPath(), file, StandardCopyOption.REPLACE_EXISTING))
+        return Result.lift(TRUNCATE_FAILED,
+                           () -> Files.move(tempPath(),
+                                            file,
+                                            StandardCopyOption.REPLACE_EXISTING))
                      .mapToUnit();
     }
 
     private Result<Unit> reopenAfterCompaction(int newSize, long uptoOffset) {
-        return Result.lift(TRUNCATE_FAILED, () -> channel.close())
+        return Result.lift(TRUNCATE_FAILED,
+                           () -> channel.close())
                      .flatMap(_ -> openChannel(file))
                      .map(reopened -> installCompacted(reopened, newSize, uptoOffset));
     }
@@ -285,6 +297,7 @@ public final class PartitionWal implements AutoCloseable {
         writePosition = newSize;
         syncedSeq = writtenSeq;
         lastCompactedUpto = uptoOffset;
+
         return unit();
     }
 
@@ -293,7 +306,6 @@ public final class PartitionWal implements AutoCloseable {
     }
 
     // === open / recovery ===
-
     private static Result<PartitionWal> recover(Path file) {
         return openChannel(file).flatMap(channel -> recoverFrom(file, channel));
     }
@@ -306,9 +318,13 @@ public final class PartitionWal implements AutoCloseable {
     }
 
     private static Result<PartitionWal> truncateAndBuild(Path file, FileChannel channel, ScanResult result) {
-        return Result.lift(t -> new WalError.OpenFailed(file, t.getMessage()),
+        return Result.lift(t -> new WalError.OpenFailed(file,
+                                                        t.getMessage()),
                            () -> channel.truncate(result.validEnd()))
-                     .map(_ -> new PartitionWal(file, channel, result.validEnd(), result.lastOffset()));
+                     .map(_ -> new PartitionWal(file,
+                                                channel,
+                                                result.validEnd(),
+                                                result.lastOffset()));
     }
 
     private static Result<FileChannel> openChannel(Path file) {
@@ -320,7 +336,6 @@ public final class PartitionWal implements AutoCloseable {
     }
 
     // === framing / scan helpers ===
-
     /// Scan `buf` in record order, invoking `consumer` for each VALID record whose
     /// `offset > afterOffset`. Returns the byte offset just past the last fully-valid record and
     /// that record's offset; stops at the first torn/CRC boundary without throwing.
@@ -339,27 +354,32 @@ public final class PartitionWal implements AutoCloseable {
                 buf.position(recordStart);
                 break;
             }
-            var payload = new byte[payloadLen];
-            buf.get(payload);
 
+            var payload = new byte[payloadLen];
+
+            buf.get(payload);
             if (crc32(offset, timestampMillis, payload) != storedCrc) {
                 buf.position(recordStart);
                 break;
             }
+
             validEnd = buf.position();
             lastOffset = offset;
-
             if (offset > afterOffset) {
                 consumer.accept(new WalRecord(offset, timestampMillis, payload));
             }
         }
+
         return new ScanResult(validEnd, lastOffset);
     }
 
     private static byte[] collectSurvivors(ByteBuffer buf, long uptoOffset) {
         var out = new ByteArrayOutputStream();
 
-        scan(buf, uptoOffset, record -> out.writeBytes(frameBytes(record.offset(), record.payload(), record.timestampMillis())));
+        scan(buf,
+             uptoOffset,
+             record -> out.writeBytes(frameBytes(record.offset(), record.payload(), record.timestampMillis())));
+
         return out.toByteArray();
     }
 
@@ -371,6 +391,7 @@ public final class PartitionWal implements AutoCloseable {
         buf.putLong(timestampMillis);
         buf.putInt(crc32(offset, timestampMillis, payload));
         buf.put(payload);
+
         return buf.array();
     }
 
@@ -379,11 +400,11 @@ public final class PartitionWal implements AutoCloseable {
 
         header.putLong(offset);
         header.putLong(timestampMillis);
-
         var crc = new CRC32();
 
         crc.update(header.array());
         crc.update(payload);
+
         return (int) crc.getValue();
     }
 
@@ -408,8 +429,10 @@ public final class PartitionWal implements AutoCloseable {
             while (buf.hasRemaining()) {
                 channel.write(buf);
             }
+
             channel.force(true);
         }
+
         return unit();
     }
 
@@ -423,13 +446,10 @@ public final class PartitionWal implements AutoCloseable {
     public sealed interface WalError extends Cause {
         enum General implements WalError {
             WAL_CLOSED("Partition WAL is closed");
-
             private final String message;
-
             General(String message) {
                 this.message = message;
             }
-
             @Override
             public String message() {
                 return message;

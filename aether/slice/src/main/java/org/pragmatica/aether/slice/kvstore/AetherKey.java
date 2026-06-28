@@ -1703,8 +1703,8 @@ public sealed interface AetherKey extends StructuredKey {
 
             var stream = content.substring(0, slashIndex);
 
-            return Number.parseInt(content.substring(slashIndex + 1))
-                         .map(partition -> new StreamPartitionOwnershipKey(stream, partition));
+            return Number.parseInt(content.substring(slashIndex + 1)).map(partition -> new StreamPartitionOwnershipKey(stream,
+                                                                                                                       partition));
         }
     }
 

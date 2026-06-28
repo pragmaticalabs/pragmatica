@@ -2,7 +2,6 @@
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
 // Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
 // See LICENSE in the repository root for full terms.
-
 package org.pragmatica.aether.pg.split;
 
 import org.pragmatica.aether.pg.split.DialectSpec.TerminatorRedefinition;
@@ -18,6 +17,7 @@ import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Result.success;
 import static org.pragmatica.lang.Result.unitResult;
+
 
 /// Pure, dialect-aware SQL statement splitter.
 ///
@@ -82,7 +82,7 @@ public sealed interface StatementSplitter {
     ///
     /// @return the script without a leading BOM
     private static String stripBom(String sql) {
-        return !sql.isEmpty() && sql.charAt(0) == BOM
+        return ! sql.isEmpty() && sql.charAt(0) == BOM
                ? sql.substring(1)
                : sql;
     }
@@ -94,7 +94,6 @@ public sealed interface StatementSplitter {
         private final DialectSpec dialect;
         private final int length;
         private final List<Statement> statements = new ArrayList<>();
-
         private int pos;
         private int line = 1;
         private int statementStart;
@@ -107,7 +106,7 @@ public sealed interface StatementSplitter {
             this.dialect = dialect;
             this.length = sql.length();
             this.statementStart = 0;
-            this.statementStartLine = 0; // 0 = pending: set on the first significant char
+            this.statementStartLine = 0;  // 0 = pending: set on the first significant char
             this.activeTerminator = initialTerminator(dialect);
         }
 
@@ -127,11 +126,13 @@ public sealed interface StatementSplitter {
             while (pos < length && outcome.isSuccess()) {
                 outcome = scanNormalChar();
             }
+
             return outcome.flatMap(this::finish);
         }
 
         private Result<List<Statement>> finish(Unit ignored) {
             emitStatement(length);
+
             return success(List.copyOf(statements));
         }
 
@@ -142,26 +143,33 @@ public sealed interface StatementSplitter {
             if (c == '\n') {
                 line++;
                 pos++;
+
                 return unitResult();
             }
+
             if (Character.isWhitespace(c)) {
                 pos++;
+
                 return unitResult();
             }
+
             if (consumesTerminatorDirective()) {
                 return unitResult();
             }
+
             if (consumesBatchSeparator()) {
                 return unitResult();
             }
+
             if (consumesBlockLineTerminator()) {
                 return unitResult();
             }
-            markStatementLine();
 
+            markStatementLine();
             if (atActiveTerminator()) {
                 return splitOrEnterCopyData();
             }
+
             return descend(c);
         }
 
@@ -175,6 +183,7 @@ public sealed interface StatementSplitter {
             if (!dialect.boundaries().semicolonTerminates() || inPlsqlBlock) {
                 return false;
             }
+
             return activeTerminator.length() == 1
                    ? sql.charAt(pos) == activeTerminator.charAt(0)
                    : sql.regionMatches(pos, activeTerminator, 0, activeTerminator.length());
@@ -196,12 +205,12 @@ public sealed interface StatementSplitter {
         /// that carries a block-line terminator. Only such dialects (Oracle) ever consult the
         /// block starter; for every other dialect this is `false` and block mode never engages.
         private boolean startsPlsqlBlock() {
-            return dialect.boundaries().blockLineTerminator().isPresent()
-                   && dialect.startsBlock(sql.substring(pos, length));
+            return dialect.boundaries()
+                          .blockLineTerminator()
+                          .isPresent() && dialect.startsBlock(sql.substring(pos, length));
         }
 
         // ----- redefinable terminator directive --------------------------------------
-
         /// Recognizes a client terminator-redefinition directive (e.g. `DELIMITER $$`) at a
         /// statement start. The directive is line-anchored: the cursor must sit on the first
         /// significant character of a line and no statement text may have accumulated since
@@ -235,8 +244,10 @@ public sealed interface StatementSplitter {
                 if (!Character.isWhitespace(sql.charAt(cursor))) {
                     return false;
                 }
+
                 cursor--;
             }
+
             return true;
         }
 
@@ -247,15 +258,19 @@ public sealed interface StatementSplitter {
             if (!keywordMatchesAt(keyword)) {
                 return false;
             }
+
             var afterKeyword = pos + keyword.length();
             var tokenStart = skipInlineWhitespace(afterKeyword);
 
             if (tokenStart == afterKeyword || tokenStart >= length || isLineEnd(sql.charAt(tokenStart))) {
                 return false;
             }
+
             var tokenEnd = lineEndFrom(tokenStart);
 
-            applyDirective(sql.substring(tokenStart, tokenEnd).stripTrailing(), tokenEnd);
+            applyDirective(sql.substring(tokenStart, tokenEnd).stripTrailing(),
+                           tokenEnd);
+
             return true;
         }
 
@@ -272,11 +287,12 @@ public sealed interface StatementSplitter {
             pos = tokenEnd;
             if (pos < length) {
                 line++;
-                pos++; // consume the directive line's newline
+                pos++;  // consume the directive line's newline
             }
+
             statementStart = pos;
-            statementStartLine = 0; // pending: re-marked on the next statement's first char
-            inPlsqlBlock = false;   // block mode decided afresh at the next statement's first char
+            statementStartLine = 0;  // pending: re-marked on the next statement's first char
+            inPlsqlBlock = false;  // block mode decided afresh at the next statement's first char
         }
 
         private int skipInlineWhitespace(int from) {
@@ -285,6 +301,7 @@ public sealed interface StatementSplitter {
             while (cursor < length && isWhitespaceAt(cursor) && !isLineEnd(sql.charAt(cursor))) {
                 cursor++;
             }
+
             return cursor;
         }
 
@@ -294,6 +311,7 @@ public sealed interface StatementSplitter {
             while (cursor < length && sql.charAt(cursor) != '\n') {
                 cursor++;
             }
+
             return cursor;
         }
 
@@ -306,7 +324,6 @@ public sealed interface StatementSplitter {
         }
 
         // ----- batch separator (T-SQL GO) --------------------------------------------
-
         /// Recognizes a batch separator (e.g. T-SQL `GO`, optionally with a trailing repeat
         /// count `GO 3`) at the start of a line. The keyword must be the sole content of the
         /// line (case-insensitive, only whitespace before it on the line). When matched the
@@ -334,8 +351,10 @@ public sealed interface StatementSplitter {
             if (!keywordAloneOnLine(keyword)) {
                 return false;
             }
+
             emitStatement(pos);
             advancePastBatchLine();
+
             return true;
         }
 
@@ -345,19 +364,23 @@ public sealed interface StatementSplitter {
             if (!keywordMatchesEndOrSpaceAt(keyword)) {
                 return false;
             }
+
             var rest = sql.substring(pos + keyword.length(), lineEndFrom(pos)).strip();
+
             return rest.isEmpty() || isPositiveInteger(rest);
         }
 
         private boolean keywordMatchesEndOrSpaceAt(String keyword) {
             var after = pos + keyword.length();
+
             return after <= length
                    && sql.regionMatches(true, pos, keyword, 0, keyword.length())
                    && (after == length || isLineEnd(sql.charAt(after)) || Character.isWhitespace(sql.charAt(after)));
         }
 
         private static boolean isPositiveInteger(String text) {
-            return text.chars().allMatch(Character::isDigit);
+            return text.chars()
+                       .allMatch(Character::isDigit);
         }
 
         /// Consumes the batch-separator line including its terminating newline and resets the
@@ -366,15 +389,15 @@ public sealed interface StatementSplitter {
             pos = lineEndFrom(pos);
             if (pos < length) {
                 line++;
-                pos++; // consume the separator line's newline
+                pos++;  // consume the separator line's newline
             }
+
             statementStart = pos;
-            statementStartLine = 0; // pending: re-marked on the next statement's first char
-            inPlsqlBlock = false;   // block mode decided afresh at the next statement's first char
+            statementStartLine = 0;  // pending: re-marked on the next statement's first char
+            inPlsqlBlock = false;  // block mode decided afresh at the next statement's first char
         }
 
         // ----- block-line terminator (Oracle /) --------------------------------------
-
         /// Recognizes a block-line terminator (Oracle `/`) at the start of a line. The token must
         /// be the sole trimmed content of the line. When matched the accumulated statement (the
         /// PL/SQL block) is emitted and the WHOLE terminator line is consumed WITHOUT emitting the
@@ -400,15 +423,19 @@ public sealed interface StatementSplitter {
             if (!tokenAloneOnLine(token)) {
                 return false;
             }
+
             emitStatement(pos);
             advancePastBatchLine();
+
             return true;
         }
 
         /// Whether the line at the cursor consists solely of the block-line terminator token,
         /// ignoring surrounding whitespace and a trailing carriage return.
         private boolean tokenAloneOnLine(String token) {
-            return stripCr(sql.substring(pos, lineEndFrom(pos))).strip().equals(token);
+            return stripCr(sql.substring(pos,
+                                         lineEndFrom(pos))).strip()
+                          .equals(token);
         }
 
         /// A top-level `;` either opens a `COPY … FROM STDIN` data block or ends a statement.
@@ -422,55 +449,71 @@ public sealed interface StatementSplitter {
             emitStatement(pos);
             pos += activeTerminator.length();
             statementStart = pos;
-            statementStartLine = 0; // pending: re-marked on the next statement's first char
-            inPlsqlBlock = false;   // block mode decided afresh at the next statement's first char
+            statementStartLine = 0;  // pending: re-marked on the next statement's first char
+            inPlsqlBlock = false;  // block mode decided afresh at the next statement's first char
             return unitResult();
         }
 
         private Result<Unit> descend(char c) {
             if (startsLineComment(c)) {
                 consumeLineComment();
+
                 return unitResult();
             }
+
             if (startsBlockComment(c)) {
                 return consumeBlockComment();
             }
+
             if (startsDollarQuote(c)) {
                 return consumeDollarQuote();
             }
+
             if (startsEscapeString(c)) {
                 return consumeEscapeString();
             }
+
             if (startsNationalString(c)) {
                 return consumeNationalString();
             }
+
             if (startsAltQuoting(c)) {
                 return consumeAltQuoting();
             }
+
             if (c == '\'') {
                 return consumeString();
             }
+
             if (startsDoubleQuoteString(c)) {
                 return consumeDoubleQuoteString();
             }
+
             if (startsBacktickIdentifier(c)) {
                 return consumeBacktickIdentifier();
             }
+
             if (startsBracketIdentifier(c)) {
                 return consumeBracketIdentifier();
             }
+
             if (startsQuotedIdentifier(c)) {
                 return consumeQuotedIdentifier();
             }
+
             pos++;
+
             return unitResult();
         }
 
         // ----- span predicates -------------------------------------------------------
-
         private boolean startsLineComment(char c) {
-            return (dialect.comments().dashLineComment() && c == '-' && peek(1) == '-' && dashCommentSpaceOk())
-                   || (dialect.comments().hashLineComment() && c == '#');
+            return (dialect.comments()
+                           .dashLineComment()
+                    && c == '-'
+                    && peek(1) == '-'
+                    && dashCommentSpaceOk()) || (dialect.comments()
+                                                        .hashLineComment() && c == '#');
         }
 
         /// Whether the `--` here may open a line comment under the dialect's dash rule. When
@@ -480,52 +523,73 @@ public sealed interface StatementSplitter {
             if (!dialect.comments().dashRequiresSpace()) {
                 return true;
             }
+
             var after = pos + 2;
+
             return after >= length || Character.isWhitespace(sql.charAt(after));
         }
 
         private boolean startsBlockComment(char c) {
-            return dialect.comments().blockComment() && c == '/' && peek(1) == '*';
+            return dialect.comments()
+                          .blockComment()
+                   && c == '/'
+                   && peek(1) == '*';
         }
 
         private boolean startsDollarQuote(char c) {
-            return dialect.dollarQuote().enabled() && c == '$' && dollarTagAt(pos).isPresent();
+            return dialect.dollarQuote()
+                          .enabled()
+                   && c == '$'
+                   && dollarTagAt(pos).isPresent();
         }
 
         private boolean startsEscapeString(char c) {
-            return dialect.strings().escapeStringPrefix() && (c == 'E' || c == 'e') && peek(1) == '\'';
+            return dialect.strings()
+                          .escapeStringPrefix()
+                   && (c == 'E' || c == 'e')
+                   && peek(1) == '\'';
         }
 
         private boolean startsNationalString(char c) {
-            return dialect.strings().nationalPrefix() && (c == 'N' || c == 'n') && peek(1) == '\'';
+            return dialect.strings()
+                          .nationalPrefix()
+                   && (c == 'N' || c == 'n')
+                   && peek(1) == '\'';
         }
 
         private boolean startsAltQuoting(char c) {
-            return dialect.strings().altQuoting() && (c == 'q' || c == 'Q') && peek(1) == '\'';
+            return dialect.strings()
+                          .altQuoting()
+                   && (c == 'q' || c == 'Q')
+                   && peek(1) == '\'';
         }
 
         private boolean startsQuotedIdentifier(char c) {
-            return dialect.identifiers().doubleQuote() && c == '"';
+            return dialect.identifiers()
+                          .doubleQuote() && c == '"';
         }
 
         private boolean startsDoubleQuoteString(char c) {
-            return dialect.strings().doubleQuoteString() && c == '"';
+            return dialect.strings()
+                          .doubleQuoteString() && c == '"';
         }
 
         private boolean startsBacktickIdentifier(char c) {
-            return dialect.identifiers().backtick() && c == '`';
+            return dialect.identifiers()
+                          .backtick() && c == '`';
         }
 
         private boolean startsBracketIdentifier(char c) {
-            return dialect.identifiers().bracket() && c == '[';
+            return dialect.identifiers()
+                          .bracket() && c == '[';
         }
 
         private boolean startsCopyData() {
-            return dialect.copyData().enabled() && copyFromStdinEndsHere();
+            return dialect.copyData()
+                          .enabled() && copyFromStdinEndsHere();
         }
 
         // ----- span consumers --------------------------------------------------------
-
         private void consumeLineComment() {
             while (pos < length && sql.charAt(pos) != '\n') {
                 pos++;
@@ -533,7 +597,8 @@ public sealed interface StatementSplitter {
         }
 
         private Result<Unit> consumeBlockComment() {
-            return dialect.comments().nestedBlock()
+            return dialect.comments()
+                          .nestedBlock()
                    ? consumeNestedBlockComment()
                    : consumeFlatBlockComment();
         }
@@ -558,6 +623,7 @@ public sealed interface StatementSplitter {
                     advanceTrackingLine();
                 }
             }
+
             return new SplitError.UnterminatedBlockComment(openedLine).result();
         }
 
@@ -566,15 +632,17 @@ public sealed interface StatementSplitter {
         private Result<Unit> consumeFlatBlockComment() {
             var openedLine = line;
 
-            pos += 2; // consume the opening /*
-
+            pos += 2;  // consume the opening /*
             while (pos < length) {
                 if (atBlockClose()) {
                     pos += 2;
+
                     return unitResult();
                 }
+
                 advanceTrackingLine();
             }
+
             return new SplitError.UnterminatedBlockComment(openedLine).result();
         }
 
@@ -583,22 +651,23 @@ public sealed interface StatementSplitter {
             var tag = dollarTagAt(pos).or("");
 
             pos += tag.length();
-
             while (pos < length) {
                 if (sql.charAt(pos) == '$' && matchesTagAt(pos, tag)) {
                     pos += tag.length();
+
                     return unitResult();
                 }
+
                 advanceTrackingLine();
             }
+
             return new SplitError.UnterminatedDollarQuote(innerTag(tag), openedLine).result();
         }
 
         private Result<Unit> consumeEscapeString() {
             var openedLine = line;
 
-            pos += 2; // consume E'
-
+            pos += 2;  // consume E'
             while (pos < length) {
                 var c = sql.charAt(pos);
 
@@ -608,11 +677,13 @@ public sealed interface StatementSplitter {
                     pos += 2;
                 } else if (c == '\'') {
                     pos++;
+
                     return unitResult();
                 } else {
                     advanceTrackingLine();
                 }
             }
+
             return new SplitError.UnterminatedString(openedLine).result();
         }
 
@@ -620,7 +691,7 @@ public sealed interface StatementSplitter {
         /// consumed and the body follows the same `''`-doubling rules as an ordinary `'…'`
         /// literal (SQL Server does not honor backslash escapes here).
         private Result<Unit> consumeNationalString() {
-            pos++; // consume the N prefix; the cursor now sits on the opening '
+            pos++;  // consume the N prefix; the cursor now sits on the opening '
             return consumeString();
         }
 
@@ -635,15 +706,16 @@ public sealed interface StatementSplitter {
             var delimiter = peek(2);
             var closer = altQuotingCloser(delimiter);
 
-            pos += 3; // consume q, ', and the delimiter char
-
+            pos += 3;  // consume q, ', and the delimiter char
             while (pos < length) {
                 if (sql.charAt(pos) == closer && peek(1) == '\'') {
-                    pos += 2; // consume the mirror delimiter and the closing '
+                    pos += 2;  // consume the mirror delimiter and the closing '
                     return unitResult();
                 }
+
                 advanceTrackingLine();
             }
+
             return new SplitError.UnterminatedString(openedLine).result();
         }
 
@@ -663,8 +735,7 @@ public sealed interface StatementSplitter {
         private Result<Unit> consumeString() {
             var openedLine = line;
 
-            pos++; // consume opening '
-
+            pos++;  // consume opening '
             while (pos < length) {
                 var c = sql.charAt(pos);
 
@@ -674,19 +745,20 @@ public sealed interface StatementSplitter {
                     pos += 2;
                 } else if (c == '\'') {
                     pos++;
+
                     return unitResult();
                 } else {
                     advanceTrackingLine();
                 }
             }
+
             return new SplitError.UnterminatedString(openedLine).result();
         }
 
         private Result<Unit> consumeQuotedIdentifier() {
             var openedLine = line;
 
-            pos++; // consume opening "
-
+            pos++;  // consume opening "
             while (pos < length) {
                 var c = sql.charAt(pos);
 
@@ -694,11 +766,13 @@ public sealed interface StatementSplitter {
                     pos += 2;
                 } else if (c == '"') {
                     pos++;
+
                     return unitResult();
                 } else {
                     advanceTrackingLine();
                 }
             }
+
             return new SplitError.UnterminatedQuotedIdentifier(openedLine).result();
         }
 
@@ -707,8 +781,7 @@ public sealed interface StatementSplitter {
         private Result<Unit> consumeDoubleQuoteString() {
             var openedLine = line;
 
-            pos++; // consume opening "
-
+            pos++;  // consume opening "
             while (pos < length) {
                 var c = sql.charAt(pos);
 
@@ -718,11 +791,13 @@ public sealed interface StatementSplitter {
                     pos += 2;
                 } else if (c == '"') {
                     pos++;
+
                     return unitResult();
                 } else {
                     advanceTrackingLine();
                 }
             }
+
             return new SplitError.UnterminatedString(openedLine).result();
         }
 
@@ -731,8 +806,7 @@ public sealed interface StatementSplitter {
         private Result<Unit> consumeBacktickIdentifier() {
             var openedLine = line;
 
-            pos++; // consume opening `
-
+            pos++;  // consume opening `
             while (pos < length) {
                 var c = sql.charAt(pos);
 
@@ -740,11 +814,13 @@ public sealed interface StatementSplitter {
                     pos += 2;
                 } else if (c == '`') {
                     pos++;
+
                     return unitResult();
                 } else {
                     advanceTrackingLine();
                 }
             }
+
             return new SplitError.UnterminatedQuotedIdentifier(openedLine).result();
         }
 
@@ -753,8 +829,7 @@ public sealed interface StatementSplitter {
         private Result<Unit> consumeBracketIdentifier() {
             var openedLine = line;
 
-            pos++; // consume opening [
-
+            pos++;  // consume opening [
             while (pos < length) {
                 var c = sql.charAt(pos);
 
@@ -762,11 +837,13 @@ public sealed interface StatementSplitter {
                     pos += 2;
                 } else if (c == ']') {
                     pos++;
+
                     return unitResult();
                 } else {
                     advanceTrackingLine();
                 }
             }
+
             return new SplitError.UnterminatedQuotedIdentifier(openedLine).result();
         }
 
@@ -774,36 +851,38 @@ public sealed interface StatementSplitter {
             var openedLine = line;
             var marker = dialect.copyData().endMarkerLine();
 
-            advanceToNextLine(); // move past the COPY header line
-
+            advanceToNextLine();  // move past the COPY header line
             while (pos < length) {
                 if (lineContentEquals(marker)) {
                     return endCopyData();
                 }
+
                 advanceToNextLine();
             }
+
             return new SplitError.UnterminatedCopyData(openedLine).result();
         }
 
         /// Consumes the marker line, emits the complete COPY statement (header + data), and
         /// resets the statement origin so a following statement is recognized separately.
         private Result<Unit> endCopyData() {
-            consumeLineComment(); // consume the marker line content
+            consumeLineComment();  // consume the marker line content
             emitStatement(pos);
             if (pos < length) {
                 line++;
-                pos++; // consume the marker line newline
+                pos++;  // consume the marker line newline
             }
+
             statementStart = pos;
-            statementStartLine = 0; // pending: re-marked on the next statement's first char
-            inPlsqlBlock = false;   // block mode decided afresh at the next statement's first char
+            statementStartLine = 0;  // pending: re-marked on the next statement's first char
+            inPlsqlBlock = false;  // block mode decided afresh at the next statement's first char
             return unitResult();
         }
 
         // ----- low-level cursor helpers ----------------------------------------------
-
         private char peek(int ahead) {
             var index = pos + ahead;
+
             return index < length
                    ? sql.charAt(index)
                    : '\0';
@@ -813,6 +892,7 @@ public sealed interface StatementSplitter {
             if (sql.charAt(pos) == '\n') {
                 line++;
             }
+
             pos++;
         }
 
@@ -820,11 +900,15 @@ public sealed interface StatementSplitter {
             if (sql.charAt(pos + 1) == '\n') {
                 line++;
             }
+
             pos += 2;
         }
 
         private boolean atBlockOpen() {
-            return dialect.comments().nestedBlock() && sql.charAt(pos) == '/' && peek(1) == '*';
+            return dialect.comments()
+                          .nestedBlock()
+                   && sql.charAt(pos) == '/'
+                   && peek(1) == '*';
         }
 
         private boolean atBlockClose() {
@@ -835,6 +919,7 @@ public sealed interface StatementSplitter {
             while (pos < length && sql.charAt(pos) != '\n') {
                 pos++;
             }
+
             if (pos < length) {
                 line++;
                 pos++;
@@ -845,20 +930,21 @@ public sealed interface StatementSplitter {
         /// of the marker, ignoring a trailing carriage return.
         private boolean lineContentEquals(String marker) {
             var end = pos;
+
             while (end < length && sql.charAt(end) != '\n') {
                 end++;
             }
+
             return stripCr(sql.substring(pos, end)).equals(marker);
         }
 
         private static String stripCr(String content) {
-            return !content.isEmpty() && content.charAt(content.length() - 1) == '\r'
+            return ! content.isEmpty() && content.charAt(content.length() - 1) == '\r'
                    ? content.substring(0, content.length() - 1)
                    : content;
         }
 
         // ----- COPY detection --------------------------------------------------------
-
         /// Whether the statement accumulated so far is a `COPY … FROM STDIN` and the cursor
         /// sits on the `;` that opens its data block. Detected from the already-scanned
         /// statement prefix so the scan stays in normal state until the terminator.
@@ -868,22 +954,24 @@ public sealed interface StatementSplitter {
 
         private boolean currentStatementIsCopyFromStdin() {
             var upper = sql.substring(statementStart, pos).stripLeading().toUpperCase(Locale.ROOT);
+
             return upper.startsWith("COPY ") && upper.contains("FROM STDIN");
         }
 
         // ----- dollar-tag matching ---------------------------------------------------
-
         /// Returns the full opening dollar tag (including both `$` delimiters) starting at
         /// `index`, if one is present. Empty tag `$$` and arbitrary `$name$` are recognized.
         private Option<String> dollarTagAt(int index) {
             if (index >= length || sql.charAt(index) != '$') {
                 return none();
             }
+
             var cursor = index + 1;
 
             while (cursor < length && isTagChar(sql.charAt(cursor), cursor == index + 1)) {
                 cursor++;
             }
+
             return option(cursor < length && sql.charAt(cursor) == '$'
                           ? sql.substring(index, cursor + 1)
                           : null);
@@ -906,7 +994,6 @@ public sealed interface StatementSplitter {
         }
 
         // ----- statement emission ----------------------------------------------------
-
         private void emitStatement(int end) {
             var text = sql.substring(statementStart, end);
 

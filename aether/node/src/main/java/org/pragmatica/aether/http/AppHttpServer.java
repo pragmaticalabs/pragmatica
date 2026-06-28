@@ -465,8 +465,8 @@ class AppHttpServerAdapter implements AppHttpServer {
     private Promise<Unit> startH1Server() {
         var serverConfig = buildServerConfig();
         java.util.function.BiConsumer<org.pragmatica.http.HttpRequest, org.pragmatica.http.server.ResponseWriter> handler = config.httpProtocol() == HttpProtocol.BOTH
-                                                                                                                                      ? this::handleRequestWithAltSvc
-                                                                                                                                      : this::handleRequest;
+                                                                                                                            ? this::handleRequestWithAltSvc
+                                                                                                                            : this::handleRequest;
         var serverPromise = bossGroup.flatMap(bg -> workerGroup.map(wg -> HttpServer.httpServer(serverConfig,
                                                                                                 handler,
                                                                                                 bg,
@@ -605,8 +605,8 @@ class AppHttpServerAdapter implements AppHttpServer {
         var serverConfig = HttpServerConfig.httpServerConfig("app-http", config.port()).withMaxContentLength(config.maxRequestSize());
         var finalConfig = newTls.map(serverConfig::withTls).or(serverConfig);
         java.util.function.BiConsumer<HttpRequest, ResponseWriter> handler = config.httpProtocol() == HttpProtocol.BOTH
-                                                                                ? this::handleRequestWithAltSvc
-                                                                                : this::handleRequest;
+                                                                             ? this::handleRequestWithAltSvc
+                                                                             : this::handleRequest;
         var serverPromise = bossGroup.flatMap(bg -> workerGroup.map(wg -> HttpServer.httpServer(finalConfig,
                                                                                                 handler,
                                                                                                 bg,
@@ -1566,20 +1566,20 @@ class AppHttpServerAdapter implements AppHttpServer {
             writer = writer.header(entry.getKey(), entry.getValue());
         }
 
-        var contentType = Option.option(responseData.headers().get("Content-Type"))
-                                .map(AppHttpServerAdapter::resolveContentType)
-                                .or(CommonContentType.APPLICATION_JSON);
+        var contentType = Option.option(responseData.headers().get("Content-Type")).map(AppHttpServerAdapter::resolveContentType).or(CommonContentType.APPLICATION_JSON);
 
         writer.write(toServerStatus(responseData.statusCode()), responseData.body(), contentType);
     }
 
     private static org.pragmatica.http.ContentType resolveContentType(String headerText) {
-        return matchCommonContentType(headerText).or(() -> org.pragmatica.http.ContentType.contentType(headerText, guessCategory(headerText)));
+        return matchCommonContentType(headerText).or(() -> org.pragmatica.http.ContentType.contentType(headerText,
+                                                                                                       guessCategory(headerText)));
     }
 
     private static Option<org.pragmatica.http.ContentType> matchCommonContentType(String headerText) {
-        return java.util.stream.Stream.<org.pragmatica.http.ContentType>of(CommonContentType.values())
-                                      .filter(ct -> ct.headerText().equalsIgnoreCase(headerText))
+        return java.util.stream.Stream.<org.pragmatica.http.ContentType> of(CommonContentType.values())
+                                      .filter(ct -> ct.headerText()
+                                                      .equalsIgnoreCase(headerText))
                                       .findFirst()
                                       .map(Option::option)
                                       .orElseGet(Option::none);
@@ -1591,18 +1591,23 @@ class AppHttpServerAdapter implements AppHttpServer {
         if (lower.contains("json")) {
             return org.pragmatica.http.ContentCategory.JSON;
         }
+
         if (lower.startsWith("text/html") || lower.contains("html")) {
             return org.pragmatica.http.ContentCategory.HTML;
         }
+
         if (lower.contains("xml")) {
             return org.pragmatica.http.ContentCategory.XML;
         }
+
         if (lower.startsWith("text/")) {
             return org.pragmatica.http.ContentCategory.TEXT;
         }
+
         if (lower.contains("x-www-form-urlencoded")) {
             return org.pragmatica.http.ContentCategory.FORM_URLENCODED;
         }
+
         if (lower.contains("multipart/")) {
             return org.pragmatica.http.ContentCategory.MULTIPART;
         }

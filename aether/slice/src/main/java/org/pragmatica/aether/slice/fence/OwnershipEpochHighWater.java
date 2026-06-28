@@ -80,26 +80,32 @@ public final class OwnershipEpochHighWater {
     /// `true` iff there IS a recorded high-water for the domain AND `presentedEpoch` is strictly
     /// older than it. Unknown domain (the floor) and equal-or-newer presented epochs are NOT stale.
     public boolean isStale(OwnershipDomain domain, Epoch presentedEpoch) {
-        return highWater(domain).map(hw -> hw.isStrictlyAfter(presentedEpoch)).or(false);
+        return highWater(domain).map(hw -> hw.isStrictlyAfter(presentedEpoch))
+                        .or(false);
     }
 
     private void seedFromKvStore() {
         kvStore.forEach(GovernorAnnouncementKey.class, GovernorAnnouncementValue.class, this::seedGovernor);
         kvStore.forEach(DhtPartitionOwnershipKey.class, DhtPartitionOwnershipValue.class, this::seedDhtPartition);
-        kvStore.forEach(StreamPartitionOwnershipKey.class, StreamPartitionOwnershipValue.class, this::seedStreamPartition);
+        kvStore.forEach(StreamPartitionOwnershipKey.class,
+                        StreamPartitionOwnershipValue.class,
+                        this::seedStreamPartition);
         log.info("Seeded {} ownership-domain epoch high-water marks from KV-Store", highWaterMarks.size());
     }
 
     private void seedGovernor(GovernorAnnouncementKey key, GovernorAnnouncementValue value) {
-        advance(OwnershipDomain.community(key.communityId()), value.fenceEpoch());
+        advance(OwnershipDomain.community(key.communityId()),
+                value.fenceEpoch());
     }
 
     private void seedDhtPartition(DhtPartitionOwnershipKey key, DhtPartitionOwnershipValue value) {
-        advance(OwnershipDomain.dhtPartition(key.partitionId()), value.fenceEpoch());
+        advance(OwnershipDomain.dhtPartition(key.partitionId()),
+                value.fenceEpoch());
     }
 
     private void seedStreamPartition(StreamPartitionOwnershipKey key, StreamPartitionOwnershipValue value) {
-        advance(OwnershipDomain.streamPartition(key.stream(), key.partition()), value.fenceEpoch());
+        advance(OwnershipDomain.streamPartition(key.stream(), key.partition()),
+                value.fenceEpoch());
     }
 
     @MessageReceiver
@@ -108,7 +114,8 @@ public final class OwnershipEpochHighWater {
         var key = valuePut.cause().key();
         var value = valuePut.cause().value();
 
-        advance(OwnershipDomain.community(key.communityId()), value.fenceEpoch());
+        advance(OwnershipDomain.community(key.communityId()),
+                value.fenceEpoch());
         log.debug("Governor announcement epoch observed from cluster: {} -> {}",
                   key.communityId(),
                   value.fenceEpoch());
@@ -120,7 +127,8 @@ public final class OwnershipEpochHighWater {
         var key = valuePut.cause().key();
         var value = valuePut.cause().value();
 
-        advance(OwnershipDomain.dhtPartition(key.partitionId()), value.fenceEpoch());
+        advance(OwnershipDomain.dhtPartition(key.partitionId()),
+                value.fenceEpoch());
         log.debug("DHT partition ownership epoch observed from cluster: {} -> {}",
                   key.partitionId(),
                   value.fenceEpoch());
@@ -132,7 +140,8 @@ public final class OwnershipEpochHighWater {
         var key = valuePut.cause().key();
         var value = valuePut.cause().value();
 
-        advance(OwnershipDomain.streamPartition(key.stream(), key.partition()), value.fenceEpoch());
+        advance(OwnershipDomain.streamPartition(key.stream(), key.partition()),
+                value.fenceEpoch());
         log.debug("Stream partition ownership epoch observed from cluster: {}/{} -> {}",
                   key.stream(),
                   key.partition(),
@@ -140,6 +149,8 @@ public final class OwnershipEpochHighWater {
     }
 
     private static Epoch maxEpoch(Epoch a, Epoch b) {
-        return a.isAtLeast(b) ? a : b;
+        return a.isAtLeast(b)
+               ? a
+               : b;
     }
 }

@@ -101,10 +101,12 @@ public final class PartitionBackfill {
     /// factory, where an empty member view makes the owner check always false — so that orchestrator is
     /// byte-identical to the original (no owner-immediate promotion).
     private final Supplier<List<NodeId>> membersSupplier;
+
     /// First wall-clock instant (ms) at which each partition was observed to have NO caught-up source.
     /// `backfill` is invoked one-shot and retried by the reconcile / on-gap seams, so the bounded wait
     /// must persist across calls — this map is that cross-call memory.
     private final ConcurrentHashMap<PartitionKey, Long> firstNoSourceMs = new ConcurrentHashMap<>();
+
     /// Per-partition `confirmedOffset` at which a CAUGHT_UP non-owner replica was last re-verified against
     /// the HRW owner (#333 write-idle residual). It quiesces {@link #redriveCandidates}: a stale CAUGHT_UP
     /// non-owner is re-included in the redrive only while its current `confirmedOffset` differs from the
@@ -273,9 +275,9 @@ public final class PartitionBackfill {
             return false;
         }
 
-        return Option.option(reverifiedAtOffset.get(partitionKey(descriptor.streamName(), descriptor.partition())))
-                     .map(recorded -> recorded != descriptor.confirmedOffset())
-                     .or(true);
+        return Option.option(reverifiedAtOffset.get(partitionKey(descriptor.streamName(),
+                                                                 descriptor.partition()))).map(recorded -> recorded != descriptor.confirmedOffset())
+                            .or(true);
     }
 
     /// Owner unknown (bootstrap) or no authoritative owner source: fall back to the registry `CAUGHT_UP`

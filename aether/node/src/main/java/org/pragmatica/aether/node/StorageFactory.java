@@ -33,7 +33,6 @@ import org.slf4j.LoggerFactory;
 public final class StorageFactory {
     private static final Logger log = LoggerFactory.getLogger(StorageFactory.class);
     private static final long DEFAULT_MEMORY_BYTES = 256L * 1024 * 1024;
-
     private static final String STREAMS_NAME = "streams";
     /// Hot-ring mirror in the memory tier — small; the live ring already holds recent events,
     /// the memory tier is only the first read-waterfall hop for just-sealed segment blocks.
@@ -133,9 +132,12 @@ public final class StorageFactory {
         var memoryTier = MemoryTier.memoryTier(STREAM_MEMORY_BYTES);
         var dhtTier = dhtClient.map(client -> DhtStorageTier.dhtStorageTier(client, "stream-segments"));
 
-        return LocalDiskTier.localDiskTier(segmentsDir, STREAM_DISK_BYTES)
-                            .fold(cause -> streamTiersWithoutDisk(cause, memoryTier, dhtTier),
-                                  disk -> streamTiers(memoryTier, disk, dhtTier));
+        return LocalDiskTier.localDiskTier(segmentsDir, STREAM_DISK_BYTES).fold(cause -> streamTiersWithoutDisk(cause,
+                                                                                                                memoryTier,
+                                                                                                                dhtTier),
+                                                                                disk -> streamTiers(memoryTier,
+                                                                                                    disk,
+                                                                                                    dhtTier));
     }
 
     private static List<StorageTier> streamTiersWithoutDisk(Cause cause,
@@ -143,7 +145,8 @@ public final class StorageFactory {
                                                             Option<DhtStorageTier> dhtTier) {
         log.warn("Disk tier for 'streams' unavailable: {}, using memory + DHT fallback", cause.message());
 
-        return dhtTier.map(dht -> List.<StorageTier> of(memoryTier, dht)).or(List.of(memoryTier));
+        return dhtTier.map(dht -> List.<StorageTier> of(memoryTier, dht))
+                      .or(List.of(memoryTier));
     }
 
     private static List<StorageTier> streamTiers(MemoryTier memoryTier,

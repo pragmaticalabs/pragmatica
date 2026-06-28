@@ -223,7 +223,6 @@ public final class ForgeServer {
                                                         forgeConfig.coreMax());
 
         applyApiVersioning(clusterInstance);
-
         var entryPointMetrics = EntryPointMetrics.entryPointMetrics();
         Supplier<List<Integer>> portSupplier = forgeConfig.lbEnabled()
                                                ? () -> List.of(forgeConfig.lbPort())
@@ -257,14 +256,9 @@ public final class ForgeServer {
     /// + [AppHttpConfig#DEFAULT_API_VERSION_HEADER] defaults — existing path-mode forge runs are
     /// byte-for-byte unchanged.
     private void applyApiVersioning(EmberCluster clusterInstance) {
-        startupConfig.forgeConfig()
-                     .map(path -> path.resolveSibling("aether.toml"))
-                     .filter(path -> path.toFile().exists())
-                     .map(ConfigLoader::load)
-                     .flatMap(Result::option)
-                     .map(AetherConfig::appHttp)
-                     .onPresent(appHttp -> clusterInstance.withApiVersioningDetection(appHttp.apiVersioningDetection(),
-                                                                                      appHttp.apiVersionHeaderName()));
+        startupConfig.forgeConfig().map(path -> path.resolveSibling("aether.toml")).filter(path -> path.toFile()
+                                                                                                       .exists()).map(ConfigLoader::load).flatMap(Result::option).map(AetherConfig::appHttp).onPresent(appHttp -> clusterInstance.withApiVersioningDetection(appHttp.apiVersioningDetection(),
+                                                                                                                                                                                                                                                             appHttp.apiVersionHeaderName()));
     }
 
     private static String serializeStatus(EmberCluster cluster,

@@ -296,11 +296,8 @@ public final class ConfigLoader {
         var httpProtocol = doc.getString("app-http", "protocol").flatMap(HttpProtocol::httpProtocol).or(HttpProtocol.H1);
         // #198 §7: cluster-level API-version detection mode + header name (per-slice override is a
         // documented follow-up). Defaults keep path mode (byte-identical to pre-#198-C3b behavior).
-        var apiVersioningDetection = doc.getString("app-http", "api_versioning_detection")
-                                        .flatMap(ApiVersioningDetection::apiVersioningDetection)
-                                        .or(ApiVersioningDetection.PATH);
-        var apiVersionHeaderName = doc.getString("app-http", "api_version_header")
-                                      .or(AppHttpConfig.DEFAULT_API_VERSION_HEADER);
+        var apiVersioningDetection = doc.getString("app-http", "api_versioning_detection").flatMap(ApiVersioningDetection::apiVersioningDetection).or(ApiVersioningDetection.PATH);
+        var apiVersionHeaderName = doc.getString("app-http", "api_version_header").or(AppHttpConfig.DEFAULT_API_VERSION_HEADER);
 
         builder.appHttp(AppHttpConfig.appHttpConfig(enabled,
                                                     port,

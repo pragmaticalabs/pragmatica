@@ -74,7 +74,8 @@ import org.pragmatica.aether.metrics.observability.HttpRequestObserver;
 import org.pragmatica.aether.metrics.observability.ObservabilityRegistry;
 import org.pragmatica.aether.metrics.observability.AetherMetrics;
 import org.pragmatica.aether.http.AetherVersioningMetricsSink;
-import org.pragmatica.lang.Contract;import org.pragmatica.aether.node.ManageableNode;
+import org.pragmatica.lang.Contract;
+import org.pragmatica.aether.node.ManageableNode;
 import org.pragmatica.aether.stream.StreamPartitionManager;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.http.HttpMethod;
@@ -331,10 +332,7 @@ class ManagementServerImpl implements ManagementServer {
                                                      ObservabilityRegistry observability) {
         var sink = AetherVersioningMetricsSink.aetherVersioningMetricsSink(AetherMetrics.aetherMetrics(observability));
 
-        nodeSupplier.get()
-                    .appHttpServer()
-                    .httpRoutePublisher()
-                    .onPresent(publisher -> publisher.setVersioningMetricsSink(sink));
+        nodeSupplier.get().appHttpServer().httpRoutePublisher().onPresent(publisher -> publisher.setVersioningMetricsSink(sink));
     }
 
     @Override
@@ -352,8 +350,8 @@ class ManagementServerImpl implements ManagementServer {
     private Promise<Unit> startH1Server() {
         var serverConfig = buildServerConfig();
         java.util.function.BiConsumer<HttpRequest, ResponseWriter> handler = httpProtocol == HttpProtocol.BOTH
-                                                                                ? this::handleRequestWithAltSvc
-                                                                                : this::handleRequest;
+                                                                             ? this::handleRequestWithAltSvc
+                                                                             : this::handleRequest;
         var serverPromise = bossGroup.flatMap(bg -> workerGroup.map(wg -> HttpServer.httpServer(serverConfig,
                                                                                                 handler,
                                                                                                 bg,
@@ -469,8 +467,8 @@ class ManagementServerImpl implements ManagementServer {
         var config = HttpServerConfig.httpServerConfig("management", port).withMaxContentLength(MAX_CONTENT_LENGTH).withWebSocket(wsEndpoint).withWebSocket(statusWsEndpoint).withWebSocket(eventWsEndpoint);
         var serverConfig = newTls.map(config::withTls).or(config);
         java.util.function.BiConsumer<HttpRequest, ResponseWriter> handler = httpProtocol == HttpProtocol.BOTH
-                                                                                ? this::handleRequestWithAltSvc
-                                                                                : this::handleRequest;
+                                                                             ? this::handleRequestWithAltSvc
+                                                                             : this::handleRequest;
         var serverPromise = bossGroup.flatMap(bg -> workerGroup.map(wg -> HttpServer.httpServer(serverConfig,
                                                                                                 handler,
                                                                                                 bg,
@@ -1192,10 +1190,7 @@ class ManagementServerImpl implements ManagementServer {
     /// (`/api/streams/{publish,publish-batch,delete}/system/...`,
     /// `/api/streams/groups/{create,delete}/system/...`) or the legacy colon-form
     /// (`/api/streams/...` with a `system:<stream>:<version>` name segment).
-    private boolean rejectSystemStreamWrite(HttpRequest ctx,
-                                            ResponseWriter response,
-                                            String path,
-                                            String methodName) {
+    private boolean rejectSystemStreamWrite(HttpRequest ctx, ResponseWriter response, String path, String methodName) {
         if (!isSystemStreamWriteOverHttp(methodName, path)) {
             return false;
         }

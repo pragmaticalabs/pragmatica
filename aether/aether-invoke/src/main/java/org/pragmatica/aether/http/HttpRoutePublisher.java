@@ -62,6 +62,7 @@ public interface HttpRoutePublisher {
     Set<HttpNodeRouteKey> allLocalRoutes();
     Option<SliceRouter> findLocalRouter(String httpMethod, String pathPrefix);
     Option<LocalRouteInfo> findLocalRoute(String httpMethod, String path);
+
     Unit updateSecurityOverrides(SecurityOverrides overrides);
 
     /// Install the #198 §11.1 versioning metrics sink. The management server owns the metrics backend
@@ -126,10 +127,10 @@ class HttpRoutePublisherImpl implements HttpRoutePublisher {
     private final RouteMetadataExtractor routeMetadataExtractor = RouteMetadataExtractor.routeMetadataExtractor();
 
     private final AtomicReference<SecurityOverrides> activeOverrides = new AtomicReference<>(SecurityOverrides.EMPTY);
-    private final AtomicReference<VersioningMetricsSink> versioningMetricsSink =
-        new AtomicReference<>(VersioningMetricsSink.noop());
-    private final VersioningMetricsSink forwardingSink =
-        VersioningMetricsSink.forwarding(versioningMetricsSink::get);
+
+    private final AtomicReference<VersioningMetricsSink> versioningMetricsSink = new AtomicReference<>(VersioningMetricsSink.noop());
+
+    private final VersioningMetricsSink forwardingSink = VersioningMetricsSink.forwarding(versioningMetricsSink::get);
 
     HttpRoutePublisherImpl(NodeId selfNodeId,
                            ClusterNode<KVCommand<AetherKey>> cluster,
@@ -385,7 +386,8 @@ class HttpRoutePublisherImpl implements HttpRoutePublisher {
     }
 
     private static String sliceLabel(Artifact artifact) {
-        return artifact.artifactId().toString();
+        return artifact.artifactId()
+                       .toString();
     }
 
     @Override

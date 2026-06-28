@@ -101,7 +101,6 @@ public final class QuorumLossDetector {
     /// suppression. Default yields [`QuorumCoConfirmation#absent`] — never suppresses (legacy
     /// behaviour) until the wiring layer injects the FSM-backed signal post-construction.
     private volatile Supplier<QuorumCoConfirmation> coConfirmationSupplier = QuorumCoConfirmation::absent;
-
     /// A6 cold-boot self-fence gate (2026-06-28). While the cluster is still in its cold-boot
     /// convergence window (the shared `swimIsBootingSupplier`: COLD_BOOT phase OR within the bounded
     /// post-boot window) SWIM has not yet confirmed peers HEALTHY, so the detector's effective quorum

@@ -33,7 +33,9 @@ class ClusterOwnershipCommand implements Callable<Integer> {
                                                               List.of(new Column("IDENTITY", "identity", 28),
                                                                       new Column("OWNER", "owner", 18),
                                                                       new Column("EPOCH-TERM", "epoch.rabiaTerm", 11),
-                                                                      new Column("EPOCH-COUNTER", "epoch.localCounter", 14)),
+                                                                      new Column("EPOCH-COUNTER",
+                                                                                 "epoch.localCounter",
+                                                                                 14)),
                                                               "entries");
 
     @CommandLine.ParentCommand
@@ -48,7 +50,8 @@ class ClusterOwnershipCommand implements Callable<Integer> {
     @Override
     public Integer call() {
         return clusterTarget.applyOverrides()
-                            .flatMap(_ -> ClusterHttpClient.fetch(CLUSTER_OWNERSHIP_GET, List.of(domain)))
+                            .flatMap(_ -> ClusterHttpClient.fetch(CLUSTER_OWNERSHIP_GET,
+                                                                  List.of(domain)))
                             .fold(ClusterOwnershipCommand::onFailure, this::onSuccess);
     }
 

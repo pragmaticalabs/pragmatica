@@ -227,7 +227,10 @@ final class DefaultAetherSchemaManager implements AetherSchemaManager {
                                                       String nodeId) {
         var version = migration.version();
 
-        return Option.option(appliedVersions.get(version)).fold(() -> executeResumable(datasource, migration, connector, nodeId),
+        return Option.option(appliedVersions.get(version)).fold(() -> executeResumable(datasource,
+                                                                                       migration,
+                                                                                       connector,
+                                                                                       nodeId),
                                                                 checksum -> checksum != migration.entry()
                                                                                                  .checksum()
                                                                             ? checksumMismatch(datasource,
@@ -284,7 +287,10 @@ final class DefaultAetherSchemaManager implements AetherSchemaManager {
     /// RESUME a partially-applied migration (skipping the durably-committed statements) instead of
     /// replaying from statement 1. The `datasource` is carried for the checksum-mismatch cause a
     /// changed script raises on resume.
-    private Promise<Integer> executeResumable(String datasource, ParsedMigration migration, SqlConnector connector, String nodeId) {
+    private Promise<Integer> executeResumable(String datasource,
+                                              ParsedMigration migration,
+                                              SqlConnector connector,
+                                              String nodeId) {
         return executeFor(datasource, migration, connector, nodeId, true);
     }
 
@@ -298,7 +304,14 @@ final class DefaultAetherSchemaManager implements AetherSchemaManager {
 
         return MigrationDialects.dialectFor(connector.config().effectiveType())
                                 .fold(() -> executeNaive(migration, connector, sql, nodeId, startNanos),
-                                      dialect -> executeSplit(datasource, migration, connector, sql, dialect, nodeId, startNanos, resumable))
+                                      dialect -> executeSplit(datasource,
+                                                              migration,
+                                                              connector,
+                                                              sql,
+                                                              dialect,
+                                                              nodeId,
+                                                              startNanos,
+                                                              resumable))
                                 .map(_ -> 1);
     }
 
@@ -314,9 +327,16 @@ final class DefaultAetherSchemaManager implements AetherSchemaManager {
                                        String nodeId,
                                        long startNanos,
                                        boolean resumable) {
-        return StatementSplitter.split(sql, dialect.spec())
-                                .async()
-                                .flatMap(statements -> runStatements(datasource, migration, connector, statements, dialect, nodeId, startNanos, resumable));
+        return StatementSplitter.split(sql,
+                                       dialect.spec()).async()
+                                      .flatMap(statements -> runStatements(datasource,
+                                                                           migration,
+                                                                           connector,
+                                                                           statements,
+                                                                           dialect,
+                                                                           nodeId,
+                                                                           startNanos,
+                                                                           resumable));
     }
 
     /// Flyway-style per-file classification: if any statement is non-transactional (e.g. a
@@ -331,7 +351,8 @@ final class DefaultAetherSchemaManager implements AetherSchemaManager {
                                         long startNanos,
                                         boolean resumable) {
         var texts = statements.stream().map(Statement::text).toList();
-        var anyNonTransactional = statements.stream().anyMatch(s -> !dialect.spec().isTransactional(s.text()));
+        var anyNonTransactional = statements.stream().anyMatch(s -> !dialect.spec()
+                                                                            .isTransactional(s.text()));
 
         return dialect.ddlTransactional() && !anyNonTransactional
                ? runInTransaction(migration, connector, texts, nodeId, startNanos)
@@ -348,7 +369,10 @@ final class DefaultAetherSchemaManager implements AetherSchemaManager {
                                            List<String> statements,
                                            String nodeId,
                                            long startNanos) {
-        return connector.transactional(tx -> applyAll(tx, statements).flatMap(_ -> recordExecution(migration, tx, nodeId, startNanos)));
+        return connector.transactional(tx -> applyAll(tx, statements).flatMap(_ -> recordExecution(migration,
+                                                                                                   tx,
+                                                                                                   nodeId,
+                                                                                                   startNanos)));
     }
 
     /// Autocommit, checkpoint-aware path (MySQL/Oracle, whose DDL self-commits so it cannot be made
@@ -387,8 +411,16 @@ final class DefaultAetherSchemaManager implements AetherSchemaManager {
                                         long startNanos,
                                         boolean resumable) {
         return resumable
-               ? historyRepo.queryProgress(connector, migration.version(), migration.type())
-                            .flatMap(progress -> runAutocommitFrom(datasource, migration, connector, statements, nodeId, startNanos, progress))
+               ? historyRepo.queryProgress(connector,
+                                           migration.version(),
+                                           migration.type())
+                            .flatMap(progress -> runAutocommitFrom(datasource,
+                                                                   migration,
+                                                                   connector,
+                                                                   statements,
+                                                                   nodeId,
+                                                                   startNanos,
+                                                                   progress))
                : runAutocommitFresh(migration, connector, statements, nodeId, startNanos);
     }
 
@@ -403,7 +435,13 @@ final class DefaultAetherSchemaManager implements AetherSchemaManager {
                                             long startNanos,
                                             Option<MigrationProgress> progress) {
         return progress.fold(() -> runAutocommitFresh(migration, connector, statements, nodeId, startNanos),
-                             checkpoint -> resumeFromCheckpoint(datasource, migration, connector, statements, nodeId, startNanos, checkpoint));
+                             checkpoint -> resumeFromCheckpoint(datasource,
+                                                                migration,
+                                                                connector,
+                                                                statements,
+                                                                nodeId,
+                                                                startNanos,
+                                                                checkpoint));
     }
 
     private Promise<Unit> resumeFromCheckpoint(String datasource,
@@ -413,11 +451,20 @@ final class DefaultAetherSchemaManager implements AetherSchemaManager {
                                                String nodeId,
                                                long startNanos,
                                                MigrationProgress checkpoint) {
-        return checkpoint.checksum() != migration.entry().checksum()
-               ? checksumMismatch(datasource, migration.version(), checkpoint.checksum(), migration.entry().checksum()).promise()
+        return checkpoint.checksum() != migration.entry()
+                                                 .checksum()
+               ? checksumMismatch(datasource,
+                                  migration.version(),
+                                  checkpoint.checksum(),
+                                  migration.entry().checksum()).promise()
                : MigrationStatus.SUCCESS.equals(checkpoint.status())
                  ? Promise.unitPromise()
-                 : runAutocommitResume(migration, connector, statements, nodeId, startNanos, checkpoint.statementsCompleted());
+                 : runAutocommitResume(migration,
+                                       connector,
+                                       statements,
+                                       nodeId,
+                                       startNanos,
+                                       checkpoint.statementsCompleted());
     }
 
     /// Fresh autocommit run: record the `IN_PROGRESS` checkpoint row, then apply every statement
@@ -429,7 +476,9 @@ final class DefaultAetherSchemaManager implements AetherSchemaManager {
                                              long startNanos) {
         var record = appliedRecord(migration, nodeId, startNanos);
 
-        return historyRepo.recordInProgress(connector, record, statements.size())
+        return historyRepo.recordInProgress(connector,
+                                            record,
+                                            statements.size())
                           .flatMap(_ -> runAutocommitResume(migration, connector, statements, nodeId, startNanos, 0));
     }
 
@@ -442,16 +491,22 @@ final class DefaultAetherSchemaManager implements AetherSchemaManager {
                                               String nodeId,
                                               long startNanos,
                                               int skip) {
-        return applyCheckpointed(migration, connector, statements, skip)
-                .flatMap(_ -> finalizeAutocommit(migration, connector, nodeId, startNanos, statements.size()))
-                .fold(result -> markFailedOnError(migration, connector, result));
+        return applyCheckpointed(migration, connector, statements, skip).flatMap(_ -> finalizeAutocommit(migration,
+                                                                                                         connector,
+                                                                                                         nodeId,
+                                                                                                         startNanos,
+                                                                                                         statements.size()))
+                                .fold(result -> markFailedOnError(migration, connector, result));
     }
 
     /// On a failed autocommit run, mark the checkpoint row `FAILED` and THEN re-propagate the
     /// original cause (so #118's retry re-enters and resumes); a successful run passes through
     /// untouched. The `markStatus` write is chained, not abandoned, so its own Promise is handled.
     private Promise<Unit> markFailedOnError(ParsedMigration migration, SqlConnector connector, Result<Unit> result) {
-        return result.fold(cause -> historyRepo.markStatus(connector, migration.version(), migration.type(), MigrationStatus.FAILED)
+        return result.fold(cause -> historyRepo.markStatus(connector,
+                                                           migration.version(),
+                                                           migration.type(),
+                                                           MigrationStatus.FAILED)
                                                .flatMap(_ -> cause.promise()),
                            Promise::success);
     }
@@ -474,7 +529,10 @@ final class DefaultAetherSchemaManager implements AetherSchemaManager {
                                                          String statement,
                                                          int index) {
         return _ -> connector.update(statement)
-                             .flatMap(_ -> historyRepo.updateProgress(connector, migration.version(), migration.type(), index + 1));
+                             .flatMap(_ -> historyRepo.updateProgress(connector,
+                                                                      migration.version(),
+                                                                      migration.type(),
+                                                                      index + 1));
     }
 
     private Promise<Unit> finalizeAutocommit(ParsedMigration migration,
@@ -506,12 +564,15 @@ final class DefaultAetherSchemaManager implements AetherSchemaManager {
                                        String sql,
                                        String nodeId,
                                        long startNanos) {
-        return connector.transactional(tx -> executeStatementsNaive(tx, sql).flatMap(_ -> recordExecution(migration, tx, nodeId, startNanos)));
+        return connector.transactional(tx -> executeStatementsNaive(tx, sql).flatMap(_ -> recordExecution(migration,
+                                                                                                          tx,
+                                                                                                          nodeId,
+                                                                                                          startNanos)));
     }
 
     private static Promise<Unit> executeStatementsNaive(SqlConnector tx, String sql) {
         var stripped = Arrays.stream(sql.split("\n")).filter(line -> !line.strip()
-                                                                         .startsWith("--")).collect(Collectors.joining("\n"));
+                                                                          .startsWith("--")).collect(Collectors.joining("\n"));
         var statements = Arrays.stream(stripped.split(";")).map(String::strip).filter(s -> !s.isEmpty()).toList();
 
         return applyAll(tx, statements);

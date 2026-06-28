@@ -236,12 +236,15 @@ public class StreamCommand implements Runnable {
     private static final TableSpec REPLICAS_TABLE_SPEC = new TableSpec("Stream Partition Replicas",
                                                                        List.of(new Column("NODE", "nodeId", 24),
                                                                                new Column("STATE", "state", 10),
-                                                                               new Column("CONFIRMED", "confirmedOffset", 12),
+                                                                               new Column("CONFIRMED",
+                                                                                          "confirmedOffset",
+                                                                                          12),
                                                                                new Column("HRW-OWNER", "isHrwOwner", 9)),
                                                                        "replicas");
 
     private static int fetchReplicas(String stream, int partition, AetherCli cli) {
-        var response = cli.fetch(ManagementRoute.STREAM_REPLICAS, List.of(stream, Integer.toString(partition)));
+        var response = cli.fetch(ManagementRoute.STREAM_REPLICAS,
+                                 List.of(stream, Integer.toString(partition)));
         var errorCode = OutputFormatter.checkResponseError(response, cli.outputOptions(), "Failed to load replica state");
 
         if (errorCode >= 0) {

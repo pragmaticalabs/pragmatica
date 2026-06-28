@@ -19,18 +19,15 @@ import org.pragmatica.lang.Option;
 public enum ApiVersioningDetection {
     PATH,
     HEADER;
-
     public static Option<ApiVersioningDetection> apiVersioningDetection(String value) {
         return Option.option(value)
                      .map(String::trim)
                      .map(String::toLowerCase)
                      .flatMap(ApiVersioningDetection::fromNormalized);
     }
-
     public boolean isHeaderMode() {
         return this == HEADER;
     }
-
     private static Option<ApiVersioningDetection> fromNormalized(String normalized) {
         return switch (normalized) {
             case "path", "url", "uri" -> Option.some(PATH);

@@ -105,10 +105,7 @@ public final class ManagementRouter {
         ProblemResponses.writeProblem(response, cause, serverCtx.path(), serverCtx.requestId());
     }
 
-    private void writeSuccess(Object value,
-                              ContentType contentType,
-                              ResponseWriter response,
-                              HttpRequest serverCtx) {
+    private void writeSuccess(Object value, ContentType contentType, ResponseWriter response, HttpRequest serverCtx) {
         if (value instanceof Option<?> opt && opt.isEmpty()) {
             response.noContent();
 
@@ -121,9 +118,11 @@ public final class ManagementRouter {
             return;
         }
 
-        ResponseSerializer.serialize(value, contentType, jsonCodec)
-                          .onFailure(cause -> writeError(response, cause, serverCtx))
-                          .onSuccess(bytes -> response.write(HttpStatus.OK, bytes, contentType));
+        ResponseSerializer.serialize(value, contentType, jsonCodec).onFailure(cause -> writeError(response,
+                                                                                                  cause,
+                                                                                                  serverCtx)).onSuccess(bytes -> response.write(HttpStatus.OK,
+                                                                                                                                                bytes,
+                                                                                                                                                contentType));
     }
 
     private org.pragmatica.http.routing.RequestContext adaptContext(HttpRequest serverCtx, Route<?> route) {

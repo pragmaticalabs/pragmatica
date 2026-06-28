@@ -83,10 +83,13 @@ public final class ReplicaRegistry {
     /// re-arms the gap loop) it would serve stale/empty data forever. The registry has no HRW knowledge,
     /// so the owner-aware classification is supplied by the caller (`PartitionBackfill`, which holds the
     /// member view); the registry only contributes the per-`nodeId` descriptor lookup.
-    public List<PartitionKey> incompletePartitionsFor(NodeId nodeId, Predicate<ReplicaDescriptor> caughtUpNeedsReverify) {
+    public List<PartitionKey> incompletePartitionsFor(NodeId nodeId,
+                                                      Predicate<ReplicaDescriptor> caughtUpNeedsReverify) {
         return replicas.entrySet()
                        .stream()
-                       .filter(entry -> needsRedrive(entry.getValue(), nodeId, caughtUpNeedsReverify))
+                       .filter(entry -> needsRedrive(entry.getValue(),
+                                                     nodeId,
+                                                     caughtUpNeedsReverify))
                        .map(Map.Entry::getKey)
                        .toList();
     }

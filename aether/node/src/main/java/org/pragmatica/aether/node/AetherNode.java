@@ -723,14 +723,14 @@ public interface AetherNode extends ManageableNode {
     private static Option<Path> resolveStreamWalDir(AetherNodeConfig config) {
         var walDir = streamDataDir(config).resolve("wal");
 
-        return FileOps.createDirectories(walDir)
-                      .fold(cause -> walDisabled(walDir, cause), _ -> Option.some(walDir));
+        return FileOps.createDirectories(walDir).fold(cause -> walDisabled(walDir, cause), _ -> Option.some(walDir));
     }
 
     private static Option<Path> walDisabled(Path walDir, Cause cause) {
         LOG.warn("Stream WAL disabled ({} not writable): {} — streaming runs non-crash-durable (in-memory tail)",
                  walDir,
                  cause.message());
+
         return Option.none();
     }
 
@@ -771,7 +771,8 @@ public interface AetherNode extends ManageableNode {
     }
 
     private static void snapshotAllSetups(Map<String, StorageFactory.StorageSetup> storageSetups) {
-        storageSetups.values().forEach(setup -> setup.snapshotManager().maybeSnapshot());
+        storageSetups.values().forEach(setup -> setup.snapshotManager()
+                                                     .maybeSnapshot());
     }
 
     /// 1d-iii owner-reconciled driver: fire the leader-only [StreamPartitionOwnershipWriter] for a
@@ -2082,11 +2083,10 @@ public interface AetherNode extends ManageableNode {
         // exhausted its dial attempts. Proven-HEALTHY peers are unaffected: every suppression branch
         // short-circuits on everSeenHealthy, so a real death still FAULTYs immediately regardless.
         long swimBootAtMs = System.currentTimeMillis();
-        BooleanSupplier swimIsBootingSupplier =
-            () -> coldBootConvergenceActive(effectivePhaseSupplier.get() == AetherValue.ClusterPhase.COLD_BOOT,
-                                            swimBootAtMs,
-                                            System.currentTimeMillis(),
-                                            COLD_BOOT_CONVERGENCE_WINDOW_MS);
+        BooleanSupplier swimIsBootingSupplier = () -> coldBootConvergenceActive(effectivePhaseSupplier.get() == AetherValue.ClusterPhase.COLD_BOOT,
+                                                                                swimBootAtMs,
+                                                                                System.currentTimeMillis(),
+                                                                                COLD_BOOT_CONVERGENCE_WINDOW_MS);
         // Leader-faulty evictor (2026-05-09): bridges SWIM-FAULTY → QUIC disconnect when
         // the FAULTY peer IS the current cluster leader. Breaks the consensus.apply
         // broadcast stall on cloud Container kill-leader (post-Step-3 architecture
@@ -2609,7 +2609,6 @@ public interface AetherNode extends ManageableNode {
                                                                                                                                                      partition))
                                                                                                               .or(-1L));
         var streamSegmentIndex = new SegmentIndex();
-
         // A3b restore-at-boot: the streams MetadataStore was already restored from its latest disk
         // snapshot when `streamStorageSetup` was assembled (StorageFactory.restoreAndSignalReady), so
         // the durable `streams/` refs are present here. Rebuild the in-memory offset→segment index from
@@ -2623,7 +2622,8 @@ public interface AetherNode extends ManageableNode {
         var streamCursorStore = CursorStore.cursorStore(streamStorage);
         var streamTieredReader = TieredStreamReader.tieredStreamReader(streamSegmentIndex, streamStorage);
         var streamPartitionManager = StreamPartitionManager.streamPartitionManager(streamMaxMemoryBytes,
-                                                                                   SegmentSealer.segmentSealer(StorageSegmentSink.storageSegmentSink(streamStorage, streamSegmentIndex)),
+                                                                                   SegmentSealer.segmentSealer(StorageSegmentSink.storageSegmentSink(streamStorage,
+                                                                                                                                                     streamSegmentIndex)),
                                                                                    streamReplicationManager,
                                                                                    clusterNode,
                                                                                    ownershipEpochHighWater,

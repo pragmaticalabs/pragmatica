@@ -682,8 +682,10 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// publishers into a single fsync so the barrier does not serialize throughput.
     @TerminalOperation
     private Result<Long> durablyLog(String streamName, int partition, long offset, byte[] payload, long timestamp) {
-        return walFor(streamName, partition).map(wal -> wal.append(offset, payload, timestamp).await().map(_ -> offset))
-                                            .or(() -> success(offset));
+        return walFor(streamName, partition).map(wal -> wal.append(offset, payload, timestamp)
+                                                           .await()
+                                                           .map(_ -> offset))
+                     .or(() -> success(offset));
     }
 
     /// The configured [PartitionWal] for `(streamName, partition)`, or [Option#none] when no WAL base
@@ -890,12 +892,11 @@ public final class StreamPartitionManager implements AutoCloseable {
         var base = lastSealedOffset.lastSealedOffset(streamName, partition);
 
         if (base >= 0) {
-            wal.truncate(base)
-               .onFailure(cause -> log.warn("WAL truncate to sealed offset {} failed for {}/{}: {}",
-                                            base,
-                                            streamName,
-                                            partition,
-                                            cause.message()));
+            wal.truncate(base).onFailure(cause -> log.warn("WAL truncate to sealed offset {} failed for {}/{}: {}",
+                                                           base,
+                                                           streamName,
+                                                           partition,
+                                                           cause.message()));
         }
     }
 
@@ -1163,9 +1164,9 @@ public final class StreamPartitionManager implements AutoCloseable {
                                                          Option<Path> walBaseDir,
                                                          LastSealedOffsetSource lastSealedOffset) {
             return openWals(config, walBaseDir).flatMap(wals -> recoverWals(config, buffers, wals, lastSealedOffset))
-                                               .map(wals -> entryOf(config,
-                                                                    buffers.toArray(OffHeapRingBuffer[]::new),
-                                                                    wals));
+                           .map(wals -> entryOf(config,
+                                                buffers.toArray(OffHeapRingBuffer[]::new),
+                                                wals));
         }
 
         /// Replay every partition's un-sealed WAL tail into its fresh ring (streaming-persistence W4),
@@ -1183,7 +1184,9 @@ public final class StreamPartitionManager implements AutoCloseable {
                 results.add(recoverPartition(config.name(), i, buffers.get(i), wals.get(i), lastSealedOffset));
             }
 
-            return Result.allOf(results).map(_ -> wals).onFailure(_ -> wals.forEach(StreamEntry::closeWal));
+            return Result.allOf(results)
+                         .map(_ -> wals)
+                         .onFailure(_ -> wals.forEach(StreamEntry::closeWal));
         }
 
         /// Replay one partition's WAL tail into its ring, or a no-op when the partition has no WAL
@@ -1212,7 +1215,7 @@ public final class StreamPartitionManager implements AutoCloseable {
             var records = new ArrayList<WalRecord>();
 
             return seedRing(ring, base).flatMap(_ -> wal.replay(base, records::add))
-                                       .flatMap(_ -> appendTail(ring, records));
+                           .flatMap(_ -> appendTail(ring, records));
         }
 
         /// Position the fresh ring so the next append is `base + 1` when sealed segments already cover
@@ -1370,10 +1373,9 @@ public final class StreamPartitionManager implements AutoCloseable {
 
         @Contract
         private static void deleteWalFile(Option<PartitionWal> wal) {
-            wal.onPresent(w -> FileOps.deleteIfExists(w.path())
-                                      .onFailure(cause -> log.warn("Failed to delete WAL file {}: {}",
-                                                                   w.path(),
-                                                                   cause.message())));
+            wal.onPresent(w -> FileOps.deleteIfExists(w.path()).onFailure(cause -> log.warn("Failed to delete WAL file {}: {}",
+                                                                                            w.path(),
+                                                                                            cause.message())));
         }
     }
 }

@@ -115,11 +115,9 @@ public final class EmberCluster {
     /// TEST SEAM (#198 §7) — cluster-level API-version detection mode applied to every node's
     /// [AppHttpConfig]. Defaults to PATH (production behaviour). A test sets HEADER via
     /// [#withApiVersioningDetection] BEFORE [#start] to deploy a slice in header mode.
-    private final AtomicReference<org.pragmatica.aether.config.ApiVersioningDetection> apiVersioningDetection =
-        new AtomicReference<>(org.pragmatica.aether.config.ApiVersioningDetection.PATH);
+    private final AtomicReference<org.pragmatica.aether.config.ApiVersioningDetection> apiVersioningDetection = new AtomicReference<>(org.pragmatica.aether.config.ApiVersioningDetection.PATH);
 
-    private final AtomicReference<String> apiVersionHeaderName =
-        new AtomicReference<>(AppHttpConfig.DEFAULT_API_VERSION_HEADER);
+    private final AtomicReference<String> apiVersionHeaderName = new AtomicReference<>(AppHttpConfig.DEFAULT_API_VERSION_HEADER);
 
     /// TEST SEAM (streaming A-WAL) — opt-in writable, restart-stable per-node data dir. Defaults to
     /// [Option#none] (production + existing tests: nodes fall back to the default read-only `/data`

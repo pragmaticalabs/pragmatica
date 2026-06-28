@@ -201,9 +201,11 @@ public final class ForgeApiHandler {
     private void sendSuccessResponse(ResponseWriter response, Route<?> route, Object result) {
         var serverContentType = toServerContentType(route.contentType());
 
-        ResponseSerializer.serialize(result, route.contentType(), jsonCodec)
-                          .onSuccess(bytes -> response.write(HttpStatus.OK, bytes, serverContentType))
-                          .onFailure(cause -> sendError(response, HttpStatus.INTERNAL_SERVER_ERROR, cause.message()));
+        ResponseSerializer.serialize(result, route.contentType(), jsonCodec).onSuccess(bytes -> response.write(HttpStatus.OK,
+                                                                                                               bytes,
+                                                                                                               serverContentType)).onFailure(cause -> sendError(response,
+                                                                                                                                                                HttpStatus.INTERNAL_SERVER_ERROR,
+                                                                                                                                                                cause.message()));
     }
 
     private org.pragmatica.http.ContentType toServerContentType(org.pragmatica.http.ContentType routingContentType) {

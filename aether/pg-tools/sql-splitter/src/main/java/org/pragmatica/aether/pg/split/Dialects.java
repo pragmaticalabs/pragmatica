@@ -2,7 +2,6 @@
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
 // Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
 // See LICENSE in the repository root for full terms.
-
 package org.pragmatica.aether.pg.split;
 
 import org.pragmatica.aether.pg.split.DialectSpec.CommentRules;
@@ -18,6 +17,7 @@ import java.util.regex.Pattern;
 import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.option;
 
+
 /// Catalog of populated [DialectSpec] descriptors. Ships PostgreSQL, MySQL/MariaDB, DB2,
 /// SQL Server (T-SQL), and Oracle.
 public sealed interface Dialects {
@@ -25,18 +25,18 @@ public sealed interface Dialects {
 
     /// Pattern matching the leading non-transactional command of a PostgreSQL statement,
     /// after leading whitespace and comments have been stripped. Case-insensitive.
-    Pattern NON_TRANSACTIONAL = Pattern.compile(
-        "^(?:"
-        + "CREATE\\s+(?:UNIQUE\\s+)?INDEX\\s+CONCURRENTLY\\b"   // CREATE INDEX CONCURRENTLY
-        + "|CREATE\\s+(?:UNIQUE\\s+)?INDEX\\b.*\\bCONCURRENTLY\\b"  // CREATE … INDEX … CONCURRENTLY
-        + "|DROP\\s+INDEX\\s+CONCURRENTLY\\b"
-        + "|REINDEX\\b.*\\bCONCURRENTLY\\b"
-        + "|VACUUM\\b"
-        + "|ALTER\\s+TYPE\\b.*\\bADD\\s+VALUE\\b"
-        + "|CREATE\\s+DATABASE\\b"
-        + "|DROP\\s+DATABASE\\b"
-        + ").*",
-        Pattern.CASE_INSENSITIVE | Pattern.DOTALL);
+    Pattern NON_TRANSACTIONAL = Pattern.compile("^(?:"
+                                               + "CREATE\\s+(?:UNIQUE\\s+)?INDEX\\s+CONCURRENTLY\\b"
+                                               + "|CREATE\\s+(?:UNIQUE\\s+)?INDEX\\b.*\\bCONCURRENTLY\\b"
+                                               + "|DROP\\s+INDEX\\s+CONCURRENTLY\\b"
+                                               + "|REINDEX\\b.*\\bCONCURRENTLY\\b"
+                                               + "|VACUUM\\b"
+                                               + "|ALTER\\s+TYPE\\b.*\\bADD\\s+VALUE\\b"
+                                               + "|CREATE\\s+DATABASE\\b"
+                                               + "|DROP\\s+DATABASE\\b"
+                                               + ").*"  // CREATE INDEX CONCURRENTLY  // CREATE … INDEX … CONCURRENTLY
+                                                ,
+                                                Pattern.CASE_INSENSITIVE | Pattern.DOTALL);
 
     /// Pattern recognizing the leading keywords of an Oracle PL/SQL block, after leading
     /// whitespace and comments have been stripped. A match means the statement's internal `;`
@@ -44,31 +44,28 @@ public sealed interface Dialects {
     /// `BEGIN`) and the stored-program DDL `CREATE [OR REPLACE] [EDITIONABLE|NONEDITIONABLE]
     /// (PROCEDURE|FUNCTION|TRIGGER|PACKAGE [BODY]|TYPE [BODY])`. A plain `CREATE TABLE`,
     /// `INSERT`, `ALTER`, etc. does NOT match. Case-insensitive.
-    Pattern PLSQL_BLOCK_START = Pattern.compile(
-        "^(?:"
-        + "DECLARE\\b"
-        + "|BEGIN\\b"
-        + "|CREATE\\s+(?:OR\\s+REPLACE\\s+)?(?:(?:NON)?EDITIONABLE\\s+)?"
-        + "(?:PROCEDURE|FUNCTION|TRIGGER|PACKAGE(?:\\s+BODY)?|TYPE(?:\\s+BODY)?)\\b"
-        + ").*",
-        Pattern.CASE_INSENSITIVE | Pattern.DOTALL);
+    Pattern PLSQL_BLOCK_START = Pattern.compile("^(?:"
+                                               + "DECLARE\\b"
+                                               + "|BEGIN\\b"
+                                               + "|CREATE\\s+(?:OR\\s+REPLACE\\s+)?(?:(?:NON)?EDITIONABLE\\s+)?"
+                                               + "(?:PROCEDURE|FUNCTION|TRIGGER|PACKAGE(?:\\s+BODY)?|TYPE(?:\\s+BODY)?)\\b"
+                                               + ").*",
+                                                Pattern.CASE_INSENSITIVE | Pattern.DOTALL);
 
     /// Strips leading whitespace, `--` line comments, and `/*…*/` block comments so the
     /// transactional classifier sees the first real command keyword.
-    Pattern LEADING_NOISE = Pattern.compile(
-        "^(?:\\s+|--[^\\n]*(?:\\n|$)|/\\*.*?\\*/)+",
-        Pattern.DOTALL);
+    Pattern LEADING_NOISE = Pattern.compile("^(?:\\s+|--[^\\n]*(?:\\n|$)|/\\*.*?\\*/)+",
+                                            Pattern.DOTALL);
 
     /// The fully-populated PostgreSQL dialect descriptor.
-    DialectSpec POSTGRESQL = new DialectSpec(
-        new StringRules(true, false, true, false, false, false),
-        new IdentifierRules(true, false, false),
-        new CommentRules(true, false, true, true, false),
-        new DollarQuoteRules(true),
-        new BoundaryRules(none(), none(), none(), true),
-        new CopyDataRules(true, "\\."),
-        Dialects::isPostgresTransactional,
-        Dialects::neverStartsBlock);
+    DialectSpec POSTGRESQL = new DialectSpec(new StringRules(true, false, true, false, false, false),
+                                             new IdentifierRules(true, false, false),
+                                             new CommentRules(true, false, true, true, false),
+                                             new DollarQuoteRules(true),
+                                             new BoundaryRules(none(), none(), none(), true),
+                                             new CopyDataRules(true, "\\."),
+                                             Dialects::isPostgresTransactional,
+                                             Dialects::neverStartsBlock);
 
     /// The fully-populated MySQL/MariaDB dialect descriptor (one spec; MariaDB reuses it).
     ///
@@ -78,15 +75,17 @@ public sealed interface Dialects {
     /// block comments do NOT nest. Statements are terminated by a redefinable terminator
     /// introduced with the `DELIMITER` client directive, defaulting to `;`. There is no
     /// dollar quoting, no batch separator, and no `COPY` inline-data mode.
-    DialectSpec MYSQL = new DialectSpec(
-        new StringRules(true, true, false, false, false, true),
-        new IdentifierRules(false, true, false),
-        new CommentRules(true, true, true, false, true),
-        new DollarQuoteRules(false),
-        new BoundaryRules(option(new TerminatorRedefinition("DELIMITER", ";")), none(), none(), true),
-        new CopyDataRules(false, ""),
-        Dialects::isMysqlTransactional,
-        Dialects::neverStartsBlock);
+    DialectSpec MYSQL = new DialectSpec(new StringRules(true, true, false, false, false, true),
+                                        new IdentifierRules(false, true, false),
+                                        new CommentRules(true, true, true, false, true),
+                                        new DollarQuoteRules(false),
+                                        new BoundaryRules(option(new TerminatorRedefinition("DELIMITER", ";")),
+                                                          none(),
+                                                          none(),
+                                                          true),
+                                        new CopyDataRules(false, ""),
+                                        Dialects::isMysqlTransactional,
+                                        Dialects::neverStartsBlock);
 
     /// The fully-populated DB2 dialect descriptor.
     ///
@@ -97,15 +96,17 @@ public sealed interface Dialects {
     /// which — because the directive check runs before line-comment handling — is consumed as a
     /// directive rather than a `--` comment. There is no batch separator and no `COPY` mode, and
     /// `;` terminates as usual (`semicolonTerminates=true`). DB2 DDL is transactional.
-    DialectSpec DB2 = new DialectSpec(
-        new StringRules(true, false, false, false, false, false),
-        new IdentifierRules(true, false, false),
-        new CommentRules(true, false, true, false, false),
-        new DollarQuoteRules(false),
-        new BoundaryRules(option(new TerminatorRedefinition("--#SET TERMINATOR", ";")), none(), none(), true),
-        new CopyDataRules(false, ""),
-        Dialects::isDb2Transactional,
-        Dialects::neverStartsBlock);
+    DialectSpec DB2 = new DialectSpec(new StringRules(true, false, false, false, false, false),
+                                      new IdentifierRules(true, false, false),
+                                      new CommentRules(true, false, true, false, false),
+                                      new DollarQuoteRules(false),
+                                      new BoundaryRules(option(new TerminatorRedefinition("--#SET TERMINATOR", ";")),
+                                                        none(),
+                                                        none(),
+                                                        true),
+                                      new CopyDataRules(false, ""),
+                                      Dialects::isDb2Transactional,
+                                      Dialects::neverStartsBlock);
 
     /// The fully-populated SQL Server (T-SQL) dialect descriptor.
     ///
@@ -116,15 +117,14 @@ public sealed interface Dialects {
     /// are bounded only by the `GO` batch separator — `semicolonTerminates=false` — so an internal
     /// `;` inside a `CREATE PROCEDURE … BEGIN …; …; END` body is preserved verbatim and each
     /// `GO`-batch is emitted as one statement. SQL Server DDL is transactional.
-    DialectSpec SQLSERVER = new DialectSpec(
-        new StringRules(true, false, false, true, false, false),
-        new IdentifierRules(true, false, true),
-        new CommentRules(true, false, true, true, false),
-        new DollarQuoteRules(false),
-        new BoundaryRules(none(), option("GO"), none(), false),
-        new CopyDataRules(false, ""),
-        Dialects::isSqlServerTransactional,
-        Dialects::neverStartsBlock);
+    DialectSpec SQLSERVER = new DialectSpec(new StringRules(true, false, false, true, false, false),
+                                            new IdentifierRules(true, false, true),
+                                            new CommentRules(true, false, true, true, false),
+                                            new DollarQuoteRules(false),
+                                            new BoundaryRules(none(), option("GO"), none(), false),
+                                            new CopyDataRules(false, ""),
+                                            Dialects::isSqlServerTransactional,
+                                            Dialects::neverStartsBlock);
 
     /// The fully-populated Oracle dialect descriptor.
     ///
@@ -138,15 +138,14 @@ public sealed interface Dialects {
     /// terminates on `;` as usual. There is no redefinable terminator, no batch separator, and no
     /// `COPY` inline-data mode. Oracle DDL auto-commits, so the executor runs the whole file in
     /// AUTOCOMMIT; the per-statement transactional classifier is therefore unused (always `true`).
-    DialectSpec ORACLE = new DialectSpec(
-        new StringRules(true, false, false, false, true, false),
-        new IdentifierRules(true, false, false),
-        new CommentRules(true, false, true, false, false),
-        new DollarQuoteRules(false),
-        new BoundaryRules(none(), none(), option("/"), true),
-        new CopyDataRules(false, ""),
-        Dialects::isOracleTransactional,
-        Dialects::isOraclePlsqlBlock);
+    DialectSpec ORACLE = new DialectSpec(new StringRules(true, false, false, false, true, false),
+                                         new IdentifierRules(true, false, false),
+                                         new CommentRules(true, false, true, false, false),
+                                         new DollarQuoteRules(false),
+                                         new BoundaryRules(none(), none(), option("/"), true),
+                                         new CopyDataRules(false, ""),
+                                         Dialects::isOracleTransactional,
+                                         Dialects::isOraclePlsqlBlock);
 
     /// Classifies a PostgreSQL statement as transactional or not.
     ///
@@ -154,7 +153,7 @@ public sealed interface Dialects {
     ///
     /// @return `false` for the non-transactional command set, `true` otherwise
     static boolean isPostgresTransactional(String statementText) {
-        return !NON_TRANSACTIONAL.matcher(stripLeadingNoise(statementText)).matches();
+        return ! NON_TRANSACTIONAL.matcher(stripLeadingNoise(statementText)).matches();
     }
 
     /// Classifies a MySQL/MariaDB statement as transactional.

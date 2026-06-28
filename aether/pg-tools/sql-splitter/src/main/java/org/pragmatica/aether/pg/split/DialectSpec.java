@@ -2,11 +2,11 @@
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
 // Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
 // See LICENSE in the repository root for full terms.
-
 package org.pragmatica.aether.pg.split;
 
 import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Option;
+
 
 /// Data-only descriptor of an SQL dialect's lexical and boundary primitives.
 ///
@@ -37,7 +37,6 @@ public record DialectSpec(StringRules strings,
                           CopyDataRules copyData,
                           Fn1<Boolean, String> classifier,
                           Fn1<Boolean, String> blockStarter) {
-
     /// Whether the given statement text runs inside a transaction in this dialect.
     ///
     /// Non-transactional statements (e.g. PostgreSQL `CREATE INDEX … CONCURRENTLY`,

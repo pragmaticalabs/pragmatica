@@ -40,14 +40,11 @@ public sealed interface MigrationDialects {
 
     /// PostgreSQL-family descriptor: the splitter's PostgreSQL spec, DDL-transactional.
     ExecutionDialect POSTGRESQL = new ExecutionDialect(Dialects.POSTGRESQL, true);
-
     /// MySQL/MariaDB descriptor: the splitter's MySQL spec, DDL auto-committing
     /// (`ddlTransactional=false`), so the whole migration file runs in autocommit.
     ExecutionDialect MYSQL = new ExecutionDialect(Dialects.MYSQL, false);
-
     /// DB2 descriptor: the splitter's DB2 spec, DDL-transactional.
     ExecutionDialect DB2 = new ExecutionDialect(Dialects.DB2, true);
-
     /// SQL Server descriptor: the splitter's SQL Server (T-SQL) spec, DDL-transactional.
     ExecutionDialect SQLSERVER = new ExecutionDialect(Dialects.SQLSERVER, true);
 

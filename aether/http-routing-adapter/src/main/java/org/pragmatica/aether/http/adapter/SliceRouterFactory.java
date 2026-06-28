@@ -11,6 +11,7 @@ import org.pragmatica.json.JsonMapper;
 public interface SliceRouterFactory<T> {
     Class<T> sliceType();
     SliceRouter create(T slice);
+
     SliceRouter create(T slice, JsonMapper jsonMapper);
 
     /// Create a slice router that mounts this slice's routes in the given #198 detection mode.

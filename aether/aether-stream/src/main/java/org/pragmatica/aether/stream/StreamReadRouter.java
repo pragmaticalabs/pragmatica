@@ -144,12 +144,8 @@ public final class StreamReadRouter {
     /// hot-path cost.
     public ReplicaSetView replicaSnapshot(String streamName, int partition) {
         var owner = ownerResolver.resolve(streamName, partition);
-        var descriptors = replicaRegistry.map(registry -> registry.replicasFor(streamName, partition))
-                                         .or(List.of());
-        var replicas = descriptors.stream()
-                                  .map(descriptor -> toReplicaView(descriptor, owner))
-                                  .sorted(Comparator.comparing(ReplicaView::nodeId))
-                                  .toList();
+        var descriptors = replicaRegistry.map(registry -> registry.replicasFor(streamName, partition)).or(List.of());
+        var replicas = descriptors.stream().map(descriptor -> toReplicaView(descriptor, owner)).sorted(Comparator.comparing(ReplicaView::nodeId)).toList();
 
         return new ReplicaSetView(streamName,
                                   partition,

@@ -4,7 +4,6 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.deployment.membership.ntt;
 
-
 /// Observability snapshot of a node's local [`QuorumLossDetector`] state — the four
 /// drain-readiness facts an operator (or LLM-ops agent) needs to answer "is THIS survivor's
 /// quorum-loss self-drain window armed, and is it currently below the simple-majority

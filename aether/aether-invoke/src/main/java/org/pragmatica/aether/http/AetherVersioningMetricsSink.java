@@ -32,8 +32,7 @@ public final class AetherVersioningMetricsSink implements VersioningMetricsSink 
     @Override
     @Contract
     public void versionedRequest(String slice, int version, String method, int status) {
-        metrics.versionedRequestCounter(slice, Integer.toString(version), method, Integer.toString(status))
-               .increment();
+        metrics.versionedRequestCounter(slice, Integer.toString(version), method, Integer.toString(status)).increment();
     }
 
     @Override

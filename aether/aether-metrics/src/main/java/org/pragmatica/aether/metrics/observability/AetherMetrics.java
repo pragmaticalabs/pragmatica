@@ -86,10 +86,14 @@ record AetherMetricsDelegate(ObservabilityRegistry registry) implements AetherMe
     @Override
     public Counter versionedRequestCounter(String slice, String version, String method, String status) {
         return registry.counter("http.requests.versioned",
-                                "slice", slice,
-                                "version", version,
-                                "method", method,
-                                "status", status);
+                                "slice",
+                                slice,
+                                "version",
+                                version,
+                                "method",
+                                method,
+                                "status",
+                                status);
     }
 
     @Override
