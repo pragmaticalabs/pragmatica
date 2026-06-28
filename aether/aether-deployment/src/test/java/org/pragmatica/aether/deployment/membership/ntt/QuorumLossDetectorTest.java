@@ -115,6 +115,55 @@ class QuorumLossDetectorTest {
         }
     }
 
+    /// A6 cold-boot self-fence gate: while the injected cold-boot supplier is active the quorum-loss
+    /// drain is suppressed (a node still converging on a full-cluster restart must not self-fence on the
+    /// transiently-low SWIM-alive count); once it clears, firing resumes. Mirrors the BelowThresholdFiring
+    /// setup (the only addition is the cold-boot supplier).
+    @Nested
+    class ColdBootSuppression {
+        @Test
+        void belowThreshold_whileColdBoot_doesNotFire() {
+            detector.setColdBootSupplier(() -> true);
+            members(5);
+            coreCount(5);
+            members(1);
+
+            assertThat(detector.isBelowThreshold()).isTrue();
+
+            timeSource.advanceTimeMillis(8_000);
+            scheduler.fireAll();
+
+            assertThat(listener.events()).isEmpty();
+        }
+
+        @Test
+        void belowThreshold_notColdBoot_stillFires() {
+            detector.setColdBootSupplier(() -> false);
+            members(5);
+            coreCount(5);
+            members(1);
+
+            timeSource.advanceTimeMillis(8_000);
+            scheduler.fireAll();
+
+            assertThat(listener.events()).hasSize(1);
+        }
+
+        @Test
+        void nullColdBootSupplier_restoresNeverSuppressDefault_fires() {
+            detector.setColdBootSupplier(() -> true);
+            detector.setColdBootSupplier(null);
+            members(5);
+            coreCount(5);
+            members(1);
+
+            timeSource.advanceTimeMillis(8_000);
+            scheduler.fireAll();
+
+            assertThat(listener.events()).hasSize(1);
+        }
+    }
+
     @Nested
     class RecoveryBeforeDeadline {
         @Test

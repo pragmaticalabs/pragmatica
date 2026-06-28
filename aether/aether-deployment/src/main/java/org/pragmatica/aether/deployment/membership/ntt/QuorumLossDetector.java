@@ -13,6 +13,7 @@ import org.pragmatica.lang.utils.TimeSource;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
 import java.util.function.IntSupplier;
 import java.util.function.Supplier;
@@ -101,6 +102,17 @@ public final class QuorumLossDetector {
     /// behaviour) until the wiring layer injects the FSM-backed signal post-construction.
     private volatile Supplier<QuorumCoConfirmation> coConfirmationSupplier = QuorumCoConfirmation::absent;
 
+    /// A6 cold-boot self-fence gate (2026-06-28). While the cluster is still in its cold-boot
+    /// convergence window (the shared `swimIsBootingSupplier`: COLD_BOOT phase OR within the bounded
+    /// post-boot window) SWIM has not yet confirmed peers HEALTHY, so the detector's effective quorum
+    /// count is artificially low — firing the self-drain here terminates live nodes that are merely
+    /// still converging (the cold-restart 3/5-wedge root cause: on a simultaneous full-cluster restart
+    /// the SWIM-alive count decays 4→3→2 before first probe-acks land, crossing threshold and
+    /// self-fencing healthy nodes). Default never-suppresses (legacy) until the wiring layer injects the
+    /// supplier. Symmetric with the SWIM cold-boot FAULTY-suppression; a genuine minority simply
+    /// self-fences once the bounded window elapses.
+    private volatile BooleanSupplier coldBootSupplier = () -> false;
+
     private QuorumLossDetector(MembershipConfig config,
                                IntSupplier coreCountSupplier,
                                TimeSource timeSource,
@@ -186,6 +198,16 @@ public final class QuorumLossDetector {
         coConfirmationSupplier = supplier == null
                                  ? QuorumCoConfirmation::absent
                                  : supplier;
+    }
+
+    /// Inject the shared cold-boot gate (the same `swimIsBootingSupplier` the SWIM FAULTY-suppression
+    /// uses). While it returns `true` the quorum-loss self-drain is deferred (see [#coldBootSupplier]).
+    /// A `null` argument restores the default (never-suppress).
+    @Contract
+    public void setColdBootSupplier(BooleanSupplier supplier) {
+        coldBootSupplier = supplier == null
+                           ? () -> false
+                           : supplier;
     }
 
     /// Observability — current member count (as last supplied; includes self).
@@ -376,6 +398,17 @@ public final class QuorumLossDetector {
     /// threshold would be a co-confirmation/gate bug, made visible by this very line).
     @Contract
     private void emitIntent(QuorumLossIntent intent) {
+        if (coldBootSupplier.getAsBoolean()) {
+            log.warn("QUORUM_LOSS drain SUPPRESSED (cold-boot convergence): observedStrictQuorumCount={} "
+                    + "requiredThreshold={} — node is still forming and SWIM has not yet confirmed peers "
+                    + "HEALTHY; deferring self-fence until the cold-boot window elapses (prevents healthy "
+                    + "nodes self-draining on a simultaneous full-cluster restart)",
+                     intent.observedLocalQuorumCount(),
+                     intent.requiredThreshold());
+
+            return;
+        }
+
         var coConfirmation = coConfirmationSupplier.get();
 
         log.warn("QUORUM_LOSS drain INTENT firing: observedStrictQuorumCount={} requiredThreshold={} "

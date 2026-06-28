@@ -2070,7 +2070,23 @@ public interface AetherNode extends ManageableNode {
         // write + NODE_LEFT / NODE_FAILED downstream event).
         // E.6 / E.8 (spec §7.2): SWIM phase-suppression gate routes through `ClusterPhaseView`
         // (the single source of truth post-E.8).
-        BooleanSupplier swimIsBootingSupplier = () -> effectivePhaseSupplier.get() == AetherValue.ClusterPhase.COLD_BOOT;
+        //
+        // A6 cold-boot convergence window (2026-06-28): the phase-only gate flips out of COLD_BOOT at
+        // FIRST quorum (e.g. 3/5), but on a simultaneous full-cluster restart the remaining nodes' QUIC
+        // links may not have formed yet — the transport single-dialer force-dials a straggler only after
+        // a 60s grace (QuicClusterNetwork.RECONCILE_BACKOFF_CAP_MS). Without a window SWIM would
+        // FAULTY-evict (then authoritatively REMOVE) the not-yet-connected seeds at ~quorum time, wedging
+        // the cluster permanently below full membership (terminal-removal is irreversible). OR-in a
+        // one-shot window anchored at THIS node's boot so never-HEALTHY SEEDS stay UNKNOWN (the existing,
+        // tested COLD_BOOT suppression branch — no tombstone, formation-safe) until the transport has
+        // exhausted its dial attempts. Proven-HEALTHY peers are unaffected: every suppression branch
+        // short-circuits on everSeenHealthy, so a real death still FAULTYs immediately regardless.
+        long swimBootAtMs = System.currentTimeMillis();
+        BooleanSupplier swimIsBootingSupplier =
+            () -> coldBootConvergenceActive(effectivePhaseSupplier.get() == AetherValue.ClusterPhase.COLD_BOOT,
+                                            swimBootAtMs,
+                                            System.currentTimeMillis(),
+                                            COLD_BOOT_CONVERGENCE_WINDOW_MS);
         // Leader-faulty evictor (2026-05-09): bridges SWIM-FAULTY → QUIC disconnect when
         // the FAULTY peer IS the current cluster leader. Breaks the consensus.apply
         // broadcast stall on cloud Container kill-leader (post-Step-3 architecture
@@ -2298,6 +2314,12 @@ public interface AetherNode extends ManageableNode {
         // fails both (unreachable members are NOT SWIM-alive and age out of SUSPECT), so the real
         // self-fence is never masked.
         quorumLossDetector.setCoConfirmationSupplier(() -> buildQuorumCoConfirmation(membershipFsm, swimHealthDetector));
+        // A6: gate the quorum-loss self-drain with the SAME cold-boot window the SWIM FAULTY-suppression
+        // uses. On a simultaneous full-cluster restart SWIM's first probe-acks lag the QUIC attach, so the
+        // detector's SWIM-alive count momentarily decays below threshold and healthy nodes would self-fence
+        // before convergence (the 3/5-wedge root cause). Deferring the fence during the bounded cold-boot
+        // window lets all nodes reform; a genuine minority still self-fences once the window elapses.
+        quorumLossDetector.setColdBootSupplier(swimIsBootingSupplier);
         metricsCollector.setDrainCommandHandler(() -> commandedDrain(drainProcedure, nodeReportedStateHolder));
         // QUIC reconnect feeds NTT's soft up-bias (unchanged) AND the FSM's peer-connected tap.
         Consumer<NodeId> nttConnectTap = ((Consumer<NodeId>) presenceSampler::onQuicReconnect).andThen(membershipFsm::onPeerConnected);
@@ -2922,7 +2944,8 @@ public interface AetherNode extends ManageableNode {
                                         streamTieredReader,
                                         serializer,
                                         deserializer,
-                                        config.self());
+                                        config.self(),
+                                        streamReplicaRegistry);
         var certRenewalScheduler = createCertRenewalScheduler(config,
                                                               clusterNode,
                                                               appHttpServer,
@@ -4580,6 +4603,22 @@ public interface AetherNode extends ManageableNode {
         spi.registerExtension(StorageInstance.class, contentStorage);
     }
 
+    /// A6 cold-boot convergence window: how long after THIS node's boot the SWIM cold-boot
+    /// FAULTY-suppression stays active even after the cluster phase has flipped out of COLD_BOOT
+    /// (which happens at first quorum, e.g. 3/5). Sized to cover the transport single-dialer
+    /// force-dial grace (`QuicClusterNetwork.RECONCILE_BACKOFF_CAP_MS` = 60s) + one reconcile tick
+    /// (~5s) + a suspect margin (~10s), so a straggler whose QUIC link forms only via the 60s
+    /// force-dial is not FAULTY-evicted before it can connect on a simultaneous full-cluster restart.
+    long COLD_BOOT_CONVERGENCE_WINDOW_MS = 75_000L;
+
+    /// Pure predicate for the SWIM cold-boot suppression gate (A6): cold-boot convergence is still
+    /// active iff the cluster phase is COLD_BOOT, OR this node booted within the convergence window.
+    /// Extracted as a static pure function so the window logic is unit-testable without standing up a
+    /// node. See `swimIsBootingSupplier` wiring for the rationale.
+    static boolean coldBootConvergenceActive(boolean phaseIsColdBoot, long bootAtMs, long nowMs, long windowMs) {
+        return phaseIsColdBoot || (nowMs - bootAtMs) < windowMs;
+    }
+
     private static StreamForwardTransport createStreamForwardTransport(ClusterNetwork network) {
         return network::send;
     }
@@ -4593,7 +4632,8 @@ public interface AetherNode extends ManageableNode {
                                                         TieredStreamReader streamTieredReader,
                                                         Serializer serializer,
                                                         Deserializer deserializer,
-                                                        NodeId self) {
+                                                        NodeId self,
+                                                        ReplicaRegistry streamReplicaRegistry) {
         resourceProviderSetup.spiProvider().onPresent(spi -> registerForwardExtensionsOnSpi(spi,
                                                                                             forwardClient,
                                                                                             ownerResolver,
@@ -4603,7 +4643,8 @@ public interface AetherNode extends ManageableNode {
                                                                                             streamTieredReader,
                                                                                             serializer,
                                                                                             deserializer,
-                                                                                            self));
+                                                                                            self,
+                                                                                            streamReplicaRegistry));
     }
 
     private static void registerForwardExtensionsOnSpi(SpiResourceProvider spi,
@@ -4615,7 +4656,8 @@ public interface AetherNode extends ManageableNode {
                                                        TieredStreamReader streamTieredReader,
                                                        Serializer serializer,
                                                        Deserializer deserializer,
-                                                       NodeId self) {
+                                                       NodeId self,
+                                                       ReplicaRegistry streamReplicaRegistry) {
         spi.registerExtension(StreamForwardClient.class, forwardClient);
         spi.registerExtension(StreamPartitionManager.class, streamPartitionManager);
         spi.registerExtension(CursorStore.class, streamCursorStore);
@@ -4625,6 +4667,10 @@ public interface AetherNode extends ManageableNode {
         // A6: self identity so the app StreamAccessFactory can wire owner-routed publish (compare the
         // resolved HRW owner against this node).
         spi.registerExtension(NodeId.class, self);
+        // A6 read-forwarding: expose the node-level replica registry so the app StreamAccessFactory wires
+        // NEAREST app-stream reads — a non-replica consumer forwards to the partition's HRW owner instead
+        // of reading its own empty local partition (the asymmetry that left GOVERNOR-default reads empty).
+        spi.registerExtension(ReplicaRegistry.class, streamReplicaRegistry);
         // #47: the STREAMING publish resolver carries BOTH the arg-less leader resolver (retained for
         // the STRONG / forward-fallback path) AND the (stream, partition)-aware HRW owner-resolver from
         // the ReplicaSetController. App-stream EVENTUAL publishes now route to the HRW owner — the SAME
