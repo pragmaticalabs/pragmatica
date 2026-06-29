@@ -2,9 +2,9 @@
 
 *The primitive for durable workflows & sagas.*
 
-**Version:** 0.2
-**Status:** Draft — open questions resolved; author-facing API pinned; needs Sergiy sign-off on items flagged §14
-**Date:** 2026-06-27
+**Version:** 0.2.1
+**Status:** Draft — open questions resolved; author-facing API pinned; needs Sergiy sign-off on items flagged §14. v0.2.1 corrects two API-shape errors (see changelog).
+**Date:** 2026-06-27 (corrected 2026-06-29)
 **Author:** design-stream
 **Epic:** #345
 **Supersedes:** #190 (the Persistent-Workflow draft is carried forward here as the *workflow specialization*, §6)
@@ -236,36 +236,36 @@ correct trade-off stated explicitly: single-writer = serialized = bounded throug
  */
 public interface DurableEntity<K, S> {
     /** Create a new entity; fails with EntityAlreadyExists if the key is taken. */
-    Promise<Result<S>>           create(K key, S initial);
+    Promise<S>           create(K key, S initial);
 
     /** Linearizable owner-routed read. Returns Option.none() if the entity does not exist. */
-    Promise<Result<Option<S>>>   get(K key);
+    Promise<Option<S>>   get(K key);
 
     /**
      * Fenced single-writer mutation. The mutator is a PURE S→S function (no IO).
      * Runs on the partition owner, inside the per-key serialization queue, committed under the fence.
      * Returns the post-update state.
      */
-    Promise<Result<S>>           update(K key, Fn1<S, S> mutator);
+    Promise<S>           update(K key, Fn1<S, S> mutator);
 
     /** Schedule a one-shot timer; on expiry applies onFire as an update on the owner. */
-    Promise<Result<TimerToken>>  scheduleTimer(K key, Duration delay, Fn1<S, S> onFire);
+    Promise<TimerToken>  scheduleTimer(K key, Duration delay, Fn1<S, S> onFire);
 
     /** Cancel a previously scheduled timer (no-op if already fired or cancelled). */
-    Promise<Result<Unit>>        cancelTimer(K key, TimerToken token);
+    Promise<Unit>        cancelTimer(K key, TimerToken token);
 
     /**
      * Delete the entity. Succeeds only when the current state satisfies the terminal predicate
      * registered at provisioning time; the runtime auto-cancels pending timers.
      */
-    Promise<Result<Unit>>        delete(K key);
+    Promise<Unit>        delete(K key);
 
     record TimerToken(String value) {}
 }
 ```
 
-`Fn1` is `org.pragmatica.lang.functions.Fn1`. All `Result` wrappers carry typed `Cause` subtypes —
-see §5.3.
+`Fn1` is `org.pragmatica.lang.functions.Fn1` (return-type-first: `Fn1<R, T1>` is `R apply(T1)`).
+Operations surface failures as typed `Cause` subtypes on the `Promise` error channel — see §5.3.
 
 ### 5.2 Provisioning — annotation, config, manifest
 
@@ -308,7 +308,7 @@ config = "orders-entity"
 
 ```java
 @Route("/orders/{id}/cancel")
-public Promise<Result<OrderState>> cancel(
+public Promise<OrderState> cancel(
         String id,
         @OrdersEntity DurableEntity<String, OrderState> orders) {
 
@@ -372,26 +372,26 @@ public sealed interface EntityCause extends Cause {
  */
 public interface PersistentWorkflow<S, E> {
     /** Create a new workflow instance at its initial FSM state. */
-    Promise<Result<S>>          start(String id, S initial);
+    Promise<S>          start(String id, S initial);
 
     /**
      * Dispatch an event. Validates the event against the FSM BEFORE any write (rejects with
      * InvalidEvent if no matching transition exists). Applies the pure transition on the owner
      * under the fence. Returns post-transition state.
      */
-    Promise<Result<S>>          dispatch(String id, E event);
+    Promise<S>          dispatch(String id, E event);
 
     /** Linearizable owner-routed read of current state. */
-    Promise<Result<Option<S>>>  current(String id);
+    Promise<Option<S>>  current(String id);
 
     /** Schedule a timer that fires the given event when it expires. */
-    Promise<Result<TimerToken>> scheduleTimer(String id, Duration delay, E event);
+    Promise<TimerToken> scheduleTimer(String id, Duration delay, E event);
 
     /** Cancel a previously scheduled timer. */
-    Promise<Result<Unit>>       cancelTimer(String id, TimerToken token);
+    Promise<Unit>       cancelTimer(String id, TimerToken token);
 
     /** Delete a completed (final-state) workflow instance. */
-    Promise<Result<Unit>>       delete(String id);
+    Promise<Unit>       delete(String id);
 }
 ```
 
@@ -453,7 +453,7 @@ Result<StateMachineDefinition<OrderState, OrderEvent, Unit>> ORDER_FSM =
 
 ```java
 @Route("/orders/{id}/confirm")
-public Promise<Result<OrderState>> confirm(
+public Promise<OrderState> confirm(
         String id,
         @OrdersWorkflow PersistentWorkflow<OrderState, OrderEvent> workflow) {
 
@@ -500,13 +500,13 @@ immutable record carrying the saga's business inputs):
  */
 public record SagaStep<C, R>(
     String name,
-    Fn1<C, Promise<Result<R>>>          forward,       // executes the step's side effect
-    Fn2<C, R, Promise<Result<Unit>>>    compensation   // undoes the step given its result
+    Fn1<Promise<R>, C>          forward,       // executes the step's side effect
+    Fn2<Promise<Unit>, C, R>    compensation   // undoes the step given its result
 ) {
     public static <C, R> SagaStep<C, R> step(
             String name,
-            Fn1<C, Promise<Result<R>>> forward,
-            Fn2<C, R, Promise<Result<Unit>>> compensation) {
+            Fn1<Promise<R>, C> forward,
+            Fn2<Promise<Unit>, C, R> compensation) {
         return new SagaStep<>(name, forward, compensation);
     }
 }
@@ -620,13 +620,13 @@ public interface Saga<C> {
      * Idempotent if a saga with the given id already exists and is Running/Compensating
      * (returns its current status); fails with SagaAlreadyTerminated if already in a terminal state.
      */
-    Promise<Result<SagaResult<C>>> run(String id, C context);
+    Promise<SagaResult<C>> run(String id, C context);
 
     /** Linearizable read of the saga's current state (useful for monitoring). */
-    Promise<Result<Option<SagaState<C>>>> status(String id);
+    Promise<Option<SagaState<C>>> status(String id);
 
     /** Delete a terminal saga instance (respects terminal-ttl if configured). */
-    Promise<Result<Unit>> delete(String id);
+    Promise<Unit> delete(String id);
 }
 
 /** The outcome of a completed saga run. */
@@ -710,7 +710,7 @@ SagaDefinition<OrderContext> ORDER_SAGA =
 
 ```java
 @Route("/orders/{orderId}/place")
-public Promise<Result<SagaResult<OrderContext>>> placeOrder(
+public Promise<SagaResult<OrderContext>> placeOrder(
         String orderId,
         OrderRequest req,
         @OrderSaga Saga<OrderContext> saga) {
@@ -863,13 +863,25 @@ context (e.g. the originating request ID) through FSM actions, `C` must be expos
 
 ---
 
+## Changelog — v0.2.1 (correction, 2026-06-29)
+
+Two API-shape errors in v0.2, caught during the Aether book's fidelity pass, are corrected here.
+No design change; signatures only.
+
+| What | Why |
+|---|---|
+| **All async signatures: `Promise<Result<T>>` → `Promise<T>`** (§5.1, §5.2, §6.2, §6.4, §7.2, §7.7, §7.10) | `Promise<T>` is the async `Result`: it already carries a typed-`Cause` error channel. `Promise<Result<T>>` double-wraps, stacking two failure representations. v0.1's bare `Promise<T>` was correct; the v0.2 move to `Promise<Result<...>>` (and the claim that bare `Promise` "hides the error channel") was the misstep. Failures travel as `EntityCause`/`WorkflowCause`/`SagaCause` on the `Promise` channel; sync parses still return `Result`. |
+| **`SagaStep` `Fn1`/`Fn2` order** (§7.2): `Fn1<C, Promise<Result<R>>>` → `Fn1<Promise<R>, C>`; `Fn2<C, R, Promise<Result<Unit>>>` → `Fn2<Promise<Unit>, C, R>` | Pragmatica `Fn1<R, T1>` / `Fn2<R, T1, T2>` are return-type-first (`R apply(T1)`). The v0.2 order declared `forward` as `C apply(Promise<...>)`, the reverse of intent; the worked lambda `ctx -> slice.call(...)` only typechecks under the corrected order. |
+
+---
+
 ## Changelog — v0.2
 
 | What | Why |
 |---|---|
 | **§3 substrate table**: KV-path fence status changed from ❌ MISSING → ✅ IMPLEMENTED | Verified: `staleEpochWrite` + `EpochBearing<E>` already live in `KVStore` Rabia applier, covering DHT + governor writes; #345 piece 1a is done. Stream-path fence (piece 1b) correctly remains MISSING. |
 | **§3, §11, §12**: split "fence" into 1a (KV, done) and 1b (stream, missing) | Precision; the two paths have different status and different implementation sites. |
-| **§5**: `DurableEntity` API — all methods now return `Promise<Result<...>>` | v0.1 returned bare `Promise<S>` / `Promise<Unit>`, hiding the error channel; JBCT requires `Result` on the success path for typed failures. |
+| **§5**: ~~`DurableEntity` API — all methods now return `Promise<Result<...>>`~~ | **Superseded (v0.2.1):** this was an error. `Promise<T>` already carries the typed-`Cause` error channel; `Promise<Result<T>>` double-wraps. v0.1's bare `Promise<T>` was correct. The provisioning walkthrough + `EntityCause` hierarchy added in v0.2 stand. |
 | **§5.2–5.3**: full provisioning walkthrough (annotation → config → manifest → inject) + `EntityCause` sealed hierarchy | Book needs concrete, copy-paste-ready provisioning code; error types needed for pattern-matching examples. |
 | **§6.1**: Q5 resolved — `PersistentWorkflow` kept as distinct facade | Ergonomics > surface-area; decision and rationale recorded inline. |
 | **§6.3–6.5**: full provisioning + worked `OrderProcess` example using real `StateMachineDefinition` builder API | v0.1 deferred to "#190 draft"; v0.2 pins the API against verified source (builder methods at `StateMachineDefinition.java:89-135`). |
