@@ -69,6 +69,11 @@ public final class ProcessorError {
         return PREFIX + "Failed to load schema from '" + path + "': " + detail;
     }
 
+    public static String unlistedMigration(String fileName, String schemaPath) {
+        return PREFIX + "Migration '" + fileName + "' in '" + schemaPath
+             + "' is not listed in migrations.list (kept via auto-discovery)";
+    }
+
     public static String returnFieldNotInSelect(String field, String recordType) {
         return PREFIX + "Field '" + field + "' in return type " + recordType + " has no matching SELECT column";
     }
