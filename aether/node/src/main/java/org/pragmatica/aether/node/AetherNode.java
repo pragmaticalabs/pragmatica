@@ -2028,6 +2028,14 @@ public interface AetherNode extends ManageableNode {
         // SWIM HEALTHY requires actual probe-ack within `suspectTimeout`, so this gate is
         // robust against owner partial-network errors. See `ClusterSyncCollector.processEvictionHints`.
         metricsCollector.setPeerLocallyAlive(nodeId -> swimHealthDetector.healthOf(nodeId) == SwimHealth.HEALTHY);
+        // Option 1 (S01) — feed cluster-sync missed-pong into SWIM as a transport-unreachable HINT
+        // instead of a destructive disconnect. SWIM drives the SUSPECT → 3s-floored-FAULTY →
+        // DepartedObserved → synchronous-DEAD pipeline (the same path the QUIC `onPeerLeft` listener
+        // feeds) and refutes the hint when pongs resume, so a transient flap no longer false-evicts a
+        // healthy peer. The owner-side SWIM-HEALTHY early-skip in `emitPingTimeoutIfExceeded` still
+        // suppresses the hint for a peer SWIM already trusts (avoids conflicting evidence).
+        metricsCollector.setUnreachableReporter(nodeId -> swimHealthDetector.recordTransportHint(new TransportObservation.PeerUnreachable(nodeId,
+                                                                                                                                          QuicTransportCause.PING_TIMEOUT)));
         allEntries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
                                                  change -> swimHealthDetector.onLeaderChanged(change.leaderId())));
         var announceTopology = config.topology();
@@ -2219,10 +2227,11 @@ public interface AetherNode extends ManageableNode {
         Consumer<NodeId> nttConnectTap = ((Consumer<NodeId>) presenceSampler::onQuicReconnect).andThen(membershipFsm::onPeerConnected);
         // QUIC disconnect feeds BOTH NTT's soft down-bias (unchanged) AND the liveness half of the
         // confirmed-death gate in the authoritative MembershipFsm. A routed QUIC disconnect fires on a
-        // bare transport drop AND on the 3-missed-pong ClusterSync ping-timeout
-        // (emitPingTimeoutIfExceeded calls network.disconnect → PeerDisconnected), so this single tap
-        // captures the spec's liveness-gone signal. Bare disconnect alone does NOT evict — the FSM
-        // gates it behind SWIM-FAULTY co-confirmation. Leader-gated inside the FSM.
+        // bare transport drop — a genuine transport-gone sensor. The 3-missed-pong ClusterSync
+        // ping-timeout no longer manufactures a disconnect (option 1); it now feeds SWIM a transport-
+        // unreachable hint, which reaches the FSM via SWIM-FAULTY co-confirmation instead of this tap.
+        // Bare disconnect alone does NOT evict — the FSM gates it behind SWIM-FAULTY co-confirmation.
+        // Leader-gated inside the FSM.
         Consumer<NodeId> nttDisconnectTap = ((Consumer<NodeId>) presenceSampler::onQuicDisconnect).andThen(membershipFsm::onLivenessGone);
         // P5: the NTT-reconciler leader-toggle (auto-heal activation) is now wired into the
         // live router. Safe because LeaderReconciler is identity-aware — it arms provisioning
@@ -3325,7 +3334,8 @@ public interface AetherNode extends ManageableNode {
     }
 
     enum QuicTransportCause implements Cause {
-        PEER_LEFT("QUIC peer connection closed");
+        PEER_LEFT("QUIC peer connection closed"),
+        PING_TIMEOUT("cluster-sync ping/pong timeout (missed-pong threshold)");
         private final String message;
         QuicTransportCause(String message) {
             this.message = message;
