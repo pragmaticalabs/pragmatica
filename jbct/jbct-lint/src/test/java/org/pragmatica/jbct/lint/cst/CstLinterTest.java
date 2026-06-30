@@ -411,6 +411,98 @@ class CstLinterTest {
                 """);
             assertNoRule(diagnostics, "JBCT-VO-01");
         }
+
+        @Test
+        void allowsTransportRecordNestedInSliceInterface() {
+            // @Slice transport DTOs (not just Request/Response — also versioned items and
+            // list wrappers) are factory-less by design.
+            var diagnostics = lint("""
+                package com.example.slice.test;
+                import org.pragmatica.aether.slice.annotation.Slice;
+                import java.util.List;
+                @Slice
+                public interface Catalog {
+                    record GetRequest(Long id) {}
+                    record ItemV2(long id, String name, long priceCents, String currency) {}
+                    record ItemListV2(List<ItemV2> items) {}
+                    record ImportResponse(int imported) {}
+                }
+                """);
+            assertNoRule(diagnostics, "JBCT-VO-01");
+        }
+
+        @Test
+        void allowsNestedFactRecordInSliceInterface() {
+            // Event/fact records nested in a @Slice interface (published via Publisher) have no factory.
+            var diagnostics = lint("""
+                package com.example.slice.test;
+                import org.pragmatica.aether.slice.annotation.Slice;
+                @Slice
+                public interface UrlShortener {
+                    record ClickEvent(String shortCode) {}
+                }
+                """);
+            assertNoRule(diagnostics, "JBCT-VO-01");
+        }
+
+        @Test
+        void allowsSliceNestedRecordWithFullyQualifiedAnnotation() {
+            // Matching is by simple name, robust to FQN-form annotations.
+            var diagnostics = lint("""
+                package com.example.slice.test;
+                @org.pragmatica.aether.slice.annotation.Slice
+                public interface Orders {
+                    record PlaceRequest(String sku, int qty) {}
+                }
+                """);
+            assertNoRule(diagnostics, "JBCT-VO-01");
+        }
+
+        @Test
+        void allowsRowRecordNestedInPgSqlInterface() {
+            // @PgSql row records (projection of a DB row) are factory-less by design.
+            var diagnostics = lint("""
+                package com.example.persistence.test;
+                import org.pragmatica.aether.resource.db.PgSql;
+                import org.pragmatica.lang.Option;
+                import org.pragmatica.lang.Promise;
+                @PgSql
+                public interface UserPersistence {
+                    record UserRow(long id, String name, String email) {}
+                    Promise<Option<UserRow>> findById(Long id);
+                }
+                """);
+            assertNoRule(diagnostics, "JBCT-VO-01");
+        }
+
+        @Test
+        void stillFlagsGenuineValueObjectAlongsideSliceInterface() {
+            // A real top-level value object is NOT exempted just because the file also holds a
+            // @Slice interface — the exemption is scoped to nesting, not file presence.
+            var diagnostics = lint("""
+                package com.example.domain.test;
+                import org.pragmatica.aether.slice.annotation.Slice;
+                @Slice
+                interface Catalog {
+                    record GetRequest(Long id) {}
+                }
+                record Money(long cents) {}
+                """);
+            assertHasRule(diagnostics, "JBCT-VO-01");
+        }
+
+        @Test
+        void stillFlagsRecordNestedInPlainInterface() {
+            // A record nested in a non-framework (un-annotated) interface, not implementing it,
+            // is still a candidate value object and must be flagged.
+            var diagnostics = lint("""
+                package com.example.domain.test;
+                public interface Holder {
+                    record Money(long cents) {}
+                }
+                """);
+            assertHasRule(diagnostics, "JBCT-VO-01");
+        }
     }
 
     @Nested

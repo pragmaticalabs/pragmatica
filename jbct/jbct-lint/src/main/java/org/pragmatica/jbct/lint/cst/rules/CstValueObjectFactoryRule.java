@@ -6,7 +6,9 @@ import org.pragmatica.jbct.lint.cst.CstLintRule;
 import org.pragmatica.jbct.parser.Cursor;
 import org.pragmatica.jbct.parser.CstNodes;
 import org.pragmatica.jbct.parser.RuleKind;
+import org.pragmatica.lang.Option;
 
+import java.util.List;
 import java.util.Optional;
 import java.util.Set;
 import java.util.regex.Pattern;
@@ -23,6 +25,15 @@ public class CstValueObjectFactoryRule implements CstLintRule {
     private static final Pattern INTERFACE_NAME_PATTERN = Pattern.compile("\\binterface\\s+(\\w+)");
     private static final Pattern IDENTIFIER_PATTERN = Pattern.compile("\\b([A-Za-z_$][A-Za-z0-9_$]*)\\b");
     private static final Pattern METHOD_NAME_PATTERN = Pattern.compile("\\b([a-zA-Z_$][a-zA-Z0-9_$]*)\\s*\\(");
+    private static final Pattern ANNOTATION_SIMPLE_NAME_PATTERN =
+        Pattern.compile("@\\s*(?:[A-Za-z_$][\\w$]*\\s*\\.\\s*)*([A-Za-z_$][\\w$]*)");
+
+    /// Records nested in an interface carrying one of these annotations are framework shapes,
+    /// not domain value objects: @Slice transport/stage/fact records and @PgSql row records.
+    /// Both are factory-less by design. (@ResourceQualifier fact records that live in their own
+    /// top-level file carry no per-file marker tying them to the qualifier — that linkage is
+    /// cross-file — so they are not detectable here; nested-in-@Slice fact records are covered.)
+    private static final Set<String> FRAMEWORK_SHAPE_ANNOTATIONS = Set.of("Slice", "PgSql");
 
     @Override
     public String ruleId() {
@@ -52,6 +63,9 @@ public class CstValueObjectFactoryRule implements CstLintRule {
         if (implementsSealedInterface(record, sealedInterfaceNames)) return false;
         // Skip records implementing their enclosing interface (implementation records, not value objects)
         if (implementsEnclosingInterface(root, record)) return false;
+        // Skip records nested in a framework-shape interface — @Slice transport/stage/fact records
+        // and @PgSql row records are factory-less by design.
+        if (nestedInFrameworkShapeInterface(root, record)) return false;
         // Skip builder-pattern records (have with*() methods returning Self)
         if (hasBuilderMethods(record, recordName)) return false;
         // Skip local records defined inside methods (implementation records, not value objects)
@@ -87,6 +101,42 @@ public class CstValueObjectFactoryRule implements CstLintRule {
         return findAncestor(root, record, RuleKind.MEMBER)
                           .filter(CstNodes::isMethodMember)
                           .isPresent();
+    }
+
+    /// A record nested inside an interface annotated with a framework-shape annotation
+    /// (@Slice / @PgSql) is a transport/row/stage/fact record, not a domain value object.
+    /// Detection is purely syntactic: the annotation is a direct child of the enclosing
+    /// interface's holder node, a sibling of its TypeKind (grammar: `Annotation* Modifier* TypeKind`).
+    private boolean nestedInFrameworkShapeInterface(Cursor root, Cursor record) {
+        return findAncestorPath(root, record)
+                          .flatMap(this::enclosingInterfaceAnnotationHolder)
+                          .map(this::declaresFrameworkShapeAnnotation)
+                          .or(false);
+    }
+
+    /// Parent node (TypeDecl/ClassMember) of the nearest enclosing interface's TypeKind — it holds
+    /// that interface's leading annotations as direct children.
+    private Option<Cursor> enclosingInterfaceAnnotationHolder(List<Cursor> path) {
+        for (int i = path.size() - 2; i >= 1; i--) {
+            var node = path.get(i);
+            if (isRule(node, RuleKind.TYPE_KIND) && hasChildOfRule(node, RuleKind.INTERFACE_DECL)) {
+                return Option.some(path.get(i - 1));
+            }
+        }
+        return Option.none();
+    }
+
+    private boolean declaresFrameworkShapeAnnotation(Cursor annotationHolder) {
+        return childrenByRule(annotationHolder, RuleKind.ANNOTATION).stream()
+                          .map(this::annotationSimpleName)
+                          .anyMatch(FRAMEWORK_SHAPE_ANNOTATIONS::contains);
+    }
+
+    /// Simple name of an annotation, robust to import vs FQN forms (`@Slice` and
+    /// `@org.pragmatica.aether.slice.annotation.Slice` both yield `Slice`).
+    private String annotationSimpleName(Cursor annotation) {
+        var matcher = ANNOTATION_SIMPLE_NAME_PATTERN.matcher(text(annotation));
+        return matcher.find() ? matcher.group(1) : "";
     }
 
     private boolean hasNoComponents(Cursor record) {
