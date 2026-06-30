@@ -59,3 +59,7 @@ CREATE TABLE foos (
     id BIGINT PRIMARY KEY,
     f TEXT NOT NULL
 );
+
+CREATE TABLE schema_versions (
+    version BIGINT NOT NULL
+);

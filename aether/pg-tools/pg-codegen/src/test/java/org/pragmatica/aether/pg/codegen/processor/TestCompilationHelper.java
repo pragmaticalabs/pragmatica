@@ -13,6 +13,7 @@ import java.io.IOException;
 import java.net.URI;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.List;
 
 /// Shared compilation infrastructure for annotation processor tests.
@@ -33,9 +34,21 @@ final class TestCompilationHelper {
         return compileWithProcessor(List.of(new SourceEntry(fileName, sourceCode)), tempDir);
     }
 
+    /// Like {@link #compileWithProcessor(String, String, Path)} but compiles the GENERATED
+    /// factory all the way to bytecode (no `-proc:only`). This is what proves the emitted
+    /// factory source is valid Java — the default helper stops after processing and never
+    /// compiles the generated file, so a mis-emitted string literal would slip through.
+    static CompilationResult compileAndCompileGenerated(String sourceCode, String fileName, Path tempDir) throws Exception {
+        return compile(List.of(new SourceEntry(fileName, sourceCode)), tempDir, false);
+    }
+
     record SourceEntry(String fileName, String sourceCode) {}
 
     static CompilationResult compileWithProcessor(List<SourceEntry> sources, Path tempDir) throws Exception {
+        return compile(sources, tempDir, true);
+    }
+
+    private static CompilationResult compile(List<SourceEntry> sources, Path tempDir, boolean procOnly) throws Exception {
         var compiler = ToolProvider.getSystemJavaCompiler();
         var diagnosticCollector = new DiagnosticCollector<JavaFileObject>();
 
@@ -47,14 +60,16 @@ final class TestCompilationHelper {
 
         var classpath = System.getProperty("java.class.path");
 
-        var options = List.of(
+        var options = new ArrayList<>(List.of(
             "-d", classOutputDir.toString(),
             "-s", outputDir.toString(),
             "-classpath", classpath,
-            "-proc:only",
             "-Xlint:none",
             "--release", "25"
-        );
+        ));
+        if (procOnly) {
+            options.add("-proc:only");
+        }
 
         var sourceFiles = sources.stream()
                                  .map(s -> (JavaFileObject) new InMemoryJavaFileObject(s.fileName(), s.sourceCode()))

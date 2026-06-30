@@ -486,9 +486,20 @@ public final class FactoryGenerator {
         };
     }
 
+    // The SQL is emitted into a `"..."` Java string literal. Besides `\` and `"`, line
+    // terminators and tabs must be escaped: a text-block `@Query` arrives (via the typed
+    // annotation accessor) as the compiler-cooked value with REAL newline characters, which
+    // would otherwise terminate the literal and break compilation of the generated code.
+    // Escaping (not whitespace-collapsing) preserves the SQL byte-for-byte at runtime. The
+    // single-line concatenated form contains none of these characters, so its emission stays
+    // byte-identical. Backslash is doubled FIRST so the escapes introduced below are not
+    // themselves re-escaped.
     private static String escapeSql(String sql) {
         return sql.replace("\\", "\\\\")
-                  .replace("\"", "\\\"");
+                  .replace("\"", "\\\"")
+                  .replace("\n", "\\n")
+                  .replace("\r", "\\r")
+                  .replace("\t", "\\t");
     }
 
     private static String toMapperMethodSuffix(String innerTypeName) {
