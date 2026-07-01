@@ -80,7 +80,16 @@ public final class ForgeServer {
         this.forgeConfig = forgeConfig;
     }
 
-    private static final String VERSION = "Aether Forge 0.20.0";
+    private static final String VERSION = "Aether Forge " + resolveVersion();
+
+    /// Resolves the running version from the shaded jar's `Implementation-Version` manifest entry
+    /// (set by the shade plugin's ManifestResourceTransformer to `${project.version}`), falling back
+    /// to `(dev)` when run outside a packaged jar (IDE / tests, where that manifest is absent).
+    private static String resolveVersion() {
+        return Option.option(ForgeServer.class.getPackage())
+                     .flatMap(pkg -> Option.option(pkg.getImplementationVersion()))
+                     .or("(dev)");
+    }
 
     public static void main(String[] args) {
         if (hasFlag(args, "--help", "-h")) {
