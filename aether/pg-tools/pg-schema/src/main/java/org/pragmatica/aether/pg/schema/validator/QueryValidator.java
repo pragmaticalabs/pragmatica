@@ -68,6 +68,75 @@ public final class QueryValidator {
         return !nav.findAll(keywordRule).isEmpty();
     }
 
+    /// Resolves the list of output column NAMES produced by the query's single top-level SELECT.
+    /// All-or-nothing: the result is present only when the query has exactly one `SelectCore` and
+    /// every one of its target-list entries resolves to a column name — an explicit alias
+    /// (`col AS name`), a qualified reference (`t.col`), or a bare column (`col`). It is absent when
+    /// any target is `*` (a `StarExpr`) or a compound expression (operator, cast, function call,
+    /// literal), or when the query has zero or multiple `SelectCore` nodes (subqueries or set
+    /// operations such as `UNION`). Schema-independent: it inspects only the CST structure. Intended
+    /// for callers that map a return-row record's fields to SELECT output columns and want to skip
+    /// the check rather than warn spuriously when the output set cannot be determined precisely.
+    public static Option<List<String>> selectOutputColumnNames(CstNavigator queryRoot) {
+        var cores = queryRoot.findAll("SelectCore");
+
+        if (cores.size() != 1) return Option.empty();
+
+        return outputColumnNames(cores.getFirst());
+    }
+
+    private static Option<List<String>> outputColumnNames(CstNavigator selectCore) {
+        var targetListOpt = selectCore.child("TargetList");
+
+        if (targetListOpt.isEmpty()) return Option.empty();
+
+        var targets = targetListOpt.unwrap().findAll("TargetElem");
+
+        if (targets.isEmpty()) return Option.empty();
+
+        var names = new ArrayList<String>();
+
+        for (var target : targets) {
+            var nameOpt = outputColumnName(target);
+
+            if (nameOpt.isEmpty()) return Option.empty();
+
+            names.add(nameOpt.unwrap());
+        }
+
+        return Option.present(names);
+    }
+
+    /// Resolves a single target's output column name. Reuses `inferTargetColumnName` for the
+    /// explicit-alias and qualified-reference cases; falls back to `bareColumnName` for a plain
+    /// unqualified column; leaves `*` and compound expressions unresolved (absent) so the caller
+    /// skips the whole check.
+    private static Option<String> outputColumnName(CstNavigator target) {
+        var aliasedOrQualified = inferTargetColumnName(target);
+
+        if (aliasedOrQualified.isPresent()) return aliasedOrQualified;
+
+        if (target.has("StarExpr")) return Option.empty();
+
+        return bareColumnName(target);
+    }
+
+    /// Resolves a bare (unqualified, unaliased) column reference by descending the single-child
+    /// expression precedence chain to its `ColId`. Any branching along the way — an operator, cast,
+    /// function argument list, parentheses, or literal introduces a sibling node — stops the descent
+    /// and yields absent, so only a plain column reference resolves.
+    private static Option<String> bareColumnName(CstNavigator node) {
+        var colId = node.child("ColId");
+
+        if (colId.isPresent()) {
+            return Option.present(CstExtractor.extractIdentifier(colId.unwrap()).normalized());
+        }
+
+        if (node.children().size() != 1) return Option.empty();
+
+        return node.firstChild().flatMap(QueryValidator::bareColumnName);
+    }
+
     public ValidationResult validate(CstNode cst) {
         var nav = CstNavigator.wrap(cst);
 
@@ -267,7 +336,7 @@ public final class QueryValidator {
         return Option.present(cols);
     }
 
-    private Option<String> inferTargetColumnName(CstNavigator target) {
+    private static Option<String> inferTargetColumnName(CstNavigator target) {
         if (target.has("StarExpr")) return Option.empty();
 
         var colLabels = target.allChildren("ColLabel");

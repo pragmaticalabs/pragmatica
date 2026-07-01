@@ -11,6 +11,7 @@ import org.pragmatica.aether.pg.codegen.annotation.Query;
 import org.pragmatica.aether.pg.codegen.annotation.Table;
 import org.pragmatica.aether.pg.parser.PostgresParser;
 import org.pragmatica.aether.pg.parser.PostgresParser.CstNode;
+import org.pragmatica.aether.pg.parser.transform.CstNavigator;
 import org.pragmatica.aether.pg.schema.model.BuiltinTypes;
 import org.pragmatica.aether.pg.schema.model.PgType;
 import org.pragmatica.aether.pg.schema.model.Schema;
@@ -230,8 +231,9 @@ public class QueryAnnotationProcessor extends AbstractProcessor {
                                                               expansion.allParamNames(),
                                                               boundBody,
                                                               schema));
-        schemaOpt.onPresent(schema -> validateReturnTypeMapping(execElement, resolved, expansion.sql()));
         var rewritten = QueryRewriter.rewriteNamedParams(expansion.sql(), expansion.allParamNames());
+        var parsedCst = sqlParseCache.computeIfAbsent(rewritten.sql(), sqlParser::parseCst);
+        schemaOpt.onPresent(schema -> validateReturnTypeMapping(execElement, resolved, parsedCst));
         validateRewrittenSql(execElement, methodName, rewritten.sql(), schemaOpt);
         var mapperColumns = boundMapperColumns(execElement, resolved, resolveMapperColumns(execElement, resolved));
         var bodyParams = reorderedParams(boundBody, rewritten.parameterOrder());
@@ -888,17 +890,27 @@ public class QueryAnnotationProcessor extends AbstractProcessor {
         }
     }
 
-    /// Validates return type field mapping against SELECT output for @Query methods.
-    /// Emits warnings since SELECT parsing is heuristic.
+    /// Validates return type field mapping against SELECT output for @Query methods, reusing the
+    /// already-parsed CST for precise, CST-based output-column resolution (via
+    /// `QueryValidator.selectOutputColumnNames`). Emits warnings — never errors — since the mapping
+    /// is a best-effort aid. When the SELECT output set cannot be determined precisely (parse
+    /// failure, `SELECT *`, unaliased expressions, or multiple/zero SELECT cores) the check is
+    /// skipped rather than warning spuriously.
     private void validateReturnTypeMapping(
     ExecutableElement execElement,
     TypeMirrorResolver.ResolvedReturn resolved,
-    String sql) {
+    Result<CstNode> parsedCst) {
         if ( !resolved.needsMapper()) {
         return;}
-        var selectColumns = extractSelectColumns(sql);
-        if ( selectColumns.isEmpty()) {
+        if ( parsedCst.isFailure()) {
         return;}
+        var navOpt = CstNavigator.wrap(parsedCst.expect("checked with isFailure above"));
+        if ( navOpt.isEmpty()) {
+        return;}
+        var selectColumnsOpt = QueryValidator.selectOutputColumnNames(navOpt.expect("checked with isEmpty above"));
+        if ( selectColumnsOpt.isEmpty()) {
+        return;}
+        var selectColumns = selectColumnsOpt.expect("checked with isEmpty above");
         var returnFields = extractReturnFields(execElement, resolved);
         for ( var field : returnFields) {
             var columnName = NamingConvention.toSnakeCase(field.name());
@@ -1050,59 +1062,6 @@ public class QueryAnnotationProcessor extends AbstractProcessor {
             pairs.add(new ColumnParamPair(columnName, paramName));}
         }
         return pairs;
-    }
-
-    private static final Pattern SELECT_COLUMN_PATTERN =
-    Pattern.compile("^\\s*SELECT\\s+(.+?)\\s+FROM\\s", Pattern.CASE_INSENSITIVE | Pattern.DOTALL);
-
-    /// Extracts column names from a SELECT clause (heuristic).
-    /// Handles aliases (AS name), qualified names (t.col), and expressions.
-    private static Set<String> extractSelectColumns(String sql) {
-        var matcher = SELECT_COLUMN_PATTERN.matcher(sql);
-        if ( !matcher.find()) {
-        return Set.of();}
-        var selectPart = matcher.group(1).trim();
-        if ( selectPart.equals("*")) {
-        return Set.of();}
-        var columns = new LinkedHashSet<String>();
-        var parts = splitSelectColumns(selectPart);
-        for ( var part : parts) {
-            var colName = extractColumnAlias(part.trim());
-            if ( colName != null) {
-            columns.add(colName);}
-        }
-        return columns;
-    }
-
-    /// Splits SELECT column list on commas, respecting parentheses.
-    private static List<String> splitSelectColumns(String selectPart) {
-        var parts = new ArrayList<String>();
-        var depth = 0;
-        var start = 0;
-        for ( int i = 0; i < selectPart.length(); i++) {
-            var ch = selectPart.charAt(i);
-            if ( ch == '(') { depth++;} else
-            if ( ch == ')') { depth--;} else if ( ch == ',' && depth == 0) {
-                parts.add(selectPart.substring(start, i));
-                start = i + 1;
-            }
-        }
-        parts.add(selectPart.substring(start));
-        return parts;
-    }
-
-    /// Extracts the effective column name from a SELECT expression.
-    /// Handles: `col`, `t.col`, `expr AS alias`, `count(x) AS alias`.
-    private static String extractColumnAlias(String expr) {
-        var asPattern = Pattern.compile("(?i)\\bAS\\s+([a-zA-Z_][a-zA-Z0-9_]*)\\s*$");
-        var asMatcher = asPattern.matcher(expr);
-        if ( asMatcher.find()) {
-        return asMatcher.group(1);}
-        var simplePattern = Pattern.compile("^(?:[a-zA-Z_][a-zA-Z0-9_.]*\\.)?([a-zA-Z_][a-zA-Z0-9_]*)$");
-        var simpleMatcher = simplePattern.matcher(expr.trim());
-        if ( simpleMatcher.matches()) {
-        return simpleMatcher.group(1);}
-        return null;
     }
 
     private static String findParamType(List<FactoryGenerator.MethodParam> params, String paramName) {
