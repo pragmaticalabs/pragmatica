@@ -8,12 +8,14 @@ package org.pragmatica.jbct.slice;
 import org.pragmatica.jbct.slice.generator.DependencyVersionResolver;
 import org.pragmatica.jbct.slice.generator.FactoryClassGenerator;
 import org.pragmatica.jbct.slice.generator.ManifestGenerator;
+import org.pragmatica.jbct.slice.model.MethodModel;
 import org.pragmatica.jbct.slice.model.SliceModel;
 import org.pragmatica.jbct.slice.routing.ErrorMappingValidator;
 import org.pragmatica.jbct.slice.routing.ErrorPatternConfig;
 import org.pragmatica.jbct.slice.routing.ErrorTypeDiscovery;
 import org.pragmatica.jbct.slice.routing.RouteConfig;
 import org.pragmatica.jbct.slice.routing.RouteConfigLoader;
+import org.pragmatica.jbct.slice.routing.RouteCoverageValidator;
 import org.pragmatica.jbct.slice.routing.RouteSourceGenerator;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
@@ -34,6 +36,7 @@ import javax.tools.StandardLocation;
 import java.io.IOException;
 import java.nio.file.FileSystemNotFoundException;
 import java.nio.file.Path;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 
@@ -41,11 +44,13 @@ import com.google.auto.service.AutoService;
 
 @AutoService(Processor.class)
 @SupportedAnnotationTypes("org.pragmatica.aether.slice.annotation.Slice")
-@SupportedOptions({"slice.groupId", "slice.artifactId", "jbct.routes.errors.strict"})
+@SupportedOptions({"slice.groupId", "slice.artifactId", "jbct.routes.errors.strict", "jbct.routes.coverage.strict"})
 @SupportedSourceVersion(SourceVersion.RELEASE_25)
 public class SliceProcessor extends AbstractProcessor {
     /// Processor option escalating an unmapped Cause record from a warning to a build error (#385).
     private static final String ERRORS_STRICT_OPTION = "jbct.routes.errors.strict";
+    /// Processor option escalating an unrouted slice method from a warning to a build error (#389).
+    private static final String COVERAGE_STRICT_OPTION = "jbct.routes.coverage.strict";
 
     private FactoryClassGenerator factoryGenerator;
     private ManifestGenerator manifestGenerator;
@@ -53,6 +58,7 @@ public class SliceProcessor extends AbstractProcessor {
     private RouteSourceGenerator routeGenerator;
     private ErrorTypeDiscovery errorDiscovery;
     private boolean errorsStrict;
+    private boolean coverageStrict;
     private final java.util.Map<String, TypeElement> packageToSlice = new java.util.concurrent.ConcurrentHashMap<>();
     private final java.util.Set<String> routeServiceEntries = java.util.Collections.synchronizedSet(new java.util.LinkedHashSet<>());
 
@@ -69,6 +75,7 @@ public class SliceProcessor extends AbstractProcessor {
         this.errorDiscovery = new ErrorTypeDiscovery(processingEnv);
         this.routeGenerator = new RouteSourceGenerator(filer, processingEnv.getMessager(), elements);
         this.errorsStrict = Boolean.parseBoolean(options.getOrDefault(ERRORS_STRICT_OPTION, "false"));
+        this.coverageStrict = Boolean.parseBoolean(options.getOrDefault(COVERAGE_STRICT_OPTION, "false"));
     }
 
     @Override
@@ -192,6 +199,7 @@ public class SliceProcessor extends AbstractProcessor {
                                                             RouteConfig config) {
         var packageName = sliceModel.packageName();
         var routesTomlPath = packageName.replace('.', '/') + "/routes.toml";
+        reportRouteCoverageIssues(interfaceElement, sliceModel, config, routesTomlPath);
         return errorDiscovery.discover(packageName, config.errors(), routesTomlPath)
                              .onSuccess(discovery -> reportErrorMappingIssues(interfaceElement,
                                                                               discovery.issues(),
@@ -230,6 +238,59 @@ public class SliceProcessor extends AbstractProcessor {
                    : Diagnostic.Kind.WARNING;
         processingEnv.getMessager()
                      .printMessage(kind, issue.message(), interfaceElement);
+    }
+
+    /// Report the forward routes<->methods coverage check (#389): every public, HTTP-eligible slice
+    /// method should have a `[routes]` entry. Delegates the pure check to [RouteCoverageValidator];
+    /// reactive handlers (subscription/scheduled/stream/pg-notification/config-update) are exempt, and
+    /// versioned slices fold their per-version method bindings into the routed set.
+    private void reportRouteCoverageIssues(TypeElement interfaceElement,
+                                           SliceModel sliceModel,
+                                           RouteConfig config,
+                                           String routesTomlPath) {
+        var descriptors = sliceModel.methods()
+                                    .stream()
+                                    .map(SliceProcessor::routeCoverageDescriptor)
+                                    .toList();
+        var issues = RouteCoverageValidator.validate(descriptors, routedHandlerNames(config), routesTomlPath);
+        for (var issue : issues) {
+            emitRouteCoverageIssue(interfaceElement, issue);
+        }
+    }
+
+    /// An unrouted slice method is a WARNING by default so slices with deliberately-internal methods
+    /// keep building; the `-Ajbct.routes.coverage.strict` processor option escalates it to an ERROR (#389).
+    private void emitRouteCoverageIssue(TypeElement interfaceElement, RouteCoverageValidator.Issue issue) {
+        var kind = coverageStrict
+                   ? Diagnostic.Kind.ERROR
+                   : Diagnostic.Kind.WARNING;
+        processingEnv.getMessager()
+                     .printMessage(kind, issue.message(), interfaceElement);
+    }
+
+    private static RouteCoverageValidator.MethodDescriptor routeCoverageDescriptor(MethodModel method) {
+        return new RouteCoverageValidator.MethodDescriptor(method.name(), isHttpExempt(method));
+    }
+
+    /// A method is exempt from route coverage when it is a reactive handler invoked by its own
+    /// transport rather than over HTTP. Rate guards are interceptors on an HTTP route, not a transport,
+    /// so a rate-guarded method is NOT exempt.
+    private static boolean isHttpExempt(MethodModel method) {
+        return method.hasSubscriptions()
+               || method.hasScheduled()
+               || method.hasStreamSubscriptions()
+               || method.hasPgNotificationSubscriptions()
+               || method.hasConfigUpdateSubscriptions();
+    }
+
+    /// The set of method names covered by routes: the `[routes]` handler keys plus, for versioned
+    /// slices, every method a `[vN]` version binding resolves to.
+    private static Set<String> routedHandlerNames(RouteConfig config) {
+        var names = new HashSet<>(config.routes().keySet());
+        for (var version : config.versions().values()) {
+            names.addAll(version.bindKeyToMethod().values());
+        }
+        return names;
     }
 
     private void error(Element element, String message) {
