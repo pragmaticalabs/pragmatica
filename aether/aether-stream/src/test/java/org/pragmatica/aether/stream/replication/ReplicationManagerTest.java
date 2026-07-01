@@ -198,19 +198,40 @@ class ReplicationManagerTest {
 
         @Test
         void selfInReplicaSet_isNotCounted_norReplicatedTo() {
-            // #262.2/.5: the HRW set is owner-first so it contains GOVERNOR (self). Self must not be a
-            // replication target, nor count toward minAcks. With self + one peer registered and
-            // minAcks=2, only ONE real peer exists → NOT_ENOUGH_REPLICAS, and replicate sends only to
-            // the peer.
+            // #262.2/.5 + #378: the HRW set is owner-first so it contains GOVERNOR (self). Under the
+            // corrected provisioning (RF = owner + minSyncReplicas peers) a minSyncReplicas=2 stream
+            // registers self + TWO real peers, so minAcks=2 is satisfiable by the peer acks alone —
+            // self is neither a replication target nor a counted ack.
             registry.registerReplica(STREAM, PARTITION, GOVERNOR); // self, owner-first
             registry.registerReplica(STREAM, PARTITION, REPLICA_A);
+            registry.registerReplica(STREAM, PARTITION, REPLICA_B);
+
+            var pending = manager.awaitReplication(STREAM, PARTITION, 5L, 2);
+            assertThat(pending.isResolved()).isFalse(); // NOT a NOT_ENOUGH failure — two real peers exist
+
+            manager.handleAck(replicateAck(GOVERNOR, STREAM, PARTITION, 5L)); // self-ack: ignored
+            assertThat(pending.isResolved()).isFalse();
+            manager.handleAck(replicateAck(REPLICA_A, STREAM, PARTITION, 5L));
+            manager.handleAck(replicateAck(REPLICA_B, STREAM, PARTITION, 5L));
+            assertThat(pending.await().isSuccess()).isTrue(); // resolved by the two DISTINCT peers
+
+            // Replication targets exclude self: only the two real peers receive the event.
+            manager.replicateEvent(STREAM, PARTITION, 0L, PAYLOAD, TIMESTAMP, Epoch.ZERO);
+            assertThat(sentMessages).extracting(SentMessage::target)
+                                    .containsExactlyInAnyOrder(REPLICA_A, REPLICA_B);
+        }
+
+        @Test
+        void awaitReplication_fewerPeersThanMinAcks_failsNotEnoughReplicas() {
+            // #378: when the cluster is too small to provision `minSyncReplicas` peers (owner + one peer
+            // but minAcks=2), the await fails CLEARLY with NOT_ENOUGH_REPLICAS rather than silently
+            // under-provisioning. This is the manager-side signal the RF clamp relies on when
+            // minSyncReplicas + 1 > N.
+            registry.registerReplica(STREAM, PARTITION, GOVERNOR); // self, owner-first
+            registry.registerReplica(STREAM, PARTITION, REPLICA_A); // only one real peer
 
             var result = manager.awaitReplication(STREAM, PARTITION, 0L, 2).await();
             assertThat(result.isFailure()).isTrue();
-
-            manager.replicateEvent(STREAM, PARTITION, 0L, PAYLOAD, TIMESTAMP, Epoch.ZERO);
-            assertThat(sentMessages).hasSize(1);
-            assertThat(sentMessages.getFirst().target()).isEqualTo(REPLICA_A);
         }
 
         @Test

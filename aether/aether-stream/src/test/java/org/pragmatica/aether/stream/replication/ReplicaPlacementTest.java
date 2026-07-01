@@ -157,10 +157,17 @@ class ReplicaPlacementTest {
     }
 
     @Test
-    void appReplicationFactorClamps() {
-        assertThat(ReplicaPlacement.replicationFactor(3, 5)).isEqualTo(3);
+    void appReplicationFactorIsOwnerPlusMinSyncPeers() {
+        // #378: APP RF = owner + minSyncReplicas sync peers = clamp(minSyncReplicas + 1, 1, N).
+        assertThat(ReplicaPlacement.replicationFactor(0, 5)).isEqualTo(1);  // EVENTUAL: owner only
+        assertThat(ReplicaPlacement.replicationFactor(1, 5)).isEqualTo(2);  // owner + 1 peer
+        assertThat(ReplicaPlacement.replicationFactor(2, 5)).isEqualTo(3);  // owner + 2 peers
+        assertThat(ReplicaPlacement.replicationFactor(3, 5)).isEqualTo(4);  // owner + 3 peers
+        assertThat(ReplicaPlacement.replicationFactor(4, 5)).isEqualTo(5);  // owner + 4 peers == N
+        // minSyncReplicas + 1 > N -> clamp to N (best-effort; the publish await then fails clearly).
+        assertThat(ReplicaPlacement.replicationFactor(4, 3)).isEqualTo(3);
         assertThat(ReplicaPlacement.replicationFactor(10, 5)).isEqualTo(5);
-        assertThat(ReplicaPlacement.replicationFactor(0, 5)).isEqualTo(1);
+        // empty cluster -> 0
         assertThat(ReplicaPlacement.replicationFactor(3, 0)).isEqualTo(0);
     }
 
@@ -176,7 +183,8 @@ class ReplicaPlacementTest {
 
     @Test
     void streamClassDispatch() {
-        assertThat(ReplicaPlacement.replicationFactor(StreamClass.APP, 2, 5)).isEqualTo(2);
+        // #378: APP dispatch honours minSyncReplicas + 1 (owner + 2 peers); SYSTEM is the full cluster.
+        assertThat(ReplicaPlacement.replicationFactor(StreamClass.APP, 2, 5)).isEqualTo(3);
         assertThat(ReplicaPlacement.replicationFactor(StreamClass.SYSTEM, 2, 5)).isEqualTo(5);
     }
 

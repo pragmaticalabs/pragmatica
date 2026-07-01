@@ -98,14 +98,25 @@ public final class ReplicaPlacement {
                     .or(false);
     }
 
-    /// Effective replication factor for an APP stream:
-    /// `clamp(requested, 1, clusterSize)`. Returns 0 only when the cluster is empty.
-    public static int replicationFactor(int requested, int clusterSize) {
+    /// Effective replication factor for an APP stream: `clamp(minSyncReplicas + 1, 1, clusterSize)`.
+    ///
+    /// The HRW replica set is owner-first, so the owner is always index 0 of the set and a synchronous
+    /// publish awaits `minSyncReplicas` DISTINCT NON-SELF acks. The set must therefore hold the owner
+    /// PLUS `minSyncReplicas` peers — hence the `+ 1`. `minSyncReplicas = 0` (EVENTUAL) yields RF = 1
+    /// (owner only, no peers), leaving the default eventual path unchanged. Returns 0 only when the
+    /// cluster is empty.
+    ///
+    /// When `minSyncReplicas + 1 > clusterSize` the cluster is too small to provision the requested
+    /// sync peers; RF clamps to `clusterSize` (best-effort placement onto every node) and the publish
+    /// then fails CLEARLY — the owner has only `clusterSize - 1 < minSyncReplicas` peers, so
+    /// [ReplicationManager#awaitReplication] rejects with `NOT_ENOUGH_REPLICAS` rather than silently
+    /// under-provisioning.
+    public static int replicationFactor(int minSyncReplicas, int clusterSize) {
         if (clusterSize <= 0) {
             return 0;
         }
 
-        return clamp(requested, 1, clusterSize);
+        return clamp(minSyncReplicas + 1, 1, clusterSize);
     }
 
     /// Effective replication factor for a SYSTEM stream: the FULL cluster — every core node is a
