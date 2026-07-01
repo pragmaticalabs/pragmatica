@@ -86,6 +86,18 @@ class SpiResourceProviderTest {
         }
 
         @Test
+        void provide_failsWithNamedError_whenProviderMissing() {
+            var provider = spiResourceProvider((section, configClass) -> Result.success("dummy"));
+
+            var result = provider.provide(String.class, "test.section")
+                                 .await(TIMEOUT);
+
+            assertThat(result.isFailure()).isTrue();
+            result.onFailure(cause -> assertThat(cause.message()).contains("No resource provider registered")
+                                                                 .contains(String.class.getName()));
+        }
+
+        @Test
         void provide_returnsSamePromise_whenCalledTwiceWithSameKey() {
             var provider = spiResourceProvider((section, configClass) -> Result.success("dummy"));
 

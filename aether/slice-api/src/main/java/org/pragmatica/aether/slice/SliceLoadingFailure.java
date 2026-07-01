@@ -82,7 +82,8 @@ public sealed interface SliceLoadingFailure extends Cause permits SliceLoadingFa
         record ResourceFactoryNotFound(String resourceType) implements Fatal {
             @Override
             public String message() {
-                return "No factory registered for resource type: " + resourceType;
+                return "No resource provider registered for resource type: " + resourceType
+                     + ". Bundle the module supplying a ResourceFactory for this type on the runtime classpath.";
             }
         }
 
