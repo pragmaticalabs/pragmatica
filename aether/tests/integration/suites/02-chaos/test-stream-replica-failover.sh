@@ -27,12 +27,17 @@ source "${SCRIPT_DIR}/../../lib/cluster.sh"
 source "${SCRIPT_DIR}/../../lib/topology.sh"
 source "${SCRIPT_DIR}/../../lib/generation.sh"
 
-# Unique per-run name so a re-run (or a prior 04-streaming run on a shared cluster)
-# cannot pollute the partition under test with stale offsets.
-STREAM_NAME="${STREAM_NAME:-chaos-replica-failover-$$}"
+# The stream under test is declared by the test-stream-repl blueprint with
+# min-sync-replicas=2 -> RF=2 (owner + 1 synchronously-in-sync replica). This is
+# the ONLY way to get RF>=2: POST /api/streams hardcodes minSyncReplicas=0 -> RF=1
+# (owner-only), which structurally cannot have a CAUGHT_UP non-owner replica to fail
+# over to. The blueprint's stream name is fixed; the deploy step deletes+redeploys it
+# so a re-run (or a prior run) cannot pollute the partition with stale offsets.
+STREAM_NAME="${STREAM_NAME:-repl-failover-events}"
+STREAM_BP="${STREAM_BP:-org.pragmatica.aether.test:test-stream-repl:1.0.0}"
 PARTITION=0                 # /api/streams/publish/{name} always writes partition 0
-                            # (StreamRoutes.publishToPartition), and we create the
-                            # stream single-partition, so all markers land here.
+                            # (StreamRoutes.publishToPartition), and the stream is
+                            # single-partition, so all markers land here.
 N_EVENTS="${N_EVENTS:-20}"  # distinct markers published before the kill
 K_EVENTS="${K_EVENTS:-5}"   # additional markers published after repair (liveness)
 
@@ -264,11 +269,33 @@ test_initial_state() {
     assert_ge "$count" "5" "Initial: at least 5 nodes (${count})"
 }
 
-test_create_stream_single_partition() {
-    local payload result
-    payload="{\"name\":\"${STREAM_NAME}\",\"partitions\":1}"
-    result=$(api_post "/api/streams" "$payload")
-    assert_contains "$result" "$STREAM_NAME" "Stream created single-partition: ${STREAM_NAME}"
+test_deploy_repl_stream_blueprint() {
+    # RF>=2 sync replication requires the stream be created via a blueprint that
+    # declares min-sync-replicas; POST /api/streams can only mint RF=1 (owner-only).
+    # Deploy the dedicated test-stream-repl blueprint whose 'repl-failover-events'
+    # stream is partitions=1 + min-sync-replicas=2 -> RF=2 (owner + 1 in-sync replica).
+    #
+    # ORDERING is load-bearing: the slice must ACTIVATE (committing the RF=2
+    # StreamConfig via StreamPublisherFactory.createStream) BEFORE the first
+    # management publish — otherwise StreamRoutes.ensureStreamExists mints the stream
+    # at RF=0 and tolerateAlreadyExists (StreamCreateOutcome ALREADY_EXISTS==DONE)
+    # freezes it there. wait_for all-instances-ACTIVE is that barrier.
+    #
+    # Defensive: drop any stale same-named stream left by a prior crashed run so the
+    # partition under test starts empty (offset 0).
+    aether_failover streams delete "$STREAM_NAME" >/dev/null 2>&1 || true
+    if ! push_blueprint "$STREAM_BP" >/dev/null; then
+        log_fail "Failed to push blueprint ${STREAM_BP}"
+        return 1
+    fi
+    deploy_blueprint "$STREAM_BP" >/dev/null 2>&1 || true
+    if ! wait_for "test-stream-repl all instances ACTIVE (RF=2 stream config committed)" \
+        "[ \$(slices_active_instances_for '${STREAM_BP}') -ge \$(slices_target_total_for '${STREAM_BP}') ] && [ \$(slices_target_total_for '${STREAM_BP}') -gt 0 ]" \
+        120; then
+        log_fail "test-stream-repl did not reach all-instances ACTIVE — RF=2 stream ${STREAM_NAME} not established"
+        return 1
+    fi
+    log_pass "Deployed ${STREAM_BP}; RF=2 stream ${STREAM_NAME} committed (partitions=1, min-sync-replicas=2)"
 }
 
 test_publish_initial_history() {
@@ -426,7 +453,7 @@ cleanup() {
 trap 'cleanup' EXIT
 
 run_test "Initial 5 nodes"                          test_initial_state
-run_test "Create single-partition stream"           test_create_stream_single_partition
+run_test "Deploy RF=2 replicated stream blueprint"  test_deploy_repl_stream_blueprint
 run_test "Publish ${N_EVENTS}-event history"        test_publish_initial_history
 run_test "Full history readable before kill"        test_full_history_present_before_kill
 run_test "Identify HRW owner + CAUGHT_UP replica"   test_identify_owner_and_caught_up_replica

@@ -1,0 +1,25 @@
+# Application-level (blueprint) resources for test-stream-repl.
+#
+# Packaged into the blueprint JAR as META-INF/resources.toml by the JBCT
+# maven-plugin (GenerateBlueprintMojo / PackageBlueprintMojo). At deploy
+# time, BlueprintService stores this content in the KV-Store; each node's
+# slice loader resolves @ResourceQualifier(config = "streams.repl-failover-events")
+# lookups (see @EventStreamPublisher / @EventStreamReader) against it.
+#
+# RF=2 / synchronously-replicated config for the 02-chaos replica-failover test:
+#   - partitions        = 1  -> one clean, globally-ordered log (monotonic offsets).
+#   - replicas          = 2  -> replication factor (RF): copies incl owner (owner + 1 replica).
+#   - min-sync-replicas = 2  -> owner + 1 in-sync per write: each publish AWAITs a replica
+#     ack before it returns, so the log survives loss of the primary replica (synchronous
+#     replication) and the single replica is always caught up -> lossless owner-kill failover.
+#   - retention  = count     -> count-based eviction (never time-based) so a slow
+#     consumer is never evicted mid-test; retention-value is far larger than any
+#     test event count, so nothing is ever dropped (no spurious CursorExpired).
+
+[streams.repl-failover-events]
+partitions = 1
+replicas = 2
+min-sync-replicas = 2
+retention = "count"
+retention-value = "100000"
+max-event-size = "64KB"
