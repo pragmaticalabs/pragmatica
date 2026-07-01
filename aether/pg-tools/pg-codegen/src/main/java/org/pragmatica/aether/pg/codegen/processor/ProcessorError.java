@@ -78,6 +78,20 @@ public final class ProcessorError {
         return PREFIX + "Field '" + field + "' in return type " + recordType + " has no matching SELECT column";
     }
 
+    public static String missingPgReprForParam(String param, String type) {
+        return PREFIX
+             + "Parameter '" + param + "' has type '" + type
+             + "' which is neither a supported column type nor a value object exposing "
+             + "'static PgRepr<" + type + ", P> pgRepr()'. Add a PgRepr or use a raw column type.";
+    }
+
+    public static String missingPgReprForField(String field, String type, String recordType) {
+        return PREFIX
+             + "Field '" + field + "' of return type " + recordType + " has type '" + type
+             + "' which is neither a supported column type nor a value object exposing "
+             + "'static PgRepr<" + type + ", P> pgRepr()'. Add a PgRepr or use a raw column type.";
+    }
+
     public static String sqlConnectorWithQueryAnnotation(String interfaceName) {
         return PREFIX
              + "Interface '" + interfaceName
