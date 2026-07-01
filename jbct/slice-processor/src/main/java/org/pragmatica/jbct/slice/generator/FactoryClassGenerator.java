@@ -11,6 +11,7 @@ import org.pragmatica.jbct.slice.model.KeyExtractorInfo;
 import org.pragmatica.jbct.slice.model.MethodModel;
 import org.pragmatica.jbct.slice.model.MethodModel.MethodParameterInfo;
 import org.pragmatica.jbct.slice.model.PlainInterfaceModel;
+import org.pragmatica.jbct.slice.model.ResolvedTopicConstant;
 import org.pragmatica.jbct.slice.model.ResourceQualifierModel;
 import org.pragmatica.jbct.slice.model.SliceModel;
 import org.pragmatica.lang.Option;
@@ -71,12 +72,19 @@ public class FactoryClassGenerator {
     }
 
     public Result<Unit> generate(SliceModel model) {
+        return generate(model, Map.of());
+    }
+
+    /// Generate the slice factory, wrapping any publisher whose `@ResourceQualifier(config = ...)`
+    /// resolved to a single-source `Topic<T>` constant in a `TypedPublisher` bound to that constant
+    /// (#396). `publisherBindings` is keyed by the publisher's `config` identifier.
+    public Result<Unit> generate(SliceModel model, Map<String, ResolvedTopicConstant> publisherBindings) {
         try {
             var factoryName = model.simpleName() + "Factory";
             var qualifiedName = model.packageName() + "." + factoryName;
             JavaFileObject file = filer.createSourceFile(qualifiedName);
             try (var writer = new PrintWriter(file.openWriter())) {
-                generateFactoryClass(writer, model, factoryName);
+                generateFactoryClass(writer, model, factoryName, publisherBindings);
             }
             return Result.unitResult();
         } catch (DependencyLimitExceeded e) {
@@ -99,7 +107,10 @@ public class FactoryClassGenerator {
         }
     }
 
-    private void generateFactoryClass(PrintWriter out, SliceModel model, String factoryName) {
+    private void generateFactoryClass(PrintWriter out,
+                                      SliceModel model,
+                                      String factoryName,
+                                      Map<String, ResolvedTopicConstant> publisherBindings) {
         var sliceName = model.simpleName();
         var basePackage = model.packageName();
         var importTracker = new ImportTracker(basePackage);
@@ -134,6 +145,9 @@ public class FactoryClassGenerator {
             importTracker.use("org.pragmatica.aether.slice.ProvisioningContext");
             importTracker.use("org.pragmatica.lang.Functions.Fn1");
         }
+        if (!publisherBindings.isEmpty()) {
+            importTracker.use("org.pragmatica.aether.slice.topic.TypedPublisher");
+        }
         if (hasMultiParamMethods(model)) {
             importTracker.use("org.pragmatica.lang.Functions.Fn1");
         }
@@ -164,7 +178,7 @@ public class FactoryClassGenerator {
         // Request records for multi-param methods (public inner records of factory class)
         generateRequestRecords(bodyOut, model, importTracker);
         // create() method
-        generateCreateMethod(bodyOut, model, allDeps, proxyMethodsCache, importTracker);
+        generateCreateMethod(bodyOut, model, allDeps, proxyMethodsCache, importTracker, publisherBindings);
         bodyOut.println();
         // createSlice() method
         generateCreateSliceMethod(bodyOut, model, proxyMethodsCache, importTracker);
@@ -211,7 +225,8 @@ public class FactoryClassGenerator {
                                        SliceModel model,
                                        List<DependencyModel> allDeps,
                                        Map<String, List<ProxyMethodInfo>> proxyMethodsCache,
-                                       ImportTracker importTracker) {
+                                       ImportTracker importTracker,
+                                       Map<String, ResolvedTopicConstant> publisherBindings) {
         var sliceName = model.simpleName();
         var methodName = lowercaseFirst(sliceName);
         // Split dependencies: resource deps, slice deps (get proxy records), plain interface deps
@@ -237,7 +252,7 @@ public class FactoryClassGenerator {
             out.println();
         }
         // Build the creation chain
-        generateCreationChain(out, model, resourceDeps, sliceDeps, plainDeps, proxyMethodsCache, importTracker);
+        generateCreationChain(out, model, resourceDeps, sliceDeps, plainDeps, proxyMethodsCache, importTracker, publisherBindings);
         out.println("    }");
     }
 
@@ -348,12 +363,13 @@ public class FactoryClassGenerator {
                                         List<DependencyModel> sliceDeps,
                                         List<DependencyModel> plainDeps,
                                         Map<String, List<ProxyMethodInfo>> proxyMethodsCache,
-                                        ImportTracker importTracker) {
+                                        ImportTracker importTracker,
+                                        Map<String, ResolvedTopicConstant> publisherBindings) {
         var sliceName = model.simpleName();
         var entries = new ArrayList<AllEntry>();
         // Resource deps
         for (var resource : resourceDeps) {
-            entries.add(new AllEntry(resource.parameterName(), generateResourceProvideCall(resource, importTracker)));
+            entries.add(new AllEntry(resource.parameterName(), generateResourceProvideCall(resource, importTracker, publisherBindings)));
         }
         // Interceptor deps (deduplicated)
         var interceptorEntries = collectUniqueInterceptors(model);
@@ -1225,17 +1241,20 @@ public class FactoryClassGenerator {
     /// Publisher and stream resources require ProvisioningContext for runtime extensions.
     /// When the resource type differs from the parameter type (e.g., @PgSql persistence interfaces),
     /// wraps the connector in a factory call: InterfaceFactory.interface(connector).
-    private String generateResourceProvideCall(DependencyModel resource, ImportTracker importTracker) {
+    private String generateResourceProvideCall(DependencyModel resource,
+                                               ImportTracker importTracker,
+                                               Map<String, ResolvedTopicConstant> publisherBindings) {
         return resource.resourceQualifier()
                        .map(qualifier -> qualifier.isConfigurationSection()
                                          ? generateConfigSectionCall(resource, qualifier, importTracker)
-                                         : generateStandardProvideCall(resource, qualifier, importTracker))
+                                         : generateStandardProvideCall(resource, qualifier, importTracker, publisherBindings))
                        .or("ctx.resources().provide(Object.class, \"unknown\")");
     }
 
     private String generateStandardProvideCall(DependencyModel resource,
                                                 ResourceQualifierModel qualifier,
-                                                ImportTracker importTracker) {
+                                                ImportTracker importTracker,
+                                                Map<String, ResolvedTopicConstant> publisherBindings) {
         var qualifiedTypeName = qualifier.resourceType().toString();
         var typeName = importTracker.use(qualifiedTypeName);
         var configSection = escapeJavaString(qualifier.configSection());
@@ -1243,6 +1262,14 @@ public class FactoryClassGenerator {
                           ? "ctx.resources().provide(" + typeName + ".class, \""
                             + configSection + "\", ProvisioningContext.provisioningContext())"
                           : "ctx.resources().provide(" + typeName + ".class, \"" + configSection + "\")";
+        // Typed-topic publisher: wrap the provisioned Publisher in a TypedPublisher bound to the
+        // single-source Topic<T> constant named by @ResourceQualifier(config = "<CONSTANT>") (#396),
+        // and provision by the topic NAME resolved from that constant.
+        if (resource.isPublisher()) {
+            return Option.option(publisherBindings.get(qualifier.configSection()))
+                         .map(constant -> typedPublisherProvideCall(typeName, constant, importTracker))
+                         .or(provideCall);
+        }
         // If resource type differs from parameter type, wrap in factory call
         // e.g., @PgSql AnalyticsPersistence -> provide PgSqlConnector, wrap via factory
         if (!qualifiedTypeName.equals(resource.interfaceQualifiedName())) {
@@ -1251,6 +1278,26 @@ public class FactoryClassGenerator {
             return provideCall + ".map(" + factoryClass + "::" + factoryMethod + ")";
         }
         return provideCall;
+    }
+
+    /// Provisioning call for a typed-topic publisher: provisions by the topic NAME resolved from the
+    /// single-source `Topic<T>` constant (so the runtime derives the name from the constant, not a
+    /// hand-written resources.toml `topic_name`) and wraps the provisioned `Publisher` in a
+    /// `TypedPublisher` bound to that constant. Falls back to the constant identifier only for a
+    /// cross-module constant whose name literal could not be read from source.
+    private String typedPublisherProvideCall(String typeName, ResolvedTopicConstant constant, ImportTracker importTracker) {
+        var section = escapeJavaString(constant.topicName().or(constant.configIdentifier()));
+        var provideCall = "ctx.resources().provide(" + typeName + ".class, \"" + section
+                          + "\", ProvisioningContext.provisioningContext())";
+        return provideCall + typedPublisherWrap(constant, importTracker);
+    }
+
+    /// The `.map(...)` fragment that wraps a provisioned `Publisher` in a `TypedPublisher` bound to
+    /// its single-source `Topic<T>` constant.
+    private static String typedPublisherWrap(ResolvedTopicConstant constant, ImportTracker importTracker) {
+        var typedPublisher = importTracker.use("org.pragmatica.aether.slice.topic.TypedPublisher");
+        var constantReference = importTracker.use(constant.holderQualifiedName()) + "." + constant.fieldName();
+        return ".map(pub -> " + typedPublisher + ".typedPublisher(" + constantReference + ", pub))";
     }
 
     /// Generate config section parsing code for ConfigurationSection resources.

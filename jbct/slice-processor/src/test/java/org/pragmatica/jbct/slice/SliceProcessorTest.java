@@ -2482,10 +2482,10 @@ class SliceProcessorTest {
         assertThat(manifestFile.isPresent()).isTrue();
         var manifestContent = manifestFile.get().getCharContent(false).toString();
 
-        // Verify envelope version (bumped to 1005: path-route codegen now emits the FULL interleaved
-        // path — static segments after the first path parameter become PathParameter.spacer("...")
-        // inside withPath(...) instead of being silently truncated — so output structure changed).
-        assertThat(manifestContent).contains("envelope.version=1005");
+        // Verify envelope version (bumped to 1006: typed pub/sub blocks now carry a topicName derived
+        // from the single-source Topic<T> constant (#396); earlier 1005 added the full interleaved
+        // path — static segments after the first path parameter become PathParameter.spacer("...")).
+        assertThat(manifestContent).contains("envelope.version=1006");
 
         // Verify stream publisher metadata
         assertThat(manifestContent).contains("stream.publishers.count=1");
@@ -3272,5 +3272,293 @@ class SliceProcessorTest {
         assertCompilation(compilation).failed();
         assertCompilation(compilation).hadErrorContaining("at most 15");
         assertCompilation(compilation).hadErrorContaining("OverloadedService");
+    }
+
+    // ========== Typed Topic (Topic<T> constant) Tests (#396) ==========
+
+    private static final JavaFileObject PUBLISHER = JavaFileObjects.forSourceString(
+            "org.pragmatica.aether.slice.Publisher",
+            """
+            package org.pragmatica.aether.slice;
+
+            import org.pragmatica.lang.Promise;
+            import org.pragmatica.lang.Unit;
+
+            public interface Publisher<T> {
+                Promise<Unit> publish(T message);
+            }
+            """);
+
+    private static final JavaFileObject TOPIC = JavaFileObjects.forSourceString(
+            "org.pragmatica.aether.slice.topic.Topic",
+            """
+            package org.pragmatica.aether.slice.topic;
+
+            import org.pragmatica.lang.type.TypeToken;
+
+            public record Topic<T>(String name, TypeToken<T> payloadType) {
+                public static <T> Topic<T> of(String name, TypeToken<T> payloadType) { return new Topic<>(name, payloadType); }
+                public static <T> Topic<T> of(String name, Class<T> payloadType) { return new Topic<>(name, null); }
+            }
+            """);
+
+    private static final JavaFileObject TYPED_PUBLISHER = JavaFileObjects.forSourceString(
+            "org.pragmatica.aether.slice.topic.TypedPublisher",
+            """
+            package org.pragmatica.aether.slice.topic;
+
+            import org.pragmatica.aether.slice.Publisher;
+            import org.pragmatica.lang.Promise;
+            import org.pragmatica.lang.Unit;
+
+            public record TypedPublisher<T>(Topic<T> topic, Publisher<T> delegate) implements Publisher<T> {
+                public static <T> TypedPublisher<T> typedPublisher(Topic<T> topic, Publisher<T> delegate) { return new TypedPublisher<>(topic, delegate); }
+                public Promise<Unit> publish(T message) { return delegate.publish(message); }
+            }
+            """);
+
+    private static final JavaFileObject ORDER_EVENT_DTO = JavaFileObjects.forSourceString(
+            "test.dto.OrderEvent",
+            """
+            package test.dto;
+            public record OrderEvent(String orderId) {}
+            """);
+
+    private static final JavaFileObject OTHER_EVENT_DTO = JavaFileObjects.forSourceString(
+            "test.dto.OtherEvent",
+            """
+            package test.dto;
+            public record OtherEvent(String value) {}
+            """);
+
+    private static final JavaFileObject ORDER_TOPICS_HOLDER = JavaFileObjects.forSourceString(
+            "test.topics.Topics",
+            """
+            package test.topics;
+            import org.pragmatica.aether.slice.topic.Topic;
+            import test.dto.OrderEvent;
+            public interface Topics {
+                Topic<OrderEvent> ORDER_EVENTS = Topic.of("order-events", OrderEvent.class);
+            }
+            """);
+
+    private List<JavaFileObject> typedTopicSources() {
+        var sources = commonSources();
+        sources.add(PUBLISHER);
+        sources.add(SUBSCRIBER);
+        sources.add(TOPIC);
+        sources.add(TYPED_PUBLISHER);
+        sources.add(ORDER_EVENT_DTO);
+        return sources;
+    }
+
+    private static JavaFileObject publisherAnnotation(String simpleName, String config) {
+        return JavaFileObjects.forSourceString("test.annotation." + simpleName,
+                                               """
+            package test.annotation;
+            import org.pragmatica.aether.slice.annotation.ResourceQualifier;
+            import org.pragmatica.aether.slice.Publisher;
+            import java.lang.annotation.*;
+            @ResourceQualifier(type = Publisher.class, config = "%s")
+            @Retention(RetentionPolicy.RUNTIME)
+            @Target(ElementType.PARAMETER)
+            public @interface %s {}
+            """.formatted(config, simpleName));
+    }
+
+    private static JavaFileObject subscriptionAnnotation(String simpleName, String config) {
+        return JavaFileObjects.forSourceString("test.annotation." + simpleName,
+                                               """
+            package test.annotation;
+            import org.pragmatica.aether.slice.annotation.ResourceQualifier;
+            import org.pragmatica.aether.slice.Subscriber;
+            import java.lang.annotation.*;
+            @ResourceQualifier(type = Subscriber.class, config = "%s")
+            @Retention(RetentionPolicy.RUNTIME)
+            @Target(ElementType.METHOD)
+            public @interface %s {}
+            """.formatted(config, simpleName));
+    }
+
+    @Test
+    void typedTopicPublisher_wrapsProvisionedPublisherInTypedPublisher_whenConfigNamesConstant() throws Exception {
+        var source = JavaFileObjects.forSourceString("test.OrderService",
+                                                     """
+            package test;
+            import org.pragmatica.aether.slice.annotation.Slice;
+            import org.pragmatica.aether.slice.Publisher;
+            import org.pragmatica.lang.Promise;
+            import test.annotation.OrderPublisher;
+            import test.dto.OrderEvent;
+            @Slice
+            public interface OrderService {
+                Promise<String> placeOrder(String orderId);
+                static OrderService orderService(@OrderPublisher Publisher<OrderEvent> clickPublisher) { return null; }
+            }
+            """);
+        var sources = typedTopicSources();
+        sources.add(ORDER_TOPICS_HOLDER);
+        sources.add(publisherAnnotation("OrderPublisher", "ORDER_EVENTS"));
+        sources.add(source);
+
+        Compilation compilation = javac().withProcessors(new SliceProcessor()).compile(sources);
+
+        assertCompilation(compilation).succeeded();
+        var factoryContent = compilation.generatedSourceFile("test.OrderServiceFactory")
+                                        .get().getCharContent(false).toString();
+        assertThat(factoryContent).contains("TypedPublisher.typedPublisher(Topics.ORDER_EVENTS, pub)");
+        assertThat(factoryContent).contains("ctx.resources().provide(Publisher.class, \"order-events\", ProvisioningContext.provisioningContext())");
+        var manifest = compilation.generatedFile(StandardLocation.CLASS_OUTPUT, "META-INF/slice/OrderService.manifest")
+                                  .get().getCharContent(false).toString();
+        assertThat(manifest).contains("publish.topic.0.topicName=order-events");
+        assertThat(manifest).contains("publish.topic.0.config=order-events");
+        assertThat(manifest).contains("envelope.version=1006");
+    }
+
+    @Test
+    void typedTopicPublisher_failsCompilation_whenConfigNamesNoConstant() throws Exception {
+        var source = JavaFileObjects.forSourceString("test.OrderService",
+                                                     """
+            package test;
+            import org.pragmatica.aether.slice.annotation.Slice;
+            import org.pragmatica.aether.slice.Publisher;
+            import org.pragmatica.lang.Promise;
+            import test.annotation.MissingPublisher;
+            import test.dto.OrderEvent;
+            @Slice
+            public interface OrderService {
+                Promise<String> placeOrder(String orderId);
+                static OrderService orderService(@MissingPublisher Publisher<OrderEvent> clickPublisher) { return null; }
+            }
+            """);
+        var sources = typedTopicSources();
+        sources.add(ORDER_TOPICS_HOLDER);
+        sources.add(publisherAnnotation("MissingPublisher", "MISSING_TOPIC"));
+        sources.add(source);
+
+        Compilation compilation = javac().withProcessors(new SliceProcessor()).compile(sources);
+
+        assertCompilation(compilation).failed();
+        assertCompilation(compilation).hadErrorContaining("names no visible");
+        assertCompilation(compilation).hadErrorContaining("MISSING_TOPIC");
+    }
+
+    @Test
+    void typedTopicPublisher_failsCompilation_whenPayloadTypeMismatches() throws Exception {
+        var source = JavaFileObjects.forSourceString("test.OrderService",
+                                                     """
+            package test;
+            import org.pragmatica.aether.slice.annotation.Slice;
+            import org.pragmatica.aether.slice.Publisher;
+            import org.pragmatica.lang.Promise;
+            import test.annotation.OrderPublisher;
+            import test.dto.OtherEvent;
+            @Slice
+            public interface OrderService {
+                Promise<String> placeOrder(String orderId);
+                static OrderService orderService(@OrderPublisher Publisher<OtherEvent> clickPublisher) { return null; }
+            }
+            """);
+        var sources = typedTopicSources();
+        sources.add(OTHER_EVENT_DTO);
+        sources.add(ORDER_TOPICS_HOLDER);
+        sources.add(publisherAnnotation("OrderPublisher", "ORDER_EVENTS"));
+        sources.add(source);
+
+        Compilation compilation = javac().withProcessors(new SliceProcessor()).compile(sources);
+
+        assertCompilation(compilation).failed();
+        assertCompilation(compilation).hadErrorContaining("payload type");
+        assertCompilation(compilation).hadErrorContaining("OtherEvent");
+    }
+
+    @Test
+    void typedTopicSubscriber_compiles_whenHandlerTypeMatchesConstant() throws Exception {
+        var source = JavaFileObjects.forSourceString("test.OrderSink",
+                                                     """
+            package test;
+            import org.pragmatica.aether.slice.annotation.Slice;
+            import org.pragmatica.lang.Promise;
+            import org.pragmatica.lang.Unit;
+            import test.annotation.OrderSubscription;
+            import test.dto.OrderEvent;
+            @Slice
+            public interface OrderSink {
+                @OrderSubscription
+                Promise<Unit> onOrder(OrderEvent event);
+                static OrderSink orderSink() { return null; }
+            }
+            """);
+        var sources = typedTopicSources();
+        sources.add(ORDER_TOPICS_HOLDER);
+        sources.add(subscriptionAnnotation("OrderSubscription", "ORDER_EVENTS"));
+        sources.add(source);
+
+        Compilation compilation = javac().withProcessors(new SliceProcessor()).compile(sources);
+
+        assertCompilation(compilation).succeeded();
+        var manifest = compilation.generatedFile(StandardLocation.CLASS_OUTPUT, "META-INF/slice/OrderSink.manifest")
+                                  .get().getCharContent(false).toString();
+        assertThat(manifest).contains("reactive.0.category=subscription");
+        assertThat(manifest).contains("reactive.0.topicName=order-events");
+        assertThat(manifest).contains("reactive.0.config=order-events");
+    }
+
+    @Test
+    void typedTopicSubscriber_failsCompilation_whenHandlerTypeMismatches() throws Exception {
+        var source = JavaFileObjects.forSourceString("test.OrderSink",
+                                                     """
+            package test;
+            import org.pragmatica.aether.slice.annotation.Slice;
+            import org.pragmatica.lang.Promise;
+            import org.pragmatica.lang.Unit;
+            import test.annotation.OrderSubscription;
+            import test.dto.OtherEvent;
+            @Slice
+            public interface OrderSink {
+                @OrderSubscription
+                Promise<Unit> onOrder(OtherEvent event);
+                static OrderSink orderSink() { return null; }
+            }
+            """);
+        var sources = typedTopicSources();
+        sources.add(OTHER_EVENT_DTO);
+        sources.add(ORDER_TOPICS_HOLDER);
+        sources.add(subscriptionAnnotation("OrderSubscription", "ORDER_EVENTS"));
+        sources.add(source);
+
+        Compilation compilation = javac().withProcessors(new SliceProcessor()).compile(sources);
+
+        assertCompilation(compilation).failed();
+        assertCompilation(compilation).hadErrorContaining("payload type");
+    }
+
+    @Test
+    void legacyLowercasePublisherConfig_keepsWorkingWithoutTypedWrap() throws Exception {
+        var source = JavaFileObjects.forSourceString("test.OrderService",
+                                                     """
+            package test;
+            import org.pragmatica.aether.slice.annotation.Slice;
+            import org.pragmatica.aether.slice.Publisher;
+            import org.pragmatica.lang.Promise;
+            import test.annotation.LegacyPublisher;
+            import test.dto.OrderEvent;
+            @Slice
+            public interface OrderService {
+                Promise<String> placeOrder(String orderId);
+                static OrderService orderService(@LegacyPublisher Publisher<OrderEvent> clickPublisher) { return null; }
+            }
+            """);
+        var sources = typedTopicSources();
+        sources.add(publisherAnnotation("LegacyPublisher", "order-events"));
+        sources.add(source);
+
+        Compilation compilation = javac().withProcessors(new SliceProcessor()).compile(sources);
+
+        assertCompilation(compilation).succeeded();
+        var factoryContent = compilation.generatedSourceFile("test.OrderServiceFactory")
+                                        .get().getCharContent(false).toString();
+        assertThat(factoryContent).contains("ctx.resources().provide(Publisher.class, \"order-events\", ProvisioningContext.provisioningContext())");
+        assertThat(factoryContent).doesNotContain("TypedPublisher");
     }
 }

@@ -8,6 +8,7 @@ package org.pragmatica.jbct.slice.generator;
 import org.pragmatica.jbct.slice.model.DependencyModel;
 import org.pragmatica.jbct.slice.model.MethodModel;
 import org.pragmatica.jbct.slice.model.MethodModel.ReactiveMethodBinding;
+import org.pragmatica.jbct.slice.model.ResolvedTopicConstant;
 import org.pragmatica.jbct.slice.model.ResourceQualifierModel;
 import org.pragmatica.jbct.slice.model.SliceModel;
 import org.pragmatica.jbct.slice.model.SliceModel.TransitiveMethod;
@@ -32,7 +33,10 @@ import java.util.Properties;
 import java.util.stream.Collectors;
 
 public class ManifestGenerator {
-    static final int ENVELOPE_FORMAT_VERSION = 1005;
+    /// Envelope bumped 1005 -> 1006: publisher and subscription manifest blocks now carry a
+    /// `topicName` derived from the single-source `Topic<T>` constant (#396), and the topic `config`
+    /// for typed topics is the resolved topic name rather than a resources.toml section identifier.
+    static final int ENVELOPE_FORMAT_VERSION = 1006;
 
     private final Filer filer;
     private final DependencyVersionResolver versionResolver;
@@ -59,18 +63,28 @@ public class ManifestGenerator {
     /// Generate per-slice manifest with class listings for multi-artifact packaging.
     /// Written to META-INF/slice/{SliceName}.manifest
     public Result<Unit> generateSliceManifest(SliceModel model) {
-        return generateSliceManifest(model, Option.none(), Option.none());
+        return generateSliceManifest(model, Option.none(), Option.none(), Map.of());
     }
 
     /// Generate per-slice manifest with optional Routes class.
     /// Written to META-INF/slice/{SliceName}.manifest
     public Result<Unit> generateSliceManifest(SliceModel model, Option<String> routesClass) {
-        return generateSliceManifest(model, routesClass, Option.none());
+        return generateSliceManifest(model, routesClass, Option.none(), Map.of());
     }
 
     /// Generate per-slice manifest with optional Routes class and route configuration.
     /// Written to META-INF/slice/{SliceName}.manifest
     public Result<Unit> generateSliceManifest(SliceModel model, Option<String> routesClass, Option<RouteConfig> routeConfig) {
+        return generateSliceManifest(model, routesClass, routeConfig, Map.of());
+    }
+
+    /// Generate per-slice manifest, threading the resolved single-source `Topic<T>` constants (#396)
+    /// so typed pub/sub blocks carry a `topicName` derived from the constant rather than a
+    /// resources.toml section.
+    public Result<Unit> generateSliceManifest(SliceModel model,
+                                              Option<String> routesClass,
+                                              Option<RouteConfig> routeConfig,
+                                              Map<String, ResolvedTopicConstant> topicBindings) {
         try{
             var props = new Properties();
             var sliceName = model.simpleName();
@@ -132,7 +146,7 @@ public class ManifestGenerator {
             // Slice config file path (for blueprint generator to read)
             props.setProperty("config.file", "slices/" + sliceName + ".toml");
             // Reactive bindings (unified format for all reactive annotations)
-            writeReactiveBindings(props, model);
+            writeReactiveBindings(props, model, topicBindings);
             // Publisher message types (for serializer registration)
             var publishMessageTypes = model.dependencies()
                                            .stream()
@@ -154,7 +168,7 @@ public class ManifestGenerator {
                 var pubPrefix = "publish.topic." + pubIndex + ".";
                 publishers.get(pubIndex)
                           .resourceQualifier()
-                          .onPresent(rq -> props.setProperty(pubPrefix + "config", rq.configSection()));
+                          .onPresent(rq -> writeTopicConfig(props, pubPrefix, rq.configSection(), topicBindings));
                 publishers.get(pubIndex)
                           .publisherMessageType()
                           .onPresent(mt -> props.setProperty(pubPrefix + "messageType", mt));
@@ -213,7 +227,7 @@ public class ManifestGenerator {
 
     private record ReactiveEntry(String category, String methodName, String config, Map<String, String> metadata) {}
 
-    private void writeReactiveBindings(Properties props, SliceModel model) {
+    private void writeReactiveBindings(Properties props, SliceModel model, Map<String, ResolvedTopicConstant> topicBindings) {
         var allReactive = new ArrayList<ReactiveEntry>();
 
         // Direct methods
@@ -241,10 +255,24 @@ public class ManifestGenerator {
             var prefix = "reactive." + i + ".";
             props.setProperty(prefix + "category", entry.category());
             props.setProperty(prefix + "method", entry.methodName());
-            props.setProperty(prefix + "config", entry.config());
+            writeTopicConfig(props, prefix, entry.config(), topicBindings);
             // Category-specific metadata
             entry.metadata().forEach((k, v) -> props.setProperty(prefix + k, v));
         }
+    }
+
+    /// Write the topic `config` and, for a typed-topic reference resolved to a single-source
+    /// `Topic<T>` constant (#396), the derived `topicName`. For a typed topic the `config` written is
+    /// the resolved topic name (so pub/sub orphan-matching and topic-address grammar validation
+    /// operate on the name); legacy lowercase section configs are written verbatim.
+    private static void writeTopicConfig(Properties props,
+                                         String prefix,
+                                         String configSection,
+                                         Map<String, ResolvedTopicConstant> topicBindings) {
+        var topicName = Option.option(topicBindings.get(configSection))
+                              .flatMap(ResolvedTopicConstant::topicName);
+        props.setProperty(prefix + "config", topicName.or(configSection));
+        topicName.onPresent(name -> props.setProperty(prefix + "topicName", name));
     }
 
     private Map<String, String> extractMetadata(MethodModel method, ReactiveMethodBinding binding) {

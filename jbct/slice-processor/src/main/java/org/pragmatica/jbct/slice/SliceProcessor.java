@@ -9,6 +9,7 @@ import org.pragmatica.jbct.slice.generator.DependencyVersionResolver;
 import org.pragmatica.jbct.slice.generator.FactoryClassGenerator;
 import org.pragmatica.jbct.slice.generator.ManifestGenerator;
 import org.pragmatica.jbct.slice.model.MethodModel;
+import org.pragmatica.jbct.slice.model.ResolvedTopicConstant;
 import org.pragmatica.jbct.slice.model.SliceModel;
 import org.pragmatica.jbct.slice.routing.ErrorMappingValidator;
 import org.pragmatica.jbct.slice.routing.ErrorPatternConfig;
@@ -38,6 +39,7 @@ import java.nio.file.FileSystemNotFoundException;
 import java.nio.file.Path;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 import com.google.auto.service.AutoService;
@@ -96,7 +98,7 @@ public class SliceProcessor extends AbstractProcessor {
                 if (!validateOneSlicePerPackage(interfaceElement)) {
                     return false;
                 }
-                processSliceInterface(interfaceElement);
+                processSliceInterface(interfaceElement, roundEnv.getRootElements());
             }
         }
         // Write service file once at the end if we have route entries
@@ -136,29 +138,43 @@ public class SliceProcessor extends AbstractProcessor {
         return true;
     }
 
-    private void processSliceInterface(TypeElement interfaceElement) {
+    private void processSliceInterface(TypeElement interfaceElement, Set<? extends Element> roundRoots) {
         SliceModel.sliceModel(interfaceElement, processingEnv)
                   .onFailure(cause -> error(interfaceElement,
                                             cause.message()))
-                  .onSuccess(sliceModel -> generateArtifacts(interfaceElement, sliceModel));
+                  .onSuccess(sliceModel -> generateArtifacts(interfaceElement, sliceModel, roundRoots));
     }
 
-    private void generateArtifacts(TypeElement interfaceElement, SliceModel sliceModel) {
-        generateFactory(interfaceElement, sliceModel)
-            .flatMap(_ -> generateRoutesAndManifest(interfaceElement, sliceModel))
+    /// Resolve the slice's typed-topic bindings (#396), emit any unknown-constant / payload-type
+    /// mismatch diagnostics, and skip generation when a binding is in error. On success the resolved
+    /// publisher bindings drive the `TypedPublisher` wrapping in the generated factory.
+    private void generateArtifacts(TypeElement interfaceElement,
+                                   SliceModel sliceModel,
+                                   Set<? extends Element> roundRoots) {
+        var topicBindings = ResolvedTopicConstant.resolveBindings(sliceModel, roundRoots, processingEnv);
+        if (!topicBindings.errors().isEmpty()) {
+            topicBindings.errors().forEach(message -> error(interfaceElement, message));
+            return;
+        }
+        generateFactory(interfaceElement, sliceModel, topicBindings.bindings())
+            .flatMap(_ -> generateRoutesAndManifest(interfaceElement, sliceModel, topicBindings.bindings()))
             .onFailure(cause -> error(interfaceElement, cause.message()));
     }
 
-    private Result<Unit> generateFactory(TypeElement interfaceElement, SliceModel sliceModel) {
-        return factoryGenerator.generate(sliceModel)
+    private Result<Unit> generateFactory(TypeElement interfaceElement,
+                                         SliceModel sliceModel,
+                                         Map<String, ResolvedTopicConstant> publisherBindings) {
+        return factoryGenerator.generate(sliceModel, publisherBindings)
                                .onSuccess(_ -> note(interfaceElement,
                                                     "Generated factory: " + sliceModel.simpleName() + "Factory"));
     }
 
-    private Result<Unit> generateRoutesAndManifest(TypeElement interfaceElement, SliceModel sliceModel) {
+    private Result<Unit> generateRoutesAndManifest(TypeElement interfaceElement,
+                                                   SliceModel sliceModel,
+                                                   Map<String, ResolvedTopicConstant> topicBindings) {
         return loadRouteConfig(sliceModel.packageName())
             .flatMap(configOpt -> generateRoutesClass(interfaceElement, sliceModel, configOpt)
-                .flatMap(routesClassOpt -> generateSliceManifest(interfaceElement, sliceModel, routesClassOpt, configOpt)));
+                .flatMap(routesClassOpt -> generateSliceManifest(interfaceElement, sliceModel, routesClassOpt, configOpt, topicBindings)));
     }
 
     private Result<Option<String>> generateRoutesClass(TypeElement interfaceElement,
@@ -172,8 +188,9 @@ public class SliceProcessor extends AbstractProcessor {
     private Result<Unit> generateSliceManifest(TypeElement interfaceElement,
                                                SliceModel sliceModel,
                                                Option<String> routesClass,
-                                               Option<RouteConfig> routeConfig) {
-        return manifestGenerator.generateSliceManifest(sliceModel, routesClass, routeConfig)
+                                               Option<RouteConfig> routeConfig,
+                                               Map<String, ResolvedTopicConstant> topicBindings) {
+        return manifestGenerator.generateSliceManifest(sliceModel, routesClass, routeConfig, topicBindings)
                                 .onSuccess(_ -> note(interfaceElement,
                                                      "Generated slice manifest: META-INF/slice/" + sliceModel.simpleName()
                                                      + ".manifest"));

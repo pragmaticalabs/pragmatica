@@ -10,6 +10,7 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.endpoint.TopicSubscriptionRegistry;
+import org.pragmatica.aether.resource.SpiResourceProvider;
 import org.pragmatica.aether.resource.TopicConfig;
 import org.pragmatica.aether.slice.MethodName;
 import org.pragmatica.aether.slice.ProvisioningContext;
@@ -23,10 +24,12 @@ import org.pragmatica.aether.slice.resource.ResourceVersion;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.type.TypeToken;
+import org.pragmatica.lang.utils.Causes;
 
 import java.util.concurrent.CopyOnWriteArrayList;
 
@@ -172,6 +175,76 @@ class PublisherFactoryTest {
             publisher.publish("order-1").await().onFailure(_ -> fail("Publish should succeed"));
 
             assertTrue(invocations.isEmpty());
+        }
+    }
+
+    /// #396 — a typed-topic publisher migrated to the single-source `Topic<T>` constant no longer
+    /// carries a `resources.toml [section]`; its topic name is generated into the slice manifest from
+    /// the constant, and the provisioning path defaults a missing `TopicConfig` section to a topic
+    /// named after the provisioned section. This proves that end-to-end through the real SPI
+    /// provisioning path: a publisher provisioned BY NAME through [SpiResourceProvider] — whose config
+    /// loader has NO matching section (the author removed `topic_name`) — still delivers a published
+    /// fact to a co-addressed subscriber, and correctly delivers nothing when no subscriber is
+    /// registered (guarding `TopicPublisher`'s silent no-op on empty subscribers).
+    @Nested
+    class TopicNameFallbackDelivery {
+        private static final MethodName METHOD = MethodName.methodName("onClickEvent").unwrap();
+        private static final NodeId NODE = new NodeId("node-a");
+        private static final Cause NO_SECTION = Causes.cause("no resources.toml section (name derived from Topic constant)");
+        private static final String CLICK_EVENTS = "click-events";
+
+        record ClickEvent(String shortCode) {}
+
+        @Test
+        void publish_reachesSubscriber_whenProvisionedByNameWithNoConfigSection() {
+            var registry = TopicSubscriptionRegistry.topicSubscriptionRegistry();
+            var invocations = new CopyOnWriteArrayList<Object>();
+            var artifact = Artifact.artifact("org.pragmatica.aether.example:url-shortener-url-shortener:1.0.0").unwrap();
+
+            registerSubscriber(registry, artifact);
+            var publisher = provisionByName(registry, invocations, artifact);
+
+            publisher.publish(new ClickEvent("A1")).await().onFailure(cause -> fail(cause.message()));
+
+            assertEquals(1, invocations.size());
+            assertEquals(artifact, invocations.getFirst());
+        }
+
+        @Test
+        void publish_deliversNothing_whenNoSubscriberRegistered() {
+            var registry = TopicSubscriptionRegistry.topicSubscriptionRegistry();
+            var invocations = new CopyOnWriteArrayList<Object>();
+            var artifact = Artifact.artifact("org.pragmatica.aether.example:url-shortener-url-shortener:1.0.0").unwrap();
+
+            var publisher = provisionByName(registry, invocations, artifact);
+
+            // TopicPublisher silently no-ops on empty subscribers — publish still succeeds.
+            publisher.publish(new ClickEvent("A1")).await().onFailure(cause -> fail(cause.message()));
+
+            assertTrue(invocations.isEmpty());
+        }
+
+        private void registerSubscriber(TopicSubscriptionRegistry registry, Artifact artifact) {
+            var address = TopicAddressResolver.resolve(artifact, CLICK_EVENTS).unwrap();
+            var key = TopicSubscriptionKey.topicSubscriptionKey(address, artifact, METHOD);
+            var value = TopicSubscriptionValue.topicSubscriptionValue(NODE);
+            registry.onSubscriptionPut(new ValuePut<>(new KVCommand.Put<>(key, value), Option.none()));
+        }
+
+        private Publisher<Object> provisionByName(TopicSubscriptionRegistry registry,
+                                                  CopyOnWriteArrayList<Object> invocations,
+                                                  Artifact artifact) {
+            var provider = SpiResourceProvider.spiResourceProvider((section, configClass) -> NO_SECTION.result());
+            var context = ProvisioningContext.provisioningContext()
+                                             .withExtension(TopicSubscriptionRegistry.class, registry)
+                                             .withExtension(SliceInvoker.class, new MinimalStubSliceInvoker(invocations))
+                                             .withExtension(String.class, artifact.asString());
+            @SuppressWarnings("unchecked")
+            var publisher = (Publisher<Object>) provider.provide(Publisher.class, CLICK_EVENTS, context)
+                                                        .await()
+                                                        .onFailure(cause -> fail("Provisioning should succeed: " + cause.message()))
+                                                        .unwrap();
+            return publisher;
         }
     }
 

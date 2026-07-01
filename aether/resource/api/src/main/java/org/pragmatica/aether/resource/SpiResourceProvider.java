@@ -250,10 +250,22 @@ public final class SpiResourceProvider implements ResourceProvider {
     private <C> Promise<C> loadConfig(String section,
                                       Class<C> configType,
                                       org.pragmatica.lang.Option<ProvisioningContext> contextOpt) {
-        return resolveConfigLoader(contextOpt).apply(section, configType)
+        var loaded = (Result<Object>) resolveConfigLoader(contextOpt).apply(section, configType);
+        return topicNameFallback(section, configType, loaded)
                                   .mapError(cause -> new SliceLoadingFailure.Fatal.ConfigurationFailed(section, cause))
                                   .map(obj -> (C) obj)
                                   .async();
+    }
+
+    /// Route a typed-topic publisher's address off the manifest-derived topic name (#396): the
+    /// `section` passed for a [TopicConfig] resource is the topic name resolved from the single-source
+    /// `Topic<T>` constant (the generated factory provisions the publisher by that name), so a missing
+    /// resources.toml `[section]` — the author no longer writes `topic_name` — defaults to a topic
+    /// named after the section instead of failing slice activation. Non-topic resources are unaffected.
+    private static Result<Object> topicNameFallback(String section, Class<?> configType, Result<Object> loaded) {
+        return configType.equals(TopicConfig.class)
+               ? loaded.recover(_ -> new TopicConfig(section))
+               : loaded;
     }
 
     /// Resolve the configuration loader for this provisioning call.

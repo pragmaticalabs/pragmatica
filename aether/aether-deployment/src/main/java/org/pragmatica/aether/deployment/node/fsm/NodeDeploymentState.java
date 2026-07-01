@@ -877,12 +877,24 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
 
             for (var entry : reactive) {
                 if ("subscription".equals(entry.category())) {
-                    resolveTopicAddress(artifact, entry.config()).flatMap(address -> MethodName.methodName(entry.method()).map(method -> new SubscriptionManifestEntry(address,
+                    resolveSubscriptionAddress(artifact, entry).flatMap(address -> MethodName.methodName(entry.method()).map(method -> new SubscriptionManifestEntry(address,
                                                                                                                                                                        method))).option().onPresent(result::add);
                 }
             }
 
             return result;
+        }
+
+        /// Resolve a subscription's topic address, preferring the manifest-generated `topicName`
+        /// derived from the single-source `Topic<T>` constant (#396). When present, the address is
+        /// resolved directly from that name via [TopicAddressResolver] — the author no longer writes a
+        /// resources.toml `topic_name`, so the legacy [TopicConfig] section lookup would fail. Falls
+        /// back to the legacy `config`-section lookup for subscriptions declared the old way.
+        private Result<ResourceAddress> resolveSubscriptionAddress(Artifact artifact, ReactiveManifestEntry entry) {
+            var manifestTopicName = entry.getProperty("topicName");
+            return manifestTopicName.isEmpty()
+                   ? resolveTopicAddress(artifact, entry.config())
+                   : TopicAddressResolver.resolve(artifact, manifestTopicName);
         }
 
         /// Resolve a subscription's declared topic config to a canonical [ResourceAddress].
