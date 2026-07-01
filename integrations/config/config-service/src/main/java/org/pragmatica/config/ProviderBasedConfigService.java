@@ -257,6 +257,9 @@ public final class ProviderBasedConfigService implements ConfigService {
         if (type == double.class || type == Double.class) {
             return some(ProviderBasedConfigService::parseDoubleAsObject);
         }
+        if (type == org.pragmatica.lang.io.TimeSpan.class) {
+            return some(ProviderBasedConfigService::parseIoTimeSpanAsObject);
+        }
         if (type == TimeSpan.class) {
             return some(ProviderBasedConfigService::parseTimeSpanAsObject);
         }
@@ -288,6 +291,10 @@ public final class ProviderBasedConfigService implements ConfigService {
 
     private static Option<Object> parseDurationAsObject(String v) {
         return TimeSpan.timeSpan(v).option().map(ts -> (Object) ts.duration());
+    }
+
+    private static Option<Object> parseIoTimeSpanAsObject(String v) {
+        return TimeSpan.timeSpan(v).option().map(ts -> (Object) org.pragmatica.lang.io.TimeSpan.fromDuration(ts.duration()));
     }
 
     // --- Type-specific resolvers ---
