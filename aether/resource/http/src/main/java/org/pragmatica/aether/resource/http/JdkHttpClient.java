@@ -7,6 +7,7 @@ package org.pragmatica.aether.resource.http;
 import org.pragmatica.http.HttpOperations;
 import org.pragmatica.http.HttpResult;
 import org.pragmatica.http.JdkHttpOperations;
+import org.pragmatica.http.NettyHttpOperations;
 import org.pragmatica.json.JsonMapper;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
@@ -49,7 +50,16 @@ final class JdkHttpClient implements HttpClient {
         return new JdkHttpClient(config, createOperations(config));
     }
 
-    private static HttpOperations createOperations(HttpClientConfig config) {
+    // NOTE: despite the name, this type now also produces a Netty-backed HttpOperations when
+    //       HttpClientConfig.backend() selects NETTY. Renaming JdkHttpClient is out of scope.
+    static HttpOperations createOperations(HttpClientConfig config) {
+        return switch (config.backend().or(HttpClientConfig.HttpBackend.JDK)) {
+            case JDK -> jdkOperations(config);
+            case NETTY -> NettyHttpOperations.nettyHttpOperations();
+        };
+    }
+
+    private static HttpOperations jdkOperations(HttpClientConfig config) {
         var timeout = Duration.ofMillis(config.connectTimeout().millis());
 
         return JdkHttpOperations.jdkHttpOperations(timeout, config.followRedirects(), none());
