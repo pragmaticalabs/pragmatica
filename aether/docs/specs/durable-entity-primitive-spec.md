@@ -2,9 +2,9 @@
 
 *The primitive for durable workflows & sagas.*
 
-**Version:** 0.2.1
-**Status:** Draft — open questions resolved; author-facing API pinned; needs Sergiy sign-off on items flagged §14. v0.2.1 corrects two API-shape errors (see changelog).
-**Date:** 2026-06-27 (corrected 2026-06-29)
+**Version:** 0.2.3
+**Status:** Draft — author-facing API pinned; sign-off items flagged §14 (S1, S2, S4, S5). v0.2.1 corrects two API-shape errors; v0.2.2 resolves S3; v0.2.3 aligns guarantee claims to the consistency lens (reads not yet linearizable; RUN_ONCE = at-most-once invocation). See changelog.
+**Date:** 2026-06-27 (updated 2026-07-01)
 **Author:** design-stream
 **Epic:** #345
 **Supersedes:** #190 (the Persistent-Workflow draft is carried forward here as the *workflow specialization*, §6)
@@ -68,7 +68,7 @@ is the **entity**, with workflow and saga as specializations — not two separat
 
 ### 1.3 Easy + durable + scalable — and how the design delivers all three
 
-The hard tension is durable-and-single-writer-correct (CP) **vs** scalable (partitioned). The industry
+The hard tension is durable-and-single-writer-correct (linearizable per key, C-favoring under partition) **vs** scalable (partitioned). The industry
 resolution is **per-partition fenced leader**: partition the keyspace (scale), one fenced owner per
 partition (single-writer correctness), replicate within the partition (durability). Spanner (Paxos
 groups), CockroachDB (range leases), Restate (partition processors + epoch fencing), Temporal (history
@@ -238,7 +238,7 @@ public interface DurableEntity<K, S> {
     /** Create a new entity; fails with EntityAlreadyExists if the key is taken. */
     Promise<S>           create(K key, S initial);
 
-    /** Linearizable owner-routed read. Returns Option.none() if the entity does not exist. */
+    /** Owner-routed read of committed state; bounded-stale during handover (not yet linearizable — see §8). Returns Option.none() if absent. */
     Promise<Option<S>>   get(K key);
 
     /**
@@ -381,7 +381,7 @@ public interface PersistentWorkflow<S, E> {
      */
     Promise<S>          dispatch(String id, E event);
 
-    /** Linearizable owner-routed read of current state. */
+    /** Owner-routed read of committed current state; bounded-stale during handover (not yet linearizable — see §8). */
     Promise<Option<S>>  current(String id);
 
     /** Schedule a timer that fires the given event when it expires. */
@@ -498,16 +498,20 @@ immutable record carrying the saga's business inputs):
  * C — saga context (immutable; business inputs visible to all steps)
  * R — step result type (stored in the ledger; compensation receives it to undo precisely)
  */
+public enum RerunPolicy { RUN_ONCE, IDEMPOTENT }
+
 public record SagaStep<C, R>(
     String name,
     Fn1<Promise<R>, C>          forward,       // executes the step's side effect
-    Fn2<Promise<Unit>, C, R>    compensation   // undoes the step given its result
+    Fn2<Promise<Unit>, C, R>    compensation,  // undoes the step given its result
+    RerunPolicy                 rerun          // required: RUN_ONCE journals; IDEMPOTENT re-runs freely
 ) {
     public static <C, R> SagaStep<C, R> step(
             String name,
             Fn1<Promise<R>, C> forward,
-            Fn2<Promise<Unit>, C, R> compensation) {
-        return new SagaStep<>(name, forward, compensation);
+            Fn2<Promise<Unit>, C, R> compensation,
+            RerunPolicy rerun) {
+        return new SagaStep<>(name, forward, compensation, rerun);
     }
 }
 ```
@@ -529,17 +533,24 @@ public final class SagaDefinition<C> {
 }
 ```
 
-### 7.4 The run-once journaled step
+### 7.4 The per-step re-run policy (resolved — S3)
 
-The optional **run-once primitive** closes the at-least-once failure window:
+Every `SagaStep` carries a **required** `RerunPolicy`; there is no default, so a step cannot be
+declared without stating whether repeating its `forward` on recovery is safe.
 
-- Before invoking `forward`, the runtime writes a `StepAttempt(id, stepIndex)` marker under the fence.
-- If the process crashes after the side effect but before the ledger commit, on recovery the runtime
-  finds the `StepAttempt` marker and promotes it to `StepCompleted` without re-running `forward`.
-- The key `(sagaId, stepIndex)` is the idempotency anchor — exactly as noted in §8.
+- **`RUN_ONCE`** — the runtime writes a `StepAttempt(sagaId, stepIndex)` marker under the fence
+  *before* invoking `forward`; on recovery, a marker present means the runtime does **not** invoke
+  `forward` again. This bounds the runtime to **at-most-once invocation** of `forward`. It is not, by
+  itself, effectively-once at the effect: the marker cannot distinguish "crashed before the effect
+  ran" from "crashed after," so end-to-end once-only for a non-idempotent downstream requires that
+  downstream to **dedup on `(sagaId, stepIndex)`** (the idempotency key the runtime supplies). Use it
+  for non-idempotent effects (charge, ship, send) whose downstream honors that key.
+- **`IDEMPOTENT`** — no marker; the author asserts `forward` is safe to run again, so recovery
+  re-runs it. Use it for reads and for writes keyed by a natural idempotency key.
 
-This is **opt-in per step** (`SagaStep.runOnce = true`). Steps not marked `runOnce` are re-runnable
-on crash and must be idempotent by the author.
+The key `(sagaId, stepIndex)` is the idempotency anchor (also handed downstream — §8). Because the
+policy is mandatory, the dangerous case — a non-idempotent effect left re-runnable by omission —
+cannot arise: it is a compile error, not a production incident.
 
 ### 7.5 Compensation semantics
 
@@ -622,7 +633,7 @@ public interface Saga<C> {
      */
     Promise<SagaResult<C>> run(String id, C context);
 
-    /** Linearizable read of the saga's current state (useful for monitoring). */
+    /** Owner-routed read of committed saga state, for monitoring; bounded-stale during handover (see §8). */
     Promise<Option<SagaState<C>>> status(String id);
 
     /** Delete a terminal saga instance (respects terminal-ttl if configured). */
@@ -694,15 +705,18 @@ SagaDefinition<OrderContext> ORDER_SAGA =
         .step(SagaStep.<OrderContext, ReservationId>step(
             "reserve-inventory",
             ctx -> inventorySlice.reserve(ctx.orderId(), ctx.items()),          // forward
-            (ctx, reservationId) -> inventorySlice.release(reservationId)))     // compensation
+            (ctx, reservationId) -> inventorySlice.release(reservationId),      // compensation
+            IDEMPOTENT))                                                        // keyed by order id; repeat is a no-op
         .step(SagaStep.<OrderContext, ChargeId>step(
             "charge-payment",
             ctx -> paymentSlice.charge(ctx.customerId(), ctx.total()),          // forward
-            (ctx, chargeId) -> paymentSlice.refund(chargeId)))                 // compensation
+            (ctx, chargeId) -> paymentSlice.refund(chargeId),                   // compensation
+            RUN_ONCE))                                                          // a second charge moves real money
         .step(SagaStep.<OrderContext, Unit>step(
             "confirm-order",
             ctx -> orderSlice.confirm(ctx.orderId()),                           // forward
-            (ctx, _) -> orderSlice.cancel(ctx.orderId())))                     // compensation
+            (ctx, _) -> orderSlice.cancel(ctx.orderId()),                       // compensation
+            IDEMPOTENT))                                                        // setting status to confirmed is idempotent
         .build();
 ```
 
@@ -723,7 +737,7 @@ public Promise<SagaResult<OrderContext>> placeOrder(
 }
 ```
 
-**Crash-window behaviour** (step 2, `charge-payment`, with `runOnce = true`):
+**Crash-window behaviour** (step 2, `charge-payment`, a `RUN_ONCE` step):
 1. Payment service charges successfully.
 2. Process crashes before ledger commit.
 3. New owner recovers, finds `StepAttempt(orderId, 1)` marker in entity state.
@@ -735,9 +749,14 @@ public Promise<SagaResult<OrderContext>> placeOrder(
 ## 8. Execution Semantics
 
 - **Single-writer total order per entity** (owner + per-key queue + fence). Across entities: no order.
-- **Linearizability** — a committed `update` is durable across RF replicas under the fence; a later
-  `get` from any node sees that state or a later one. (Fence for KV path is live; stream path is
-  #345 piece 1b.)
+- **Writes: linearizable per key** — a committed `update` is ordered and durable across RF replicas
+  under the epoch write-fence (KV path live; stream path is #345 piece 1b).
+- **Reads: committed, not yet linearizable** — the write fence orders writes, not reads. A `get`
+  returns committed state, but an owner-routed read during handover can be served by a deposed owner
+  that has not yet learned it lost ownership, and a read from a lagging replica trails the latest
+  commit. Linearizable reads need an owner-routed read-side epoch/lease check (ReadIndex-style) or a
+  quorum read — a design item, not yet specified (§14 S5). Until then, reads are bounded-stale during
+  owner handover and replication lag.
 - **No replay** — recovery resumes from current durable state; transitions never rerun; nondeterminism
   permitted.
 - **Idempotency** — each update carries a stable per-entity monotonic counter `(key, n)`; slice
@@ -768,8 +787,9 @@ public Promise<SagaResult<OrderContext>> placeOrder(
 The mutator is pure. After `update`/`dispatch` returns, the slice has the new state and performs
 whatever side effect it implies (call a slice, HTTP, notify, DB) using its own resources — the runtime
 does not run side effects on the slice's behalf (avoids re-creating Temporal's Activity model). The
-**optional saga run-once step** (§7.4) is the single managed affordance, for closing the crash-after-
-effect-before-commit window without an SDK.
+**`RUN_ONCE`** step (§7.4) is the single managed affordance for narrowing the
+crash-after-effect-before-commit window without an SDK; end-to-end once-only still requires a
+downstream that dedups on the `(sagaId, stepIndex)` key.
 
 ---
 
@@ -802,7 +822,7 @@ Per-slice cron stays on `ScheduledTaskManager` (independent). **Two foundations 
 | Resource SPI | exists, mechanical | register `DurableEntity`/`PersistentWorkflow`/`Saga` types | **REUSE** | `SpiResourceProvider.java:45` |
 | Per-key serialization | none | owner-side per-key queue | **MISSING** | — |
 | Per-instance timers | per-slice cron only | durable one-shot per-entity timers | **MISSING** | `ScheduledTaskManager.java:178` |
-| Durable KV | LWW/AP quorum (KV-path fence now live) | entity state uses fenced KV (HA) → fenced log (restart-durable) | **EXTEND** | `DHTClient.java:39` |
+| Durable KV | LWW, HLC-versioned, eventually consistent (FULL/q=1: single-node ack, stale cross-node reads); KV-path fence adds single-writer write ordering | entity state uses fenced KV (HA) → fenced log (restart-durable) | **EXTEND** | `DHTClient.java:39` |
 
 ---
 
@@ -840,10 +860,12 @@ injection into a running saga/workflow from outside the owning slice) a v1 book 
 values, or does the product have a different retention philosophy (e.g. retain forever unless
 explicitly deleted, let ops configure)?
 
-**S3 — `runOnce` opt-in vs opt-out.** The spec makes the journaled run-once step opt-in per `SagaStep`
-(default = re-runnable, must be idempotent). This avoids journaling overhead for inherently idempotent
-steps. **Decision needed:** should `runOnce` default to `true` (always journal, simpler author
-contract) or `false` (opt-in, author declares idempotent steps explicitly)?
+**S3 — re-run policy default. RESOLVED (2026-07-01).** Neither default. Every `SagaStep` carries a
+**required** `RerunPolicy` (`RUN_ONCE` | `IDEMPOTENT`); a step cannot be constructed without stating
+its re-run safety (§7.2, §7.4). This removes both silent failure modes — a forgotten opt-in that
+double-executes a non-idempotent effect, and a forgotten opt-out that journals needlessly — at the
+cost of one enum per step, visible and reviewable on the line. The asymmetry decided it: a missed
+declaration is a compile error, not a production incident.
 
 **S4 — `StateMachineDefinition` `C` type parameter for the workflow facade.** The FSM library uses
 `C` as a context type passed through `TransitionContext` to `onEntry`/`onExit` actions. The workflow
@@ -851,6 +873,14 @@ facade currently uses `C = Unit` (pure FSM, no side-effect context). If authors 
 context (e.g. the originating request ID) through FSM actions, `C` must be exposed in
 `PersistentWorkflow<S,E,C>`. **Decision needed:** expose `C` as a third type param on
 `PersistentWorkflow`, or keep it hidden as `Unit` and require authors to embed context in state?
+
+**S5 — read-side linearization mechanism.** The write path is linearizable (owner + epoch
+write-fence); reads are not, because the write fence does not cover reads (§8). Making
+`get`/`current`/`status` linearizable needs either an owner-routed **read-side epoch/lease check**
+(ReadIndex-style: the owner confirms its epoch is still current before serving) or a **quorum read**.
+**Decision needed:** which read-side mechanism, and is linearizable read a v1 requirement, or is
+bounded-stale acceptable for v1 with linearizable read deferred? Until decided, reads are documented
+as committed-but-bounded-stale (§8). Relates to #382.
 
 ---
 
@@ -860,6 +890,29 @@ context (e.g. the originating request ID) through FSM actions, `C` must be expos
 - **Per-partition fenced leader:** Restate first-principles (Bifrost, epoch fencing) — https://www.restate.dev/blog/building-a-modern-durable-execution-engine-from-first-principles · CockroachDB range leases — https://www.cockroachlabs.com/docs/stable/architecture/replication-layer · Spanner — https://cloud.google.com/spanner/docs/whitepapers
 - **Durable-execution model (no-replay vs replay):** Vanlightly, demystifying determinism — https://jack-vanlightly.com/blog/2025/11/24/demystifying-determinism-in-durable-execution · DBOS architecture — https://docs.dbos.dev/architecture
 - **Internal:** #345 (fence epic), #349 (durability epic), #190 (superseded workflow draft), #265/#261 (streaming substrate), `StateMachineDefinition`, `EpochBearing`, `KVStore`.
+
+---
+
+## Changelog — v0.2.3 (2026-07-01)
+
+Consistency-lens pass (Kleppmann; `guarantees.md` discipline): guarantee claims corrected to name the
+precise per-operation model + the mechanism that earns it. No API change; wording + one new §14 item.
+
+| What | Why |
+|---|---|
+| **Reads: "linearizable" → "committed, bounded-stale"** (§5.1, §6.2, §7.7, §8) | The epoch write-fence orders writes, not reads. An owner-routed read during handover can be served by a deposed-unaware owner; a lagging replica trails the latest commit. Linearizable reads need a read-side lease/ReadIndex or quorum read — now tracked as **S5**. Extends C5/#382 (shipped javadoc) and matches the `guarantees.md` D1 rewrite. |
+| **§1.3 "(CP)" → "linearizable per key, C-favoring under partition"** | One-bit CAP label replaced with the per-operation model. |
+| **§12 "LWW/AP quorum" → LWW/eventual (FULL/q=1)** | The DHT default is FULL/q=1 (single-node ack, stale cross-node reads), not a quorum; the KV-path fence adds write ordering on top. Matches C3/D2. |
+| **§7.4 `RUN_ONCE` = at-most-once invocation** (not effectively-once by itself) | The marker cannot distinguish crash-before-effect from crash-after; end-to-end once-only for a non-idempotent downstream requires that downstream to dedup on `(sagaId, stepIndex)`. House term: effectively-once (D16), never exactly-once. |
+| **New §14 S5** — read-side linearization mechanism (lease/ReadIndex vs quorum read) | The genuine design decision the lens surfaced; relates to #382. |
+
+---
+
+## Changelog — v0.2.2 (2026-07-01)
+
+| What | Why |
+|---|---|
+| **S3 resolved: mandatory per-step `RerunPolicy`** (§7.2, §7.4, §7.10, §14) | The journaled run-once step is no longer opt-in (or opt-out). `SagaStep` gains a required `RerunPolicy` (`RUN_ONCE` \| `IDEMPOTENT`); a step cannot be constructed without declaring its re-run safety. Rationale: the failure asymmetry — a forgotten opt-in double-executes a non-idempotent effect (silent, in production); a forgotten opt-out costs one fenced write. No default makes the dangerous case a compile error. The marker write is cheap relative to the network side effect it guards, so the performance case for an opt-in default is weak. |
 
 ---
 
