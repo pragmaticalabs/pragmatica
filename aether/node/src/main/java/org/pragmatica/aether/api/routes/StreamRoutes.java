@@ -138,7 +138,7 @@ public final class StreamRoutes implements RouteSource {
                          ManagementRoutes.<PublishResponse> route(ManagementRoute.STREAM_PUBLISH)
                                          .withPath(PathParameter.aString())
                                          .withBody(PublishRequest.class)
-                                         .toResult(this::publishEvent)
+                                         .to(this::publishEvent)
                                          .asJson(),
                          ManagementRoutes.<ReadEventsResponse> route(ManagementRoute.STREAM_READ)
                                          .withPath(PathParameter.aString(),
@@ -221,18 +221,33 @@ public final class StreamRoutes implements RouteSource {
         return new ReplicaStateDetail(replica.nodeId(), replica.state(), replica.confirmedOffset(), replica.hrwOwner());
     }
 
-    private Result<PublishResponse> publishEvent(String name, PublishRequest request) {
+    private Promise<PublishResponse> publishEvent(String name, PublishRequest request) {
         return publishToPartition(name, request);
     }
 
-    private Result<PublishResponse> publishToPartition(String name, PublishRequest request) {
+    /// Publish to partition 0 (single-partition Management-API scope). When the stream's
+    /// `min-sync-replicas > 1`, the response resolves only after the local write AND
+    /// `minSyncReplicas - 1` distinct non-self replica acks land; a replication failure propagates as
+    /// an error response. `min-sync-replicas <= 1` resolves on the local write (owner-only/eventual).
+    private Promise<PublishResponse> publishToPartition(String name, PublishRequest request) {
         var payload = request.data().getBytes(StandardCharsets.UTF_8);
 
-        return ensureStreamExists(name).flatMap(_ -> streamManager().publishLocal(name,
-                                                                                  0,
-                                                                                  payload,
-                                                                                  System.currentTimeMillis()))
-                                 .map(PublishResponse::new);
+        return ensureStreamExists(name).async()
+                                       .flatMap(_ -> publishAndAwaitSync(name, payload));
+    }
+
+    private Promise<PublishResponse> publishAndAwaitSync(String name, byte[] payload) {
+        return streamManager().publishLocal(name, 0, payload, System.currentTimeMillis())
+                              .async()
+                              .flatMap(offset -> awaitSyncBarrier(name, offset));
+    }
+
+    private Promise<PublishResponse> awaitSyncBarrier(String name, long offset) {
+        var minSyncReplicas = streamManager().minSyncReplicasFor(name);
+
+        return minSyncReplicas > 1
+               ? streamManager().awaitReplication(name, 0, offset, minSyncReplicas - 1).map(_ -> new PublishResponse(offset))
+               : Promise.success(new PublishResponse(offset));
     }
 
     private Result<StreamCreateResponse> createStream(StreamCreateRequest request) {
@@ -262,7 +277,21 @@ public final class StreamRoutes implements RouteSource {
                                                                                                     4 * 1024 * 1024L,
                                                                                                     60 * 60 * 1000L);
 
-    private Result<Unit> ensureStreamExists(String name) {
+    /// Publish auto-create guard. A stream ALREADY materialized locally carries its own committed
+    /// `StreamConfig` — an app/blueprint-declared stream keeps its `replicas` / `minSyncReplicas`
+    /// durability knobs — so the management publish path must leave it INTACT rather than fabricate and
+    /// commit a `replicas=1/min-sync=0` MANAGEMENT DEFAULT over it (which would disarm the sync barrier
+    /// — `minSyncReplicas` read as 0 — and collapse the replica set to RF=1). Only a genuinely NEW,
+    /// management-only stream with no materialized entry falls back to the management default. `streamInfo`
+    /// is a LOCAL read of the manager's already-materialized state — NO consensus round-trip on the
+    /// publish hot path. Package-visible for direct unit coverage.
+    Result<Unit> ensureStreamExists(String name) {
+        return streamManager().streamInfo(name)
+                            .map(_ -> Result.unitResult())
+                            .or(() -> createManagementStream(name));
+    }
+
+    private Result<Unit> createManagementStream(String name) {
         return StreamCreateOutcome.tolerateAlreadyExists(streamManager().createStream(StreamConfig.streamConfig(name,
                                                                                                                 DEFAULT_PARTITIONS,
                                                                                                                 MANAGEMENT_API_RETENTION,

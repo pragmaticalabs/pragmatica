@@ -233,9 +233,35 @@ public interface StreamConfigParser {
                                                              Option<String> roleOpt) {
         return StreamVersionSpec.streamVersionSpec(version)
                                 .flatMap(spec -> rejectProducerLatest(streamName, spec, roleOpt))
-                                .map(spec -> StreamResource.owned(streamName,
-                                                                  spec,
-                                                                  parseStreamSection(doc, section, streamName)));
+                                .flatMap(spec -> buildOwnedResource(doc, section, streamName, spec));
+    }
+
+    private static Result<StreamResource> buildOwnedResource(TomlDocument doc,
+                                                             String section,
+                                                             String streamName,
+                                                             StreamVersionSpec spec) {
+        return validateReplication(streamName, parseStreamSection(doc, section, streamName))
+                   .map(config -> StreamResource.owned(streamName, spec, config));
+    }
+
+    /// Spec §11.x: the two decoupled replication knobs must satisfy `replicas >= 1` and
+    /// `0 <= min-sync-replicas <= replicas`. `replicas` is the replication factor (total copies incl.
+    /// owner); `min-sync-replicas` is the in-sync ack requirement (incl. owner). A `min-sync-replicas`
+    /// exceeding `replicas` can never be met, so it is a build-time error via the same [Result] failure
+    /// path used for the rest of the parser's config rejections.
+    private static Result<StreamConfig> validateReplication(String streamName, StreamConfig config) {
+        if (config.replicas() < 1) {
+            return Causes.<Cause> cause("Stream resource '" + streamName + "' has replicas="
+                                       + config.replicas() + "; replicas must be >= 1").result();
+        }
+
+        if (config.minSyncReplicas() > config.replicas()) {
+            return Causes.<Cause> cause("Stream resource '" + streamName + "' has min-sync-replicas="
+                                       + config.minSyncReplicas() + " > replicas=" + config.replicas()
+                                       + "; min-sync-replicas must not exceed replicas").result();
+        }
+
+        return success(config);
     }
 
     /// Spec §11.1.3: producer with `version = "latest"` (explicit, after defaulting) is a build-time
@@ -288,6 +314,7 @@ public interface StreamConfigParser {
         var autoOffsetReset = doc.getString(section, "auto-offset-reset").or("latest");
         var maxEventSizeBytes = doc.getString(section, "max-event-size").map(StreamConfigParser::parseSizeBytes).or(1_048_576L);
         var consistencyMode = doc.getString(section, "consistency").map(StreamConfigParser::parseConsistencyMode).or(ConsistencyMode.EVENTUAL);
+        var replicas = doc.getInt(section, "replicas").or(1);
         var minSyncReplicas = doc.getInt(section, "min-sync-replicas").or(0);
         var compression = doc.getString(section, "compression").map(StreamConfigParser::parseCompression).or(StreamCompression.NONE);
         var encryptionKeyId = doc.getString(section, "encryption-key-id");
@@ -298,6 +325,7 @@ public interface StreamConfigParser {
                                          autoOffsetReset,
                                          maxEventSizeBytes,
                                          consistencyMode,
+                                         replicas,
                                          minSyncReplicas,
                                          compression,
                                          encryptionKeyId);

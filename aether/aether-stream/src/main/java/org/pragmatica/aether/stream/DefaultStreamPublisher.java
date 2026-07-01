@@ -215,7 +215,7 @@ public final class DefaultStreamPublisher<T> implements StreamPublisher<T> {
     }
 
     private Promise<Unit> publishLocalEventual(int partition, byte[] bytes, long timestamp) {
-        if (minSyncReplicas <= 0) {
+        if (minSyncReplicas <= 1) {
             return partitionManager.publishLocal(streamName, partition, bytes, timestamp)
                                    .mapToUnit()
                                    .async();
@@ -226,7 +226,7 @@ public final class DefaultStreamPublisher<T> implements StreamPublisher<T> {
                                .flatMap(offset -> partitionManager.awaitReplication(streamName,
                                                                                     partition,
                                                                                     offset,
-                                                                                    minSyncReplicas));
+                                                                                    minSyncReplicas - 1));
     }
 
     private Promise<Unit> publishRemote(int partition, byte[] bytes, long timestamp) {

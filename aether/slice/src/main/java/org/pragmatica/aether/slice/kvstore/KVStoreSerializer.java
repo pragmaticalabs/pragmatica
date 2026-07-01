@@ -1263,7 +1263,7 @@ public final class KVStoreSerializer {
         var encryptionKeyId = config.encryptionKeyId().or("");
 
         return config.partitions() + PIPE + config.autoOffsetReset() + PIPE + config.maxEventSizeBytes() + PIPE + config.consistencyMode()
-                                                                                                                        .name() + PIPE + config.minSyncReplicas() + PIPE + config.compression()
+                                                                                                                        .name() + PIPE + config.replicas() + PIPE + config.minSyncReplicas() + PIPE + config.compression()
                                                                                                                                                                                  .name() + PIPE + encryptionKeyId + PIPE + retention.maxCount() + PIPE + retention.maxBytes() + PIPE + retention.maxAgeMs() + PIPE + retention.mode()
                                                                                                                                                                                                                                                                                                                               .name() + PIPE + v.createdAt();
     }
@@ -1271,8 +1271,8 @@ public final class KVStoreSerializer {
     private static Result<Map.Entry<AetherKey, AetherValue>> parseStreamConfigEntry(String identity, String raw) {
         var parts = raw.split("(?<!\\\\)\\|", -1);
 
-        if (parts.length != 12) {
-            return parseFailure("stream-config value requires 12 fields, got " + parts.length);
+        if (parts.length != 13) {
+            return parseFailure("stream-config value requires 13 fields, got " + parts.length);
         }
 
         return StreamConfigKey.streamConfigKey("stream-config/" + identity, true).flatMap(key -> buildStreamConfigValue(identity,
@@ -1289,23 +1289,25 @@ public final class KVStoreSerializer {
         var autoOffsetReset = parts[1];
         var maxEventSizeBytes = Long.parseLong(parts[2]);
         var consistencyMode = ConsistencyMode.valueOf(parts[3]);
-        var minSyncReplicas = Integer.parseInt(parts[4]);
-        var compression = StreamCompression.valueOf(parts[5]);
-        var encryptionKeyId = parts[6].isEmpty()
+        var replicas = Integer.parseInt(parts[4]);
+        var minSyncReplicas = Integer.parseInt(parts[5]);
+        var compression = StreamCompression.valueOf(parts[6]);
+        var encryptionKeyId = parts[7].isEmpty()
                               ? Option.<String> none()
-                              : Option.some(parts[6]);
-        var retention = new RetentionPolicy(Long.parseLong(parts[7]),
-                                            Long.parseLong(parts[8]),
+                              : Option.some(parts[7]);
+        var retention = new RetentionPolicy(Long.parseLong(parts[8]),
                                             Long.parseLong(parts[9]),
-                                            RetentionMode.valueOf(parts[10]),
+                                            Long.parseLong(parts[10]),
+                                            RetentionMode.valueOf(parts[11]),
                                             Option.none());
-        var createdAt = Long.parseLong(parts[11]);
+        var createdAt = Long.parseLong(parts[12]);
         var config = StreamConfig.streamConfig(streamName,
                                                partitions,
                                                retention,
                                                autoOffsetReset,
                                                maxEventSizeBytes,
                                                consistencyMode,
+                                               replicas,
                                                minSyncReplicas,
                                                compression,
                                                encryptionKeyId);

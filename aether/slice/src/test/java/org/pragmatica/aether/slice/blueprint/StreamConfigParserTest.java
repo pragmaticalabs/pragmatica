@@ -153,6 +153,36 @@ class StreamConfigParserTest {
         }
 
         @Test
+        void rejectsMinSyncReplicasExceedingReplicas() {
+            var toml = """
+                    [streams.orders]
+                    version = "1.0.0"
+                    replicas = 2
+                    min-sync-replicas = 3
+                    """;
+
+            var result = parseResources(toml);
+
+            assertThat(result.isFailure()).isTrue();
+            result.onFailure(cause -> assertThat(cause.message()).contains("min-sync-replicas")
+                                                                    .contains("replicas"));
+        }
+
+        @Test
+        void acceptsMinSyncReplicasEqualToReplicas() {
+            var toml = """
+                    [streams.orders]
+                    version = "1.0.0"
+                    replicas = 3
+                    min-sync-replicas = 3
+                    """;
+
+            var result = parseResources(toml);
+
+            assertThat(result.isSuccess()).isTrue();
+        }
+
+        @Test
         void rejectsMalformedSource() {
             var toml = """
                     [streams.bad_ref]

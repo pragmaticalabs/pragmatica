@@ -197,6 +197,22 @@ class ReplicationManagerTest {
         }
 
         @Test
+        void minSyncTwo_resolvesAfterOneDistinctPeerAck() {
+            // Barrier arithmetic: min-sync-replicas=2 (owner + one in-sync peer) maps to
+            // awaitReplication(minAcks = min-sync - 1 = 1). At replicas=2 OR replicas=3, a SINGLE
+            // distinct non-self replica ack satisfies the sync barrier — the owner is one of the
+            // in-sync set and is never awaited.
+            registry.registerReplica(STREAM, PARTITION, REPLICA_A);
+            registry.registerReplica(STREAM, PARTITION, REPLICA_B);
+
+            var pending = manager.awaitReplication(STREAM, PARTITION, 5L, 1);
+
+            manager.handleAck(replicateAck(REPLICA_A, STREAM, PARTITION, 5L));
+
+            assertThat(pending.await().isSuccess()).isTrue();
+        }
+
+        @Test
         void selfInReplicaSet_isNotCounted_norReplicatedTo() {
             // #262.2/.5 + #378: the HRW set is owner-first so it contains GOVERNOR (self). Under the
             // corrected provisioning (RF = owner + minSyncReplicas peers) a minSyncReplicas=2 stream

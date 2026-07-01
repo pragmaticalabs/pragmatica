@@ -240,7 +240,7 @@ public final class PartitionBackfill {
         var replicas = registry.replicasFor(streamName, partition);
 
         if (isSelfOwner(streamName, partition)) {
-            return ownerSelfPromote(streamName, partition);
+            return promoteOwner(streamName, partition, replicas);
         }
 
         return hrwOwner(streamName, partition).filter(owner -> !owner.equals(self))
@@ -261,7 +261,30 @@ public final class PartitionBackfill {
     /// quiesced (see {@link #reverifiedAtOffset}), so it fires one owner pull per genuinely-new stale
     /// offset and never a per-tick probe once the replica is genuinely complete.
     public List<PartitionKey> redriveCandidates() {
-        return registry.incompletePartitionsFor(self, this::staleCaughtUpNonOwner);
+        return registry.incompletePartitionsFor(self, this::caughtUpNeedsCatchup);
+    }
+
+    /// A (prematurely) CAUGHT_UP self descriptor that still needs a catch-up backfill before it is
+    /// genuinely complete, dispatched on self's role:
+    ///   - self IS the HRW owner but a surviving replica holds a HIGHER `confirmedOffset` — a promoted
+    ///     owner that is BEHIND (the #336 lossless-failover case). It must catch up to the survivor before
+    ///     serving as owner, so it is re-driven even though it is already CAUGHT_UP.
+    ///   - self is NOT the HRW owner — the #333 write-idle residual ({@link #staleCaughtUpNonOwner}).
+    /// The genuine single-node / already-covered owner-self-promote stays CAUGHT_UP untouched (no survivor
+    /// is ahead ⇒ no re-drive).
+    private boolean caughtUpNeedsCatchup(ReplicaDescriptor descriptor) {
+        return isSelfOwner(descriptor.streamName(), descriptor.partition())
+               ? ownerBehindSurvivor(descriptor)
+               : staleCaughtUpNonOwner(descriptor);
+    }
+
+    /// True when self is the HRW owner but a surviving non-self replica holds a strictly higher
+    /// `confirmedOffset` than self's — a promoted owner that must catch up before becoming authoritative
+    /// (#336). Compared against self's registry `confirmedOffset` (the owner's contiguous watermark), so
+    /// the redrive decision needs no local-ring read.
+    private boolean ownerBehindSurvivor(ReplicaDescriptor descriptor) {
+        return aheadSurvivor(registry.replicasFor(descriptor.streamName(), descriptor.partition()),
+                             descriptor.confirmedOffset()).isPresent();
     }
 
     /// True when `descriptor` (self's CAUGHT_UP descriptor) needs an owner re-verify: self is NOT the HRW
@@ -377,6 +400,7 @@ public final class PartitionBackfill {
 
         registry.updateWatermark(streamName, partition, self, watermark);
         reverifiedAtOffset.put(partitionKey(streamName, partition), watermark);
+        firstNoSourceMs.remove(partitionKey(streamName, partition));
         log.info("Backfill {}[{}] complete: applied {} events, self CAUGHT_UP at offset {}",
                  streamName,
                  partition,
@@ -457,6 +481,103 @@ public final class PartitionBackfill {
     /// window before members are visible), where the registry / cold-start source path takes over.
     private Option<NodeId> hrwOwner(String streamName, int partition) {
         return Option.from(ReplicaPlacement.rank(streamName, partition, membersSupplier.get()).stream().findFirst());
+    }
+
+    /// Owner promotion is LOSSLESS (#336 phase-2). A freshly HRW-elected owner can be BEHIND a surviving
+    /// replica when `replicas > minSyncReplicas`: different client-acked writes were confirmed by different
+    /// peers, so the promoted owner's local watermark may trail the highest survivor. Self-promoting at the
+    /// local watermark would then serve a SHORT log (silent data loss on failover — the empirically-observed
+    /// ownerHeadOffset=5 while 20 were acked). The catch-up target is the MAX `confirmedOffset` among the
+    /// SURVIVING non-self replicas — a CONTIGUOUS watermark, so with `minSync >= 2` the max-confirmed
+    /// survivor holds every client-acked offset after a single owner loss. When self already covers that
+    /// target it is authoritative immediately (the owner-immediate cold-start path, unchanged); otherwise it
+    /// is held NON-authoritative (SYNCING — the existing read gate then forwards reads to the caught-up
+    /// survivor rather than serving self's short log) while it pulls the missing suffix, becoming CAUGHT_UP
+    /// only once it reaches the survivor's tail. HRW ownership stays DETERMINISTIC — no other node is elected;
+    /// the HRW-elected owner is caught up before it is authoritative.
+    private Promise<Long> promoteOwner(String streamName, int partition, List<ReplicaDescriptor> replicas) {
+        var localWatermark = selfWatermark.localWatermark(streamName, partition);
+
+        return aheadSurvivor(replicas, localWatermark).fold(() -> ownerSelfPromote(streamName, partition),
+                                                            survivor -> catchupOwnerFromSurvivor(streamName,
+                                                                                                 partition,
+                                                                                                 survivor,
+                                                                                                 localWatermark));
+    }
+
+    /// The surviving NON-SELF replica holding the highest `confirmedOffset`, but only when it is STRICTLY
+    /// ahead of `localWatermark` — the offset the promoted owner must catch up to before it may serve as
+    /// owner. {@link Option#none()} when self already covers every survivor (authoritative immediately) or
+    /// there is no survivor at all (cold-start owner-immediate). Taking the MAX across ALL survivors (not a
+    /// single best-effort pick) is what makes the target the true watermark, since any one survivor may hold
+    /// a different acked subset.
+    private Option<ReplicaDescriptor> aheadSurvivor(List<ReplicaDescriptor> replicas, long localWatermark) {
+        return Option.from(replicas.stream()
+                                   .filter(descriptor -> !descriptor.nodeId().equals(self))
+                                   .max(Comparator.comparingLong(ReplicaDescriptor::confirmedOffset)))
+                     .filter(survivor -> survivor.confirmedOffset() > localWatermark);
+    }
+
+    /// Hold self NON-authoritative (SYNCING at the local watermark, so the read path forwards to the
+    /// caught-up survivor instead of serving self's short log) and pull the missing suffix
+    /// (`localWatermark + 1 ..` survivor tail) FROM the max-confirmed survivor. Promotion to CAUGHT_UP is
+    /// gated by {@link #applyAndPromote}/{@link #promote} — the SAME catch-up-then-promote gate the non-owner
+    /// owner-source path uses — so self becomes authoritative only once the applied offset actually reaches
+    /// the target. A catch-up failure (survivor unreachable/silent) routes to the bounded-wait liveness
+    /// escape rather than a false promote.
+    private Promise<Long> catchupOwnerFromSurvivor(String streamName,
+                                                   int partition,
+                                                   ReplicaDescriptor survivor,
+                                                   long localWatermark) {
+        registry.updateWatermark(streamName, partition, self, localWatermark, ReplicationState.SYNCING);
+        var fromOffset = localWatermark + 1;
+        var request = catchupRequest(survivor.nodeId(), streamName, partition, fromOffset);
+
+        log.warn("Backfill {}[{}]: promoted owner BEHIND survivor {} (self watermark {}, target {}) — holding "
+                + "non-authoritative and catching up before serving [#336 lossless failover]",
+                 streamName,
+                 partition,
+                 survivor.nodeId(),
+                 localWatermark,
+                 survivor.confirmedOffset());
+
+        return transport.requestCatchup(survivor.nodeId(), request)
+                        .flatMap(response -> applyAndPromote(streamName, partition, survivor.confirmedOffset(), response))
+                        .fold(result -> result.fold(cause -> escapeOwnerCatchup(streamName, partition, localWatermark, cause),
+                                                    Promise::success));
+    }
+
+    /// Liveness escape for a promoted owner whose survivor catch-up failed. Until {@link #sourceWaitBound}
+    /// elapses self stays behind (the failure propagates and the redrive retries — a slow/flaky survivor may
+    /// still answer). Once the bound elapses self promotes at its LOCAL watermark with a LOUD warning: a
+    /// logged degraded recovery beats a wedged partition. The bound is cross-call memory
+    /// ({@link #firstNoSourceMs}), armed on the FIRST failed catch-up, so successive redrive ticks measure
+    /// one continuous wait.
+    private Promise<Long> escapeOwnerCatchup(String streamName, int partition, long localWatermark, Cause cause) {
+        var key = partitionKey(streamName, partition);
+        var firstObserved = firstNoSourceMs.computeIfAbsent(key, _ -> clock.getAsLong());
+        var waited = clock.getAsLong() - firstObserved;
+
+        if (waited < sourceWaitBound.millis()) {
+            log.warn("Backfill {}[{}]: promoted-owner catch-up from survivor failed ({}) — staying "
+                    + "non-authoritative ({}ms of {}ms wait elapsed), will retry",
+                     streamName,
+                     partition,
+                     cause.message(),
+                     waited,
+                     sourceWaitBound.millis());
+
+            return cause.promise();
+        }
+
+        log.warn("Backfill {}[{}]: promoted-owner catch-up UNAVAILABLE after {}ms — promoting at LOCAL watermark "
+                + "{} with POSSIBLE DATA LOSS [#336 liveness escape: degraded recovery, not a wedge]",
+                 streamName,
+                 partition,
+                 waited,
+                 localWatermark);
+
+        return ownerSelfPromote(streamName, partition);
     }
 
     /// Owner-immediate cold-start promotion: self IS the HRW owner and no caught-up peer source exists,

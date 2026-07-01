@@ -62,8 +62,8 @@ class ReplicaSetControllerTest {
                                                         Runnable::run);
     }
 
-    private static StreamCatalog appCatalog(int minSyncReplicas) {
-        return new FakeCatalog(List.of(new StreamCatalog.StreamSpec(APP_STREAM, PARTITIONS, minSyncReplicas)));
+    private static StreamCatalog appCatalog(int replicas) {
+        return new FakeCatalog(List.of(new StreamCatalog.StreamSpec(APP_STREAM, PARTITIONS, replicas, 0)));
     }
 
     /// Counting assignment store: register => assigned=true, unregister => assigned=false.
@@ -111,6 +111,21 @@ class ReplicaSetControllerTest {
             var actual = new HashSet<NodeId>();
             registry.replicasFor(APP_STREAM, p).forEach(d -> actual.add(d.nodeId()));
             assertThat(actual).isEqualTo(desiredReplicas(APP_STREAM, p, members.get(), rf));
+        }
+    }
+
+    @Test
+    void replicationFactorDerivesFromReplicasNotMinSyncReplicas() {
+        var registry = ReplicaRegistry.replicaRegistry();
+        var members = new AtomicReference<>(nodes("n0", "n1", "n2", "n3"));
+        // replicas=2 drives placement RF; min-sync-replicas=4 must be IGNORED for placement.
+        var catalog = new FakeCatalog(List.of(new StreamCatalog.StreamSpec(APP_STREAM, PARTITIONS, 2, 4)));
+        var ctrl = controller(registry, node("n0"), members, catalog, (_, _) -> {});
+
+        ctrl.reconcile();
+
+        for (var p = 0; p < PARTITIONS; p++) {
+            assertThat(registry.replicasFor(APP_STREAM, p).size()).isEqualTo(2);
         }
     }
 
@@ -312,8 +327,8 @@ class ReplicaSetControllerTest {
         var systemStream = "system:cluster-events:1.0.0";
         var members = nodes("n0", "n1", "n2", "n3", "n4");
         var registry = ReplicaRegistry.replicaRegistry();
-        // minSyncReplicas deliberately set to 1 — should be IGNORED for system streams.
-        var catalog = new FakeCatalog(List.of(new StreamCatalog.StreamSpec(systemStream, 1, 1)));
+        // replicas deliberately set to 1 — should be IGNORED for system streams.
+        var catalog = new FakeCatalog(List.of(new StreamCatalog.StreamSpec(systemStream, 1, 1, 1)));
         var ctrl = controller(registry, node("n0"), new AtomicReference<>(members), catalog, (_, _) -> {});
 
         ctrl.reconcile();
