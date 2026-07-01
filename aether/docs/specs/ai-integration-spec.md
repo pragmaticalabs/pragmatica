@@ -19,7 +19,7 @@ as dependencies and not as API templates.
 **This module is the third instance of one established pattern.** It maps slot-for-slot onto the two
 shipped declarative-adapter specs:
 
-| Concern | HTTP client | PG "Aether Store" | **AI (this module)** |
+| Concern | HTTP client | PG "Aether Persistence (AEP)" | **AI (this module)** |
 |---|---|---|---|
 | Low-level resource (native, `Promise`-returning) | `HttpOperations` | `PgSqlConnector` | **`ChatModel` / `EmbeddingModel`** |
 | Resource qualifier → config | `@Payments` → `[http.payments]` | `@PgSql` → `[database]`+`schema/` | **`@Ai` → `[ai.<name>]`** |
@@ -300,7 +300,7 @@ delivery behavior is answerable at build time.
 ## 6. References
 
 ### Internal
-- `aether/docs/specs/pg-persistence-spec.md` — "Aether Store" declarative persistence adapter (pattern source)
+- `aether/docs/specs/pg-persistence-spec.md` — AEP declarative persistence adapter (pattern source)
 - `aether/docs/specs/declarative-http-client-spec.md` — declarative HTTP client (pattern source; config/JSON/observability reuse)
 - `aether/docs/specs/in-memory-streams-spec.md` — stream partition / consumer-paced delivery model (token delivery semantics)
 - `aether/slice-api/.../Subscriber.java`, `Scheduled.java` — inbound-event marker resource types (precedent for `TokenSink`)

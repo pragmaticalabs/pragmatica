@@ -11,6 +11,18 @@ Comprehensive inventory of all Aether Unified Application Runtime capabilities.
 
 ---
 
+## Terminology
+
+Three storage/persistence concepts that are distinct and must not be conflated:
+
+| Term | Abbreviation | What it is |
+|------|-------------|------------|
+| **Aether Persistence** | **AEP** | `@PgSql` type-safe relational persistence with compile-time SQL validation. Application-layer persistence for slice data in PostgreSQL. |
+| **Consensus KV store** | — | The Rabia-replicated internal key-value store that holds cluster state (slice targets, routes, blueprints, topology). Internal infrastructure — not an application persistence layer. |
+| **Aether Hierarchical Storage Engine** | **AHSE** | Tiered content-addressed block storage for artifacts and binary data (`integrations/storage`). |
+
+---
+
 ## Deployment & Lifecycle
 
 | # | Feature | Status | Description |
@@ -131,7 +143,7 @@ Comprehensive inventory of all Aether Unified Application Runtime capabilities.
 |---|---------|--------|-------------|
 | 44 | SPI resource factories | Complete | ServiceLoader discovery, config-driven provisioning, type-safe qualifiers |
 | 45 | Database resources | Complete | JDBC, R2DBC, jOOQ, jOOQ-R2DBC, jOOQ-async, JPA, postgres-async (native async + R2DBC adapter) with connection pooling, query pipelining, configurable IO threads, transaction management, and LISTEN/NOTIFY |
-| 45a | Aether Store — PostgreSQL persistence | Complete | `@PgSql` type-safe persistence with compile-time SQL validation against migration-derived schema. Validates parameter types, return field mappings, column existence, NOT NULL coverage. Generates CRUD from method names (Spring Data conventions). 41-rule migration linter, record/enum codegen, named parameter rewriting, query narrowing, record expansion (INSERT VALUES + UPDATE SET). `pg-maven-plugin` for schema → Java generation. CLI scaffolding via `jbct add persistence` |
+| 45a | Aether Persistence (AEP) — PostgreSQL persistence | Complete | `@PgSql` type-safe persistence with compile-time SQL validation against migration-derived schema. Validates parameter types, return field mappings, column existence, NOT NULL coverage. Generates CRUD from method names (Spring Data conventions). 41-rule migration linter, record/enum codegen, named parameter rewriting, query narrowing, record expansion (INSERT VALUES + UPDATE SET). `pg-maven-plugin` for schema → Java generation. CLI scaffolding via `jbct add persistence` |
 | 45b | jOOQ XML schema export | Complete | `JooqXmlExporter` generates jOOQ `XMLDatabase` input from pg-tools static analysis. Maven goals: `export-jooq-xml` + `check-jooq-xml`. 25+ PG type mappings, enums, domains, indexes, multi-schema. No jOOQ dependency — hand-written StAX emission |
 | 46 | HTTP client resource | Complete | Configurable outbound HTTP with timeouts, retries, SSL/TLS, Jackson integration |
 | 47 | Interceptor framework | Complete | Method-level interceptors: retry, circuit breaker, rate limit, logging, metrics. Runtime enable/disable |
