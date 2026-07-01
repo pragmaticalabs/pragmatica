@@ -12,6 +12,7 @@ import org.pragmatica.lang.utils.Causes;
 
 import javax.annotation.processing.ProcessingEnvironment;
 import javax.lang.model.element.ElementKind;
+import javax.lang.model.element.Modifier;
 import javax.lang.model.element.TypeElement;
 import javax.lang.model.type.TypeMirror;
 import java.util.ArrayList;
@@ -46,22 +47,61 @@ public final class ErrorTypeDiscovery {
                      .map(TypeElement::asType);
     }
 
-    /// Discover all error types in the package and map to HTTP status codes.
+    /// Discover all error types in the package, map to HTTP status codes, and validate totality.
     ///
-    /// @param packageName the package to scan for error types
-    /// @param config      the error pattern configuration
-    /// @return success with mappings, or failure with conflict details
-    public Result<List<ErrorTypeMapping>> discover(String packageName,
-                                                   ErrorPatternConfig config) {
+    /// @param packageName   the package to scan for error types
+    /// @param config        the error pattern configuration
+    /// @param routesTomlPath the resource path of the `routes.toml`, named in validation messages
+    /// @return success with mappings + validation issues, or failure with conflict details
+    public Result<DiscoveryResult> discover(String packageName,
+                                            ErrorPatternConfig config,
+                                            String routesTomlPath) {
         if (causeType.isEmpty()) {
             return Causes.cause("Cannot resolve " + CAUSE_QUALIFIED_NAME + " - is pragmatica-lite on classpath?")
                          .result();
         }
         var errorTypes = findCauseTypes(packageName);
         if (errorTypes.isEmpty()) {
-            return Result.success(List.of());
+            return Result.success(new DiscoveryResult(List.of(), List.of()));
         }
-        return mapErrorTypes(errorTypes, config);
+        return mapErrorTypes(errorTypes, config)
+            .map(mappings -> new DiscoveryResult(mappings, validate(errorTypes, config, routesTomlPath)));
+    }
+
+    /// Mappings for the router plus the totality / dead-mapping issues found for this slice.
+    ///
+    /// @param mappings the error type to HTTP status mappings fed to the router generator
+    /// @param issues   the totality / dead-mapping problems, reported via the Messager by the caller
+    public record DiscoveryResult(List<ErrorTypeMapping> mappings, List<ErrorMappingValidator.Issue> issues) {}
+
+    private List<ErrorMappingValidator.Issue> validate(List<TypeElement> errorTypes,
+                                                       ErrorPatternConfig config,
+                                                       String routesTomlPath) {
+        var descriptors = errorTypes.stream()
+                                    .map(ErrorTypeDiscovery::toDescriptor)
+                                    .toList();
+        return ErrorMappingValidator.validate(descriptors, config, routesTomlPath);
+    }
+
+    private static ErrorMappingValidator.CauseDescriptor toDescriptor(TypeElement element) {
+        return new ErrorMappingValidator.CauseDescriptor(element.getSimpleName()
+                                                                .toString(),
+                                                         element.getQualifiedName()
+                                                                .toString(),
+                                                         isLeaf(element));
+    }
+
+    /// A Cause type is a mappable leaf when it can actually be returned as a value: records and
+    /// enums (the concrete failure carriers) and non-abstract classes. The sealed interface itself
+    /// and abstract classes are catch-all supertypes, never returned directly, so they are exempt
+    /// from the totality check.
+    private static boolean isLeaf(TypeElement element) {
+        return switch (element.getKind()) {
+            case RECORD, ENUM -> true;
+            case CLASS -> !element.getModifiers()
+                                  .contains(Modifier.ABSTRACT);
+            default -> false;
+        };
     }
 
     private List<TypeElement> findCauseTypes(String packageName) {
@@ -153,7 +193,9 @@ public final class ErrorTypeDiscovery {
         if (explicit != null) {
             return Result.success(ErrorTypeMapping.errorTypeMapping(errorType, explicit));
         }
-        var matches = findMatchingPatterns(simpleName, config.statusPatterns());
+        var qualifiedName = errorType.getQualifiedName()
+                                     .toString();
+        var matches = findMatchingPatterns(simpleName, qualifiedName, config.statusPatterns());
         if (matches.isEmpty()) {
             // No pattern matched - use default status with no pattern
             return Result.success(ErrorTypeMapping.errorTypeMapping(errorType, config.defaultStatus()));
@@ -173,13 +215,14 @@ public final class ErrorTypeDiscovery {
         return new ConflictCause(ErrorConflict.errorConflict(errorType, matches)).result();
     }
 
-    private List<ErrorConflict.PatternMatch> findMatchingPatterns(String typeName,
+    private List<ErrorConflict.PatternMatch> findMatchingPatterns(String simpleName,
+                                                                  String qualifiedName,
                                                                   Map<Integer, List<String>> statusPatterns) {
         var matches = new ArrayList<ErrorConflict.PatternMatch>();
         for (var entry : statusPatterns.entrySet()) {
             var status = entry.getKey();
             for (var pattern : entry.getValue()) {
-                if (ErrorTypeMatcher.matches(typeName, pattern)) {
+                if (ErrorTypeMatcher.matchesType(simpleName, qualifiedName, pattern)) {
                     matches.add(new ErrorConflict.PatternMatch(pattern, status));
                 }
             }

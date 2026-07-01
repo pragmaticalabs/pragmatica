@@ -721,4 +721,86 @@ class RouteConfigLoaderTest {
             });
         }
     }
+
+    @Nested
+    class ErrorMappingParsing {
+
+        @Test
+        void parseErrors_parsesBareNumericStatusKeys() throws IOException {
+            var config = writeConfig("routes.toml", """
+                [routes]
+                getSeat = "GET /{id}"
+
+                [errors]
+                default = 500
+                404 = ["SeatError.SeatNotFound"]
+                400 = ["SeatError.InvalidSeat", "*Blank*"]
+                """);
+
+            var result = RouteConfigLoader.load(config);
+
+            assertThat(result.isSuccess()).isTrue();
+            result.onSuccess(rc -> {
+                var errors = rc.errors();
+                assertThat(errors.defaultStatus()).isEqualTo(500);
+                assertThat(errors.statusPatterns().get(404)).containsExactly("SeatError.SeatNotFound");
+                assertThat(errors.statusPatterns().get(400)).containsExactly("SeatError.InvalidSeat", "*Blank*");
+            });
+        }
+
+        @Test
+        void parseErrors_keepsLegacyHttpPrefixedKeys() throws IOException {
+            var config = writeConfig("routes.toml", """
+                [routes]
+                getSeat = "GET /{id}"
+
+                [errors]
+                default = 500
+                HTTP_404 = ["*NotFound*", "*Missing*"]
+                HTTP_400 = ["*Invalid*"]
+                """);
+
+            var result = RouteConfigLoader.load(config);
+
+            assertThat(result.isSuccess()).isTrue();
+            result.onSuccess(rc -> {
+                var errors = rc.errors();
+                assertThat(errors.statusPatterns().get(404)).containsExactly("*NotFound*", "*Missing*");
+                assertThat(errors.statusPatterns().get(400)).containsExactly("*Invalid*");
+            });
+        }
+
+        @Test
+        void parseErrors_parsesStrictFlag() throws IOException {
+            var config = writeConfig("routes.toml", """
+                [routes]
+                getSeat = "GET /{id}"
+
+                [errors]
+                strict = true
+                404 = ["SeatError.SeatNotFound"]
+                """);
+
+            var result = RouteConfigLoader.load(config);
+
+            assertThat(result.isSuccess()).isTrue();
+            result.onSuccess(rc -> assertThat(rc.errors().strict()).isTrue());
+        }
+
+        @Test
+        void parseErrors_defaultsStrictToFalse() throws IOException {
+            var config = writeConfig("routes.toml", """
+                [routes]
+                getSeat = "GET /{id}"
+
+                [errors]
+                404 = ["SeatError.SeatNotFound"]
+                """);
+
+            var result = RouteConfigLoader.load(config);
+
+            assertThat(result.isSuccess()).isTrue();
+            result.onSuccess(rc -> assertThat(rc.errors().strict()).isFalse());
+        }
+    }
 }

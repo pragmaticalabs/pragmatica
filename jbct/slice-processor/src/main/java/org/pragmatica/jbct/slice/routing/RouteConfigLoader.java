@@ -411,26 +411,36 @@ public final class RouteConfigLoader {
                                 .or(500);
         var statusPatterns = parseStatusPatterns(toml);
         var explicitMappings = parseExplicitMappings(toml);
-        return ErrorPatternConfig.errorPatternConfig(defaultStatus, statusPatterns, explicitMappings);
+        var strict = toml.getBoolean("errors", "strict")
+                         .or(false);
+        return ErrorPatternConfig.errorPatternConfig(defaultStatus, statusPatterns, explicitMappings, strict);
     }
 
+    /// Parse the status-to-patterns entries of `[errors]`. A status key is EITHER the legacy
+    /// `HTTP_<code>` form (e.g. `HTTP_404`) OR a bare numeric code (e.g. `404`, #385); both may hold
+    /// glob patterns (`*NotFound*`) and/or exact type references (`SeatError.SeatNotFound`). The
+    /// `default`, `strict`, and any other non-numeric keys are handled elsewhere and skipped here.
     private static Map<Integer, List<String>> parseStatusPatterns(TomlDocument toml) {
         var patterns = new HashMap<Integer, List<String>>();
         var errorsSection = toml.getSection("errors");
         for (var entry : errorsSection.entrySet()) {
             var key = entry.getKey();
-            if (key.startsWith("HTTP_")) {
-                var statusCode = parseHttpStatus(key);
-                if (statusCode > 0) {
-                    var patternList = toml.getStringList("errors", key)
-                                          .or(List.of());
-                    if (!patternList.isEmpty()) {
-                        patterns.put(statusCode, patternList);
-                    }
+            var statusCode = parseStatusKey(key);
+            if (statusCode > 0) {
+                var patternList = toml.getStringList("errors", key)
+                                      .or(List.of());
+                if (!patternList.isEmpty()) {
+                    patterns.merge(statusCode, patternList, RouteConfigLoader::concatPatterns);
                 }
             }
         }
         return Map.copyOf(patterns);
+    }
+
+    private static List<String> concatPatterns(List<String> existing, List<String> added) {
+        var combined = new ArrayList<>(existing);
+        combined.addAll(added);
+        return List.copyOf(combined);
     }
 
     private static Map<String, Integer> parseExplicitMappings(TomlDocument toml) {
@@ -448,6 +458,22 @@ public final class RouteConfigLoader {
             return Option.some(Integer.parseInt(value));
         } catch (NumberFormatException _) {
             return Option.none();
+        }
+    }
+
+    /// Resolve the HTTP status code a `[errors]` key denotes: the legacy `HTTP_<code>` form or a
+    /// bare numeric `<code>` (#385). Returns `-1` for non-status keys (`default`, `strict`, ...).
+    private static int parseStatusKey(String key) {
+        return key.startsWith("HTTP_")
+               ? parseHttpStatus(key)
+               : parseBareStatus(key);
+    }
+
+    private static int parseBareStatus(String key) {
+        try{
+            return Integer.parseInt(key);
+        } catch (NumberFormatException _) {
+            return - 1;
         }
     }
 

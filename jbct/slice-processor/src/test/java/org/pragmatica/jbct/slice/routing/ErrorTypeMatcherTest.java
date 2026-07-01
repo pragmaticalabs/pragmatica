@@ -199,4 +199,88 @@ class ErrorTypeMatcherTest {
             assertThat(ErrorTypeMatcher.extractLiteral("**")).isEmpty();
         }
     }
+
+    @Nested
+    class ExactReferenceDetection {
+
+        @Test
+        void isExactReference_returnsTrue_forNoWildcard() {
+            assertThat(ErrorTypeMatcher.isExactReference("SeatError.SeatNotFound")).isTrue();
+        }
+
+        @Test
+        void isExactReference_returnsFalse_forGlob() {
+            assertThat(ErrorTypeMatcher.isExactReference("*NotFound*")).isFalse();
+        }
+
+        @Test
+        void isExactReference_returnsFalse_forNull() {
+            assertThat(ErrorTypeMatcher.isExactReference(null)).isFalse();
+        }
+    }
+
+    @Nested
+    class MatchesTypeGlob {
+
+        @Test
+        void matchesType_matchesGlobAgainstSimpleName() {
+            assertThat(ErrorTypeMatcher.matchesType("SeatNotFound",
+                                                    "com.acme.seat.SeatError.SeatNotFound",
+                                                    "*NotFound*")).isTrue();
+        }
+
+        @Test
+        void matchesType_globIgnoresQualifiedName() {
+            assertThat(ErrorTypeMatcher.matchesType("InvalidSeat",
+                                                    "com.acme.seat.SeatError.InvalidSeat",
+                                                    "*NotFound*")).isFalse();
+        }
+    }
+
+    @Nested
+    class MatchesTypeExactReference {
+
+        @Test
+        void matchesType_resolvesNestedReference() {
+            assertThat(ErrorTypeMatcher.matchesType("SeatNotFound",
+                                                    "com.acme.seat.SeatError.SeatNotFound",
+                                                    "SeatError.SeatNotFound")).isTrue();
+        }
+
+        @Test
+        void matchesType_resolvesFullyQualifiedReference() {
+            assertThat(ErrorTypeMatcher.matchesType("SeatNotFound",
+                                                    "com.acme.seat.SeatError.SeatNotFound",
+                                                    "com.acme.seat.SeatError.SeatNotFound")).isTrue();
+        }
+
+        @Test
+        void matchesType_resolvesSimpleReference() {
+            assertThat(ErrorTypeMatcher.matchesType("SeatNotFound",
+                                                    "com.acme.seat.SeatError.SeatNotFound",
+                                                    "SeatNotFound")).isTrue();
+        }
+
+        @Test
+        void matchesType_doesNotMatchDifferentNestedReference() {
+            assertThat(ErrorTypeMatcher.matchesType("SeatNotFound",
+                                                    "com.acme.seat.SeatError.SeatNotFound",
+                                                    "SeatError.InvalidSeat")).isFalse();
+        }
+
+        @Test
+        void matchesType_dottedSuffixRespectsNameBoundary() {
+            // 'Found' must not match '...SeatNotFound' - the suffix is anchored at a '.' boundary.
+            assertThat(ErrorTypeMatcher.matchesType("SeatNotFound",
+                                                    "com.acme.seat.SeatError.SeatNotFound",
+                                                    "Found")).isFalse();
+        }
+
+        @Test
+        void matchesType_returnsFalse_forNullPattern() {
+            assertThat(ErrorTypeMatcher.matchesType("SeatNotFound",
+                                                    "com.acme.seat.SeatError.SeatNotFound",
+                                                    null)).isFalse();
+        }
+    }
 }

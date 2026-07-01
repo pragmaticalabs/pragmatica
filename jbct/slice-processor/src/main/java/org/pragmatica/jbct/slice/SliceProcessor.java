@@ -9,6 +9,7 @@ import org.pragmatica.jbct.slice.generator.DependencyVersionResolver;
 import org.pragmatica.jbct.slice.generator.FactoryClassGenerator;
 import org.pragmatica.jbct.slice.generator.ManifestGenerator;
 import org.pragmatica.jbct.slice.model.SliceModel;
+import org.pragmatica.jbct.slice.routing.ErrorMappingValidator;
 import org.pragmatica.jbct.slice.routing.ErrorPatternConfig;
 import org.pragmatica.jbct.slice.routing.ErrorTypeDiscovery;
 import org.pragmatica.jbct.slice.routing.RouteConfig;
@@ -33,20 +34,25 @@ import javax.tools.StandardLocation;
 import java.io.IOException;
 import java.nio.file.FileSystemNotFoundException;
 import java.nio.file.Path;
+import java.util.List;
 import java.util.Set;
 
 import com.google.auto.service.AutoService;
 
 @AutoService(Processor.class)
 @SupportedAnnotationTypes("org.pragmatica.aether.slice.annotation.Slice")
-@SupportedOptions({"slice.groupId", "slice.artifactId"})
+@SupportedOptions({"slice.groupId", "slice.artifactId", "jbct.routes.errors.strict"})
 @SupportedSourceVersion(SourceVersion.RELEASE_25)
 public class SliceProcessor extends AbstractProcessor {
+    /// Processor option escalating an unmapped Cause record from a warning to a build error (#385).
+    private static final String ERRORS_STRICT_OPTION = "jbct.routes.errors.strict";
+
     private FactoryClassGenerator factoryGenerator;
     private ManifestGenerator manifestGenerator;
     private DependencyVersionResolver versionResolver;
     private RouteSourceGenerator routeGenerator;
     private ErrorTypeDiscovery errorDiscovery;
+    private boolean errorsStrict;
     private final java.util.Map<String, TypeElement> packageToSlice = new java.util.concurrent.ConcurrentHashMap<>();
     private final java.util.Set<String> routeServiceEntries = java.util.Collections.synchronizedSet(new java.util.LinkedHashSet<>());
 
@@ -62,6 +68,7 @@ public class SliceProcessor extends AbstractProcessor {
         this.manifestGenerator = new ManifestGenerator(filer, versionResolver, options);
         this.errorDiscovery = new ErrorTypeDiscovery(processingEnv);
         this.routeGenerator = new RouteSourceGenerator(filer, processingEnv.getMessager(), elements);
+        this.errorsStrict = Boolean.parseBoolean(options.getOrDefault(ERRORS_STRICT_OPTION, "false"));
     }
 
     @Override
@@ -184,14 +191,45 @@ public class SliceProcessor extends AbstractProcessor {
                                                             SliceModel sliceModel,
                                                             RouteConfig config) {
         var packageName = sliceModel.packageName();
-        return errorDiscovery.discover(packageName,
-                                       config.errors())
-                             .flatMap(errorMappings -> routeGenerator.generate(interfaceElement, sliceModel, config, errorMappings))
+        var routesTomlPath = packageName.replace('.', '/') + "/routes.toml";
+        return errorDiscovery.discover(packageName, config.errors(), routesTomlPath)
+                             .onSuccess(discovery -> reportErrorMappingIssues(interfaceElement,
+                                                                              discovery.issues(),
+                                                                              strictErrorMapping(config)))
+                             .flatMap(discovery -> routeGenerator.generate(interfaceElement, sliceModel, config, discovery.mappings()))
                              .onSuccess(qualifiedNameOpt -> {
                                             qualifiedNameOpt.onPresent(routeServiceEntries::add);
                                             note(interfaceElement,
                                                  "Generated routes: " + sliceModel.simpleName() + "Routes");
                                         });
+    }
+
+    /// Strict when either the `[errors] strict` config flag or the `-Ajbct.routes.errors.strict`
+    /// processor option is set: an unmapped Cause record then fails the build instead of warning.
+    private boolean strictErrorMapping(RouteConfig config) {
+        return errorsStrict || config.errors()
+                                     .strict();
+    }
+
+    private void reportErrorMappingIssues(TypeElement interfaceElement,
+                                          List<ErrorMappingValidator.Issue> issues,
+                                          boolean strict) {
+        for (var issue : issues) {
+            emitErrorMappingIssue(interfaceElement, issue, strict);
+        }
+    }
+
+    /// Report one totality / dead-mapping issue. An unmapped Cause is an ERROR (build failure) only
+    /// under strict mode; dead patterns/references and the non-strict unmapped case are WARNINGs, so
+    /// existing slices with unmapped causes keep building (#385, non-breaking default).
+    private void emitErrorMappingIssue(TypeElement interfaceElement,
+                                       ErrorMappingValidator.Issue issue,
+                                       boolean strict) {
+        var kind = strict && issue.kind() == ErrorMappingValidator.IssueKind.UNMAPPED_CAUSE
+                   ? Diagnostic.Kind.ERROR
+                   : Diagnostic.Kind.WARNING;
+        processingEnv.getMessager()
+                     .printMessage(kind, issue.message(), interfaceElement);
     }
 
     private void error(Element element, String message) {
