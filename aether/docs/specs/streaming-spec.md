@@ -1449,6 +1449,21 @@ When a governor fails and a new governor takes over:
 
 **Phase 2 improvement (AHSE):** With hierarchical storage, sealed segments are persisted to AHSE local disk tier. On governor failover, the new governor loads sealed segments from AHSE — only the current unsealed segment (events since last seal) requires replica recovery. Data loss is bounded to one segment rather than the entire partition.
 
+### 10.5 Stream Replication Durability
+
+Replication durability is governed by two independent stream-level knobs. Both count the owner; `consistency-mode` (Section 3.3) remains the orthogonal *read* knob and is unaffected.
+
+| Property | Type | Default | Description |
+|----------|------|---------|-------------|
+| `replicas` | int | `1` | Replication factor (RF): total copies of each partition **including the owner**. The owner plus `replicas − 1` follower replicas are placed by HRW (highest-random-weight) over the eligible nodes, so `replicas = 1` is owner-only (no follower). |
+| `min-sync-replicas` | int | `0` | Minimum in-sync replicas (Kafka `min.insync.replicas`, **counts the owner**) that must acknowledge a write before it is client-acked. `min-sync ≤ 1` resolves on the owner's local write (no peer-ack wait); `min-sync ≥ 2` blocks the publish until `min-sync − 1` follower replicas ack. |
+
+**Invariant:** `0 ≤ min-sync-replicas ≤ replicas`. A configuration violating this bound is rejected at stream creation.
+
+**Durability guarantee:** a write that has been client-acked survives up to `min-sync − 1` *simultaneous* replica failures (owner included), because `min-sync` distinct copies held the record before the ack returned. With `replicas = 2, min-sync-replicas = 2` (owner + 1 in-sync per write), the single follower is always caught up to the last acked offset, so it can be promoted with zero loss.
+
+**Elect-from-ISR failover:** on owner death the partition's new owner is elected from the in-sync set (the replicas known to have acked through the owner's last committed offset), never from a lagging replica. Because every in-sync replica holds every client-acked record, promotion is lossless — the promoted owner serves the complete pre-failure history. (This is the acceptance proven by the `02-chaos` `test-stream-replica-failover.sh` suite.)
+
 ---
 
 ## 11. CDM Integration
