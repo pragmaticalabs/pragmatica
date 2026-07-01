@@ -78,10 +78,23 @@ public class FactoryClassGenerator {
                 generateFactoryClass(writer, model, factoryName);
             }
             return Result.unitResult();
+        } catch (DependencyLimitExceeded e) {
+            // Surface the actionable, slice-attributed message verbatim (not wrapped as a generation failure).
+            return Causes.cause(e.getMessage())
+                         .result();
         } catch (Exception e) {
             return Causes.cause("Failed to generate factory class: " + e.getClass()
                                                                         .getSimpleName() + ": " + e.getMessage())
                          .result();
+        }
+    }
+
+    /// Signals that a slice's asynchronously provisioned dependency count exceeds the Promise.all()
+    /// arity limit of 15. Carries a fully-formed, slice-attributed diagnostic that [#generate] surfaces
+    /// verbatim so the constraint stays legible instead of crashing with a cryptic internal error.
+    private static final class DependencyLimitExceeded extends RuntimeException {
+        private DependencyLimitExceeded(String message) {
+            super(message);
         }
     }
 
@@ -373,8 +386,12 @@ public class FactoryClassGenerator {
             return;
         }
         if (entries.size() > 15) {
-            throw new IllegalStateException("Too many dependencies (" + entries.size()
-                                            + ") for Promise.all() - maximum is 15");
+            throw new DependencyLimitExceeded(
+                "Slice '" + sliceName + "' needs " + entries.size()
+                + " asynchronously provisioned dependencies, but its generated factory assembles them with"
+                + " Promise.all(), which supports at most 15. Reduce the count by splitting '" + sliceName
+                + "' into smaller slices or applying interface segregation to its dependencies (each injected"
+                + " slice method handle and each provisioned resource counts toward the limit of 15).");
         }
         // Generate Promise.all(...)
         out.println("        return Promise.all(");

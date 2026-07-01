@@ -89,6 +89,14 @@ public final class ProcessorError {
         return PREFIX + "SQL parse failed in '" + methodName + "': " + detail;
     }
 
+    public static String dataModifyingCteNotSupported(String methodName) {
+        return PREFIX
+             + "Data-modifying CTEs are not supported in '" + methodName
+             + "': a WITH clause whose body is INSERT/UPDATE/DELETE (e.g. "
+             + "WITH x AS (INSERT ... RETURNING ...) SELECT ...) cannot be validated or generated. "
+             + "Split the write and the read into separate methods.";
+    }
+
     public static String columnNotFoundInQuery(String column, String table, int line, int col) {
         return PREFIX + "Column '" + column + "' not found in table '" + table + "' at SQL " + line + ":" + col;
     }

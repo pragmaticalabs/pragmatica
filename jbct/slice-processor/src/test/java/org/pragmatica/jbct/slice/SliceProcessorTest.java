@@ -3114,4 +3114,106 @@ class SliceProcessorTest {
         assertThat(factoryContent).contains("\"onPaymentReceived\"");
         assertThat(factoryContent).contains("\"listenerOnOrderPlaced\"");
     }
+
+    // ========== Multi-business-param security method (issue #395) ==========
+
+    private static final JavaFileObject PRINCIPAL = JavaFileObjects.forSourceString(
+            "org.pragmatica.aether.http.handler.security.Principal",
+            """
+            package org.pragmatica.aether.http.handler.security;
+
+            public interface Principal {}
+            """);
+
+    @Test
+    void should_fail_on_security_method_with_multiple_business_params() {
+        var source = JavaFileObjects.forSourceString("test.ProfileService",
+                                                     """
+            package test;
+            import org.pragmatica.aether.slice.annotation.Slice;
+            import org.pragmatica.lang.Promise;
+            import org.pragmatica.aether.http.handler.security.Principal;
+            @Slice
+            public interface ProfileService {
+                Promise<String> updateProfile(Principal principal, String name, String email);
+                static ProfileService profileService() { return null; }
+            }
+            """);
+        var sources = commonSources();
+        sources.add(PRINCIPAL);
+        sources.add(source);
+        Compilation compilation = javac().withProcessors(new SliceProcessor()).compile(sources);
+        assertCompilation(compilation).failed();
+        assertCompilation(compilation).hadErrorContaining("exactly one request record");
+        assertCompilation(compilation).hadErrorContaining("ProfileService.updateProfile");
+    }
+
+    @Test
+    void should_process_security_method_with_single_business_param() {
+        var source = JavaFileObjects.forSourceString("test.ProfileService",
+                                                     """
+            package test;
+            import org.pragmatica.aether.slice.annotation.Slice;
+            import org.pragmatica.lang.Promise;
+            import org.pragmatica.aether.http.handler.security.Principal;
+            @Slice
+            public interface ProfileService {
+                Promise<String> getProfile(Principal principal, String userId);
+                static ProfileService profileService() { return null; }
+            }
+            """);
+        var sources = commonSources();
+        sources.add(PRINCIPAL);
+        sources.add(source);
+        Compilation compilation = javac().withProcessors(new SliceProcessor()).compile(sources);
+        assertCompilation(compilation).succeeded();
+    }
+
+    // ========== Promise.all() dependency-count cap (issue #395) ==========
+
+    @Test
+    void should_fail_when_dependency_count_exceeds_promise_all_limit() {
+        var manyOps = JavaFileObjects.forSourceString("external.ManyOps",
+                                                      """
+            package external;
+            import org.pragmatica.lang.Promise;
+            public interface ManyOps {
+                Promise<String> op0(String x);
+                Promise<String> op1(String x);
+                Promise<String> op2(String x);
+                Promise<String> op3(String x);
+                Promise<String> op4(String x);
+                Promise<String> op5(String x);
+                Promise<String> op6(String x);
+                Promise<String> op7(String x);
+                Promise<String> op8(String x);
+                Promise<String> op9(String x);
+                Promise<String> op10(String x);
+                Promise<String> op11(String x);
+                Promise<String> op12(String x);
+                Promise<String> op13(String x);
+                Promise<String> op14(String x);
+                Promise<String> op15(String x);
+            }
+            """);
+        var source = JavaFileObjects.forSourceString("test.OverloadedService",
+                                                     """
+            package test;
+            import org.pragmatica.aether.slice.annotation.Slice;
+            import org.pragmatica.lang.Promise;
+            import external.ManyOps;
+            @Slice
+            public interface OverloadedService {
+                Promise<String> doWork(String request);
+                static OverloadedService overloadedService(ManyOps ops) { return null; }
+            }
+            """);
+        var sources = commonSources();
+        sources.add(manyOps);
+        sources.add(source);
+        Compilation compilation = javac().withProcessors(new SliceProcessor()).compile(sources);
+        assertCompilation(compilation).failed();
+        assertCompilation(compilation).hadErrorContaining("at most 15");
+        assertCompilation(compilation).hadErrorContaining("OverloadedService");
+    }
 }

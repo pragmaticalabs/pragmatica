@@ -219,6 +219,9 @@ public class QueryAnnotationProcessor extends AbstractProcessor {
         // references match the Java method param names; after expansion `:request` is replaced with
         // $N positional placeholders and virtual field names would otherwise be flagged as unused.
         var originalParamNames = originalParams.stream().map(FactoryGenerator.MethodParam::name).toList();
+        if (rejectsDataModifyingCte(execElement, methodName, sql, originalParamNames)) {
+            return null;
+        }
         validateQueryParams(execElement, methodName, sql, originalParamNames);
         var expansion = expandRecordParams(execElement, sql, originalParams);
         schemaOpt.onPresent(schema -> validateQueryParamTypes(execElement,
@@ -253,6 +256,33 @@ public class QueryAnnotationProcessor extends AbstractProcessor {
                                                mapperColumns,
                                                resolved.needsMapper(),
                                                resolved.scalarAccessor());
+    }
+
+    private static final Pattern CTE_HINT_PATTERN = Pattern.compile("(?i)\\bWITH\\b");
+
+    /// Rejects data-modifying CTEs — a `WITH` clause whose body is `INSERT`/`UPDATE`/`DELETE`
+    /// (e.g. `WITH x AS (INSERT ... RETURNING ...) SELECT ...`) — with a clear, located error
+    /// instead of silently mis-validating the outer statement. Cheaply gated on the presence of a
+    /// `WITH` keyword, then confirmed against the parsed CST so occurrences of INSERT/UPDATE/DELETE
+    /// inside string literals or comments never trigger a false positive. Schema-independent; genuine
+    /// parse failures are left to `validateRewrittenSql` to report. Returns true when rejected.
+    private boolean rejectsDataModifyingCte(ExecutableElement execElement,
+                                            String methodName,
+                                            String sql,
+                                            List<String> paramNames) {
+        if (!CTE_HINT_PATTERN.matcher(sql).find()) {
+            return false;
+        }
+        var rewritten = QueryRewriter.rewriteNamedParams(sql, paramNames).sql();
+        var parsed = sqlParseCache.computeIfAbsent(rewritten, sqlParser::parseCst);
+        if (parsed.isFailure()) {
+            return false;
+        }
+        if (QueryValidator.hasDataModifyingCte(parsed.expect("checked with isFailure above"))) {
+            error(ProcessorError.dataModifyingCteNotSupported(methodName), execElement);
+            return true;
+        }
+        return false;
     }
 
     /// Verifies that the return type is usable: either a record, a known scalar, or a scalar ReturnKind

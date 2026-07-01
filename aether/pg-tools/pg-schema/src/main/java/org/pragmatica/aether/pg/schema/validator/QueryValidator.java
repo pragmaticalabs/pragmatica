@@ -36,6 +36,38 @@ public final class QueryValidator {
         return new QueryValidator(schema);
     }
 
+    /// Reports whether the query contains a data-modifying CTE — a `WITH` common table
+    /// expression whose body is an `INSERT`, `UPDATE`, or `DELETE` statement (typically with
+    /// `RETURNING`). These execute writes inside an otherwise read-shaped query and are not
+    /// supported by the generated accessors, so callers reject them with a clear diagnostic
+    /// rather than silently mis-validating the outer statement. Schema-independent: it inspects
+    /// only the CST structure.
+    public static boolean hasDataModifyingCte(CstNode cst) {
+        var navOpt = CstNavigator.wrap(cst);
+
+        if (navOpt.isEmpty()) {
+            return false;
+        }
+
+        for (var cteDef : navOpt.unwrap().findAll("CteDef")) {
+            if (isDataModifying(cteDef)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static boolean isDataModifying(CstNavigator cteDef) {
+        return containsKeyword(cteDef, "InsertKW")
+               || containsKeyword(cteDef, "DeleteKW")
+               || containsKeyword(cteDef, "UpdateKW") && containsKeyword(cteDef, "SetKW");
+    }
+
+    private static boolean containsKeyword(CstNavigator nav, String keywordRule) {
+        return !nav.findAll(keywordRule).isEmpty();
+    }
+
     public ValidationResult validate(CstNode cst) {
         var nav = CstNavigator.wrap(cst);
 
