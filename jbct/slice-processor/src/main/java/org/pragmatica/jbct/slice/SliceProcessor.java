@@ -76,6 +76,11 @@ public class SliceProcessor extends AbstractProcessor {
         this.routeGenerator = new RouteSourceGenerator(filer, processingEnv.getMessager(), elements);
         this.errorsStrict = Boolean.parseBoolean(options.getOrDefault(ERRORS_STRICT_OPTION, "false"));
         this.coverageStrict = Boolean.parseBoolean(options.getOrDefault(COVERAGE_STRICT_OPTION, "false"));
+        // Stamp the running processor version into the build log so a stale locally-installed jar
+        // is diagnosable rather than silently reintroducing an already-fixed codegen bug (#403).
+        processingEnv.getMessager()
+                     .printMessage(Diagnostic.Kind.NOTE,
+                                   "slice-processor " + BuildInfo.VERSION + " (built " + BuildInfo.BUILD_TIMESTAMP + ")");
     }
 
     @Override
