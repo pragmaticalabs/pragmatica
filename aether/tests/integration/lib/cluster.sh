@@ -2207,13 +2207,24 @@ restart_all_nodes() {
     # broken state — yet the test harness believed it had reset the cluster and
     # interpreted subsequent "no leader elected" as a Rabia convergence failure rather
     # than the real cause: the compose cycle never ran.
-    # CTM-replacement cleanup: post-NodeId==container_name migration, auto-heal
-    # containers are named aether-<cluster>-node-N with N >= 6, indistinguishable
-    # from a hypothetical compose extension. Use the authoritative provisioner
-    # label `aether.provisioned-by=ctm` for the pre-compose-cycle sweep.
+    # Pre-clean cluster B by NAME PREFIX `aether-b-node-`, not by the CTM label alone.
+    # Mid-suite, B's ON_DUTY members are a mix of compose-fixed nodes (aether-b-node-1..5) and
+    # CTM auto-heal replacements named `aether-b-node-<ULID>`. A replacement provisioned before
+    # bootstrap can carry `aether.cluster=default` (DockerComputeProvider.clusterOrDefault
+    # fallback — see docker-compose-b.yml AETHER_CLUSTER_NAME note), so the old
+    # `--filter label=aether.cluster=b` sweep MISSED it: it outlived `down -v` (not a compose
+    # service), kept holding a node's name/network-alias, and the following `up -d` then failed
+    # to (re)create that compose node — the cluster returned as a sub-quorum MINORITY (observed
+    # 2026-06-30 S20: only 2/5, nodes 3+5). The name prefix `aether-b-node-` matches BOTH compose
+    # nodes AND every CTM replicant, and CANNOT match cluster A (`aether-a-node-*`), so it is a
+    # safe, comprehensive reset.
+    # DO NOT add `--remove-orphans`: clusters A and B share one default compose project (both are
+    # `up`'d from ~ with no -p), so B's `up -d` lists A's containers as orphans — `--remove-orphans`
+    # would DELETE cluster A + forge-postgres. Project isolation (-p per cluster) is the proper
+    # structural fix, tracked separately.
     local restart_out restart_rc
     if [ -f "$compose" ] && [ "${prefix}" = "aether-b-node-" ]; then
-        restart_out=$(remote_exec "docker rm -f \$(docker ps -a -q --filter label=aether.provisioned-by=ctm --filter label=aether.cluster=b) 2>/dev/null || true; cd ~ && docker compose -f docker-compose-b.yml down -v && docker compose -f docker-compose-b.yml up -d" 2>&1)
+        restart_out=$(remote_exec "docker rm -f \$(docker ps -aq --filter name='aether-b-node-') 2>/dev/null || true; cd ~ && docker compose -f docker-compose-b.yml down -v && docker compose -f docker-compose-b.yml up -d" 2>&1)
         restart_rc=$?
     else
         # Fallback for non-standard cluster names — best-effort start of exited containers.
@@ -2223,6 +2234,28 @@ restart_all_nodes() {
     if [ "$restart_rc" -ne 0 ]; then
         log_fail "restart_all_nodes: compose cycle returned rc=${restart_rc}. Output: ${restart_out}"
         return 1
+    fi
+    # Container-count guard (compose-b path). `docker compose up -d` can return 0 yet leave fewer
+    # than NODE_COUNT containers running when a transient name/alias conflict blocks a subset on
+    # the first attempt — the exact S20 symptom (rc=0, but 2/5 up). Verify the RUNNING container
+    # count directly via docker (authoritative — independent of the management API, which is
+    # unreachable while the cluster is sub-quorum); on a shortfall, force-recreate once, then
+    # capture per-container status + tail logs and fail loud before the management-API waits below
+    # (which would otherwise misreport a missing-container problem as a Rabia convergence failure).
+    if [ "${prefix}" = "aether-b-node-" ]; then
+        local want="${NODE_COUNT:-5}" running
+        running=$(remote_exec "docker ps --filter name='aether-b-node-' --filter status=running -q | wc -l" 2>/dev/null | tail -n1 | tr -dc '0-9')
+        if [ "${running:-0}" -lt "$want" ]; then
+            log_warn "restart_all_nodes: only ${running:-0}/${want} aether-b-node containers running after up -d — force-recreating"
+            remote_exec "docker rm -f \$(docker ps -aq --filter name='aether-b-node-') 2>/dev/null || true; cd ~ && docker compose -f docker-compose-b.yml up -d --force-recreate" >/dev/null 2>&1
+            running=$(remote_exec "docker ps --filter name='aether-b-node-' --filter status=running -q | wc -l" 2>/dev/null | tail -n1 | tr -dc '0-9')
+        fi
+        if [ "${running:-0}" -lt "$want" ]; then
+            local diag
+            diag=$(remote_exec "docker ps -a --filter name='aether-b-node-' --format '{{.Names}} {{.Status}}'; for c in \$(docker ps -aq --filter name='aether-b-node-' --filter status=exited); do echo \"--- \$c ---\"; docker logs --tail 15 \$c 2>&1; done" 2>&1)
+            log_fail "restart_all_nodes: only ${running:-0}/${want} aether-b-node containers running after force-recreate. Diagnostics: ${diag}"
+            return 1
+        fi
     fi
     # Rotate entry point — the previous pinned node may have been killed during the suite.
     rotate_mgmt_entry_point 2>/dev/null || true
