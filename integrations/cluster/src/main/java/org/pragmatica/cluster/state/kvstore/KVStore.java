@@ -74,7 +74,7 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
     }
 
     private Option<V> handlePut(Put<K, V> put) {
-        if (staleWrite(put)) {
+        if (staleWrite(put.key(), put.value())) {
             return Option.option(storage.get(put.key()));
         }
         var oldValue = Option.option(storage.put(put.key(), put.value()));
@@ -82,27 +82,28 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
         return oldValue;
     }
 
-    /// The committed-state fence: a `Put` is rejected (applied to nothing, NO `ValuePut` emitted)
-    /// when it is either a stale `LeaderKey` write (H4 leader fence) or a stale-epoch write to any
-    /// [EpochBearing] value (ownership fence, #345 piece 1a). Both arms are pure functions of the
-    /// committed storage content and the command itself, so every replica decides identically inside
-    /// the consensus applier. Snapshot restore ([#restoreSnapshot]) intentionally bypasses both
-    /// fences: a restored snapshot is the authoritative committed state, not a competing write.
-    private boolean staleWrite(Put<K, V> put) {
-        return staleLeaderWrite(put) || staleEpochWrite(put);
+    /// The committed-state fence, shared by [#handlePut] and [#handleRemove] (#345 piece 1a, #379):
+    /// a mutation (a `Put` value or a `Remove` witness) is rejected when it is either a stale
+    /// `LeaderKey` write (H4 leader fence) or a stale-epoch write to any [EpochBearing] value
+    /// (ownership fence). Both arms are pure functions of the committed storage content and the
+    /// incoming value alone, so every replica decides identically inside the consensus applier.
+    /// Snapshot restore ([#restoreSnapshot]) intentionally bypasses both fences: a restored snapshot
+    /// is the authoritative committed state, not a competing write.
+    private boolean staleWrite(K key, Object incoming) {
+        return staleLeaderWrite(key, incoming) || staleEpochWrite(key, incoming);
     }
 
     /// H4 leader fence (cluster-topology-overhaul §Wave 8.2): `LeaderKey` writes are
     /// compare-and-put — applied only when the incoming [LeaderValue#viewSequence()] is strictly
     /// greater than the stored one. The check is deterministic (it depends only on the replicated
-    /// storage content and the command itself), so every replica accepts or rejects identically
-    /// inside the consensus applier. A rejected write mutates nothing and emits NO `ValuePut`
-    /// notification — a stale leader must never be observed by the election FSMs.
-    private boolean staleLeaderWrite(Put<K, V> put) {
-        return put.key() instanceof LeaderKey
-               && put.value() instanceof LeaderValue incoming
-               && storage.get(put.key()) instanceof LeaderValue stored
-               && incoming.viewSequence() <= stored.viewSequence();
+    /// storage content and the incoming value), so every replica accepts or rejects identically
+    /// inside the consensus applier. A rejected write mutates nothing and emits NO notification — a
+    /// stale leader must never be observed by the election FSMs.
+    private boolean staleLeaderWrite(K key, Object incoming) {
+        return key instanceof LeaderKey
+               && incoming instanceof LeaderValue in
+               && storage.get(key) instanceof LeaderValue stored
+               && in.viewSequence() <= stored.viewSequence();
     }
 
     /// Ownership/governance epoch fence (#345 piece 1a): generalizes the leader fence to ANY
@@ -113,10 +114,10 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
     /// value pass through unchanged. Equal-or-newer epochs are accepted: governor reannouncement and
     /// dissolution legitimately re-write at the same epoch, and a stale-owner takeover rewrites
     /// ownership at the same epoch while bumping only its `ownershipTerm` — see [EpochBearing].
-    private boolean staleEpochWrite(Put<K, V> put) {
-        return put.value() instanceof EpochBearing<?> incoming
-               && storage.get(put.key()) instanceof EpochBearing<?> stored
-               && incomingEpochIsStale(incoming, stored);
+    private boolean staleEpochWrite(K key, Object incoming) {
+        return incoming instanceof EpochBearing<?> in
+               && storage.get(key) instanceof EpochBearing<?> stored
+               && incomingEpochIsStale(in, stored);
     }
 
     /// Captures the recursive epoch type variable so the [Comparable#compareTo] is fully type-checked
@@ -129,9 +130,48 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
     }
 
     private Option<V> handleRemove(Remove<K> remove) {
+        if (staleRemove(remove)) {
+            return Option.option(storage.get(remove.key()));
+        }
         var oldValue = Option.option(storage.remove(remove.key()));
         router.route(new ValueRemove<>(remove, oldValue));
         return oldValue;
+    }
+
+    /// The delete-side committed-state fence (#379) — STRICTER than the `Put` fence by design. A
+    /// `Remove` of a key whose COMMITTED value is fenced (any [EpochBearing] value, or the `LeaderKey`'s
+    /// [LeaderValue]) is rejected — applied to nothing, NO `ValueRemove` emitted — UNLESS it carries a
+    /// witness that is (a) present, (b) the SAME fenced kind as the committed value (an `EpochBearing`
+    /// witness for an `EpochBearing`-valued key, a `LeaderValue` for the `LeaderKey`), and (c) current
+    /// (equal-or-newer epoch, or strictly-greater `viewSequence`). A missing, wrong-typed, or stale
+    /// witness fails, so a deposed owner cannot delete a fenced key even with a bare `Remove(key)` —
+    /// closing the witnessless-delete gap. A non-fenced committed value, or an absent key, deletes
+    /// freely — preserving every existing unfenced remover (locks, blueprints, registry entries; no
+    /// production remover targets a fenced key today). The decision reads only committed storage and
+    /// the command, so every replica accepts or rejects a delete identically inside the applier.
+    private boolean staleRemove(Remove<K> remove) {
+        var key = remove.key();
+        return switch (storage.get(key)) {
+            case LeaderValue committed when key instanceof LeaderKey -> !currentLeaderWitness(committed, remove.witness());
+            case EpochBearing<?> committed -> !currentEpochWitness(committed, remove.witness());
+            case null, default -> false;
+        };
+    }
+
+    /// A witness authorizes deleting an `EpochBearing`-valued key iff it is present, itself
+    /// `EpochBearing` (matching kind), and NOT strictly-older than the committed epoch — the current
+    /// owner or a newer one. Reuses the same [#incomingEpochIsStale] comparator as the `Put` fence.
+    private boolean currentEpochWitness(EpochBearing<?> committed, Option<Object> witness) {
+        return witness.map(w -> w instanceof EpochBearing<?> incoming && !incomingEpochIsStale(incoming, committed))
+                      .or(false);
+    }
+
+    /// A witness authorizes deleting the `LeaderKey` iff it is present, itself a `LeaderValue`
+    /// (matching kind), and its `viewSequence` is strictly greater than the committed one — the exact
+    /// inverse of the `Put` leader fence's stale-OR-EQUAL (`<=`) rejection.
+    private boolean currentLeaderWitness(LeaderValue committed, Option<Object> witness) {
+        return witness.map(w -> w instanceof LeaderValue incoming && incoming.viewSequence() > committed.viewSequence())
+                      .or(false);
     }
 
     @Override
