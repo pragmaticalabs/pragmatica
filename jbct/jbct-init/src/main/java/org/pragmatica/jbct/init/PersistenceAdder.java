@@ -59,6 +59,16 @@ public final class PersistenceAdder {
         return persistencePackage;
     }
 
+    /// Render a `[database]`-style config stub for the given section name, reusing the
+    /// local-development template. The section header and its nested `pool_config` table
+    /// are adapted to the requested section so non-default datasources (e.g.
+    /// `database.orders`) get a correctly-scoped stub. Exposed for add-only config
+    /// fixers (e.g. `fix-slice`).
+    public static String databaseConfigStub(String section) {
+        return DATABASE_CONFIG_TEMPLATE.replace("[database.pool_config]", "[" + section + ".pool_config]")
+                                       .replace("[database]", "[" + section + "]");
+    }
+
     private static PersistenceAdder buildPersistenceAdder(Path projectDir,
                                                            String packageOverride,
                                                            ProjectConfig config) {

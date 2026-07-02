@@ -20,6 +20,7 @@ import picocli.CommandLine.Option;
  AddSliceCommand.class,
  AddEventCommand.class,
  AddPersistenceCommand.class,
+ FixSliceCommand.class,
  UpdateCommand.class,
  MigrateCommand.class,
  VerifySliceCommand.class})
