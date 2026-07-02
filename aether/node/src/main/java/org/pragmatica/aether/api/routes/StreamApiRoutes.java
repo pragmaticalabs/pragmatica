@@ -8,6 +8,8 @@ import org.pragmatica.aether.management.route.ManagementRoute;
 import org.pragmatica.aether.node.ManageableNode;
 import org.pragmatica.aether.slice.RetentionPolicy;
 import org.pragmatica.aether.slice.StreamConfig;
+import org.pragmatica.aether.slice.kvstore.AetherKey.StreamConfigKey;
+import org.pragmatica.aether.slice.kvstore.AetherValue.StreamConfigValue;
 import org.pragmatica.aether.slice.resource.ResourceAddress;
 import org.pragmatica.aether.slice.stream.StreamNamespacesService;
 import org.pragmatica.aether.slice.stream.StreamRegistry;
@@ -410,8 +412,21 @@ public final class StreamApiRoutes implements RouteSource {
 
     private static final byte[] EMPTY_PAYLOAD = new byte[0];
 
+    /// Publish auto-create guard. When the stream is not yet materialized locally, prefer the committed
+    /// `StreamConfig` from applied KV state (which carries the app/blueprint `replicas` / `minSyncReplicas`
+    /// durability knobs committed at slice activation) so a first publish racing ahead of local
+    /// materialization preserves the replication factor rather than fabricating a `replicas=1/min-sync=0`
+    /// management default over it. Falls back to the management default only for a genuinely
+    /// management-only stream with no committed entry.
     private Result<org.pragmatica.lang.Unit> ensureStreamExists(String streamName) {
-        var config = StreamConfig.streamConfig(streamName, DEFAULT_PARTITIONS, MANAGEMENT_API_RETENTION, "latest");
+        var config = nodeSupplier.get()
+                                 .kvStore()
+                                 .getTyped(StreamConfigKey.streamConfigKey(streamName), StreamConfigValue.class)
+                                 .map(StreamConfigValue::config)
+                                 .or(() -> StreamConfig.streamConfig(streamName,
+                                                                     DEFAULT_PARTITIONS,
+                                                                     MANAGEMENT_API_RETENTION,
+                                                                     "latest"));
 
         return streamManager().ensureStreamMaterialized(config)
                             .recover(_ -> org.pragmatica.lang.Unit.unit());

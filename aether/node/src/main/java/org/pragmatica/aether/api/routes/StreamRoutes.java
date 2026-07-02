@@ -11,6 +11,8 @@ import org.pragmatica.aether.node.ManageableNode;
 import org.pragmatica.aether.slice.ReadPreference;
 import org.pragmatica.aether.slice.RetentionPolicy;
 import org.pragmatica.aether.slice.StreamConfig;
+import org.pragmatica.aether.slice.kvstore.AetherKey.StreamConfigKey;
+import org.pragmatica.aether.slice.kvstore.AetherValue.StreamConfigValue;
 import org.pragmatica.aether.stream.OffHeapRingBuffer;
 import org.pragmatica.aether.stream.StreamCreateOutcome;
 import org.pragmatica.aether.stream.StreamPartitionManager;
@@ -281,21 +283,34 @@ public final class StreamRoutes implements RouteSource {
     /// `StreamConfig` — an app/blueprint-declared stream keeps its `replicas` / `minSyncReplicas`
     /// durability knobs — so the management publish path must leave it INTACT rather than fabricate and
     /// commit a `replicas=1/min-sync=0` MANAGEMENT DEFAULT over it (which would disarm the sync barrier
-    /// — `minSyncReplicas` read as 0 — and collapse the replica set to RF=1). Only a genuinely NEW,
-    /// management-only stream with no materialized entry falls back to the management default. `streamInfo`
-    /// is a LOCAL read of the manager's already-materialized state — NO consensus round-trip on the
-    /// publish hot path. Package-visible for direct unit coverage.
+    /// — `minSyncReplicas` read as 0 — and collapse the replica set to RF=1). `streamInfo` is a LOCAL
+    /// read of the manager's already-materialized state — NO consensus round-trip on the publish hot
+    /// path. When it MISSES (a first publish racing ahead of local materialization of an app config
+    /// committed at slice activation), the absent branch still prefers the committed config from applied
+    /// KV state before falling back to the management default, so the RF is preserved across the race.
+    /// Package-visible for direct unit coverage.
     Result<Unit> ensureStreamExists(String name) {
         return streamManager().streamInfo(name)
                             .map(_ -> Result.unitResult())
-                            .or(() -> createManagementStream(name));
+                            .or(() -> materializeAbsentStream(name));
     }
 
-    private Result<Unit> createManagementStream(String name) {
-        return StreamCreateOutcome.tolerateAlreadyExists(streamManager().createStream(StreamConfig.streamConfig(name,
-                                                                                                                DEFAULT_PARTITIONS,
-                                                                                                                MANAGEMENT_API_RETENTION,
-                                                                                                                "latest")));
+    /// Absent-locally branch. The app/blueprint stream's committed `StreamConfig` (with its
+    /// `replicas` / `minSyncReplicas` durability knobs) lands in applied KV state at slice activation but
+    /// may not yet be in the manager's local materialized map when a first publish races in. Prefer that
+    /// committed config so the auto-create preserves RF; fall back to the management default only for a
+    /// genuinely management-only stream that has no committed entry.
+    private Result<Unit> materializeAbsentStream(String name) {
+        var config = nodeSupplier.get()
+                                 .kvStore()
+                                 .getTyped(StreamConfigKey.streamConfigKey(name), StreamConfigValue.class)
+                                 .map(StreamConfigValue::config)
+                                 .or(() -> StreamConfig.streamConfig(name,
+                                                                     DEFAULT_PARTITIONS,
+                                                                     MANAGEMENT_API_RETENTION,
+                                                                     "latest"));
+
+        return StreamCreateOutcome.tolerateAlreadyExists(streamManager().createStream(config));
     }
 
     private Promise<ReadEventsResponse> readEvents(String name,

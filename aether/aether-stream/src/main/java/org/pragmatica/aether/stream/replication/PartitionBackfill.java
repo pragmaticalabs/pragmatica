@@ -27,6 +27,7 @@ import static org.pragmatica.aether.stream.replication.BackfillError.General.NO_
 import static org.pragmatica.aether.stream.replication.BackfillError.General.UNREACHABLE_REPLICA_BLOCKS_PROMOTION;
 import static org.pragmatica.aether.stream.replication.PartitionKey.partitionKey;
 import static org.pragmatica.aether.stream.replication.ReplicationMessage.CatchupRequest.catchupRequest;
+import static org.pragmatica.aether.stream.replication.ReplicationMessage.ReplicateAck.replicateAck;
 
 
 /// A4 backfill orchestrator. When a node newly becomes a replica for a non-empty `(stream, partition)`
@@ -89,6 +90,7 @@ public final class PartitionBackfill {
     private final ReplicaRegistry registry;
     private final StreamPartitionRecovery partitionRecovery;
     private final CatchupTransport transport;
+    private final ReplicationTransport replicationTransport;
     private final ReplicaWatermarkProbe probe;
     private final SelfWatermark selfWatermark;
     private final NodeId self;
@@ -118,6 +120,7 @@ public final class PartitionBackfill {
     private PartitionBackfill(ReplicaRegistry registry,
                               StreamPartitionRecovery partitionRecovery,
                               CatchupTransport transport,
+                              ReplicationTransport replicationTransport,
                               ReplicaWatermarkProbe probe,
                               SelfWatermark selfWatermark,
                               NodeId self,
@@ -127,6 +130,7 @@ public final class PartitionBackfill {
         this.registry = registry;
         this.partitionRecovery = partitionRecovery;
         this.transport = transport;
+        this.replicationTransport = replicationTransport;
         this.probe = probe;
         this.selfWatermark = selfWatermark;
         this.self = self;
@@ -145,6 +149,7 @@ public final class PartitionBackfill {
         return new PartitionBackfill(registry,
                                      partitionRecovery,
                                      transport,
+                                     ReplicationTransport.NOOP,
                                      (_, _, _) -> NO_SOURCE_REPLICA.promise(),
                                      (_, _) -> - 1L,
                                      self,
@@ -158,9 +163,13 @@ public final class PartitionBackfill {
     /// current watermark (success) or its unreachability (failure); `selfWatermark` reports self's local
     /// tail offset for the promotion contest. `membersSupplier` reports the current core members so the
     /// HRW OWNER can self-promote immediately (owner-immediate path) without waiting for a peer source.
+    /// `replicationTransport` carries a completed NON-owner backfill's {@link ReplicationMessage.ReplicateAck}
+    /// back to the current HRW owner (#336), so the owner's replicas-view shows the replica CAUGHT_UP at the
+    /// backfilled tail before the next live write.
     public static PartitionBackfill partitionBackfill(ReplicaRegistry registry,
                                                       StreamPartitionRecovery partitionRecovery,
                                                       CatchupTransport transport,
+                                                      ReplicationTransport replicationTransport,
                                                       ReplicaWatermarkProbe probe,
                                                       SelfWatermark selfWatermark,
                                                       NodeId self,
@@ -169,6 +178,7 @@ public final class PartitionBackfill {
         return new PartitionBackfill(registry,
                                      partitionRecovery,
                                      transport,
+                                     replicationTransport,
                                      probe,
                                      selfWatermark,
                                      self,
@@ -200,7 +210,8 @@ public final class PartitionBackfill {
     }
 
     /// Test factory with an explicit member view, for exercising the owner-immediate cold-start path
-    /// with a deterministic clock.
+    /// with a deterministic clock. Uses a no-op replication transport (the backfill-completion ack to the
+    /// owner is exercised through the production factory / a capturing transport).
     static PartitionBackfill partitionBackfill(ReplicaRegistry registry,
                                                StreamPartitionRecovery partitionRecovery,
                                                CatchupTransport transport,
@@ -213,6 +224,7 @@ public final class PartitionBackfill {
         return new PartitionBackfill(registry,
                                      partitionRecovery,
                                      transport,
+                                     ReplicationTransport.NOOP,
                                      probe,
                                      selfWatermark,
                                      self,
@@ -264,18 +276,31 @@ public final class PartitionBackfill {
         return registry.incompletePartitionsFor(self, this::caughtUpNeedsCatchup);
     }
 
-    /// A (prematurely) CAUGHT_UP self descriptor that still needs a catch-up backfill before it is
-    /// genuinely complete, dispatched on self's role:
-    ///   - self IS the HRW owner but a surviving replica holds a HIGHER `confirmedOffset` — a promoted
-    ///     owner that is BEHIND (the #336 lossless-failover case). It must catch up to the survivor before
-    ///     serving as owner, so it is re-driven even though it is already CAUGHT_UP.
+    /// A (prematurely) CAUGHT_UP self descriptor that still needs a re-drive before it is genuinely
+    /// complete, dispatched on self's role:
+    ///   - self IS the HRW owner and its row needs a re-drive ({@link #ownerRowNeedsRedrive}): a surviving
+    ///     replica holds a HIGHER `confirmedOffset` — a promoted owner that is BEHIND (the #336 lossless-
+    ///     failover case) — OR the owner's OWN registry `confirmedOffset` lags its authoritative ring tail
+    ///     (the #336 post-failover replicas-view staleness). Either way the redrive routes through
+    ///     {@link #promoteOwner} and reseats the owner row, even though it is already CAUGHT_UP.
     ///   - self is NOT the HRW owner — the #333 write-idle residual ({@link #staleCaughtUpNonOwner}).
     /// The genuine single-node / already-covered owner-self-promote stays CAUGHT_UP untouched (no survivor
-    /// is ahead ⇒ no re-drive).
+    /// is ahead and the row already equals the ring tail ⇒ no re-drive).
     private boolean caughtUpNeedsCatchup(ReplicaDescriptor descriptor) {
         return isSelfOwner(descriptor.streamName(), descriptor.partition())
-               ? ownerBehindSurvivor(descriptor)
+               ? ownerRowNeedsRedrive(descriptor)
                : staleCaughtUpNonOwner(descriptor);
+    }
+
+    /// Owner-branch redrive predicate (#336): re-drive a CAUGHT_UP owner row when EITHER a surviving
+    /// replica is strictly ahead ({@link #ownerBehindSurvivor} — the lossless-failover catch-up) OR the
+    /// owner's own registry `confirmedOffset` lags its authoritative ring tail
+    /// ({@link #ownerRegistryBelowRingTail} — the post-failover replicas-view reseat). The scheduled
+    /// redrive then routes through {@link #promoteOwner}, which self-promotes at the ring tail via
+    /// {@link #ownerSelfPromote}, so the operator replicas-view reports the true watermark without a live
+    /// write. Idempotent: once the row equals the ring tail and no survivor is ahead it is not a candidate.
+    private boolean ownerRowNeedsRedrive(ReplicaDescriptor descriptor) {
+        return ownerBehindSurvivor(descriptor) || ownerRegistryBelowRingTail(descriptor);
     }
 
     /// True when self is the HRW owner but a surviving non-self replica holds a strictly higher
@@ -285,6 +310,16 @@ public final class PartitionBackfill {
     private boolean ownerBehindSurvivor(ReplicaDescriptor descriptor) {
         return aheadSurvivor(registry.replicasFor(descriptor.streamName(), descriptor.partition()),
                              descriptor.confirmedOffset()).isPresent();
+    }
+
+    /// True when self is the HRW owner and its OWN registry `confirmedOffset` trails its authoritative
+    /// ring tail (`selfWatermark.localWatermark`) — the #336 post-promotion self-watermark staleness. A
+    /// replica→owner promotion never re-runs {@link #ownerSelfPromote}, and the live replication path acks
+    /// only peers (never the owner's own row), so the promoted owner's row stays frozen at its last
+    /// backfill value while its ring tail is correct. Keyed off the RING tail (authoritative), never a peer
+    /// watermark, so the reseat converges to real, locally-held data.
+    private boolean ownerRegistryBelowRingTail(ReplicaDescriptor descriptor) {
+        return descriptor.confirmedOffset() < selfWatermark.localWatermark(descriptor.streamName(), descriptor.partition());
     }
 
     /// True when `descriptor` (self's CAUGHT_UP descriptor) needs an owner re-verify: self is NOT the HRW
@@ -383,7 +418,9 @@ public final class PartitionBackfill {
     /// Promote self to CAUGHT_UP only when the highest applied offset actually reaches the source
     /// watermark. `fromOffset + applied - 1` is the highest offset landed locally; if that is below
     /// the watermark a gap remains (short/truncated page, source still ahead) → fail and stay SYNCING
-    /// rather than declare a false-ready CAUGHT_UP with holes (B2).
+    /// rather than declare a false-ready CAUGHT_UP with holes (B2). On a genuine promotion a NON-owner
+    /// acks the current HRW owner ({@link #ackBackfillToOwner}) so the owner's replicas-view reflects the
+    /// completed backfill before the next live write (#336).
     private Promise<Long> promote(String streamName, int partition, long fromOffset, long watermark, long applied) {
         var highestApplied = fromOffset + applied - 1;
 
@@ -399,6 +436,7 @@ public final class PartitionBackfill {
         }
 
         registry.updateWatermark(streamName, partition, self, watermark);
+        ackBackfillToOwner(streamName, partition, watermark);
         reverifiedAtOffset.put(partitionKey(streamName, partition), watermark);
         firstNoSourceMs.remove(partitionKey(streamName, partition));
         log.info("Backfill {}[{}] complete: applied {} events, self CAUGHT_UP at offset {}",
@@ -408,6 +446,24 @@ public final class PartitionBackfill {
                  watermark);
 
         return Promise.success(applied);
+    }
+
+    /// Ack a completed NON-owner backfill back to the CURRENT HRW owner so the owner's replicas-view shows
+    /// this replica CAUGHT_UP at the backfilled tail BEFORE (and without waiting for) the next live write
+    /// (#336). Reuses the live {@link ReplicationMessage.ReplicateAck} path — the SAME message
+    /// {@link ReplicationReceiveHandler} sends per replicated batch — so no new message type is introduced
+    /// and the owner's existing {@link DefaultReplicationManager#handleAck} advances the descriptor. When
+    /// self IS the owner the resolved owner is self and the `filter` drops it (the owner reseats its own
+    /// row via {@link #ownerSelfPromote}); when the owner is unknown (empty member view / bootstrap window)
+    /// nothing is sent. Idempotent under redrive: a re-completed backfill re-acks the same tail, a no-op on
+    /// the owner.
+    private void ackBackfillToOwner(String streamName, int partition, long watermark) {
+        hrwOwner(streamName, partition).filter(owner -> !owner.equals(self))
+                                       .onPresent(owner -> replicationTransport.send(owner,
+                                                                                     replicateAck(self,
+                                                                                                  streamName,
+                                                                                                  partition,
+                                                                                                  watermark)));
     }
 
     /// Apply every recovered event in order via a sequential fail-fast fold. A truncated response
@@ -495,10 +551,15 @@ public final class PartitionBackfill {
     /// survivor rather than serving self's short log) while it pulls the missing suffix, becoming CAUGHT_UP
     /// only once it reaches the survivor's tail. HRW ownership stays DETERMINISTIC — no other node is elected;
     /// the HRW-elected owner is caught up before it is authoritative.
+    ///
+    /// When the local registry shows NO survivor ahead the answer may be a FALSE negative (peer watermarks
+    /// are never propagated — {@link WatermarkStore#NOOP} — so a caught-up survivor reads as the `-1`
+    /// registration default). A FRESH HRW owner (empty ring, `localWatermark == -1`) therefore falls back to
+    /// {@link #probeThenPromoteOwner}, which probes the blind survivors' REAL tails before it may self-promote.
     private Promise<Long> promoteOwner(String streamName, int partition, List<ReplicaDescriptor> replicas) {
         var localWatermark = selfWatermark.localWatermark(streamName, partition);
 
-        return aheadSurvivor(replicas, localWatermark).fold(() -> ownerSelfPromote(streamName, partition),
+        return aheadSurvivor(replicas, localWatermark).fold(() -> probeThenPromoteOwner(streamName, partition, replicas, localWatermark),
                                                             survivor -> catchupOwnerFromSurvivor(streamName,
                                                                                                  partition,
                                                                                                  survivor,
@@ -529,22 +590,141 @@ public final class PartitionBackfill {
                                                    int partition,
                                                    ReplicaDescriptor survivor,
                                                    long localWatermark) {
+        return catchupOwnerFromSurvivor(streamName, partition, survivor.nodeId(), survivor.confirmedOffset(), localWatermark);
+    }
+
+    /// Core promoted-owner catch-up against an explicit `(survivorNode, survivorTail)`. The local-registry
+    /// HIT path passes the survivor's locally-known descriptor; the peer-watermark-blind fallback
+    /// ({@link #probeThenPromoteOwner}) passes a survivor whose REAL tail was learned by PROBE (the local
+    /// registry reads it as the `-1` registration default because peer watermarks are never propagated —
+    /// production {@link ReplicaRegistry} uses {@link WatermarkStore#NOOP}). Both hold self SYNCING at the
+    /// local watermark and promote to CAUGHT_UP only once the applied offset reaches the target.
+    private Promise<Long> catchupOwnerFromSurvivor(String streamName,
+                                                   int partition,
+                                                   NodeId survivorNode,
+                                                   long survivorTail,
+                                                   long localWatermark) {
         registry.updateWatermark(streamName, partition, self, localWatermark, ReplicationState.SYNCING);
         var fromOffset = localWatermark + 1;
-        var request = catchupRequest(survivor.nodeId(), streamName, partition, fromOffset);
+        var request = catchupRequest(survivorNode, streamName, partition, fromOffset);
 
         log.warn("Backfill {}[{}]: promoted owner BEHIND survivor {} (self watermark {}, target {}) — holding "
                 + "non-authoritative and catching up before serving [#336 lossless failover]",
                  streamName,
                  partition,
-                 survivor.nodeId(),
+                 survivorNode,
                  localWatermark,
-                 survivor.confirmedOffset());
+                 survivorTail);
 
-        return transport.requestCatchup(survivor.nodeId(), request)
-                        .flatMap(response -> applyAndPromote(streamName, partition, survivor.confirmedOffset(), response))
+        return transport.requestCatchup(survivorNode, request)
+                        .flatMap(response -> applyAndPromote(streamName, partition, survivorTail, response))
+                        .onSuccess(_ -> recordSurvivorConfirmed(streamName, partition, survivorNode, survivorTail))
                         .fold(result -> result.fold(cause -> escapeOwnerCatchup(streamName, partition, localWatermark, cause),
                                                     Promise::success));
+    }
+
+    /// After a SUCCESSFUL owner catch-up the owner has just read `localWatermark + 1 .. survivorTail` FROM
+    /// `survivorNode`, so it holds DIRECT EVIDENCE that `survivorNode` is confirmed at least to `survivorTail`
+    /// — this is a TRUTHFUL operator-surface update (the owner literally pulled those offsets), NOT a
+    /// fabrication. Reflecting it in the owner's registry row for the survivor (otherwise blind — peer
+    /// watermarks are never propagated, {@link WatermarkStore#NOOP}) makes the replicas-view and any
+    /// "a CAUGHT_UP non-owner exists" check see the survivor CAUGHT_UP@survivorTail immediately, without
+    /// waiting for the survivor's next live ack or the #333 redrive. Fires ONLY on a successful pull
+    /// ({@link Promise#onSuccess}) and only for the survivor actually pulled from, at the tail actually
+    /// applied. Guarded MONOTONIC-UP: {@link ReplicaRegistry#updateWatermark} overwrites unconditionally, so
+    /// it is invoked only when `survivorTail` exceeds the survivor's currently-recorded offset — a concurrent
+    /// higher live ack is never clobbered down. On the local-registry HIT path this is a no-op (the survivor's
+    /// row already carries `survivorTail`).
+    private void recordSurvivorConfirmed(String streamName, int partition, NodeId survivorNode, long survivorTail) {
+        if (survivorTail > recordedOffset(streamName, partition, survivorNode)) {
+            registry.updateWatermark(streamName, partition, survivorNode, survivorTail);
+        }
+    }
+
+    /// The survivor's currently-recorded `confirmedOffset` in the owner's registry, or `-1` when it has no
+    /// row yet (blind). Used by {@link #recordSurvivorConfirmed} to keep the survivor-row update monotonic-up.
+    private long recordedOffset(String streamName, int partition, NodeId nodeId) {
+        return registry.replicasFor(streamName, partition)
+                       .stream()
+                       .filter(descriptor -> descriptor.nodeId().equals(nodeId))
+                       .mapToLong(ReplicaDescriptor::confirmedOffset)
+                       .findFirst()
+                       .orElse(-1L);
+    }
+
+    /// Peer-watermark-blind fallback (#336): reached when the local-registry {@link #aheadSurvivor} finds NO
+    /// survivor ahead, but the answer may be a FALSE negative — production {@link ReplicaRegistry} uses
+    /// {@link WatermarkStore#NOOP}, so a caught-up survivor's real tail reads as the `-1` registration
+    /// default. Without this, a FRESH HRW owner (empty ring, `localWatermark == -1`) would self-promote a
+    /// false-ready `CAUGHT_UP@-1` on an empty ring while a survivor holds the whole partition — an effective
+    /// RF=1 empty owner. Only survivors whose local watermark is UNKNOWN ({@link #blindPeers}, offset `< 0`)
+    /// are probed for their REAL tail; a survivor with a known local offset was already weighed by
+    /// {@link #aheadSurvivor}, so the local-registry HIT path is untouched. With no blind survivor there is
+    /// genuinely nothing ahead → immediate self-promote. `probe` carries its own transport timeout (the same
+    /// one the cold-start path uses), and the chain is async, so the redrive executor thread never blocks.
+    private Promise<Long> probeThenPromoteOwner(String streamName,
+                                                int partition,
+                                                List<ReplicaDescriptor> replicas,
+                                                long localWatermark) {
+        var blind = blindPeers(replicas);
+
+        if (blind.isEmpty()) {
+            return ownerSelfPromote(streamName, partition);
+        }
+
+        return Promise.allOf(blind.stream().map(peer -> probe.probe(peer, streamName, partition)).toList())
+                      .flatMap(results -> decideOwnerCatchup(streamName, partition, blind, localWatermark, results));
+    }
+
+    /// The non-self survivors whose LOCAL watermark is unknown (registration default `-1`, i.e. blind under
+    /// {@link WatermarkStore#NOOP}) — the only peers worth probing when {@link #aheadSurvivor} found none. A
+    /// survivor with a known local offset was already weighed by {@link #aheadSurvivor} and is excluded, so
+    /// no redundant probe is issued and the local-registry HIT path stays authoritative.
+    private List<NodeId> blindPeers(List<ReplicaDescriptor> replicas) {
+        return replicas.stream()
+                       .filter(descriptor -> !descriptor.nodeId().equals(self))
+                       .filter(descriptor -> descriptor.confirmedOffset() < 0)
+                       .map(ReplicaDescriptor::nodeId)
+                       .sorted()
+                       .toList();
+    }
+
+    /// Decide the promoted owner's next move from the probed REAL tails of the blind survivors:
+    ///   - the highest REACHABLE tail strictly exceeds `localWatermark` → catch up from that survivor (the
+    ///     fresh-owner fix: pull the partition the local registry could not see),
+    ///   - no reachable tail is ahead but some peer is UNREACHABLE → its watermark is unknown and might be
+    ///     ahead, so route to the bounded-wait {@link #escapeOwnerCatchup} (never self-promote empty past a
+    ///     possibly-ahead peer; never wedge — self stays SYNCING so the redrive retries, then degrades),
+    ///   - every peer reachable and none ahead → genuinely nothing ahead → {@link #ownerSelfPromote}.
+    private Promise<Long> decideOwnerCatchup(String streamName,
+                                             int partition,
+                                             List<NodeId> peers,
+                                             long localWatermark,
+                                             List<Result<Long>> results) {
+        var bestTail = results.stream().mapToLong(result -> result.or(-1L)).max().orElse(-1L);
+
+        if (bestTail > localWatermark) {
+            return catchupOwnerFromSurvivor(streamName, partition, peerWithTail(peers, results, bestTail), bestTail, localWatermark);
+        }
+
+        if (results.stream().anyMatch(Result::isFailure)) {
+            return escapeOwnerCatchup(streamName, partition, localWatermark, UNREACHABLE_REPLICA_BLOCKS_PROMOTION);
+        }
+
+        return ownerSelfPromote(streamName, partition);
+    }
+
+    /// The reachable peer whose probed tail equals `tail` (index-aligned with `results`, since
+    /// {@link Promise#allOf} preserves order). `tail` is a strictly-positive reachable maximum here, so an
+    /// unreachable peer's `-1` can never match; the final fallback is unreachable in practice.
+    private NodeId peerWithTail(List<NodeId> peers, List<Result<Long>> results, long tail) {
+        for (var i = 0; i < peers.size(); i++) {
+            if (results.get(i).or(-1L) == tail) {
+                return peers.get(i);
+            }
+        }
+
+        return peers.getFirst();
     }
 
     /// Liveness escape for a promoted owner whose survivor catch-up failed. Until {@link #sourceWaitBound}
