@@ -8,6 +8,7 @@ import org.pragmatica.aether.http.adapter.impl.SliceRequestContext;
 import org.pragmatica.aether.http.handler.HttpRequestContext;
 import org.pragmatica.aether.http.handler.HttpResponseData;
 import org.pragmatica.http.ContentType;
+import org.pragmatica.http.HttpError;
 import org.pragmatica.http.HttpMethod;
 import org.pragmatica.http.HttpStatus;
 import org.pragmatica.http.JsonCodec;
@@ -281,7 +282,7 @@ public interface SliceRouter {
             }
 
             private HttpResponseData errorToResponse(Cause cause, HttpRequestContext request) {
-                var httpError = errorMapper.map(cause);
+                var httpError = resolveHttpError(cause);
 
                 log.warn("[requestId={}] SliceRouter error: {} {} -> {} {}",
                          request.requestId(),
@@ -297,6 +298,20 @@ public interface SliceRouter {
                                        body -> HttpResponseData.httpResponseData(httpError.status().code(),
                                                                                  JSON_HEADERS,
                                                                                  body));
+            }
+
+            /// Resolve the HTTP error for a failure. A boundary parse failure — e.g. a value-object
+            /// path/query segment the framework could not lift (#397) — is a typed [HttpError] that
+            /// `matchPath`/`matchQuery` wrap in a `Causes.CompositeCause` via `Result.all`. Unwrap that
+            /// (a direct [HttpError], or one carried as a composite member) so its typed status (400) is
+            /// honored instead of collapsing to the slice mapper's 500 default. Any other cause falls
+            /// through to the slice error mapper unchanged.
+            private HttpError resolveHttpError(Cause cause) {
+                return Option.from(cause.stream()
+                                        .filter(HttpError.class::isInstance)
+                                        .map(HttpError.class::cast)
+                                        .findFirst())
+                             .or(() -> errorMapper.map(cause));
             }
 
             private HttpResponseData notFound(HttpRequestContext request) {

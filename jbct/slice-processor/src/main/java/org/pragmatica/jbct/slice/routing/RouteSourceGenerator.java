@@ -16,6 +16,7 @@ import org.pragmatica.lang.utils.Causes;
 import javax.annotation.processing.Filer;
 import javax.annotation.processing.Messager;
 import javax.lang.model.element.TypeElement;
+import javax.lang.model.type.TypeMirror;
 import javax.lang.model.util.Elements;
 import javax.tools.Diagnostic;
 import javax.tools.JavaFileObject;
@@ -23,8 +24,10 @@ import java.io.IOException;
 import java.io.PrintWriter;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
@@ -139,6 +142,25 @@ public class RouteSourceGenerator {
                                                                                 Map.entry(504, "GATEWAY_TIMEOUT"));
 
     private static final int MAX_PARAMS = 5;
+
+    /// Framework-owned `P -> String parser` table for value-object HTTP binding (#397 §5): the set of
+    /// domain primitives `P` for which a value object exposing `static ValueMapping<Self, P>
+    /// valueMapping()` can bind a path/query segment. Each entry maps `P`'s type name to the
+    /// `PathParameter`/`QueryParameter` factory that parses `String -> P`; the value object's `lift`
+    /// then composes on top via `.mapped(Vo.valueMapping().lift())`. Restricted to primitives both
+    /// `PathParameter` and `QueryParameter` support, so a value-object segment binds identically on
+    /// either. A value object whose `P` is outside this set is a compile error (§5), not a silent
+    /// fallback.
+    private static final Map<String, String> VO_PRIMITIVE_PARSER = Map.ofEntries(Map.entry("java.lang.String", "aString"),
+                                                                                 Map.entry("java.lang.Integer", "aInteger"),
+                                                                                 Map.entry("java.lang.Long", "aLong"),
+                                                                                 Map.entry("java.lang.Boolean", "aBoolean"),
+                                                                                 Map.entry("java.lang.Double", "aDouble"),
+                                                                                 Map.entry("java.math.BigDecimal", "aDecimal"),
+                                                                                 Map.entry("java.time.LocalDate", "aLocalDate"),
+                                                                                 Map.entry("java.time.LocalDateTime",
+                                                                                           "aLocalDateTime"),
+                                                                                 Map.entry("java.util.UUID", "aUuid"));
 
     private final Filer filer;
     private final Messager messager;
@@ -559,23 +581,89 @@ public class RouteSourceGenerator {
         var hasPath = routeDsl.hasPathParams();
         var hasQuery = routeDsl.hasQueryParams();
         var hasBody = isBodyMethod(routeDsl.method());
+        // #397 §4.2: value-object path/query segments (a component whose type exposes
+        // `valueMapping()`) compose the framework String->P parser with the VO's `lift`; keyed by
+        // request-record component name so path/query arg emission can look each one up.
+        var voBindings = voBindings(method, routeDsl, sliceElement);
         if (hasPath && hasQuery && hasBody) {
-            generatePathQueryBodyRoute(out, fullPath, httpMethod, responseType, parameterType, routeDsl, method, trailer, security);
+            generatePathQueryBodyRoute(out, fullPath, httpMethod, responseType, parameterType, routeDsl, method, trailer, security, voBindings);
         } else if (hasPath && hasBody) {
-            generatePathBodyRoute(out, fullPath, httpMethod, responseType, parameterType, routeDsl, method, trailer, security);
+            generatePathBodyRoute(out, fullPath, httpMethod, responseType, parameterType, routeDsl, method, trailer, security, voBindings);
         } else if (hasQuery && hasBody) {
-            generateQueryBodyRoute(out, fullPath, httpMethod, responseType, parameterType, routeDsl, method, trailer, security);
+            generateQueryBodyRoute(out, fullPath, httpMethod, responseType, parameterType, routeDsl, method, trailer, security, voBindings);
         } else if (hasPath && hasQuery) {
-            generatePathQueryRoute(out, fullPath, httpMethod, responseType, routeDsl, method, trailer, security);
+            generatePathQueryRoute(out, fullPath, httpMethod, responseType, routeDsl, method, trailer, security, voBindings);
         } else if (hasPath) {
-            generatePathRoute(out, fullPath, httpMethod, responseType, routeDsl, method, trailer, security);
+            generatePathRoute(out, fullPath, httpMethod, responseType, routeDsl, method, trailer, security, voBindings);
         } else if (hasQuery) {
-            generateQueryRoute(out, fullPath, httpMethod, responseType, routeDsl, method, trailer, security);
+            generateQueryRoute(out, fullPath, httpMethod, responseType, routeDsl, method, trailer, security, voBindings);
         } else if (hasBody) {
             generateBodyRoute(out, fullPath, httpMethod, responseType, parameterType, routeDsl, method, trailer, security);
         } else {
             generateNoParamsRoute(out, fullPath, httpMethod, responseType, routeDsl, method, trailer, security);
         }
+    }
+
+    /// Resolve the value-object bindings for a route method's path/query parameters (#397 §4.2):
+    /// parameter name -> its `ValueMapping` binding, for path/query params whose request-record
+    /// component type declares `valueMapping()` and whose primitive `P` is HTTP-bindable. Only path
+    /// and query parameter names are considered — body-bound value-object fields are handled by the
+    /// JSON layer and are never validated here. A value-object path/query param whose `P` is not in
+    /// [#VO_PRIMITIVE_PARSER] is reported as a compile error and excluded (§5).
+    private Map<String, ValueMappingResolver.Binding> voBindings(MethodModel method,
+                                                                 RouteDsl routeDsl,
+                                                                 TypeElement sliceElement) {
+        var pathQueryNames = pathQueryParamNames(routeDsl);
+        if (pathQueryNames.isEmpty()) {
+            return Map.of();
+        }
+        var components = requestRecordType(method).map(ValueMappingResolver::resolveRecordComponents)
+                                                  .or(Map.of());
+        var supported = new HashMap<String, ValueMappingResolver.Binding>();
+        for (var entry : components.entrySet()) {
+            if (pathQueryNames.contains(entry.getKey())) {
+                classifyVoBinding(entry.getKey(), entry.getValue(), supported, method, sliceElement);
+            }
+        }
+        return supported;
+    }
+
+    /// The union of path and query parameter names declared by a route.
+    private Set<String> pathQueryParamNames(RouteDsl routeDsl) {
+        var names = new HashSet<String>();
+        routeDsl.pathParams().forEach(p -> names.add(p.name()));
+        routeDsl.queryParams().forEach(q -> names.add(q.name()));
+        return names;
+    }
+
+    private void classifyVoBinding(String componentName,
+                                   ValueMappingResolver.Binding binding,
+                                   Map<String, ValueMappingResolver.Binding> supported,
+                                   MethodModel method,
+                                   TypeElement sliceElement) {
+        if (VO_PRIMITIVE_PARSER.containsKey(binding.pTypeName())) {
+            supported.put(componentName, binding);
+        } else {
+            messager.printMessage(Diagnostic.Kind.ERROR,
+                                  "Value object '" + binding.voQualifiedName() + "' bound to path/query parameter '"
+                                  + componentName + "' of slice method '" + method.name() + "' maps to primitive '"
+                                  + binding.pTypeName() + "', which has no HTTP path/query parser. Supported primitives: "
+                                  + VO_PRIMITIVE_PARSER.keySet() + ". Use a supported primitive or bind a raw type.",
+                                  sliceElement);
+        }
+    }
+
+    /// The single request-record parameter type of a route method (the business parameter when
+    /// security params are present), or empty for methods that carry no single request record.
+    private Option<TypeMirror> requestRecordType(MethodModel method) {
+        if (method.hasSecurityParams()) {
+            return method.businessParameters().size() == 1
+                   ? Option.some(method.businessParameterType())
+                   : Option.none();
+        }
+        return method.hasSingleParam()
+               ? Option.some(method.parameterType())
+               : Option.none();
     }
 
     /// The `.versioned(N)` call to tag a versioned route, or empty string for an unversioned route
@@ -728,14 +816,15 @@ public class RouteSourceGenerator {
                                    RouteDsl routeDsl,
                                    MethodModel method,
                                    String trailer,
-                                   String security) {
+                                   String security,
+                                   Map<String, ValueMappingResolver.Binding> voBindings) {
         var pathParams = routeDsl.pathParams();
         var parameterType = method.hasSecurityParams()
                             ? method.businessParameterType().toString()
                             : method.parameterType().toString();
         out.print("            Route.<" + responseType + ">" + httpMethod + "(\"" + path + "\")");
         out.println();
-        out.println("                 .withPath(" + withPathArgs(routeDsl) + ")");
+        out.println("                 .withPath(" + withPathArgs(routeDsl, voBindings) + ")");
         // Lambda binds every withPath element (spacers -> `_`); the constructor binds real params only.
         var lambdaNames = withPathLambdaNames(routeDsl);
         var constructorArgs = pathParams.stream()
@@ -763,14 +852,15 @@ public class RouteSourceGenerator {
                                     RouteDsl routeDsl,
                                     MethodModel method,
                                     String trailer,
-                                    String security) {
+                                    String security,
+                                    Map<String, ValueMappingResolver.Binding> voBindings) {
         var queryParams = routeDsl.queryParams();
         var parameterType = method.hasSecurityParams()
                             ? method.businessParameterType().toString()
                             : method.parameterType().toString();
         out.print("            Route.<" + responseType + ">" + httpMethod + "(\"" + path + "\")");
         out.println();
-        out.println("                 .withQuery(" + queryParamList(queryParams) + ")");
+        out.println("                 .withQuery(" + queryParamList(queryParams, voBindings) + ")");
         var paramNames = queryParams.stream()
                                     .map(QueryParam::name)
                                     .toList();
@@ -822,11 +912,12 @@ public class RouteSourceGenerator {
                                        RouteDsl routeDsl,
                                        MethodModel method,
                                        String trailer,
-                                       String security) {
+                                       String security,
+                                       Map<String, ValueMappingResolver.Binding> voBindings) {
         var pathParams = routeDsl.pathParams();
         out.print("            Route.<" + responseType + ">" + httpMethod + "(\"" + path + "\")");
         out.println();
-        out.println("                 .withPath(" + withPathArgs(routeDsl) + ")");
+        out.println("                 .withPath(" + withPathArgs(routeDsl, voBindings) + ")");
         out.println("                 " + bodyBindingCall(routeDsl, parameterType));
         var pathParamNames = pathParams.stream()
                                        .map(PathParam::name)
@@ -854,11 +945,12 @@ public class RouteSourceGenerator {
                                         RouteDsl routeDsl,
                                         MethodModel method,
                                         String trailer,
-                                        String security) {
+                                        String security,
+                                        Map<String, ValueMappingResolver.Binding> voBindings) {
         var queryParams = routeDsl.queryParams();
         out.print("            Route.<" + responseType + ">" + httpMethod + "(\"" + path + "\")");
         out.println();
-        out.println("                 .withQuery(" + queryParamList(queryParams) + ")");
+        out.println("                 .withQuery(" + queryParamList(queryParams, voBindings) + ")");
         out.println("                 " + bodyBindingCall(routeDsl, parameterType));
         var queryParamNames = queryParams.stream()
                                          .map(QueryParam::name)
@@ -884,7 +976,8 @@ public class RouteSourceGenerator {
                                         RouteDsl routeDsl,
                                         MethodModel method,
                                         String trailer,
-                                        String security) {
+                                        String security,
+                                        Map<String, ValueMappingResolver.Binding> voBindings) {
         var pathParams = routeDsl.pathParams();
         var queryParams = routeDsl.queryParams();
         var parameterType = method.hasSecurityParams()
@@ -892,8 +985,8 @@ public class RouteSourceGenerator {
                             : method.parameterType().toString();
         out.print("            Route.<" + responseType + ">" + httpMethod + "(\"" + path + "\")");
         out.println();
-        out.println("                 .withPath(" + withPathArgs(routeDsl) + ")");
-        out.println("                 .withQuery(" + queryParamList(queryParams) + ")");
+        out.println("                 .withPath(" + withPathArgs(routeDsl, voBindings) + ")");
+        out.println("                 .withQuery(" + queryParamList(queryParams, voBindings) + ")");
         var pathParamNames = pathParams.stream()
                                        .map(PathParam::name)
                                        .toList();
@@ -928,13 +1021,14 @@ public class RouteSourceGenerator {
                                             RouteDsl routeDsl,
                                             MethodModel method,
                                             String trailer,
-                                            String security) {
+                                            String security,
+                                            Map<String, ValueMappingResolver.Binding> voBindings) {
         var pathParams = routeDsl.pathParams();
         var queryParams = routeDsl.queryParams();
         out.print("            Route.<" + responseType + ">" + httpMethod + "(\"" + path + "\")");
         out.println();
-        out.println("                 .withPath(" + withPathArgs(routeDsl) + ")");
-        out.println("                 .withQuery(" + queryParamList(queryParams) + ")");
+        out.println("                 .withPath(" + withPathArgs(routeDsl, voBindings) + ")");
+        out.println("                 .withQuery(" + queryParamList(queryParams, voBindings) + ")");
         out.println("                 " + bodyBindingCall(routeDsl, parameterType));
         var pathParamNames = pathParams.stream()
                                        .map(PathParam::name)
@@ -1011,20 +1105,31 @@ public class RouteSourceGenerator {
     /// segments in path order. Real params become typed `PathParameter.aXxx()` calls; static
     /// segments become `PathParameter.spacer("seg")`. This is the full interleaved path — nothing
     /// after the first parameter is dropped.
-    private String withPathArgs(RouteDsl routeDsl) {
+    private String withPathArgs(RouteDsl routeDsl, Map<String, ValueMappingResolver.Binding> voBindings) {
         return routeDsl.pathSegments()
                        .stream()
-                       .map(this::segmentArg)
+                       .map(segment -> segmentArg(segment, voBindings))
                        .collect(Collectors.joining(", "));
     }
 
-    private String segmentArg(RouteDsl.PathSegment segment) {
+    private String segmentArg(RouteDsl.PathSegment segment, Map<String, ValueMappingResolver.Binding> voBindings) {
         return switch (segment) {
-            case RouteDsl.PathSegment.Param(var param) ->
-                    "PathParameter." + typeToPathParameter(param.type()) + "()";
+            case RouteDsl.PathSegment.Param(var param) -> pathParamArg(param, voBindings);
             case RouteDsl.PathSegment.Static(var text) ->
                     "PathParameter.spacer(\"" + escapeJavaString(text) + "\")";
         };
+    }
+
+    /// The `PathParameter` factory call for a single path parameter. A value-object parameter (its
+    /// request-record component declares `valueMapping()`) composes the framework `String -> P`
+    /// parser with the value object's `lift` (#397 §4.2); a raw parameter keeps the JDK-type factory.
+    private String pathParamArg(PathParam param, Map<String, ValueMappingResolver.Binding> voBindings) {
+        var binding = voBindings.get(param.name());
+        if (binding == null) {
+            return "PathParameter." + typeToPathParameter(param.type()) + "()";
+        }
+        return "PathParameter." + VO_PRIMITIVE_PARSER.get(binding.pTypeName()) + "().mapped("
+               + binding.voQualifiedName() + ".valueMapping().lift())";
     }
 
     /// The lambda parameter names matching the `.withPath(...)` arity, in path order: each real path
@@ -1044,11 +1149,23 @@ public class RouteSourceGenerator {
         };
     }
 
-    private String queryParamList(List<QueryParam> queryParams) {
+    private String queryParamList(List<QueryParam> queryParams, Map<String, ValueMappingResolver.Binding> voBindings) {
         return queryParams.stream()
-                          .map(q -> "QueryParameter." + typeToQueryParameter(q.type()) + "(\"" + escapeJavaString(q.name())
-                                    + "\")")
+                          .map(q -> queryParamArg(q, voBindings))
                           .collect(Collectors.joining(", "));
+    }
+
+    /// The `QueryParameter` factory call for a single query parameter. A value-object parameter (its
+    /// request-record component declares `valueMapping()`) composes the framework `String -> P`
+    /// parser with the value object's `lift` (#397 §4.2); a raw parameter keeps the JDK-type factory.
+    private String queryParamArg(QueryParam q, Map<String, ValueMappingResolver.Binding> voBindings) {
+        var binding = voBindings.get(q.name());
+        var name = "\"" + escapeJavaString(q.name()) + "\"";
+        if (binding == null) {
+            return "QueryParameter." + typeToQueryParameter(q.type()) + "(" + name + ")";
+        }
+        return "QueryParameter." + VO_PRIMITIVE_PARSER.get(binding.pTypeName()) + "(" + name + ").mapped("
+               + binding.voQualifiedName() + ".valueMapping().lift())";
     }
 
     private void generateErrorMapperMethod(PrintWriter out, List<ErrorTypeMapping> errorMappings) {

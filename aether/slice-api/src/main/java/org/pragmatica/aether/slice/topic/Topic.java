@@ -27,7 +27,7 @@ import org.pragmatica.lang.type.TypeToken;
 /// static final Topic<SeatSold> SEAT_SOLD = Topic.of("seat-sold", SeatSold.class);
 /// ```
 ///
-/// Like [org.pragmatica.aether.slice.repr.PgRepr], this is a descriptor, not a validated value
+/// Like [org.pragmatica.aether.slice.mapping.ValueMapping], this is a descriptor, not a validated value
 /// object: [#of] returns the topic directly. A blank name is a declaration-time programming error,
 /// not a runtime failure to be recovered from.
 ///

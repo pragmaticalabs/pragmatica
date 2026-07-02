@@ -519,10 +519,10 @@ public class QueryAnnotationProcessor extends AbstractProcessor {
         return FactoryGenerator.MapperColumn.plain(columnName, accessor.method(), field.name(), accessor.typeArg());
     }
 
-    // --- PgRepr value-object column mapping ---
+    // --- ValueMapping value-object column mapping ---
 
-    private boolean hasPgRepr(VariableElement paramElement) {
-        return PgReprResolver.resolve(paramElement.asType()).isPresent();
+    private boolean hasValueMapping(VariableElement paramElement) {
+        return ValueMappingResolver.resolve(paramElement.asType()).isPresent();
     }
 
     private static boolean isScalarType(String typeName) {
@@ -530,9 +530,9 @@ public class QueryAnnotationProcessor extends AbstractProcessor {
     }
 
     /// Validates and lowers value-object bind targets: emits a compile error for any target that
-    /// is neither a supported column type nor a value object with a discoverable PgRepr, then
+    /// is neither a supported column type nor a value object with a discoverable ValueMapping, then
     /// rewrites each value-object target to lower it to its column value (exposing the primitive
-    /// column type for schema validation and `vo.pgRepr().lower().apply(...)` for binding).
+    /// column type for schema validation and `vo.valueMapping().lower().apply(...)` for binding).
     private List<FactoryGenerator.MethodParam> boundBodyParams(ExecutableElement execElement,
                                                                List<FactoryGenerator.MethodParam> rawBodyParams) {
         var reprs = collectBindReprs(execElement);
@@ -543,12 +543,12 @@ public class QueryAnnotationProcessor extends AbstractProcessor {
     }
 
     /// Maps each bind target (a scalar/value-object method param, or a field of an expanded payload
-    /// record) to its PgRepr binding when the target is a single-column value object.
-    private Map<String, PgReprResolver.Binding> collectBindReprs(ExecutableElement execElement) {
-        var reprs = new HashMap<String, PgReprResolver.Binding>();
+    /// record) to its ValueMapping binding when the target is a single-column value object.
+    private Map<String, ValueMappingResolver.Binding> collectBindReprs(ExecutableElement execElement) {
+        var reprs = new HashMap<String, ValueMappingResolver.Binding>();
 
         for (var param : execElement.getParameters()) {
-            var direct = PgReprResolver.resolve(param.asType());
+            var direct = ValueMappingResolver.resolve(param.asType());
 
             if (direct.isPresent()) {
                 reprs.put(param.getSimpleName().toString(), direct.expect("checked with isPresent above"));
@@ -560,10 +560,10 @@ public class QueryAnnotationProcessor extends AbstractProcessor {
         return reprs;
     }
 
-    private void collectRecordFieldReprs(VariableElement recordParam, Map<String, PgReprResolver.Binding> reprs) {
+    private void collectRecordFieldReprs(VariableElement recordParam, Map<String, ValueMappingResolver.Binding> reprs) {
         for (var component : ((TypeElement) ((DeclaredType) recordParam.asType()).asElement()).getEnclosedElements()) {
             if (component.getKind() == ElementKind.RECORD_COMPONENT) {
-                PgReprResolver.resolve(component.asType())
+                ValueMappingResolver.resolve(component.asType())
                               .onPresent(binding -> reprs.put(component.getSimpleName().toString(), binding));
             }
         }
@@ -571,23 +571,23 @@ public class QueryAnnotationProcessor extends AbstractProcessor {
 
     private void validateBindReprs(ExecutableElement execElement,
                                    List<FactoryGenerator.MethodParam> bodyParams,
-                                   Map<String, PgReprResolver.Binding> reprs) {
+                                   Map<String, ValueMappingResolver.Binding> reprs) {
         for (var param : bodyParams) {
             if (!reprs.containsKey(param.name()) && !isScalarType(param.typeName())) {
-                error(ProcessorError.missingPgReprForParam(param.name(), param.typeName()), execElement);
+                error(ProcessorError.missingValueMappingForParam(param.name(), param.typeName()), execElement);
             }
         }
     }
 
     private static List<FactoryGenerator.MethodParam> applyBindReprs(List<FactoryGenerator.MethodParam> bodyParams,
-                                                                     Map<String, PgReprResolver.Binding> reprs) {
+                                                                     Map<String, ValueMappingResolver.Binding> reprs) {
         return reprs.isEmpty()
                ? bodyParams
                : bodyParams.stream().map(param -> loweredParam(param, reprs)).toList();
     }
 
     private static FactoryGenerator.MethodParam loweredParam(FactoryGenerator.MethodParam param,
-                                                             Map<String, PgReprResolver.Binding> reprs) {
+                                                             Map<String, ValueMappingResolver.Binding> reprs) {
         var binding = reprs.get(param.name());
 
         return binding == null
@@ -596,7 +596,7 @@ public class QueryAnnotationProcessor extends AbstractProcessor {
     }
 
     /// Validates and lifts value-object decode targets: emits a compile error for any return-record
-    /// field that is neither a supported column type nor a value object with a discoverable PgRepr,
+    /// field that is neither a supported column type nor a value object with a discoverable ValueMapping,
     /// then rewrites each value-object column to decode through the value object's `lift` (guarded
     /// by a typed `RowDecode` cause).
     private List<FactoryGenerator.MapperColumn> boundMapperColumns(ExecutableElement execElement,
@@ -613,8 +613,8 @@ public class QueryAnnotationProcessor extends AbstractProcessor {
         return applyDecodeReprs(rawColumns, reprs);
     }
 
-    private Map<String, PgReprResolver.Binding> collectDecodeReprs(ExecutableElement execElement) {
-        var reprs = new HashMap<String, PgReprResolver.Binding>();
+    private Map<String, ValueMappingResolver.Binding> collectDecodeReprs(ExecutableElement execElement) {
+        var reprs = new HashMap<String, ValueMappingResolver.Binding>();
         var innerElement = TypeMirrorResolver.innerTypeElement(execElement.getReturnType());
 
         if (innerElement == null) {
@@ -623,7 +623,7 @@ public class QueryAnnotationProcessor extends AbstractProcessor {
 
         for (var component : innerElement.getEnclosedElements()) {
             if (component.getKind() == ElementKind.RECORD_COMPONENT) {
-                PgReprResolver.resolve(component.asType())
+                ValueMappingResolver.resolve(component.asType())
                               .onPresent(binding -> reprs.put(component.getSimpleName().toString(), binding));
             }
         }
@@ -633,7 +633,7 @@ public class QueryAnnotationProcessor extends AbstractProcessor {
 
     private void validateDecodeReprs(ExecutableElement execElement,
                                      TypeMirrorResolver.ResolvedReturn resolved,
-                                     Map<String, PgReprResolver.Binding> reprs) {
+                                     Map<String, ValueMappingResolver.Binding> reprs) {
         var innerElement = TypeMirrorResolver.innerTypeElement(execElement.getReturnType());
 
         if (innerElement == null) {
@@ -648,21 +648,21 @@ public class QueryAnnotationProcessor extends AbstractProcessor {
             var fieldName = component.getSimpleName().toString();
 
             if (!reprs.containsKey(fieldName) && !isScalarType(component.asType().toString())) {
-                error(ProcessorError.missingPgReprForField(fieldName, component.asType().toString(), resolved.innerTypeName()),
+                error(ProcessorError.missingValueMappingForField(fieldName, component.asType().toString(), resolved.innerTypeName()),
                       execElement);
             }
         }
     }
 
     private static List<FactoryGenerator.MapperColumn> applyDecodeReprs(List<FactoryGenerator.MapperColumn> columns,
-                                                                        Map<String, PgReprResolver.Binding> reprs) {
+                                                                        Map<String, ValueMappingResolver.Binding> reprs) {
         return reprs.isEmpty()
                ? columns
                : columns.stream().map(col -> liftedColumn(col, reprs)).toList();
     }
 
     private static FactoryGenerator.MapperColumn liftedColumn(FactoryGenerator.MapperColumn col,
-                                                              Map<String, PgReprResolver.Binding> reprs) {
+                                                              Map<String, ValueMappingResolver.Binding> reprs) {
         var binding = reprs.get(col.fieldName());
 
         if (binding == null) {
@@ -729,7 +729,7 @@ public class QueryAnnotationProcessor extends AbstractProcessor {
         if ( !isInsertOrSave(operation) || params.size() != 1) {
         return RecordExpansionResult.noExpansion(params);}
         var paramElement = execElement.getParameters().getFirst();
-        if ( !isRecordType(paramElement) || hasPgRepr(paramElement)) {
+        if ( !isRecordType(paramElement) || hasValueMapping(paramElement)) {
         return RecordExpansionResult.noExpansion(params);}
         var recordParamName = paramElement.getSimpleName().toString();
         var fields = extractRecordComponentFields(paramElement);
@@ -760,7 +760,7 @@ public class QueryAnnotationProcessor extends AbstractProcessor {
         for ( int paramIdx = 0; paramIdx < originalParams.size(); paramIdx++) {
             var param = originalParams.get(paramIdx);
             var paramElement = execElement.getParameters().get(paramIdx);
-            if ( !isRecordType(paramElement) || hasPgRepr(paramElement)) {
+            if ( !isRecordType(paramElement) || hasValueMapping(paramElement)) {
                 allParamNames.add(param.name());
                 bodyParams.add(param);
                 continue;
@@ -1123,7 +1123,7 @@ public class QueryAnnotationProcessor extends AbstractProcessor {
         }
     }
 
-    /// Imports the field types of a return record, so a value-object field's `Vo.pgRepr().lift()`
+    /// Imports the field types of a return record, so a value-object field's `Vo.valueMapping().lift()`
     /// reference resolves in the generated factory even when the value object lives in another
     /// package. Non-importable types (primitives, java.lang, core types) are skipped downstream.
     private void collectReturnFieldImports(ExecutableElement method, Set<String> imports) {

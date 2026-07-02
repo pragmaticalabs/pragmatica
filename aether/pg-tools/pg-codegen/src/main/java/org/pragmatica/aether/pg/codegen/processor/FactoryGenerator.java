@@ -37,7 +37,7 @@ public final class FactoryGenerator {
     }
 
     /// A column read by a generated row mapper. `liftExpr`, when non-empty, is a value-object
-    /// `lift` function reference (e.g. `SeatState.pgRepr().lift()`): the raw column value is
+    /// `lift` function reference (e.g. `SeatState.valueMapping().lift()`): the raw column value is
     /// decoded through it and the result guarded with a typed `RowDecode` cause.
     public record MapperColumn(String columnName, String accessorMethod, String fieldName, String typeArg, String liftExpr) {
         public static MapperColumn plain(String columnName, String accessorMethod, String fieldName, String typeArg) {

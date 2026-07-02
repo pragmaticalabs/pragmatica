@@ -14,29 +14,31 @@ import javax.lang.model.element.TypeElement;
 import javax.lang.model.type.DeclaredType;
 import javax.lang.model.type.TypeMirror;
 
-/// Discovers the `PgRepr` descriptor a value object declares, via the reflection-free convention
-/// that the value object exposes a `public static PgRepr<Self, P> pgRepr()` method. The processor
-/// never invokes the method; it reads the declared return type at compile time to learn the
-/// primitive column representation `P`, then generates code that calls `Vo.pgRepr()` at runtime.
+/// Discovers the `ValueMapping` descriptor a value object declares, via the reflection-free
+/// convention that the value object exposes a `public static ValueMapping<Self, P> valueMapping()`
+/// method. The processor never invokes the method; it reads the declared return type at compile time
+/// to learn the primitive column representation `P`, then generates code that calls
+/// `Vo.valueMapping()` at runtime.
 ///
 /// Because the convention is a single conventionally-named static method, a value object can carry
-/// at most one `PgRepr` — two descriptors for one value object is a compiler error by construction
-/// (Java forbids two static methods with the same signature), so no ambiguity check is required.
+/// at most one `ValueMapping` — two descriptors for one value object is a compiler error by
+/// construction (Java forbids two static methods with the same signature), so no ambiguity check is
+/// required.
 @Contract
-public final class PgReprResolver {
-    private PgReprResolver() {}
+public final class ValueMappingResolver {
+    private ValueMappingResolver() {}
 
-    /// The `P` (primitive column) side of a discovered `PgRepr<Vo, P>`, plus the value object's
-    /// simple name used to reference `Vo.pgRepr()` in generated code.
+    /// The `P` (primitive column) side of a discovered `ValueMapping<Vo, P>`, plus the value
+    /// object's simple name used to reference `Vo.valueMapping()` in generated code.
     public record Binding(String voSimpleName, String pTypeName) {
         /// Bind expression: lower the value object to its column value (total, cannot fail).
         public String lowerExpr(String valueExpr) {
-            return voSimpleName + ".pgRepr().lower().apply(" + valueExpr + ")";
+            return voSimpleName + ".valueMapping().lower().apply(" + valueExpr + ")";
         }
 
         /// The `lift` function reference used inside a row decode's `flatMap`.
         public String liftExpr() {
-            return voSimpleName + ".pgRepr().lift()";
+            return voSimpleName + ".valueMapping().lift()";
         }
 
         /// Row accessor (method + class-literal type argument) for reading `P` from a row.
@@ -45,8 +47,8 @@ public final class PgReprResolver {
         }
     }
 
-    /// Returns the `PgRepr` binding for the given type, or empty when the type declares no
-    /// conforming `static pgRepr()` method.
+    /// Returns the `ValueMapping` binding for the given type, or empty when the type declares no
+    /// conforming `static valueMapping()` method.
     public static Option<Binding> resolve(TypeMirror type) {
         if (!(type instanceof DeclaredType declaredType)) {
             return Option.empty();
@@ -72,14 +74,14 @@ public final class PgReprResolver {
     }
 
     private static Option<Binding> bindingFor(TypeElement voType, ExecutableElement method) {
-        if (!method.getSimpleName().contentEquals("pgRepr")
+        if (!method.getSimpleName().contentEquals("valueMapping")
             || !method.getModifiers().contains(Modifier.STATIC)
             || !method.getParameters().isEmpty()) {
             return Option.empty();
         }
 
         if (!(method.getReturnType() instanceof DeclaredType returnType)
-            || !returnType.asElement().getSimpleName().contentEquals("PgRepr")) {
+            || !returnType.asElement().getSimpleName().contentEquals("ValueMapping")) {
             return Option.empty();
         }
 

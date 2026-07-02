@@ -1,5 +1,7 @@
 package org.pragmatica.http.routing;
 
+import org.pragmatica.http.HttpStatus;
+import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Result;
 
 import java.math.BigDecimal;
@@ -9,6 +11,7 @@ import java.time.LocalDateTime;
 import java.time.LocalTime;
 import java.time.OffsetDateTime;
 import java.util.Locale;
+import java.util.UUID;
 
 import static org.pragmatica.http.routing.ParameterError.InvalidParameter;
 import static org.pragmatica.http.routing.ParameterError.PathMismatch;
@@ -52,6 +55,24 @@ public interface PathParameter<T> {
     /// String parameter - accepts any string value.
     static PathParameter<String> aString() {
         return Result::success;
+    }
+
+    /// UUID parameter - parses a canonical RFC-4122 textual UUID.
+    /// The natural `P` for value objects whose domain primitive is a `UUID` (e.g. an id column).
+    static PathParameter<UUID> aUuid() {
+        return value -> Result.lift(_ -> new InvalidParameter("Invalid UUID value: " + value),
+                                    () -> UUID.fromString(value));
+    }
+
+    /// Compose this framework-owned `String -> P` parser with a value object's fallible `lift`
+    /// (`P -> Result<T>`) so a path segment is parsed to its primitive representation, then lifted
+    /// into the value object. Either failure — a malformed primitive or a rejected `lift` — surfaces
+    /// as a typed [org.pragmatica.http.HttpError] 400, never a 500 and never a silent raw value. The
+    /// value object declares only its `P` mapping; it never mentions `String`, `PathParameter`, or
+    /// HTTP status, so no transport concept leaks into value-object code.
+    default <R> PathParameter<R> mapped(Fn1<Result<R>, T> lift) {
+        return value -> parse(value).flatMap(lift)
+                                    .mapError(cause -> HttpStatus.BAD_REQUEST.with(cause));
     }
 
     /// Byte parameter - parses signed 8-bit integer.

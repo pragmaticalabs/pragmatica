@@ -33,10 +33,11 @@ import java.util.Properties;
 import java.util.stream.Collectors;
 
 public class ManifestGenerator {
-    /// Envelope bumped 1005 -> 1006: publisher and subscription manifest blocks now carry a
-    /// `topicName` derived from the single-source `Topic<T>` constant (#396), and the topic `config`
-    /// for typed topics is the resolved topic name rather than a resources.toml section identifier.
-    static final int ENVELOPE_FORMAT_VERSION = 1006;
+    /// Envelope bumped 1006 -> 1007: value-object HTTP path/query segments now bind through the VO's
+    /// `ValueMapping` (`static ValueMapping<Self, P> valueMapping()`), so generated `*Routes` compose
+    /// the framework `String -> P` parser with the VO's `lift` (`PathParameter.aXxx().mapped(...)` /
+    /// `QueryParameter.aXxx(name).mapped(...)`) and a lift failure yields a typed 400 (#397).
+    static final int ENVELOPE_FORMAT_VERSION = 1007;
 
     private final Filer filer;
     private final DependencyVersionResolver versionResolver;

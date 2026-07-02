@@ -2482,10 +2482,11 @@ class SliceProcessorTest {
         assertThat(manifestFile.isPresent()).isTrue();
         var manifestContent = manifestFile.get().getCharContent(false).toString();
 
-        // Verify envelope version (bumped to 1006: typed pub/sub blocks now carry a topicName derived
-        // from the single-source Topic<T> constant (#396); earlier 1005 added the full interleaved
-        // path — static segments after the first path parameter become PathParameter.spacer("...")).
-        assertThat(manifestContent).contains("envelope.version=1006");
+        // Verify envelope version (bumped to 1007: value-object HTTP path/query segments now bind
+        // through the VO's ValueMapping — generated *Routes compose the framework String->P parser
+        // with the VO's lift, a lift failure yielding a typed 400 (#397). Earlier: 1006 typed pub/sub
+        // topicName from Topic<T> (#396); 1005 the full interleaved path with PathParameter.spacer).
+        assertThat(manifestContent).contains("envelope.version=1007");
 
         // Verify stream publisher metadata
         assertThat(manifestContent).contains("stream.publishers.count=1");
@@ -3412,7 +3413,7 @@ class SliceProcessorTest {
                                   .get().getCharContent(false).toString();
         assertThat(manifest).contains("publish.topic.0.topicName=order-events");
         assertThat(manifest).contains("publish.topic.0.config=order-events");
-        assertThat(manifest).contains("envelope.version=1006");
+        assertThat(manifest).contains("envelope.version=1007");
     }
 
     @Test

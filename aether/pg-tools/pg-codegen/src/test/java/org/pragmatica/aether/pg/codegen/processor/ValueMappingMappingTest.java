@@ -20,10 +20,10 @@ import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-/// End-to-end tests for value-object column mapping (`PgRepr`): value objects bind via `lower`,
+/// End-to-end tests for value-object column mapping (`ValueMapping`): value objects bind via `lower`,
 /// row records decode via `lift` guarded by a typed `RowDecode` cause, missing/ambiguous/mismatched
 /// descriptors are compile errors, and raw types keep working unchanged.
-class PgReprMappingTest {
+class ValueMappingMappingTest {
 
     @TempDir
     Path tempDir;
@@ -41,7 +41,7 @@ class PgReprMappingTest {
             // Signature keeps the value-object type; the interface method is overridden verbatim.
             assertThat(generated).contains("EventId id");
             // The bind lowers the value object to its raw column value.
-            assertThat(generated).contains("EventId.pgRepr().lower().apply(id)");
+            assertThat(generated).contains("EventId.valueMapping().lower().apply(id)");
         }
 
         @Test
@@ -53,14 +53,14 @@ class PgReprMappingTest {
 
                 import org.pragmatica.aether.pg.codegen.annotation.Query;
                 import org.pragmatica.aether.resource.db.PgSql;
-                import org.pragmatica.aether.slice.repr.PgRepr;
+                import org.pragmatica.aether.slice.mapping.ValueMapping;
                 import org.pragmatica.lang.Promise;
                 import org.pragmatica.lang.Result;
                 import org.pragmatica.lang.Unit;
 
                 record AccountId(UUID value) {
                     static Result<AccountId> accountId(UUID raw) { return Result.success(new AccountId(raw)); }
-                    static PgRepr<AccountId, UUID> pgRepr() { return PgRepr.of(AccountId::value, AccountId::accountId); }
+                    static ValueMapping<AccountId, UUID> valueMapping() { return ValueMapping.of(AccountId::value, AccountId::accountId); }
                 }
 
                 record LedgerEntry(AccountId accountId, java.math.BigDecimal amount) {}
@@ -79,7 +79,7 @@ class PgReprMappingTest {
             var generated = result.generatedSource("test.LedgerRepoFactory");
             assertThat(generated).isNotNull();
             // The value-object field is lowered; the scalar field is bound directly.
-            assertThat(generated).contains("AccountId.pgRepr().lower().apply(entry.accountId())");
+            assertThat(generated).contains("AccountId.valueMapping().lower().apply(entry.accountId())");
             assertThat(generated).contains("entry.amount()");
         }
     }
@@ -96,7 +96,7 @@ class PgReprMappingTest {
             assertThat(generated).isNotNull();
             // The value-object column is read as UUID, re-parsed through lift, and guarded.
             assertThat(generated).contains("RowDecodeError.guard(\"id\"");
-            assertThat(generated).contains("EventId.pgRepr().lift()");
+            assertThat(generated).contains("EventId.valueMapping().lift()");
             assertThat(generated).contains("import org.pragmatica.aether.resource.db.RowDecodeError;");
             // The scalar column stays a plain read.
             assertThat(generated).contains("row.getObject(\"amount\", java.math.BigDecimal.class)");
@@ -106,7 +106,7 @@ class PgReprMappingTest {
     @Nested
     class CompileErrors {
         @Test
-        void missingPgReprForParam_isCompileError() throws Exception {
+        void missingValueMappingForParam_isCompileError() throws Exception {
             var source = """
                 package test;
 
@@ -129,11 +129,11 @@ class PgReprMappingTest {
 
             assertThat(result.success()).isFalse();
             assertThat(result.diagnostics()).contains("PG-VALIDATE");
-            assertThat(result.diagnostics()).contains("PgRepr");
+            assertThat(result.diagnostics()).contains("ValueMapping");
         }
 
         @Test
-        void missingPgReprForReturnField_isCompileError() throws Exception {
+        void missingValueMappingForReturnField_isCompileError() throws Exception {
             var source = """
                 package test;
 
@@ -158,7 +158,7 @@ class PgReprMappingTest {
 
             assertThat(result.success()).isFalse();
             assertThat(result.diagnostics()).contains("PG-VALIDATE");
-            assertThat(result.diagnostics()).contains("PgRepr");
+            assertThat(result.diagnostics()).contains("ValueMapping");
             assertThat(result.diagnostics()).contains("id");
         }
 
@@ -169,18 +169,18 @@ class PgReprMappingTest {
 
                 import org.pragmatica.aether.pg.codegen.annotation.Query;
                 import org.pragmatica.aether.resource.db.PgSql;
-                import org.pragmatica.aether.slice.repr.PgRepr;
+                import org.pragmatica.aether.slice.mapping.ValueMapping;
                 import org.pragmatica.lang.Promise;
                 import org.pragmatica.lang.Result;
 
                 record TextId(String value) {
                     static Result<TextId> textId(String raw) { return Result.success(new TextId(raw)); }
-                    static PgRepr<TextId, String> pgRepr() { return PgRepr.of(TextId::value, TextId::textId); }
+                    static ValueMapping<TextId, String> valueMapping() { return ValueMapping.of(TextId::value, TextId::textId); }
                 }
 
                 @PgSql
                 public interface MismatchRepo {
-                    // events_uuid.id is UUID, but the PgRepr's P is String.
+                    // events_uuid.id is UUID, but the ValueMapping's P is String.
                     @Query("SELECT count(*) FROM events_uuid WHERE id = :id")
                     Promise<Long> countById(TextId id);
                 }
@@ -232,7 +232,7 @@ class PgReprMappingTest {
     @Nested
     class BackwardCompatibility {
         @Test
-        void rawTypesKeepWorking_withoutPgReprMachinery() throws Exception {
+        void rawTypesKeepWorking_withoutValueMappingMachinery() throws Exception {
             var source = """
                 package test;
 
@@ -260,7 +260,7 @@ class PgReprMappingTest {
             assertThat(generated).isNotNull();
             // No value-object machinery leaks into raw-type factories.
             assertThat(generated).doesNotContain("RowDecodeError");
-            assertThat(generated).doesNotContain("pgRepr()");
+            assertThat(generated).doesNotContain("valueMapping()");
             assertThat(generated).contains("row.getObject(\"id\", java.util.UUID.class)");
         }
     }
@@ -274,14 +274,14 @@ class PgReprMappingTest {
 
         import org.pragmatica.aether.pg.codegen.annotation.Query;
         import org.pragmatica.aether.resource.db.PgSql;
-        import org.pragmatica.aether.slice.repr.PgRepr;
+        import org.pragmatica.aether.slice.mapping.ValueMapping;
         import org.pragmatica.lang.Option;
         import org.pragmatica.lang.Promise;
         import org.pragmatica.lang.Result;
 
         record EventId(UUID value) {
             static Result<EventId> eventId(UUID raw) { return Result.success(new EventId(raw)); }
-            static PgRepr<EventId, UUID> pgRepr() { return PgRepr.of(EventId::value, EventId::eventId); }
+            static ValueMapping<EventId, UUID> valueMapping() { return ValueMapping.of(EventId::value, EventId::eventId); }
         }
 
         record EventRow(EventId id, java.math.BigDecimal amount) {}
@@ -298,7 +298,7 @@ class PgReprMappingTest {
 
         import org.pragmatica.aether.pg.codegen.annotation.Query;
         import org.pragmatica.aether.resource.db.PgSql;
-        import org.pragmatica.aether.slice.repr.PgRepr;
+        import org.pragmatica.aether.slice.mapping.ValueMapping;
         import org.pragmatica.lang.Cause;
         import org.pragmatica.lang.utils.Causes;
         import org.pragmatica.lang.Option;
@@ -312,7 +312,7 @@ class PgReprMappingTest {
                        ? Result.success(new OrderStatus(raw))
                        : BAD_STATUS.result();
             }
-            static PgRepr<OrderStatus, String> pgRepr() { return PgRepr.of(OrderStatus::value, OrderStatus::orderStatus); }
+            static ValueMapping<OrderStatus, String> valueMapping() { return ValueMapping.of(OrderStatus::value, OrderStatus::orderStatus); }
         }
 
         record StatusRow(OrderStatus status) {}

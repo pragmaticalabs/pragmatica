@@ -154,9 +154,11 @@ sealed interface BoundaryMapping permits Mapping, CompositeMapping {}
 
 ---
 
-## 3. THE NAME — **OPEN QUESTION (reserved for the user)**
+## 3. THE NAME — **`ValueMapping` (chosen)**
 
-The ticket forbids shipping `Repr`. The name is author-facing and public, so it is chosen deliberately. Below are candidates with honest trade-offs. **The final pick is the user's.**
+**Name: `ValueMapping` (chosen).** The type is `ValueMapping<T,P>`, the discovery convention method is `valueMapping()`, and the (deferred) composite variant is `CompositeValueMapping<T>` with sealed supertype `BoundaryMapping`. `ValueMapping` is the honest, approachable, zero-overclaim pick from the candidate analysis below: it neither collides with the existing `Codec`/`SliceCodec`/`TypeCodec` family nor overclaims totality the way `Iso`/`Lens` would, and it disambiguates the bare `Mapping` working title from the overloaded ORM/`Map` sense by naming *what* is mapped — a value object. The rc2 implementation uses `ValueMapping` / `valueMapping()` throughout.
+
+The ticket forbids shipping `Repr`. The name is author-facing and public, so it is chosen deliberately. Below are candidates with honest trade-offs.
 
 The repo's *honest-guarantees / consistency-lens* culture matters here: a name must not overclaim a property the type does not have. The type is a **total unwrap + partial (fallible) re-parse** between a rich type and one raw type. That immediately disqualifies two popular candidates.
 
@@ -333,7 +335,7 @@ This is self-contained, needs no serialization-SPI change, and satisfies "bind a
 - **Q2 — `PgRepr` migration.** Clean absorption/rename (recommended, A) vs keep `PgRepr` as a named DB specialization (B)? *(§6)*
 - **Q3 — known-primitive `P↔wire` table.** Exact set of primitives that auto-get a String-leg (HTTP) and a fact-leg, and whether the per-boundary override escape hatch (§5-B) is in scope for rc2. *(§5)*
 - **Q4 — facts typed decode.** Add a `Result`-returning reader to `TypeCodec`/`SliceCodec` (honest parse-don't-validate on read) vs bridge via a thrown typed `CodecError` at the deserialization boundary? *(§4.3)*
-- **Q5 — THE NAME (reserved for the user).** `Mapping` (recommended, safe) vs `Prism` (precise, jargon) vs another; drives the convention method and composite names. *(§3)*
+- **Q5 — THE NAME. RESOLVED: `ValueMapping` (chosen).** Type `ValueMapping<T,P>`, convention `valueMapping()`, deferred composite `CompositeValueMapping<T>` / sealed supertype `BoundaryMapping`. *(§3)*
 - **Q6 — composite author API.** Hide the erased `List<Object>` behind a typed builder (`Mapping.composite().add(...).assembledBy(...)`) — confirm the ergonomic target before implementing composite. *(§2.2)*
 
 ---
