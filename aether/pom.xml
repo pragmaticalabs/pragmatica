@@ -72,6 +72,8 @@
         <module>aether-ttm-onnx</module>
         <!-- worker module removed: sources moved to node and aether-metrics -->
         <module>node</module>
+        <!-- Test-support kit: spin one slice with fakes/testcontainers + typed client -->
+        <module>slice-testkit</module>
         <!-- E2E test slices - pure function, no dependencies -->
         <module>pg-tools</module>
         <module>e2e-tests/echo-slice</module>
