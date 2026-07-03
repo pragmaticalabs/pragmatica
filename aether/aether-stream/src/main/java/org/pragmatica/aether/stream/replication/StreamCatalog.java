@@ -15,9 +15,11 @@ import java.util.List;
 /// controller never depends on the manager directly.
 public interface StreamCatalog {
     /// One spec per stream currently materialized on this node. `partitions` is the partition
-    /// count; `minSyncReplicas` is the configured app-stream replication factor (ignored for
-    /// system streams, whose RF is derived from cluster size).
-    record StreamSpec(String name, int partitions, int minSyncReplicas) {}
+    /// count; `replicas` is the configured app-stream replication factor (total copies incl. owner)
+    /// that drives placement — ignored for system streams, whose RF is derived from cluster size.
+    /// `minSyncReplicas` is the write-ack requirement (in-sync count incl. owner); it is carried here
+    /// for consumers of the in-sync gate and is NOT used for placement.
+    record StreamSpec(String name, int partitions, int replicas, int minSyncReplicas) {}
 
     List<StreamSpec> streams();
 }

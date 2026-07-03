@@ -102,7 +102,7 @@
 | TC ID | Test function | File:line | Contract(s) | Severity | Notes |
 |---|---|---|---|---|---|
 | TC-02-033 | `test_initial_state` | `test-stream-replica-failover.sh` | C1, C2 | smoke | `wait_for_cluster_ready` + `wait_for_phase NORMAL 180` warn-then-continue (DEMOTION) + `assert_ge count 5` |
-| TC-02-034 | `test_create_stream_single_partition` | `test-stream-replica-failover.sh` | C17 (setup) | smoke | `api_post /api/streams {"partitions":1}`; per-run unique name `chaos-replica-failover-$$` |
+| TC-02-034 | `test_deploy_repl_stream_blueprint` | `test-stream-replica-failover.sh` | C17 (setup) | smoke | Deploy `test-stream-repl` blueprint (stream `repl-failover-events`, partitions=1, **min-sync-replicas=2 → RF=2**); `wait_for` all-instances ACTIVE before first publish (the RF=2 `StreamConfig` must commit before publish, else `ensureStreamExists` mints RF=1). Replaces the prior `POST /api/streams` create, which is structurally RF=1 (owner-only) and cannot satisfy C17 |
 | TC-02-035 | `test_publish_initial_history` | `test-stream-replica-failover.sh` | C19 (setup) | core | Publish N=20 distinct raw markers via `stream_publish`; strict `assert_eq ok N` |
 | TC-02-036 | `test_full_history_present_before_kill` | `test-stream-replica-failover.sh` | C19 (baseline) | core | Strict `assert_eq present N` — establishes publish→read at strength N (vs suite-04 >=1) so a post-kill shortfall is attributable to failover. Markers counted by Base64 (read path b64-encodes `data`) |
 | TC-02-037 | `test_identify_owner_and_caught_up_replica` | `test-stream-replica-failover.sh` | C17 | core | `GET /api/streams/replicas/{name}/0` retried until `servedByOwner=true`; `assert_ne hrwOwner ""`; **fails** if no CAUGHT_UP non-owner replica (replication not established) |

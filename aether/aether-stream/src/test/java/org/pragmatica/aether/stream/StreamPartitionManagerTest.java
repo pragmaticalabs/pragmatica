@@ -12,14 +12,26 @@ import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.slice.ConsistencyMode;
 import org.pragmatica.aether.slice.RetentionPolicy;
 import org.pragmatica.aether.slice.StreamConfig;
+import org.pragmatica.aether.slice.fence.OwnershipDomain;
+import org.pragmatica.aether.slice.fence.OwnershipEpochHighWater;
+import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
+import org.pragmatica.aether.slice.kvstore.AetherValue;
+import org.pragmatica.aether.stream.replication.ReplicationManager;
 import org.pragmatica.cluster.node.ClusterNode;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
+import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.topology.TopologyManager;
 import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.messaging.MessageRouter;
+import org.pragmatica.serialization.Deserializer;
+import org.pragmatica.serialization.Serializer;
+
+import io.netty.buffer.ByteBuf;
 
 import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -41,12 +53,108 @@ class StreamPartitionManagerTest {
         manager.close();
     }
 
+    /// #336 owner-epoch fence on the recovery/backfill seam. The A4 recovery seam (`streamPartitionRecovery`)
+    /// must stamp appends with the COMMITTED owner epoch a live publish would, not `Epoch.ZERO`. When the
+    /// partition high-water has advanced (a real ownership epoch is committed), a ZERO-stamped recovered
+    /// append is strictly-older → fenced → every backfill-apply fails and the fresh owner loops in
+    /// `escapeOwnerCatchup`. Stamping the committed epoch (equal-or-newer) passes the fence; cold-start ZERO
+    /// vs the fence's ZERO default is equal → passes, so fresh-stream recovery is not regressed.
+    @Nested
+    class RecoveryEpochFence {
+        private static final String FENCE_STREAM = "orders";
+        private static final int FENCE_PARTITION = 0;
+
+        @Test
+        void appendRecovered_zeroEpoch_rejectedWhenHighWaterAdvanced() {
+            // Pre-fix behavior: the 4-arg recovery overload stamps Epoch.ZERO. With the committed high-water at
+            // 1:3, 0:0 is STRICTLY older → the append is fenced (StaleEpochAppend) — the real-infra symptom.
+            var fenced = fencedManager(highWaterAt(Epoch.epoch(1, 3)));
+            assertThat(fenced.createStream(StreamConfig.streamConfig(FENCE_STREAM)).isSuccess()).isTrue();
+
+            var rejected = fenced.appendRecovered(FENCE_STREAM, FENCE_PARTITION, "e".getBytes(), 1L);
+
+            assertThat(rejected.isFailure()).isTrue();
+            rejected.onFailure(cause -> assertThat(cause).isInstanceOf(StreamError.StaleEpochAppend.class));
+            fenced.close();
+        }
+
+        @Test
+        void appendRecovered_committedEpoch_passesFenceWhenHighWaterAdvanced() {
+            // The fix stamps the COMMITTED owner epoch (1:3) — equal to the high-water → passes the fence, so
+            // the backfilled event lands and the fresh owner can reach CAUGHT_UP.
+            var fenced = fencedManager(highWaterAt(Epoch.epoch(1, 3)));
+            assertThat(fenced.createStream(StreamConfig.streamConfig(FENCE_STREAM)).isSuccess()).isTrue();
+
+            var accepted = fenced.appendRecovered(FENCE_STREAM, FENCE_PARTITION, "e".getBytes(), 1L, Epoch.epoch(1, 3));
+
+            assertThat(accepted.isSuccess()).isTrue();
+            assertThat(accepted.or(-1L)).isEqualTo(0L); // first offset landed locally
+            fenced.close();
+        }
+
+        @Test
+        void appendRecovered_zeroEpoch_passesOnColdStartNoHighWater() {
+            // Cold-start / no committed ownership record: currentOwnerEpoch is Epoch.ZERO and the fence has no
+            // mark, so 0:0 is not strictly older than anything → passes. Fresh-stream recovery is not regressed.
+            var fenced = fencedManager(freshHighWater());
+            assertThat(fenced.createStream(StreamConfig.streamConfig(FENCE_STREAM)).isSuccess()).isTrue();
+
+            var accepted = fenced.appendRecovered(FENCE_STREAM, FENCE_PARTITION, "e".getBytes(), 1L);
+
+            assertThat(accepted.isSuccess()).isTrue();
+            assertThat(accepted.or(-1L)).isEqualTo(0L);
+            fenced.close();
+        }
+
+        private static StreamPartitionManager fencedManager(OwnershipEpochHighWater highWater) {
+            return StreamPartitionManager.streamPartitionManager(Long.MAX_VALUE,
+                                                                 EvictionListener.NOOP,
+                                                                 ReplicationManager.NONE,
+                                                                 new StubClusterNode(StubApply.SUCCESS),
+                                                                 highWater,
+                                                                 StreamOwnerEpochSource.zero(),
+                                                                 Option.none(),
+                                                                 LastSealedOffsetSource.none());
+        }
+
+        private static OwnershipEpochHighWater highWaterAt(Epoch epoch) {
+            var highWater = freshHighWater();
+
+            highWater.advance(OwnershipDomain.streamPartition(FENCE_STREAM, FENCE_PARTITION), epoch);
+
+            return highWater;
+        }
+
+        private static OwnershipEpochHighWater freshHighWater() {
+            return OwnershipEpochHighWater.ownershipEpochHighWater(emptyStore());
+        }
+
+        private static KVStore<AetherKey, AetherValue> emptyStore() {
+            return new KVStore<>(MessageRouter.mutable(), stubSerializer(), stubDeserializer());
+        }
+
+        private static Serializer stubSerializer() {
+            return new Serializer() {
+                @Override
+                public <T> void write(ByteBuf byteBuf, T object) {}
+            };
+        }
+
+        private static Deserializer stubDeserializer() {
+            return new Deserializer() {
+                @Override
+                public <T> T read(ByteBuf byteBuf) {
+                    return null;
+                }
+            };
+        }
+    }
+
     @Nested
     class CreateStream {
 
         @Test
-        void createStream_success_defaultConfig() {
-            var config = StreamConfig.streamConfig("orders");
+        void createStream_success_defaultConfig() {            var config = StreamConfig.streamConfig("orders");
 
             manager.createStream(config)
                    .onFailure(_ -> org.junit.jupiter.api.Assertions.fail("Expected success"));

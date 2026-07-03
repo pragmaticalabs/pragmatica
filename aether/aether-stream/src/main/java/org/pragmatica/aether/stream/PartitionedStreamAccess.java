@@ -134,8 +134,10 @@ public final class PartitionedStreamAccess<T> implements StreamAccess<T> {
     /// A6: app-stream overload that wires owner-routed {@link #publish} (forward client + self +
     /// owner-resolver) while keeping the default local read path (no tiered/cursor/registry). Used by
     /// the app `StreamAccessFactory` so a non-owner producer write-forwards to the partition owner.
-    /// `minSyncReplicas > 0` makes a local app publish AWAIT that many distinct replica acks before the
-    /// publisher's promise resolves (#262.4) — the durability guarantee the stream was created with.
+    /// `minSyncReplicas > 1` makes a local app publish AWAIT `minSyncReplicas - 1` distinct non-self
+    /// replica acks before the publisher's promise resolves (#262.4) — the owner counts as one of the
+    /// in-sync set, so only the remaining peers are awaited. `minSyncReplicas <= 1` resolves on the
+    /// local write (0 = eventual, 1 = owner-only) — the durability guarantee the stream was created with.
     public static <T> PartitionedStreamAccess<T> streamAccess(StreamPartitionManager partitionManager,
                                                               Serializer serializer,
                                                               Deserializer deserializer,
@@ -512,12 +514,14 @@ public final class PartitionedStreamAccess<T> implements StreamAccess<T> {
                               .or(() -> publishLocal(partition, bytes, timestamp));
     }
 
-    /// Local publish on the owner. With `minSyncReplicas > 0` the publish does not resolve until that
-    /// many DISTINCT replica acks land (#262.4) — `awaitReplication` registers the pending ack against
-    /// the already-fired replication (the manager seeds it from the registry to close the
-    /// ack-before-register race). With `minSyncReplicas == 0` it resolves on the local write (EVENTUAL).
+    /// Local publish on the owner. With `minSyncReplicas > 1` the publish does not resolve until
+    /// `minSyncReplicas - 1` DISTINCT non-self replica acks land (#262.4) — the owner itself is one of
+    /// the in-sync set, so only the remaining peers are awaited. `awaitReplication` registers the
+    /// pending ack against the already-fired replication (the manager seeds it from the registry to
+    /// close the ack-before-register race). With `minSyncReplicas <= 1` it resolves on the local write
+    /// (0 = eventual, 1 = owner-only).
     private Promise<Long> publishLocal(int partition, byte[] bytes, long timestamp) {
-        if (minSyncReplicas <= 0) {
+        if (minSyncReplicas <= 1) {
             return partitionManager.publishLocal(streamName, partition, bytes, timestamp)
                                    .async();
         }
@@ -527,7 +531,7 @@ public final class PartitionedStreamAccess<T> implements StreamAccess<T> {
                                .flatMap(offset -> partitionManager.awaitReplication(streamName,
                                                                                     partition,
                                                                                     offset,
-                                                                                    minSyncReplicas)
+                                                                                    minSyncReplicas - 1)
                                                                   .map(_ -> offset));
     }
 

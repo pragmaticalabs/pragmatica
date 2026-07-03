@@ -11,6 +11,8 @@ import org.pragmatica.aether.node.ManageableNode;
 import org.pragmatica.aether.slice.ReadPreference;
 import org.pragmatica.aether.slice.RetentionPolicy;
 import org.pragmatica.aether.slice.StreamConfig;
+import org.pragmatica.aether.slice.kvstore.AetherKey.StreamConfigKey;
+import org.pragmatica.aether.slice.kvstore.AetherValue.StreamConfigValue;
 import org.pragmatica.aether.stream.OffHeapRingBuffer;
 import org.pragmatica.aether.stream.StreamCreateOutcome;
 import org.pragmatica.aether.stream.StreamPartitionManager;
@@ -138,7 +140,7 @@ public final class StreamRoutes implements RouteSource {
                          ManagementRoutes.<PublishResponse> route(ManagementRoute.STREAM_PUBLISH)
                                          .withPath(PathParameter.aString())
                                          .withBody(PublishRequest.class)
-                                         .toResult(this::publishEvent)
+                                         .to(this::publishEvent)
                                          .asJson(),
                          ManagementRoutes.<ReadEventsResponse> route(ManagementRoute.STREAM_READ)
                                          .withPath(PathParameter.aString(),
@@ -221,18 +223,33 @@ public final class StreamRoutes implements RouteSource {
         return new ReplicaStateDetail(replica.nodeId(), replica.state(), replica.confirmedOffset(), replica.hrwOwner());
     }
 
-    private Result<PublishResponse> publishEvent(String name, PublishRequest request) {
+    private Promise<PublishResponse> publishEvent(String name, PublishRequest request) {
         return publishToPartition(name, request);
     }
 
-    private Result<PublishResponse> publishToPartition(String name, PublishRequest request) {
+    /// Publish to partition 0 (single-partition Management-API scope). When the stream's
+    /// `min-sync-replicas > 1`, the response resolves only after the local write AND
+    /// `minSyncReplicas - 1` distinct non-self replica acks land; a replication failure propagates as
+    /// an error response. `min-sync-replicas <= 1` resolves on the local write (owner-only/eventual).
+    private Promise<PublishResponse> publishToPartition(String name, PublishRequest request) {
         var payload = request.data().getBytes(StandardCharsets.UTF_8);
 
-        return ensureStreamExists(name).flatMap(_ -> streamManager().publishLocal(name,
-                                                                                  0,
-                                                                                  payload,
-                                                                                  System.currentTimeMillis()))
-                                 .map(PublishResponse::new);
+        return ensureStreamExists(name).async()
+                                       .flatMap(_ -> publishAndAwaitSync(name, payload));
+    }
+
+    private Promise<PublishResponse> publishAndAwaitSync(String name, byte[] payload) {
+        return streamManager().publishLocal(name, 0, payload, System.currentTimeMillis())
+                              .async()
+                              .flatMap(offset -> awaitSyncBarrier(name, offset));
+    }
+
+    private Promise<PublishResponse> awaitSyncBarrier(String name, long offset) {
+        var minSyncReplicas = streamManager().minSyncReplicasFor(name);
+
+        return minSyncReplicas > 1
+               ? streamManager().awaitReplication(name, 0, offset, minSyncReplicas - 1).map(_ -> new PublishResponse(offset))
+               : Promise.success(new PublishResponse(offset));
     }
 
     private Result<StreamCreateResponse> createStream(StreamCreateRequest request) {
@@ -262,11 +279,38 @@ public final class StreamRoutes implements RouteSource {
                                                                                                     4 * 1024 * 1024L,
                                                                                                     60 * 60 * 1000L);
 
-    private Result<Unit> ensureStreamExists(String name) {
-        return StreamCreateOutcome.tolerateAlreadyExists(streamManager().createStream(StreamConfig.streamConfig(name,
-                                                                                                                DEFAULT_PARTITIONS,
-                                                                                                                MANAGEMENT_API_RETENTION,
-                                                                                                                "latest")));
+    /// Publish auto-create guard. A stream ALREADY materialized locally carries its own committed
+    /// `StreamConfig` — an app/blueprint-declared stream keeps its `replicas` / `minSyncReplicas`
+    /// durability knobs — so the management publish path must leave it INTACT rather than fabricate and
+    /// commit a `replicas=1/min-sync=0` MANAGEMENT DEFAULT over it (which would disarm the sync barrier
+    /// — `minSyncReplicas` read as 0 — and collapse the replica set to RF=1). `streamInfo` is a LOCAL
+    /// read of the manager's already-materialized state — NO consensus round-trip on the publish hot
+    /// path. When it MISSES (a first publish racing ahead of local materialization of an app config
+    /// committed at slice activation), the absent branch still prefers the committed config from applied
+    /// KV state before falling back to the management default, so the RF is preserved across the race.
+    /// Package-visible for direct unit coverage.
+    Result<Unit> ensureStreamExists(String name) {
+        return streamManager().streamInfo(name)
+                            .map(_ -> Result.unitResult())
+                            .or(() -> materializeAbsentStream(name));
+    }
+
+    /// Absent-locally branch. The app/blueprint stream's committed `StreamConfig` (with its
+    /// `replicas` / `minSyncReplicas` durability knobs) lands in applied KV state at slice activation but
+    /// may not yet be in the manager's local materialized map when a first publish races in. Prefer that
+    /// committed config so the auto-create preserves RF; fall back to the management default only for a
+    /// genuinely management-only stream that has no committed entry.
+    private Result<Unit> materializeAbsentStream(String name) {
+        var config = nodeSupplier.get()
+                                 .kvStore()
+                                 .getTyped(StreamConfigKey.streamConfigKey(name), StreamConfigValue.class)
+                                 .map(StreamConfigValue::config)
+                                 .or(() -> StreamConfig.streamConfig(name,
+                                                                     DEFAULT_PARTITIONS,
+                                                                     MANAGEMENT_API_RETENTION,
+                                                                     "latest"));
+
+        return StreamCreateOutcome.tolerateAlreadyExists(streamManager().createStream(config));
     }
 
     private Promise<ReadEventsResponse> readEvents(String name,

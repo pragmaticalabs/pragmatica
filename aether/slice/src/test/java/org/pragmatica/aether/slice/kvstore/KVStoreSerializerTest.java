@@ -11,9 +11,12 @@ import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.artifact.ArtifactBase;
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.artifact.Version;
+import org.pragmatica.aether.slice.ConsistencyMode;
 import org.pragmatica.aether.slice.MethodName;
 import org.pragmatica.aether.slice.RetentionMode;
 import org.pragmatica.aether.slice.RetentionPolicy;
+import org.pragmatica.aether.slice.StreamCompression;
+import org.pragmatica.aether.slice.StreamConfig;
 import org.pragmatica.aether.slice.blueprint.BlueprintId;
 import org.pragmatica.aether.slice.kvstore.AetherKey.*;
 import org.pragmatica.aether.slice.kvstore.AetherValue.*;
@@ -819,6 +822,41 @@ class KVStoreSerializerTest {
                                  var rv = (StreamRegistryValue) restored.get(key);
                                  assertThat(rv.entry().refCount()).isEqualTo(1);
                                  assertThat(rv.entry().registeredBy()).isEqualTo(StreamRegistryEntry.RegisteredByKind.FRAMEWORK);
+                             });
+        }
+    }
+
+    @Nested
+    class StreamConfigRoundTrip {
+        @Test
+        void roundTrip_streamConfig_preservesReplicasAndMinSyncReplicas() {
+            var entries = new LinkedHashMap<AetherKey, AetherValue>();
+            var retention = new RetentionPolicy(1_000L, 2_000L, 3_000L, RetentionMode.ANY, Option.none());
+            var config = StreamConfig.streamConfig("orders",
+                                                   4,
+                                                   retention,
+                                                   "latest",
+                                                   1_048_576L,
+                                                   ConsistencyMode.EVENTUAL,
+                                                   3,
+                                                   2,
+                                                   StreamCompression.NONE,
+                                                   Option.none());
+            var key = StreamConfigKey.streamConfigKey("orders");
+            entries.put(key, StreamConfigValue.streamConfigValue(config, 1710072000000L));
+
+            KVStoreSerializer.toToml(entries, TEST_PHASE, TEST_TIMESTAMP)
+                             .flatMap(KVStoreSerializer::fromToml)
+                             .onFailureRun(Assertions::fail)
+                             .onSuccess(restored -> {
+                                 assertThat(restored).hasSize(1);
+                                 var rv = (StreamConfigValue) restored.get(key);
+                                 assertThat(rv.config().replicas()).isEqualTo(3);
+                                 assertThat(rv.config().minSyncReplicas()).isEqualTo(2);
+                                 assertThat(rv.config().partitions()).isEqualTo(4);
+                                 assertThat(rv.config().consistencyMode()).isEqualTo(ConsistencyMode.EVENTUAL);
+                                 assertThat(rv.config().retention()).isEqualTo(retention);
+                                 assertThat(rv.createdAt()).isEqualTo(1710072000000L);
                              });
         }
     }

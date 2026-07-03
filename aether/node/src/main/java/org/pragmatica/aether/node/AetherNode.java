@@ -808,6 +808,23 @@ public interface AetherNode extends ManageableNode {
                                                                     cause.message()));
     }
 
+    /// #336 reachability-evidence: when an app/blueprint stream's committed `StreamConfig` lands via
+    /// consensus (e.g. `replicas=2 / min-sync=2` at slice activation), place its replica set NOW instead
+    /// of waiting for an unrelated membership/quorum edge that may never fire in a membership-stable
+    /// cluster. Registered as the SECOND `StreamConfigKey` put-handler, so it runs AFTER
+    /// [StreamPartitionManager#onStreamConfigPut] has hydrated the stream into `replicaCatalog()`
+    /// (KVNotificationRouter dispatches handlers in registration order) — the reconcile scan therefore
+    /// sees the new stream. [ReplicaSetController#reconcile] returns immediately (the work is serialized
+    /// on the controller's own executor), so the KV-apply thread never blocks; it is idempotent and
+    /// coalescing (safe to fire per config Put, on every applying node — each does per-node HRW
+    /// placement) and writes only `StreamPartitionOwnershipKey`, never a `StreamConfigKey`, so it cannot
+    /// re-trigger this edge. No-op until the controller is bound; boot-time streams are covered by the
+    /// initial reconcile fired once membership is available.
+    @Contract
+    private static void reconcileReplicaSetOnConfigPut(AtomicReference<ReplicaSetController> controllerRef) {
+        Option.option(controllerRef.get()).onPresent(ReplicaSetController::reconcile);
+    }
+
     /// Periodic activation level-heal tick (see [#NDM_ACTIVATION_RECONCILE_INTERVAL]). Gated on a
     /// LIVE consensus-active sample (`clusterNode::isActive`, the SAME accessor the readiness pong
     /// and leader election use) so it only acts when this node IS in quorum: a dropped ACTIVE edge
@@ -2630,13 +2647,19 @@ public interface AetherNode extends ManageableNode {
         // post-restart reads from sealed cold segments.
         var streamCursorStore = CursorStore.cursorStore(streamStorage);
         var streamTieredReader = TieredStreamReader.tieredStreamReader(streamSegmentIndex, streamStorage);
+        // #336 epoch-adoption: the committed owner-epoch source is SHARED between the live-append stamp
+        // (StreamPartitionManager, below) and the backfill/recovery seam (streamPartitionRecovery, below), so
+        // a recovered/backfilled event carries the SAME committed fencing token a live append would. Both
+        // read the identical committed StreamPartitionOwnershipValue.ownerEpoch the fence high-water derives
+        // from — otherwise the recovery seam's Epoch.ZERO (0:0) is rejected by an advanced high-water (1:N).
+        var streamOwnerEpochSource = KvStreamOwnerEpochSource.kvStreamOwnerEpochSource(kvStore);
         var streamPartitionManager = StreamPartitionManager.streamPartitionManager(streamMaxMemoryBytes,
                                                                                    SegmentSealer.segmentSealer(StorageSegmentSink.storageSegmentSink(streamStorage,
                                                                                                                                                      streamSegmentIndex)),
                                                                                    streamReplicationManager,
                                                                                    clusterNode,
                                                                                    ownershipEpochHighWater,
-                                                                                   KvStreamOwnerEpochSource.kvStreamOwnerEpochSource(kvStore),
+                                                                                   streamOwnerEpochSource,
                                                                                    resolveStreamWalDir(config),
                                                                                    streamSegmentIndex::lastSealedOffset);
 
@@ -2647,9 +2670,16 @@ public interface AetherNode extends ManageableNode {
         // StreamMemoryExceeded event through its un-gated emitLocal path (per-node fact, like
         // SelfDrainInitiated). The aggregator owns the per-(stream,phase) 60s throttle.
         streamPartitionManager.exhaustionSink(eventAggregator::onStreamMemoryExceeded);
-        var streamConfigKvRouter = KVNotificationRouter.<AetherKey, AetherValue> builder(AetherKey.class).onPut(AetherKey.StreamConfigKey.class,
-                                                                                                                streamPartitionManager::onStreamConfigPut).onRemove(AetherKey.StreamConfigKey.class,
-                                                                                                                                                                    streamPartitionManager::onStreamConfigRemove).build();
+        // #336: the two StreamConfigKey put-handlers run in registration order — hydrate the committed
+        // config into replicaCatalog() FIRST (onStreamConfigPut), then place its replica set
+        // (reconcileReplicaSetOnConfigPut). clusterEventsControllerRef is the late-bound holder for the
+        // stream ReplicaSetController (set below, after the controller is built).
+        var streamConfigKvRouter = KVNotificationRouter.<AetherKey, AetherValue> builder(AetherKey.class)
+                .onPut(AetherKey.StreamConfigKey.class, streamPartitionManager::onStreamConfigPut)
+                .onPut(AetherKey.StreamConfigKey.class,
+                       _ -> reconcileReplicaSetOnConfigPut(clusterEventsControllerRef))
+                .onRemove(AetherKey.StreamConfigKey.class, streamPartitionManager::onStreamConfigRemove)
+                .build();
 
         allEntries.addAll(streamConfigKvRouter.asRouteEntries());
         // B5b — provision system:cluster-events:1.0.0 as a REAL partition-managed stream.
@@ -2720,7 +2750,15 @@ public interface AetherNode extends ManageableNode {
         // A4: lands backfilled/recovered events into the local ring offset-preserving WITHOUT
         // re-replicating (the receiver is not an owner), replacing the StreamPartitionRecovery NOOP
         // for both governor-failover recovery and the A4 backfill path below.
-        StreamPartitionRecovery streamPartitionRecovery = streamPartitionManager::appendRecovered;
+        // #336 epoch adoption (NOT invention): stamp the recovery/backfill append with the SAME committed
+        // owner epoch a live publish stamps (streamOwnerEpochSource reads the committed
+        // StreamPartitionOwnershipValue.ownerEpoch — the identical source the fence high-water is seeded
+        // from), so a backfilled event is equal-or-newer than the partition high-water and passes the fence
+        // instead of being rejected at the Epoch.ZERO floor (0:0 < 1:N). Cold-start/unowned arcs read
+        // Epoch.ZERO == the fence's ZERO default (equal → passes), so fresh-stream recovery is not regressed.
+        // The fence itself is untouched — this is a truthful stamp, not a wholesale exemption.
+        StreamPartitionRecovery streamPartitionRecovery = (s, p, payload, ts) ->
+                streamPartitionManager.appendRecovered(s, p, payload, ts, streamOwnerEpochSource.currentOwnerEpoch(s, p));
         var streamFailoverHandler = GovernorFailoverHandler.governorFailoverHandler(streamReplicaRegistry,
                                                                                     streamPartitionRecovery);
         // A4: production catch-up wiring. The forward transport/client are constructed here (ahead of
@@ -2790,6 +2828,7 @@ public interface AetherNode extends ManageableNode {
         var streamPartitionBackfill = PartitionBackfill.partitionBackfill(streamReplicaRegistry,
                                                                           streamPartitionRecovery,
                                                                           streamCatchupTransport,
+                                                                          streamReplicationTransport,
                                                                           streamWatermarkProbe,
                                                                           streamSelfWatermark,
                                                                           config.self(),

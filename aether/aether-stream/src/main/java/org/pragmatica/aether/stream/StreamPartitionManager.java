@@ -21,6 +21,7 @@ import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValueRemove;
 import org.pragmatica.lang.Contract;
+import org.pragmatica.lang.NullReturn;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
@@ -573,7 +574,49 @@ public final class StreamPartitionManager implements AutoCloseable {
         var streamName = put.cause().key().streamName();
         var config = put.cause().value().config();
 
-        streams.computeIfAbsent(streamName, _ -> hydrateEntry(config));
+        streams.compute(streamName, (_, existing) -> reconcileCommittedConfig(config, existing));
+    }
+
+    /// Reconcile a committed `StreamConfigKey` Put against the local map. Absent locally — hydrate the
+    /// follower entry (unchanged materialization path; a native-OOM hydrate returns `null` so the
+    /// [java.util.Map#compute] contract leaves no entry, exactly as the former `computeIfAbsent` did).
+    /// Present — let a genuinely committed app/blueprint config become authoritative over a prior REST
+    /// management default (see {@link #adoptIfMoreDurable}).
+    @NullReturn
+    private StreamEntry reconcileCommittedConfig(StreamConfig config, StreamEntry existing) {
+        return option(existing).map(entry -> adoptIfMoreDurable(config, entry))
+                     .or(() -> hydrateEntry(config));
+    }
+
+    /// A committed config for an ALREADY-materialized stream. The publish auto-create path
+    /// (`StreamRoutes.ensureStreamExists`) can win a race and materialize a `replicas=1/min-sync=0`
+    /// management DEFAULT before this committed app/blueprint config's notification is applied here; when
+    /// the incoming config carries STRICTLY STRONGER durability (more `replicas` or a higher
+    /// `minSyncReplicas`) AND the same partition count, its replication knobs are adopted onto the SAME
+    /// partition rings / WALs — no data drop, no re-allocation. The comparison is monotonic-up so a stray
+    /// later default never re-weakens an adopted app config (no ping-pong), and a live partition-count
+    /// change — which cannot be re-shaped onto existing rings — is never adopted (the current entry is
+    /// kept). Equal or weaker configs keep the existing entry (the `computeIfAbsent` idempotence this
+    /// replaces).
+    private StreamEntry adoptIfMoreDurable(StreamConfig config, StreamEntry existing) {
+        return config.partitions() == existing.config().partitions() && strongerDurability(config, existing.config())
+               ? adoptConfig(config, existing)
+               : existing;
+    }
+
+    private StreamEntry adoptConfig(StreamConfig config, StreamEntry existing) {
+        log.info("Adopting committed config for stream '{}' over prior local default: replicas {}->{}, minSyncReplicas {}->{}",
+                 config.name(),
+                 existing.config().replicas(),
+                 config.replicas(),
+                 existing.config().minSyncReplicas(),
+                 config.minSyncReplicas());
+
+        return existing.withConfig(config);
+    }
+
+    private static boolean strongerDurability(StreamConfig incoming, StreamConfig existing) {
+        return incoming.replicas() > existing.replicas() || incoming.minSyncReplicas() > existing.minSyncReplicas();
     }
 
     @Contract
@@ -698,6 +741,14 @@ public final class StreamPartitionManager implements AutoCloseable {
         return replicationManager.awaitReplication(streamName, partition, offset, minAcks);
     }
 
+    /// The configured `min-sync-replicas` write-ack requirement for `streamName` (in-sync count incl.
+    /// owner), or `0` when the stream is unknown. `<= 1` means no peer-ack barrier; `>= 2` means a
+    /// publish must await `minSyncReplicas - 1` distinct non-self replica acks. Read straight from the
+    /// stream's committed config so the REST publish path can gate on the stream's durability setting.
+    public int minSyncReplicasFor(String streamName) {
+        return option(streams.get(streamName)).map(entry -> entry.config().minSyncReplicas()).or(0);
+    }
+
     /// Append a backfilled event into the local partition ring WITHOUT re-triggering replication.
     /// Used by the A4 catch-up path: a freshly-assigned replica receiving events from an up-to-date
     /// source must land them locally but must NOT re-emit them onto the replication stream (it is the
@@ -806,9 +857,11 @@ public final class StreamPartitionManager implements AutoCloseable {
     }
 
     /// Adapt this manager to the narrow {@link org.pragmatica.aether.stream.replication.StreamCatalog}
-    /// consumed by `ReplicaSetController`. Exposes `(name, partitions, minSyncReplicas)` per stream —
-    /// the per-stream `minSyncReplicas` is not carried by {@link StreamInfo}, so the controller cannot
-    /// be fed by `listStreams()` alone; this accessor reads it straight from each stream's config.
+    /// consumed by `ReplicaSetController`. Exposes `(name, partitions, replicas, minSyncReplicas)` per
+    /// stream — placement uses `replicas` (the replication factor), while `minSyncReplicas` (the write-
+    /// ack requirement) is carried for the in-sync gate. Neither is carried by {@link StreamInfo}, so
+    /// the controller cannot be fed by `listStreams()` alone; this accessor reads them straight from
+    /// each stream's config.
     public org.pragmatica.aether.stream.replication.StreamCatalog replicaCatalog() {
         return new org.pragmatica.aether.stream.replication.StreamCatalog() {
             @Override
@@ -818,6 +871,7 @@ public final class StreamPartitionManager implements AutoCloseable {
                                              .map(entry -> entry.config())
                                              .map(config -> new StreamSpec(config.name(),
                                                                            config.partitions(),
+                                                                           config.replicas(),
                                                                            config.minSyncReplicas()))
                                              .toList();
             }
@@ -1341,6 +1395,15 @@ public final class StreamPartitionManager implements AutoCloseable {
         @Contract
         void updateActivity() {
             lastActivityRef.set(System.currentTimeMillis());
+        }
+
+        /// Adopt a stronger committed config onto THIS entry's live rings / WALs and durability state: a
+        /// copy that swaps ONLY the [StreamConfig], reusing the SAME partition buffers, WAL handles,
+        /// commit latch and activity clock so no buffered data is dropped and no off-heap bytes are
+        /// re-reserved. Called only from the notification-thread config reconcile
+        /// ({@link StreamPartitionManager#adoptConfig}) with a partition-count-compatible config.
+        StreamEntry withConfig(StreamConfig newConfig) {
+            return new StreamEntry(newConfig, partitions, wals, createdAt, lastActivityRef, configCommitted);
         }
 
         private static EvictionPolicy deriveEvictionPolicy(StreamConfig config) {

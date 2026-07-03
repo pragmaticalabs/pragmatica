@@ -27,12 +27,17 @@ source "${SCRIPT_DIR}/../../lib/cluster.sh"
 source "${SCRIPT_DIR}/../../lib/topology.sh"
 source "${SCRIPT_DIR}/../../lib/generation.sh"
 
-# Unique per-run name so a re-run (or a prior 04-streaming run on a shared cluster)
-# cannot pollute the partition under test with stale offsets.
-STREAM_NAME="${STREAM_NAME:-chaos-replica-failover-$$}"
+# The stream under test is declared by the test-stream-repl blueprint with
+# min-sync-replicas=2 -> RF=2 (owner + 1 synchronously-in-sync replica). This is
+# the ONLY way to get RF>=2: POST /api/streams hardcodes minSyncReplicas=0 -> RF=1
+# (owner-only), which structurally cannot have a CAUGHT_UP non-owner replica to fail
+# over to. The blueprint's stream name is fixed; the deploy step deletes+redeploys it
+# so a re-run (or a prior run) cannot pollute the partition with stale offsets.
+STREAM_NAME="${STREAM_NAME:-repl-failover-events}"
+STREAM_BP="${STREAM_BP:-org.pragmatica.aether.test:test-stream-repl:1.0.0}"
 PARTITION=0                 # /api/streams/publish/{name} always writes partition 0
-                            # (StreamRoutes.publishToPartition), and we create the
-                            # stream single-partition, so all markers land here.
+                            # (StreamRoutes.publishToPartition), and the stream is
+                            # single-partition, so all markers land here.
 N_EVENTS="${N_EVENTS:-20}"  # distinct markers published before the kill
 K_EVENTS="${K_EVENTS:-5}"   # additional markers published after repair (liveness)
 
@@ -126,6 +131,11 @@ count_inorder_offsets() {
         return 0
     }
     [ -n "$body" ] || { printf '%s' 0; return 0; }
+    # `streams read --format json` emits PRETTY-PRINTED multi-line event objects; grep is
+    # line-oriented, so flatten newlines to spaces first — otherwise the per-offset object
+    # regex (single-line, [^{}]*) can never match across an object's lines and every
+    # offset silently misses (returns 0 despite the data being present + correctly ordered).
+    body=$(printf '%s' "$body" | tr '\n' ' ')
     for ((i = 0; i <= upto; i++)); do
         # Isolate the event object whose offset is exactly i. The trailing [^0-9]
         # after ${i} prevents offset 2 from matching "offset":20; the leading
@@ -223,6 +233,45 @@ has_caught_up_replica_excluding() {
     return 1
 }
 
+# Gate the FIRST publish on the owner AUTHORITATIVELY serving a placed RF=2 replica
+# set (owner + >=1 CAUGHT_UP non-owner) — proof the committed replicas=2/min-sync=2
+# config is in EFFECT, not merely committed. No management endpoint exposes the
+# minSyncReplicas scalar, so the owner-authoritative replicas view (servedByOwner=true)
+# is the only authoritative surface; an RF=1 default has NO CAUGHT_UP non-owner replica.
+# Load-bearing because replica placement is EDGE-triggered (ReplicaSetController.reconcile
+# runs on boot/membership/quorum edges + the stream-config-committed edge) — without this
+# gate the first publish can race placement and write pre-kill markers with no replica to
+# receive them. Plain while-poll, NOT wait_for (whose timeout emits [FAIL] + latches
+# TEST_FAIL_COUNT). One log_fail on genuine timeout; returns 0 ready / 1 timeout.
+wait_for_stream_config_committed() {
+    local budget="${1:-60}" interval=2 elapsed=0
+    local body served owner nreplicas
+    while [ "$elapsed" -lt "$budget" ]; do
+        body=$(replicas_snapshot_owner_view 4)          # retries to reach owner; no [FAIL]/[PASS]
+        served=$(json_scalar "$body" servedByOwner)
+        owner=$(json_scalar "$body" hrwOwner)
+        if [ "$served" = "true" ] && [ -n "$owner" ] && [ "$owner" != "none" ]; then
+            nreplicas=$(printf '%s' "$body" | grep -oE '\{[^{}]*"nodeId"[^{}]*\}' | grep -c .)
+            nonowner=$(printf '%s' "$body" | grep -oE '"isHrwOwner"[[:space:]]*:[[:space:]]*false' | grep -c .)
+            # Gate on the RF=2 replica set being PLACED (owner + >=1 non-owner), NOT on the
+            # non-owner being CAUGHT_UP: on an EMPTY stream the replica stays SYNCING until
+            # the first write, and the replication barrier is state-agnostic (a SYNCING
+            # replica both receives writes and acks them — proven end-to-end), so placement
+            # is the correct pre-publish proof that the reconcile-on-config-Put edge
+            # established RF=2. Requiring CAUGHT_UP here would deadlock the very publish
+            # that promotes the replica.
+            if [ "${nreplicas:-0}" -ge 2 ] && [ "${nonowner:-0}" -ge 1 ]; then
+                log_info "Stream config in effect: owner=${owner}, replicas=${nreplicas}, non-owner replica placed (RF=2/min-sync=2)"
+                return 0
+            fi
+        fi
+        sleep "$interval"
+        elapsed=$((elapsed + interval))
+    done
+    log_fail "Stream ${STREAM_NAME}/${PARTITION} RF=2 replica set not placed within ${budget}s (last view: ${body:0:300})"
+    return 1
+}
+
 # True iff NO CAUGHT_UP replica's confirmedOffset lags ownerHeadOffset-1 (the true
 # tail offset on the owner). ownerHeadOffset is head+1 (next-expected), so the last
 # durable offset is ownerHeadOffset-1; a CAUGHT_UP replica must have confirmed it.
@@ -249,6 +298,23 @@ no_caught_up_replica_lags_tail() {
     return 0
 }
 
+# Full post-failover convergence predicate: an owner-authoritative view where BOTH
+#  (a) no CAUGHT_UP replica lags the owner's true tail, AND
+#  (b) a CAUGHT_UP NON-owner replica is present (RF re-established).
+# (b) is the anti-false-green guard: (a) alone passes VACUOUSLY while the replacement
+# replica is stuck SYNCING (the sensor skips non-CAUGHT_UP rows), which would report
+# "converged" on an effective-RF=1 partition. Requiring a CAUGHT_UP non-owner proves the
+# replacement replica actually re-replicated post-failover.
+converged_with_rf_restored() {
+    local body="$1" owner
+    [ -n "$body" ] || return 1
+    owner=$(json_scalar "$body" hrwOwner)
+    [ -n "$owner" ] && [ "$owner" != "none" ] || return 1
+    no_caught_up_replica_lags_tail "$body" || return 1
+    has_caught_up_replica_excluding "$body" "$owner" || return 1
+    return 0
+}
+
 # ===========================================================================
 # Tests
 # ===========================================================================
@@ -264,11 +330,39 @@ test_initial_state() {
     assert_ge "$count" "5" "Initial: at least 5 nodes (${count})"
 }
 
-test_create_stream_single_partition() {
-    local payload result
-    payload="{\"name\":\"${STREAM_NAME}\",\"partitions\":1}"
-    result=$(api_post "/api/streams" "$payload")
-    assert_contains "$result" "$STREAM_NAME" "Stream created single-partition: ${STREAM_NAME}"
+test_deploy_repl_stream_blueprint() {
+    # RF>=2 sync replication requires the stream be created via a blueprint that
+    # declares min-sync-replicas; POST /api/streams can only mint RF=1 (owner-only).
+    # Deploy the dedicated test-stream-repl blueprint whose 'repl-failover-events'
+    # stream is partitions=1 + min-sync-replicas=2 -> RF=2 (owner + 1 in-sync replica).
+    #
+    # ORDERING is load-bearing: the slice must ACTIVATE (committing the RF=2
+    # StreamConfig via StreamPublisherFactory.createStream) BEFORE the first
+    # management publish — otherwise StreamRoutes.ensureStreamExists mints the stream
+    # at RF=0 and tolerateAlreadyExists (StreamCreateOutcome ALREADY_EXISTS==DONE)
+    # freezes it there. wait_for all-instances-ACTIVE is that barrier.
+    #
+    # Defensive: drop any stale same-named stream left by a prior crashed run so the
+    # partition under test starts empty (offset 0).
+    aether_failover streams delete "$STREAM_NAME" >/dev/null 2>&1 || true
+    if ! push_blueprint "$STREAM_BP" >/dev/null; then
+        log_fail "Failed to push blueprint ${STREAM_BP}"
+        return 1
+    fi
+    deploy_blueprint "$STREAM_BP" >/dev/null 2>&1 || true
+    if ! wait_for "test-stream-repl all instances ACTIVE (RF=2 stream config committed)" \
+        "[ \$(slices_active_instances_for '${STREAM_BP}') -ge \$(slices_target_total_for '${STREAM_BP}') ] && [ \$(slices_target_total_for '${STREAM_BP}') -gt 0 ]" \
+        120; then
+        log_fail "test-stream-repl did not reach all-instances ACTIVE — RF=2 stream ${STREAM_NAME} not established"
+        return 1
+    fi
+    # ACTIVE proves the RF=2 StreamConfig is COMMITTED; the stream-config-committed
+    # reconcile edge then PLACES the replica set. Gate the first publish on that
+    # placement being authoritatively in effect so pre-kill markers cannot race it.
+    if ! wait_for_stream_config_committed 60; then
+        return 1   # log_fail already emitted by the gate
+    fi
+    log_pass "Deployed ${STREAM_BP}; RF=2 stream ${STREAM_NAME} committed (partitions=1, min-sync-replicas=2)"
 }
 
 test_publish_initial_history() {
@@ -390,10 +484,10 @@ test_post_repair_liveness() {
 # CAUGHT_UP replica's confirmedOffset lags the owner's true tail (#333 sensor).
 test_replica_set_converged() {
     local body
-    if ! wait_for "owner-authoritative replicas view with no lagging CAUGHT_UP replica" \
-            "no_caught_up_replica_lags_tail \"\$(replicas_snapshot_owner_view 4)\"" 120; then
+    if ! wait_for "post-failover convergence: no lag AND a CAUGHT_UP non-owner replica (RF restored)" \
+            "converged_with_rf_restored \"\$(replicas_snapshot_owner_view 4)\"" 120; then
         body=$(replicas_snapshot_owner_view 6)
-        log_fail "Replica set did not converge (no lagging CAUGHT_UP within budget). View: ${body:0:400}"
+        log_fail "Replica set did not converge (need no-lag AND a CAUGHT_UP non-owner within budget). View: ${body:0:400}"
         return 1
     fi
     body=$(replicas_snapshot_owner_view 8)
@@ -411,7 +505,15 @@ test_replica_set_converged() {
     owner_state=$(printf '%s' "$owner_obj" | sed -E 's/.*"state"[[:space:]]*:[[:space:]]*"([^"]*)".*/\1/')
     assert_eq "$owner_state" "CAUGHT_UP" "Converged partition owner is CAUGHT_UP"
 
-    log_pass "No CAUGHT_UP replica lags ownerHeadOffset (confirmedOffsets reached the tail)"
+    # Anti-false-green: positively assert the replacement replica re-replicated (a CAUGHT_UP
+    # non-owner exists) — RF re-established post-failover, not merely "no CAUGHT_UP lags"
+    # (which the sensor satisfies vacuously while the replica is stuck SYNCING).
+    if has_caught_up_replica_excluding "$body" "$(json_scalar "$body" hrwOwner)"; then
+        log_pass "Replacement replica re-replicated and is CAUGHT_UP (RF restored post-failover)"
+    else
+        log_fail "Post-failover RF NOT restored: no CAUGHT_UP non-owner replica. View: ${body:0:400}"
+        return 1
+    fi
 }
 
 # Restore cluster for the next suite via the semantic baseline restore (re-enables
@@ -426,7 +528,7 @@ cleanup() {
 trap 'cleanup' EXIT
 
 run_test "Initial 5 nodes"                          test_initial_state
-run_test "Create single-partition stream"           test_create_stream_single_partition
+run_test "Deploy RF=2 replicated stream blueprint"  test_deploy_repl_stream_blueprint
 run_test "Publish ${N_EVENTS}-event history"        test_publish_initial_history
 run_test "Full history readable before kill"        test_full_history_present_before_kill
 run_test "Identify HRW owner + CAUGHT_UP replica"   test_identify_owner_and_caught_up_replica

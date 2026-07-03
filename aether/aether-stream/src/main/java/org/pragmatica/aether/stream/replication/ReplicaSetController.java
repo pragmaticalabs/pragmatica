@@ -42,8 +42,8 @@ import static org.pragmatica.lang.Option.some;
 /// On {@link #reconcile()} it snapshots the current core members and cluster size, then for each
 /// stream from the {@link StreamCatalog}:
 ///   1. classifies it APP vs SYSTEM ({@code system:*} namespace ⇒ {@link StreamClass#SYSTEM}),
-///   2. computes the effective replication factor (APP ⇒ owner + configured `minSyncReplicas` sync
-///      peers, i.e. `minSyncReplicas + 1` clamped to cluster size;
+///   2. computes the effective replication factor (APP ⇒ the configured `replicas` knob — total
+///      copies including the owner — clamped to cluster size;
 ///      SYSTEM ⇒ {@link ReplicaPlacement#systemReplicationFactor(int)}),
 ///   3. for each partition computes {@link ReplicaPlacement#place} and diffs the desired replica
 ///      set against {@link ReplicaRegistry#replicasFor}, issuing
@@ -299,7 +299,7 @@ public final class ReplicaSetController implements AutoCloseable {
 
     private void reconcileStream(StreamCatalog.StreamSpec spec, List<NodeId> members, int clusterSize) {
         var streamClass = classify(spec.name());
-        var rf = ReplicaPlacement.replicationFactor(streamClass, spec.minSyncReplicas(), clusterSize);
+        var rf = ReplicaPlacement.replicationFactor(streamClass, spec.replicas(), clusterSize);
 
         for (var partition = 0; partition < spec.partitions(); partition++) {
             var p = partition;
@@ -411,7 +411,7 @@ public final class ReplicaSetController implements AutoCloseable {
     private int rfFor(String streamName, StreamClass streamClass) {
         var clusterSize = currentClusterSize();
         var requested = catalog.streams().stream().filter(spec -> spec.name()
-                                                                      .equals(streamName)).mapToInt(StreamCatalog.StreamSpec::minSyncReplicas).findFirst().orElse(0);
+                                                                      .equals(streamName)).mapToInt(StreamCatalog.StreamSpec::replicas).findFirst().orElse(0);
 
         return ReplicaPlacement.replicationFactor(streamClass, requested, clusterSize);
     }

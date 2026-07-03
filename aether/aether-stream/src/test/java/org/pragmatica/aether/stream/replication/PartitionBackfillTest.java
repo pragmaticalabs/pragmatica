@@ -832,6 +832,550 @@ class PartitionBackfillTest {
         }
     }
 
+    /// #336 phase-2 (lossless owner-kill failover): when `replicas > minSyncReplicas` a freshly HRW-promoted
+    /// owner can be BEHIND a surviving replica, because different client-acked writes were confirmed by
+    /// different peers. Promoting it at its short local watermark serves a truncated log (silent data loss).
+    /// The promoted owner must catch up to the MAX `confirmedOffset` among surviving replicas — the true
+    /// acked watermark — before it becomes authoritative, and must not wedge when a survivor is unreachable.
+    @Nested
+    class PromotedOwnerLosslessFailover {
+        private static final NodeId NODE_AA = NodeId.nodeId("node-aa").unwrap();
+        private static final NodeId NODE_BB = NodeId.nodeId("node-bb").unwrap();
+        private static final NodeId NODE_CC = NodeId.nodeId("node-cc").unwrap();
+        private static final NodeId NODE_DD = NodeId.nodeId("node-dd").unwrap();
+        private static final TimeSpan BOUND = TimeSpan.timeSpan(10).seconds();
+        private static final List<NodeId> MEMBERS = List.of(NODE_AA, NODE_BB, NODE_CC, NODE_DD);
+        // The promoted owner is the HRW owner of (STREAM, PARTITION); the survivors are the other members,
+        // deterministically ranked by the same placement the production code uses.
+        private static final NodeId OWNER = ReplicaPlacement.rank(STREAM, PARTITION, MEMBERS).getFirst();
+        private static final List<NodeId> SURVIVORS = ReplicaPlacement.rank(STREAM, PARTITION, MEMBERS)
+                                                                      .stream()
+                                                                      .filter(node -> !node.equals(OWNER))
+                                                                      .toList();
+
+        @Test
+        void backfill_promotedOwnerBehindSurvivor_catchesUpToSurvivorTail_beforeAuthoritative() {
+            // Self is the freshly-promoted HRW owner holding only 0..4 locally (CAUGHT_UP@4 from before the
+            // owner death); a surviving replica confirms 0..19 (min-sync acked those offsets on the survivor,
+            // not on self). Promotion must pull 5..19 FROM the survivor and reach CAUGHT_UP@19 — never
+            // self-promote at the short local watermark 4.
+            var survivor = SURVIVORS.getFirst();
+            seedLocal(5); // local offsets 0..4 -> head 4
+            registry.registerReplica(STREAM, PARTITION, OWNER);
+            registry.updateWatermark(STREAM, PARTITION, OWNER, 4L);      // self CAUGHT_UP@4 (behind)
+            registry.registerReplica(STREAM, PARTITION, survivor);
+            registry.updateWatermark(STREAM, PARTITION, survivor, 19L);  // survivor CAUGHT_UP@19
+
+            var transport = survivorSource(survivor, 5L, eventsFrom(5, 15)); // returns offsets 5..19
+            var backfill = ownerBackfill(transport, new AtomicLong(0L));
+
+            var applied = backfill.backfill(STREAM, PARTITION).await();
+
+            assertThat(applied.isSuccess()).isTrue();
+            var self = descriptorFor(OWNER);
+            assertThat(self.state()).isEqualTo(ReplicationState.CAUGHT_UP);
+            assertThat(self.confirmedOffset()).isEqualTo(19L); // authoritative only at the survivor tail
+            // Local ring now holds 0..19 contiguously — the promoted owner serves the FULL acked log.
+            var local = manager.readLocal(STREAM, PARTITION, 0, 100).or(List.of());
+            assertThat(local).hasSize(20);
+            for (var i = 0; i < 20; i++) {
+                assertThat(local.get(i).offset()).isEqualTo((long) i);
+            }
+        }
+
+        @Test
+        void backfill_promotedOwnerAtOrAboveMax_authoritativeImmediately_noCatchup() {
+            // Self (promoted owner) already holds 0..9; the highest survivor confirms only 0..9. No survivor
+            // is ahead, so self is authoritative immediately — no catch-up request, no bounded wait.
+            var survivor = SURVIVORS.getFirst();
+            seedLocal(10); // local 0..9 -> head 9
+            registry.registerReplica(STREAM, PARTITION, OWNER);
+            registry.updateWatermark(STREAM, PARTITION, OWNER, 9L);
+            registry.registerReplica(STREAM, PARTITION, survivor);
+            registry.updateWatermark(STREAM, PARTITION, survivor, 9L); // not ahead
+
+            var clock = new AtomicLong(0L); // bound NOT elapsed — must not matter
+            var backfill = ownerBackfill(failIfCatchup(), clock);
+
+            var applied = backfill.backfill(STREAM, PARTITION).await();
+
+            assertThat(applied.isSuccess()).isTrue();
+            assertThat(clock.get()).isZero();
+            var self = descriptorFor(OWNER);
+            assertThat(self.state()).isEqualTo(ReplicationState.CAUGHT_UP);
+            assertThat(self.confirmedOffset()).isEqualTo(9L);
+        }
+
+        @Test
+        void backfill_promotedOwnerBehindMultipleSurvivors_catchesUpToTheMaxConfirmed() {
+            // Three survivors at differing confirmed offsets (12, 20, 8). The catch-up target is the MAX (20),
+            // and the source is the survivor holding it — not a lower one.
+            seedLocal(5); // local 0..4 -> head 4
+            registry.registerReplica(STREAM, PARTITION, OWNER);
+            registry.updateWatermark(STREAM, PARTITION, OWNER, 4L);
+            var low = SURVIVORS.get(0);
+            var high = SURVIVORS.get(1);
+            var mid = SURVIVORS.get(2);
+            registry.registerReplica(STREAM, PARTITION, low);
+            registry.updateWatermark(STREAM, PARTITION, low, 12L);
+            registry.registerReplica(STREAM, PARTITION, high);
+            registry.updateWatermark(STREAM, PARTITION, high, 20L);
+            registry.registerReplica(STREAM, PARTITION, mid);
+            registry.updateWatermark(STREAM, PARTITION, mid, 8L);
+
+            var transport = survivorSource(high, 5L, eventsFrom(5, 16)); // offsets 5..20 FROM the @20 survivor
+            var backfill = ownerBackfill(transport, new AtomicLong(0L));
+
+            var applied = backfill.backfill(STREAM, PARTITION).await();
+
+            assertThat(applied.isSuccess()).isTrue();
+            var self = descriptorFor(OWNER);
+            assertThat(self.state()).isEqualTo(ReplicationState.CAUGHT_UP);
+            assertThat(self.confirmedOffset()).isEqualTo(20L);
+        }
+
+        @Test
+        void backfill_promotedOwnerSurvivorUnreachable_boundedWaitThenDegradedPromoteAtLocal() {
+            // A survivor confirms 0..19 but is UNREACHABLE (catch-up transport fails). Self must NOT wedge: it
+            // stays non-authoritative (SYNCING) within the bound, then — once the bound elapses — promotes at
+            // its LOCAL watermark (4) with a loud warning: a degraded recovery, not a wedge.
+            var survivor = SURVIVORS.getFirst();
+            seedLocal(5); // local 0..4 -> head 4
+            registry.registerReplica(STREAM, PARTITION, OWNER);
+            registry.updateWatermark(STREAM, PARTITION, OWNER, 4L);
+            registry.registerReplica(STREAM, PARTITION, survivor);
+            registry.updateWatermark(STREAM, PARTITION, survivor, 19L);
+
+            CatchupTransport unreachable = (_, _) -> ReplicationError.General.REPLICATION_TIMEOUT.promise();
+            var clock = new AtomicLong(0L);
+            var backfill = ownerBackfill(unreachable, clock);
+
+            // Within the bound: stays non-authoritative (SYNCING), NOT falsely promoted to the survivor tail.
+            assertThat(backfill.backfill(STREAM, PARTITION).await().isFailure()).isTrue();
+            var held = descriptorFor(OWNER);
+            assertThat(held.state()).isEqualTo(ReplicationState.SYNCING);
+            assertThat(held.confirmedOffset()).isEqualTo(4L);
+
+            // Bound elapsed: proceed at the local watermark (degraded, but available — not wedged).
+            clock.set(BOUND.millis() + 1);
+            var applied = backfill.backfill(STREAM, PARTITION).await();
+            assertThat(applied.isSuccess()).isTrue();
+            var promoted = descriptorFor(OWNER);
+            assertThat(promoted.state()).isEqualTo(ReplicationState.CAUGHT_UP);
+            assertThat(promoted.confirmedOffset()).isEqualTo(4L); // best available offset
+        }
+
+        @Test
+        void redriveCandidates_promotedOwnerBehindSurvivor_isReDriven_thenQuiesces() {
+            // The trigger: a freshly-promoted owner that is (prematurely) CAUGHT_UP but BEHIND a survivor must
+            // be re-included in the redrive so the catch-up actually runs. Once it reaches the survivor tail
+            // it quiesces (no per-tick owner probe).
+            var survivor = SURVIVORS.getFirst();
+            seedLocal(5);
+            registry.registerReplica(STREAM, PARTITION, OWNER);
+            registry.updateWatermark(STREAM, PARTITION, OWNER, 4L);      // CAUGHT_UP@4, behind
+            registry.registerReplica(STREAM, PARTITION, survivor);
+            registry.updateWatermark(STREAM, PARTITION, survivor, 19L);
+
+            var backfill = ownerBackfill(failIfCatchup(), new AtomicLong(0L));
+            assertThat(backfill.redriveCandidates()).containsExactly(PartitionKey.partitionKey(STREAM, PARTITION));
+
+            // Once self is no longer behind the survivor, the owner quiesces (not a redrive candidate).
+            registry.updateWatermark(STREAM, PARTITION, OWNER, 19L);
+            assertThat(backfill.redriveCandidates()).isEmpty();
+        }
+
+        private PartitionBackfill ownerBackfill(CatchupTransport transport, AtomicLong clock) {
+            return partitionBackfill(registry,
+                                     recovery,
+                                     transport,
+                                     failIfProbed(),
+                                     localHeadWatermark(),
+                                     OWNER,
+                                     BOUND,
+                                     clock::get,
+                                     () -> MEMBERS);
+        }
+
+        private void seedLocal(int count) {
+            for (var i = 0; i < count; i++) {
+                recovery.appendRecoveredEvent(STREAM, PARTITION, ("event-" + i).getBytes(), 1000L + i).unwrap();
+            }
+        }
+
+        private SelfWatermark localHeadWatermark() {
+            return (stream, partition) -> manager.partitionInfo(stream, partition)
+                                                 .map(StreamPartitionManager.PartitionInfo::headOffset)
+                                                 .or(-1L);
+        }
+
+        private ReplicaWatermarkProbe failIfProbed() {
+            return (_, _, _) -> {
+                throw new AssertionError("promoted-owner catch-up must not probe peers");
+            };
+        }
+
+        private CatchupTransport failIfCatchup() {
+            return (_, _) -> {
+                throw new AssertionError("no catch-up must be issued when self already covers the max survivor");
+            };
+        }
+
+        // A catch-up source that asserts it is targeted at the max-confirmed survivor from the expected
+        // (contiguous) offset, then returns `events` (toOffset = last event offset, or fromOffset-1 empty).
+        private CatchupTransport survivorSource(NodeId expectedSurvivor, long expectedFrom, List<EventData> events) {
+            return (target, request) -> {
+                assertThat(target).as("promoted owner must catch up from the max-confirmed survivor")
+                                  .isEqualTo(expectedSurvivor);
+                assertThat(request.fromOffset()).as("fromOffset must be local head + 1 (contiguous)")
+                                                .isEqualTo(expectedFrom);
+                var payloads = new ArrayList<byte[]>();
+                var timestamps = new ArrayList<Long>();
+                events.forEach(event -> {
+                    payloads.add(event.data());
+                    timestamps.add(event.timestamp());
+                });
+                var toOffset = events.isEmpty() ? request.fromOffset() - 1 : events.getLast().offset();
+                return Promise.success(catchupResponse(target,
+                                                       request.streamName(),
+                                                       request.partition(),
+                                                       request.fromOffset(),
+                                                       toOffset,
+                                                       payloads,
+                                                       timestamps));
+            };
+        }
+    }
+
+    /// #336 fresh-owner blind-registry probe fallback. When a node that was NOT previously a replica becomes
+    /// HRW owner (empty ring, `localWatermark == -1`) the local-registry `aheadSurvivor` reads every peer at
+    /// the `-1` registration default (peer watermarks are never propagated — `WatermarkStore.NOOP`), so it
+    /// would false-self-promote `CAUGHT_UP@-1` on an empty ring while a survivor holds the whole partition
+    /// (effective RF=1, empty owner). The fix probes the blind survivors' REAL tails and catches up from the
+    /// max reachable one; an unreachable survivor routes to the bounded-wait escape (never a false-ready
+    /// empty self-promote past a possibly-ahead peer, never a wedge).
+    @Nested
+    class FreshOwnerBlindRegistryProbeFallback {
+        private static final NodeId NODE_AA = NodeId.nodeId("node-aa").unwrap();
+        private static final NodeId NODE_BB = NodeId.nodeId("node-bb").unwrap();
+        private static final NodeId NODE_CC = NodeId.nodeId("node-cc").unwrap();
+        private static final TimeSpan BOUND = TimeSpan.timeSpan(10).seconds();
+        private static final List<NodeId> MEMBERS = List.of(NODE_AA, NODE_BB, NODE_CC);
+        private static final NodeId OWNER = ReplicaPlacement.rank(STREAM, PARTITION, MEMBERS).getFirst();
+        private static final NodeId SURVIVOR = ReplicaPlacement.rank(STREAM, PARTITION, MEMBERS).getLast();
+
+        @Test
+        void backfill_freshOwnerEmptyRing_blindSurvivor_probesRealTail_catchesUpNotFalseReady() {
+            // Self is a FRESH HRW owner: empty local ring (localWatermark=-1) and the survivor's real tail
+            // (24) is INVISIBLE in the local registry (registration default -1, WatermarkStore.NOOP).
+            // aheadSurvivor sees -1 (not ahead) and would false-self-promote CAUGHT_UP@-1 on the empty ring;
+            // the probe reveals the real tail 24 → the owner catches up and reaches CAUGHT_UP@24.
+            registry.registerReplica(STREAM, PARTITION, OWNER);      // self, fresh, empty ring, SYNCING@-1
+            registry.registerReplica(STREAM, PARTITION, SURVIVOR);   // blind: local confirmedOffset stays -1
+
+            var backfill = partitionBackfill(registry,
+                                             recovery,
+                                             survivorSource(SURVIVOR, 0L, eventsFrom(0, 25)), // survivor holds 0..24
+                                             reachableProbe(SURVIVOR, 24L),
+                                             localHeadWatermark(),   // empty ring -> -1
+                                             OWNER,
+                                             BOUND,
+                                             new AtomicLong(0L)::get,
+                                             () -> MEMBERS);
+
+            var applied = backfill.backfill(STREAM, PARTITION).await();
+
+            assertThat(applied.isSuccess()).isTrue();
+            assertThat(applied.or(-1L)).isEqualTo(25L);
+            var self = descriptorFor(OWNER);
+            assertThat(self.state()).isEqualTo(ReplicationState.CAUGHT_UP);
+            assertThat(self.confirmedOffset()).isEqualTo(24L); // NOT a false-ready CAUGHT_UP@-1
+            // The survivor the owner pulled 0..24 FROM is now recorded CAUGHT_UP@24 (no longer blind@-1): the
+            // owner has direct evidence it holds >= 24, so a "CAUGHT_UP non-owner exists" check passes at once.
+            var survivor = descriptorFor(SURVIVOR);
+            assertThat(survivor.state()).isEqualTo(ReplicationState.CAUGHT_UP);
+            assertThat(survivor.confirmedOffset()).isEqualTo(24L);
+            // Local ring now holds the full partition 0..24 (offsets preserved).
+            var local = manager.readLocal(STREAM, PARTITION, 0, 100).or(List.of());
+            assertThat(local).hasSize(25);
+            for (var i = 0; i < 25; i++) {
+                assertThat(local.get(i).offset()).isEqualTo((long) i);
+            }
+
+            // Idempotent: caught up at the survivor tail, the owner is no longer a redrive candidate.
+            assertThat(backfill.redriveCandidates()).isEmpty();
+        }
+
+        @Test
+        void backfill_freshOwnerEmptyRing_blindSurvivorUnreachable_boundedWait_noEmptySelfPromote() {
+            // Same fresh owner, but the blind survivor is UNREACHABLE (probe fails). Self must NOT self-promote
+            // a false-ready CAUGHT_UP@-1 past a peer that might hold the data — it holds SYNCING within the
+            // bound (the redrive retries), and degrades only once the bound elapses.
+            registry.registerReplica(STREAM, PARTITION, OWNER);
+            registry.registerReplica(STREAM, PARTITION, SURVIVOR);
+
+            ReplicaWatermarkProbe unreachable = (_, _, _) -> ReplicationError.General.REPLICATION_TIMEOUT.promise();
+            var clock = new AtomicLong(0L);
+            var backfill = partitionBackfill(registry,
+                                             recovery,
+                                             failIfCatchup(),   // no catch-up must be issued to an unreachable survivor
+                                             unreachable,
+                                             localHeadWatermark(),
+                                             OWNER,
+                                             BOUND,
+                                             clock::get,
+                                             () -> MEMBERS);
+
+            // Within the bound: stays SYNCING (no false-ready empty CAUGHT_UP), backfill fails-soft.
+            assertThat(backfill.backfill(STREAM, PARTITION).await().isFailure()).isTrue();
+            var held = descriptorFor(OWNER);
+            assertThat(held.state()).isEqualTo(ReplicationState.SYNCING);
+            assertThat(held.confirmedOffset()).isEqualTo(-1L);
+
+            // Bound elapsed: degraded self-promote at the local watermark (available, not wedged).
+            clock.set(BOUND.millis() + 1);
+            assertThat(backfill.backfill(STREAM, PARTITION).await().isSuccess()).isTrue();
+            assertThat(descriptorFor(OWNER).state()).isEqualTo(ReplicationState.CAUGHT_UP);
+        }
+
+        @Test
+        void backfill_ownerWithKnownSurvivorOffset_noProbe_localRegistryHitPathUntouched() {
+            // NEGATIVE: when the local registry DOES carry the survivor's offset (not blind), aheadSurvivor is
+            // authoritative and the probe fallback must NOT fire. Survivor known at 3, owner ring at 5 -> no
+            // survivor ahead -> self-promote WITHOUT probing (a probe would be a regression).
+            seedLocal(6); // local 0..5 -> head 5
+            registry.registerReplica(STREAM, PARTITION, OWNER);
+            registry.updateWatermark(STREAM, PARTITION, OWNER, 5L);
+            registry.registerReplica(STREAM, PARTITION, SURVIVOR);
+            registry.updateWatermark(STREAM, PARTITION, SURVIVOR, 3L); // KNOWN, not blind, not ahead
+
+            var backfill = partitionBackfill(registry,
+                                             recovery,
+                                             failIfCatchup(),
+                                             failIfProbed(),          // must not be consulted for a known survivor
+                                             localHeadWatermark(),
+                                             OWNER,
+                                             BOUND,
+                                             new AtomicLong(0L)::get,
+                                             () -> MEMBERS);
+
+            assertThat(backfill.backfill(STREAM, PARTITION).await().isSuccess()).isTrue();
+            var self = descriptorFor(OWNER);
+            assertThat(self.state()).isEqualTo(ReplicationState.CAUGHT_UP);
+            assertThat(self.confirmedOffset()).isEqualTo(5L); // self-promoted at its own tail
+        }
+
+        private void seedLocal(int count) {
+            for (var i = 0; i < count; i++) {
+                recovery.appendRecoveredEvent(STREAM, PARTITION, ("event-" + i).getBytes(), 1000L + i).unwrap();
+            }
+        }
+
+        private SelfWatermark localHeadWatermark() {
+            return (stream, partition) -> manager.partitionInfo(stream, partition)
+                                                 .map(StreamPartitionManager.PartitionInfo::headOffset)
+                                                 .or(-1L);
+        }
+
+        private ReplicaWatermarkProbe reachableProbe(NodeId target, long tail) {
+            return (probed, _, _) -> probed.equals(target)
+                                     ? Promise.success(tail)
+                                     : ReplicationError.General.REPLICATION_TIMEOUT.promise();
+        }
+
+        private ReplicaWatermarkProbe failIfProbed() {
+            return (_, _, _) -> {
+                throw new AssertionError("known-survivor owner promote must not probe peers");
+            };
+        }
+
+        private CatchupTransport failIfCatchup() {
+            return (_, _) -> {
+                throw new AssertionError("no catch-up must be issued on the no-reachable-survivor path");
+            };
+        }
+
+        private CatchupTransport survivorSource(NodeId expectedSurvivor, long expectedFrom, List<EventData> events) {
+            return (target, request) -> {
+                assertThat(target).as("fresh owner must catch up from the probed survivor").isEqualTo(expectedSurvivor);
+                assertThat(request.fromOffset()).as("fromOffset must be local head + 1 (contiguous)")
+                                                .isEqualTo(expectedFrom);
+                var payloads = new ArrayList<byte[]>();
+                var timestamps = new ArrayList<Long>();
+                events.forEach(event -> {
+                    payloads.add(event.data());
+                    timestamps.add(event.timestamp());
+                });
+                var toOffset = events.isEmpty() ? request.fromOffset() - 1 : events.getLast().offset();
+                return Promise.success(catchupResponse(target,
+                                                       request.streamName(),
+                                                       request.partition(),
+                                                       request.fromOffset(),
+                                                       toOffset,
+                                                       payloads,
+                                                       timestamps));
+            };
+        }
+    }
+
+    /// #336 post-failover replicas-view reseat (REPORTING side; data serving unchanged). After an owner-kill
+    /// failover the promoted owner serves all data correctly, but the operator replicas-view
+    /// (`GET /api/streams/replicas/...`) reports stale watermarks: the promoted owner's OWN registry row and
+    /// the replacement replica's row both stay frozen (e.g. `confirmedOffset=-1`) while the ring tail is
+    /// correct. Fix A: the redrive reseats the promoted owner's own row to its authoritative ring tail
+    /// (`selfWatermark.localWatermark`). Fix B: a NON-owner reaching CAUGHT_UP acks the CURRENT HRW owner
+    /// (reusing the live `ReplicateAck`), so the owner's replicas-view shows the replica CAUGHT_UP at the
+    /// backfilled tail — both without waiting for the next live write.
+    @Nested
+    class PostFailoverReplicasViewReseat {
+        private static final NodeId NODE_AA = NodeId.nodeId("node-aa").unwrap();
+        private static final NodeId NODE_BB = NodeId.nodeId("node-bb").unwrap();
+        private static final NodeId NODE_CC = NodeId.nodeId("node-cc").unwrap();
+        private static final TimeSpan BOUND = TimeSpan.timeSpan(10).seconds();
+        private static final List<NodeId> MEMBERS = List.of(NODE_AA, NODE_BB, NODE_CC);
+        private static final NodeId OWNER = ReplicaPlacement.rank(STREAM, PARTITION, MEMBERS).getFirst();
+        private static final NodeId NON_OWNER = ReplicaPlacement.rank(STREAM, PARTITION, MEMBERS).getLast();
+
+        @Test
+        void redriveCandidates_promotedOwnerRowLagsRingTail_reseatsOwnRowToRingTail_thenQuiesces() {
+            // Fix A: self IS the HRW owner and is (prematurely) CAUGHT_UP@-1 in its own registry row — the
+            // exact post-failover staleness (a replica->owner promotion never re-ran ownerSelfPromote, and
+            // the live path acks only peers) — while its authoritative ring tail is 25. The plain
+            // `state != CAUGHT_UP` filter can never catch this; the new owner-branch predicate must.
+            registry.registerReplica(STREAM, PARTITION, OWNER);         // self == HRW owner
+            registry.updateWatermark(STREAM, PARTITION, OWNER, -1L);    // CAUGHT_UP@-1 (frozen, lags ring)
+
+            var backfill = partitionBackfill(registry,
+                                             recovery,
+                                             failIfCatchup(),                 // owner self-promote: no catch-up
+                                             ReplicationTransport.NOOP,       // owner never acks itself
+                                             failIfProbed(),                  // owner path: no probe
+                                             selfWatermarkOf(25L),            // ring tail = 25 (authoritative)
+                                             OWNER,
+                                             BOUND,
+                                             () -> MEMBERS);
+
+            // Frozen owner row is a redrive candidate precisely because its registry offset lags the ring tail.
+            assertThat(descriptorFor(OWNER).state()).isEqualTo(ReplicationState.CAUGHT_UP);
+            assertThat(descriptorFor(OWNER).confirmedOffset()).isEqualTo(-1L);
+            assertThat(backfill.redriveCandidates()).containsExactly(PartitionKey.partitionKey(STREAM, PARTITION));
+
+            // Re-driving reseats the owner's OWN row to the ring tail (25) WITHOUT a live write.
+            assertThat(backfill.backfill(STREAM, PARTITION).await().isSuccess()).isTrue();
+            assertThat(descriptorFor(OWNER).state()).isEqualTo(ReplicationState.CAUGHT_UP);
+            assertThat(descriptorFor(OWNER).confirmedOffset()).isEqualTo(25L);
+
+            // Idempotent: once the row equals the ring tail it is no longer a candidate (no oscillation).
+            assertThat(backfill.redriveCandidates()).isEmpty();
+        }
+
+        @Test
+        void backfill_nonOwnerReachesCaughtUp_acksCurrentOwner_ownerViewShowsCaughtUp() {
+            // Fix B: self (the replacement replica) is a NON-owner that backfills the missing suffix from the
+            // HRW owner and reaches CAUGHT_UP@15. It must ack the CURRENT owner so the owner's replicas-view
+            // shows this replica CAUGHT_UP@15 before the next live write.
+            seedLocal(2); // local offsets 0,1 -> head 1, fromOffset 2
+            registry.registerReplica(STREAM, PARTITION, OWNER);
+            registry.registerReplica(STREAM, PARTITION, NON_OWNER); // self, SYNCING@-1
+
+            var sent = new AtomicReference<SentMessage>();
+            ReplicationTransport capturing = (target, message) -> sent.set(new SentMessage(target, message));
+            var backfill = partitionBackfill(registry,
+                                             recovery,
+                                             ownerSource(OWNER, 2L, eventsFrom(2, 14)), // owner holds 2..15
+                                             capturing,
+                                             failIfProbed(),
+                                             localHeadWatermark(),
+                                             NON_OWNER,
+                                             BOUND,
+                                             () -> MEMBERS);
+
+            var applied = backfill.backfill(STREAM, PARTITION).await();
+
+            assertThat(applied.isSuccess()).isTrue();
+            assertThat(applied.or(-1L)).isEqualTo(14L);
+            assertThat(descriptorFor(NON_OWNER).state()).isEqualTo(ReplicationState.CAUGHT_UP);
+            assertThat(descriptorFor(NON_OWNER).confirmedOffset()).isEqualTo(15L);
+
+            // The ack is a live ReplicateAck addressed to the CURRENT HRW owner, carrying the backfilled tail.
+            var message = sent.get();
+            assertThat(message).as("a completed non-owner backfill must ack the owner").isNotNull();
+            assertThat(message.target()).isEqualTo(OWNER);
+            assertThat(message.message()).isInstanceOf(ReplicationMessage.ReplicateAck.class);
+            var ack = (ReplicationMessage.ReplicateAck) message.message();
+            assertThat(ack.replicaId()).isEqualTo(NON_OWNER);
+            assertThat(ack.streamName()).isEqualTo(STREAM);
+            assertThat(ack.partition()).isEqualTo(PARTITION);
+            assertThat(ack.confirmedOffset()).isEqualTo(15L);
+
+            // Owner-side convergence: delivering that ack to the owner's own registry (a DISTINCT node) flips
+            // its view of the replica to CAUGHT_UP@15 — exactly what the replicas-view projects.
+            var ownerRegistry = replicaRegistry();
+            ownerRegistry.registerReplica(STREAM, PARTITION, OWNER);
+            ownerRegistry.registerReplica(STREAM, PARTITION, NON_OWNER); // SYNCING@-1 before the ack
+            ReplicationManager.replicationManager(OWNER, ownerRegistry, ReplicationTransport.NOOP).handleAck(ack);
+
+            var ownerViewOfReplica = ownerRegistry.replicasFor(STREAM, PARTITION).stream()
+                                                  .filter(d -> d.nodeId().equals(NON_OWNER))
+                                                  .findFirst()
+                                                  .orElseThrow();
+            assertThat(ownerViewOfReplica.state()).isEqualTo(ReplicationState.CAUGHT_UP);
+            assertThat(ownerViewOfReplica.confirmedOffset()).isEqualTo(15L);
+        }
+
+        private void seedLocal(int count) {
+            for (var i = 0; i < count; i++) {
+                recovery.appendRecoveredEvent(STREAM, PARTITION, ("event-" + i).getBytes(), 1000L + i).unwrap();
+            }
+        }
+
+        private SelfWatermark selfWatermarkOf(long watermark) {
+            return (_, _) -> watermark;
+        }
+
+        private SelfWatermark localHeadWatermark() {
+            return (stream, partition) -> manager.partitionInfo(stream, partition)
+                                                 .map(StreamPartitionManager.PartitionInfo::headOffset)
+                                                 .or(-1L);
+        }
+
+        private ReplicaWatermarkProbe failIfProbed() {
+            return (_, _, _) -> {
+                throw new AssertionError("replicas-view reseat must not probe peers");
+            };
+        }
+
+        private CatchupTransport failIfCatchup() {
+            return (_, _) -> {
+                throw new AssertionError("owner self-reseat must not issue a catch-up request");
+            };
+        }
+
+        private CatchupTransport ownerSource(NodeId expectedOwner, long expectedFrom, List<EventData> events) {
+            return (target, request) -> {
+                assertThat(target).as("backfill must target the HRW owner").isEqualTo(expectedOwner);
+                assertThat(request.fromOffset()).as("fromOffset must be local head + 1 (contiguous)")
+                                                .isEqualTo(expectedFrom);
+                var payloads = new ArrayList<byte[]>();
+                var timestamps = new ArrayList<Long>();
+                events.forEach(event -> {
+                    payloads.add(event.data());
+                    timestamps.add(event.timestamp());
+                });
+                var toOffset = events.isEmpty() ? request.fromOffset() - 1 : events.getLast().offset();
+                return Promise.success(catchupResponse(target,
+                                                       request.streamName(),
+                                                       request.partition(),
+                                                       request.fromOffset(),
+                                                       toOffset,
+                                                       payloads,
+                                                       timestamps));
+            };
+        }
+
+        private record SentMessage(NodeId target, ReplicationMessage message) {}
+    }
+
     private ReplicaDescriptor descriptorFor(NodeId nodeId) {
         return registry.replicasFor(STREAM, PARTITION).stream()
                        .filter(d -> d.nodeId().equals(nodeId))
