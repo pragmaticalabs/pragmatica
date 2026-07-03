@@ -178,6 +178,22 @@ public interface ClusterSyncCollector {
         return true;
     }
 
+    /// Option 1 (S01) — wire the consumer that feeds a transport-unreachable HINT into SWIM when a
+    /// peer misses `pingTimeoutThreshold` pongs. `ClusterSyncContext.emitPingTimeoutIfExceeded`
+    /// invokes [reportUnreachable] (after the SWIM-HEALTHY early-skip) INSTEAD of the former
+    /// destructive `network.disconnect` + eviction-hint broadcast. Mirrors the [setPeerLocallyAlive]
+    /// injection pattern. Default no-op (test doubles inherit; production wires in `AetherNode` to
+    /// `CoreSwimHealthDetector.recordTransportHint(new TransportObservation.PeerUnreachable(...))`).
+    @Contract
+    default void setUnreachableReporter(Consumer<NodeId> reporter) {}
+
+    /// Option 1 (S01) — report `peer` to SWIM as transport-unreachable evidence via the consumer
+    /// wired through [setUnreachableReporter]. SWIM drives the SUSPECT → FAULTY → DEAD pipeline and
+    /// refutes the hint when pongs resume, so a transient flap no longer false-evicts a healthy peer.
+    /// Default no-op (no reporter wired → silently ignored, preserving prior test-double behavior).
+    @Contract
+    default void reportUnreachable(NodeId peer) {}
+
     /// Emit one `PeerConnectivityObservation` per topology peer (excluding `self`)
     /// into the wired `PeerObservationBuffer`. Peers in `connected` get state
     /// `CONNECTED`; peers in `topology` but absent from `connected` get state
@@ -254,6 +270,12 @@ class ClusterSyncCollectorImpl implements ClusterSyncCollector {
     /// SwimHealth.HEALTHY`. When this predicate returns TRUE for a peer, the follower
     /// IGNORES the owner's eviction hint for that peer — independence preserved.
     private final AtomicReference<java.util.function.Predicate<NodeId>> peerLocallyAlive = new AtomicReference<>(_ -> true);
+
+    /// Option 1 (S01) — consumer that feeds a transport-unreachable HINT into SWIM on ping-timeout.
+    /// Default no-op until `AetherNode` wires it to `swimHealthDetector.recordTransportHint(new
+    /// TransportObservation.PeerUnreachable(peer, QuicTransportCause.PING_TIMEOUT))`. Replaces the
+    /// former destructive disconnect — SWIM arbitrates the hint and refutes it when pongs resume.
+    private final AtomicReference<Consumer<NodeId>> unreachableReporter = new AtomicReference<>(_ -> {});
 
     /// Membership v2 (§7.5.3) — node-reported readiness state supplier. `buildPong()`
     /// stamps `current().name()` onto the pong's `lifecycleState` field, repurposing it
@@ -612,6 +634,21 @@ class ClusterSyncCollectorImpl implements ClusterSyncCollector {
     public boolean peerLocallyAlive(NodeId peer) {
         return peerLocallyAlive.get()
                                .test(peer);
+    }
+
+    @Override
+    @Contract
+    public void setUnreachableReporter(Consumer<NodeId> reporter) {
+        unreachableReporter.set(reporter == null
+                                ? _ -> {}
+                                : reporter);
+    }
+
+    @Override
+    @Contract
+    public void reportUnreachable(NodeId peer) {
+        unreachableReporter.get()
+                           .accept(peer);
     }
 
     @Override

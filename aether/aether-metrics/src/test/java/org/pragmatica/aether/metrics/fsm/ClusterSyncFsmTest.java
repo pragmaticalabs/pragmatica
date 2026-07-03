@@ -26,6 +26,7 @@ import java.util.Set;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Consumer;
 import java.util.function.Function;
 import java.util.stream.IntStream;
 
@@ -223,14 +224,16 @@ class ClusterSyncFsmTest {
     @Nested
     class OwnerSideSwimGuard {
         @Test
-        void emitPingTimeout_peerSwimAlive_doesNotDisconnectAndEmitsNoEvictionHint() {
-            // FIX 3 (a): the owner-side ping-timeout path must mirror the follower-side
-            // processEvictionHints SWIM guard. A peer past the ping-timeout threshold but
+        void emitPingTimeout_peerSwimAlive_doesNotDisconnectOrReportUnreachable() {
+            // Option 1 + the owner-side SWIM guard: a peer past the ping-timeout threshold but
             // reported SWIM-ALIVE (e.g. transiently missing leader-coupled pongs during a
-            // re-election) must NOT be soft-evicted and must NOT be broadcast as an eviction
-            // hint — preventing the live-peer REMOVE flap / self-drain cascade.
+            // re-election) must NOT be disconnected and must NOT be fed into SWIM as an unreachable
+            // hint — feeding a conflicting hint for a peer SWIM already trusts would be self-defeating
+            // and risks the live-peer flap / self-drain cascade.
             var network = new RecordingNetwork();
             var collector = new SwimAwareCollector(Set.of(PEER_A));
+            var reported = new CopyOnWriteArrayList<NodeId>();
+            collector.setUnreachableReporter(reported::add);
             var harness = buildFsmHarness(network, HealthSignalSink.noop(), 3, collector);
 
             harness.context().emitPingTimeoutIfExceeded(PEER_A, 5);
@@ -238,7 +241,11 @@ class ClusterSyncFsmTest {
             assertThat(network.disconnected())
                 .as("SWIM-ALIVE peer must not be disconnected by owner-side ping timeout")
                 .isEmpty();
-            // The next outbound ping must NOT carry an eviction hint for the SWIM-ALIVE peer.
+            assertThat(reported)
+                .as("no unreachable hint fed into SWIM for a SWIM-ALIVE peer")
+                .isEmpty();
+            // The inert eviction-hint wire path must also stay empty — the next outbound ping carries
+            // no hint for any peer (emitPingTimeoutIfExceeded is the sole writer and no longer writes).
             harness.context().broadcastPing(Epoch.epoch(7L, 0L), 7L);
             var pings = network.sent().stream()
                                .filter(m -> m instanceof org.pragmatica.cluster.metrics.ClusterSyncMessage.ClusterSyncPing)
@@ -251,19 +258,45 @@ class ClusterSyncFsmTest {
         }
 
         @Test
-        void emitPingTimeout_peerNotSwimAlive_disconnects() {
-            // Control: a peer past the threshold that SWIM does NOT consider ALIVE is evicted
-            // as before — the guard is strictly additive, it does not block genuine dead-peer
-            // eviction.
+        void emitPingTimeout_peerNotSwimAlive_reportsUnreachableAndDoesNotDisconnect() {
+            // Option 1: a peer past the threshold that SWIM does NOT consider ALIVE is fed into SWIM
+            // as transport-unreachable EVIDENCE (refutable when pongs resume) instead of being
+            // destructively disconnected. The old behavior (network.disconnect on this path) is gone.
             var network = new RecordingNetwork();
             var collector = new SwimAwareCollector(Set.of());
+            var reported = new CopyOnWriteArrayList<NodeId>();
+            collector.setUnreachableReporter(reported::add);
             var harness = buildFsmHarness(network, HealthSignalSink.noop(), 3, collector);
 
             harness.context().emitPingTimeoutIfExceeded(PEER_A, 5);
 
-            assertThat(network.disconnected())
-                .as("non-ALIVE peer past threshold is still evicted")
+            assertThat(reported)
+                .as("non-ALIVE peer past threshold is reported to SWIM as unreachable")
                 .containsExactly(PEER_A);
+            assertThat(network.disconnected())
+                .as("option 1: ping-timeout no longer manufactures a destructive disconnect")
+                .isEmpty();
+        }
+
+        @Test
+        void emitPingTimeout_reportsUnreachableForDeadPeerOnly_notForSwimAlivePeer() {
+            // Both branches in one pass: the SWIM-ALIVE peer is skipped entirely while the
+            // SWIM-not-alive peer is reported unreachable exactly once; neither is disconnected.
+            var network = new RecordingNetwork();
+            var collector = new SwimAwareCollector(Set.of(PEER_A));
+            var reported = new CopyOnWriteArrayList<NodeId>();
+            collector.setUnreachableReporter(reported::add);
+            var harness = buildFsmHarness(network, HealthSignalSink.noop(), 3, collector);
+
+            harness.context().emitPingTimeoutIfExceeded(PEER_A, 5);
+            harness.context().emitPingTimeoutIfExceeded(PEER_B, 5);
+
+            assertThat(reported)
+                .as("only the SWIM-not-alive peer is reported unreachable, exactly once")
+                .containsExactly(PEER_B);
+            assertThat(network.disconnected())
+                .as("option 1 never manufactures a disconnect")
+                .isEmpty();
         }
 
         @Test
@@ -271,11 +304,14 @@ class ClusterSyncFsmTest {
             // Below-threshold calls short-circuit before the guard or any side effect.
             var network = new RecordingNetwork();
             var collector = new SwimAwareCollector(Set.of());
+            var reported = new CopyOnWriteArrayList<NodeId>();
+            collector.setUnreachableReporter(reported::add);
             var harness = buildFsmHarness(network, HealthSignalSink.noop(), 3, collector);
 
             harness.context().emitPingTimeoutIfExceeded(PEER_A, 1);
 
             assertThat(network.disconnected()).isEmpty();
+            assertThat(reported).as("below threshold short-circuits before any SWIM hint").isEmpty();
         }
     }
 
@@ -402,9 +438,11 @@ class ClusterSyncFsmTest {
 
     /// Collector double whose SWIM-alive predicate is fixed at construction, so the owner-side
     /// `emitPingTimeoutIfExceeded` guard can be driven deterministically without standing up
-    /// real SWIM. ALIVE peers must be exempt from ping-timeout eviction.
+    /// real SWIM. ALIVE peers are exempt from the unreachable hint; not-alive peers are fed to the
+    /// wired reporter (capturing the option-1 reportUnreachable evidence path).
     private static final class SwimAwareCollector extends NoopClusterSyncCollector {
         private final Set<NodeId> alivePeers;
+        private final AtomicReference<Consumer<NodeId>> unreachableReporter = new AtomicReference<>(_ -> {});
 
         SwimAwareCollector(Set<NodeId> alivePeers) {
             this.alivePeers = Set.copyOf(alivePeers);
@@ -413,6 +451,19 @@ class ClusterSyncFsmTest {
         @Override
         public boolean peerLocallyAlive(NodeId peer) {
             return alivePeers.contains(peer);
+        }
+
+        @Override
+        public void setUnreachableReporter(Consumer<NodeId> reporter) {
+            unreachableReporter.set(reporter == null
+                                    ? _ -> {}
+                                    : reporter);
+        }
+
+        @Override
+        public void reportUnreachable(NodeId peer) {
+            unreachableReporter.get()
+                               .accept(peer);
         }
     }
 }

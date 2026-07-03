@@ -16,7 +16,6 @@ import org.pragmatica.cluster.metrics.PeerHealthObservation;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.fsm.ClusterFsmEvent;
 import org.pragmatica.consensus.net.ClusterNetwork;
-import org.pragmatica.consensus.net.NetworkServiceMessage;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.SharedScheduler;
@@ -403,39 +402,24 @@ public final class ClusterSyncContext {
         }
 
         signalSink.emit(new HealthSignal.PingTimeout(peer, missed, epochSupplier.get()));
-        // RC1 (S01 fix, owner-side SWIM symmetry): the follower-side `processEvictionHints`
-        // already refuses to act on an eviction hint when SWIM reports the peer ALIVE; the
-        // owner-side ping-timeout path must apply the SAME guard. Pong delivery is leader-
-        // coupled, so during a leader-loss / re-election window a LIVE SWIM-HEALTHY peer can
-        // transiently miss `pingTimeoutThreshold` pongs. Without this guard the owner would
-        // soft-evict it (REMOVE → ~1s flap), feeding the self-drain cascade. Skip BOTH the
-        // disconnect AND the eviction-hint broadcast for a SWIM-HEALTHY peer. The
-        // `PingTimeout` signal above is still emitted — it is advisory liveness telemetry
-        // that the SWIM-gated FSM arbitrates independently; only the disconnect + hint are
-        // harmful for a peer SWIM still considers reachable.
+        // RC1 (S01 fix, owner-side SWIM symmetry) + option 1: do NOT feed an unreachable hint for a
+        // peer SWIM still observes as HEALTHY. Pong delivery is leader-coupled, so during a
+        // leader-loss / re-election window a LIVE SWIM-HEALTHY peer can transiently miss
+        // `pingTimeoutThreshold` pongs. SWIM already trusts that peer, so feeding a conflicting
+        // unreachable hint would be self-defeating. The `PingTimeout` signal above is still emitted —
+        // it is advisory liveness telemetry the SWIM-gated FSM arbitrates independently.
         if (collector.peerLocallyAlive(peer)) {
-            log.debug("ClusterSync: skipping ping-timeout eviction for {} — SWIM says ALIVE (missed={})", peer, missed);
+            log.debug("ClusterSync: skipping ping-timeout unreachable hint for {} — SWIM says ALIVE (missed={})", peer, missed);
 
             return;
         }
-        // RC1 (S01 fix): app-level liveness detection. QUIC's MAX_IDLE_TIMEOUT is
-        // intentionally disabled (cluster connections are persistent per QUIC RFC 9000
-        // §10.1), so the QUIC layer has no autonomous dead-peer detection — UDP sends
-        // are fire-and-forget. The cluster-sync ping/pong cycle IS an app-level liveness
-        // signal: `pingTimeoutThreshold` consecutive missed pongs (default 3 = ~3s) means
-        // the peer is unresponsive. Without this local disconnect, `ReachabilityAggregator.
-        // foldSelfObservations` would keep voting REACHABLE for the unresponsive peer
-        // (its QUIC `PeerState` stays CONNECTED), diluting follower UNREACHABLE evidence
-        // and forcing the FSM to wait on SWIM's 10s suspectTimeout floor for transport-
-        // gated decommission. Local disconnect here strips the false REACHABLE vote and
-        // lets the aggregator converge within the ping-timeout window. Disconnect is
-        // idempotent (peer.evict() guards against double-eviction). See spec §16 S01/S02
-        // and the QuicClusterClient.java:139 / QuicClusterServer.java:136 idle-timeout note.
-        network.disconnect(new NetworkServiceMessage.DisconnectNode(peer));
-        // Track this eviction so the next `ClusterSyncPing` broadcasts it as a
-        // SUGGESTION to followers. Followers verify against their own `lastReceivedNanos`
-        // before acting — owner's eviction is informational, not authoritative.
-        evictionHints.put(peer, System.nanoTime());
+        // Option 1 (S01) — feed the missed-pong observation into SWIM as a transport-unreachable
+        // HINT instead of manufacturing a destructive `network.disconnect`. SWIM already drives the
+        // full SUSPECT → 3s-floored-FAULTY → DepartedObserved → synchronous-DEAD pipeline (the same
+        // path the QUIC `onPeerLeft` listener feeds), and the hint is naturally refuted when pongs
+        // resume — so a transient flap no longer false-evicts a healthy peer. The reporter is wired
+        // in `AetherNode` to `CoreSwimHealthDetector.recordTransportHint(PeerUnreachable)`.
+        collector.reportUnreachable(peer);
     }
 
     public int bufferCap() {
