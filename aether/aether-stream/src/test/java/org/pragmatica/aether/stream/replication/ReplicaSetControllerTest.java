@@ -87,26 +87,18 @@ class ReplicaSetControllerTest {
                                .or(Set.of());
     }
 
-    /// Effective APP placement RF the controller derives from `minSyncReplicas` (#378: owner +
-    /// `minSyncReplicas` sync peers = `clamp(minSyncReplicas + 1, 1, N)`). Placement expectations must
-    /// be sized by THIS, not by the raw `minSyncReplicas` — the registry holds the owner PLUS
-    /// `minSyncReplicas` peers, one more member than the configured `minSyncReplicas`.
-    private static int appRf(int minSync, int clusterSize) {
-        return ReplicaPlacement.replicationFactor(minSync, clusterSize);
-    }
-
     // ---- tests ---------------------------------------------------------------------------------
 
     @Test
     void reconcilePopulatesRegistryToMatchPlacement() {
         var registry = ReplicaRegistry.replicaRegistry();
         var members = new AtomicReference<>(nodes("n0", "n1", "n2", "n3"));
-        var minSync = 2;
-        var ctrl = controller(registry, node("n0"), members, appCatalog(minSync), (_, _) -> {});
+        var replicas = 2;
+        var ctrl = controller(registry, node("n0"), members, appCatalog(replicas), (_, _) -> {});
 
         ctrl.reconcile();
 
-        var rf = appRf(minSync, members.get().size());
+        var rf = ReplicaPlacement.replicationFactor(replicas, members.get().size());
         for (var p = 0; p < PARTITIONS; p++) {
             var actual = new HashSet<NodeId>();
             registry.replicasFor(APP_STREAM, p).forEach(d -> actual.add(d.nodeId()));
@@ -133,8 +125,8 @@ class ReplicaSetControllerTest {
     void membershipChangeRemovesAndAddsReplicasViaDiff() {
         var registry = ReplicaRegistry.replicaRegistry();
         var members = new AtomicReference<>(nodes("n0", "n1", "n2", "n3", "n4"));
-        var minSync = 3;
-        var ctrl = controller(registry, node("n0"), members, appCatalog(minSync), (_, _) -> {});
+        var replicas = 3;
+        var ctrl = controller(registry, node("n0"), members, appCatalog(replicas), (_, _) -> {});
         ctrl.reconcile();
 
         // Pick a partition whose replica set includes n2, and one that does not.
@@ -160,7 +152,7 @@ class ReplicaSetControllerTest {
         // n2 is gone everywhere it was, replaced by the next-ranked surviving node.
         var afterInvolved = registry.replicasFor(APP_STREAM, involved).stream().map(ReplicaDescriptor::nodeId).collect(java.util.stream.Collectors.toSet());
         assertThat(afterInvolved).doesNotContain(node("n2"));
-        assertThat(afterInvolved).isEqualTo(desiredReplicas(APP_STREAM, involved, members.get(), appRf(minSync, members.get().size())));
+        assertThat(afterInvolved).isEqualTo(desiredReplicas(APP_STREAM, involved, members.get(), ReplicaPlacement.replicationFactor(replicas, members.get().size())));
 
         if (uninvolved != null) {
             var afterUninvolved = registry.replicasFor(APP_STREAM, uninvolved).stream().map(ReplicaDescriptor::nodeId).collect(java.util.stream.Collectors.toSet());
@@ -188,8 +180,8 @@ class ReplicaSetControllerTest {
     @Test
     void selfRoleOwnerReplicaNone() {
         var members = nodes("n0", "n1", "n2", "n3", "n4");
-        var minSync = 3;
-        var rf = appRf(minSync, members.size());
+        var replicas = 3;
+        var rf = ReplicaPlacement.replicationFactor(replicas, members.size());
 
         for (var p = 0; p < PARTITIONS; p++) {
             var placement = ReplicaPlacement.place(APP_STREAM, p, members, rf).or(() -> {
@@ -199,19 +191,19 @@ class ReplicaSetControllerTest {
             var replicaSet = Set.copyOf(placement.replicas());
 
             // Owner node sees OWNER and isOwner true.
-            var ownerCtrl = controller(ReplicaRegistry.replicaRegistry(), owner, new AtomicReference<>(members), appCatalog(minSync), (_, _) -> {});
+            var ownerCtrl = controller(ReplicaRegistry.replicaRegistry(), owner, new AtomicReference<>(members), appCatalog(replicas), (_, _) -> {});
             assertThat(ownerCtrl.roleFor(APP_STREAM, p)).isEqualTo(Role.OWNER);
             assertThat(ownerCtrl.isOwner(APP_STREAM, p)).isTrue();
 
             // A non-owner replica sees REPLICA, isOwner false.
             var replicaNode = replicaSet.stream().filter(n -> !n.equals(owner)).findFirst().orElseThrow();
-            var replicaCtrl = controller(ReplicaRegistry.replicaRegistry(), replicaNode, new AtomicReference<>(members), appCatalog(minSync), (_, _) -> {});
+            var replicaCtrl = controller(ReplicaRegistry.replicaRegistry(), replicaNode, new AtomicReference<>(members), appCatalog(replicas), (_, _) -> {});
             assertThat(replicaCtrl.roleFor(APP_STREAM, p)).isEqualTo(Role.REPLICA);
             assertThat(replicaCtrl.isOwner(APP_STREAM, p)).isFalse();
 
             // A node outside the replica set sees NONE.
             var outsider = members.stream().filter(n -> !replicaSet.contains(n)).findFirst().orElseThrow();
-            var outsiderCtrl = controller(ReplicaRegistry.replicaRegistry(), outsider, new AtomicReference<>(members), appCatalog(minSync), (_, _) -> {});
+            var outsiderCtrl = controller(ReplicaRegistry.replicaRegistry(), outsider, new AtomicReference<>(members), appCatalog(replicas), (_, _) -> {});
             assertThat(outsiderCtrl.roleFor(APP_STREAM, p)).isEqualTo(Role.NONE);
             assertThat(outsiderCtrl.isOwner(APP_STREAM, p)).isFalse();
         }
@@ -260,8 +252,8 @@ class ReplicaSetControllerTest {
         // skipped backfill for exactly the fresh replicas that need it. Here NO partition has local data
         // (the fresh-join case) yet every partition where self is a replica must fire.
         var members = nodes("n0", "n1", "n2", "n3", "n4");
-        var minSync = 3;
-        var rf = appRf(minSync, members.size());
+        var replicas = 3;
+        var rf = ReplicaPlacement.replicationFactor(replicas, members.size());
 
         // Collect every partition for which a chosen self is a replica.
         NodeId self = null;
@@ -286,7 +278,7 @@ class ReplicaSetControllerTest {
         var ctrl = controller(registry,
                               self,
                               new AtomicReference<>(members),
-                              appCatalog(minSync),
+                              appCatalog(replicas),
                               (stream, partition) -> fired.add(new PartitionKey(stream, partition)));
 
         ctrl.reconcile();

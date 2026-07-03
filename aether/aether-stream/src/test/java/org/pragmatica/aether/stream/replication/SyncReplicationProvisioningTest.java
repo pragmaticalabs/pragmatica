@@ -16,12 +16,14 @@ import static org.pragmatica.aether.stream.replication.ReplicaRegistry.replicaRe
 import static org.pragmatica.aether.stream.replication.ReplicationManager.replicationManager;
 import static org.pragmatica.aether.stream.replication.ReplicationMessage.ReplicateAck.replicateAck;
 
-/// #378 end-to-end provisioning: the effective APP replication factor (owner + `minSyncReplicas` sync
-/// peers) sizes the HRW replica set so that a synchronous publish awaiting `minSyncReplicas` DISTINCT
-/// NON-SELF acks is SATISFIABLE. Composes the real formula
+/// #262 two-knob end-to-end provisioning: the `replicas` knob alone sizes the HRW replica set
+/// (`RF = clamp(replicas, 1, N)`, owner + `replicas − 1` peers), while the independent
+/// `min-sync-replicas` knob (which COUNTS the owner) sets the synchronous write-ack floor to
+/// `minAcks = min-sync-replicas − 1` DISTINCT NON-SELF acks. Composes the real formula
 /// ({@link ReplicaPlacement#replicationFactor(int, int)}) → placement ({@link ReplicaPlacement#place})
-/// → registry → {@link ReplicationManager#awaitReplication}. Before the fix the set was one peer short,
-/// so every `minSyncReplicas >= 1` await failed NOT_ENOUGH_REPLICAS.
+/// → registry → {@link ReplicationManager#awaitReplication}. With `replicas ≥ min-sync-replicas` the
+/// required peers exist and the barrier is SATISFIABLE; a too-small cluster clamps RF down and the
+/// await then fails CLEARLY with `NOT_ENOUGH_REPLICAS` rather than silently under-provisioning.
 class SyncReplicationProvisioningTest {
     private static final String STREAM = "orders";
     private static final int PARTITION = 0;
@@ -37,13 +39,15 @@ class SyncReplicationProvisioningTest {
         return list;
     }
 
-    /// Provision `(STREAM, PARTITION)` at `minSyncReplicas` on an N-node cluster exactly as the runtime
-    /// does: effective RF → HRW placement → registry, with a manager whose governor is the placement
-    /// owner (so owner self-exclusion applies).
+    /// Provision `(STREAM, PARTITION)` at the `replicas` knob on an N-node cluster exactly as the
+    /// runtime does: effective RF (`clamp(replicas, 1, N)`) → HRW placement → registry, with a manager
+    /// whose governor is the placement owner (so owner self-exclusion applies). The `min-sync-replicas`
+    /// knob is applied separately by each test as the `minAcks` (= `min-sync-replicas − 1`) argument to
+    /// {@link ReplicationManager#awaitReplication}.
     private record Provisioned(Placement placement, ReplicaRegistry registry, ReplicationManager manager) {
-        static Provisioned provision(int minSyncReplicas, int clusterSize) {
+        static Provisioned provision(int replicas, int clusterSize) {
             var members = nodes(clusterSize);
-            var rf = ReplicaPlacement.replicationFactor(minSyncReplicas, clusterSize);
+            var rf = ReplicaPlacement.replicationFactor(replicas, clusterSize);
             var placement = ReplicaPlacement.place(STREAM, PARTITION, members, rf)
                                             .or(() -> {
                                                 throw new AssertionError("expected a placement");
@@ -66,10 +70,10 @@ class SyncReplicationProvisioningTest {
     }
 
     @Test
-    void minSyncOne_ownerPlusOnePeer_resolvesOnPeerAck() {
-        // #378: minSyncReplicas=1 → RF=2 = owner + 1 peer. The await for minAcks=1 RESOLVES on that
-        // single peer's ack. Before the fix RF was 1 (owner only) → 0 peers → NOT_ENOUGH_REPLICAS.
-        var provisioned = Provisioned.provision(1, 3);
+    void minSyncTwo_ownerPlusOnePeer_resolvesOnPeerAck() {
+        // #262: replicas=2 → RF=2 = owner + 1 peer. min-sync-replicas=2 (owner + 1 in-sync peer) →
+        // minAcks = 2 − 1 = 1, so the await RESOLVES on that single peer's ack.
+        var provisioned = Provisioned.provision(2, 3);
         assertThat(provisioned.peers()).hasSize(1);
         var peer = provisioned.peers().getFirst();
 
@@ -81,9 +85,10 @@ class SyncReplicationProvisioningTest {
     }
 
     @Test
-    void minSyncTwo_ownerPlusTwoPeers_resolvesOnTwoPeerAcks() {
-        // #378: minSyncReplicas=2 → RF=3 = owner + 2 peers. minAcks=2 needs BOTH peers to ack.
-        var provisioned = Provisioned.provision(2, 5);
+    void minSyncThree_ownerPlusTwoPeers_resolvesOnTwoPeerAcks() {
+        // #262: replicas=3 → RF=3 = owner + 2 peers. min-sync-replicas=3 → minAcks = 3 − 1 = 2 needs
+        // BOTH peers to ack.
+        var provisioned = Provisioned.provision(3, 5);
         assertThat(provisioned.peers()).hasSize(2);
         var peers = provisioned.peers();
 
@@ -96,10 +101,11 @@ class SyncReplicationProvisioningTest {
     }
 
     @Test
-    void minSyncTwo_clusterTooSmall_failsNotEnoughReplicas() {
-        // #378: minSyncReplicas + 1 > N. RF clamps to N=2 (owner + 1 peer), one peer short of minAcks=2,
-        // so the await fails CLEARLY with NOT_ENOUGH_REPLICAS — no silent under-provisioning.
-        var provisioned = Provisioned.provision(2, 2);
+    void minSyncExceedsClusterPeers_failsNotEnoughReplicas() {
+        // #262: replicas=3 requested but cluster N=2 → RF clamps to 2 (owner + 1 peer). With
+        // min-sync-replicas=3 → minAcks=2 the barrier needs 2 peers but only 1 exists, so the await
+        // fails CLEARLY with NOT_ENOUGH_REPLICAS — no silent under-provisioning.
+        var provisioned = Provisioned.provision(3, 2);
         assertThat(provisioned.peers()).hasSize(1);
 
         var result = provisioned.manager().awaitReplication(STREAM, PARTITION, OFFSET, 2).await();
@@ -108,8 +114,8 @@ class SyncReplicationProvisioningTest {
 
     @Test
     void minSyncZero_eventualDefault_ownerOnly_unaffected() {
-        // #378: minSyncReplicas=0 (EVENTUAL) is unchanged — RF=1, owner only, no sync peers.
-        var provisioned = Provisioned.provision(0, 5);
+        // #262: replicas=1 / min-sync-replicas=0 (EVENTUAL) is unchanged — RF=1, owner only, no peers.
+        var provisioned = Provisioned.provision(1, 5);
 
         assertThat(provisioned.placement().replicas()).containsExactly(provisioned.placement().owner());
         assertThat(provisioned.peers()).isEmpty();

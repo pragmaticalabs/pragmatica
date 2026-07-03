@@ -214,10 +214,10 @@ class ReplicationManagerTest {
 
         @Test
         void selfInReplicaSet_isNotCounted_norReplicatedTo() {
-            // #262.2/.5 + #378: the HRW set is owner-first so it contains GOVERNOR (self). Under the
-            // corrected provisioning (RF = owner + minSyncReplicas peers) a minSyncReplicas=2 stream
-            // registers self + TWO real peers, so minAcks=2 is satisfiable by the peer acks alone —
-            // self is neither a replication target nor a counted ack.
+            // #262.2/.5: the HRW set is owner-first so it contains GOVERNOR (self). A replicas=3 /
+            // min-sync-replicas=3 stream registers self (owner) + TWO real peers, so
+            // minAcks = min-sync-replicas − 1 = 2 is satisfiable by the peer acks alone — self is
+            // neither a replication target nor a counted ack.
             registry.registerReplica(STREAM, PARTITION, GOVERNOR); // self, owner-first
             registry.registerReplica(STREAM, PARTITION, REPLICA_A);
             registry.registerReplica(STREAM, PARTITION, REPLICA_B);
@@ -239,10 +239,10 @@ class ReplicationManagerTest {
 
         @Test
         void awaitReplication_fewerPeersThanMinAcks_failsNotEnoughReplicas() {
-            // #378: when the cluster is too small to provision `minSyncReplicas` peers (owner + one peer
-            // but minAcks=2), the await fails CLEARLY with NOT_ENOUGH_REPLICAS rather than silently
-            // under-provisioning. This is the manager-side signal the RF clamp relies on when
-            // minSyncReplicas + 1 > N.
+            // #262: when min-sync-replicas demands more distinct peer acks than the provisioned set can
+            // supply (here replicas=2 → owner + one peer, but min-sync-replicas=3 → minAcks=2), the
+            // await fails CLEARLY with NOT_ENOUGH_REPLICAS rather than silently under-provisioning. This
+            // is the manager-side signal the RF clamp relies on when the cluster is too small.
             registry.registerReplica(STREAM, PARTITION, GOVERNOR); // self, owner-first
             registry.registerReplica(STREAM, PARTITION, REPLICA_A); // only one real peer
 
