@@ -18,6 +18,7 @@ import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValueRemove;
 import org.pragmatica.lang.Contract;
+import org.pragmatica.lang.Functions.Fn0;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
@@ -27,6 +28,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -94,7 +97,7 @@ public class ObservabilityConfigRegistry implements ObservabilityCellRegistrar {
     public Unit register(ObservabilityStrategyCell cell) {
         instances.computeIfAbsent(cell.key(), _ -> ConcurrentHashMap.newKeySet())
                  .add(cell);
-        cell.swap(strategyFor(configs.getOrDefault(cell.key(), AspectObservabilityConfig.OFF)));
+        cell.swap(strategyFor(cell, configs.getOrDefault(cell.key(), AspectObservabilityConfig.OFF)));
 
         return Unit.unit();
     }
@@ -118,9 +121,13 @@ public class ObservabilityConfigRegistry implements ObservabilityCellRegistrar {
         }
     }
 
-    private void swapAll(String registryKey, InvocationStrategy strategy) {
+    /// Recomposes and swaps the strategy for every live cell sharing `registryKey`. Composition is
+    /// per-cell (not one shared strategy) because a stateful facet — the embryonic counting metrics
+    /// facet — binds to each cell's own storage slot; the north-south route cell and east-west bridge
+    /// cell of one method must each count into their own AtomicLong.
+    private void swapAll(String registryKey, AspectObservabilityConfig snapshot) {
         instances.getOrDefault(registryKey, Set.of())
-                 .forEach(cell -> cell.swap(strategy));
+                 .forEach(cell -> cell.swap(strategyFor(cell, snapshot)));
     }
 
     @MessageReceiver
@@ -132,7 +139,7 @@ public class ObservabilityConfigRegistry implements ObservabilityCellRegistrar {
         var snapshot = snapshotOf(value);
 
         configs.put(registryKey, snapshot);
-        swapAll(registryKey, strategyFor(snapshot));
+        swapAll(registryKey, snapshot);
         log.debug("Observability config updated from cluster: {} -> logging={} metrics={} spans={} tracing={} depth={}",
                   registryKey,
                   value.logging(),
@@ -149,7 +156,7 @@ public class ObservabilityConfigRegistry implements ObservabilityCellRegistrar {
         var registryKey = key.artifactBase() + "/" + key.methodName();
 
         configs.remove(registryKey);
-        swapAll(registryKey, InvocationStrategy.IDENTITY);
+        swapAll(registryKey, AspectObservabilityConfig.OFF);
         log.debug("Observability config removed from cluster: {}", registryKey);
     }
 
@@ -201,9 +208,34 @@ public class ObservabilityConfigRegistry implements ObservabilityCellRegistrar {
         return Map.copyOf(configs);
     }
 
+    /// Live invocation count for an injection point — the read path of the embryonic metrics facet
+    /// (#277 increment 3) for tests and ops. Sums the counters across every live cell sharing the key
+    /// rather than reading one cell: when the north-south route cell and the east-west bridge cell of a
+    /// method are both registered they each count into their own storage, so the sum is the honest total
+    /// for the injection point. `None` when no live cell is registered for the key (e.g. after a slice
+    /// unregisters and its cells are deregistered); `Some(0)` when cells are registered but the facet
+    /// has never been activated (still identity) or was switched off before any call.
+    public Option<Long> invocationCount(String artifactBase, String methodName) {
+        return Option.option(instances.get(artifactBase + "/" + methodName))
+                     .map(ObservabilityConfigRegistry::sumCounters);
+    }
+
+    private static long sumCounters(Set<ObservabilityStrategyCell> cells) {
+        return cells.stream()
+                    .mapToLong(ObservabilityConfigRegistry::counterValue)
+                    .sum();
+    }
+
+    private static long counterValue(ObservabilityStrategyCell cell) {
+        return Option.option(cell.storage().get())
+                     .map(AtomicLong.class::cast)
+                     .map(AtomicLong::get)
+                     .or(0L);
+    }
+
     private Unit applyConfig(String registryKey, AspectObservabilityConfig snapshot) {
         configs.put(registryKey, snapshot);
-        swapAll(registryKey, strategyFor(snapshot));
+        swapAll(registryKey, snapshot);
         log.info("Observability config set for {}: logging={} metrics={} spans={} tracing={} depth={}",
                  registryKey,
                  snapshot.logging(),
@@ -217,24 +249,43 @@ public class ObservabilityConfigRegistry implements ObservabilityCellRegistrar {
 
     private Unit removeFromRegistry(String registryKey) {
         configs.remove(registryKey);
-        swapAll(registryKey, InvocationStrategy.IDENTITY);
+        swapAll(registryKey, AspectObservabilityConfig.OFF);
         log.info("Observability config removed for {}", registryKey);
 
         return Unit.unit();
     }
 
     /// Translates the last-known config for an injection point into the composed "around" strategy
-    /// swapped into its cell. Placeholder with the final shape for this increment: `allOff()` configs
-    /// resolve to the identity strategy (zero-cost passthrough); non-off configs resolve to identity as
-    /// well until facet composition lands, so the swap seam is exercised end-to-end while per-call
-    /// behaviour stays unchanged.
-    private static InvocationStrategy strategyFor(AspectObservabilityConfig config) {
+    /// swapped into `cell`. `allOff()` configs resolve to the zero-cost identity singleton (untouched
+    /// passthrough); any non-off config resolves to the counting strategy — the metrics facet in
+    /// embryonic form (#277 increment 3): it counts invocations into the cell's own storage slot. The
+    /// facet is per-cell (hence the cell parameter, not just the config): each cell counts into its own
+    /// AtomicLong, so the two seams of one method never share a counter. Full facet composition
+    /// (logging / spans / tracing bodies, facet layering) lands in increment 4.
+    private static InvocationStrategy strategyFor(ObservabilityStrategyCell cell, AspectObservabilityConfig config) {
         if (config.allOff()) {
             return InvocationStrategy.IDENTITY;
         }
 
-        // facet composition lands in increment 4
-        return InvocationStrategy.IDENTITY;
+        return countingStrategy(cell.storage());
+    }
+
+    /// Composes the counting strategy once, here at swap time (never per call). Plants an AtomicLong on
+    /// first activation — `compareAndSet(null, ...)` keeps any prior counter across re-activation cycles,
+    /// so a metrics -> off -> metrics flip resumes the count rather than resetting it — captures it, and
+    /// returns a closure that increments then delegates. The hot path is one `incrementAndGet` plus one
+    /// delegate, allocation-free.
+    private static InvocationStrategy countingStrategy(AtomicReference<Object> storage) {
+        storage.compareAndSet(null, new AtomicLong());
+        var counter = (AtomicLong) storage.get();
+
+        return proceed -> countThenProceed(counter, proceed);
+    }
+
+    private static Promise<?> countThenProceed(AtomicLong counter, Fn0<Promise<?>> proceed) {
+        counter.incrementAndGet();
+
+        return proceed.apply();
     }
 
     private static AspectObservabilityConfig snapshotOf(ObservabilityConfigValue value) {

@@ -31,9 +31,10 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// #277: proves the write-side registry translates KV-sourced AspectObservabilityConfig snapshots into
 /// "around" strategies and swaps them into the live per-injection-point ObservabilityStrategyCell
 /// (push-on-event), preserves the register-before-seed load/put race fix, and that deregister drops the
-/// live reference so a later KV-update cannot touch an unloaded injection point. While facet
-/// composition is a placeholder (every config resolves to IDENTITY), swaps are made observable by
-/// planting a distinct sentinel strategy and asserting whether the registry overwrote it.
+/// live reference so a later KV-update cannot touch an unloaded injection point. `allOff()` configs
+/// resolve to the identity singleton; a non-off config composes the counting strategy (embryonic
+/// metrics facet, increment 3), so swaps are observed both by reference (overwriting a planted sentinel)
+/// and by behaviour (a call through the cell increments the registry-visible counter).
 class ObservabilityConfigRegistryTest {
     private static final String ARTIFACT = "com.example:my-slice";
     private static final String METHOD = "handle";
@@ -72,7 +73,9 @@ class ObservabilityConfigRegistryTest {
         assertThat(stored.spans()).isFalse();
         assertThat(stored.tracing()).isFalse();
         assertThat(stored.depth()).isEqualTo(3);
-        assertThat(cell.strategy()).isSameAs(InvocationStrategy.IDENTITY);
+        // Non-off config composes the counting strategy: the sentinel-free cell now holds a non-identity
+        // strategy (its behaviour is exercised directly in onObservabilityConfigPut_withNonOffConfig_*).
+        assertThat(cell.strategy()).isNotSameAs(InvocationStrategy.IDENTITY);
     }
 
     @Test
@@ -84,8 +87,8 @@ class ObservabilityConfigRegistryTest {
         registry.register(cell);
         var stored = registry.getConfig(ARTIFACT, METHOD);
 
-        // The seed read the last-known config and swapped the sentinel out for its strategy.
-        assertThat(cell.strategy()).isSameAs(InvocationStrategy.IDENTITY);
+        // The seed read the last-known (non-off) config and swapped the sentinel out for its strategy.
+        assertThat(cell.strategy()).isNotSameAs(InvocationStrategy.IDENTITY);
         assertThat(stored.logging()).isTrue();
         assertThat(stored.spans()).isTrue();
         assertThat(stored.depth()).isEqualTo(5);
@@ -148,22 +151,32 @@ class ObservabilityConfigRegistryTest {
         assertThat(stored.spans()).isFalse();
         assertThat(stored.tracing()).isTrue();
         assertThat(stored.depth()).isEqualTo(6);
-        assertThat(cell.strategy()).isSameAs(InvocationStrategy.IDENTITY);
+        assertThat(cell.strategy()).isNotSameAs(InvocationStrategy.IDENTITY);
     }
 
     @Test
-    void onObservabilityConfigPut_withNonOffConfig_stillSwapsCell() {
+    void onObservabilityConfigPut_withNonOffConfig_swapsInCountingStrategy() {
         var cell = ObservabilityStrategyCell.observabilityStrategyCell(ARTIFACT, METHOD);
         registry.register(cell);
         var planted = sentinel();
         cell.swap(planted);
 
-        registry.onObservabilityConfigPut(put(true, true, true, true, 9));
+        registry.onObservabilityConfigPut(put(false, true, false, false, 0));
 
-        // The seam fires even while composition is a placeholder: the planted sentinel was overwritten
-        // by the recomputed (identity, for now) strategy.
+        // Non-off composes the counting strategy (embryonic metrics facet): the planted sentinel is
+        // overwritten, the counter is planted at zero, and a call through the cell increments it.
         assertThat(cell.strategy()).isNotSameAs(planted);
-        assertThat(cell.strategy()).isSameAs(InvocationStrategy.IDENTITY);
+        assertThat(cell.strategy()).isNotSameAs(InvocationStrategy.IDENTITY);
+        assertThat(registry.invocationCount(ARTIFACT, METHOD)).isEqualTo(Option.some(0L));
+
+        cell.around(() -> Promise.success("x")).await();
+
+        assertThat(registry.invocationCount(ARTIFACT, METHOD)).isEqualTo(Option.some(1L));
+    }
+
+    @Test
+    void invocationCount_isNone_forUnregisteredKey() {
+        assertThat(registry.invocationCount(ARTIFACT, METHOD)).isEqualTo(Option.<Long>none());
     }
 
     // A distinct InvocationStrategy instance (never InvocationStrategy.IDENTITY); behaviour is
