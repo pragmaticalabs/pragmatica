@@ -1,8 +1,9 @@
 # Placement-Aware Stream Hydration — Design Specification
 
-**Version:** 0.1
-**Status:** Draft
-**Date:** 2026-06-24
+**Version:** 0.2
+**Status:** Draft — **decision-complete** (all §14 open questions resolved 2026-07-04; three by the
+landed #262/#410 two-knob + failover-convergence work, two by config-knobbed defaults)
+**Date:** 2026-06-24 (updated 2026-07-04)
 **Author:** design-stream
 **Issue:** #265 (folds in #261 backfill fix)
 **Related:** #165 (event-stream production readiness epic), #241 (community placement), #261 (backfill)
@@ -405,11 +406,14 @@ CLAUDE.md invariant #1).
 ```toml
 [streams]
 ring_budget_bytes      = "128MiB"   # per-node materialized-ring budget (DEFAULT_MAX_TOTAL_BYTES)
-replication_factor     = 3          # RF; owner + (RF-1) replicas materialize each partition
+# NOTE (v0.2): RF is NOT a global config key. Each stream declares its own `replicas`
+# (two-knob model, #262/#410, StreamConfig field); the cap formula (§7) and budget
+# accounting (§6) use the PER-STREAM `replicas` at create-time validation.
 
 [streams.limits]
-# derived cap is computed at runtime; this is the ABSOLUTE upper guard (Kafka 100×nodes×RF style)
+# derived cap is computed at runtime; these are the ABSOLUTE upper guards (Kafka-style)
 max_partitions_per_stream_ceiling = 1024
+max_partitions_cluster_total      = "100x-nodes-x-maxrf"   # derived: 100 × N × max declared replicas; guards aggregate ring memory
 ```
 
 Per-stream `partitions` stays in the stream section; create-time validation (§7) rejects configs whose
@@ -476,17 +480,34 @@ serves complete history.
 
 ## 14. Open Questions
 
-1. **RF source.** Is `replication_factor` global, per-stream, or per-namespace? `ReplicaPlacement.replicationFactor(...)`
-   already takes a stream — confirm whether the cap formula should use a per-stream RF or a cluster default.
-2. **Reshuffle pacing policy.** When materialize-before-release would exceed budget (§6), what's the
-   pacing unit — one partition at a time per node, or a small concurrency window? Tune against backfill
-   throughput.
-3. **Backfill source selection** under multiple `SERVING` replicas — owner-only, or nearest/least-loaded
-   (ties to `hierarchical-storage-spec.md §9` and #241 zone-awareness)?
-4. **Absolute ceiling default.** Confirm the `max_partitions_per_stream_ceiling` default (proposed 1024)
-   and whether it should also bound *cluster-wide* total partitions (Kafka `200k`-style guard).
-5. **Pre-membership config replay.** Confirm the catalog already queues `StreamConfigKey` commits that
-   arrive before placement is live (§5.4), or whether a small replay buffer is net-new.
+**All five resolved (v0.2, 2026-07-04)** — three by the #262/#410 two-knob + failover-convergence work
+that landed after this spec was drafted, two by default-setting (config-knobbed, tunable):
+
+1. **RF source. RESOLVED: per-stream.** The two-knob model (#262/#410) made `replicas` a first-class
+   per-stream `StreamConfig` field (default 1; durable pub-sub topics constrain it per
+   `durable-pubsub-spec.md` §3). The cap formula (§7) and budget accounting (§6) use each stream's
+   declared `replicas` at create-time validation. The global `[streams] replication_factor` key is
+   removed from §10 — a cluster default, if ever wanted, is a default *for the per-stream field*,
+   not a parallel source of truth.
+2. **Reshuffle pacing. RESOLVED: bounded concurrency window, default 2 partitions per node,**
+   config `[streams] reshuffle_concurrency = 2`. One-at-a-time starves large reshuffles; unbounded
+   floods backfill. A small window is the standard middle; tune against backfill throughput once
+   §12's implementation exposes the reshuffle-lag metric.
+3. **Backfill source selection. RESOLVED: owner-first with probed-survivor fallback — the mechanism
+   that now exists.** Post-#410, `PartitionBackfill` pulls from the owner (`backfillFromOwner`), and
+   an owner with a blind local registry probes peers' real tails and catches up from the best
+   reachable survivor (`probeThenPromoteOwner`; epoch-adopting recovery appends). Hydration reuses
+   exactly this path — no new selection logic. Nearest/least-loaded selection is deferred to #241
+   zone-awareness, as a pure optimization behind the same seam.
+4. **Absolute ceiling default. RESOLVED: 1024 per stream, PLUS a cluster-wide total-partitions
+   guard** (`100 × nodes × max declared replicas`, §10) — the per-stream ceiling alone doesn't
+   bound aggregate ring memory across many streams; the cluster guard does (Kafka-style).
+5. **Pre-membership config replay. RESOLVED: no replay buffer needed — consensus re-apply is the
+   replay.** Committed `StreamConfigKey` entries re-apply from the log/snapshot on boot, and each
+   apply fires the Put handlers (catalog hydration + the reconcile edge added by #410). Reconcile
+   is suppressed while quorum-PASSIVE and re-fired on the PASSIVE→ACTIVE edge, so placement
+   catches up regardless of arrival order. Verified against the #410 wiring (AetherNode
+   `onStreamConfigPut` + reconcile-edge registration order).
 
 ---
 
