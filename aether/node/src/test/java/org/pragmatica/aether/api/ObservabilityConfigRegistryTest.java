@@ -30,14 +30,18 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 /// #277: proves the write-side registry translates KV-sourced AspectObservabilityConfig snapshots into
 /// "around" strategies and swaps them into the live per-injection-point ObservabilityStrategyCell
-/// (push-on-event), preserves the register-before-seed load/put race fix, and that deregister drops the
-/// live reference so a later KV-update cannot touch an unloaded injection point. `allOff()` configs
-/// resolve to the identity singleton; a non-off config composes the counting strategy (embryonic
-/// metrics facet, increment 3), so swaps are observed both by reference (overwriting a planted sentinel)
-/// and by behaviour (a call through the cell increments the registry-visible counter).
+/// (push-on-event), resolves each cell against the method -> artifact -> global -> baseline scope
+/// hierarchy, preserves the register-before-seed load/put race fix, and that deregister drops the live
+/// reference so a later KV-update cannot touch an unloaded injection point. Absence-default posture
+/// (variant C): a cell with no config at any scope resolves to the counting baseline, not identity; an
+/// explicit `allOff()` config resolves to the identity singleton (deliberate darkening); a non-off config
+/// composes the counting strategy (embryonic metrics facet, increment 3). Swaps are observed both by
+/// reference (overwriting a planted sentinel / switching identity <-> non-identity) and by behaviour (a
+/// call through the cell increments the registry-visible counter).
 class ObservabilityConfigRegistryTest {
     private static final String ARTIFACT = "com.example:my-slice";
     private static final String METHOD = "handle";
+    private static final String WILDCARD = "*";
     private static final String KEY = ARTIFACT + "/" + METHOD;
 
     private KVStore<AetherKey, AetherValue> kvStore;
@@ -50,13 +54,19 @@ class ObservabilityConfigRegistryTest {
     }
 
     @Test
-    void register_seedsCell_atIdentityStrategy() {
+    void register_seedsCell_atBaselineStrategy_countingByDefault() {
         var cell = ObservabilityStrategyCell.observabilityStrategyCell(ARTIFACT, METHOD);
 
         registry.register(cell);
 
-        assertThat(cell.strategy()).isSameAs(InvocationStrategy.IDENTITY);
+        // Absence-default posture: no config at any scope resolves to the counting baseline, not identity.
+        assertThat(cell.strategy()).isNotSameAs(InvocationStrategy.IDENTITY);
         assertThat(registry.getConfig(ARTIFACT, METHOD).allOff()).isTrue();
+        assertThat(registry.invocationCount(ARTIFACT, METHOD)).isEqualTo(Option.some(0L));
+
+        cell.around(() -> Promise.success("x")).await();
+
+        assertThat(registry.invocationCount(ARTIFACT, METHOD)).isEqualTo(Option.some(1L));
     }
 
     @Test
@@ -106,7 +116,7 @@ class ObservabilityConfigRegistryTest {
     }
 
     @Test
-    void onObservabilityConfigRemove_swapsLiveCellToIdentity() {
+    void onObservabilityConfigRemove_swapsLiveCellToBaseline() {
         var cell = ObservabilityStrategyCell.observabilityStrategyCell(ARTIFACT, METHOD);
         registry.register(cell);
 
@@ -114,8 +124,13 @@ class ObservabilityConfigRegistryTest {
         cell.swap(sentinel());
         registry.onObservabilityConfigRemove(remove());
 
-        assertThat(cell.strategy()).isSameAs(InvocationStrategy.IDENTITY);
+        // With no broader-scope config, removal falls back to the counting baseline (NOT identity): the
+        // sentinel is overwritten and a call counts.
+        assertThat(cell.strategy()).isNotSameAs(InvocationStrategy.IDENTITY);
         assertThat(registry.allConfigs()).doesNotContainKey(KEY);
+
+        cell.around(() -> Promise.success("x")).await();
+        assertThat(registry.invocationCount(ARTIFACT, METHOD)).isEqualTo(Option.some(1L));
     }
 
     @Test
@@ -179,6 +194,125 @@ class ObservabilityConfigRegistryTest {
         assertThat(registry.invocationCount(ARTIFACT, METHOD)).isEqualTo(Option.<Long>none());
     }
 
+    @Test
+    void methodScope_overridesArtifactScope_wholeSnapshot() {
+        var cell = ObservabilityStrategyCell.observabilityStrategyCell(ARTIFACT, METHOD);
+        registry.register(cell);
+
+        // Artifact scope darkens (all-off -> identity); the nearer method scope re-lights (metrics).
+        registry.onObservabilityConfigPut(putScope(ARTIFACT, WILDCARD, false, false, false, false, 0));
+        registry.onObservabilityConfigPut(putScope(ARTIFACT, METHOD, false, true, false, false, 0));
+
+        // Nearest scope wins whole: the method's metrics config, not a merge with the artifact all-off.
+        assertThat(cell.strategy()).isNotSameAs(InvocationStrategy.IDENTITY);
+        cell.around(() -> Promise.success("x")).await();
+        assertThat(registry.invocationCount(ARTIFACT, METHOD)).isEqualTo(Option.some(1L));
+    }
+
+    @Test
+    void artifactScope_overridesGlobalScope_wholeSnapshot() {
+        var cell = ObservabilityStrategyCell.observabilityStrategyCell(ARTIFACT, METHOD);
+        registry.register(cell);
+
+        // Global scope darkens (all-off); the nearer artifact scope re-lights (metrics).
+        registry.onObservabilityConfigPut(putScope(WILDCARD, WILDCARD, false, false, false, false, 0));
+        registry.onObservabilityConfigPut(putScope(ARTIFACT, WILDCARD, false, true, false, false, 0));
+
+        assertThat(cell.strategy()).isNotSameAs(InvocationStrategy.IDENTITY);
+        cell.around(() -> Promise.success("x")).await();
+        assertThat(registry.invocationCount(ARTIFACT, METHOD)).isEqualTo(Option.some(1L));
+    }
+
+    @Test
+    void removalAtMethodScope_fallsBackToArtifactConfig_notIdentity() {
+        var cell = ObservabilityStrategyCell.observabilityStrategyCell(ARTIFACT, METHOD);
+        registry.register(cell);
+
+        // Artifact scope counts; the method scope darkens on top (all-off -> identity, counter frozen).
+        registry.onObservabilityConfigPut(putScope(ARTIFACT, WILDCARD, false, true, false, false, 0));
+        registry.onObservabilityConfigPut(putScope(ARTIFACT, METHOD, false, false, false, false, 0));
+        assertThat(cell.strategy()).isSameAs(InvocationStrategy.IDENTITY);
+        cell.around(() -> Promise.success("x")).await();
+        assertThat(registry.invocationCount(ARTIFACT, METHOD)).isEqualTo(Option.some(0L));
+
+        // Removing the method-scope config re-swaps to the artifact config (counting), NOT identity.
+        registry.onObservabilityConfigRemove(removeScope(ARTIFACT, METHOD));
+
+        assertThat(cell.strategy()).isNotSameAs(InvocationStrategy.IDENTITY);
+        cell.around(() -> Promise.success("x")).await();
+        assertThat(registry.invocationCount(ARTIFACT, METHOD)).isEqualTo(Option.some(1L));
+    }
+
+    @Test
+    void removalOfLastScope_fallsBackToBaseline_countingResumes() {
+        var cell = ObservabilityStrategyCell.observabilityStrategyCell(ARTIFACT, METHOD);
+        registry.register(cell);
+
+        // The only config darkens the method (all-off -> identity, baseline suppressed).
+        registry.onObservabilityConfigPut(putScope(ARTIFACT, METHOD, false, false, false, false, 0));
+        assertThat(cell.strategy()).isSameAs(InvocationStrategy.IDENTITY);
+        cell.around(() -> Promise.success("x")).await();
+        assertThat(registry.invocationCount(ARTIFACT, METHOD)).isEqualTo(Option.some(0L));
+
+        // Removing the last scope falls back to the BASELINE: counting resumes.
+        registry.onObservabilityConfigRemove(removeScope(ARTIFACT, METHOD));
+
+        assertThat(cell.strategy()).isNotSameAs(InvocationStrategy.IDENTITY);
+        cell.around(() -> Promise.success("x")).await();
+        assertThat(registry.invocationCount(ARTIFACT, METHOD)).isEqualTo(Option.some(1L));
+    }
+
+    @Test
+    void unregisteredConfigCell_countsByDefault_baseline() {
+        var cell = ObservabilityStrategyCell.observabilityStrategyCell(ARTIFACT, METHOD);
+        registry.register(cell);
+
+        // No config at any scope: the baseline counts by default ("off means baseline, not blind").
+        cell.around(() -> Promise.success("x")).await();
+        cell.around(() -> Promise.success("x")).await();
+
+        assertThat(registry.invocationCount(ARTIFACT, METHOD)).isEqualTo(Option.some(2L));
+    }
+
+    @Test
+    void explicitAllOffAtGlobalScope_darkensEverything_identity() {
+        var cell = ObservabilityStrategyCell.observabilityStrategyCell(ARTIFACT, METHOD);
+        registry.register(cell);
+        cell.around(() -> Promise.success("x")).await();
+        assertThat(registry.invocationCount(ARTIFACT, METHOD)).isEqualTo(Option.some(1L));
+
+        // Explicit all-off at the global scope darkens every cell to identity; the counter freezes.
+        registry.onObservabilityConfigPut(putScope(WILDCARD, WILDCARD, false, false, false, false, 0));
+
+        assertThat(cell.strategy()).isSameAs(InvocationStrategy.IDENTITY);
+        cell.around(() -> Promise.success("x")).await();
+        cell.around(() -> Promise.success("x")).await();
+        assertThat(registry.invocationCount(ARTIFACT, METHOD)).isEqualTo(Option.some(1L));
+    }
+
+    @Test
+    void methodScopeNonOff_underGlobalAllOff_relightsJustThatMethod() {
+        var lit = ObservabilityStrategyCell.observabilityStrategyCell(ARTIFACT, "lit");
+        var dark = ObservabilityStrategyCell.observabilityStrategyCell(ARTIFACT, "dark");
+        registry.register(lit);
+        registry.register(dark);
+
+        // Global all-off darkens both methods.
+        registry.onObservabilityConfigPut(putScope(WILDCARD, WILDCARD, false, false, false, false, 0));
+        assertThat(lit.strategy()).isSameAs(InvocationStrategy.IDENTITY);
+        assertThat(dark.strategy()).isSameAs(InvocationStrategy.IDENTITY);
+
+        // A method-scope non-off config re-lights just that one method.
+        registry.onObservabilityConfigPut(putScope(ARTIFACT, "lit", false, true, false, false, 0));
+        assertThat(lit.strategy()).isNotSameAs(InvocationStrategy.IDENTITY);
+        assertThat(dark.strategy()).isSameAs(InvocationStrategy.IDENTITY);
+
+        lit.around(() -> Promise.success("x")).await();
+        dark.around(() -> Promise.success("x")).await();
+        assertThat(registry.invocationCount(ARTIFACT, "lit")).isEqualTo(Option.some(1L));
+        assertThat(registry.invocationCount(ARTIFACT, "dark")).isEqualTo(Option.some(0L));
+    }
+
     // A distinct InvocationStrategy instance (never InvocationStrategy.IDENTITY); behaviour is
     // irrelevant, only reference identity is asserted to detect whether a swap fired.
     private static InvocationStrategy sentinel() {
@@ -190,14 +324,28 @@ class ObservabilityConfigRegistryTest {
                                                                                   boolean spans,
                                                                                   boolean tracing,
                                                                                   int depth) {
-        var key = ObservabilityConfigKey.observabilityConfigKey(ARTIFACT, METHOD);
-        var value = ObservabilityConfigValue.observabilityConfigValue(ARTIFACT, METHOD, logging, metrics, spans, tracing, depth);
+        return putScope(ARTIFACT, METHOD, logging, metrics, spans, tracing, depth);
+    }
+
+    private static ValuePut<ObservabilityConfigKey, ObservabilityConfigValue> putScope(String artifactBase,
+                                                                                       String methodName,
+                                                                                       boolean logging,
+                                                                                       boolean metrics,
+                                                                                       boolean spans,
+                                                                                       boolean tracing,
+                                                                                       int depth) {
+        var key = ObservabilityConfigKey.observabilityConfigKey(artifactBase, methodName);
+        var value = ObservabilityConfigValue.observabilityConfigValue(artifactBase, methodName, logging, metrics, spans, tracing, depth);
 
         return new ValuePut<>(new KVCommand.Put<>(key, value), Option.none());
     }
 
     private static ValueRemove<ObservabilityConfigKey, ObservabilityConfigValue> remove() {
-        var key = ObservabilityConfigKey.observabilityConfigKey(ARTIFACT, METHOD);
+        return removeScope(ARTIFACT, METHOD);
+    }
+
+    private static ValueRemove<ObservabilityConfigKey, ObservabilityConfigValue> removeScope(String artifactBase, String methodName) {
+        var key = ObservabilityConfigKey.observabilityConfigKey(artifactBase, methodName);
 
         return new ValueRemove<>(new KVCommand.Remove<>(key), Option.none());
     }

@@ -94,6 +94,39 @@ class ObservabilityConfigKeyTest {
     }
 
     @Nested
+    class Wildcards {
+        @Test
+        void observabilityConfigKey_globalScope_roundtrips() {
+            var key = ObservabilityConfigKey.observabilityConfigKey("*", "*");
+
+            assertThat(key.asString()).isEqualTo("obs-config/*/*");
+
+            ObservabilityConfigKey.observabilityConfigKey(key.asString())
+                                  .onSuccess(parsed -> {
+                                      assertThat(parsed.artifactBase()).isEqualTo("*");
+                                      assertThat(parsed.methodName()).isEqualTo("*");
+                                      assertThat(parsed).isEqualTo(key);
+                                  })
+                                  .onFailureRun(Assertions::fail);
+        }
+
+        @Test
+        void observabilityConfigKey_artifactScope_roundtrips() {
+            var key = ObservabilityConfigKey.observabilityConfigKey("com.example:my-slice", "*");
+
+            assertThat(key.asString()).isEqualTo("obs-config/com.example:my-slice/*");
+
+            ObservabilityConfigKey.observabilityConfigKey(key.asString())
+                                  .onSuccess(parsed -> {
+                                      assertThat(parsed.artifactBase()).isEqualTo("com.example:my-slice");
+                                      assertThat(parsed.methodName()).isEqualTo("*");
+                                      assertThat(parsed).isEqualTo(key);
+                                  })
+                                  .onFailureRun(Assertions::fail);
+        }
+    }
+
+    @Nested
     class Equality {
         @Test
         void observabilityConfigKey_equality_works() {

@@ -30,16 +30,32 @@ import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.stream.Stream;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 
 // Write-side registry for the per-injection-point system-observability cell (#277). It owns the
-// last-known AspectObservabilityConfig snapshot per injection point (keyed `artifactBase + "/" +
-// methodName`) AND the live ObservabilityStrategyCell minted for each dispatch injection point. On a
-// KV-update event it translates the new snapshot into an "around" strategy and swaps it wholesale into
-// the live cell (push-on-event), so the per-call hot path never performs a registry lookup.
+// last-known AspectObservabilityConfig snapshot per config scope AND the live ObservabilityStrategyCell
+// minted for each dispatch injection point. On a KV-update event it re-resolves the affected cells against
+// the scope hierarchy, translates each effective snapshot into an "around" strategy, and swaps it
+// wholesale into the live cell (push-on-event), so the per-call hot path never performs a registry lookup.
+//
+// Config scopes, nearest-scope whole-snapshot override (never per-field merge). For a cell keyed
+// `base/method`: the method-scope config (exact key `base/method`) wins if present; else the artifact
+// scope (`base/*`); else the global scope (`*/*`); else the BASELINE. Scopes are plain-value keys in the
+// same `configs` map — a wildcard `*` is just a string — so no distinct key type is needed. A put/remove
+// at ANY scope re-resolves every AFFECTED live cell: a method put touches that key's cells; an artifact
+// put touches every live cell with prefix `base/`; a global put touches every live cell. Removal at a
+// scope re-resolves too (falling back to the next-broader scope, NOT necessarily identity). This is
+// control-plane work: the artifact/global fan-out scans `instances` — acceptable off the hot path.
+//
+// Absence-default posture (variant C): a cell with NO config at any scope resolves to the BASELINE
+// strategy (this increment: counting into the cell's storage), not identity. An explicit `allOff()` config
+// at any scope resolves to identity — the operator's deliberate darkening. The baseline collaborators
+// (sampler, trace store, logger) are injected through ObservabilityBaseline at construction (counting-only
+// for now); increment 5 moves the fleet facets into the baseline there.
 //
 // Distinct from ObservabilityDepthRegistry (depth / trace-rate tuning, read-on-demand): this registry
 // holds live cell references and swaps their behaviour. It IS the ObservabilityCellRegistrar the dispatch
@@ -48,21 +64,32 @@ import org.slf4j.LoggerFactory;
 // and the east-west bridge cell of the same method) — all are held in a per-key set and swapped together.
 public class ObservabilityConfigRegistry implements ObservabilityCellRegistrar {
     private static final Logger log = LoggerFactory.getLogger(ObservabilityConfigRegistry.class);
+    private static final String WILDCARD = "*";
+    private static final String GLOBAL_KEY = WILDCARD + "/" + WILDCARD;
 
     private final RabiaNode<KVCommand<AetherKey>> clusterNode;
     private final KVStore<AetherKey, AetherValue> kvStore;
+    private final ObservabilityBaseline baseline;
     private final Map<String, AspectObservabilityConfig> configs = new ConcurrentHashMap<>();
     private final Map<String, Set<ObservabilityStrategyCell>> instances = new ConcurrentHashMap<>();
 
     private ObservabilityConfigRegistry(RabiaNode<KVCommand<AetherKey>> clusterNode,
-                                        KVStore<AetherKey, AetherValue> kvStore) {
+                                        KVStore<AetherKey, AetherValue> kvStore,
+                                        ObservabilityBaseline baseline) {
         this.clusterNode = clusterNode;
         this.kvStore = kvStore;
+        this.baseline = baseline;
     }
 
     public static ObservabilityConfigRegistry observabilityConfigRegistry(RabiaNode<KVCommand<AetherKey>> clusterNode,
                                                                           KVStore<AetherKey, AetherValue> kvStore) {
-        var registry = new ObservabilityConfigRegistry(clusterNode, kvStore);
+        return observabilityConfigRegistry(clusterNode, kvStore, ObservabilityBaseline.countingOnly());
+    }
+
+    public static ObservabilityConfigRegistry observabilityConfigRegistry(RabiaNode<KVCommand<AetherKey>> clusterNode,
+                                                                          KVStore<AetherKey, AetherValue> kvStore,
+                                                                          ObservabilityBaseline baseline) {
+        var registry = new ObservabilityConfigRegistry(clusterNode, kvStore, baseline);
 
         registry.loadFromKvStore();
 
@@ -88,16 +115,17 @@ public class ObservabilityConfigRegistry implements ObservabilityCellRegistrar {
     }
 
     /// Registers a live ObservabilityStrategyCell for its injection point, then seeds it with the
-    /// strategy for the last-known snapshot (or OFF) so subsequent KV-update events swap its behaviour
-    /// in place. Registering BEFORE seeding closes the load/put race: a concurrent KV put either finds
-    /// the cell and swaps it, or lands before registration and is picked up by the seed read — both
-    /// converge on the strategy for the latest snapshot. Multiple cells may share one key; each joins
-    /// the key's set and all are swapped together.
+    /// strategy resolved against the scope hierarchy (method -> artifact -> global -> baseline) so
+    /// subsequent KV-update events swap its behaviour in place. Registering BEFORE seeding closes the
+    /// load/put race: a concurrent KV put either finds the cell and swaps it, or lands before
+    /// registration and is picked up by the seed read — both converge on the strategy for the latest
+    /// effective snapshot. Multiple cells may share one key; each joins the key's set and all are swapped
+    /// together.
     @Override
     public Unit register(ObservabilityStrategyCell cell) {
         instances.computeIfAbsent(cell.key(), _ -> ConcurrentHashMap.newKeySet())
                  .add(cell);
-        cell.swap(strategyFor(cell, configs.getOrDefault(cell.key(), AspectObservabilityConfig.OFF)));
+        cell.swap(resolvedStrategy(cell));
 
         return Unit.unit();
     }
@@ -121,14 +149,64 @@ public class ObservabilityConfigRegistry implements ObservabilityCellRegistrar {
         }
     }
 
-    /// Recomposes and swaps the strategy for every live cell sharing `registryKey`. Composition is
-    /// per-cell (not one shared strategy) because a stateful facet — the embryonic counting metrics
-    /// facet — binds to each cell's own storage slot; the north-south route cell and east-west bridge
-    /// cell of one method must each count into their own AtomicLong.
-    private void swapAll(String registryKey, AspectObservabilityConfig snapshot) {
-        instances.getOrDefault(registryKey, Set.of())
-                 .forEach(cell -> cell.swap(strategyFor(cell, snapshot)));
+    /// Re-resolves and swaps the strategy for every live cell AFFECTED by a change at the given config
+    /// scope. Method scope touches only that key's cells; artifact scope (`base/*`) touches every live
+    /// cell with prefix `base/`; global scope (`*/*`) touches every live cell. Each affected cell is
+    /// re-resolved independently against the full hierarchy — an artifact or global change never
+    /// overrides a cell that has its own nearer-scope config. Composition is per-cell (not one shared
+    /// strategy) because a stateful facet — the embryonic counting metrics facet — binds to each cell's
+    /// own storage slot; the north-south route cell and east-west bridge cell of one method each count
+    /// into their own AtomicLong.
+    private void reresolveAffected(String artifactBase, String methodName) {
+        affectedCells(artifactBase, methodName).forEach(this::reresolveCell);
     }
+
+    private void reresolveCell(ObservabilityStrategyCell cell) {
+        cell.swap(resolvedStrategy(cell));
+    }
+
+    // Fan-out over the live cells a scope change affects. The artifact/global arms scan `instances`
+    // (a weakly-consistent ConcurrentHashMap traversal) — control-plane cost paid off the hot path.
+    private Stream<ObservabilityStrategyCell> affectedCells(String artifactBase, String methodName) {
+        return switch (scopeOf(artifactBase, methodName)) {
+            case GLOBAL -> allCells();
+            case ARTIFACT -> cellsUnderArtifact(artifactBase);
+            case METHOD -> cellsUnderKey(artifactBase + "/" + methodName);
+        };
+    }
+
+    private Stream<ObservabilityStrategyCell> allCells() {
+        return instances.values()
+                        .stream()
+                        .flatMap(Set::stream);
+    }
+
+    private Stream<ObservabilityStrategyCell> cellsUnderArtifact(String artifactBase) {
+        var prefix = artifactBase + "/";
+
+        return instances.entrySet()
+                        .stream()
+                        .filter(entry -> entry.getKey().startsWith(prefix))
+                        .flatMap(entry -> entry.getValue().stream());
+    }
+
+    private Stream<ObservabilityStrategyCell> cellsUnderKey(String registryKey) {
+        return instances.getOrDefault(registryKey, Set.of())
+                        .stream();
+    }
+
+    private static Scope scopeOf(String artifactBase, String methodName) {
+        if (WILDCARD.equals(artifactBase) && WILDCARD.equals(methodName)) {
+            return Scope.GLOBAL;
+        }
+        if (WILDCARD.equals(methodName)) {
+            return Scope.ARTIFACT;
+        }
+
+        return Scope.METHOD;
+    }
+
+    private enum Scope {GLOBAL, ARTIFACT, METHOD}
 
     @MessageReceiver
     @Contract
@@ -139,7 +217,7 @@ public class ObservabilityConfigRegistry implements ObservabilityCellRegistrar {
         var snapshot = snapshotOf(value);
 
         configs.put(registryKey, snapshot);
-        swapAll(registryKey, snapshot);
+        reresolveAffected(key.artifactBase(), key.methodName());
         log.debug("Observability config updated from cluster: {} -> logging={} metrics={} spans={} tracing={} depth={}",
                   registryKey,
                   value.logging(),
@@ -156,7 +234,7 @@ public class ObservabilityConfigRegistry implements ObservabilityCellRegistrar {
         var registryKey = key.artifactBase() + "/" + key.methodName();
 
         configs.remove(registryKey);
-        swapAll(registryKey, AspectObservabilityConfig.OFF);
+        reresolveAffected(key.artifactBase(), key.methodName());
         log.debug("Observability config removed from cluster: {}", registryKey);
     }
 
@@ -180,7 +258,7 @@ public class ObservabilityConfigRegistry implements ObservabilityCellRegistrar {
         var snapshot = AspectObservabilityConfig.aspectObservabilityConfig(logging, metrics, spans, tracing, depth);
 
         return clusterNode.<Unit> apply(List.of(command))
-                          .map(_ -> applyConfig(artifactBase + "/" + methodName, snapshot))
+                          .map(_ -> applyConfig(artifactBase, methodName, snapshot))
                           .onFailure(cause -> log.error("Failed to persist observability config for {}/{}: {}",
                                                         artifactBase,
                                                         methodName,
@@ -193,7 +271,7 @@ public class ObservabilityConfigRegistry implements ObservabilityCellRegistrar {
         var command = (KVCommand<AetherKey>)(KVCommand<?>) new KVCommand.Remove<>(key);
 
         return clusterNode.<Unit> apply(List.of(command))
-                          .map(_ -> removeFromRegistry(artifactBase + "/" + methodName))
+                          .map(_ -> removeFromRegistry(artifactBase, methodName))
                           .onFailure(cause -> log.error("Failed to persist observability config removal for {}/{}: {}",
                                                         artifactBase,
                                                         methodName,
@@ -213,8 +291,9 @@ public class ObservabilityConfigRegistry implements ObservabilityCellRegistrar {
     /// rather than reading one cell: when the north-south route cell and the east-west bridge cell of a
     /// method are both registered they each count into their own storage, so the sum is the honest total
     /// for the injection point. `None` when no live cell is registered for the key (e.g. after a slice
-    /// unregisters and its cells are deregistered); `Some(0)` when cells are registered but the facet
-    /// has never been activated (still identity) or was switched off before any call.
+    /// unregisters and its cells are deregistered); `Some(0)` when cells are registered but no call has
+    /// counted yet — either the baseline/metrics counter was just planted at zero, or the cell is under an
+    /// explicit `allOff()` config (identity, storage untouched, read as zero).
     public Option<Long> invocationCount(String artifactBase, String methodName) {
         return Option.option(instances.get(artifactBase + "/" + methodName))
                      .map(ObservabilityConfigRegistry::sumCounters);
@@ -233,11 +312,12 @@ public class ObservabilityConfigRegistry implements ObservabilityCellRegistrar {
                      .or(0L);
     }
 
-    private Unit applyConfig(String registryKey, AspectObservabilityConfig snapshot) {
-        configs.put(registryKey, snapshot);
-        swapAll(registryKey, snapshot);
-        log.info("Observability config set for {}: logging={} metrics={} spans={} tracing={} depth={}",
-                 registryKey,
+    private Unit applyConfig(String artifactBase, String methodName, AspectObservabilityConfig snapshot) {
+        configs.put(artifactBase + "/" + methodName, snapshot);
+        reresolveAffected(artifactBase, methodName);
+        log.info("Observability config set for {}/{}: logging={} metrics={} spans={} tracing={} depth={}",
+                 artifactBase,
+                 methodName,
                  snapshot.logging(),
                  snapshot.metrics(),
                  snapshot.spans(),
@@ -247,27 +327,62 @@ public class ObservabilityConfigRegistry implements ObservabilityCellRegistrar {
         return Unit.unit();
     }
 
-    private Unit removeFromRegistry(String registryKey) {
-        configs.remove(registryKey);
-        swapAll(registryKey, AspectObservabilityConfig.OFF);
-        log.info("Observability config removed for {}", registryKey);
+    private Unit removeFromRegistry(String artifactBase, String methodName) {
+        configs.remove(artifactBase + "/" + methodName);
+        reresolveAffected(artifactBase, methodName);
+        log.info("Observability config removed for {}/{}", artifactBase, methodName);
 
         return Unit.unit();
     }
 
-    /// Translates the last-known config for an injection point into the composed "around" strategy
-    /// swapped into `cell`. `allOff()` configs resolve to the zero-cost identity singleton (untouched
-    /// passthrough); any non-off config resolves to the counting strategy — the metrics facet in
-    /// embryonic form (#277 increment 3): it counts invocations into the cell's own storage slot. The
-    /// facet is per-cell (hence the cell parameter, not just the config): each cell counts into its own
-    /// AtomicLong, so the two seams of one method never share a counter. Full facet composition
-    /// (logging / spans / tracing bodies, facet layering) lands in increment 4.
-    private static InvocationStrategy strategyFor(ObservabilityStrategyCell cell, AspectObservabilityConfig config) {
-        if (config.allOff()) {
-            return InvocationStrategy.IDENTITY;
-        }
+    private InvocationStrategy resolvedStrategy(ObservabilityStrategyCell cell) {
+        return strategyFor(cell, effectiveConfigFor(cell.key()));
+    }
 
-        return countingStrategy(cell.storage());
+    /// Resolves the effective config for a cell against the scope hierarchy: the method-scope snapshot
+    /// (exact key) if present, else the artifact scope (`base/*`), else the global scope (`*/*`), else
+    /// `None` — the absence that resolves to the baseline. Whole-snapshot, never merged: the first scope
+    /// that has a config wins entirely.
+    private Option<AspectObservabilityConfig> effectiveConfigFor(String cellKey) {
+        return configAt(cellKey)
+            .orElse(() -> configAt(artifactScopeKey(cellKey)))
+            .orElse(() -> configAt(GLOBAL_KEY));
+    }
+
+    private Option<AspectObservabilityConfig> configAt(String scopeKey) {
+        return Option.option(configs.get(scopeKey));
+    }
+
+    // The artifact-scope key for a `base/method` cell key: `base/*`. The artifact base never contains a
+    // slash (it is `groupId:artifactId`), so the first slash is the scope separator.
+    private static String artifactScopeKey(String cellKey) {
+        return cellKey.substring(0, cellKey.indexOf('/')) + "/" + WILDCARD;
+    }
+
+    /// The three-case absence-default posture (variant C). No config at any scope -> the BASELINE strategy
+    /// (this increment: counting only). An explicit `allOff()` config -> the zero-cost identity singleton
+    /// (the operator's deliberate darkening). Any explicit non-off config -> the counting strategy (the
+    /// metrics facet in embryonic form, #277 increment 3). Baseline and non-off both count for now but are
+    /// kept as distinct call sites so increment 5 diverges them (the baseline gains the fleet facets)
+    /// without touching this resolution.
+    private InvocationStrategy strategyFor(ObservabilityStrategyCell cell, Option<AspectObservabilityConfig> effective) {
+        return effective.map(config -> configuredStrategy(cell, config))
+                        .or(() -> baselineStrategy(cell));
+    }
+
+    private static InvocationStrategy configuredStrategy(ObservabilityStrategyCell cell, AspectObservabilityConfig config) {
+        return config.allOff()
+               ? InvocationStrategy.IDENTITY
+               : countingStrategy(cell.storage());
+    }
+
+    /// The absence default: a cell with no config at any scope counts by default rather than running
+    /// blind. The baseline decorates the shared counting inner (the metrics-facet embryo) with its fleet
+    /// facets; the counting-only baseline injected this increment adds none, so absence == counting. The
+    /// facet is per-cell (hence the cell): each cell counts into its own AtomicLong, so the two seams of
+    /// one method never share a counter.
+    private InvocationStrategy baselineStrategy(ObservabilityStrategyCell cell) {
+        return baseline.decorate(countingStrategy(cell.storage()));
     }
 
     /// Composes the counting strategy once, here at swap time (never per call). Plants an AtomicLong on

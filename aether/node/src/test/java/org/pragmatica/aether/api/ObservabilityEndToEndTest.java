@@ -47,13 +47,14 @@ import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-/// #277 increment 3, end-to-end proof: a KV observability-config put flips a live method's behaviour on
-/// the NEXT invocation, through the exact production wiring chain — real ObservabilityConfigRegistry
-/// bound as the InvocationHandler's cell registrar (as AetherNode binds it), a real DefaultSliceBridge
-/// over a toy slice, and config driven through the registry's real KV-notification entry point
+/// #277 end-to-end proof: a KV observability-config put flips a live method's behaviour on the NEXT
+/// invocation, through the exact production wiring chain — real ObservabilityConfigRegistry bound as the
+/// InvocationHandler's cell registrar (as AetherNode binds it), a real DefaultSliceBridge over a toy
+/// slice, and config driven through the registry's real KV-notification entry point
 /// (onObservabilityConfigPut) rather than the write path. Behaviour is the embryonic counting metrics
-/// facet: OFF = identity passthrough (method runs, no count); non-off = counting (method runs AND the
-/// registry-visible counter increments once per call).
+/// facet under the increment-4 absence-default posture (variant C): with NO config the baseline counts by
+/// default; an explicit all-off config = identity (method runs, counter frozen); a non-off config =
+/// counting. An artifact-scope put (`base/*`) re-swaps every method cell of a slice at once.
 ///
 /// East-west/topic/timer seam is driven through InvocationHandler.onInvokeRequest (the real dispatch site
 /// that wraps the interceptor unit in ObservabilityCells.around). The north-south seam is driven through
@@ -65,6 +66,7 @@ class ObservabilityEndToEndTest {
     private static final String ARTIFACT_BASE = "com.example:my-slice";
     private static final String METHOD = "echo";
     private static final String ROUTE_KEY = "getEcho";
+    private static final String WILDCARD = "*";
     private static final NodeId SELF = new NodeId("self");
 
     private final AtomicInteger methodCalls = new AtomicInteger();
@@ -88,11 +90,13 @@ class ObservabilityEndToEndTest {
     @Nested
     class EastWestSeam {
         @Test
-        void identityBeforeConfig_runsMethodButDoesNotCount() {
+        void baselineBeforeConfig_runsMethodAndCountsByDefault() {
             invokeViaHandler();
             awaitMethodCalls(1);
 
-            assertThat(registry.invocationCount(ARTIFACT_BASE, METHOD)).isEqualTo(Option.some(0L));
+            // Absence-default posture (variant C): with no config at any scope the baseline counts by
+            // default ("off means baseline, not blind") — this replaces the former absence=identity.
+            assertThat(registry.invocationCount(ARTIFACT_BASE, METHOD)).isEqualTo(Option.some(1L));
         }
 
         @Test
@@ -158,17 +162,19 @@ class ObservabilityEndToEndTest {
     @Nested
     class NorthSouthSeam {
         @Test
-        void routeHandler_countsAfterPut_underTheRouteKey() {
+        void routeHandler_countsFromBaseline_andContinuesAfterPut_underTheRouteKey() {
             var router = routerWithRegisteredCell();
 
+            // Baseline posture: the route cell counts by default before any config is present.
             handleRoute(router);
-            assertThat(registry.invocationCount(ARTIFACT_BASE, ROUTE_KEY)).isEqualTo(Option.some(0L));
+            assertThat(registry.invocationCount(ARTIFACT_BASE, ROUTE_KEY)).isEqualTo(Option.some(1L));
 
+            // An explicit metrics put keeps counting on the same per-cell counter.
             registry.onObservabilityConfigPut(put(ROUTE_KEY, false, true, false, false, 0));
             handleRoute(router);
             handleRoute(router);
 
-            assertThat(registry.invocationCount(ARTIFACT_BASE, ROUTE_KEY)).isEqualTo(Option.some(2L));
+            assertThat(registry.invocationCount(ARTIFACT_BASE, ROUTE_KEY)).isEqualTo(Option.some(3L));
         }
 
         private SliceRouter routerWithRegisteredCell() {
@@ -198,6 +204,67 @@ class ObservabilityEndToEndTest {
             router.handle(request)
                   .await()
                   .unwrap();
+        }
+    }
+
+    @Nested
+    class ArtifactScopeSeam {
+        private static final Artifact TWO_METHOD_ARTIFACT = Artifact.artifact("com.example:two-method:1.0.0").unwrap();
+        private static final String TWO_METHOD_BASE = "com.example:two-method";
+        private static final String FIRST = "first";
+        private static final String SECOND = "second";
+
+        @Test
+        void artifactScopePut_reswapsEveryMethodCellOfSlice() {
+            var twoMethodBridge = DefaultSliceBridge.defaultSliceBridge(TWO_METHOD_ARTIFACT, twoMethodSlice(), codec);
+            handler.registerSlice(TWO_METHOD_ARTIFACT, twoMethodBridge);
+
+            // Artifact-scope all-off darkens the WHOLE artifact at once: both method cells -> identity.
+            registry.onObservabilityConfigPut(putFor(TWO_METHOD_BASE, WILDCARD, false, false, false, false, 0));
+            invokeMethod(twoMethodBridge, FIRST);
+            invokeMethod(twoMethodBridge, SECOND);
+            awaitMethodCalls(2);
+            assertThat(registry.invocationCount(TWO_METHOD_BASE, FIRST)).isEqualTo(Option.some(0L));
+            assertThat(registry.invocationCount(TWO_METHOD_BASE, SECOND)).isEqualTo(Option.some(0L));
+
+            // A single artifact-scope metrics put re-swaps BOTH method cells of the slice to counting.
+            registry.onObservabilityConfigPut(putFor(TWO_METHOD_BASE, WILDCARD, false, true, false, false, 0));
+            invokeMethod(twoMethodBridge, FIRST);
+            invokeMethod(twoMethodBridge, SECOND);
+            awaitMethodCalls(4);
+
+            assertThat(registry.invocationCount(TWO_METHOD_BASE, FIRST)).isEqualTo(Option.some(1L));
+            assertThat(registry.invocationCount(TWO_METHOD_BASE, SECOND)).isEqualTo(Option.some(1L));
+        }
+
+        private void invokeMethod(DefaultSliceBridge sliceBridge, String method) {
+            var payload = sliceBridge.encode("hi").await().unwrap();
+            var request = InvokeRequest.invokeRequest(SELF,
+                                                      "corr",
+                                                      "req",
+                                                      TWO_METHOD_ARTIFACT,
+                                                      MethodName.methodName(method).unwrap(),
+                                                      payload,
+                                                      false);
+
+            handler.onInvokeRequest(request);
+        }
+
+        private Slice twoMethodSlice() {
+            return () -> List.of(sliceMethod(FIRST), sliceMethod(SECOND));
+        }
+
+        private SliceMethod<?, ?> sliceMethod(String name) {
+            return new SliceMethod<>(MethodName.methodName(name).unwrap(),
+                                     this::run,
+                                     new TypeToken<String>() {},
+                                     new TypeToken<String>() {});
+        }
+
+        private Promise<String> run(String value) {
+            methodCalls.incrementAndGet();
+
+            return Promise.success("ran:" + value);
         }
     }
 
@@ -252,8 +319,18 @@ class ObservabilityEndToEndTest {
                                                                                   boolean spans,
                                                                                   boolean tracing,
                                                                                   int depth) {
-        var key = ObservabilityConfigKey.observabilityConfigKey(ARTIFACT_BASE, method);
-        var value = ObservabilityConfigValue.observabilityConfigValue(ARTIFACT_BASE,
+        return putFor(ARTIFACT_BASE, method, logging, metrics, spans, tracing, depth);
+    }
+
+    private static ValuePut<ObservabilityConfigKey, ObservabilityConfigValue> putFor(String artifactBase,
+                                                                                     String method,
+                                                                                     boolean logging,
+                                                                                     boolean metrics,
+                                                                                     boolean spans,
+                                                                                     boolean tracing,
+                                                                                     int depth) {
+        var key = ObservabilityConfigKey.observabilityConfigKey(artifactBase, method);
+        var value = ObservabilityConfigValue.observabilityConfigValue(artifactBase,
                                                                       method,
                                                                       logging,
                                                                       metrics,

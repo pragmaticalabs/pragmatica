@@ -357,6 +357,35 @@ class KVStoreSerializerTest {
         }
 
         @Test
+        void roundTrip_observabilityConfig_wildcardScopes_preservesGlobalAndArtifactKeys() {
+            var entries = new LinkedHashMap<AetherKey, AetherValue>();
+            var globalKey = ObservabilityConfigKey.observabilityConfigKey("*", "*");
+            var artifactKey = ObservabilityConfigKey.observabilityConfigKey("com.example:my-slice", "*");
+
+            entries.put(globalKey, new ObservabilityConfigValue("*", "*", true, true, false, false, 0, 1000L));
+            entries.put(artifactKey, new ObservabilityConfigValue("com.example:my-slice", "*", false, true, false, false, 3, 2000L));
+            KVStoreSerializer.toToml(entries, TEST_PHASE, TEST_TIMESTAMP)
+                             .flatMap(KVStoreSerializer::fromToml)
+                             .onFailureRun(Assertions::fail)
+                             .onSuccess(restored -> {
+                                 assertThat(restored).containsKey(globalKey);
+                                 assertThat(restored).containsKey(artifactKey);
+
+                                 var g = (ObservabilityConfigValue) restored.get(globalKey);
+                                 assertThat(g.artifactBase()).isEqualTo("*");
+                                 assertThat(g.methodName()).isEqualTo("*");
+                                 assertThat(g.logging()).isTrue();
+                                 assertThat(g.metrics()).isTrue();
+
+                                 var a = (ObservabilityConfigValue) restored.get(artifactKey);
+                                 assertThat(a.artifactBase()).isEqualTo("com.example:my-slice");
+                                 assertThat(a.methodName()).isEqualTo("*");
+                                 assertThat(a.metrics()).isTrue();
+                                 assertThat(a.depth()).isEqualTo(3);
+                             });
+        }
+
+        @Test
         void roundTrip_apiKeyValue_preservesAuthorizationRole() {
             var entries = new LinkedHashMap<AetherKey, AetherValue>();
             entries.put(ApiKeyKey.apiKeyKey("ak_admin01"),
