@@ -129,7 +129,7 @@ public interface ManagementServer {
     static ManagementServer managementServer(int port,
                                              Supplier<ManageableNode> nodeSupplier,
                                              AlertManager alertManager,
-                                             ObservabilityDepthRegistry depthRegistry,
+                                             ObservabilityConfigRegistry configRegistry,
                                              InvocationTraceStore traceStore,
                                              LogLevelRegistry logLevelRegistry,
                                              Option<DynamicConfigManager> dynamicConfigManager,
@@ -152,7 +152,7 @@ public interface ManagementServer {
         return new ManagementServerImpl(port,
                                         nodeSupplier,
                                         alertManager,
-                                        depthRegistry,
+                                        configRegistry,
                                         traceStore,
                                         logLevelRegistry,
                                         dynamicConfigManager,
@@ -182,7 +182,7 @@ class ManagementServerImpl implements ManagementServer {
     private final int port;
     private final Supplier<ManageableNode> nodeSupplier;
     private final AlertManager alertManager;
-    private final ObservabilityDepthRegistry depthRegistry;
+    private final ObservabilityConfigRegistry configRegistry;
     private final InvocationTraceStore traceStore;
     private final LogLevelRegistry logLevelRegistry;
     private final DashboardMetricsPublisher metricsPublisher;
@@ -219,7 +219,7 @@ class ManagementServerImpl implements ManagementServer {
     ManagementServerImpl(int port,
                          Supplier<ManageableNode> nodeSupplier,
                          AlertManager alertManager,
-                         ObservabilityDepthRegistry depthRegistry,
+                         ObservabilityConfigRegistry configRegistry,
                          InvocationTraceStore traceStore,
                          LogLevelRegistry logLevelRegistry,
                          Option<DynamicConfigManager> dynamicConfigManager,
@@ -242,7 +242,7 @@ class ManagementServerImpl implements ManagementServer {
         this.port = port;
         this.nodeSupplier = nodeSupplier;
         this.alertManager = alertManager;
-        this.depthRegistry = depthRegistry;
+        this.configRegistry = configRegistry;
         this.traceStore = traceStore;
         this.logLevelRegistry = logLevelRegistry;
         this.securityValidator = securityValidator;
@@ -283,7 +283,7 @@ class ManagementServerImpl implements ManagementServer {
         routeSources.add(AlertRoutes.alertRoutes(alertManager));
         routeSources.add(org.pragmatica.aether.api.routes.CertificateRoutes.certificateRoutes(nodeSupplier));
         routeSources.add(LogLevelRoutes.logLevelRoutes(logLevelRegistry));
-        routeSources.add(ObservabilityRoutes.observabilityRoutes(depthRegistry, traceStore));
+        routeSources.add(ObservabilityRoutes.observabilityRoutes(configRegistry, traceStore));
         routeSources.add(ControllerRoutes.controllerRoutes(nodeSupplier));
         routeSources.add(SliceRoutes.sliceRoutes(nodeSupplier));
         routeSources.add(MetricsRoutes.metricsRoutes(nodeSupplier, observability));

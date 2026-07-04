@@ -123,8 +123,7 @@ public class ObservabilityConfigRegistry implements ObservabilityCellRegistrar {
     /// together.
     @Override
     public Unit register(ObservabilityStrategyCell cell) {
-        instances.computeIfAbsent(cell.key(), _ -> ConcurrentHashMap.newKeySet())
-                 .add(cell);
+        instances.computeIfAbsent(cell.key(), _ -> ConcurrentHashMap.newKeySet()).add(cell);
         cell.swap(resolvedStrategy(cell));
 
         return Unit.unit();
@@ -135,15 +134,13 @@ public class ObservabilityConfigRegistry implements ObservabilityCellRegistrar {
     /// removes the registry's reference; the key's set is dropped once its last cell leaves.
     @Override
     public Unit deregister(ObservabilityStrategyCell cell) {
-        Option.option(instances.get(cell.key()))
-              .onPresent(set -> removeFromSet(cell.key(), set, cell));
+        Option.option(instances.get(cell.key())).onPresent(set -> removeFromSet(cell.key(), set, cell));
 
         return Unit.unit();
     }
 
     private void removeFromSet(String key, Set<ObservabilityStrategyCell> set, ObservabilityStrategyCell cell) {
         set.remove(cell);
-
         if (set.isEmpty()) {
             instances.remove(key, set);
         }
@@ -186,12 +183,15 @@ public class ObservabilityConfigRegistry implements ObservabilityCellRegistrar {
 
         return instances.entrySet()
                         .stream()
-                        .filter(entry -> entry.getKey().startsWith(prefix))
-                        .flatMap(entry -> entry.getValue().stream());
+                        .filter(entry -> entry.getKey()
+                                              .startsWith(prefix))
+                        .flatMap(entry -> entry.getValue()
+                                               .stream());
     }
 
     private Stream<ObservabilityStrategyCell> cellsUnderKey(String registryKey) {
-        return instances.getOrDefault(registryKey, Set.of())
+        return instances.getOrDefault(registryKey,
+                                      Set.of())
                         .stream();
     }
 
@@ -199,6 +199,7 @@ public class ObservabilityConfigRegistry implements ObservabilityCellRegistrar {
         if (WILDCARD.equals(artifactBase) && WILDCARD.equals(methodName)) {
             return Scope.GLOBAL;
         }
+
         if (WILDCARD.equals(methodName)) {
             return Scope.ARTIFACT;
         }
@@ -206,7 +207,11 @@ public class ObservabilityConfigRegistry implements ObservabilityCellRegistrar {
         return Scope.METHOD;
     }
 
-    private enum Scope {GLOBAL, ARTIFACT, METHOD}
+    private enum Scope {
+        GLOBAL,
+        ARTIFACT,
+        METHOD
+    }
 
     @MessageReceiver
     @Contract
@@ -282,6 +287,52 @@ public class ObservabilityConfigRegistry implements ObservabilityCellRegistrar {
         return configs.getOrDefault(artifactBase + "/" + methodName, AspectObservabilityConfig.OFF);
     }
 
+    /// The three-case effective posture for an injection point, distinguishing the two states `getConfig`
+    /// conflates into `OFF` (absence vs. explicit all-off). Increment 5b's management surface reads this;
+    /// the depth routes and the strategy resolution share the same scope hierarchy underneath. BASELINE =
+    /// no config at any scope (fleet baseline runs); CONFIGURED = an explicit non-off config (its facets,
+    /// counting-only until 5b wires the toggles); DARKENED = an explicit all-off config (identity, the
+    /// operator's deliberate opt-out).
+    public ObservabilityState effectiveState(String artifactBase, String methodName) {
+        return effectiveConfigFor(artifactBase + "/" + methodName).map(ObservabilityState::of)
+                                 .or(ObservabilityState.BASELINE);
+    }
+
+    /// Effective depth threshold for an injection point: the nearest-scope config's depth, else the baseline
+    /// default (mirrors today's ObservabilityDepthRegistry default). Read path for `/api/observability/depth`.
+    public int effectiveDepth(String artifactBase, String methodName) {
+        return effectiveDepthFor(artifactBase + "/" + methodName);
+    }
+
+    /// Depth-store unification (#277 increment 5a): the retired ObservabilityDepthRegistry's depth store folds
+    /// into this one. Setting a depth materializes a METHOD-scope config = the current effective config (or the
+    /// baseline defaults when absent) with `depth` replaced — i.e. setting depth pins this method's full config
+    /// as-of-now with the new depth. It persists through the same replicated `setConfig` path.
+    public Promise<Unit> setDepth(String artifactBase, String methodName, int depth) {
+        var pinned = effectiveConfigFor(artifactBase + "/" + methodName).or(baselineDefaults());
+
+        return setConfig(artifactBase,
+                         methodName,
+                         pinned.logging(),
+                         pinned.metrics(),
+                         pinned.spans(),
+                         pinned.tracing(),
+                         depth);
+    }
+
+    /// Removes the method-scope config entry entirely (resolution falls back to the next-broader scope, else
+    /// the baseline) — the DELETE half of the unified depth store.
+    public Promise<Unit> removeDepth(String artifactBase, String methodName) {
+        return removeConfig(artifactBase, methodName);
+    }
+
+    // The baseline-behavior facet set used to materialize a depth pin when no config exists yet: the fleet
+    // baseline reproduces failure-log + depth-leveled logging (logging) + depth-0 sampled tracing (tracing) +
+    // counting (metrics); spans stay off.
+    private AspectObservabilityConfig baselineDefaults() {
+        return AspectObservabilityConfig.aspectObservabilityConfig(true, true, false, true, baseline.defaultDepth());
+    }
+
     public Map<String, AspectObservabilityConfig> allConfigs() {
         return Map.copyOf(configs);
     }
@@ -295,8 +346,7 @@ public class ObservabilityConfigRegistry implements ObservabilityCellRegistrar {
     /// counted yet — either the baseline/metrics counter was just planted at zero, or the cell is under an
     /// explicit `allOff()` config (identity, storage untouched, read as zero).
     public Option<Long> invocationCount(String artifactBase, String methodName) {
-        return Option.option(instances.get(artifactBase + "/" + methodName))
-                     .map(ObservabilityConfigRegistry::sumCounters);
+        return Option.option(instances.get(artifactBase + "/" + methodName)).map(ObservabilityConfigRegistry::sumCounters);
     }
 
     private static long sumCounters(Set<ObservabilityStrategyCell> cells) {
@@ -344,9 +394,8 @@ public class ObservabilityConfigRegistry implements ObservabilityCellRegistrar {
     /// `None` — the absence that resolves to the baseline. Whole-snapshot, never merged: the first scope
     /// that has a config wins entirely.
     private Option<AspectObservabilityConfig> effectiveConfigFor(String cellKey) {
-        return configAt(cellKey)
-            .orElse(() -> configAt(artifactScopeKey(cellKey)))
-            .orElse(() -> configAt(GLOBAL_KEY));
+        return configAt(cellKey).orElse(() -> configAt(artifactScopeKey(cellKey)))
+                       .orElse(() -> configAt(GLOBAL_KEY));
     }
 
     private Option<AspectObservabilityConfig> configAt(String scopeKey) {
@@ -365,24 +414,34 @@ public class ObservabilityConfigRegistry implements ObservabilityCellRegistrar {
     /// metrics facet in embryonic form, #277 increment 3). Baseline and non-off both count for now but are
     /// kept as distinct call sites so increment 5 diverges them (the baseline gains the fleet facets)
     /// without touching this resolution.
-    private InvocationStrategy strategyFor(ObservabilityStrategyCell cell, Option<AspectObservabilityConfig> effective) {
+    private InvocationStrategy strategyFor(ObservabilityStrategyCell cell,
+                                           Option<AspectObservabilityConfig> effective) {
         return effective.map(config -> configuredStrategy(cell, config))
                         .or(() -> baselineStrategy(cell));
     }
 
-    private static InvocationStrategy configuredStrategy(ObservabilityStrategyCell cell, AspectObservabilityConfig config) {
+    private static InvocationStrategy configuredStrategy(ObservabilityStrategyCell cell,
+                                                         AspectObservabilityConfig config) {
         return config.allOff()
                ? InvocationStrategy.IDENTITY
                : countingStrategy(cell.storage());
     }
 
-    /// The absence default: a cell with no config at any scope counts by default rather than running
-    /// blind. The baseline decorates the shared counting inner (the metrics-facet embryo) with its fleet
-    /// facets; the counting-only baseline injected this increment adds none, so absence == counting. The
-    /// facet is per-cell (hence the cell): each cell counts into its own AtomicLong, so the two seams of
-    /// one method never share a counter.
+    /// The absence default: a cell with no config at any scope runs the fleet baseline (this increment 5a:
+    /// sampling + tracing + depth-leveled logging + counting) rather than running blind. The baseline
+    /// decorates the shared counting inner (the metrics-facet embryo) with its fleet facets; the
+    /// counting-only baseline (observability disabled) adds none, so absence == counting. The facet is
+    /// per-cell (hence the cell): each cell counts into its own AtomicLong, so the two seams of one method
+    /// never share a counter. The logging ladder's depth threshold is resolved from the effective config
+    /// (AspectObservabilityConfig.depth) else the baseline default; in the absence case that is always the
+    /// baseline default, but the read is kept honest against the registry's own config.
     private InvocationStrategy baselineStrategy(ObservabilityStrategyCell cell) {
-        return baseline.decorate(countingStrategy(cell.storage()));
+        return baseline.decorate(countingStrategy(cell.storage()), cell.key(), effectiveDepthFor(cell.key()));
+    }
+
+    private int effectiveDepthFor(String cellKey) {
+        return effectiveConfigFor(cellKey).map(AspectObservabilityConfig::depth)
+                                 .or(baseline.defaultDepth());
     }
 
     /// Composes the counting strategy once, here at swap time (never per call). Plants an AtomicLong on
@@ -409,5 +468,24 @@ public class ObservabilityConfigRegistry implements ObservabilityCellRegistrar {
                                                                    value.spans(),
                                                                    value.tracing(),
                                                                    value.depth());
+    }
+
+    /// The three-case absence-default posture as a value (#277 increment 5a), resolving the getConfig
+    /// absence-vs-off conflation for increment 5b's management surface. BASELINE = no config at any scope;
+    /// CONFIGURED carries the explicit non-off config; DARKENED carries the explicit all-off config.
+    public sealed interface ObservabilityState {
+        ObservabilityState BASELINE = new Baseline();
+
+        record Baseline() implements ObservabilityState {}
+
+        record Configured(AspectObservabilityConfig config) implements ObservabilityState {}
+
+        record Darkened(AspectObservabilityConfig config) implements ObservabilityState {}
+
+        static ObservabilityState of(AspectObservabilityConfig config) {
+            return config.allOff()
+                   ? new Darkened(config)
+                   : new Configured(config);
+        }
     }
 }

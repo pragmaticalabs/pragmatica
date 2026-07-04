@@ -62,8 +62,7 @@ public interface InvocationHandler {
                                          DEFAULT_INVOCATION_TIMEOUT,
                                          Option.none(),
                                          Option.none(),
-                                         Option.none(),
-                                         ObservabilityInterceptor.noOp());
+                                         Option.none());
     }
 
     static InvocationHandler invocationHandler(NodeId self,
@@ -75,8 +74,7 @@ public interface InvocationHandler {
                                          DEFAULT_INVOCATION_TIMEOUT,
                                          Option.none(),
                                          Option.none(),
-                                         Option.none(),
-                                         ObservabilityInterceptor.noOp());
+                                         Option.none());
     }
 
     static InvocationHandler invocationHandler(NodeId self,
@@ -91,8 +89,7 @@ public interface InvocationHandler {
                                          DEFAULT_INVOCATION_TIMEOUT,
                                          Option.option(serializer),
                                          Option.option(deserializer),
-                                         Option.option(httpRoutePublisher),
-                                         ObservabilityInterceptor.noOp());
+                                         Option.option(httpRoutePublisher));
     }
 
     static InvocationHandler invocationHandler(NodeId self,
@@ -105,25 +102,7 @@ public interface InvocationHandler {
                                          invocationTimeout,
                                          Option.none(),
                                          Option.none(),
-                                         Option.none(),
-                                         ObservabilityInterceptor.noOp());
-    }
-
-    static InvocationHandler invocationHandler(NodeId self,
-                                               ClusterNetwork network,
-                                               InvocationMetricsCollector metricsCollector,
-                                               Serializer serializer,
-                                               Deserializer deserializer,
-                                               HttpRoutePublisher httpRoutePublisher,
-                                               ObservabilityInterceptor observabilityInterceptor) {
-        return invocationHandler(self,
-                                 network,
-                                 metricsCollector,
-                                 DEFAULT_INVOCATION_TIMEOUT,
-                                 serializer,
-                                 deserializer,
-                                 httpRoutePublisher,
-                                 observabilityInterceptor);
+                                         Option.none());
     }
 
     static InvocationHandler invocationHandler(NodeId self,
@@ -132,16 +111,14 @@ public interface InvocationHandler {
                                                TimeSpan invocationTimeout,
                                                Serializer serializer,
                                                Deserializer deserializer,
-                                               HttpRoutePublisher httpRoutePublisher,
-                                               ObservabilityInterceptor observabilityInterceptor) {
+                                               HttpRoutePublisher httpRoutePublisher) {
         return new InvocationHandlerImpl(self,
                                          network,
                                          Option.option(metricsCollector),
                                          invocationTimeout,
                                          Option.option(serializer),
                                          Option.option(deserializer),
-                                         Option.option(httpRoutePublisher),
-                                         observabilityInterceptor);
+                                         Option.option(httpRoutePublisher));
     }
 }
 
@@ -155,7 +132,6 @@ class InvocationHandlerImpl implements InvocationHandler {
     private final Option<Serializer> serializer;
     private final Option<Deserializer> deserializer;
     private final Option<HttpRoutePublisher> httpRoutePublisher;
-    private final ObservabilityInterceptor observabilityInterceptor;
     private final Map<Artifact, SliceBridge> localSlices = new ConcurrentHashMap<>();
     private final Map<ClassLoader, SliceBridge> classLoaderBridges = new ConcurrentHashMap<>();
     private volatile ObservabilityCellRegistrar cellRegistrar = ObservabilityCellRegistrar.NOOP;
@@ -166,8 +142,7 @@ class InvocationHandlerImpl implements InvocationHandler {
                           TimeSpan invocationTimeout,
                           Option<Serializer> serializer,
                           Option<Deserializer> deserializer,
-                          Option<HttpRoutePublisher> httpRoutePublisher,
-                          ObservabilityInterceptor observabilityInterceptor) {
+                          Option<HttpRoutePublisher> httpRoutePublisher) {
         this.self = self;
         this.network = network;
         this.metricsCollector = metricsCollector;
@@ -175,7 +150,6 @@ class InvocationHandlerImpl implements InvocationHandler {
         this.serializer = serializer;
         this.deserializer = deserializer;
         this.httpRoutePublisher = httpRoutePublisher;
-        this.observabilityInterceptor = observabilityInterceptor;
     }
 
     @Override
@@ -261,18 +235,13 @@ class InvocationHandlerImpl implements InvocationHandler {
         metricsCollector.onPresent(mc -> mc.recordStart(request.targetSlice(), request.method()));
         ObservabilityCells.around(bridge,
                                   request.method().name(),
-                                  () -> observabilityInterceptor.intercept(request.targetSlice(),
-                                                                           request.method(),
-                                                                           request.requestId(),
-                                                                           request.depth(),
-                                                                           true,
-                                                                           () -> invokeWithHttpRouting(request, bridge))).timeout(invocationTimeout).onSuccess(data -> handleInvocationSuccess(request,
-                                                                                                                                                              data,
-                                                                                                                                                              startTime,
-                                                                                                                                                              requestBytes)).onFailure(cause -> handleInvocationFailure(request,
-                                                                                                                                                                                                                        cause,
-                                                                                                                                                                                                                        startTime,
-                                                                                                                                                                                                                        requestBytes));
+                                  () -> invokeWithHttpRouting(request, bridge)).timeout(invocationTimeout).onSuccess(data -> handleInvocationSuccess(request,
+                                                                                                                                                     data,
+                                                                                                                                                     startTime,
+                                                                                                                                                     requestBytes)).onFailure(cause -> handleInvocationFailure(request,
+                                                                                                                                                                                                               cause,
+                                                                                                                                                                                                               startTime,
+                                                                                                                                                                                                               requestBytes));
     }
 
     private Promise<byte[]> invokeWithHttpRouting(InvokeRequest request, SliceBridge bridge) {

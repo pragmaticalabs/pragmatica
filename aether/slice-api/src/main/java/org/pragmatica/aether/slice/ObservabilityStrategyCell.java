@@ -11,12 +11,15 @@ import org.pragmatica.lang.utils.AtomicStrategy;
 
 import java.util.concurrent.atomic.AtomicReference;
 
+
 // Per-injection-point system-observability cell (#277). One instance wraps ONE dispatch injection point
-// (keyed `artifactBase + "/" + methodName`) at either native seam — east-west/topic/timer
-// (ObservabilityInterceptor.intercept) or north-south (SliceRouter.invokeHandler). It holds an
+// (keyed `artifactBase + "/" + methodName`) at either native seam — east-west/topic/timer (the invoker
+// dispatch sites, via ObservabilityCells.around) or north-south (SliceRouter.invokeHandler). It holds an
 // AtomicStrategy whose lambda IS the behaviour: the write-side registry pre-composes the KV config into
 // one "around" strategy and swaps it in wholesale, so the per-call hot path is one volatile read + one
-// invoke, with zero allocation while off.
+// invoke, with zero allocation while off. Since increment 5a the swapped-in strategy carries the fleet
+// baseline (sampling, tracing, depth-leveled logging, counting) for unconfigured points — the cell is the
+// single observation layer, the retired ObservabilityInterceptor's behaviour folded in.
 //
 // OFF is the InvocationStrategy.IDENTITY singleton (proceed -> proceed.apply()): a call runs untouched.
 // Distinct from user interceptors (frozen at construction) — this is the outer, runtime-switchable
@@ -28,7 +31,6 @@ public final class ObservabilityStrategyCell {
     @FunctionalInterface
     public interface InvocationStrategy {
         Promise<?> around(Fn0<Promise<?>> proceed);
-
         InvocationStrategy IDENTITY = Fn0::apply;
     }
 

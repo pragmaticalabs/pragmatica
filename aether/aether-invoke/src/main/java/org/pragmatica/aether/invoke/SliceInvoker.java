@@ -161,8 +161,7 @@ public interface SliceInvoker extends SliceInvokerFacade {
                                      InvocationHandler invocationHandler,
                                      Serializer serializer,
                                      Deserializer deserializer,
-                                     DeploymentManager deploymentManager,
-                                     ObservabilityInterceptor observabilityInterceptor) {
+                                     DeploymentManager deploymentManager) {
         return sliceInvoker(self,
                             network,
                             endpointRegistry,
@@ -171,8 +170,7 @@ public interface SliceInvoker extends SliceInvokerFacade {
                             deserializer,
                             DEFAULT_TIMEOUT_MS,
                             SliceInvokerImpl.DEFAULT_CLEANUP_INTERVAL_MS,
-                            deploymentManager,
-                            observabilityInterceptor);
+                            deploymentManager);
     }
 
     static SliceInvoker sliceInvoker(NodeId self,
@@ -183,8 +181,7 @@ public interface SliceInvoker extends SliceInvokerFacade {
                                      Deserializer deserializer,
                                      long timeoutMs,
                                      long cleanupIntervalMs,
-                                     DeploymentManager deploymentManager,
-                                     ObservabilityInterceptor observabilityInterceptor) {
+                                     DeploymentManager deploymentManager) {
         return new SliceInvokerImpl(self,
                                     network,
                                     endpointRegistry,
@@ -193,8 +190,7 @@ public interface SliceInvoker extends SliceInvokerFacade {
                                     deserializer,
                                     timeoutMs,
                                     cleanupIntervalMs,
-                                    deploymentManager,
-                                    observabilityInterceptor);
+                                    deploymentManager);
     }
 }
 
@@ -219,7 +215,6 @@ class SliceInvokerImpl implements SliceInvoker {
     private final long timeoutMs;
     private volatile ScheduledFuture<?> cleanupTask;
     private final DeploymentManager deploymentManager;
-    private final ObservabilityInterceptor observabilityInterceptor;
     private final ConcurrentHashMap<String, PendingInvocation> pendingInvocations = new ConcurrentHashMap<>();
     private final Map<NodeId, Set<String>> pendingInvocationsByNode = new ConcurrentHashMap<>();
     private final Map<String, CacheAffinityResolver> affinityResolvers = new ConcurrentHashMap<>();
@@ -242,8 +237,7 @@ class SliceInvokerImpl implements SliceInvoker {
                      Deserializer deserializer,
                      long timeoutMs,
                      long cleanupIntervalMs,
-                     DeploymentManager deploymentManager,
-                     ObservabilityInterceptor observabilityInterceptor) {
+                     DeploymentManager deploymentManager) {
         this.self = self;
         this.network = network;
         this.endpointRegistry = endpointRegistry;
@@ -252,7 +246,6 @@ class SliceInvokerImpl implements SliceInvoker {
         this.deserializer = deserializer;
         this.timeoutMs = timeoutMs;
         this.deploymentManager = deploymentManager;
-        this.observabilityInterceptor = observabilityInterceptor;
         this.cleanupTask = SharedScheduler.scheduleAtFixedRate(this::cleanupStaleInvocations,
                                                                timeSpan(cleanupIntervalMs).millis());
     }
@@ -333,14 +326,9 @@ class SliceInvokerImpl implements SliceInvoker {
                                 .async(SLICE_NOT_FOUND)
                                 .flatMap(bridge -> ObservabilityCells.around(bridge,
                                                                              method.name(),
-                                                                             () -> observabilityInterceptor.intercept(slice,
-                                                                                                                      method,
-                                                                                                                      InvocationContext.getOrGenerateRequestId(),
-                                                                                                                      InvocationContext.currentDepth() + 1,
-                                                                                                                      true,
-                                                                                                                      () -> invokeViaBridge(bridge,
-                                                                                                                                            method,
-                                                                                                                                            request))))
+                                                                             () -> invokeViaBridge(bridge,
+                                                                                                   method,
+                                                                                                   request)))
                                 .mapToUnit();
     }
 
@@ -564,19 +552,15 @@ class SliceInvokerImpl implements SliceInvoker {
 
     @SuppressWarnings("unchecked")
     private <R> void invokeLocalForFailover(Promise<R> promise, FailoverContext<R> ctx) {
-        invocationHandler.localSlice(ctx.slice).async(SLICE_NOT_FOUND).flatMap(bridge -> ObservabilityCells.around(bridge,
-                                                                                                                  ctx.method.name(),
-                                                                                                                  () -> observabilityInterceptor.intercept(ctx.slice,
-                                                                                                                                                           ctx.method,
-                                                                                                                                                           ctx.requestId,
-                                                                                                                                                           InvocationContext.currentDepth() + 1,
-                                                                                                                                                           true,
-                                                                                                                                                           () -> invokeViaBridge(bridge,
-                                                                                                                                                                                 ctx.method,
-                                                                                                                                                                                 ctx.request)))).onSuccess(result -> promise.succeed((R) result)).onFailure(cause -> handleFailoverFailure(promise,
-                                                                                                                                                                                                                                                                                          ctx,
-                                                                                                                                                                                                                                                                                          self,
-                                                                                                                                                                                                                                                                                          cause));
+        invocationHandler.localSlice(ctx.slice).async(SLICE_NOT_FOUND).flatMap(bridge -> InvocationContext.runWithRequestId(ctx.requestId,
+                                                                                                                            () -> ObservabilityCells.around(bridge,
+                                                                                                                                                            ctx.method.name(),
+                                                                                                                                                            () -> invokeViaBridge(bridge,
+                                                                                                                                                                                  ctx.method,
+                                                                                                                                                                                  ctx.request)))).onSuccess(result -> promise.succeed((R) result)).onFailure(cause -> handleFailoverFailure(promise,
+                                                                                                                                                                                                                                                                                            ctx,
+                                                                                                                                                                                                                                                                                            self,
+                                                                                                                                                                                                                                                                                            cause));
     }
 
     private <R> void invokeRemoteForFailover(Promise<R> promise, FailoverContext<R> ctx, NodeId targetNode) {
@@ -761,14 +745,9 @@ class SliceInvokerImpl implements SliceInvoker {
                                 .async(SLICE_NOT_FOUND)
                                 .flatMap(bridge -> ObservabilityCells.around(bridge,
                                                                              method.name(),
-                                                                             () -> observabilityInterceptor.intercept(slice,
-                                                                                                                      method,
-                                                                                                                      InvocationContext.getOrGenerateRequestId(),
-                                                                                                                      InvocationContext.currentDepth() + 1,
-                                                                                                                      true,
-                                                                                                                      () -> invokeViaBridge(bridge,
-                                                                                                                                            method,
-                                                                                                                                            request))));
+                                                                             () -> invokeViaBridge(bridge,
+                                                                                                   method,
+                                                                                                   request)));
     }
 
     @SuppressWarnings("unchecked")

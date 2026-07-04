@@ -4,9 +4,6 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.invoke;
 
-import org.junit.jupiter.api.Assertions;
-import org.junit.jupiter.api.Nested;
-import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.endpoint.EndpointRegistry;
 import org.pragmatica.aether.slice.MethodName;
@@ -26,11 +23,16 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
 
+import org.junit.jupiter.api.Assertions;
+import org.junit.jupiter.api.Nested;
+import org.junit.jupiter.api.Test;
+
 import static org.assertj.core.api.Assertions.assertThat;
+
 
 /// #277 increment 2, east-west/topic/timer seam. Proves the cell attaches at the invoker's dispatch
 /// sites: `ObservabilityCells.around` resolves the per-injection-point cell from the bridge and wraps the
-/// interceptor unit (single fire, decorates when swapped, passthrough when absent); InvocationHandler
+/// raw invocation (single fire, decorates when swapped, passthrough when absent); InvocationHandler
 /// registers a bridge's cells at load and drops them at unload; and a real same-node `invokeLocal` fires
 /// the cell exactly once (no double-wrap).
 class ObservabilityCellsTest {
@@ -60,7 +62,6 @@ class ObservabilityCellsTest {
         void around_passesThrough_whenBridgeHasNoCell() {
             var bridge = new StubBridge(Map.of());
             var inner = Promise.success("payload");
-
             var returned = ObservabilityCells.around(bridge, "echo", () -> inner);
 
             assertThat(returned).isSameAs(inner);
@@ -69,22 +70,18 @@ class ObservabilityCellsTest {
         @Test
         void around_firesTheCellOnce_andDecorates_whenCellSwapped() {
             var cell = ObservabilityStrategyCell.observabilityStrategyCell("com.example:my-slice", "echo");
+
             cell.swap(decorating());
             var bridge = new StubBridge(Map.of("echo", cell));
 
-            ObservabilityCells.around(bridge, "echo", () -> Promise.success("payload"))
-                              .await()
-                              .onFailure(cause -> Assertions.fail(cause.message()))
-                              .onSuccess(value -> assertThat(value).isEqualTo("decorated:payload"));
+            ObservabilityCells.around(bridge, "echo", () -> Promise.success("payload")).await().onFailure(cause -> Assertions.fail(cause.message())).onSuccess(value -> assertThat(value).isEqualTo("decorated:payload"));
         }
 
         @Test
         void around_firesTheCellExactlyOnce_perCall() {
             var bridge = new StubBridge(Map.of("echo", countingCell()));
 
-            ObservabilityCells.around(bridge, "echo", () -> Promise.success("payload"))
-                              .await();
-
+            ObservabilityCells.around(bridge, "echo", () -> Promise.success("payload")).await();
             assertThat(fires.get()).isEqualTo(1);
         }
     }
@@ -101,12 +98,9 @@ class ObservabilityCellsTest {
 
             handler.setObservabilityCellRegistrar(registrar);
             handler.registerSlice(ARTIFACT, bridge);
-
             assertThat(registrar.registered).containsExactlyInAnyOrder(cellA, cellB);
             assertThat(registrar.deregistered).isEmpty();
-
             handler.unregisterSlice(ARTIFACT);
-
             assertThat(registrar.deregistered).containsExactlyInAnyOrder(cellA, cellB);
         }
     }
@@ -127,20 +121,16 @@ class ObservabilityCellsTest {
                                                     handler,
                                                     new StubSerializer(),
                                                     new StubDeserializer(),
-                                                    new StubDeploymentManager(),
-                                                    ObservabilityInterceptor.noOp());
+                                                    new StubDeploymentManager());
 
-            invoker.invokeLocal(ARTIFACT, METHOD, "hi", new TypeToken<Object>() {})
-                   .await()
-                   .onFailure(cause -> Assertions.fail(cause.message()))
-                   .onSuccess(value -> assertThat(value).isEqualTo("result"));
-
+            invoker.invokeLocal(ARTIFACT, METHOD, "hi", new TypeToken<Object>() {}).await().onFailure(cause -> Assertions.fail(cause.message())).onSuccess(value -> assertThat(value).isEqualTo("result"));
             assertThat(fires.get()).isEqualTo(1);
         }
     }
 
     private static InvocationStrategy decorating() {
-        return proceed -> proceed.apply().map(value -> "decorated:" + value);
+        return proceed -> proceed.apply()
+                                 .map(value -> "decorated:" + value);
     }
 
     // Configurable bridge: maps method name -> cell, with canned encode/invoke/decode so a local invoke

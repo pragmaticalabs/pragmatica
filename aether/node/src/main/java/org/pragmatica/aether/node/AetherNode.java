@@ -72,12 +72,11 @@ import org.pragmatica.aether.resource.ResourceProvider;
 import org.pragmatica.aether.resource.SpiResourceProvider;
 import org.pragmatica.aether.resource.artifact.ArtifactStore;
 import org.pragmatica.aether.resource.artifact.MavenProtocolHandler;
-import org.pragmatica.aether.api.ObservabilityDepthRegistry;
+import org.pragmatica.aether.api.ObservabilityBaseline;
 import org.pragmatica.aether.api.ObservabilityConfigRegistry;
 import org.pragmatica.aether.invoke.AdaptiveSampler;
 import org.pragmatica.aether.invoke.InvocationHandler;
 import org.pragmatica.aether.invoke.InvocationTraceStore;
-import org.pragmatica.aether.invoke.ObservabilityInterceptor;
 import org.pragmatica.aether.invoke.InvocationMessage;
 import org.pragmatica.aether.invoke.ScheduledTaskManager;
 import org.pragmatica.aether.invoke.ScheduledTaskRegistry;
@@ -321,7 +320,6 @@ public interface AetherNode extends ManageableNode {
     AbTestManager abTestManager();
     EndpointRegistry endpointRegistry();
     AlertManager alertManager();
-    ObservabilityDepthRegistry observabilityDepthRegistry();
     InvocationTraceStore traceStore();
     LogLevelRegistry logLevelRegistry();
     Option<DynamicConfigManager> dynamicConfigManager();
@@ -1033,7 +1031,6 @@ public interface AetherNode extends ManageableNode {
                           DeploymentManager deploymentManager,
                           AbTestManager abTestManager,
                           AlertManager alertManager,
-                          ObservabilityDepthRegistry observabilityDepthRegistry,
                           InvocationTraceStore traceStore,
                           LogLevelRegistry logLevelRegistry,
                           Option<DynamicConfigManager> dynamicConfigManager,
@@ -1450,22 +1447,27 @@ public interface AetherNode extends ManageableNode {
                                                                        routeMountMode(config.appHttp()));
         var invocationMetrics = InvocationMetricsCollector.invocationMetricsCollector();
         var logLevelRegistry = LogLevelRegistry.logLevelRegistry(clusterNode, kvStore);
-        var depthRegistry = ObservabilityDepthRegistry.observabilityDepthRegistry(clusterNode,
-                                                                                  kvStore,
-                                                                                  config.observability());
-        var configRegistry = ObservabilityConfigRegistry.observabilityConfigRegistry(clusterNode, kvStore);
         var traceStore = InvocationTraceStore.invocationTraceStore();
-        var observabilityInterceptor = config.observability().depthThreshold() < 0
-                                       ? ObservabilityInterceptor.noOp()
-                                       : createObservabilityInterceptor(config, traceStore, depthRegistry);
+        // #277 increment 5a: the strategy-cell system is the ONE observability engine. Unconfigured
+        // injection points run the fleet baseline (sampling + tracing + depth-leveled logging + counting),
+        // absorbed here from the retired ObservabilityInterceptor. depthThreshold < 0 disables observability
+        // -> counting-only baseline (no fleet emission), the prior noOp-interceptor posture.
+        var observabilityBaseline = config.observability().depthThreshold() < 0
+                                    ? ObservabilityBaseline.countingOnly()
+                                    : ObservabilityBaseline.fleet(AdaptiveSampler.adaptiveSampler(config.observability().targetTracesPerSec()),
+                                                                  traceStore,
+                                                                  config.self().id(),
+                                                                  config.observability().depthThreshold());
+        var configRegistry = ObservabilityConfigRegistry.observabilityConfigRegistry(clusterNode,
+                                                                                     kvStore,
+                                                                                     observabilityBaseline);
         var invocationHandler = InvocationHandler.invocationHandler(config.self(),
                                                                     clusterNode.network(),
                                                                     invocationMetrics,
                                                                     config.timeouts().invocation().timeout(),
                                                                     serializer,
                                                                     deserializer,
-                                                                    httpRoutePublisher,
-                                                                    observabilityInterceptor);
+                                                                    httpRoutePublisher);
         // #277 increment 2: the config registry IS the write-side cell registrar for both dispatch
         // seams — bind it so bridge (east-west) and route (north-south) cells register at slice load /
         // route publish and deregister at unload, and a KV config put swaps their behaviour in place.
@@ -1867,8 +1869,7 @@ public interface AetherNode extends ManageableNode {
                                                      deserializer,
                                                      config.timeouts().invocation().invokerTimeout().millis(),
                                                      config.timeouts().observability().invocationCleanup().millis(),
-                                                     deploymentManager,
-                                                     observabilityInterceptor);
+                                                     deploymentManager);
 
         deferredInvoker.setDelegate(sliceInvoker);
         var scheduledTaskManager = ScheduledTaskManager.scheduledTaskManager(scheduledTaskRegistry,
@@ -1963,7 +1964,6 @@ public interface AetherNode extends ManageableNode {
                                                 sliceInvoker,
                                                 invocationHandler,
                                                 alertManager,
-                                                depthRegistry,
                                                 configRegistry,
                                                 logLevelRegistry,
                                                 ownershipEpochHighWater,
@@ -2682,12 +2682,10 @@ public interface AetherNode extends ManageableNode {
         // config into replicaCatalog() FIRST (onStreamConfigPut), then place its replica set
         // (reconcileReplicaSetOnConfigPut). clusterEventsControllerRef is the late-bound holder for the
         // stream ReplicaSetController (set below, after the controller is built).
-        var streamConfigKvRouter = KVNotificationRouter.<AetherKey, AetherValue> builder(AetherKey.class)
-                .onPut(AetherKey.StreamConfigKey.class, streamPartitionManager::onStreamConfigPut)
-                .onPut(AetherKey.StreamConfigKey.class,
-                       _ -> reconcileReplicaSetOnConfigPut(clusterEventsControllerRef))
-                .onRemove(AetherKey.StreamConfigKey.class, streamPartitionManager::onStreamConfigRemove)
-                .build();
+        var streamConfigKvRouter = KVNotificationRouter.<AetherKey, AetherValue> builder(AetherKey.class).onPut(AetherKey.StreamConfigKey.class,
+                                                                                                                streamPartitionManager::onStreamConfigPut).onPut(AetherKey.StreamConfigKey.class,
+                                                                                                                                                                 _ -> reconcileReplicaSetOnConfigPut(clusterEventsControllerRef)).onRemove(AetherKey.StreamConfigKey.class,
+                                                                                                                                                                                                                                           streamPartitionManager::onStreamConfigRemove).build();
 
         allEntries.addAll(streamConfigKvRouter.asRouteEntries());
         // B5b — provision system:cluster-events:1.0.0 as a REAL partition-managed stream.
@@ -2765,8 +2763,12 @@ public interface AetherNode extends ManageableNode {
         // instead of being rejected at the Epoch.ZERO floor (0:0 < 1:N). Cold-start/unowned arcs read
         // Epoch.ZERO == the fence's ZERO default (equal → passes), so fresh-stream recovery is not regressed.
         // The fence itself is untouched — this is a truthful stamp, not a wholesale exemption.
-        StreamPartitionRecovery streamPartitionRecovery = (s, p, payload, ts) ->
-                streamPartitionManager.appendRecovered(s, p, payload, ts, streamOwnerEpochSource.currentOwnerEpoch(s, p));
+        StreamPartitionRecovery streamPartitionRecovery = (s, p, payload, ts) -> streamPartitionManager.appendRecovered(s,
+                                                                                                                        p,
+                                                                                                                        payload,
+                                                                                                                        ts,
+                                                                                                                        streamOwnerEpochSource.currentOwnerEpoch(s,
+                                                                                                                                                                 p));
         var streamFailoverHandler = GovernorFailoverHandler.governorFailoverHandler(streamReplicaRegistry,
                                                                                     streamPartitionRecovery);
         // A4: production catch-up wiring. The forward transport/client are constructed here (ahead of
@@ -3035,7 +3037,6 @@ public interface AetherNode extends ManageableNode {
                                   deploymentManager,
                                   abTestManager,
                                   alertManager,
-                                  depthRegistry,
                                   traceStore,
                                   logLevelRegistry,
                                   dynamicConfigManager,
@@ -3100,7 +3101,7 @@ public interface AetherNode extends ManageableNode {
                 var managementServer = ManagementServer.managementServer(config.managementPort(),
                                                                          () -> node,
                                                                          alertManager,
-                                                                         depthRegistry,
+                                                                         configRegistry,
                                                                          traceStore,
                                                                          logLevelRegistry,
                                                                          dynamicConfigManager,
@@ -3152,7 +3153,6 @@ public interface AetherNode extends ManageableNode {
                                       deploymentManager,
                                       abTestManager,
                                       alertManager,
-                                      depthRegistry,
                                       traceStore,
                                       logLevelRegistry,
                                       dynamicConfigManager,
@@ -4176,7 +4176,6 @@ public interface AetherNode extends ManageableNode {
                                                                     SliceInvoker sliceInvoker,
                                                                     InvocationHandler invocationHandler,
                                                                     AlertManager alertManager,
-                                                                    ObservabilityDepthRegistry depthRegistry,
                                                                     ObservabilityConfigRegistry configRegistry,
                                                                     LogLevelRegistry logLevelRegistry,
                                                                     OwnershipEpochHighWater ownershipEpochHighWater,
@@ -4210,19 +4209,19 @@ public interface AetherNode extends ManageableNode {
                                                                                                                                                                                                                                                                                                                                                                                                                                                  controlLoop::onSliceTargetPut).onRemove(AetherKey.SliceTargetKey.class,
                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          controlLoop::onSliceTargetRemove).onPut(AetherKey.AlertThresholdKey.class,
                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  alertManager::onAlertThresholdPut).onRemove(AetherKey.AlertThresholdKey.class,
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             alertManager::onAlertThresholdRemove).onPut(AetherKey.ObservabilityDepthKey.class,
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         depthRegistry::onDepthPut).onRemove(AetherKey.ObservabilityDepthKey.class,
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             depthRegistry::onDepthRemove).onPut(AetherKey.ObservabilityConfigKey.class, configRegistry::onObservabilityConfigPut).onRemove(AetherKey.ObservabilityConfigKey.class, configRegistry::onObservabilityConfigRemove).onPut(AetherKey.LogLevelKey.class,
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 logLevelRegistry::onLogLevelPut).onRemove(AetherKey.LogLevelKey.class,
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           logLevelRegistry::onLogLevelRemove).onPut(AetherKey.SliceTargetKey.class,
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     rollbackManager::onSliceTargetPut).onPut(AetherKey.PreviousVersionKey.class,
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              rollbackManager::onPreviousVersionPut).onPut(AetherKey.TopicSubscriptionKey.class,
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           topicSubscriptionRegistry::onSubscriptionPut).onRemove(AetherKey.TopicSubscriptionKey.class,
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  topicSubscriptionRegistry::onSubscriptionRemove).onPut(AetherKey.ScheduledTaskKey.class,
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         scheduledTaskRegistry::onScheduledTaskPut).onRemove(AetherKey.ScheduledTaskKey.class,
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             scheduledTaskRegistry::onScheduledTaskRemove).onPut(AetherKey.ScheduledTaskStateKey.class,
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 scheduledTaskStateRegistry::onStatePut).onRemove(AetherKey.ScheduledTaskStateKey.class,
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  scheduledTaskStateRegistry::onStateRemove)
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             alertManager::onAlertThresholdRemove).onPut(AetherKey.ObservabilityConfigKey.class,
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         configRegistry::onObservabilityConfigPut).onRemove(AetherKey.ObservabilityConfigKey.class,
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            configRegistry::onObservabilityConfigRemove).onPut(AetherKey.LogLevelKey.class,
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               logLevelRegistry::onLogLevelPut).onRemove(AetherKey.LogLevelKey.class,
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         logLevelRegistry::onLogLevelRemove).onPut(AetherKey.SliceTargetKey.class,
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   rollbackManager::onSliceTargetPut).onPut(AetherKey.PreviousVersionKey.class,
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            rollbackManager::onPreviousVersionPut).onPut(AetherKey.TopicSubscriptionKey.class,
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         topicSubscriptionRegistry::onSubscriptionPut).onRemove(AetherKey.TopicSubscriptionKey.class,
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                topicSubscriptionRegistry::onSubscriptionRemove).onPut(AetherKey.ScheduledTaskKey.class,
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       scheduledTaskRegistry::onScheduledTaskPut).onRemove(AetherKey.ScheduledTaskKey.class,
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           scheduledTaskRegistry::onScheduledTaskRemove).onPut(AetherKey.ScheduledTaskStateKey.class,
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               scheduledTaskStateRegistry::onStatePut).onRemove(AetherKey.ScheduledTaskStateKey.class,
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                scheduledTaskStateRegistry::onStateRemove)
         // Membership v2: the NodeLifecycleKey atom is deleted. NodeDeploymentManager and
         // ClusterDeploymentManager derive membership from MembershipDecision (routed near the
         // generationSnapshotPublisher wiring above); there are no remaining NodeLifecycleKey consumers.
@@ -4497,19 +4496,6 @@ public interface AetherNode extends ManageableNode {
             // this node's next proposal is fenced strictly above the committed sequence.
             leaderManager.onLeaderCommitted(value.leader(), value.viewSequence());
         }
-    }
-
-    private static ObservabilityInterceptor createObservabilityInterceptor(AetherNodeConfig config,
-                                                                           InvocationTraceStore traceStore,
-                                                                           ObservabilityDepthRegistry depthRegistry) {
-        var sampler = AdaptiveSampler.adaptiveSampler(config.observability().targetTracesPerSec());
-
-        return ObservabilityInterceptor.observabilityInterceptor(sampler,
-                                                                 traceStore,
-                                                                 config.self().id(),
-                                                                 (artifact, method) -> depthRegistry.getConfig(artifact,
-                                                                                                               method)
-                                                                                                    .depthThreshold());
     }
 
     /// Resolve the cluster-level #198 route-mount mode (§7) from the app-HTTP config. Path mode is

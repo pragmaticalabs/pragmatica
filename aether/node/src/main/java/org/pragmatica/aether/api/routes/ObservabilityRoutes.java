@@ -5,12 +5,13 @@
 package org.pragmatica.aether.api.routes;
 
 import org.pragmatica.aether.api.ManagementApiResponses.TraceInjectResponse;
-import org.pragmatica.aether.api.ObservabilityDepthRegistry;
+import org.pragmatica.aether.api.ObservabilityConfigRegistry;
 import org.pragmatica.aether.invoke.InvocationNode;
 import org.pragmatica.aether.invoke.InvocationTraceStore;
 import org.pragmatica.aether.invoke.InvocationTraceStore.TraceStats;
 import org.pragmatica.aether.invoke.ObservabilityConfig;
 import org.pragmatica.aether.management.route.ManagementRoute;
+import org.pragmatica.aether.slice.AspectObservabilityConfig;
 import org.pragmatica.http.routing.QueryParameter;
 import org.pragmatica.http.routing.Route;
 import org.pragmatica.http.routing.RouteSource;
@@ -29,17 +30,17 @@ import static org.pragmatica.http.routing.PathParameter.aString;
 public final class ObservabilityRoutes implements RouteSource {
     private static final int DEFAULT_LIMIT = 100;
 
-    private final ObservabilityDepthRegistry depthRegistry;
+    private final ObservabilityConfigRegistry configRegistry;
     private final InvocationTraceStore traceStore;
 
-    private ObservabilityRoutes(ObservabilityDepthRegistry depthRegistry, InvocationTraceStore traceStore) {
-        this.depthRegistry = depthRegistry;
+    private ObservabilityRoutes(ObservabilityConfigRegistry configRegistry, InvocationTraceStore traceStore) {
+        this.configRegistry = configRegistry;
         this.traceStore = traceStore;
     }
 
-    public static ObservabilityRoutes observabilityRoutes(ObservabilityDepthRegistry depthRegistry,
+    public static ObservabilityRoutes observabilityRoutes(ObservabilityConfigRegistry configRegistry,
                                                           InvocationTraceStore traceStore) {
-        return new ObservabilityRoutes(depthRegistry, traceStore);
+        return new ObservabilityRoutes(configRegistry, traceStore);
     }
 
     record SetDepthRequest(String artifact, String method, int depthThreshold) {}
@@ -146,18 +147,18 @@ public final class ObservabilityRoutes implements RouteSource {
     }
 
     private List<DepthConfigView> handleGetDepthConfigs() {
-        return toDepthConfigViews(depthRegistry.allConfigs());
+        return toDepthConfigViews(configRegistry.allConfigs());
     }
 
     private Promise<DepthSetResponse> handleSetDepth(SetDepthRequest req) {
         return validateSetDepthRequest(req).async()
-                                      .flatMap(valid -> depthRegistry.setConfig(valid.artifact(),
+                                      .flatMap(valid -> configRegistry.setDepth(valid.artifact(),
                                                                                 valid.method(),
                                                                                 valid.depthThreshold())
-                                                                     .map(_ -> new DepthSetResponse("depth_set",
-                                                                                                    valid.artifact(),
-                                                                                                    valid.method(),
-                                                                                                    valid.depthThreshold())));
+                                                                      .map(_ -> new DepthSetResponse("depth_set",
+                                                                                                     valid.artifact(),
+                                                                                                     valid.method(),
+                                                                                                     valid.depthThreshold())));
     }
 
     private Promise<DepthRemovedResponse> handleDeleteDepth(String artifact, String method) {
@@ -165,8 +166,8 @@ public final class ObservabilityRoutes implements RouteSource {
             return ObservabilityError.KEY_REQUIRED.promise();
         }
 
-        return depthRegistry.removeConfig(artifact, method)
-                            .map(_ -> new DepthRemovedResponse("depth_removed", artifact, method));
+        return configRegistry.removeDepth(artifact, method)
+                             .map(_ -> new DepthRemovedResponse("depth_removed", artifact, method));
     }
 
     private static Result<SetDepthRequest> validateSetDepthRequest(SetDepthRequest req) {
@@ -233,12 +234,12 @@ public final class ObservabilityRoutes implements RouteSource {
                              node.hops());
     }
 
-    private static List<DepthConfigView> toDepthConfigViews(Map<String, ObservabilityConfig> configs) {
+    private static List<DepthConfigView> toDepthConfigViews(Map<String, AspectObservabilityConfig> configs) {
         return configs.entrySet()
                       .stream()
                       .map(entry -> new DepthConfigView(entry.getKey(),
-                                                        entry.getValue().depthThreshold(),
-                                                        entry.getValue().targetTracesPerSec()))
+                                                        entry.getValue().depth(),
+                                                        ObservabilityConfig.DEFAULT.targetTracesPerSec()))
                       .toList();
     }
 
