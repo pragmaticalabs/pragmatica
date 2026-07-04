@@ -61,6 +61,16 @@ public interface SliceRouter {
     /// @return an observability-wired router
     SliceRouter withObservability(String sliceName, VersioningMetricsSink sink);
 
+    /// Return a router whose every route handler is wrapped once with its per-injection-point
+    /// observability cell (#277 increment 2). The publisher supplies a `RouteDecorator` that mints,
+    /// registers, and closes each route's handler over its cell; applying it here rebuilds the dispatch
+    /// routers over the rewrapped routes so the per-call path stays a plain route lookup with no per-call
+    /// cell resolution. `RouteDecorator.IDENTITY` leaves the router untouched.
+    ///
+    /// @param decorator the per-route handler rewrap to apply once
+    /// @return a router dispatching over the decorated routes
+    SliceRouter withInvocationCells(RouteDecorator decorator);
+
     static SliceRouter sliceRouter(RouteSource routes, ErrorMapper errorMapper, JsonMapper jsonMapper) {
         return sliceRouter(routes, errorMapper, jsonMapper, RouteMountMode.pathMode());
     }
@@ -79,7 +89,8 @@ public interface SliceRouter {
                            JsonMapper jsonMapper,
                            JsonCodec jsonCodec,
                            String sliceName,
-                           VersioningMetricsSink metricsSink) implements SliceRouter {
+                           VersioningMetricsSink metricsSink,
+                           List<Route<?>> composedRoutes) implements SliceRouter {
             private static final Map<String, String> JSON_HEADERS = Map.of("Content-Type",
                                                                            "application/json; charset=UTF-8");
 
@@ -95,7 +106,34 @@ public interface SliceRouter {
                                        jsonMapper,
                                        jsonCodec,
                                        sliceName,
-                                       sink);
+                                       sink,
+                                       composedRoutes);
+            }
+
+            /// Rebuild the dispatch routers over the decorator-rewrapped routes (#277 increment 2). Each
+            /// route keeps its method/path/spacers/arity/version/security identity — only the handler is
+            /// wrapped — so routing behaviour is unchanged while every invocation now flows through its
+            /// cell. Both the path-mode router and any per-version routers are rebuilt from the SAME
+            /// decorated list so every dispatch shape is covered.
+            @Override
+            public SliceRouter withInvocationCells(RouteDecorator decorator) {
+                var decorated = composedRoutes.stream()
+                                              .map(decorator::decorate)
+                                              .toList();
+                var newVersioned = mountMode.isHeaderMode() && versionRegistry.isVersioned()
+                                   ? perVersionRouters(decorated)
+                                   : Map.<Integer, RequestRouter> of();
+
+                return new sliceRouter(RequestRouter.with(routeSourceOf(decorated)),
+                                       newVersioned,
+                                       versionRegistry,
+                                       mountMode,
+                                       errorMapper,
+                                       jsonMapper,
+                                       jsonCodec,
+                                       sliceName,
+                                       metricsSink,
+                                       decorated);
             }
 
             @Override
@@ -365,7 +403,8 @@ public interface SliceRouter {
                                jsonMapper,
                                JsonCodecAdapter.forMapper(jsonMapper),
                                "",
-                               VersioningMetricsSink.noop());
+                               VersioningMetricsSink.noop(),
+                               composedRoutes);
     }
 
     /// Partition a slice's composed (bare-path, header-mode) routes by [Route#version()] into one

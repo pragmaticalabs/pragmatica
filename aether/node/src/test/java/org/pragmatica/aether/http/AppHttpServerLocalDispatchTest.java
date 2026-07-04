@@ -14,12 +14,14 @@ import org.pragmatica.http.routing.VersioningMetricsSink;
 
 import org.pragmatica.aether.config.AppHttpConfig;
 import org.pragmatica.aether.http.HttpRoutePublisher.LocalRouteInfo;
+import org.pragmatica.aether.http.adapter.RouteDecorator;
 import org.pragmatica.aether.http.adapter.SliceRouter;
 import org.pragmatica.aether.http.handler.HttpRequestContext;
 import org.pragmatica.aether.http.handler.HttpRequestHandler;
 import org.pragmatica.aether.http.handler.HttpResponseData;
 import org.pragmatica.aether.http.handler.security.SecurityPolicy;
 import org.pragmatica.aether.config.TimeoutsConfig.ForwardingTimeouts;
+import org.pragmatica.aether.slice.ObservabilityCellRegistrar;
 import org.pragmatica.aether.slice.SliceInvokerFacade;
 import org.pragmatica.aether.slice.blueprint.SecurityOverrides;
 import org.pragmatica.aether.slice.kvstore.AetherKey.HttpNodeRouteKey;
@@ -247,6 +249,11 @@ class AppHttpServerLocalDispatchTest {
         public Map<Artifact, SliceVersionRegistry> versionRegistries() {
             return Map.of();
         }
+
+        @Override
+        public Unit setObservabilityCellRegistrar(ObservabilityCellRegistrar registrar) {
+            return unit();
+        }
     }
 
     /// Minimal SliceRouter stub returning a fixed 200; unversioned registry, identity observability.
@@ -263,6 +270,11 @@ class AppHttpServerLocalDispatchTest {
 
         @Override
         public SliceRouter withObservability(String sliceName, VersioningMetricsSink sink) {
+            return this;
+        }
+
+        @Override
+        public SliceRouter withInvocationCells(RouteDecorator decorator) {
             return this;
         }
     }

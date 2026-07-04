@@ -51,6 +51,16 @@ public final class ObservabilityStrategyCell {
         return strategy.strategy();
     }
 
+    /// Hot-path entry used by both dispatch seams: read the current strategy (one volatile load) and run
+    /// it around `proceed`. Centralises the sole erasure bridge between the type-erased
+    /// [InvocationStrategy#around] (`Fn0<Promise<?>>` -> `Promise<?>`) and the caller's concrete
+    /// `Promise<R>`. While the cell is OFF this is `proceed.apply()` verbatim (IDENTITY forwards without
+    /// wrapping), so an always-present but off cell adds one volatile read and one call, zero allocation.
+    @SuppressWarnings("unchecked")
+    public <R> Promise<R> around(Fn0<Promise<R>> proceed) {
+        return (Promise<R>) strategy().around((Fn0<Promise<?>>)(Fn0<?>) proceed);
+    }
+
     @Contract
     public void swap(InvocationStrategy next) {
         strategy.swap(next);

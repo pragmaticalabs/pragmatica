@@ -331,14 +331,16 @@ class SliceInvokerImpl implements SliceInvoker {
     private Promise<Unit> invokeLocalFireAndForget(Artifact slice, MethodName method, Object request) {
         return invocationHandler.localSlice(slice)
                                 .async(SLICE_NOT_FOUND)
-                                .flatMap(bridge -> observabilityInterceptor.intercept(slice,
-                                                                                      method,
-                                                                                      InvocationContext.getOrGenerateRequestId(),
-                                                                                      InvocationContext.currentDepth() + 1,
-                                                                                      true,
-                                                                                      () -> invokeViaBridge(bridge,
-                                                                                                            method,
-                                                                                                            request)))
+                                .flatMap(bridge -> ObservabilityCells.around(bridge,
+                                                                             method.name(),
+                                                                             () -> observabilityInterceptor.intercept(slice,
+                                                                                                                      method,
+                                                                                                                      InvocationContext.getOrGenerateRequestId(),
+                                                                                                                      InvocationContext.currentDepth() + 1,
+                                                                                                                      true,
+                                                                                                                      () -> invokeViaBridge(bridge,
+                                                                                                                                            method,
+                                                                                                                                            request))))
                                 .mapToUnit();
     }
 
@@ -562,17 +564,19 @@ class SliceInvokerImpl implements SliceInvoker {
 
     @SuppressWarnings("unchecked")
     private <R> void invokeLocalForFailover(Promise<R> promise, FailoverContext<R> ctx) {
-        invocationHandler.localSlice(ctx.slice).async(SLICE_NOT_FOUND).flatMap(bridge -> observabilityInterceptor.intercept(ctx.slice,
-                                                                                                                            ctx.method,
-                                                                                                                            ctx.requestId,
-                                                                                                                            InvocationContext.currentDepth() + 1,
-                                                                                                                            true,
-                                                                                                                            () -> invokeViaBridge(bridge,
-                                                                                                                                                  ctx.method,
-                                                                                                                                                  ctx.request))).onSuccess(result -> promise.succeed((R) result)).onFailure(cause -> handleFailoverFailure(promise,
-                                                                                                                                                                                                                                                           ctx,
-                                                                                                                                                                                                                                                           self,
-                                                                                                                                                                                                                                                           cause));
+        invocationHandler.localSlice(ctx.slice).async(SLICE_NOT_FOUND).flatMap(bridge -> ObservabilityCells.around(bridge,
+                                                                                                                  ctx.method.name(),
+                                                                                                                  () -> observabilityInterceptor.intercept(ctx.slice,
+                                                                                                                                                           ctx.method,
+                                                                                                                                                           ctx.requestId,
+                                                                                                                                                           InvocationContext.currentDepth() + 1,
+                                                                                                                                                           true,
+                                                                                                                                                           () -> invokeViaBridge(bridge,
+                                                                                                                                                                                 ctx.method,
+                                                                                                                                                                                 ctx.request)))).onSuccess(result -> promise.succeed((R) result)).onFailure(cause -> handleFailoverFailure(promise,
+                                                                                                                                                                                                                                                                                          ctx,
+                                                                                                                                                                                                                                                                                          self,
+                                                                                                                                                                                                                                                                                          cause));
     }
 
     private <R> void invokeRemoteForFailover(Promise<R> promise, FailoverContext<R> ctx, NodeId targetNode) {
@@ -755,14 +759,16 @@ class SliceInvokerImpl implements SliceInvoker {
     public <R> Promise<R> invokeLocal(Artifact slice, MethodName method, Object request, TypeToken<R> responseType) {
         return invocationHandler.localSlice(slice)
                                 .async(SLICE_NOT_FOUND)
-                                .flatMap(bridge -> observabilityInterceptor.intercept(slice,
-                                                                                      method,
-                                                                                      InvocationContext.getOrGenerateRequestId(),
-                                                                                      InvocationContext.currentDepth() + 1,
-                                                                                      true,
-                                                                                      () -> invokeViaBridge(bridge,
-                                                                                                            method,
-                                                                                                            request)));
+                                .flatMap(bridge -> ObservabilityCells.around(bridge,
+                                                                             method.name(),
+                                                                             () -> observabilityInterceptor.intercept(slice,
+                                                                                                                      method,
+                                                                                                                      InvocationContext.getOrGenerateRequestId(),
+                                                                                                                      InvocationContext.currentDepth() + 1,
+                                                                                                                      true,
+                                                                                                                      () -> invokeViaBridge(bridge,
+                                                                                                                                            method,
+                                                                                                                                            request))));
     }
 
     @SuppressWarnings("unchecked")

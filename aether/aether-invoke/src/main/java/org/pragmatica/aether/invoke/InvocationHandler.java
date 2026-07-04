@@ -9,12 +9,14 @@ import org.pragmatica.aether.http.HttpRoutePublisher;
 import org.pragmatica.aether.invoke.InvocationMessage.InvokeRequest;
 import org.pragmatica.aether.invoke.InvocationMessage.InvokeResponse;
 import org.pragmatica.aether.metrics.invocation.InvocationMetricsCollector;
+import org.pragmatica.aether.slice.ObservabilityCellRegistrar;
 import org.pragmatica.aether.slice.SliceBridge;
 import org.pragmatica.consensus.net.ClusterNetwork;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Unit;
 import org.pragmatica.messaging.MessageReceiver;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.serialization.Deserializer;
@@ -45,6 +47,13 @@ public interface InvocationHandler {
     Option<SliceBridge> findBridgeByClassLoader(ClassLoader classLoader);
     Option<InvocationMetricsCollector> metricsCollector();
     TimeSpan DEFAULT_INVOCATION_TIMEOUT = timeSpan(15).seconds();
+
+    /// Bind the write-side registrar so a loaded slice's per-method observability cells (#277 increment
+    /// 2) are registered at registerSlice and dropped at unregisterSlice. Default no-op keeps stubs and
+    /// observability-off nodes at passthrough.
+    default Unit setObservabilityCellRegistrar(ObservabilityCellRegistrar registrar) {
+        return Unit.unit();
+    }
 
     static InvocationHandler invocationHandler(NodeId self, ClusterNetwork network) {
         return new InvocationHandlerImpl(self,
@@ -149,6 +158,7 @@ class InvocationHandlerImpl implements InvocationHandler {
     private final ObservabilityInterceptor observabilityInterceptor;
     private final Map<Artifact, SliceBridge> localSlices = new ConcurrentHashMap<>();
     private final Map<ClassLoader, SliceBridge> classLoaderBridges = new ConcurrentHashMap<>();
+    private volatile ObservabilityCellRegistrar cellRegistrar = ObservabilityCellRegistrar.NOOP;
 
     InvocationHandlerImpl(NodeId self,
                           ClusterNetwork network,
@@ -170,9 +180,18 @@ class InvocationHandlerImpl implements InvocationHandler {
 
     @Override
     @SuppressWarnings("JBCT-RET-01")
+    public Unit setObservabilityCellRegistrar(ObservabilityCellRegistrar registrar) {
+        this.cellRegistrar = registrar;
+
+        return Unit.unit();
+    }
+
+    @Override
+    @SuppressWarnings("JBCT-RET-01")
     public void registerSlice(Artifact artifact, SliceBridge bridge) {
         localSlices.put(artifact, bridge);
         classLoaderBridges.put(bridge.classLoader(), bridge);
+        bridge.observabilityCells().forEach(cellRegistrar::register);
         log.debug("Registered slice for invocation: {}", artifact);
     }
 
@@ -183,6 +202,7 @@ class InvocationHandlerImpl implements InvocationHandler {
 
         if (bridge != null) {
             classLoaderBridges.remove(bridge.classLoader());
+            bridge.observabilityCells().forEach(cellRegistrar::deregister);
         }
 
         log.debug("Unregistered slice from invocation: {}", artifact);
@@ -239,12 +259,14 @@ class InvocationHandlerImpl implements InvocationHandler {
         var requestBytes = request.payload().length;
 
         metricsCollector.onPresent(mc -> mc.recordStart(request.targetSlice(), request.method()));
-        observabilityInterceptor.intercept(request.targetSlice(),
-                                           request.method(),
-                                           request.requestId(),
-                                           request.depth(),
-                                           true,
-                                           () -> invokeWithHttpRouting(request, bridge)).timeout(invocationTimeout).onSuccess(data -> handleInvocationSuccess(request,
+        ObservabilityCells.around(bridge,
+                                  request.method().name(),
+                                  () -> observabilityInterceptor.intercept(request.targetSlice(),
+                                                                           request.method(),
+                                                                           request.requestId(),
+                                                                           request.depth(),
+                                                                           true,
+                                                                           () -> invokeWithHttpRouting(request, bridge))).timeout(invocationTimeout).onSuccess(data -> handleInvocationSuccess(request,
                                                                                                                                                               data,
                                                                                                                                                               startTime,
                                                                                                                                                               requestBytes)).onFailure(cause -> handleInvocationFailure(request,

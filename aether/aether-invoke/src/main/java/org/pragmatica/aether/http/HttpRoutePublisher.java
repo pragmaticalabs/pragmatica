@@ -5,12 +5,15 @@
 package org.pragmatica.aether.http;
 
 import org.pragmatica.aether.artifact.Artifact;
+import org.pragmatica.aether.http.adapter.RouteDecorator;
 import org.pragmatica.aether.http.adapter.SliceRouter;
 import org.pragmatica.aether.http.adapter.SliceRouterFactory;
 import org.pragmatica.aether.http.handler.HttpRequestHandler;
 import org.pragmatica.aether.http.handler.HttpRequestHandlerFactory;
 import org.pragmatica.aether.http.handler.HttpRouteDefinition;
 import org.pragmatica.aether.http.handler.security.SecurityPolicy;
+import org.pragmatica.aether.slice.ObservabilityCellRegistrar;
+import org.pragmatica.aether.slice.ObservabilityStrategyCell;
 import org.pragmatica.aether.slice.SliceInvokerFacade;
 import org.pragmatica.aether.slice.blueprint.SecurityOverrides;
 import org.pragmatica.aether.slice.generation.Epoch;
@@ -23,6 +26,8 @@ import org.pragmatica.cluster.node.ClusterNode;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.topology.GenerationSnapshotSource;
+import org.pragmatica.http.routing.Handler;
+import org.pragmatica.http.routing.Route;
 import org.pragmatica.http.routing.RouteMountMode;
 import org.pragmatica.http.routing.RouteMounting;
 import org.pragmatica.http.routing.RouteSource;
@@ -35,6 +40,7 @@ import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.Causes;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.LinkedHashMap;
@@ -72,6 +78,15 @@ public interface HttpRoutePublisher {
     /// @param sink the versioning metrics sink
     /// @return unit
     Unit setVersioningMetricsSink(VersioningMetricsSink sink);
+
+    /// Bind the write-side observability cell registrar (#277 increment 2) so each published route's
+    /// handler is wrapped once with a per-injection-point cell that a KV config put can swap. Late-bound
+    /// after the config registry is built at boot; routers published before this call decorate with the
+    /// no-op registrar (cells stay identity). Idempotent — the last registrar wins.
+    ///
+    /// @param registrar the write-side cell registrar
+    /// @return unit
+    Unit setObservabilityCellRegistrar(ObservabilityCellRegistrar registrar);
 
     /// Snapshot the version registries of every deployed slice that declares API versions (#198
     /// §11.3), keyed by artifact. Drives the `GET /api/versions` introspection endpoint; unversioned
@@ -124,9 +139,12 @@ class HttpRoutePublisherImpl implements HttpRoutePublisher {
     private final Map<Artifact, HttpRequestHandler> handlers = new ConcurrentHashMap<>();
     private final Map<Artifact, SliceRouter> sliceRouters = new ConcurrentHashMap<>();
     private final Map<Artifact, List<HttpRouteDefinition>> publishedRoutes = new ConcurrentHashMap<>();
+    private final Map<Artifact, List<ObservabilityStrategyCell>> routeCells = new ConcurrentHashMap<>();
     private final RouteMetadataExtractor routeMetadataExtractor = RouteMetadataExtractor.routeMetadataExtractor();
 
     private final AtomicReference<SecurityOverrides> activeOverrides = new AtomicReference<>(SecurityOverrides.EMPTY);
+
+    private final AtomicReference<ObservabilityCellRegistrar> cellRegistrar = new AtomicReference<>(ObservabilityCellRegistrar.NOOP);
 
     private final AtomicReference<VersioningMetricsSink> versioningMetricsSink = new AtomicReference<>(VersioningMetricsSink.noop());
 
@@ -222,8 +240,13 @@ class HttpRoutePublisherImpl implements HttpRoutePublisher {
         // deprecated / missing-header counters at dispatch. The sink forwards to the live backend the
         // management server installs post-boot (forwardingSink), so deploy-time router creation needn't
         // wait on the metrics registry.
-        var router = baseRouter.withObservability(sliceLabel(artifact), forwardingSink);
+        // #277 increment 2: rewrap each route's handler once with its per-injection-point observability
+        // cell (north-south seam). Cells are minted+registered here and dropped at unpublishRoutes.
+        var cells = new ArrayList<ObservabilityStrategyCell>();
+        var router = baseRouter.withObservability(sliceLabel(artifact), forwardingSink)
+                               .withInvocationCells(route -> decorateRoute(artifact, route, cells));
 
+        routeCells.put(artifact, List.copyOf(cells));
         sliceRouters.put(artifact, router);
         if (factory instanceof RouteSource routeSource) {
             // #198 §7: compose the routes ONCE for this node's detection mode and feed the SAME
@@ -304,6 +327,7 @@ class HttpRoutePublisherImpl implements HttpRoutePublisher {
     public Promise<Unit> unpublishRoutes(Artifact artifact) {
         handlers.remove(artifact);
         sliceRouters.remove(artifact);
+        deregisterRouteCells(artifact);
         var routes = publishedRoutes.remove(artifact);
 
         if (routes == null || routes.isEmpty()) {
@@ -364,6 +388,64 @@ class HttpRoutePublisherImpl implements HttpRoutePublisher {
         versioningMetricsSink.set(sink);
 
         return Unit.unit();
+    }
+
+    @Override
+    public Unit setObservabilityCellRegistrar(ObservabilityCellRegistrar registrar) {
+        cellRegistrar.set(registrar);
+
+        return Unit.unit();
+    }
+
+    /// Mint + register the route's per-injection-point cell (keyed `artifactBase/route.name()`, falling
+    /// back to the path for un-`.named()` routes) and rewrap its handler over `cell.around(...)`. The
+    /// minted cell is collected so unpublishRoutes can deregister it.
+    private Route<?> decorateRoute(Artifact artifact, Route<?> route, List<ObservabilityStrategyCell> collected) {
+        var cell = ObservabilityStrategyCell.observabilityStrategyCell(artifact.base()
+                                                                               .asString(),
+                                                                       routeCellKey(route));
+
+        cellRegistrar.get()
+                     .register(cell);
+        collected.add(cell);
+
+        return wrapHandler(cell, route);
+    }
+
+    private static String routeCellKey(Route<?> route) {
+        return route.name().isEmpty()
+               ? stripTrailingSlash(route.path())
+               : route.name();
+    }
+
+    /// The path-fallback cell key is operator-facing: normalize away the router's trailing slash
+    /// (`/two/` → `/two`) so the KV key an operator addresses matches the path as authored. Root `/`
+    /// stays as-is.
+    private static String stripTrailingSlash(String path) {
+        return path.length() > 1 && path.endsWith("/")
+               ? path.substring(0, path.length() - 1)
+               : path;
+    }
+
+    private static <T> Route<T> wrapHandler(ObservabilityStrategyCell cell, Route<T> route) {
+        var original = route.handler();
+        Handler<T> wrapped = ctx -> cell.around(() -> original.handle(ctx));
+
+        return Route.route(route.method(),
+                           route.path(),
+                           wrapped,
+                           route.contentType(),
+                           route.spacers(),
+                           route.name(),
+                           route.security(),
+                           route.version(),
+                           route.pathParamCount());
+    }
+
+    private void deregisterRouteCells(Artifact artifact) {
+        Option.option(routeCells.remove(artifact))
+              .onPresent(cells -> cells.forEach(cell -> cellRegistrar.get()
+                                                                     .deregister(cell)));
     }
 
     @Override

@@ -27,16 +27,37 @@ public record DefaultSliceBridge(Artifact artifact,
                                  Slice slice,
                                  Map<String, InternalMethod> methodMap,
                                  SliceCodec codec) implements SliceBridge {
-    public record InternalMethod(SliceMethod<?, ?> method, TypeToken<?> parameterType, TypeToken<?> returnType) {}
+    public record InternalMethod(SliceMethod<?, ?> method,
+                                 TypeToken<?> parameterType,
+                                 TypeToken<?> returnType,
+                                 ObservabilityStrategyCell cell) {}
 
     public static DefaultSliceBridge defaultSliceBridge(Artifact artifact, Slice slice, SliceCodec codec) {
+        var artifactBase = artifact.base()
+                                   .asString();
         var methodMap = slice.methods().stream().collect(Collectors.toMap(m -> m.name()
                                                                                 .name(),
                                                                           m -> new InternalMethod(m,
                                                                                                   m.parameterType(),
-                                                                                                  m.returnType())));
+                                                                                                  m.returnType(),
+                                                                                                  ObservabilityStrategyCell.observabilityStrategyCell(artifactBase,
+                                                                                                                                                      m.name()
+                                                                                                                                                       .name()))));
 
         return new DefaultSliceBridge(artifact, slice, Map.copyOf(methodMap), codec);
+    }
+
+    @Override
+    public Option<ObservabilityStrategyCell> observabilityCell(String methodName) {
+        return option(methodMap.get(methodName)).map(InternalMethod::cell);
+    }
+
+    @Override
+    public List<ObservabilityStrategyCell> observabilityCells() {
+        return methodMap.values()
+                        .stream()
+                        .map(InternalMethod::cell)
+                        .toList();
     }
 
     @Override

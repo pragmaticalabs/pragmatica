@@ -52,7 +52,7 @@ class ObservabilityConfigRegistryTest {
     void register_seedsCell_atIdentityStrategy() {
         var cell = ObservabilityStrategyCell.observabilityStrategyCell(ARTIFACT, METHOD);
 
-        registry.register(KEY, cell);
+        registry.register(cell);
 
         assertThat(cell.strategy()).isSameAs(InvocationStrategy.IDENTITY);
         assertThat(registry.getConfig(ARTIFACT, METHOD).allOff()).isTrue();
@@ -61,7 +61,7 @@ class ObservabilityConfigRegistryTest {
     @Test
     void onObservabilityConfigPut_updatesConfigSnapshot_andSwapsCell() {
         var cell = ObservabilityStrategyCell.observabilityStrategyCell(ARTIFACT, METHOD);
-        registry.register(KEY, cell);
+        registry.register(cell);
         cell.swap(sentinel());
 
         registry.onObservabilityConfigPut(put(true, true, false, false, 3));
@@ -81,7 +81,7 @@ class ObservabilityConfigRegistryTest {
 
         var cell = ObservabilityStrategyCell.observabilityStrategyCell(ARTIFACT, METHOD);
         cell.swap(sentinel());
-        registry.register(KEY, cell);
+        registry.register(cell);
         var stored = registry.getConfig(ARTIFACT, METHOD);
 
         // The seed read the last-known config and swapped the sentinel out for its strategy.
@@ -105,7 +105,7 @@ class ObservabilityConfigRegistryTest {
     @Test
     void onObservabilityConfigRemove_swapsLiveCellToIdentity() {
         var cell = ObservabilityStrategyCell.observabilityStrategyCell(ARTIFACT, METHOD);
-        registry.register(KEY, cell);
+        registry.register(cell);
 
         registry.onObservabilityConfigPut(put(true, true, true, true, 4));
         cell.swap(sentinel());
@@ -118,11 +118,11 @@ class ObservabilityConfigRegistryTest {
     @Test
     void deregister_dropsLiveCell_soLaterPutDoesNotTouchIt() {
         var cell = ObservabilityStrategyCell.observabilityStrategyCell(ARTIFACT, METHOD);
-        registry.register(KEY, cell);
+        registry.register(cell);
         var planted = sentinel();
         cell.swap(planted);
 
-        registry.deregister(KEY);
+        registry.deregister(cell);
         registry.onObservabilityConfigPut(put(true, true, true, true, 8));
 
         // The deregistered cell must keep its planted strategy: the put updates configs only.
@@ -134,7 +134,7 @@ class ObservabilityConfigRegistryTest {
     void setConfig_persistsCommand_andAppliesStrategyLocally() {
         var writeRegistry = ObservabilityConfigRegistry.observabilityConfigRegistry(clusterNodeStub(), kvStore);
         var cell = ObservabilityStrategyCell.observabilityStrategyCell(ARTIFACT, METHOD);
-        writeRegistry.register(KEY, cell);
+        writeRegistry.register(cell);
         cell.swap(sentinel());
 
         writeRegistry.setConfig(ARTIFACT, METHOD, true, true, false, true, 6)
@@ -154,7 +154,7 @@ class ObservabilityConfigRegistryTest {
     @Test
     void onObservabilityConfigPut_withNonOffConfig_stillSwapsCell() {
         var cell = ObservabilityStrategyCell.observabilityStrategyCell(ARTIFACT, METHOD);
-        registry.register(KEY, cell);
+        registry.register(cell);
         var planted = sentinel();
         cell.swap(planted);
 

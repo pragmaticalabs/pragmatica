@@ -1466,6 +1466,11 @@ public interface AetherNode extends ManageableNode {
                                                                     deserializer,
                                                                     httpRoutePublisher,
                                                                     observabilityInterceptor);
+        // #277 increment 2: the config registry IS the write-side cell registrar for both dispatch
+        // seams — bind it so bridge (east-west) and route (north-south) cells register at slice load /
+        // route publish and deregister at unload, and a KV config put swaps their behaviour in place.
+        invocationHandler.setObservabilityCellRegistrar(configRegistry);
+        httpRoutePublisher.setObservabilityCellRegistrar(configRegistry);
         var deploymentMetricsCollector = DeploymentMetricsCollector.deploymentMetricsCollector(config.self(),
                                                                                                clusterNode.network());
         var deploymentMetricsScheduler = DeploymentMetricsScheduler.deploymentMetricsScheduler(config.self(),

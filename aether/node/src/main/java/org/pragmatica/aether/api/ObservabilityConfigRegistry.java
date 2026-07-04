@@ -5,6 +5,7 @@
 package org.pragmatica.aether.api;
 
 import org.pragmatica.aether.slice.AspectObservabilityConfig;
+import org.pragmatica.aether.slice.ObservabilityCellRegistrar;
 import org.pragmatica.aether.slice.ObservabilityStrategyCell;
 import org.pragmatica.aether.slice.ObservabilityStrategyCell.InvocationStrategy;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
@@ -24,6 +25,7 @@ import org.pragmatica.messaging.MessageReceiver;
 
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
 import org.slf4j.Logger;
@@ -37,15 +39,17 @@ import org.slf4j.LoggerFactory;
 // the live cell (push-on-event), so the per-call hot path never performs a registry lookup.
 //
 // Distinct from ObservabilityDepthRegistry (depth / trace-rate tuning, read-on-demand): this registry
-// holds live cell references and swaps their behaviour. The dispatch seams (increment 2) call
-// register(key, cell) at slice load and deregister(key) at unload.
-public class ObservabilityConfigRegistry {
+// holds live cell references and swaps their behaviour. It IS the ObservabilityCellRegistrar the dispatch
+// seams (increment 2) call to register(cell) at slice load / route publish and deregister(cell) at
+// unload / unpublish. Multiple cells can share one injection-point key (e.g. the north-south route cell
+// and the east-west bridge cell of the same method) — all are held in a per-key set and swapped together.
+public class ObservabilityConfigRegistry implements ObservabilityCellRegistrar {
     private static final Logger log = LoggerFactory.getLogger(ObservabilityConfigRegistry.class);
 
     private final RabiaNode<KVCommand<AetherKey>> clusterNode;
     private final KVStore<AetherKey, AetherValue> kvStore;
     private final Map<String, AspectObservabilityConfig> configs = new ConcurrentHashMap<>();
-    private final Map<String, ObservabilityStrategyCell> instances = new ConcurrentHashMap<>();
+    private final Map<String, Set<ObservabilityStrategyCell>> instances = new ConcurrentHashMap<>();
 
     private ObservabilityConfigRegistry(RabiaNode<KVCommand<AetherKey>> clusterNode,
                                         KVStore<AetherKey, AetherValue> kvStore) {
@@ -80,23 +84,43 @@ public class ObservabilityConfigRegistry {
                   value.depth());
     }
 
-    /// Registers a live ObservabilityStrategyCell for an injection point, then seeds it with the
+    /// Registers a live ObservabilityStrategyCell for its injection point, then seeds it with the
     /// strategy for the last-known snapshot (or OFF) so subsequent KV-update events swap its behaviour
     /// in place. Registering BEFORE seeding closes the load/put race: a concurrent KV put either finds
     /// the cell and swaps it, or lands before registration and is picked up by the seed read — both
-    /// converge on the strategy for the latest snapshot.
-    public Unit register(String key, ObservabilityStrategyCell cell) {
-        instances.put(key, cell);
-        cell.swap(strategyFor(configs.getOrDefault(key, AspectObservabilityConfig.OFF)));
+    /// converge on the strategy for the latest snapshot. Multiple cells may share one key; each joins
+    /// the key's set and all are swapped together.
+    @Override
+    public Unit register(ObservabilityStrategyCell cell) {
+        instances.computeIfAbsent(cell.key(), _ -> ConcurrentHashMap.newKeySet())
+                 .add(cell);
+        cell.swap(strategyFor(configs.getOrDefault(cell.key(), AspectObservabilityConfig.OFF)));
 
         return Unit.unit();
     }
 
-    /// Drops the live cell for an injection point (on unload) so a later KV-update does not retain it.
-    public Unit deregister(String key) {
-        instances.remove(key);
+    /// Drops the live cell for its injection point (on unload / unpublish) so a later KV-update does not
+    /// retain it. The deregistered cell keeps its current strategy and works standalone — deregister only
+    /// removes the registry's reference; the key's set is dropped once its last cell leaves.
+    @Override
+    public Unit deregister(ObservabilityStrategyCell cell) {
+        Option.option(instances.get(cell.key()))
+              .onPresent(set -> removeFromSet(cell.key(), set, cell));
 
         return Unit.unit();
+    }
+
+    private void removeFromSet(String key, Set<ObservabilityStrategyCell> set, ObservabilityStrategyCell cell) {
+        set.remove(cell);
+
+        if (set.isEmpty()) {
+            instances.remove(key, set);
+        }
+    }
+
+    private void swapAll(String registryKey, InvocationStrategy strategy) {
+        instances.getOrDefault(registryKey, Set.of())
+                 .forEach(cell -> cell.swap(strategy));
     }
 
     @MessageReceiver
@@ -108,7 +132,7 @@ public class ObservabilityConfigRegistry {
         var snapshot = snapshotOf(value);
 
         configs.put(registryKey, snapshot);
-        Option.option(instances.get(registryKey)).onPresent(cell -> cell.swap(strategyFor(snapshot)));
+        swapAll(registryKey, strategyFor(snapshot));
         log.debug("Observability config updated from cluster: {} -> logging={} metrics={} spans={} tracing={} depth={}",
                   registryKey,
                   value.logging(),
@@ -125,7 +149,7 @@ public class ObservabilityConfigRegistry {
         var registryKey = key.artifactBase() + "/" + key.methodName();
 
         configs.remove(registryKey);
-        Option.option(instances.get(registryKey)).onPresent(cell -> cell.swap(InvocationStrategy.IDENTITY));
+        swapAll(registryKey, InvocationStrategy.IDENTITY);
         log.debug("Observability config removed from cluster: {}", registryKey);
     }
 
@@ -179,7 +203,7 @@ public class ObservabilityConfigRegistry {
 
     private Unit applyConfig(String registryKey, AspectObservabilityConfig snapshot) {
         configs.put(registryKey, snapshot);
-        Option.option(instances.get(registryKey)).onPresent(cell -> cell.swap(strategyFor(snapshot)));
+        swapAll(registryKey, strategyFor(snapshot));
         log.info("Observability config set for {}: logging={} metrics={} spans={} tracing={} depth={}",
                  registryKey,
                  snapshot.logging(),
@@ -193,7 +217,7 @@ public class ObservabilityConfigRegistry {
 
     private Unit removeFromRegistry(String registryKey) {
         configs.remove(registryKey);
-        Option.option(instances.get(registryKey)).onPresent(cell -> cell.swap(InvocationStrategy.IDENTITY));
+        swapAll(registryKey, InvocationStrategy.IDENTITY);
         log.info("Observability config removed for {}", registryKey);
 
         return Unit.unit();
