@@ -3,7 +3,7 @@
 ## Version: 1.0
 ## Status: Implementation-Ready
 ## Target Release: Post Passive Worker Pools Phase 1
-## Last Updated: 2026-03-20
+## Last Updated: 2026-07-04 (§10.6: #411 coverage-union promotion catch-up design)
 
 ---
 
@@ -1463,6 +1463,54 @@ Replication durability is governed by two independent stream-level knobs. Both c
 **Durability guarantee (storage):** a write that has been client-acked is held by `min-sync` distinct copies before the ack returns, so the *data* survives up to `min-sync − 1` simultaneous replica failures (owner included). Whether a *promotion* recovers all of it is scoped below. With `replicas = 2, min-sync-replicas = 2` (owner + 1 in-sync per write), the single follower is always caught up to the last acked offset, so it can be promoted with zero loss.
 
 **Failover (HRW-elect + catch-up-before-serve):** on owner death the new owner is the next HRW-ranked survivor — election is placement-driven, not ISR-membership-driven. A lagging promotee is held non-authoritative until it catches up to the highest `confirmedOffset` among surviving replicas, then serves. **Losslessness scope:** with `replicas = 2` or `min-sync-replicas = replicas`, every client-acked record is on every surviving in-sync replica, so the promoted owner serves the complete acked history (this is the acceptance proven by the `02-chaos` `test-stream-replica-failover.sh` suite). With `replicas > 2` and `min-sync < replicas`, promotion catch-up currently sources from a **single** ahead-survivor; distinct acked offsets may reside on different followers, so promotion is not yet guaranteed lossless — tracked in #411 (multi-survivor promotion catch-up).
+
+### 10.6 Multi-survivor promotion catch-up — coverage-union design (#411, 2026-07-04)
+
+Closes the §10.5 losslessness gap for `replicas > 2 ∧ min-sync < replicas`.
+
+**Why a single ahead-survivor is insufficient.** Each surviving replica `r` holds a contiguous
+interval `[e_r, w_r]` of the partition — contiguous because live replication applies in order
+(`applyContiguous`) and backfill fills from a starting offset; but `e_r > 0` is possible (a
+replica placed late by the reconcile edge backfills from the then-earliest retained offset and
+holds a **suffix**). With per-record ack quorums of size `min-sync − 1 < replicas − 1`, different
+acked records may be held by different followers. Max-tail-only catch-up pulls one interval and
+can miss acked records that only another survivor holds.
+
+**Coverage-union catch-up (normative):**
+
+1. **Probe all** registered non-self replicas — `ReplicaWatermarkProbe` extended to return the
+   full held interval `(earliestAvailable, confirmedTail)`, not the tail alone.
+2. Needed range = `[promotee_tail + 1 .. max_r(w_r)]`.
+3. **Plan per-run sources**: walk the needed range in offset order; for each uncovered run pick a
+   reachable survivor whose interval covers it (prefer the survivor covering the longest run —
+   fewest source switches). Pull through the existing `CatchupTransport`; appends use the
+   epoch-adopting recovery path (§10.5 fence intact); apply strictly in offset order across
+   source switches.
+4. Promote to `CAUGHT_UP@max_tail` only when the union is applied contiguously.
+5. **Uncoverable run** (no reachable survivor holds it): hold non-authoritative in the bounded
+   wait (`escapeOwnerCatchup`) while the holder is merely unreachable; once membership confirms
+   the holder dead, promote at the highest contiguously-covered offset and emit an explicit,
+   operator-visible **`PROMOTION_GAP` event** (offset range + last known holder) — degraded
+   recovery is reported, never silent.
+
+**Guarantee statement (post-implementation):** promotion recovers *every acked record held by at
+least one reachable surviving replica* — the information-theoretic maximum. Acked records whose
+entire ack quorum (`min-sync` copies) is lost are unrecoverable by any mechanism and are reported
+via `PROMOTION_GAP`; their exposure is bounded by the `min-sync` floor the writer chose (§10.5).
+
+**Validation gate:** implementing this section is the precondition for relaxing the
+`min-sync == replicas` constraint in `durable-pubsub-spec.md` §3, and requires a `replicas = 3,
+min-sync = 2` failover scenario in `02-chaos` (kill the owner after acks routed via different
+followers; assert union recovery) before the relaxation ships.
+
+**Companion #411 items (decided):**
+- `KVStoreSerializer` stream-config wire format gains a leading **schema-version tag** and
+  per-stream skip-on-parse-fail (quarantine + log, not map-wide abort) **before** it is wired to
+  any snapshot/persistence path. (Today: test-only, zero production callers.)
+- Startup **WARN** when `replicas ≥ 3 ∧ min-sync ≤ 1` (placement redundancy with a zero peer-ack
+  floor — legal, Kafka-consistent, surprising; §10.5 note made loud at boot).
+- `@Contract` on `PartitionBackfill.ackBackfillToOwner` / `DefaultReplicationManager.recordSurvivorConfirmed`
+  — fold into the same-file touch that implements this section.
 
 ---
 
