@@ -333,6 +333,30 @@ class KVStoreSerializerTest {
         }
 
         @Test
+        void roundTrip_observabilityConfig_preservesAllFacets() {
+            var entries = new LinkedHashMap<AetherKey, AetherValue>();
+            var key = ObservabilityConfigKey.observabilityConfigKey("com.example:my-slice", "handle");
+
+            entries.put(key, new ObservabilityConfigValue("com.example:my-slice", "handle", true, false, true, false, 7, 9000L));
+            KVStoreSerializer.toToml(entries, TEST_PHASE, TEST_TIMESTAMP)
+                             .flatMap(KVStoreSerializer::fromToml)
+                             .onFailureRun(Assertions::fail)
+                             .onSuccess(restored -> {
+                                 assertThat(restored).containsKey(key);
+                                 var oc = (ObservabilityConfigValue) restored.get(key);
+
+                                 assertThat(oc.artifactBase()).isEqualTo("com.example:my-slice");
+                                 assertThat(oc.methodName()).isEqualTo("handle");
+                                 assertThat(oc.logging()).isTrue();
+                                 assertThat(oc.metrics()).isFalse();
+                                 assertThat(oc.spans()).isTrue();
+                                 assertThat(oc.tracing()).isFalse();
+                                 assertThat(oc.depth()).isEqualTo(7);
+                                 assertThat(oc.updatedAt()).isEqualTo(9000L);
+                             });
+        }
+
+        @Test
         void roundTrip_apiKeyValue_preservesAuthorizationRole() {
             var entries = new LinkedHashMap<AetherKey, AetherValue>();
             entries.put(ApiKeyKey.apiKeyKey("ak_admin01"),

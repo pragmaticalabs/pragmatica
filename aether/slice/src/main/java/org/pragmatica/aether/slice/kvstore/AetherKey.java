@@ -390,6 +390,42 @@ public sealed interface AetherKey extends StructuredKey {
         }
     }
 
+    record ObservabilityConfigKey(String artifactBase, String methodName) implements AetherKey {
+        private static final String PREFIX = "obs-config/";
+
+        @Override
+        public String asString() {
+            return PREFIX + artifactBase + "/" + methodName;
+        }
+
+        @Override
+        public String toString() {
+            return asString();
+        }
+
+        public static ObservabilityConfigKey observabilityConfigKey(String artifactBase, String methodName) {
+            return new ObservabilityConfigKey(artifactBase, methodName);
+        }
+
+        public static Result<ObservabilityConfigKey> observabilityConfigKey(String key) {
+            if (!key.startsWith(PREFIX)) {
+                return OBSERVABILITY_CONFIG_KEY_FORMAT_ERROR.apply(key).result();
+            }
+
+            var content = key.substring(PREFIX.length());
+            var slashIndex = content.indexOf('/');
+
+            if (slashIndex == -1 || slashIndex == 0 || slashIndex == content.length() - 1) {
+                return OBSERVABILITY_CONFIG_KEY_FORMAT_ERROR.apply(key).result();
+            }
+
+            var artifactBase = content.substring(0, slashIndex);
+            var methodName = content.substring(slashIndex + 1);
+
+            return success(new ObservabilityConfigKey(artifactBase, methodName));
+        }
+    }
+
     record AlertThresholdKey(String metricName) implements AetherKey {
         private static final String PREFIX = "alert-threshold/";
 
@@ -1154,6 +1190,8 @@ public sealed interface AetherKey extends StructuredKey {
     Fn1<Cause, String> LOG_LEVEL_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid log-level key format: %s");
 
     Fn1<Cause, String> OBSERVABILITY_DEPTH_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid obs-depth key format: %s");
+
+    Fn1<Cause, String> OBSERVABILITY_CONFIG_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid obs-config key format: %s");
 
     Fn1<Cause, String> CONFIG_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid config key format: %s");
 

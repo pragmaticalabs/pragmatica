@@ -373,6 +373,32 @@ public sealed interface AetherValue {
         }
     }
 
+    record ObservabilityConfigValue(String artifactBase,
+                                    String methodName,
+                                    boolean logging,
+                                    boolean metrics,
+                                    boolean spans,
+                                    boolean tracing,
+                                    int depth,
+                                    long updatedAt) implements AetherValue {
+        public static ObservabilityConfigValue observabilityConfigValue(String artifactBase,
+                                                                        String methodName,
+                                                                        boolean logging,
+                                                                        boolean metrics,
+                                                                        boolean spans,
+                                                                        boolean tracing,
+                                                                        int depth) {
+            return new ObservabilityConfigValue(artifactBase,
+                                                methodName,
+                                                logging,
+                                                metrics,
+                                                spans,
+                                                tracing,
+                                                depth,
+                                                System.currentTimeMillis());
+        }
+    }
+
     record ConfigValue(String key, String value, long updatedAt) implements AetherValue {
         public static ConfigValue configValue(String key, String value) {
             return new ConfigValue(key, value, System.currentTimeMillis());
