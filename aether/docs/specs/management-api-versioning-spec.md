@@ -210,7 +210,7 @@ EVERY stream, app or system, which the split design could not offer.
 | `STREAM_GET` | `GET /api/streams/{name}` | `GET /api/v1/streams/{ns}/{stream}/{ver}/partitions` (detail = partitions sub-resource) |
 | `STREAM_PARTITION` | `GET /api/streams/{name}/{partition}` | `GET /api/v1/streams/{ns}/{stream}/{ver}/partitions/{p}` |
 | `STREAM_DELETE` | `DELETE /api/streams/{name}` | **merged** into catalog `STREAMS_DELETE` (system ns) |
-| `STREAM_PUBLISH` | `POST /api/streams/publish/{name}` | **merged** into `STREAMS_PUBLISH` `POST /api/v1/streams/publish/{ns}/{stream}/{ver}` |
+| `STREAM_PUBLISH` | `POST /api/streams/publish/{name}` | **merged** into `STREAMS_PUBLISH` `POST /api/v1/streams/{ns}/{stream}/{ver}/publish` (identity-first, §3.4) |
 | `STREAM_READ` | `GET /api/streams/read/{name}/{partition}` | `GET /api/v1/streams/{ns}/{stream}/{ver}/read/{p}` |
 | `STREAM_REPLICAS` | `GET /api/streams/replicas/{name}/{partition}` | `GET /api/v1/streams/{ns}/{stream}/{ver}/replicas/{p}` |
 | `STREAM_CONSUMERS` | `GET /api/streams/consumers/{name}` | `GET /api/v1/streams/{ns}/{stream}/{ver}/consumers` |
@@ -230,7 +230,35 @@ subcommands (unify on the catalog addressing), `ManagementServer` write-gate pre
 now), durable-pubsub-spec §9 DLQ routes (drafted as `/api/topics/...` — mount under
 `/api/v1/topics/**`, unaffected by this merge).
 
-### 3.3 Unchanged (unversioned by design)
+### 3.3 Namespace fold-in + catalog normalization (Q2/Q3 resolved, owner decision 2026-07-05)
+
+Same free-window logic as the §3.2 merge: pre-GA renames are free; these two warts would otherwise
+ship into v1. **Rule: identity-first resource shapes** — `/api/v1/streams/{ns}/{stream}/{ver}/{sub}`;
+verb-prefix paths (`/streams/{verb}/{params...}`) are eliminated. §3.2's merged rows already read
+in this shape.
+
+| Enum entry | Old (verb-first) | New (identity-first) |
+|---|---|---|
+| `STREAMS_LIST` | `GET /api/streams/list` | `GET /api/v1/streams` |
+| `STREAMS_VERSIONS_LIST` | `GET /api/streams/versions/{ns}/{stream}` | `GET /api/v1/streams/{ns}/{stream}` (the stream resource = its versions) |
+| `STREAMS_LATEST` | `GET /api/streams/latest/{ns}/{stream}` | `GET /api/v1/streams/{ns}/{stream}/latest` |
+| `STREAMS_METADATA` | `GET /api/streams/metadata/{ns}/{stream}/{ver}` | `GET /api/v1/streams/{ns}/{stream}/{ver}` (the version resource = its metadata) |
+| `STREAMS_TAIL` | `GET /api/streams/tail/{ns}/{stream}/{ver}` | `GET /api/v1/streams/{ns}/{stream}/{ver}/tail` |
+| `STREAMS_EVENTS` | `GET /api/streams/events/{ns}/{stream}/{ver}` | `GET /api/v1/streams/{ns}/{stream}/{ver}/events` |
+| `STREAMS_GROUPS_LIST` | `GET /api/streams/groups/{ns}/{stream}/{ver}` | `GET /api/v1/streams/{ns}/{stream}/{ver}/groups` |
+| `STREAMS_PUBLISH` | `POST /api/streams/publish/{ns}/{stream}/{ver}` | `POST /api/v1/streams/{ns}/{stream}/{ver}/publish` |
+| `STREAMS_PUBLISH_BATCH` | `POST .../publish-batch/{ns}/{stream}/{ver}` | `POST /api/v1/streams/{ns}/{stream}/{ver}/publish-batch` |
+| `STREAMS_GROUP_CREATE` | `POST .../groups/create/...` | `POST /api/v1/streams/{ns}/{stream}/{ver}/groups` |
+| `STREAMS_GROUP_DELETE` | `DELETE .../groups/delete/...` | `DELETE /api/v1/streams/{ns}/{stream}/{ver}/groups/{group}` |
+| `STREAMS_DELETE` | `DELETE /api/streams/delete/{ns}/{stream}/{ver}` | `DELETE /api/v1/streams/{ns}/{stream}/{ver}` |
+| `STREAM_NAMESPACES_LIST` | `GET /api/stream-namespaces/list` | `GET /api/v1/streams/namespaces` |
+| `STREAM_NAMESPACES_GET` | `GET /api/stream-namespaces/get/{...}` | `GET /api/v1/streams/namespaces/{ns}` (note: current entry declares a `(namespace, stream, version)` param triple — audit and reduce to `{ns}` during implementation) |
+
+`StreamNamespacesRoutes` handlers change accordingly (path-param shift, not just prefix); the
+`/api/stream-namespaces` root disappears. HTTP-method semantics carry the verb (create=POST on the
+collection, delete=DELETE on the identity) — no verb suffixes remain anywhere in the stream tree.
+
+### 3.4 Unchanged (unversioned by design)
 
 `GET /health/live`, `GET /health/ready` (incl. `{id}` variants), `GET|PUT|POST|DELETE /repository/**` (`MAVEN_METADATA`, `ARTIFACT_*`, `REPOSITORY_ARTIFACTS_LIST`).
 
@@ -252,6 +280,6 @@ Non-collision note: slice-served routes (e.g. `/api/v1/urls/` in k6) live on the
 ## 5. Open questions
 
 1. **Fallback-only routes:** does any `RouteSource` register a route *not* named after an enum entry (reachable only via the trie fallback)? Must be audited to zero before §2.4 deletes the fallback — if nonzero, those routes first get enum entries.
-2. **`/api/stream-namespaces/{list,get}`:** these are catalog metadata addressed by `(namespace, stream, version)` — fold into `/api/v1/streams/**` now (one more rename inside the free window) or leave as-is? With the §3.2 full merge making the catalog THE stream surface, folding in is now the consistent choice — leaning fold-in; costs `StreamNamespacesRoutes` handler changes.
-3. **Catalog suffix normalization:** with the engine gone, `GET /api/v1/streams/list` could become `GET /api/v1/streams`. Same free-window argument; same churn concern. Decide together with Q2.
+2. ~~`/api/stream-namespaces/{list,get}`~~ — **RESOLVED (2026-07-05): folded into `/api/v1/streams/namespaces{,/{ns}}`** (§3.3); the separate root disappears.
+3. ~~Catalog suffix normalization~~ — **RESOLVED (2026-07-05): identity-first shapes across the whole stream tree** (§3.3); no verb suffixes remain.
 4. ~~`stream-engine` naming~~ — **moot (2026-07-04):** the full-merge decision (§3.2) eliminates the separate engine surface entirely.
