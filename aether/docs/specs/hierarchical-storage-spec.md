@@ -1,9 +1,9 @@
 # Aether Hierarchical Storage Engine (AHSE): Implementation Specification
 
-## Version: 1.0
+## Version: 1.1
 ## Status: Implementation-Ready
 ## Target Release: v0.25.0+
-## Last Updated: 2026-03-29
+## Last Updated: 2026-07-04 (DD-8: #349 durable-tier authority + activation decisions)
 
 ---
 
@@ -2338,6 +2338,32 @@ public final class RemoteTier implements StorageTier {
 | **C: Custom HTTP client** | Build S3 API calls on Netty HTTP | Minimal dependencies. Full control. | Significant effort. S3 signing is complex. |
 
 **Decision: Option A.** AWS SDK v2 async client is the standard for production S3 access. It supports custom endpoints (MinIO, GCS in S3-compatible mode). The dependency tree is manageable with BOM imports. Non-blocking fits Aether's async model.
+
+---
+
+### DD-8: Durable-tier authority + activation scope (#349 owner decisions, 2026-07-04)
+
+Three decisions closing the #349 EPIC's open items against the implemented state
+(`integrations/storage/`: `LocalDiskTier` complete + wired; `RemoteTier` complete, unwired;
+demotion/GC managers present, wired `noOp()` in production — #250):
+
+1. **`LocalDiskTier` is the AUTHORITATIVE, ack-gating durable tier (normative correction).**
+   `DefaultStorageInstance.writeToAllTiers` currently acks on `tiers.getLast()` (the DHT tier)
+   and treats other tiers as best-effort cache promotes that swallow failures — under the
+   production order `[memory, disk, DHT]` this makes "durable" mean *replicated-in-memory*,
+   and full-cluster-restart durability rests on snapshots. Corrected semantics: a durable-class
+   write acks ONLY when the local-disk write succeeded (fail-hard on the durable tier);
+   memory/DHT remain best-effort hot tiers. "Durable" then honestly reads: survives
+   full-cluster restart (disk) AND node loss (replication above it).
+2. **RemoteTier (S3) wiring + demotion/GC activation land in the SAME implementation cycle**
+   as (1): disk-authoritative ack + `StorageFactory` RemoteTier config plumbing (#249) +
+   replacing the production `DelegatedStorageAdapter.noOp()` with the real demotion/GC
+   managers (#250), validated against MinIO. No dark tiers after the cycle.
+3. **Encryption moves INTO `DefaultStorageInstance` per §13** (uniform for all instances:
+   artifacts, content, streams). The current placement at the `StorageSegmentSink`/
+   `SegmentReader` layer is superseded; `BlockEncryptor` (#253) becomes an instance-level
+   concern applied after compression, per the original §13 design. Key sourcing per
+   `security-subsystem-spec.md` Plane 2.
 
 ---
 

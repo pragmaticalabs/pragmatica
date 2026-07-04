@@ -2,9 +2,9 @@
 
 *The primitive for durable workflows & sagas.*
 
-**Version:** 0.2.3
-**Status:** Draft — author-facing API pinned; sign-off items flagged §14 (S1, S2, S4, S5). v0.2.1 corrects two API-shape errors; v0.2.2 resolves S3; v0.2.3 aligns guarantee claims to the consistency lens (reads not yet linearizable; RUN_ONCE = at-most-once invocation). See changelog.
-**Date:** 2026-06-27 (updated 2026-07-01)
+**Version:** 0.3.0
+**Status:** Draft — **decision-complete** (author-facing API pinned; all §14 sign-off items resolved). v0.3.0 closes S1/S2/S4/S5 (signals in v1 §6.6, retention defaults, C hidden, per-call read consistency §8.1). See changelog.
+**Date:** 2026-06-27 (updated 2026-07-04)
 **Author:** design-stream
 **Epic:** #345
 **Supersedes:** #190 (the Persistent-Workflow draft is carried forward here as the *workflow specialization*, §6)
@@ -378,11 +378,17 @@ public interface PersistentWorkflow<S, E> {
      * Dispatch an event. Validates the event against the FSM BEFORE any write (rejects with
      * InvalidEvent if no matching transition exists). Applies the pure transition on the owner
      * under the fence. Returns post-transition state.
+     * <p>
+     * Also the substrate for EXTERNAL signal injection (§6.6): the management signal surface
+     * routes to this method on the owner — a signal is a dispatch, fenced like any write.
      */
     Promise<S>          dispatch(String id, E event);
 
-    /** Owner-routed read of committed current state; bounded-stale during handover (not yet linearizable — see §8). */
+    /** Read of committed current state at the default read level (BOUNDED_STALE — see §8.1). */
     Promise<Option<S>>  current(String id);
+
+    /** Read at an explicit per-call consistency level (§8.1). */
+    Promise<Option<S>>  current(String id, ReadConsistency consistency);
 
     /** Schedule a timer that fires the given event when it expires. */
     Promise<TimerToken> scheduleTimer(String id, Duration delay, E event);
@@ -477,6 +483,30 @@ public sealed interface WorkflowCause extends Cause {
 ```
 
 ---
+
+### 6.6 External signal injection (v1 — resolves S1)
+
+A **signal** is an FSM event injected into a running workflow from outside the owning slice
+(operator, another service, the book's observability demo). Mechanically it is nothing new:
+the signal surface routes to `dispatch(id, event)` on the owner — validated against the FSM,
+applied under the epoch fence, subject to the same per-key total order as any other event.
+No second write path exists.
+
+Surface (management triad, per project invariant — REST → CLI → docs):
+
+- `POST /api/workflows/{workflowType}/{id}/signal` — body: the event (JSON, validated against
+  the workflow's event type); response: post-transition state or the typed rejection
+  (`InvalidEvent`, `WorkflowNotFound`, `StaleOwnerEpoch` → retried by the gateway).
+- CLI: `aether workflows signal <type> <id> --event <json>`.
+- Docs: `management-api.md` + `cli.md` sections.
+
+Authorization rides the existing management-API auth; a signal is a state mutation and is
+audited like one (§ observability piece, #355).
+
+**Saga signals are v2.** A saga advances by step completion; an external signal would need a
+`WAIT_SIGNAL` step kind (a step that parks the saga until a matching signal arrives) — a new
+step-kind design with its own timeout/compensation semantics, deliberately out of v1 scope.
+Workflows cover the v1/book requirement; the FSM *is* the signal consumer.
 
 ## 7. Saga specialization
 
@@ -633,8 +663,11 @@ public interface Saga<C> {
      */
     Promise<SagaResult<C>> run(String id, C context);
 
-    /** Owner-routed read of committed saga state, for monitoring; bounded-stale during handover (see §8). */
+    /** Read of committed saga state, for monitoring, at the default read level (BOUNDED_STALE — §8.1). */
     Promise<Option<SagaState<C>>> status(String id);
+
+    /** Read at an explicit per-call consistency level (§8.1). */
+    Promise<Option<SagaState<C>>> status(String id, ReadConsistency consistency);
 
     /** Delete a terminal saga instance (respects terminal-ttl if configured). */
     Promise<Unit> delete(String id);
@@ -751,12 +784,10 @@ public Promise<SagaResult<OrderContext>> placeOrder(
 - **Single-writer total order per entity** (owner + per-key queue + fence). Across entities: no order.
 - **Writes: linearizable per key** — a committed `update` is ordered and durable across RF replicas
   under the epoch write-fence (KV path live; stream path is #345 piece 1b).
-- **Reads: committed, not yet linearizable** — the write fence orders writes, not reads. A `get`
-  returns committed state, but an owner-routed read during handover can be served by a deposed owner
-  that has not yet learned it lost ownership, and a read from a lagging replica trails the latest
-  commit. Linearizable reads need an owner-routed read-side epoch/lease check (ReadIndex-style) or a
-  quorum read — a design item, not yet specified (§14 S5). Until then, reads are bounded-stale during
-  owner handover and replication lag.
+- **Reads: per-call consistency (resolves S5)** — see §8.1. The default is committed-but-bounded-stale;
+  callers state what they need per call. The write fence orders writes, not default reads: a
+  BOUNDED_STALE read during handover can be served by a deposed owner that has not yet learned it
+  lost ownership, and a read from a lagging replica trails the latest commit.
 - **No replay** — recovery resumes from current durable state; transitions never rerun; nondeterminism
   permitted.
 - **Idempotency** — each update carries a stable per-entity monotonic counter `(key, n)`; slice
@@ -765,6 +796,46 @@ public Promise<SagaResult<OrderContext>> placeOrder(
   is elected (seconds, SWIM). In-flight operations see a retriable `StaleOwnerEpoch` or timeout and
   are transparently retried by the runtime. The fence guarantees the *old* owner cannot commit after
   handover.
+
+### 8.1 Read consistency (v1 — resolves S5)
+
+Every read (`get`/`current`/`status`) takes an optional `ReadConsistency`:
+
+```java
+public enum ReadConsistency {
+    /** Default. Local committed-prefix read: ~µs, no coordination, never torn; staleness =
+        consensus apply lag (ms healthy; grows on a partitioned minority). Monotonic per node.
+        Keeps serving through owner failover and leader churn. */
+    BOUNDED_STALE,
+    /** Linearizable: the read reflects every write acknowledged before it began. Costs a
+        coordination round (mechanism below); blocks (retriable) during owner/leader churn. */
+    LINEARIZABLE
+}
+```
+
+The enum names **semantics**; the LINEARIZABLE **mechanism** is cluster config (ops knob, not
+caller-visible — swapping it never changes what callers may assume):
+
+```toml
+[durable-entity]
+read-linearization = "no-op-round"   # "no-op-round" (default) | "lease"
+```
+
+- **`no-op-round`** (default): the read is ordered through a no-op consensus round and served
+  after the local apply reaches it. No clock assumptions; correct on Rabia by construction.
+  Cost ~0.5–2 ms per batch (concurrent LINEARIZABLE reads share a round).
+- **`lease`**: the owner serves LINEARIZABLE reads locally while holding a time-bounded
+  ownership lease. Near-BOUNDED_STALE cost when healthy; **correctness depends on bounded
+  clock skew** — the lease TTL must dominate `max_clock_skew`, the runtime monitors skew and
+  fails the mechanism closed (falls back to `no-op-round`) when the bound is violated, and
+  reads block up to lease-TTL after owner death. **Validation gate:** the lease mechanism
+  ships only with a dedicated clock-skew chaos suite (skewed-clock + partition scenarios);
+  until that suite is green on real infra, deployments run `no-op-round`.
+
+Both mechanisms ship in v1 (owner decision, 2026-07-04 — accepting the validation surface).
+Per-call semantics + configurable mechanism means: callers can mix fast polling
+(BOUNDED_STALE) with decision-point reads (LINEARIZABLE) in one application, and ops can
+trade the lease's performance for the no-op round's assumption-freedom without touching code.
 
 ---
 
@@ -846,19 +917,21 @@ node with no slice-author-visible errors; the fence rejects a stale-owner write 
 
 ## 14. Owner Decisions Still Needed
 
-The six open questions from v0.1 are resolved (decisions recorded inline in the relevant sections above).
-The following items genuinely require Sergiy's call before implementation begins:
+**All resolved as of 2026-07-04** (S3 on 2026-07-01; S1/S2/S4/S5 on 2026-07-04). Recorded here
+with rationale; the normative content lives in the referenced sections.
 
-**S1 — Visibility/query + signals scope for v1 (was Q6).** The spec recommends deferring a general
-query API (list-by-state, signal injection) to v2, keeping v1 to `status(id)` + the operator audit
-stream. The risk is that the book's "observability" chapter needs enough to demo; if signal-injection
-is in scope for the book, it must be in v1. **Decision needed:** is signal injection (external event
-injection into a running saga/workflow from outside the owning slice) a v1 book requirement?
+**S1 — signals scope for v1. RESOLVED (2026-07-04): signal injection IS v1** (book requirement).
+Scoped precisely: **workflow** signal injection ships in v1 as a thin external exposure of
+`dispatch` (management triad, §6.6) — a signal is a dispatch, fenced like any write, no second
+write path. **Saga** signals (a `WAIT_SIGNAL` step kind with park/timeout/compensation
+semantics) are explicitly v2 — new step-kind design, not a thin exposure. The general
+query API (list-by-state) remains v2.
 
-**S2 — GC / terminal retention defaults.** The spec proposes `terminal-ttl = "7d"` for entities and
-`"30d"` for workflows as config defaults. **Decision needed:** are these the right out-of-the-box
-values, or does the product have a different retention philosophy (e.g. retain forever unless
-explicitly deleted, let ops configure)?
+**S2 — GC / terminal retention defaults. RESOLVED (2026-07-04): as proposed** —
+`terminal-ttl = "7d"` (entities) / `"30d"` (workflows) as config defaults, plus the explicit
+`delete` API. Rationale: retain-forever-by-default is unbounded storage growth by surprise;
+finite-defaults-loudly-documented matches the product's retention-as-floor stance
+(cf. durable-pubsub-spec §7). Ops raise the TTLs where the domain needs it.
 
 **S3 — re-run policy default. RESOLVED (2026-07-01).** Neither default. Every `SagaStep` carries a
 **required** `RerunPolicy` (`RUN_ONCE` | `IDEMPOTENT`); a step cannot be constructed without stating
@@ -867,20 +940,20 @@ double-executes a non-idempotent effect, and a forgotten opt-out that journals n
 cost of one enum per step, visible and reviewable on the line. The asymmetry decided it: a missed
 declaration is a compile error, not a production incident.
 
-**S4 — `StateMachineDefinition` `C` type parameter for the workflow facade.** The FSM library uses
-`C` as a context type passed through `TransitionContext` to `onEntry`/`onExit` actions. The workflow
-facade currently uses `C = Unit` (pure FSM, no side-effect context). If authors need to pass request
-context (e.g. the originating request ID) through FSM actions, `C` must be exposed in
-`PersistentWorkflow<S,E,C>`. **Decision needed:** expose `C` as a third type param on
-`PersistentWorkflow`, or keep it hidden as `Unit` and require authors to embed context in state?
+**S4 — `StateMachineDefinition` `C` type parameter. RESOLVED (2026-07-04): keep hidden,
+`C = Unit`.** Owner's rationale, verbatim: *"non-durable context in durable workflow sounds odd
+at best."* Context flowing through `TransitionContext` is not persisted — anything load-bearing
+in it silently vanishes on owner failover, violating state-as-truth. Context that matters belongs
+in state; workflows stay resumable by construction. Widening to `PersistentWorkflow<S,E,C>`
+later is possible (pre-GA, no compat debt) if a non-load-bearing-context use case materializes.
 
-**S5 — read-side linearization mechanism.** The write path is linearizable (owner + epoch
-write-fence); reads are not, because the write fence does not cover reads (§8). Making
-`get`/`current`/`status` linearizable needs either an owner-routed **read-side epoch/lease check**
-(ReadIndex-style: the owner confirms its epoch is still current before serving) or a **quorum read**.
-**Decision needed:** which read-side mechanism, and is linearizable read a v1 requirement, or is
-bounded-stale acceptable for v1 with linearizable read deferred? Until decided, reads are documented
-as committed-but-bounded-stale (§8). Relates to #382.
+**S5 — read-side linearization. RESOLVED (2026-07-04): per-call semantics, both mechanisms in
+v1.** `ReadConsistency` (BOUNDED_STALE default | LINEARIZABLE) as a per-call parameter — callers
+state what they need, no cluster-wide semantic switch. The LINEARIZABLE mechanism is an ops
+config: `no-op-round` (default; no clock assumptions, correct on Rabia) or `lease`
+(near-local cost; gated on a dedicated clock-skew chaos suite). Normative: §8.1. The owner chose
+to ship both mechanisms in v1 accepting the added validation surface; the lease's validation
+gate is the guard-rail. Fixes #382 (javadoc overclaim) via the honest per-level documentation.
 
 ---
 
@@ -892,6 +965,22 @@ as committed-but-bounded-stale (§8). Relates to #382.
 - **Internal:** #345 (fence epic), #349 (durability epic), #190 (superseded workflow draft), #265/#261 (streaming substrate), `StateMachineDefinition`, `EpochBearing`, `KVStore`.
 
 ---
+
+## Changelog — v0.3.0 (2026-07-04)
+
+**All §14 owner decisions closed — spec is decision-complete for implementation.**
+
+- **S1 resolved (signals in v1):** new §6.6 — workflow signal injection as a thin external
+  exposure of `dispatch` (management triad: REST `POST /api/workflows/{type}/{id}/signal`,
+  CLI `aether workflows signal`, docs). Saga `WAIT_SIGNAL` step kind explicitly v2.
+- **S2 resolved:** terminal-ttl defaults confirmed (`7d` entities / `30d` workflows) + explicit delete.
+- **S4 resolved:** `C` stays hidden (`Unit`) — non-durable context in a durable workflow violates
+  state-as-truth; context belongs in state.
+- **S5 resolved:** new §8.1 — per-call `ReadConsistency` (BOUNDED_STALE default | LINEARIZABLE);
+  both linearizable mechanisms (`no-op-round` default, `lease` behind a clock-skew chaos-suite
+  validation gate) ship in v1, mechanism selected by ops config, semantics never config-dependent.
+  `current`/`status` gain the per-call overload (§6.2, §7.7). Fixes #382 by honest documentation.
+- §8 reads bullet rewritten to point at §8.1.
 
 ## Changelog — v0.2.3 (2026-07-01)
 
