@@ -123,5 +123,15 @@ class MediaTypeTypeCheckerTest {
             assertThat(result.isPresent()).isTrue();
             result.onPresent(msg -> assertThat(msg).contains("consumes category MULTIPART").contains("MultipartRequest"));
         }
+
+        @Test
+        void checkConsumes_fails_forFormUrlencodedConsumes() {
+            var result = MediaTypeTypeChecker.checkConsumes("FORM_URLENCODED", "com.example.Request", "submit");
+
+            assertThat(result.isPresent()).isTrue();
+            result.onPresent(msg -> assertThat(msg).contains("FORM_URLENCODED")
+                                                   .contains("not supported yet")
+                                                   .contains("form-body binding is unimplemented"));
+        }
     }
 }

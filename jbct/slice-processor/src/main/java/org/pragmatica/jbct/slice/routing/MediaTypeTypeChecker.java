@@ -23,7 +23,8 @@ import org.pragmatica.lang.Option;
 ///   - consumes BINARY → parameter must be `byte[]`
 ///   - consumes MULTIPART → parameter must be `MultipartRequest`
 ///   - JSON (in or out) → any type is accepted
-///   - FORM_URLENCODED is input-only; as a `produces` it is rejected
+///   - FORM_URLENCODED is rejected in both directions: as a `produces` it is input-only, and as a
+///     `consumes` it is rejected until form-body binding is implemented (#414)
 ///
 public sealed interface MediaTypeTypeChecker {
 
@@ -67,7 +68,10 @@ public sealed interface MediaTypeTypeChecker {
             case "MULTIPART" -> isMultipart(parameterType)
                                 ? Option.none()
                                 : consumesError(category, "MultipartRequest", parameterType, methodName);
-            case "FORM_URLENCODED" -> Option.none();
+            case "FORM_URLENCODED" ->
+                Option.some("Slice method '" + methodName + "': consumes media type with category " + category
+                            + " is not supported yet — form-body binding is unimplemented; use application/json"
+                            + " or a supported type");
             default -> Option.some("Slice method '" + methodName + "': unknown consumes content category " + category);
         };
     }

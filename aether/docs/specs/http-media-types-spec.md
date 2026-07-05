@@ -143,7 +143,7 @@ change (current: 1007, `jbct/slice-processor/.../generator/ManifestGenerator.jav
 | `consumes = "text/*"` (also HTML/XML) | `String` | `bodyAsString()` | — | — | — |
 | `consumes = "application/octet-stream"` (any BINARY) | `byte[]` | `body()` raw | — | — | — |
 | `consumes = "multipart/form-data"` | `MultipartRequest` | `multipartRequest()` | — | — | — |
-| `consumes = "application/x-www-form-urlencoded"` | *(gap — see OQ-1)* | `fromJson` (wrong) | — | — | — |
+| `consumes = "application/x-www-form-urlencoded"` | *(rejected at compile time — #414, see OQ-1)* | — | — | — | — |
 | `produces = "text/csv"` (any TEXT/HTML/XML) | — | — | `String` | UTF-8 bytes | declared |
 | `produces = "application/pdf"` (any BINARY) | — | — | `byte[]` | verbatim passthrough | declared |
 | unknown type, e.g. `produces = "text/plain; version=0.0.4"` | — | — | per inferred category | per category | raw string as declared |
@@ -161,11 +161,12 @@ change (current: 1007, `jbct/slice-processor/.../generator/ManifestGenerator.jav
 
 ## 5. Open questions
 
-1. **OQ-1 — FORM_URLENCODED binding gap.** `MediaTypeTypeChecker.checkConsumes:70` accepts
-   `FORM_URLENCODED` with any param type, but `bodyBindingCall` (`RouteSourceGenerator.java:725-731`)
-   has no FORM_URLENCODED arm — it falls to the default and **JSON-parses a form body** at
-   runtime. Either add a form-binding path (param type + `Route` builder) or reject
-   `consumes = "application/x-www-form-urlencoded"` at compile time until one exists.
+1. **OQ-1 — FORM_URLENCODED binding gap. Resolved by rejection (#414).**
+   `MediaTypeTypeChecker.checkConsumes` now hard-errors at compile time on
+   `consumes = "application/x-www-form-urlencoded"` (previously it accepted any param type but
+   `bodyBindingCall` had no FORM_URLENCODED arm, so a form body was silently JSON-parsed at
+   runtime). Full form-body binding (param type + `Route` builder) remains the future enhancement;
+   the codegen/envelope question re-opens when it is implemented.
 2. **OQ-2 — 415 enforcement.** Should the generated route (or `SliceRouter`) reject a
    request whose `Content-Type` contradicts the declared `consumes` with a typed 415
    `ProblemDetail`, instead of binding blindly? Cheap for BINARY/MULTIPART; for JSON it
