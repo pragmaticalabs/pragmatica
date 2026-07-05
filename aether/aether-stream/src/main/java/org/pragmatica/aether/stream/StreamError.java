@@ -122,6 +122,46 @@ public sealed interface StreamError extends Cause {
         }
     }
 
+    /// Per-stream partition-ceiling breach (#265 increment 4, spec §7/§10/§11): a fresh stream declares MORE
+    /// partitions than the absolute per-stream ceiling
+    /// ({@link StreamPartitionManager#MAX_PARTITIONS_PER_STREAM_CEILING}). Rejected PRE-COMMIT on the
+    /// committing node (before the `StreamConfigKey` Put) — the create-time admission gate, mirroring the
+    /// build-time `StreamConfigParser` check so an over-ceiling blueprint fails to build in the first place.
+    /// NOT a capacity shortage (does not implement {@link org.pragmatica.aether.slice.ResourceCapacityExhausted}):
+    /// re-declaring the SAME over-ceiling config always fails, so it is a fatal config error like
+    /// {@link General#AHSE_REQUIRED_FOR_STRONG}, never retried.
+    record PartitionCeilingExceeded(String streamName, int requestedPartitions, int ceiling) implements StreamError {
+        @Override
+        public String message() {
+            return "Stream '%s' declares %d partitions, over the per-stream ceiling of %d".formatted(streamName,
+                                                                                                     requestedPartitions,
+                                                                                                     ceiling);
+        }
+    }
+
+    /// Cluster-wide aggregate partition-cap breach (#265 increment 4, spec §7/§10/§11): admitting this stream
+    /// would push the cluster's total materialized-ring count (Σ `partitions × replicas` across every committed
+    /// stream plus this one) past the aggregate guard `100 × nodes × maxDeclaredReplicas` — the Kafka-style
+    /// heuristic that bounds aggregate ring memory. Rejected PRE-COMMIT on the committing node, where the
+    /// aggregate is knowable (a follower observes committed state and never re-rejects — spec §7). Fatal for
+    /// the presented config (retrying the same create without shrinking existing streams or growing the
+    /// cluster always fails). `requestedSlots` is the projected cluster total; `guard`/`nodeCount`/`maxReplicas`
+    /// frame the limit.
+    record PartitionCapExceeded(String streamName,
+                                long requestedSlots,
+                                long guard,
+                                int nodeCount,
+                                int maxReplicas) implements StreamError {
+        @Override
+        public String message() {
+            return "Stream '%s' admission would raise cluster partition slots to %d, over the aggregate guard %d (100 × %d nodes × %d max-replicas)".formatted(streamName,
+                                                                                                                                                              requestedSlots,
+                                                                                                                                                              guard,
+                                                                                                                                                              nodeCount,
+                                                                                                                                                              maxReplicas);
+        }
+    }
+
     /// Ownership-fence rejection (#345 item 1d-ii, spec §8): an append carries a `presented` owner
     /// epoch STRICTLY older than the `(stream, partition)` domain high-water `current`, so the writer
     /// is a deposed owner and the append is rejected at the replica's commit point with NO mutation.

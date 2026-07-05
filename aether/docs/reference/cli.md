@@ -1609,22 +1609,24 @@ core-4    SYNCING    240        no
 
 ### `aether stream hydration`
 
-Show per-node stream hydration state — the memory/placement observability sensor for placement-aware-stream-hydration (#265). Renders a per-stream table (each stream's `DECLARED` partition count, `RINGS` materialized locally, `DEFERRED` held-but-not-yet-materialized partitions, `FLOOR-BYTES` reserved, and the node's `OWNER`/`REPLICA`/`NONE` placement-role tally) and surfaces the per-node budget fields (`totalAllocatedBytes`, `maxTotalBytes`, `overBudget`, `deferredPartitions`) in `--format json`. Answered by the STREAMING-capable node from its own `StreamPartitionManager` — a PER-NODE view, not leader-forwarded.
+Show per-node stream hydration state — the memory/placement observability sensor for placement-aware-stream-hydration (#265). Renders a per-stream table (each stream's `DECLARED` partition count, `RINGS` materialized locally, `DEFERRED` held-but-not-yet-materialized partitions, `FLOOR-BYTES` reserved, `OVER-CEIL` whether the committed config is over the per-stream partition ceiling, and the node's `OWNER`/`REPLICA`/`NONE` placement-role tally) and surfaces the per-node budget fields (`totalAllocatedBytes`, `maxTotalBytes`, `overBudget`, `deferredPartitions`) plus the partition-cap fields (`perStreamCeiling`, `clusterAggregateGuard`, `currentAggregatePartitionSlots`, `aggregateHeadroom`, `configOverCeilingStreams`) in `--format json`. Answered by the STREAMING-capable node from its own `StreamPartitionManager` — a PER-NODE view, not leader-forwarded.
 
-Materialization is placement-gated: `RINGS` drops below `DECLARED` on non-replicas and `REPLICA`/`NONE` are non-zero off-owner. Per §6 a follower that cannot admit a held partition's floor NO LONGER over-subscribes — it holds the partition metadata-only and counts it under `DEFERRED` until budget frees, when the deferred-retry hook materializes it. This command is how that memory win and any budget pressure are observed. Wraps `GET /api/streams/hydration`.
+Materialization is placement-gated: `RINGS` drops below `DECLARED` on non-replicas and `REPLICA`/`NONE` are non-zero off-owner. Per §6 a follower that cannot admit a held partition's floor NO LONGER over-subscribes — it holds the partition metadata-only and counts it under `DEFERRED` until budget frees, when the deferred-retry hook materializes it. Partition caps (§7, increment 4) are admission control: a create over the per-stream ceiling (`1024`) or the cluster aggregate guard (`100 × nodes × maxDeclaredReplicas`) is rejected pre-commit; a follower observing an over-ceiling committed config flags it under `OVER-CEIL` / `configOverCeilingStreams` (never rejecting — the budget machinery is the memory backstop). This command is how that memory win, any budget pressure, and cap headroom are observed. Wraps `GET /api/streams/hydration`.
 
 ```bash
 aether stream hydration
 
-# Machine-readable (includes totalAllocatedBytes / maxTotalBytes / overBudget / deferredPartitions)
+# Machine-readable (includes totalAllocatedBytes / maxTotalBytes / overBudget / deferredPartitions
+# and the partition-cap fields perStreamCeiling / clusterAggregateGuard / currentAggregatePartitionSlots
+# / aggregateHeadroom / configOverCeilingStreams)
 aether stream hydration --format json
 ```
 
 Example output (table):
 ```
-STREAM                        DECLARED  RINGS  DEFERRED  FLOOR-BYTES     OWNER  REPLICA  NONE
-orders                        4         4      0         5320704         4      0        0
-system:cluster-events:1.0.0   1         1      0         2660352         1      0        0
+STREAM                        DECLARED  RINGS  DEFERRED  FLOOR-BYTES     OVER-CEIL  OWNER  REPLICA  NONE
+orders                        4         4      0         5320704         false      4      0        0
+system:cluster-events:1.0.0   1         1      0         2660352         false      1      0        0
 ```
 
 ### `aether stream tail <namespace:stream:version> [options]`

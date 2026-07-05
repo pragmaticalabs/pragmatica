@@ -670,26 +670,39 @@ public sealed interface ManagementApiResponses {
     /// node's off-heap budget, `overBudget` its follower over-subscribe condition (false in steady state
     /// since increment 3 removed over-subscription). `deferredPartitions` (#265 increment 3) is the
     /// node-wide count of held-but-not-yet-materialized partitions — the budget-defer sensor (spec §6).
-    /// `streams` carries one row per live stream. A later increment gates materialization on placement, at
+    /// `streams` carries one row per live stream. `perStreamCeiling` / `clusterAggregateGuard` /
+    /// `currentAggregatePartitionSlots` / `aggregateHeadroom` / `configOverCeilingStreams` (#265 increment 4,
+    /// spec §7) add the partition-cap observability: the absolute per-stream ceiling, the
+    /// `100 × nodes × maxDeclaredReplicas` aggregate guard (`-1` when the cluster size is unknown), the current
+    /// cluster ring-slot total (Σ `partitions × replicas`), the remaining headroom, and the count of streams
+    /// whose committed config is over the ceiling. A later increment gates materialization on placement, at
     /// which point `ringsMaterialized` drops below `partitionsDeclared` on non-replicas — this surface is
     /// how that memory win is observed.
     record StreamHydrationResponse(long totalAllocatedBytes,
                                    long maxTotalBytes,
                                    boolean overBudget,
                                    long deferredPartitions,
+                                   int perStreamCeiling,
+                                   long clusterAggregateGuard,
+                                   long currentAggregatePartitionSlots,
+                                   long aggregateHeadroom,
+                                   int configOverCeilingStreams,
                                    List<StreamHydrationDetail> streams) {}
 
     /// Per-stream hydration row: `partitionsDeclared` the configured partition count,
     /// `ringsMaterialized` the rings actually built on this node (gated below declared on non-replicas),
     /// `partitionsDeferred` (#265 increment 3) the held partitions not yet materialized (budget-deferred
     /// per spec §6 or pre-membership), `floorBytesAllocated` the per-partition floor times the
-    /// materialized ring count, and `ownerPartitions` / `replicaPartitions` / `nonePartitions` the
-    /// placement-role tally for this node under the current supplier (default: all OWNER).
+    /// materialized ring count, `overCeiling` (#265 increment 4) whether this committed config declares
+    /// more partitions than the per-stream ceiling (the follower-defense flag; materialization still
+    /// proceeds under the budget backstop), and `ownerPartitions` / `replicaPartitions` / `nonePartitions`
+    /// the placement-role tally for this node under the current supplier (default: all OWNER).
     record StreamHydrationDetail(String stream,
                                  int partitionsDeclared,
                                  int ringsMaterialized,
                                  int partitionsDeferred,
                                  long floorBytesAllocated,
+                                 boolean overCeiling,
                                  int ownerPartitions,
                                  int replicaPartitions,
                                  int nonePartitions) {}

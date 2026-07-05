@@ -4159,6 +4159,8 @@ Per-node hydration observability for the placement-aware-stream-hydration work (
 
 Materialization is placement-gated (increment 2): `ringsMaterialized` drops below `partitionsDeclared` on non-replicas, and `replicaPartitions` / `nonePartitions` are non-zero on a node that is not OWNER of every partition. Per §6 (increment 3) a follower that cannot admit a held partition's floor NO LONGER over-subscribes — it holds the partition metadata-only and reports it under `partitionsDeferred` until budget frees, at which point the deferred-retry hook materializes it. This surface is how that memory win and any budget pressure are observed.
 
+**Partition caps (increment 4, §7).** The response root also carries the derived partition-cap values: `perStreamCeiling` (the absolute per-stream partition ceiling, `1024`, enforced at create/build and re-checked pre-commit), `clusterAggregateGuard` (`100 × nodes × maxDeclaredReplicas` — the Kafka-style guard bounding aggregate ring memory, `-1` when the cluster size is unknown on a non-cluster manager), `currentAggregatePartitionSlots` (the current cluster ring-slot total `Σ partitions × replicas`), `aggregateHeadroom` (`guard − current`, `-1` when unenforced), and `configOverCeilingStreams` (count of streams whose committed config declares more partitions than the ceiling). Each `streams[].overCeiling` flags that per stream. A create breaching the ceiling or the aggregate guard is rejected PRE-COMMIT on the committing node; a follower observing an over-ceiling committed config never rejects it — it emits a `CommittedConfigOverCeiling` event and sets these flags, and materialization proceeds under the budget backstop.
+
 **Response:**
 ```json
 {
@@ -4166,9 +4168,14 @@ Materialization is placement-gated (increment 2): `ringsMaterialized` drops belo
   "maxTotalBytes": 134217728,
   "overBudget": false,
   "deferredPartitions": 0,
+  "perStreamCeiling": 1024,
+  "clusterAggregateGuard": 500,
+  "currentAggregatePartitionSlots": 5,
+  "aggregateHeadroom": 495,
+  "configOverCeilingStreams": 0,
   "streams": [
-    {"stream": "orders", "partitionsDeclared": 4, "ringsMaterialized": 4, "partitionsDeferred": 0, "floorBytesAllocated": 5320704, "ownerPartitions": 4, "replicaPartitions": 0, "nonePartitions": 0},
-    {"stream": "system:cluster-events:1.0.0", "partitionsDeclared": 1, "ringsMaterialized": 1, "partitionsDeferred": 0, "floorBytesAllocated": 2660352, "ownerPartitions": 1, "replicaPartitions": 0, "nonePartitions": 0}
+    {"stream": "orders", "partitionsDeclared": 4, "ringsMaterialized": 4, "partitionsDeferred": 0, "floorBytesAllocated": 5320704, "overCeiling": false, "ownerPartitions": 4, "replicaPartitions": 0, "nonePartitions": 0},
+    {"stream": "system:cluster-events:1.0.0", "partitionsDeclared": 1, "ringsMaterialized": 1, "partitionsDeferred": 0, "floorBytesAllocated": 2660352, "overCeiling": false, "ownerPartitions": 1, "replicaPartitions": 0, "nonePartitions": 0}
   ]
 }
 ```
@@ -4179,11 +4186,17 @@ Materialization is placement-gated (increment 2): `ringsMaterialized` drops belo
 | `maxTotalBytes` | This node's off-heap budget ceiling |
 | `overBudget` | Whether `totalAllocatedBytes > maxTotalBytes` (false in steady state since increment 3 removed over-subscription, §6) |
 | `deferredPartitions` | Node-wide count of held partitions not yet materialized — the budget-defer sensor (§6) |
+| `perStreamCeiling` | Absolute per-stream partition ceiling (§7) — a create/commit over this is rejected pre-commit (`1024`) |
+| `clusterAggregateGuard` | Aggregate partition guard `100 × nodes × maxDeclaredReplicas` (`-1` when cluster size unknown) (§7) |
+| `currentAggregatePartitionSlots` | Current cluster ring-slot total `Σ partitions × replicas` across known streams (§7) |
+| `aggregateHeadroom` | Remaining aggregate slots `guard − current` (`-1` when the guard is unenforced) (§7) |
+| `configOverCeilingStreams` | Count of streams whose committed config declares more partitions than the ceiling (§7) |
 | `streams[].stream` | Partition manager's local stream name |
 | `streams[].partitionsDeclared` | Configured partition count for the stream |
 | `streams[].ringsMaterialized` | Partition rings actually built on this node (below declared on non-replicas) |
 | `streams[].partitionsDeferred` | Held partitions not yet materialized — budget-deferred (§6) or pre-membership |
 | `streams[].floorBytesAllocated` | Per-partition floor × materialized ring count |
+| `streams[].overCeiling` | Whether this committed config declares more partitions than the per-stream ceiling (§7) |
 | `streams[].ownerPartitions` | Partitions this node OWNS under the current placement supplier |
 | `streams[].replicaPartitions` | Partitions this node is a non-owner REPLICA of |
 | `streams[].nonePartitions` | Partitions this node neither owns nor replicates |

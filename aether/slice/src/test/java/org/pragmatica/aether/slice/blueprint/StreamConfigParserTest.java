@@ -153,6 +153,33 @@ class StreamConfigParserTest {
         }
 
         @Test
+        void rejectsPartitionsOverCeiling() {
+            var toml = """
+                    [streams.orders]
+                    version = "1.0.0"
+                    partitions = 2000
+                    """;
+
+            var result = parseResources(toml);
+
+            assertThat(result.isFailure()).isTrue();
+            result.onFailure(cause -> assertThat(cause.message()).contains("2000").contains("per-stream ceiling of 1024"));
+        }
+
+        @Test
+        void acceptsPartitionsAtCeiling() {
+            var toml = """
+                    [streams.orders]
+                    version = "1.0.0"
+                    partitions = 1024
+                    """;
+
+            var result = parseResources(toml);
+
+            assertThat(result.isSuccess()).isTrue();
+        }
+
+        @Test
         void rejectsMinSyncReplicasExceedingReplicas() {
             var toml = """
                     [streams.orders]

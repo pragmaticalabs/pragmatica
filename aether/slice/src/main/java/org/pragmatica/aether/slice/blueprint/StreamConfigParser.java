@@ -37,6 +37,12 @@ import static org.pragmatica.lang.utils.Causes.cause;
 public interface StreamConfigParser {
     String STREAMS_PREFIX = "streams.";
     int DEFAULT_PARTITIONS = 4;
+    /// Per spec §7/§10: the absolute per-stream partition ceiling, enforced at BUILD time (a blueprint
+    /// declaring more partitions than this fails to build) and re-checked pre-commit at runtime
+    /// (`StreamPartitionManager.createFreshStream`). A fixed absolute guard — NOT the RAM-derived cap. Spec
+    /// §10 presents it as the tunable `[streams.limits] max_partitions_per_stream_ceiling` node-config key
+    /// (future wiring); this is its default. Mirrors Pulsar's `maxNumPartitionsPerPartitionedTopic`.
+    int MAX_PARTITIONS_PER_STREAM_CEILING = 1024;
     /// Per spec §11.1.1: when `version` is omitted on a producer-role declaration (or omitted with no
     /// explicit role — current parser-only assumption pending Wave 3 slice-binding role inference),
     /// default to `"1.0.0"`. The producer assumption is the safer default for the common case where
@@ -240,8 +246,24 @@ public interface StreamConfigParser {
                                                              String section,
                                                              String streamName,
                                                              StreamVersionSpec spec) {
-        return validateReplication(streamName, parseStreamSection(doc, section, streamName))
+        return validatePartitionCeiling(streamName, parseStreamSection(doc, section, streamName))
+                   .flatMap(config -> validateReplication(streamName, config))
                    .map(config -> StreamResource.owned(streamName, spec, config));
+    }
+
+    /// Spec §7/§10: a blueprint declaring more than [#MAX_PARTITIONS_PER_STREAM_CEILING] partitions for one
+    /// stream is a build-time error (the create-time admission gate's parser half). Enforced through the same
+    /// [Result] failure path as the replication-knob rejections; the runtime pre-commit check re-applies the
+    /// ceiling on the committing node, and the cluster-wide aggregate guard (unknowable at build time) is
+    /// applied there too.
+    private static Result<StreamConfig> validatePartitionCeiling(String streamName, StreamConfig config) {
+        if (config.partitions() > MAX_PARTITIONS_PER_STREAM_CEILING) {
+            return Causes.<Cause> cause("Stream resource '" + streamName + "' declares " + config.partitions()
+                                       + " partitions, over the per-stream ceiling of "
+                                       + MAX_PARTITIONS_PER_STREAM_CEILING).result();
+        }
+
+        return success(config);
     }
 
     /// Spec §11.x: the two decoupled replication knobs must satisfy `replicas >= 1` and

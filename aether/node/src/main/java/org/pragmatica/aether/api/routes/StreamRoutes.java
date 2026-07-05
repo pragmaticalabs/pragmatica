@@ -242,6 +242,11 @@ public final class StreamRoutes implements RouteSource {
                                            snapshot.maxTotalBytes(),
                                            snapshot.overBudget(),
                                            snapshot.deferredPartitions(),
+                                           snapshot.perStreamCeiling(),
+                                           snapshot.clusterAggregateGuard(),
+                                           snapshot.currentAggregatePartitionSlots(),
+                                           snapshot.aggregateHeadroom(),
+                                           snapshot.configOverCeilingStreams(),
                                            snapshot.streams().stream().map(StreamRoutes::toHydrationDetail).toList());
     }
 
@@ -253,6 +258,7 @@ public final class StreamRoutes implements RouteSource {
                                          stream.ringsMaterialized(),
                                          stream.partitionsDeferred(),
                                          stream.floorBytesAllocated(),
+                                         stream.overCeiling(),
                                          roleCount(roles, Role.OWNER),
                                          roleCount(roles, Role.REPLICA),
                                          roleCount(roles, Role.NONE));

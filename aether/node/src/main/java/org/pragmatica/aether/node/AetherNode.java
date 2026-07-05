@@ -2924,6 +2924,11 @@ public interface AetherNode extends ManageableNode {
         // owner-append safety valve materialize a deferred ring once the role resolves. Forge/unit managers
         // keep the default always-OWNER supplier (materialize-everything, unchanged).
         streamPartitionManager.placementRoleSupplier(streamReplicaSetController::roleFor);
+        // #265 increment 4: bind the aggregate partition-guard's cluster-size source to the SAME
+        // topology-observer count the ReplicaSetController uses for HRW placement, so the create-time guard's
+        // node count matches placement. The default `() -> 0` in Forge/unit/legacy managers disables the
+        // aggregate guard (only the per-stream ceiling applies).
+        streamPartitionManager.clusterSizeSupplier(clusterTopologyManager.observer()::clusterSize);
         // Reconcile on every membership decision (all variants via the tail helper) and on
         // ClusterStateNotification edges (PASSIVE suppresses; PASSIVE->ACTIVE re-reconciles).
         wireMembershipDecisionTail(allEntries, streamReplicaSetController::onMembershipDecision);

@@ -42,6 +42,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Consumer;
 import java.util.function.IntPredicate;
+import java.util.function.IntSupplier;
 import java.util.function.LongConsumer;
 import java.util.function.LongPredicate;
 import java.util.stream.Collectors;
@@ -59,6 +60,22 @@ public final class StreamPartitionManager implements AutoCloseable {
     private static final long DEFAULT_MAX_TOTAL_BYTES = 128 * 1024 * 1024L;
     private static final TimeSpan COMMIT_TIMEOUT = TimeSpan.timeSpan(10).seconds();
     private static final Logger log = LoggerFactory.getLogger(StreamPartitionManager.class);
+
+    /// Absolute per-stream partition ceiling (#265 increment 4, spec §7/§10). Enforced PRE-COMMIT in
+    /// {@link #createFreshStream} (mirroring the build-time `StreamConfigParser` check) and surfaced as the
+    /// follower over-ceiling event + snapshot flag on {@link #hydrateEntry}. A fixed absolute guard (NOT the
+    /// RAM-derived cap); spec §10 presents it as the tunable `[streams.limits]
+    /// max_partitions_per_stream_ceiling` — this is its default. Kept in sync with the identically-named
+    /// `StreamConfigParser` constant (the build-time half of the same gate).
+    static final int MAX_PARTITIONS_PER_STREAM_CEILING = 1024;
+
+    /// Cluster aggregate partition-guard factor (#265 increment 4, spec §7/§10): the guard is
+    /// `CLUSTER_PARTITION_GUARD_FACTOR × clusterSize × maxDeclaredReplicas` and bounds the cluster's total
+    /// materialized-ring count (Σ `partitions × replicas`) — the Kafka `100 × brokers × RF` heuristic.
+    /// Enforced pre-commit ONLY where the cluster size is knowable ({@link #clusterSizeSupplier} > 0); a
+    /// manager with no cluster context (Forge/unit/legacy) skips the aggregate guard and keeps only the
+    /// per-stream ceiling.
+    static final int CLUSTER_PARTITION_GUARD_FACTOR = 100;
 
     /// Default exhaustion sink — no-op. Wave 3 (`AetherNode`) replaces it with a binding to the
     /// cluster-event aggregator. See spec §4.5c.
@@ -107,6 +124,12 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// seam resolves). Volatile: set once at wiring, read on the hydrate/create, snapshot, and lazy-
     /// materialize paths.
     private volatile PlacementRoleSupplier placementRoleSupplier = ALWAYS_OWNER;
+    /// Live cluster-size source for the aggregate partition guard (#265 increment 4). Defaults to `() -> 0`
+    /// (cluster size UNKNOWN — Forge/unit/legacy managers), which DISABLES the aggregate guard so only the
+    /// per-stream ceiling applies; `AetherNode` late-binds this to the topology observer's live count — the
+    /// SAME source [ReplicaSetController] uses for HRW placement, so the guard's node count matches placement.
+    /// Volatile: set once at wiring, read on the create-admission and snapshot paths.
+    private volatile IntSupplier clusterSizeSupplier = () -> 0;
 
     private StreamPartitionManager(long maxTotalBytes,
                                    EvictionListener evictionListener,
@@ -289,6 +312,16 @@ public final class StreamPartitionManager implements AutoCloseable {
         this.placementRoleSupplier = supplier;
     }
 
+    /// Late-bind the cluster-size source for the aggregate partition guard (#265 increment 4). `AetherNode`
+    /// wires this to the topology observer's live count (the SAME source [ReplicaSetController] uses for HRW
+    /// placement). Until then — and in Forge/unit/legacy managers — the default `() -> 0` reports "cluster
+    /// size unknown" and the aggregate guard is skipped (only the per-stream ceiling applies). Set once at
+    /// wiring; read on the create-admission and snapshot paths.
+    @Contract
+    public void clusterSizeSupplier(IntSupplier supplier) {
+        this.clusterSizeSupplier = supplier;
+    }
+
     /// Atomically reserve `bytes` against the shared pool. Returns true iff the reservation fit under
     /// `maxTotalBytes`. CAS loop — correct under concurrent create and concurrent growth (replaces the
     /// former read-then-add TOCTOU). See spec §4.3.
@@ -392,6 +425,49 @@ public final class StreamPartitionManager implements AutoCloseable {
     }
 
     private Result<Unit> createFreshStream(StreamConfig config, CommitMode commitMode) {
+        return checkPartitionCaps(config).flatMap(_ -> materializeFreshStream(config, commitMode));
+    }
+
+    /// Create-time admission gate (#265 increment 4, spec §7): reject a fresh stream that breaches the
+    /// absolute per-stream partition ceiling or — where the cluster size is knowable — the cluster-wide
+    /// aggregate guard, BEFORE any off-heap reservation or the `StreamConfigKey` commit. The parser applies
+    /// the ceiling half at build time; this is the runtime pre-commit re-check plus the aggregate guard the
+    /// parser cannot know. A follower observing the committed config never re-runs this — it alarms via
+    /// {@link #reportOverCeilingIfViolating} instead (spec §7).
+    private Result<Unit> checkPartitionCaps(StreamConfig config) {
+        return checkPerStreamCeiling(config).flatMap(_ -> checkClusterAggregate(config));
+    }
+
+    private static Result<Unit> checkPerStreamCeiling(StreamConfig config) {
+        return config.partitions() <= MAX_PARTITIONS_PER_STREAM_CEILING
+               ? success(unit())
+               : new StreamError.PartitionCeilingExceeded(config.name(),
+                                                          config.partitions(),
+                                                          MAX_PARTITIONS_PER_STREAM_CEILING).result();
+    }
+
+    /// The aggregate guard is enforced ONLY where the cluster size is knowable (a real node); a manager with
+    /// no cluster context reports `0` and skips it (spec §7: enforce where the aggregate is knowable, never
+    /// on a follower).
+    private Result<Unit> checkClusterAggregate(StreamConfig config) {
+        var clusterSize = clusterSizeSupplier.getAsInt();
+
+        return clusterSize <= 0
+               ? success(unit())
+               : enforceAggregateGuard(config, clusterSize);
+    }
+
+    private Result<Unit> enforceAggregateGuard(StreamConfig config, int clusterSize) {
+        var maxReplicas = Math.max(config.replicas(), maxDeclaredReplicas());
+        var guard = (long) CLUSTER_PARTITION_GUARD_FACTOR * clusterSize * maxReplicas;
+        var projected = currentAggregateSlots() + partitionSlots(config);
+
+        return projected <= guard
+               ? success(unit())
+               : new StreamError.PartitionCapExceeded(config.name(), projected, guard, clusterSize, maxReplicas).result();
+    }
+
+    private Result<Unit> materializeFreshStream(StreamConfig config, CommitMode commitMode) {
         if (config.consistencyMode() == ConsistencyMode.STRONG && evictionListener == EvictionListener.NOOP) {
             return StreamError.General.AHSE_REQUIRED_FOR_STRONG.result();
         }
@@ -681,6 +757,8 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// partitions materialize later through the single deferred-retry entry point once budget frees (see
     /// {@link #deferHydration}). The growth seam still gates every later segment against the pool normally.
     private StreamEntry hydrateEntry(StreamConfig config) {
+        reportOverCeilingIfViolating(config);
+
         var floorBytes = materializedFloorBytes(config);
 
         if (floorBytes > 0 && !tryReserve(floorBytes)) {
@@ -742,6 +820,25 @@ public final class StreamPartitionManager implements AutoCloseable {
         release(floorBytes);
         log.warn("Follower could not materialize committed stream '{}' — off-heap floor allocation failed; entry not created",
                  config.name());
+    }
+
+    /// Follower defense-in-depth (#265 increment 4, spec §7/§11): a COMMITTED config whose declared partition
+    /// count is over the per-stream ceiling (committed before the guard existed, or a hand-edited config) does
+    /// NOT reject the commit — a follower never diverges from committed cluster state. It emits a named
+    /// `CommittedConfigOverCeiling` signal through the EXISTING exhaustion/event sink (operator-visible, with
+    /// its own `(stream, CONFIG_OVER_CEILING)` throttle bucket) and surfaces as the snapshot's
+    /// `configOverCeilingStreams` count + the per-stream `overCeiling` flag. Materialization still proceeds
+    /// under the budget machinery (increments 2-3), which is the memory backstop — the guard is admission
+    /// control, the budget is enforcement. NO early return.
+    @Contract
+    private void reportOverCeilingIfViolating(StreamConfig config) {
+        if (config.partitions() > MAX_PARTITIONS_PER_STREAM_CEILING) {
+            log.warn("Committed stream '{}' declares {} partitions, over the per-stream ceiling of {} — materializing under the budget backstop",
+                     config.name(),
+                     config.partitions(),
+                     MAX_PARTITIONS_PER_STREAM_CEILING);
+            exhaustionSink.accept(Exhaustion.overCeiling(config));
+        }
     }
 
     public Result<Long> publishLocal(String streamName, int partition, byte[] payload, long timestamp) {
@@ -957,8 +1054,24 @@ public final class StreamPartitionManager implements AutoCloseable {
                                  .map(e -> streamHydration(e.getKey(), e.getValue()))
                                  .toList();
         var deferred = streamViews.stream().mapToLong(StreamHydration::partitionsDeferred).sum();
+        var overCeiling = (int) streamViews.stream().filter(StreamHydration::overCeiling).count();
+        var clusterSize = clusterSizeSupplier.getAsInt();
+        var guard = aggregateGuard(clusterSize);
+        var currentSlots = currentAggregateSlots();
+        var headroom = guard < 0
+                       ? -1L
+                       : guard - currentSlots;
 
-        return new HydrationSnapshot(allocated, maxTotalBytes, allocated > maxTotalBytes, deferred, streamViews);
+        return new HydrationSnapshot(allocated,
+                                     maxTotalBytes,
+                                     allocated > maxTotalBytes,
+                                     deferred,
+                                     MAX_PARTITIONS_PER_STREAM_CEILING,
+                                     guard,
+                                     currentSlots,
+                                     headroom,
+                                     overCeiling,
+                                     streamViews);
     }
 
     /// Assemble one stream's hydration view. `ringsMaterialized` is the count of partition rings actually
@@ -979,6 +1092,7 @@ public final class StreamPartitionManager implements AutoCloseable {
                                    materialized,
                                    deferred,
                                    perPartitionFloorBytes(entry.config()) * materialized,
+                                   declared > MAX_PARTITIONS_PER_STREAM_CEILING,
                                    roleCounts(name, declared));
     }
 
@@ -1202,6 +1316,33 @@ public final class StreamPartitionManager implements AutoCloseable {
         };
     }
 
+    /// Cluster-wide total of materialized-ring slots = Σ `partitions × replicas` across every committed stream
+    /// this node knows (#265 increment 4, spec §7/§10). Each node hydrates every committed `StreamConfigKey`
+    /// (metadata-only on non-replicas), so the local `streams` map is a full cluster view. Shared by the
+    /// create-time aggregate guard ({@link #enforceAggregateGuard}) and the hydration snapshot's headroom.
+    private long currentAggregateSlots() {
+        return streams.values().stream().mapToLong(entry -> partitionSlots(entry.config())).sum();
+    }
+
+    private static long partitionSlots(StreamConfig config) {
+        return (long) config.partitions() * config.replicas();
+    }
+
+    /// Largest declared `replicas` across known streams (min 1) — the `maxDeclaredReplicas` factor of the
+    /// aggregate guard `100 × nodes × maxDeclaredReplicas` (spec §10).
+    private int maxDeclaredReplicas() {
+        return Math.max(1, streams.values().stream().mapToInt(entry -> entry.config().replicas()).max().orElse(1));
+    }
+
+    /// The aggregate partition guard `100 × clusterSize × maxDeclaredReplicas`, or `-1` when the cluster size
+    /// is unknown ({@link #clusterSizeSupplier} == 0 — a Forge/unit/legacy manager) meaning the guard is not
+    /// enforced. Shared by the snapshot's guard/headroom fields (#265 increment 4).
+    private long aggregateGuard(int clusterSize) {
+        return clusterSize <= 0
+               ? -1L
+               : (long) CLUSTER_PARTITION_GUARD_FACTOR * clusterSize * maxDeclaredReplicas();
+    }
+
     /// Lazily materialize a single held partition's ring (#265 increment 2). Two callers: the
     /// materialize-on-reconcile hook (`AetherNode` binds this behind the controller's `onBecameReplica`
     /// seam, which fires for owner-or-replica the moment self joins a partition's replica set) and the
@@ -1346,11 +1487,22 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// longer over-subscribe as of increment 3 (spec §6), so this stays false in steady state and is
     /// retained as a belt-and-braces sensor. `deferredPartitions` (#265 increment 3) is the node-wide
     /// count of held-but-not-yet-materialized partitions across all streams — the budget-defer sensor
-    /// (spec §6). `streams` carries one [StreamHydration] per live stream.
+    /// (spec §6). `perStreamCeiling` / `clusterAggregateGuard` / `currentAggregatePartitionSlots` /
+    /// `aggregateHeadroom` / `configOverCeilingStreams` (#265 increment 4, spec §7) are the partition-cap
+    /// observability: the absolute per-stream ceiling, the `100 × nodes × maxDeclaredReplicas` aggregate guard
+    /// (`-1` when the cluster size is unknown on a non-cluster manager), the current cluster ring-slot total
+    /// (Σ `partitions × replicas`), the remaining headroom (`guard − current`, or `-1` when unenforced), and
+    /// the count of streams whose committed config is over the ceiling (the follower-defense flag). `streams`
+    /// carries one [StreamHydration] per live stream.
     public record HydrationSnapshot(long totalAllocatedBytes,
                                     long maxTotalBytes,
                                     boolean overBudget,
                                     long deferredPartitions,
+                                    int perStreamCeiling,
+                                    long clusterAggregateGuard,
+                                    long currentAggregatePartitionSlots,
+                                    long aggregateHeadroom,
+                                    int configOverCeilingStreams,
                                     List<StreamHydration> streams) {}
 
     /// Per-stream hydration view (#265 increment 0). `partitionsDeclared` is the configured partition
@@ -1358,12 +1510,15 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// builds fewer, increment 2); `partitionsDeferred` (#265 increment 3) the held partitions NOT yet
     /// materialized (`max(0, held − materialized)` — budget-deferred per spec §6 or pre-membership per
     /// §5.4); `floorBytesAllocated` the per-partition floor times the materialized ring count;
-    /// `roleCounts` the placement-role tally under the current supplier (default: all OWNER).
+    /// `overCeiling` (#265 increment 4, spec §7) whether this committed config declares more partitions than
+    /// the per-stream ceiling (the follower-defense flag — materialization still proceeds under the budget
+    /// backstop); `roleCounts` the placement-role tally under the current supplier (default: all OWNER).
     public record StreamHydration(String name,
                                   int partitionsDeclared,
                                   int ringsMaterialized,
                                   int partitionsDeferred,
                                   long floorBytesAllocated,
+                                  boolean overCeiling,
                                   Map<ReplicaSetController.Role, Long> roleCounts) {}
 
     /// Off-heap budget exhaustion signal handed to the injected sink. Node-id-agnostic by design —
@@ -1379,7 +1534,8 @@ public final class StreamPartitionManager implements AutoCloseable {
                              ConsistencyMode consistencyMode) {
         public enum Phase {
             CREATE_FLOOR,
-            GROWTH
+            GROWTH,
+            CONFIG_OVER_CEILING
         }
 
         static Exhaustion createFloor(StreamConfig config,
@@ -1405,10 +1561,35 @@ public final class StreamPartitionManager implements AutoCloseable {
                                   config.consistencyMode());
         }
 
+        /// Follower over-ceiling signal (#265 increment 4, spec §7/§11): a committed config declares more
+        /// partitions than the per-stream ceiling. Carries the declared partition count in `partitions`; the
+        /// byte fields are 0 (a partition-count admission event, not an off-heap shortage). Routed through the
+        /// SAME exhaustion sink so the aggregator stamps the node id and emits it, throttled on its own
+        /// `(stream, CONFIG_OVER_CEILING)` bucket.
+        static Exhaustion overCeiling(StreamConfig config) {
+            return new Exhaustion(config.name(),
+                                  config.partitions(),
+                                  Phase.CONFIG_OVER_CEILING,
+                                  0L,
+                                  0L,
+                                  0L,
+                                  config.consistencyMode());
+        }
+
         public String summary() {
-            return "Off-heap budget exhausted (" + phase.name()
-                                                        .toLowerCase()
-                                                        .replace('_', '-')
+            return switch (phase) {
+                case CONFIG_OVER_CEILING -> ceilingSummary();
+                case CREATE_FLOOR, GROWTH -> budgetSummary();
+            };
+        }
+
+        private String ceilingSummary() {
+            return "Committed stream config over per-stream partition ceiling for stream '" + streamName
+                 + "' (" + partitions + " partitions, ceiling " + MAX_PARTITIONS_PER_STREAM_CEILING + ")";
+        }
+
+        private String budgetSummary() {
+            return "Off-heap budget exhausted (" + phaseLabel()
                  + ") for stream '" + streamName
                  + "' (" + partitions
                  + " parts): need " + requestedBytes
@@ -1417,12 +1598,32 @@ public final class StreamPartitionManager implements AutoCloseable {
         }
 
         public Map<String, String> details() {
+            return switch (phase) {
+                case CONFIG_OVER_CEILING -> ceilingDetails();
+                case CREATE_FLOOR, GROWTH -> budgetDetails();
+            };
+        }
+
+        private Map<String, String> ceilingDetails() {
+            return Map.of("streamName",
+                          streamName,
+                          "declaredPartitions",
+                          Integer.toString(partitions),
+                          "phase",
+                          phaseLabel(),
+                          "ceiling",
+                          Integer.toString(MAX_PARTITIONS_PER_STREAM_CEILING),
+                          "consistencyMode",
+                          consistencyMode.name());
+        }
+
+        private Map<String, String> budgetDetails() {
             return Map.of("streamName",
                           streamName,
                           "partitions",
                           Integer.toString(partitions),
                           "phase",
-                          phase.name().toLowerCase().replace('_', '-'),
+                          phaseLabel(),
                           "requestedBytes",
                           Long.toString(requestedBytes),
                           "availableBytes",
@@ -1431,6 +1632,10 @@ public final class StreamPartitionManager implements AutoCloseable {
                           Long.toString(maxTotalBytes),
                           "consistencyMode",
                           consistencyMode.name());
+        }
+
+        private String phaseLabel() {
+            return phase.name().toLowerCase().replace('_', '-');
         }
     }
 

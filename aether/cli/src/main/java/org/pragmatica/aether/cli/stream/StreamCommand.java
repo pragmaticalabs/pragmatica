@@ -266,10 +266,13 @@ public class StreamCommand implements Runnable {
     }
 
     /// Per-stream rows are drawn from the `streams` array; the per-node fields (`totalAllocatedBytes`,
-    /// `maxTotalBytes`, `overBudget`, `deferredPartitions`) live at the response root and are visible in
+    /// `maxTotalBytes`, `overBudget`, `deferredPartitions`) and the partition-cap fields (`perStreamCeiling`,
+    /// `clusterAggregateGuard`, `currentAggregatePartitionSlots`, `aggregateHeadroom`,
+    /// `configOverCeilingStreams` — #265 increment 4) live at the response root and are visible in
     /// `--format json`. DECLARED/RINGS diverge once materialization is placement-gated (non-replicas
     /// materialize fewer rings); DEFERRED counts held partitions not yet materialized (budget-deferred per
-    /// spec §6 or pre-membership); OWNER/REPLICA/NONE are this node's placement-role tally per stream.
+    /// spec §6 or pre-membership); OVER-CEIL flags a committed config over the per-stream ceiling (spec §7);
+    /// OWNER/REPLICA/NONE are this node's placement-role tally per stream.
     private static final TableSpec HYDRATION_TABLE_SPEC = new TableSpec("Stream Hydration",
                                                                         List.of(new Column("STREAM", "stream", 32),
                                                                                 new Column("DECLARED",
@@ -282,6 +285,7 @@ public class StreamCommand implements Runnable {
                                                                                 new Column("FLOOR-BYTES",
                                                                                            "floorBytesAllocated",
                                                                                            14),
+                                                                                new Column("OVER-CEIL", "overCeiling", 9),
                                                                                 new Column("OWNER", "ownerPartitions", 6),
                                                                                 new Column("REPLICA",
                                                                                            "replicaPartitions",
