@@ -7,7 +7,6 @@ package org.pragmatica.aether.slice.dependency;
 
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
-import org.pragmatica.aether.slice.Aspect;
 import org.pragmatica.aether.slice.MethodHandle;
 import org.pragmatica.aether.slice.ProvisioningContext;
 import org.pragmatica.aether.slice.ResourceProviderFacade;
@@ -24,9 +23,9 @@ import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-/// Tests for SliceFactory with new-style 2-parameter factories.
+/// Tests for SliceFactory with single-parameter factories.
 ///
-/// New-style factories take only (Aspect, SliceCreationContext) and resolve
+/// Factories take only (SliceCreationContext) and resolve
 /// dependencies dynamically via SliceCreationContext at runtime.
 class SliceFactoryTest {
 
@@ -54,12 +53,12 @@ class SliceFactoryTest {
 
     // Test factory with no dependencies (matches generated factory pattern)
     public static class SimpleSliceFactory {
-        public static Promise<SimpleSlice> simpleSlice(Aspect<SimpleSlice> aspect, SliceCreationContext ctx) {
-            return Promise.success(aspect.apply(new SimpleSlice()));
+        public static Promise<SimpleSlice> simpleSlice(SliceCreationContext ctx) {
+            return Promise.success(new SimpleSlice());
         }
 
-        public static Promise<Slice> simpleSliceSlice(Aspect<SimpleSlice> aspect, SliceCreationContext ctx) {
-            return simpleSlice(aspect, ctx).map(s -> s);
+        public static Promise<Slice> simpleSliceSlice(SliceCreationContext ctx) {
+            return simpleSlice(ctx).map(s -> s);
         }
     }
 
@@ -72,15 +71,13 @@ class SliceFactoryTest {
 
     // Test factory that simulates dependency resolution via SliceCreationContext
     public static class OrderServiceFactory {
-        public static Promise<OrderService> orderService(Aspect<OrderService> aspect,
-                                                         SliceCreationContext ctx) {
+        public static Promise<OrderService> orderService(SliceCreationContext ctx) {
             // In real generated code, dependencies are resolved via ctx.invoker().methodHandle()
-            return Promise.success(aspect.apply(new OrderService()));
+            return Promise.success(new OrderService());
         }
 
-        public static Promise<Slice> orderServiceSlice(Aspect<OrderService> aspect,
-                                                       SliceCreationContext ctx) {
-            return orderService(aspect, ctx).map(s -> s);
+        public static Promise<Slice> orderServiceSlice(SliceCreationContext ctx) {
+            return orderService(ctx).map(s -> s);
         }
     }
 
@@ -130,9 +127,9 @@ class SliceFactoryTest {
 
     @Test
     void fails_when_factory_has_wrong_parameter_count() {
-        // Factory with wrong number of parameters
+        // Factory with wrong number of parameters (expected exactly 1: SliceCreationContext)
         class WrongParamCountFactory {
-            public static Promise<Slice> wrongParamCountSlice(Aspect<?> aspect) {
+            public static Promise<Slice> wrongParamCountSlice(SliceCreationContext ctx, String extra) {
                 return Promise.success(new SimpleSlice());
             }
         }
@@ -142,15 +139,15 @@ class SliceFactoryTest {
                     .onSuccessRun(Assertions::fail)
                     .onFailure(cause -> {
                         assertThat(cause.message()).contains("Parameter mismatch");
-                        assertThat(cause.message()).contains("expected 2");
+                        assertThat(cause.message()).contains("expected 1");
                     });
     }
 
     @Test
-    void fails_when_first_parameter_is_not_aspect() {
-        // Factory with wrong first parameter type
+    void fails_when_first_parameter_is_not_creation_context() {
+        // Factory with a single parameter of the wrong type
         class WrongFirstParamFactory {
-            public static Promise<Slice> wrongFirstParamSlice(String notAspect, SliceCreationContext ctx) {
+            public static Promise<Slice> wrongFirstParamSlice(String notCtx) {
                 return Promise.success(new SimpleSlice());
             }
         }
@@ -159,7 +156,7 @@ class SliceFactoryTest {
                     .await()
                     .onSuccessRun(Assertions::fail)
                     .onFailure(cause -> {
-                        assertThat(cause.message()).contains("first parameter must be Aspect");
+                        assertThat(cause.message()).contains("factory parameter 0 must be SliceCreationContext");
                     });
     }
 }

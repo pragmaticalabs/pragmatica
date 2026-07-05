@@ -44,8 +44,8 @@ import java.util.stream.Collectors;
 ///
 /// Generated factory contains:
 ///
-///   - `create(Aspect, SliceCreationContext)` - returns typed slice instance
-///   - `createSlice(Aspect, SliceCreationContext)` - returns Slice for Aether runtime
+///   - `create(SliceCreationContext)` - returns typed slice instance
+///   - `createSlice(SliceCreationContext)` - returns Slice for Aether runtime
 ///
 ///
 /// Slice dependencies get local proxy records that delegate to ctx.invoker().
@@ -130,7 +130,6 @@ public class FactoryClassGenerator {
         var bodyBuffer = new StringWriter();
         var bodyOut = new PrintWriter(bodyBuffer);
         // Register standard imports
-        importTracker.use("org.pragmatica.aether.slice.Aspect");
         importTracker.use("org.pragmatica.aether.slice.MethodHandle");
         importTracker.use("org.pragmatica.aether.slice.MethodName");
         importTracker.use("org.pragmatica.aether.slice.Slice");
@@ -239,8 +238,7 @@ public class FactoryClassGenerator {
         var plainDeps = allDeps.stream()
                                .filter(DependencyModel::isPlainInterface)
                                .toList();
-        out.println("    public static Promise<" + sliceName + "> " + methodName + "(Aspect<" + sliceName + "> aspect,");
-        out.println("                                              SliceCreationContext ctx) {");
+        out.println("    public static Promise<" + sliceName + "> " + methodName + "(SliceCreationContext ctx) {");
         // Generate local proxy records ONLY for slice dependencies
         for (var dep : sliceDeps) {
             generateLocalProxyRecord(out, dep, proxyMethodsCache, importTracker);
@@ -461,7 +459,7 @@ public class FactoryClassGenerator {
             out.println();
             generateInterceptorWrapping(out, model, interceptorEntries, "            ", importTracker);
         } else {
-            out.println("            return aspect.apply(" + factoryCall + ");");
+            out.println("            return " + factoryCall + ";");
         }
         out.println("        });");
     }
@@ -488,9 +486,9 @@ public class FactoryClassGenerator {
             }
         } else {
             switch (model.factoryReturnKind()) {
-                case RESULT -> out.println("            return " + factoryCall + ".map(aspect::apply).async();");
-                case OPTION -> out.println("            return " + factoryCall + ".toResult().map(aspect::apply).async();");
-                case PROMISE -> out.println("            return " + factoryCall + ".map(aspect::apply);");
+                case RESULT -> out.println("            return " + factoryCall + ".async();");
+                case OPTION -> out.println("            return " + factoryCall + ".toResult().async();");
+                case PROMISE -> out.println("            return " + factoryCall + ";");
                 default -> throw new IllegalStateException("DIRECT should not reach here");
             }
         }
@@ -536,9 +534,10 @@ public class FactoryClassGenerator {
                                .stream()
                                .map(m -> m.name() + "Wrapped")
                                .toList();
-        out.println("        return Promise.success(aspect.apply(new " + wrapperName + "(" + String.join(", ",
-                                                                                                         wrappedArgs)
-                    + ")));");
+        out.println("        " + sliceName + " wrapped = new " + wrapperName + "(" + String.join(", ",
+                                                                                                 wrappedArgs)
+                    + ");");
+        out.println("        return Promise.success(wrapped);");
     }
 
     private void generateNonDirectNoDepInterceptorBody(PrintWriter out, SliceModel model, String sliceName, ImportTracker importTracker) {
@@ -582,7 +581,8 @@ public class FactoryClassGenerator {
                                .stream()
                                .map(m -> m.name() + "Wrapped")
                                .toList();
-        out.println("            return aspect.apply(new " + wrapperName + "(" + String.join(", ", wrappedArgs) + "));");
+        out.println("            " + sliceName + " wrapped = new " + wrapperName + "(" + String.join(", ", wrappedArgs) + ");");
+        out.println("            return wrapped;");
 
         // Close the chain
         switch (model.factoryReturnKind()) {
@@ -618,11 +618,11 @@ public class FactoryClassGenerator {
         switch (model.factoryReturnKind()) {
             case DIRECT -> {
                 out.println("        var instance = " + factoryCall + ";");
-                out.println("        return Promise.success(aspect.apply(instance));");
+                out.println("        return Promise.success(instance);");
             }
-            case RESULT -> out.println("        return " + factoryCall + ".map(aspect::apply).async();");
-            case OPTION -> out.println("        return " + factoryCall + ".toResult().map(aspect::apply).async();");
-            case PROMISE -> out.println("        return " + factoryCall + ".map(aspect::apply);");
+            case RESULT -> out.println("        return " + factoryCall + ".async();");
+            case OPTION -> out.println("        return " + factoryCall + ".toResult().async();");
+            case PROMISE -> out.println("        return " + factoryCall + ";");
         }
     }
 
@@ -688,7 +688,8 @@ public class FactoryClassGenerator {
                                .stream()
                                .map(m -> m.name() + "Wrapped")
                                .toList();
-        out.println(indent + "return aspect.apply(new " + wrapperName + "(" + String.join(", ", wrappedArgs) + "));");
+        out.println(indent + model.simpleName() + " wrapped = new " + wrapperName + "(" + String.join(", ", wrappedArgs) + ");");
+        out.println(indent + "return wrapped;");
     }
 
     /// Generate interceptor provisioning call with optional ProvisioningContext.
@@ -913,8 +914,7 @@ public class FactoryClassGenerator {
                                      .filter(PlainInterfaceModel::hasAnnotatedMethods)
                                      .toList()
                               : List.<PlainInterfaceModel>of();
-        out.println("    public static Promise<Slice> " + methodName + "Slice(Aspect<" + sliceName + "> aspect,");
-        out.println("                                              SliceCreationContext ctx) {");
+        out.println("    public static Promise<Slice> " + methodName + "Slice(SliceCreationContext ctx) {");
         // Generate local adapter record — add step fields when transitive methods exist
         var recordComponents = sliceName + " delegate, ResourceProviderFacade resources";
         for (var step : transitiveSteps) {
@@ -1018,7 +1018,7 @@ public class FactoryClassGenerator {
                                                 stepResourceEntries, stepResourceParams, importTracker);
             }
         } else {
-            out.println("        return " + methodName + "(aspect, ctx)");
+            out.println("        return " + methodName + "(ctx)");
             out.println("                   .map(impl -> new " + sliceRecordName + "(impl, resources));");
         }
         out.println("    }");
@@ -1028,7 +1028,7 @@ public class FactoryClassGenerator {
                                                String sliceRecordName, List<PlainInterfaceModel> transitiveSteps,
                                                Map<String, List<PlainInterfaceFactoryParam>> stepResourceParams,
                                                ImportTracker importTracker) {
-        out.println("        return " + methodName + "(aspect, ctx)");
+        out.println("        return " + methodName + "(ctx)");
         out.println("                   .map(impl -> {");
         for (var step : transitiveSteps) {
             var stepDep = findDependencyByParamName(model, step.parameterName());
@@ -1058,7 +1058,7 @@ public class FactoryClassGenerator {
                                                   ImportTracker importTracker) {
         // Use Promise.all to provision step resources in parallel with create()
         out.println("        return Promise.all(");
-        out.println("            " + methodName + "(aspect, ctx),");
+        out.println("            " + methodName + "(ctx),");
         for (int i = 0; i < stepResourceEntries.size(); i++) {
             var entry = stepResourceEntries.get(i);
             var comma = (i < stepResourceEntries.size() - 1) ? "," : "";

@@ -4,7 +4,6 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.slice.dependency;
 
-import org.pragmatica.aether.slice.Aspect;
 import org.pragmatica.aether.slice.Slice;
 import org.pragmatica.aether.slice.SliceCreationContext;
 import org.pragmatica.aether.slice.SliceLoadingFailure;
@@ -114,18 +113,13 @@ public interface SliceFactory {
                                                    List<DependencyDescriptor> descriptors) {
         var parameters = method.getParameters();
 
-        if (parameters.length != 2) {
-            return parameterCountMismatch(method.getName(), 2, parameters.length).result();
+        if (parameters.length != 1) {
+            return parameterCountMismatch(method.getName(), 1, parameters.length).result();
         }
 
-        if (!parameters[0].getType().equals(Aspect.class)) {
-            return firstParameterMustBeAspect(method.getName(),
-                                              parameters[0].getType().getName()).result();
-        }
-
-        if (!parameters[1].getType().equals(SliceCreationContext.class)) {
-            return secondParameterMustBeCreationContext(method.getName(),
-                                                        parameters[1].getType().getName()).result();
+        if (!parameters[0].getType().equals(SliceCreationContext.class)) {
+            return firstParameterMustBeCreationContext(method.getName(),
+                                                       parameters[0].getType().getName()).result();
         }
 
         return success(method);
@@ -140,9 +134,9 @@ public interface SliceFactory {
         return Promise.lift(Causes::fromThrowable,
                             () -> {
                                 method.setAccessible(true);
-                                var args = new Object[]{Aspect.identity(), creationContext};
+                                var args = new Object[]{creationContext};
 
-                                log.debug("Calling factory method {} with args: Aspect, SliceCreationContext",
+                                log.debug("Calling factory method {} with args: SliceCreationContext",
                                           method.getName());
 
                                 return (Promise<Slice>) method.invoke(null, args);
@@ -176,17 +170,15 @@ public interface SliceFactory {
     private static Cause parameterCountMismatch(String methodName, int expected, int actual) {
         return new SliceLoadingFailure.Fatal.ParameterMismatch(methodName,
                                                                "expected " + expected
-                                                              + " (Aspect, SliceCreationContext), got " + actual);
+                                                              + " (SliceCreationContext), got " + actual
+                                                              + " — slice was compiled against an older runtime"
+                                                              + " (factory parameter 0 Aspect was removed); rebuild against this runtime version");
     }
 
-    private static Cause firstParameterMustBeAspect(String methodName, String actual) {
+    private static Cause firstParameterMustBeCreationContext(String methodName, String actual) {
         return new SliceLoadingFailure.Fatal.ParameterMismatch(methodName,
-                                                               "first parameter must be Aspect, got " + actual);
-    }
-
-    private static Cause secondParameterMustBeCreationContext(String methodName, String actual) {
-        return new SliceLoadingFailure.Fatal.ParameterMismatch(methodName,
-                                                               "second parameter must be SliceCreationContext, got " + actual);
+                                                               "factory parameter 0 must be SliceCreationContext, got " + actual
+                                                              + " — slice was compiled against an older runtime; rebuild against this runtime version");
     }
 
     private static Cause parameterTypeMismatch(int index, String expected, String actual) {

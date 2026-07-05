@@ -6,7 +6,6 @@ package org.pragmatica.aether.testkit;
 
 import org.pragmatica.aether.resource.http.HttpClient;
 import org.pragmatica.aether.resource.notification.NotificationSender;
-import org.pragmatica.aether.slice.Aspect;
 import org.pragmatica.aether.slice.Publisher;
 import org.pragmatica.aether.slice.SliceCreationContext;
 import org.pragmatica.aether.testkit.MapResourceProvider.ResourceKey;
@@ -14,7 +13,7 @@ import org.pragmatica.aether.testkit.container.ContainerResource;
 import org.pragmatica.aether.testkit.fake.CapturingNotificationSender;
 import org.pragmatica.aether.testkit.fake.CapturingPublisher;
 import org.pragmatica.aether.testkit.fake.FakeHttpClient;
-import org.pragmatica.lang.Functions.Fn2;
+import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.TerminalOperation;
 import org.pragmatica.lang.io.TimeSpan;
@@ -40,18 +39,17 @@ import java.util.Map;
 public final class SliceTestKit<T> {
     private static final TimeSpan BUILD_TIMEOUT = TimeSpan.timeSpan(60).seconds();
 
-    private final Fn2<Promise<T>, Aspect<T>, SliceCreationContext> factory;
+    private final Fn1<Promise<T>, SliceCreationContext> factory;
     private final Map<ResourceKey, Object> resources = new LinkedHashMap<>();
     private final Map<ResourceKey, ContainerResource<?>> containerSpecs = new LinkedHashMap<>();
-    private Aspect<T> aspect = Aspect.identity();
 
-    private SliceTestKit(Fn2<Promise<T>, Aspect<T>, SliceCreationContext> factory) {
+    private SliceTestKit(Fn1<Promise<T>, SliceCreationContext> factory) {
         this.factory = factory;
     }
 
     /// Start a kit for the slice built by a generated typed factory method, e.g.
     /// `OrderIntakeFactory::orderIntake`.
-    public static <T> SliceTestKit<T> forSlice(Fn2<Promise<T>, Aspect<T>, SliceCreationContext> factory) {
+    public static <T> SliceTestKit<T> forSlice(Fn1<Promise<T>, SliceCreationContext> factory) {
         return new SliceTestKit<>(factory);
     }
 
@@ -90,13 +88,6 @@ public final class SliceTestKit<T> {
         return this;
     }
 
-    /// Override the interceptor stack (default `Aspect.identity()`).
-    public SliceTestKit<T> withAspect(Aspect<T> aspect) {
-        this.aspect = aspect;
-
-        return this;
-    }
-
     /// Provision containers, resolve the slice through its factory, and hand back the driven handle.
     /// Fails the test fast (spec §7.1 MVP-6) if the slice asks for an unregistered resource.
     @TerminalOperation
@@ -105,7 +96,7 @@ public final class SliceTestKit<T> {
         var provider = MapResourceProvider.mapResourceProvider(resources);
         var ctx = SliceCreationContext.sliceCreationContext(NoOpSliceInvoker.INSTANCE, provider);
 
-        return factory.apply(aspect, ctx)
+        return factory.apply(ctx)
                       .await(BUILD_TIMEOUT)
                       .fold(TestKitFailures::raise, client -> DefaultSliceUnderTest.defaultSliceUnderTest(client, resources, provisioned));
     }

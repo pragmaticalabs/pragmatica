@@ -37,16 +37,6 @@ class SliceProcessorTest {
             public @interface Slice {}
             """);
 
-    private static final JavaFileObject ASPECT = JavaFileObjects.forSourceString(
-            "org.pragmatica.aether.slice.Aspect",
-            """
-            package org.pragmatica.aether.slice;
-
-            public interface Aspect<T> {
-                T apply(T instance);
-            }
-            """);
-
     private static final JavaFileObject UNIT = JavaFileObjects.forSourceString(
             "org.pragmatica.lang.Unit",
             """
@@ -295,7 +285,7 @@ class SliceProcessorTest {
     private List<JavaFileObject> commonSources() {
         return new ArrayList<>(List.of(
                 SLICE_ANNOTATION,
-                ASPECT, SLICE_CODEC, SLICE, SLICE_METHOD, METHOD_NAME, METHOD_HANDLE, INVOKER_FACADE,
+                SLICE_CODEC, SLICE, SLICE_METHOD, METHOD_NAME, METHOD_HANDLE, INVOKER_FACADE,
                 METHOD_INTERCEPTOR, PROVISIONING_CONTEXT,
                 RESOURCE_PROVIDER_FACADE, CONFIG_FACADE, SLICE_CREATION_CONTEXT, RESOURCE_QUALIFIER,
                 CONFIGURATION_SECTION, KEY_ANNOTATION, UNIT
@@ -2006,9 +1996,10 @@ class SliceProcessorTest {
         assertCompilation(compilation).succeeded();
         var factoryContent = compilation.generatedSourceFile("test.ValidatedServiceFactory")
                                         .get().getCharContent(false).toString();
-        // Should use Result.map + async instead of Promise.success
-        assertThat(factoryContent).contains(".map(aspect::apply).async()");
+        // Should use Result.async instead of Promise.success (aspect seam removed)
+        assertThat(factoryContent).contains(".async()");
         assertThat(factoryContent).doesNotContain("Promise.success(");
+        assertThat(factoryContent).doesNotContain("aspect");
     }
 
     @Test
@@ -2031,8 +2022,9 @@ class SliceProcessorTest {
         assertCompilation(compilation).succeeded();
         var factoryContent = compilation.generatedSourceFile("test.OptionalServiceFactory")
                                         .get().getCharContent(false).toString();
-        assertThat(factoryContent).contains(".toResult().map(aspect::apply).async()");
+        assertThat(factoryContent).contains(".toResult().async()");
         assertThat(factoryContent).doesNotContain("Promise.success(");
+        assertThat(factoryContent).doesNotContain("aspect");
     }
 
     @Test
@@ -2054,10 +2046,11 @@ class SliceProcessorTest {
         assertCompilation(compilation).succeeded();
         var factoryContent = compilation.generatedSourceFile("test.AsyncServiceFactory")
                                         .get().getCharContent(false).toString();
-        // Promise factory: .map(aspect::apply) without .async()
-        assertThat(factoryContent).contains(".map(aspect::apply)");
+        // Promise factory: returns the promise directly — no aspect wrap, no .async()
+        assertThat(factoryContent).contains("return AsyncService.asyncService();");
         assertThat(factoryContent).doesNotContain("Promise.success(");
         assertThat(factoryContent).doesNotContain(".async()");
+        assertThat(factoryContent).doesNotContain("aspect");
     }
 
     @Test
@@ -2102,7 +2095,8 @@ class SliceProcessorTest {
                                         .get().getCharContent(false).toString();
         // Async path should use .flatMap instead of .map
         assertThat(factoryContent).contains(".flatMap(");
-        assertThat(factoryContent).contains(".map(aspect::apply).async()");
+        assertThat(factoryContent).contains(".async()");
+        assertThat(factoryContent).doesNotContain("aspect");
         assertThat(factoryContent).contains("ctx.resources().provide(DatabaseConnector.class, \"database.primary\")");
     }
 
