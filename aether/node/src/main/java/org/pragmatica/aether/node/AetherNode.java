@@ -131,6 +131,7 @@ import org.pragmatica.aether.stream.forward.StreamReadForwardMetrics;
 import org.pragmatica.aether.stream.replication.GovernorFailoverHandler;
 import org.pragmatica.aether.stream.replication.ForwardCatchupTransport;
 import org.pragmatica.aether.stream.replication.PartitionBackfill;
+import org.pragmatica.aether.stream.replication.PartitionKey;
 import org.pragmatica.aether.stream.replication.ReplicaRegistry;
 import org.pragmatica.aether.stream.replication.ReplicaSetController;
 import org.pragmatica.aether.stream.replication.StreamPartitionOwnershipWriter;
@@ -836,37 +837,38 @@ public interface AetherNode extends ManageableNode {
                                                      .maybeSnapshot());
     }
 
-    /// 1d-iii owner-reconciled driver: fire the leader-only [StreamPartitionOwnershipWriter] for a
-    /// single `(stream, partition)` reconciled by the [ReplicaSetController], and — only when it emits a
-    /// command — apply that ownership-change Put through the consensus `ClusterNode`. The writer
-    /// self-limits: [StreamPartitionOwnershipWriter#writeOwnershipChange] returns [Option#none] on a
-    /// follower (its `isLeaderSupplier` gate short-circuits BEFORE any committed-state read) and
-    /// [Option#none] for an unchanged owner, so this driver only reaches `apply` on the leader and only
-    /// for genuinely-moved partitions. There is no extra leader-epoch guard around the apply (unlike the
+    /// 1d-iii / #265 owner-reconciled BATCH driver: once per [ReplicaSetController] reconcile pass, the
+    /// controller flushes the pass's reconciled `(stream, partition)` list here. The leader-only
+    /// [StreamPartitionOwnershipWriter#writeOwnershipChanges] decides each pair — self-limiting to the
+    /// leader (its `isLeaderSupplier` gate short-circuits BEFORE any committed-state read) and to
+    /// genuinely-moved partitions (an unchanged owner's `decide` returns [Option#none]) — and returns the
+    /// ownership-change Puts as ONE list. That list is applied through the consensus `ClusterNode` as a
+    /// SINGLE batch, so a mass reshuffle (a membership change that shifts HRW ownership for many
+    /// stream×partitions) commits ONE consensus batch per reconcile pass instead of N un-batched applies —
+    /// the fan-out bound #265 promises. There is no extra leader-epoch guard around the apply (unlike the
     /// DHT bootstrap writer, whose apply runs in an async retry batch that can straddle a leader change):
-    /// the decide-then-apply here is synchronous on the reconcile thread, the writer re-checks
-    /// leadership immediately before deciding, and consensus rejects a stale-leader apply. A failed apply
+    /// the decide-then-apply here is synchronous on the reconcile thread, the writer re-checks leadership
+    /// immediately before deciding each pair, and consensus rejects a stale-leader apply. A failed apply
     /// is logged, never thrown — the next membership-change reconcile re-drives.
     @Contract
     private static void driveStreamOwnership(StreamPartitionOwnershipWriter writer,
                                              Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> applier,
-                                             String stream,
-                                             int partition) {
-        writer.writeOwnershipChange(stream, partition).onPresent(command -> applyStreamOwnershipChange(applier,
-                                                                                                       stream,
-                                                                                                       partition,
-                                                                                                       command));
+                                             List<PartitionKey> reconciled) {
+        applyStreamOwnershipBatch(applier, writer.writeOwnershipChanges(reconciled));
     }
 
+    /// Apply the reconcile pass's ownership-change Puts as ONE consensus batch. An empty batch (a
+    /// follower, or a pass with no moved partitions) applies nothing and logs nothing — the empty apply
+    /// is skipped rather than sent (an empty command batch would be rejected by consensus).
     @Contract
-    private static void applyStreamOwnershipChange(Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> applier,
-                                                   String stream,
-                                                   int partition,
-                                                   KVCommand<AetherKey> command) {
-        applier.apply(List.of(command)).onFailure(cause -> LOG.warn("Stream ownership write for ({}, {}) failed: {} — re-driven on next reconcile",
-                                                                    stream,
-                                                                    partition,
-                                                                    cause.message()));
+    private static void applyStreamOwnershipBatch(Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> applier,
+                                                  List<KVCommand<AetherKey>> commands) {
+        if (commands.isEmpty()) {
+            return;
+        }
+        applier.apply(commands).onFailure(cause -> LOG.warn("Stream ownership batch write for {} moved partition(s) failed: {} — re-driven on next reconcile",
+                                                            commands.size(),
+                                                            cause.message()));
     }
 
     /// #336 reachability-evidence: when an app/blueprint stream's committed `StreamConfig` lands via
@@ -2915,18 +2917,20 @@ public interface AetherNode extends ManageableNode {
         // minSyncReplicas + partition-has-data) is adapted from the partition manager. The A4
         // catch-up seam now runs backfill off the reconcile thread on a dedicated executor.
         //
-        // 1d-iii: the leader-only StreamPartitionOwnershipWriter, fired by the controller's
-        // onOwnerReconciled driver seam. It mirrors the DHT BootstrapModule ownership writer:
+        // 1d-iii / #265: the leader-only StreamPartitionOwnershipWriter, fired by the controller's
+        // onReconcilePassComplete batch driver seam. It mirrors the DHT BootstrapModule ownership writer:
         //   - isLeaderSupplier / rabiaTermSupplier / hlcClock are the same suppliers the DHT writer uses,
         //   - CommittedOwnership reads the committed StreamPartitionOwnershipValue exactly as
         //     KvStreamOwnerEpochSource does (getTyped on the StreamPartitionOwnershipKey),
         //   - HrwOwner late-binds to streamReplicaSetController::ownerFor through clusterEventsControllerRef
         //     (set to the same controller below, before the first reconcile fires the driver).
         // The writer self-limits: writeOwnershipChange returns none() on a follower (its isLeaderSupplier
-        // gate short-circuits BEFORE any KV read) and none() for an unchanged owner, so the driver loop
-        // only emits a consensus Put on the leader and only for genuinely-moved partitions. The single
-        // per-moved-partition apply (not batched) is intentional for 1d-i — #265 bounds the reshuffle
-        // fan-out.
+        // gate short-circuits BEFORE any KV read) and none() for an unchanged owner, so the driver only
+        // emits a consensus Put on the leader and only for genuinely-moved partitions. #265 increment 6:
+        // the driver is now BATCH-shaped — the controller flushes ONE reconciled (stream, partition) list
+        // per reconcile pass (onReconcilePassComplete) and driveStreamOwnership applies the emitted Puts as
+        // a SINGLE consensus batch, so a mass reshuffle commits one batch per pass, not one apply per moved
+        // partition. This keeps the reshuffle fan-out bound the promise #265 makes.
         var streamOwnershipWriter = StreamPartitionOwnershipWriter.streamPartitionOwnershipWriter(isLeaderSupplier,
                                                                                                   rabiaTermSupplier,
                                                                                                   hlcClock,
@@ -2945,10 +2949,9 @@ public interface AetherNode extends ManageableNode {
                                                                                                                                                                            streamPartitionBackfill,
                                                                                                                                                                            streamName,
                                                                                                                                                                            partition)),
-                                                                                   (streamName, partition) -> driveStreamOwnership(streamOwnershipWriter,
-                                                                                                                                   clusterCommandApplier,
-                                                                                                                                   streamName,
-                                                                                                                                   partition));
+                                                                                   (List<PartitionKey> reconciled) -> driveStreamOwnership(streamOwnershipWriter,
+                                                                                                                                          clusterCommandApplier,
+                                                                                                                                          reconciled));
         // B5b: bind the owner-gate ref so ClusterEventAggregator.emit can consult isOwner(...) for
         // (system:cluster-events:1.0.0, partition 0). isOwner is computed from the live HRW placement
         // against the current topology, independent of reconcile, so it is correct as soon as members

@@ -45,7 +45,7 @@ import static org.awaitility.Awaitility.await;
 import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
 
 /// #345 item 1d-iii end-to-end gate: the leader-only stream-ownership DRIVER (the
-/// `onOwnerReconciled` seam on [ReplicaSetController] bound to the
+/// `onReconcilePassComplete` batch seam on [ReplicaSetController] bound to the
 /// [org.pragmatica.aether.stream.replication.StreamPartitionOwnershipWriter] in `AetherNode`) makes the
 /// stream ownership fence go LIVE in production — it AUTO-COMMITS a
 /// [StreamPartitionOwnershipValue] on a real membership change, with NO manual `apply(Put)` anywhere in

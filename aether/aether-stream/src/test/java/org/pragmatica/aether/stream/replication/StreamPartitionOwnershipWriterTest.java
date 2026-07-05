@@ -20,8 +20,11 @@ import org.pragmatica.hlc.HlcTimestamp;
 import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Option;
 
+import java.util.List;
+import java.util.Map;
 import java.util.function.BooleanSupplier;
 import java.util.function.Supplier;
+import java.util.stream.IntStream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -246,6 +249,101 @@ class StreamPartitionOwnershipWriterTest {
             assertThat(writer.writeOwnershipChange(STREAM, PARTITION))
                 .as("no HRW placement (empty member view) — nothing to write")
                 .isEqualTo(Option.none());
+        }
+    }
+
+    /// #265 increment 6: the batch decide — [StreamPartitionOwnershipWriter#writeOwnershipChanges] decides a
+    /// WHOLE reconcile pass at once and returns the moved partitions' Puts as ONE list (which the driver
+    /// applies as a single consensus batch). A follower and unchanged partitions contribute nothing.
+    @Nested
+    class WriteOwnershipChanges {
+        private static final Epoch COMMITTED_EPOCH = Epoch.epoch(COMMITTED_TERM, 1L);
+        private static final Epoch TAKEOVER_EPOCH = Epoch.epoch(COMMITTED_TERM, 2L);
+
+        /// Committed = OWNER_A at (term, 1) for EVERY partition, so any partition whose HRW owner is OWNER_B
+        /// is a genuine move and any partition whose HRW owner is OWNER_A is unchanged.
+        private static CommittedOwnership committedAllA() {
+            return (stream, partition) -> Option.some(ownership(OWNER_A, COMMITTED_EPOCH, 1L));
+        }
+
+        private static HrwOwner hrwByPartition(Map<Integer, NodeId> owners) {
+            return (stream, partition) -> Option.option(owners.get(partition));
+        }
+
+        private static List<PartitionKey> keys(int... partitions) {
+            return IntStream.of(partitions)
+                            .mapToObj(partition -> PartitionKey.partitionKey(STREAM, partition))
+                            .toList();
+        }
+
+        private static void assertTakeoverToB(KVCommand<AetherKey> command) {
+            var value = valueOf(command);
+
+            assertThat(value.owner()).isEqualTo(OWNER_B);
+            assertThat(value.ownerEpoch())
+                .as("a moved partition advances the epoch to (committedTerm, bumped ownershipTerm)")
+                .isEqualTo(TAKEOVER_EPOCH);
+            assertThat(value.ownershipTerm()).isEqualTo(2L);
+        }
+
+        @Test
+        void writeOwnershipChanges_allMoved_returnsOnePutPerPartitionWithAdvancedEpoch() {
+            var writer = writer(LEADER,
+                                committedAllA(),
+                                hrwByPartition(Map.of(0, OWNER_B, 1, OWNER_B, 2, OWNER_B)));
+
+            var commands = writer.writeOwnershipChanges(keys(0, 1, 2));
+
+            assertThat(commands)
+                .as("one consensus Put per genuinely-moved partition")
+                .hasSize(3)
+                .allSatisfy(WriteOwnershipChanges::assertTakeoverToB);
+            assertThat(commands.stream().map(WriteOwnershipChanges::partitionOf).toList())
+                .as("the batch holds exactly the three moved partitions")
+                .containsExactlyInAnyOrder(0, 1, 2);
+        }
+
+        @Test
+        void writeOwnershipChanges_unchangedPartitions_contributeNothing() {
+            // Partitions 0,1,2 move A→B; partitions 3,4 keep committed OWNER_A (HRW == committed) so their
+            // decide is a no-op and they must not appear in the batch.
+            var writer = writer(LEADER,
+                                committedAllA(),
+                                hrwByPartition(Map.of(0, OWNER_B, 1, OWNER_B, 2, OWNER_B, 3, OWNER_A, 4, OWNER_A)));
+
+            var commands = writer.writeOwnershipChanges(keys(0, 1, 2, 3, 4));
+
+            assertThat(commands)
+                .as("only the three moved partitions contribute; the two unchanged ones add nothing")
+                .hasSize(3);
+            assertThat(commands.stream().map(WriteOwnershipChanges::partitionOf).toList())
+                .containsExactlyInAnyOrder(0, 1, 2);
+        }
+
+        @Test
+        void writeOwnershipChanges_follower_returnsEmptyBatch() {
+            var writer = writer(FOLLOWER,
+                                committedAllA(),
+                                hrwByPartition(Map.of(0, OWNER_B, 1, OWNER_B, 2, OWNER_B)));
+
+            assertThat(writer.writeOwnershipChanges(keys(0, 1, 2)))
+                .as("a follower emits no ownership writes — every per-pair decide short-circuits on the leader gate")
+                .isEmpty();
+        }
+
+        @Test
+        void writeOwnershipChanges_emptyInput_returnsEmptyBatch() {
+            var writer = writer(LEADER,
+                                committedAllA(),
+                                hrwByPartition(Map.of(0, OWNER_B)));
+
+            assertThat(writer.writeOwnershipChanges(List.of()))
+                .as("an empty reconcile pass yields an empty batch — the driver applies nothing")
+                .isEmpty();
+        }
+
+        private static int partitionOf(KVCommand<AetherKey> command) {
+            return keyOf(command).partition();
         }
     }
 }

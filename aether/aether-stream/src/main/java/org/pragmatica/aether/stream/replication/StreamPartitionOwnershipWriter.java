@@ -14,6 +14,7 @@ import org.pragmatica.consensus.NodeId;
 import org.pragmatica.hlc.HlcClock;
 import org.pragmatica.lang.Option;
 
+import java.util.List;
 import java.util.function.BooleanSupplier;
 import java.util.function.Supplier;
 
@@ -64,8 +65,12 @@ import java.util.function.Supplier;
 /// ## Load shape under reshuffle
 /// One `KVCommand.Put` per MOVED partition — a full ring reshuffle (a membership change that shifts
 /// HRW ownership for many partitions) emits one consensus write per partition whose owner actually
-/// changed (unchanged partitions are no-ops). This is intentionally NOT batched/optimized for 1d-i;
-/// #265's reshuffle-ring work is where the moved-partition fan-out is bounded.
+/// changed (unchanged partitions are no-ops). #265 (increment 6) bounds the reshuffle fan-out on the
+/// APPLY axis: [#writeOwnershipChanges] decides a WHOLE reconcile pass at once and returns the moved
+/// partitions' Puts as ONE list, which the caller (the AetherNode driver, fired once per
+/// [ReplicaSetController] pass) applies as a SINGLE consensus batch — so a mass reshuffle commits one
+/// batch per pass instead of N un-batched applies. The per-partition [#decide] is unchanged: it still
+/// mints one Put per moved partition; only the transport is batched.
 public interface StreamPartitionOwnershipWriter {
     /// Compute the ownership-change command for a single `(stream, partition)`, or [Option#none] when
     /// the HRW owner already matches the committed owner (idempotent). Pure: no side effects, no clock
@@ -84,6 +89,21 @@ public interface StreamPartitionOwnershipWriter {
     /// reading committed state. Returns the emitted command (if any) so the caller can apply it through
     /// the consensus `ClusterNode` and so tests can assert the decision without a live cluster.
     Option<KVCommand<AetherKey>> writeOwnershipChange(String stream, int partition);
+
+    /// Leader-only BATCH driver (#265): [#writeOwnershipChange] every `(stream, partition)` in
+    /// `partitions` — the pairs reconciled by ONE [ReplicaSetController] pass — and collect the emitted
+    /// commands into a single list, the ownership deltas of that pass. The caller applies the whole list
+    /// as ONE consensus batch. Each per-pair call self-limits: a follower emits nothing (its
+    /// `isLeaderSupplier` gate short-circuits before any committed-state read) and an unchanged owner
+    /// contributes nothing (its `decide` returns [Option#none]), so the returned list holds at most one
+    /// `Put` per GENUINELY-moved partition. An empty `partitions` list — or a pass with no moved
+    /// partitions — yields an empty list and the caller applies nothing.
+    default List<KVCommand<AetherKey>> writeOwnershipChanges(List<PartitionKey> partitions) {
+        return partitions.stream()
+                         .map(partition -> writeOwnershipChange(partition.streamName(), partition.partition()))
+                         .flatMap(Option::stream)
+                         .toList();
+    }
 
     static StreamPartitionOwnershipWriter streamPartitionOwnershipWriter(BooleanSupplier isLeaderSupplier,
                                                                          Supplier<Long> rabiaTermSupplier,

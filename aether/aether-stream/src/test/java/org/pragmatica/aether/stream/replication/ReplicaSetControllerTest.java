@@ -406,4 +406,39 @@ class ReplicaSetControllerTest {
         assertThat(ctrl.isOwner(APP_STREAM, ownedPartition)).isFalse();
         assertThat(ctrl.roleFor(APP_STREAM, ownedPartition)).isEqualTo(Role.NONE);
     }
+
+    @Test
+    void reconcilePass_reconcilesThreePartitions_firesPassCompleteOnceWithAllThree() {
+        // #265: the owner-reconciled seam is BATCHED. A whole reconcile pass fires onReconcilePassComplete
+        // EXACTLY ONCE with the full list of (stream, partition) reconciled that pass — NOT once per
+        // partition. This is the batch boundary the driver rides on: one flush per pass => one consensus
+        // batch apply per pass instead of N un-batched applies.
+        var registry = ReplicaRegistry.replicaRegistry();
+        var members = new AtomicReference<>(nodes("n0", "n1", "n2", "n3"));
+        var passes = new ArrayList<List<PartitionKey>>();
+        var ctrl = ReplicaSetController.replicaSetController(registry,
+                                                            node("n0"),
+                                                            members::get,
+                                                            () -> members.get().size(),
+                                                            appCatalog(2),
+                                                            (_, _) -> {},
+                                                            passes::add,
+                                                            Runnable::run);
+
+        ctrl.reconcile();
+
+        var expected = new ArrayList<PartitionKey>();
+        for (var p = 0; p < PARTITIONS; p++) {
+            expected.add(new PartitionKey(APP_STREAM, p));
+        }
+        assertThat(passes).as("one reconcile pass fires the pass-complete seam exactly once").hasSize(1);
+        assertThat(passes.getFirst())
+            .as("the single flush carries every (stream, partition) reconciled that pass")
+            .containsExactlyInAnyOrderElementsOf(expected);
+
+        // A second pass flushes again — once per pass, never accumulated across passes.
+        ctrl.reconcile();
+        assertThat(passes).as("each reconcile pass is its own single flush").hasSize(2);
+        assertThat(passes.get(1)).containsExactlyInAnyOrderElementsOf(expected);
+    }
 }
