@@ -115,6 +115,26 @@ public sealed interface StreamError extends Cause {
         }
     }
 
+    /// Reshuffle-concurrency pacing defer (#265 increment 5, spec §6/§14.2): a HELD partition could not be
+    /// materialized right now because this node already has `reshuffle_concurrency` (default 2) partitions
+    /// concurrently in materialize+backfill state, so the materialization is QUEUED at the `buildAndInstall`
+    /// pacing seam (system streams first, then FIFO) and re-driven once a slot frees (a completed backfill or
+    /// a release). DISTINCT from {@link General#PARTITION_NOT_LOCAL} (a genuine non-replica the caller
+    /// FORWARDS) and from {@link MaterializeBudgetExceeded} (an off-heap shortage): this node IS the holder
+    /// and has budget — it is bounding concurrent reshuffle work — so the caller RETRIES (reconcile hook next
+    /// tick / owner-append client retry), never a forward loop. Implements
+    /// {@link org.pragmatica.aether.slice.ResourceCapacityExhausted} (transient by default) so the
+    /// resource/slice-loading path classifies it retryable. `inFlightLimit` is the `reshuffle_concurrency`
+    /// bound in force.
+    record ReshufflePaced(String streamName, int partition, int inFlightLimit) implements StreamError, ResourceCapacityExhausted {
+        @Override
+        public String message() {
+            return "Materialize of %s[%d] paced: node already has %d partitions in materialize+backfill (reshuffle_concurrency)".formatted(streamName,
+                                                                                                                                            partition,
+                                                                                                                                            inFlightLimit);
+        }
+    }
+
     record EventProcessingFailed(String streamName, int partition, long offset, String reason) implements StreamError {
         @Override
         public String message() {

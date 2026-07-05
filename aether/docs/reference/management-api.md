@@ -4161,6 +4161,8 @@ Materialization is placement-gated (increment 2): `ringsMaterialized` drops belo
 
 **Partition caps (increment 4, §7).** The response root also carries the derived partition-cap values: `perStreamCeiling` (the absolute per-stream partition ceiling, `1024`, enforced at create/build and re-checked pre-commit), `clusterAggregateGuard` (`100 × nodes × maxDeclaredReplicas` — the Kafka-style guard bounding aggregate ring memory, `-1` when the cluster size is unknown on a non-cluster manager), `currentAggregatePartitionSlots` (the current cluster ring-slot total `Σ partitions × replicas`), `aggregateHeadroom` (`guard − current`, `-1` when unenforced), and `configOverCeilingStreams` (count of streams whose committed config declares more partitions than the ceiling). Each `streams[].overCeiling` flags that per stream. A create breaching the ceiling or the aggregate guard is rejected PRE-COMMIT on the committing node; a follower observing an over-ceiling committed config never rejects it — it emits a `CommittedConfigOverCeiling` event and sets these flags, and materialization proceeds under the budget backstop.
 
+**Reshuffle lifecycle (increment 5, §5/§14.2).** The response root also carries the reshuffle-lifecycle sensors: `releaseCandidates` (materialized partitions currently DEBOUNCING toward release because their placement role went NONE — a role regained within the ~10s / 2-tick window cancels the candidacy at zero cost), `releasedPartitionsSinceBoot` (running count of partition rings released on confirmed role loss, freeing ring memory + budget while KEEPING the WAL on disk), and `materializeQueueDepth` (partitions queued behind the `reshuffle_concurrency = 2` slot limit, system streams first). A release fires only once the local replica view shows ≥ the effective (clamped) RF other replicas CAUGHT_UP AND the committed ownership record names a different owner. `system:*` streams bypass the budget reject (they oversubscribe with a named event and drain first) — cluster-critical streams are never starved behind app-stream pressure.
+
 **Response:**
 ```json
 {
@@ -4173,6 +4175,9 @@ Materialization is placement-gated (increment 2): `ringsMaterialized` drops belo
   "currentAggregatePartitionSlots": 5,
   "aggregateHeadroom": 495,
   "configOverCeilingStreams": 0,
+  "releaseCandidates": 0,
+  "releasedPartitionsSinceBoot": 0,
+  "materializeQueueDepth": 0,
   "streams": [
     {"stream": "orders", "partitionsDeclared": 4, "ringsMaterialized": 4, "partitionsDeferred": 0, "floorBytesAllocated": 5320704, "overCeiling": false, "ownerPartitions": 4, "replicaPartitions": 0, "nonePartitions": 0},
     {"stream": "system:cluster-events:1.0.0", "partitionsDeclared": 1, "ringsMaterialized": 1, "partitionsDeferred": 0, "floorBytesAllocated": 2660352, "overCeiling": false, "ownerPartitions": 1, "replicaPartitions": 0, "nonePartitions": 0}
@@ -4191,6 +4196,9 @@ Materialization is placement-gated (increment 2): `ringsMaterialized` drops belo
 | `currentAggregatePartitionSlots` | Current cluster ring-slot total `Σ partitions × replicas` across known streams (§7) |
 | `aggregateHeadroom` | Remaining aggregate slots `guard − current` (`-1` when the guard is unenforced) (§7) |
 | `configOverCeilingStreams` | Count of streams whose committed config declares more partitions than the ceiling (§7) |
+| `releaseCandidates` | Materialized partitions currently debouncing toward release (placement role went NONE) (§5, increment 5) |
+| `releasedPartitionsSinceBoot` | Running count of partition rings released on role loss (ring + budget freed, WAL kept) (§5) |
+| `materializeQueueDepth` | Partitions queued behind the `reshuffle_concurrency = 2` slot limit (system first) (§14.2) |
 | `streams[].stream` | Partition manager's local stream name |
 | `streams[].partitionsDeclared` | Configured partition count for the stream |
 | `streams[].ringsMaterialized` | Partition rings actually built on this node (below declared on non-replicas) |

@@ -13,7 +13,10 @@ import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.StreamConfigKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.StreamConfigValue;
+import org.pragmatica.aether.stream.replication.ReplicaPlacement;
+import org.pragmatica.aether.stream.replication.ReplicaPlacement.StreamClass;
 import org.pragmatica.aether.stream.replication.ReplicaSetController;
+import org.pragmatica.aether.stream.replication.ReplicaSetController.Role;
 import org.pragmatica.aether.stream.replication.ReplicationManager;
 import org.pragmatica.aether.stream.wal.PartitionWal;
 import org.pragmatica.aether.stream.wal.PartitionWal.WalRecord;
@@ -34,9 +37,13 @@ import org.pragmatica.messaging.MessageReceiver;
 
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Deque;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentLinkedDeque;
+import java.util.concurrent.Semaphore;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
@@ -77,6 +84,29 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// manager with no cluster context (Forge/unit/legacy) skips the aggregate guard and keeps only the
     /// per-stream ceiling.
     static final int CLUSTER_PARTITION_GUARD_FACTOR = 100;
+
+    /// Reshuffle concurrency window (#265 increment 5, spec §14.2 decision 2): at most this many partitions
+    /// per node may be in materialize+backfill state at once. Excess REPLICA materializations queue at the
+    /// {@link #buildAndInstall} pacing seam (system streams first, then FIFO) and re-drive once a slot frees
+    /// (a completed backfill or a release). OWNER materializations are NOT paced — an owner ring has no
+    /// backfill (it is the source), so pacing it would only stall the owner write path with no throughput
+    /// benefit. `2` is the spec default (one-at-a-time starves a large reshuffle; unbounded floods backfill).
+    static final int RESHUFFLE_CONCURRENCY = 2;
+
+    /// Flap-debounce grace, in reconcile ticks (#265 increment 5, spec §5.4 / §14.2). A materialized
+    /// partition whose role transitions to NONE becomes a RELEASE CANDIDATE; it is released only after it has
+    /// remained a candidate for this many {@link #reconcileReshuffle} ticks AND the catch-up + owner gates
+    /// pass. A role regained within the window cancels the candidacy at zero cost (no release, no
+    /// re-materialize). Tick-based (not wall-clock) so it is deterministic and test-controllable; the
+    /// production scheduler runs the reconcile every {@code STREAM_RESHUFFLE_RECONCILE_INTERVAL} (5s), so
+    /// `2` ticks ≈ the ~10s wall-clock debounce spec §5.4 suggests.
+    static final int RELEASE_DEBOUNCE_TICKS = 2;
+
+    /// The `system:*` namespace prefix (mirrors `ReplicaSetController.SYSTEM_NAMESPACE_PREFIX`). System
+    /// streams are cluster-critical and full-cluster placed; per owner decision 2026-07-05 they BYPASS the
+    /// off-heap budget reject (always materialize, emitting a named {@link Exhaustion.Phase#SYSTEM_OVERSUBSCRIBE}
+    /// WARN when over budget) and drain FIRST in the reshuffle materialization queue.
+    private static final String SYSTEM_STREAM_PREFIX = "system:";
 
     /// Default exhaustion sink — no-op. Wave 3 (`AetherNode`) replaces it with a binding to the
     /// cluster-event aggregator. See spec §4.5c.
@@ -131,6 +161,56 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// SAME source [ReplicaSetController] uses for HRW placement, so the guard's node count matches placement.
     /// Volatile: set once at wiring, read on the create-admission and snapshot paths.
     private volatile IntSupplier clusterSizeSupplier = () -> 0;
+
+    /// Default replica-catch-up source (#265 increment 5): reports "everyone caught up" — a large
+    /// other-caught-up count (so the release catch-up gate always passes) and `selfCaughtUp = true` (so an
+    /// in-flight slot frees on the next tick). Forge/unit/legacy managers keep this; `AetherNode` late-binds
+    /// the real registry-backed view. The release gate never fires on those managers anyway, because the
+    /// periodic {@link #reconcileReshuffle} is only scheduled on a real node.
+    private static final ReplicaCatchupSource ALL_CAUGHT_UP = (_, _) -> new ReplicaCatchupSource.CatchupView(Integer.MAX_VALUE, true);
+
+    /// Default owner-release guard (#265 increment 5): reports "committed owner is elsewhere" for every arc,
+    /// so the owner rule never blocks release on a manager with no committed-ownership source. `AetherNode`
+    /// late-binds the real committed-`StreamPartitionOwnershipValue` check.
+    private static final OwnerReleaseGuard OWNER_ELSEWHERE = (_, _) -> true;
+
+    /// Live catch-up view for the release catch-up gate + in-flight slot completion (#265 increment 5).
+    /// `AetherNode` binds it to the [org.pragmatica.aether.stream.replication.ReplicaRegistry]. Default:
+    /// [#ALL_CAUGHT_UP]. Volatile: set once at wiring, read on the reconcile tick.
+    private volatile ReplicaCatchupSource catchupSource = ALL_CAUGHT_UP;
+
+    /// Live committed-ownership guard for the owner release rule (#265 increment 5): a node never releases a
+    /// partition whose COMMITTED owner is still itself. `AetherNode` binds it to the committed
+    /// `StreamPartitionOwnershipValue`. Default: [#OWNER_ELSEWHERE]. Volatile: set once at wiring, read on
+    /// the reconcile tick.
+    private volatile OwnerReleaseGuard ownerReleaseGuard = OWNER_ELSEWHERE;
+
+    /// Reshuffle-concurrency permits (#265 increment 5): `RESHUFFLE_CONCURRENCY` slots gating REPLICA
+    /// materialize+backfill. Acquired in {@link #buildAndInstall} for a REPLICA partition, released when the
+    /// partition reaches CAUGHT_UP / loses the role / is released. Fair=false (throughput over ordering; the
+    /// queue provides the ordering).
+    private final Semaphore reshuffleSlots = new Semaphore(RESHUFFLE_CONCURRENCY);
+    /// Partitions currently holding a reshuffle slot (materialize+backfill in flight). Membership set paired
+    /// with {@link #reshuffleSlots}: `add` is the "acquire", `remove`+release is the "free". Swept each tick
+    /// so a completed/lost partition frees its slot.
+    private final Set<PartitionRef> inFlightMaterializations = ConcurrentHashMap.newKeySet();
+    /// System-stream reshuffle queue (drains FIRST — owner decision 2026-07-05). Refs enqueued when no slot
+    /// is free; dequeued on the reconcile tick as slots free.
+    private final Deque<PartitionRef> systemMaterializeQueue = new ConcurrentLinkedDeque<>();
+    /// App-stream reshuffle queue (drains AFTER the system queue, FIFO). A queued app partition proceeds only
+    /// when a slot AND off-heap budget headroom both exist (budget-AND).
+    private final Deque<PartitionRef> appMaterializeQueue = new ConcurrentLinkedDeque<>();
+    /// Dedup set across both queues + a fast "is queued" membership test — a repeat materialize request for an
+    /// already-queued partition is a no-op (idempotent, like the lazy-materialize path itself).
+    private final Set<PartitionRef> queuedMaterializations = ConcurrentHashMap.newKeySet();
+    /// Release candidacy (#265 increment 5): a materialized partition whose role went NONE maps to the
+    /// reconcile tick at which candidacy started. Debounced (survive [#RELEASE_DEBOUNCE_TICKS] ticks) then
+    /// gated (catch-up + owner) before release. A role regained removes the entry (flap cancel).
+    private final ConcurrentHashMap<PartitionRef, Long> releaseCandidacy = new ConcurrentHashMap<>();
+    /// Monotonic reconcile-tick counter driving the debounce (one increment per {@link #reconcileReshuffle}).
+    private final AtomicLong reconcileTick = new AtomicLong(0);
+    /// Count of partition rings released on role loss since boot (#265 increment 5 observability).
+    private final AtomicLong releasedSinceBoot = new AtomicLong(0);
 
     private StreamPartitionManager(long maxTotalBytes,
                                    EvictionListener evictionListener,
@@ -283,6 +363,36 @@ public final class StreamPartitionManager implements AutoCloseable {
         ReplicaSetController.Role roleFor(String stream, int partition);
     }
 
+    /// Live replica catch-up view for the reshuffle release gate + slot completion (#265 increment 5). One
+    /// committed lookup answers both facts the manager cannot compute locally: `caughtUpReplicaCount` — how
+    /// many OTHER (non-self) replicas of the current registered replica set have reached CAUGHT_UP (the
+    /// release catch-up gate compares this against the effective, clamped RF), and `selfCaughtUp` — whether
+    /// THIS node has finished backfilling the partition (so its reshuffle slot may free). `AetherNode` binds
+    /// it to the [org.pragmatica.aether.stream.replication.ReplicaRegistry]; the default reports everyone
+    /// caught up.
+    @FunctionalInterface
+    public interface ReplicaCatchupSource {
+        CatchupView catchupView(String stream, int partition);
+
+        record CatchupView(int caughtUpReplicaCount, boolean selfCaughtUp) {}
+    }
+
+    /// Committed-ownership release guard for the owner rule (#265 increment 5). Reports whether it is safe —
+    /// on the ownership axis — to release `(stream, partition)`: `true` when the COMMITTED
+    /// `StreamPartitionOwnershipValue.owner` names a DIFFERENT node than self (or no ownership record is
+    /// committed), `false` while it still names self. A node that has lost the HRW OWNER role but is still
+    /// the committed (fenced) owner must NOT release until the 1d-iii reshuffle driver commits the ownership
+    /// change. `AetherNode` binds it to the committed ownership record; the default never blocks.
+    @FunctionalInterface
+    public interface OwnerReleaseGuard {
+        boolean committedOwnerElsewhere(String stream, int partition);
+    }
+
+    /// Value key for a single `(stream, partition)` arc — the map/set key for the reshuffle in-flight set,
+    /// materialization queues, and release candidacy (#265 increment 5). Record equality gives correct
+    /// hashing without a hand-rolled key.
+    private record PartitionRef(String streamName, int partition) {}
+
     public long totalAllocatedBytes() {
         return totalAllocatedBytes.get();
     }
@@ -321,6 +431,24 @@ public final class StreamPartitionManager implements AutoCloseable {
     @Contract
     public void clusterSizeSupplier(IntSupplier supplier) {
         this.clusterSizeSupplier = supplier;
+    }
+
+    /// Late-bind the replica catch-up source (#265 increment 5). `AetherNode` wires this to the
+    /// [org.pragmatica.aether.stream.replication.ReplicaRegistry] (self-excluded caught-up count + self
+    /// caught-up flag). Until then — and in Forge/unit/legacy managers — the default reports everyone caught
+    /// up. Set once at wiring; read on the reconcile tick.
+    @Contract
+    public void replicaCatchupSource(ReplicaCatchupSource source) {
+        this.catchupSource = source;
+    }
+
+    /// Late-bind the committed-ownership release guard (#265 increment 5). `AetherNode` wires this to the
+    /// committed `StreamPartitionOwnershipValue` (safe to release iff the committed owner is not self). Until
+    /// then — and in Forge/unit/legacy managers — the default never blocks. Set once at wiring; read on the
+    /// reconcile tick.
+    @Contract
+    public void ownerReleaseGuard(OwnerReleaseGuard guard) {
+        this.ownerReleaseGuard = guard;
     }
 
     /// Atomically reserve `bytes` against the shared pool. Returns true iff the reservation fit under
@@ -476,7 +604,10 @@ public final class StreamPartitionManager implements AutoCloseable {
         var floorBytes = materializedFloorBytes(config);
 
         if (floorBytes > 0 && !tryReserve(floorBytes)) {
-            return reportFloorExhaustion(config, floorBytes);
+            if (!isSystemStream(config.name())) {
+                return reportFloorExhaustion(config, floorBytes);
+            }
+            forceReserveForSystem(config, floorBytes);
         }
 
         return StreamEntry.fromConfig(config,
@@ -764,7 +895,10 @@ public final class StreamPartitionManager implements AutoCloseable {
         var floorBytes = materializedFloorBytes(config);
 
         if (floorBytes > 0 && !tryReserve(floorBytes)) {
-            return deferHydration(config, floorBytes);
+            if (!isSystemStream(config.name())) {
+                return deferHydration(config, floorBytes);
+            }
+            forceReserveForSystem(config, floorBytes);
         }
         // fromConfig threads the per-partition floor-allocation Result (bug #6): a native-OOM on any
         // held partition closes the built siblings and fails. On that (rare) failure we release the
@@ -815,6 +949,28 @@ public final class StreamPartitionManager implements AutoCloseable {
                  availableBytes(),
                  maxTotalBytes);
         exhaustionSink.accept(Exhaustion.createFloor(config, floorBytes, availableBytes(), maxTotalBytes));
+    }
+
+    /// System-stream budget bypass (#265 increment 5, owner decision 2026-07-05): reserve `floorBytes`
+    /// UNCONDITIONALLY — past the cap if need be — for a cluster-critical `system:*` stream, then emit a named
+    /// {@link Exhaustion.Phase#SYSTEM_OVERSUBSCRIBE} WARN so the oversubscription is operator-visible. This is
+    /// the DELIBERATE, scoped restoration of the old over-subscribe behavior FOR SYSTEM STREAMS ONLY (app
+    /// streams still defer): cluster-critical streams must not defer behind app-stream budget pressure, and
+    /// their footprint is bounded (few streams, full-cluster placement deliberate). A later release/destroy of
+    /// the stream returns exactly these bytes (`release` is symmetric even past the cap).
+    @Contract
+    private void forceReserveForSystem(StreamConfig config, long floorBytes) {
+        totalAllocatedBytes.addAndGet(floorBytes);
+        log.warn("System stream '{}' oversubscribed off-heap budget by {} floor bytes ({} of {} now allocated) — system streams bypass budget-reject (owner decision 2026-07-05)",
+                 config.name(),
+                 floorBytes,
+                 totalAllocatedBytes.get(),
+                 maxTotalBytes);
+        exhaustionSink.accept(Exhaustion.systemOversubscribe(config, floorBytes, availableBytes(), maxTotalBytes));
+    }
+
+    private static boolean isSystemStream(String streamName) {
+        return streamName.startsWith(SYSTEM_STREAM_PREFIX);
     }
 
     @Contract
@@ -1074,6 +1230,9 @@ public final class StreamPartitionManager implements AutoCloseable {
                                      currentSlots,
                                      headroom,
                                      overCeiling,
+                                     releaseCandidacy.size(),
+                                     releasedSinceBoot.get(),
+                                     (long) (systemMaterializeQueue.size() + appMaterializeQueue.size()),
                                      streamViews);
     }
 
@@ -1210,6 +1369,11 @@ public final class StreamPartitionManager implements AutoCloseable {
         streams.values().forEach(StreamEntry::close);
         streams.clear();
         totalAllocatedBytes.set(0);
+        inFlightMaterializations.clear();
+        systemMaterializeQueue.clear();
+        appMaterializeQueue.clear();
+        queuedMaterializations.clear();
+        releaseCandidacy.clear();
     }
 
     private Result<StreamEntry> resolveStreamEntry(String streamName) {
@@ -1386,10 +1550,49 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// winner's ring is returned. Reserve/release stays symmetric on destroy.
     private Result<OffHeapRingBuffer> buildAndInstall(StreamEntry entry, int partition) {
         var config = entry.config();
+        var role = placementRoleSupplier.roleFor(config.name(), partition);
+
+        // OWNER materialize has no history backfill (it IS the source), so it is NEVER paced by the reshuffle
+        // concurrency window (#265 increment 5) — pacing it would only stall the owner write path with zero
+        // throughput benefit. Only REPLICA (or a not-yet-resolved) materialize, which triggers a history
+        // backfill, consumes a reshuffle slot; excess queues at this seam and re-drives on the reconcile tick.
+        return role == Role.OWNER
+               ? materializeNow(entry, partition, false)
+               : materializePaced(entry, partition);
+    }
+
+    /// Slot-gated REPLICA materialize (#265 increment 5). Off-heap headroom is peeked FIRST — an APP partition
+    /// with no headroom defers via the existing budget path WITHOUT consuming a slot (the budget-AND; a system
+    /// stream skips this and oversubscribes). Then a reshuffle slot is acquired; if all
+    /// [#RESHUFFLE_CONCURRENCY] are taken the materialization is enqueued (system queue first) and a named
+    /// {@link StreamError.ReshufflePaced} returned. With a slot in hand the ring is built.
+    private Result<OffHeapRingBuffer> materializePaced(StreamEntry entry, int partition) {
+        var config = entry.config();
+        var ref = new PartitionRef(config.name(), partition);
+        var system = isSystemStream(config.name());
+
+        if (!system && availableBytes() < perPartitionFloorBytes(config)) {
+            return reportMaterializeDeferred(config, partition, perPartitionFloorBytes(config));
+        }
+        if (!tryAcquireReshuffleSlot(ref)) {
+            return enqueueMaterialize(ref, system);
+        }
+
+        return materializeNow(entry, partition, true);
+    }
+
+    /// Reserve the per-partition floor (a `system:*` stream OVERSUBSCRIBES past the cap — owner decision
+    /// 2026-07-05) and build+install the ring. An APP budget shortfall defers (no ring) and frees any held
+    /// slot; a build failure releases the floor and frees any held slot; a lost install race closes the
+    /// duplicate WITHOUT seam-release and releases its floor, the slot staying with the winner. `slotHeld`
+    /// tells the failure paths whether a reshuffle slot must be freed (REPLICA path) or not (OWNER path).
+    private Result<OffHeapRingBuffer> materializeNow(StreamEntry entry, int partition, boolean slotHeld) {
+        var config = entry.config();
+        var ref = new PartitionRef(config.name(), partition);
         var floorBytes = perPartitionFloorBytes(config);
 
-        if (!tryReserve(floorBytes)) {
-            return reportMaterializeDeferred(config, partition, floorBytes);
+        if (!reserveMaterialize(config, floorBytes)) {
+            return deferForBudget(ref, config, partition, floorBytes, slotHeld);
         }
 
         return StreamEntry.materializeOne(config,
@@ -1399,8 +1602,265 @@ public final class StreamPartitionManager implements AutoCloseable {
                                           this::release,
                                           walBaseDir,
                                           lastSealedOffset)
-                          .onFailure(_ -> release(floorBytes))
+                          .onFailure(_ -> releaseFailedMaterialize(ref, floorBytes, slotHeld))
                           .map(candidate -> installOrRelease(entry, partition, candidate, floorBytes));
+    }
+
+    /// Reserve the per-partition floor. An APP stream returns false when the pool is exhausted (the caller
+    /// defers); a `system:*` stream ALWAYS reserves — oversubscribing past the cap with a
+    /// {@link Exhaustion.Phase#SYSTEM_OVERSUBSCRIBE} WARN (owner decision 2026-07-05) — and returns true.
+    private boolean reserveMaterialize(StreamConfig config, long floorBytes) {
+        if (tryReserve(floorBytes)) {
+            return true;
+        }
+        if (!isSystemStream(config.name())) {
+            return false;
+        }
+        forceReserveForSystem(config, floorBytes);
+
+        return true;
+    }
+
+    private Result<OffHeapRingBuffer> deferForBudget(PartitionRef ref,
+                                                     StreamConfig config,
+                                                     int partition,
+                                                     long floorBytes,
+                                                     boolean slotHeld) {
+        if (slotHeld) {
+            freeReshuffleSlot(ref);
+        }
+
+        return reportMaterializeDeferred(config, partition, floorBytes);
+    }
+
+    @Contract
+    private void releaseFailedMaterialize(PartitionRef ref, long floorBytes, boolean slotHeld) {
+        release(floorBytes);
+
+        if (slotHeld) {
+            freeReshuffleSlot(ref);
+        }
+    }
+
+    /// Acquire a reshuffle-concurrency slot for `ref`, or false when all [#RESHUFFLE_CONCURRENCY] are taken.
+    /// Idempotent: a ref already in flight (its slot held) returns true without a second permit; a
+    /// membership-add that cannot get a permit is rolled back so the ref is not falsely counted.
+    private boolean tryAcquireReshuffleSlot(PartitionRef ref) {
+        if (!inFlightMaterializations.add(ref)) {
+            return true;
+        }
+        if (reshuffleSlots.tryAcquire()) {
+            return true;
+        }
+        inFlightMaterializations.remove(ref);
+
+        return false;
+    }
+
+    @Contract
+    private void freeReshuffleSlot(PartitionRef ref) {
+        if (inFlightMaterializations.remove(ref)) {
+            reshuffleSlots.release();
+        }
+    }
+
+    /// Enqueue a slot-starved materialization (system queue drains FIRST — owner decision 2026-07-05).
+    /// Deduped across both queues via {@link #queuedMaterializations}; a repeat request for an already-queued
+    /// partition is a no-op. Returns the named {@link StreamError.ReshufflePaced} so the caller retries
+    /// (reconcile hook next tick / owner-append client retry), never forwards.
+    private Result<OffHeapRingBuffer> enqueueMaterialize(PartitionRef ref, boolean system) {
+        if (queuedMaterializations.add(ref)) {
+            (system ? systemMaterializeQueue : appMaterializeQueue).add(ref);
+        }
+
+        return new StreamError.ReshufflePaced(ref.streamName(), ref.partition(), RESHUFFLE_CONCURRENCY).result();
+    }
+
+    /// Periodic reshuffle-lifecycle reconcile (#265 increment 5) — the release state machine + slot pacing
+    /// tick. `AetherNode` schedules it every `STREAM_RESHUFFLE_RECONCILE_INTERVAL` (5s); tests call it directly
+    /// to advance the machine deterministically. One tick, in order: (1) free reshuffle slots for partitions
+    /// that finished backfill (self CAUGHT_UP), became OWNER (no backfill), or lost the role; (2) evaluate
+    /// release candidates — a materialized partition whose role is NONE debounces [#RELEASE_DEBOUNCE_TICKS]
+    /// ticks, then releases IFF the catch-up gate (≥ effective, clamped RF other replicas CAUGHT_UP) AND the
+    /// owner rule (committed owner elsewhere) both pass, freeing the ring + its budget (WAL kept); (3) drain
+    /// the materialization queue (system first, then app with budget headroom) up to the slot limit — so the
+    /// budget a release just freed can admit a queued partition in the same tick. A role regained before
+    /// release cancels candidacy at zero cost (flap debounce).
+    @Contract
+    public void reconcileReshuffle() {
+        reconcileTick.incrementAndGet();
+        freeCompletedSlots();
+        evaluateReleaseCandidates();
+        drainMaterializeQueue();
+    }
+
+    private void freeCompletedSlots() {
+        Set.copyOf(inFlightMaterializations).forEach(this::freeSlotIfComplete);
+    }
+
+    @Contract
+    private void freeSlotIfComplete(PartitionRef ref) {
+        if (slotComplete(ref)) {
+            freeReshuffleSlot(ref);
+        }
+    }
+
+    /// A reshuffle slot frees when the partition is no longer materialized (released/destroyed elsewhere), its
+    /// role is OWNER or NONE (an owner ring has no backfill; a NONE partition is being released), or this node
+    /// has finished backfilling it (self CAUGHT_UP). A REPLICA still catching up keeps its slot.
+    private boolean slotComplete(PartitionRef ref) {
+        if (!isMaterialized(ref)) {
+            return true;
+        }
+
+        return placementRoleSupplier.roleFor(ref.streamName(), ref.partition()) != Role.REPLICA
+            || catchupSource.catchupView(ref.streamName(), ref.partition()).selfCaughtUp();
+    }
+
+    private boolean isMaterialized(PartitionRef ref) {
+        return option(streams.get(ref.streamName())).flatMap(entry -> entry.ringFor(ref.partition())).isPresent();
+    }
+
+    private void evaluateReleaseCandidates() {
+        streams.forEach(this::evaluateStreamReleases);
+    }
+
+    @Contract
+    private void evaluateStreamReleases(String name, StreamEntry entry) {
+        entry.materializedPartitionIndexes().forEach(partition -> evaluatePartitionRelease(name, entry, partition));
+    }
+
+    /// One partition's release state machine (#265 increment 5): HELD (role OWNER/REPLICA) cancels any
+    /// candidacy; role NONE starts (or continues) the debounce; past the window the catch-up + owner gates
+    /// decide release. Held candidacy is re-checked every tick until the gates pass or the role returns.
+    @Contract
+    private void evaluatePartitionRelease(String name, StreamEntry entry, int partition) {
+        var ref = new PartitionRef(name, partition);
+
+        if (placementRoleSupplier.roleFor(name, partition) != Role.NONE) {
+            releaseCandidacy.remove(ref);
+
+            return;
+        }
+
+        var since = releaseCandidacy.putIfAbsent(ref, reconcileTick.get());
+
+        if (since == null || reconcileTick.get() - since < RELEASE_DEBOUNCE_TICKS) {
+            return;
+        }
+        if (releaseAllowed(name, partition)) {
+            releasePartitionRing(name, entry, ref);
+        }
+    }
+
+    /// The two release gates (#265 increment 5, owner decision B): the owner rule (committed owner is
+    /// elsewhere) AND the catch-up gate (≥ effective, clamped RF OTHER replicas CAUGHT_UP). Both must pass —
+    /// the CLAMPED RF means a cluster-shrink reshuffle does not demand copies the shrunk cluster cannot host,
+    /// and an owner that lost the HRW role but is still the committed owner holds until ownership moves.
+    private boolean releaseAllowed(String name, int partition) {
+        return ownerReleaseGuard.committedOwnerElsewhere(name, partition) && caughtUpEnough(name, partition);
+    }
+
+    private boolean caughtUpEnough(String name, int partition) {
+        return option(streams.get(name)).map(entry -> catchupSource.catchupView(name, partition)
+                                                                    .caughtUpReplicaCount() >= effectiveReplicationFactor(entry.config()))
+                     .or(false);
+    }
+
+    /// Effective (clamped) replication factor for the release catch-up gate: APP ⇒ `clamp(replicas, 1,
+    /// clusterSize)`, SYSTEM ⇒ the full cluster — the SAME formula [ReplicaPlacement] uses for placement, so
+    /// the gate's RF matches the placement RF. `0` when the cluster size is unknown (Forge/unit), which makes
+    /// the gate trivially pass — those managers never run the reconcile.
+    private int effectiveReplicationFactor(StreamConfig config) {
+        var streamClass = isSystemStream(config.name())
+                          ? StreamClass.SYSTEM
+                          : StreamClass.APP;
+
+        return ReplicaPlacement.replicationFactor(streamClass, config.replicas(), clusterSizeSupplier.getAsInt());
+    }
+
+    /// Release a single materialized partition's ring on confirmed role loss (#265 increment 5). Atomic remove
+    /// from the entry's `materialized` map — the SAME discipline `reapIfIdle`/`close` use: an in-flight
+    /// read/append that already resolved the ring finishes against it (its `append` then sees the named
+    /// BUFFER_CLOSED), a new access gets [Option#none] → PARTITION_NOT_LOCAL and forwards. Control bytes return
+    /// to the pool and the ring `close()` seam-releases its data bytes; the per-partition WAL FILE is KEPT on
+    /// disk (cheap re-hydration on flap-back + crash-recovery value — reaper cleanup is future work).
+    private void releasePartitionRing(String name, StreamEntry entry, PartitionRef ref) {
+        entry.releasePartition(ref.partition()).onPresent(mp -> completeRelease(ref, mp));
+    }
+
+    @Contract
+    private void completeRelease(PartitionRef ref, StreamEntry.MaterializedPartition mp) {
+        var controlBytes = mp.ring().controlBytes();
+
+        release(controlBytes);
+        mp.close();
+        releaseCandidacy.remove(ref);
+        freeReshuffleSlot(ref);
+        releasedSinceBoot.incrementAndGet();
+        log.info("Released stream partition {}[{}] on role loss — ring + {} control floor bytes freed, WAL retained on disk",
+                 ref.streamName(),
+                 ref.partition(),
+                 controlBytes);
+    }
+
+    /// Drain queued materializations as slots free (#265 increment 5): the system queue FIRST (owner decision
+    /// 2026-07-05 — cluster-critical streams never wait behind app-stream pressure), then the app queue FIFO.
+    /// Each class purges stale heads (stream gone / no longer held / already materialized) and then, while a
+    /// slot is free and the head can proceed (app: budget headroom too — the budget-AND), dequeues + materializes.
+    private void drainMaterializeQueue() {
+        drainClass(systemMaterializeQueue, true);
+        drainClass(appMaterializeQueue, false);
+    }
+
+    @Contract
+    private void drainClass(Deque<PartitionRef> queue, boolean system) {
+        queue.removeIf(this::purgeStaleQueued);
+
+        while (!queue.isEmpty() && reshuffleSlots.availablePermits() > 0 && headCanProceed(queue.peekFirst(), system)) {
+            materializeQueued(queue.removeFirst());
+        }
+    }
+
+    /// Drop a queued ref no longer drainable — stream removed, this node no longer holds the partition (role
+    /// NONE), or already materialized — clearing its dedup entry so a fresh request can re-queue.
+    private boolean purgeStaleQueued(PartitionRef ref) {
+        var stale = !drainEligible(ref);
+
+        if (stale) {
+            queuedMaterializations.remove(ref);
+        }
+
+        return stale;
+    }
+
+    private boolean drainEligible(PartitionRef ref) {
+        return option(streams.get(ref.streamName())).map(entry -> drainEligibleIn(ref, entry)).or(false);
+    }
+
+    private boolean drainEligibleIn(PartitionRef ref, StreamEntry entry) {
+        return entry.ringFor(ref.partition()).isEmpty() && shouldMaterialize(ref.streamName(), ref.partition());
+    }
+
+    /// A queued head may materialize when a slot is free (the caller's guard) and — for an APP stream — the
+    /// pool has headroom for its floor (the budget-AND; a system stream bypasses this and oversubscribes if
+    /// needed). App head-of-line: a FIFO head that cannot get budget blocks its class, preserving order.
+    private boolean headCanProceed(PartitionRef head, boolean system) {
+        return system || availableBytes() >= floorFor(head);
+    }
+
+    private long floorFor(PartitionRef ref) {
+        return option(streams.get(ref.streamName())).map(entry -> perPartitionFloorBytes(entry.config())).or(0L);
+    }
+
+    @Contract
+    private void materializeQueued(PartitionRef ref) {
+        queuedMaterializations.remove(ref);
+        materializePartition(ref.streamName(),
+                             ref.partition()).onFailure(cause -> log.debug("Queued materialize of {}[{}] did not complete this tick: {}",
+                                                                           ref.streamName(),
+                                                                           ref.partition(),
+                                                                           cause.message()));
     }
 
     /// Budget-deferred single-partition materialization (#265 increment 3, spec §6/§11): the per-partition
@@ -1505,7 +1965,11 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// (`-1` when the cluster size is unknown on a non-cluster manager), the current cluster ring-slot total
     /// (Σ `partitions × replicas`), the remaining headroom (`guard − current`, or `-1` when unenforced), and
     /// the count of streams whose committed config is over the ceiling (the follower-defense flag). `streams`
-    /// carries one [StreamHydration] per live stream.
+    /// carries one [StreamHydration] per live stream. `releaseCandidates` (#265 increment 5) is the number of
+    /// materialized partitions currently DEBOUNCING toward release (role went NONE, not yet released);
+    /// `releasedPartitionsSinceBoot` the running count of partition rings released on role loss since this node
+    /// booted; `materializeQueueDepth` the number of partitions queued behind the `reshuffle_concurrency` slot
+    /// limit (system + app queues) awaiting a free slot.
     public record HydrationSnapshot(long totalAllocatedBytes,
                                     long maxTotalBytes,
                                     boolean overBudget,
@@ -1515,6 +1979,9 @@ public final class StreamPartitionManager implements AutoCloseable {
                                     long currentAggregatePartitionSlots,
                                     long aggregateHeadroom,
                                     int configOverCeilingStreams,
+                                    long releaseCandidates,
+                                    long releasedPartitionsSinceBoot,
+                                    long materializeQueueDepth,
                                     List<StreamHydration> streams) {}
 
     /// Per-stream hydration view (#265 increment 0). `partitionsDeclared` is the configured partition
@@ -1547,7 +2014,8 @@ public final class StreamPartitionManager implements AutoCloseable {
         public enum Phase {
             CREATE_FLOOR,
             GROWTH,
-            CONFIG_OVER_CEILING
+            CONFIG_OVER_CEILING,
+            SYSTEM_OVERSUBSCRIBE
         }
 
         static Exhaustion createFloor(StreamConfig config,
@@ -1588,10 +2056,28 @@ public final class StreamPartitionManager implements AutoCloseable {
                                   config.consistencyMode());
         }
 
+        /// System-stream budget-oversubscribe signal (#265 increment 5, owner decision 2026-07-05): a
+        /// cluster-critical `system:*` stream reserved its floor PAST the off-heap cap rather than defer.
+        /// A DISTINCT phase from the app-stream `CREATE_FLOOR` deferral so operators can tell a deliberate,
+        /// bounded system oversubscription apart from an app-stream budget shortage. Carries the same byte
+        /// framing as the budget events.
+        static Exhaustion systemOversubscribe(StreamConfig config,
+                                              long requestedBytes,
+                                              long availableBytes,
+                                              long maxTotalBytes) {
+            return new Exhaustion(config.name(),
+                                  config.partitions(),
+                                  Phase.SYSTEM_OVERSUBSCRIBE,
+                                  requestedBytes,
+                                  availableBytes,
+                                  maxTotalBytes,
+                                  config.consistencyMode());
+        }
+
         public String summary() {
             return switch (phase) {
                 case CONFIG_OVER_CEILING -> ceilingSummary();
-                case CREATE_FLOOR, GROWTH -> budgetSummary();
+                case CREATE_FLOOR, GROWTH, SYSTEM_OVERSUBSCRIBE -> budgetSummary();
             };
         }
 
@@ -1614,7 +2100,7 @@ public final class StreamPartitionManager implements AutoCloseable {
         public Map<String, String> details() {
             return switch (phase) {
                 case CONFIG_OVER_CEILING -> ceilingDetails();
-                case CREATE_FLOOR, GROWTH -> budgetDetails();
+                case CREATE_FLOOR, GROWTH, SYSTEM_OVERSUBSCRIBE -> budgetDetails();
             };
         }
 
@@ -1997,6 +2483,21 @@ public final class StreamPartitionManager implements AutoCloseable {
         /// declared count on a node that is not OWNER/REPLICA of every partition (#265 increment 2).
         int ringsMaterialized() {
             return materialized.size();
+        }
+
+        /// Atomically remove and return the materialized partition for `partition` (#265 increment 5 release),
+        /// or [Option#none] if it was not materialized. `ConcurrentHashMap.remove` is the CAS at the map slot —
+        /// the SAME discipline `reapIfIdle` uses at stream granularity; the caller frees the budget + closes the
+        /// ring (keeping the WAL file). A concurrent in-flight read/append that already resolved the ring
+        /// finishes against it; a new access misses ([Option#none]) and forwards.
+        Option<MaterializedPartition> releasePartition(int partition) {
+            return option(materialized.remove(partition));
+        }
+
+        /// The indexes of the partitions materialized on this node — the release reconcile sweeps these
+        /// (#265 increment 5). A copy so the sweep can release without a concurrent-modification hazard.
+        Set<Integer> materializedPartitionIndexes() {
+            return Set.copyOf(materialized.keySet());
         }
 
         /// Install a lazily-built [MaterializedPartition] iff `partition` is not already materialized,

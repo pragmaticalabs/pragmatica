@@ -274,10 +274,25 @@ tail are reconciled at the offset where backfill catches the source head.
 > **Rejected alternative.** *Release immediately on de-assignment* — the availability/history window
 > again.
 
+> **Status (increment 5, implemented).** `StreamPartitionManager.reconcileReshuffle` (scheduled every 5s)
+> runs the release state machine: a materialized partition whose `roleFor` is NONE becomes a candidate,
+> debounces (§5.4), then releases IFF (a) the local `ReplicaRegistry` view shows ≥ the **effective, clamped**
+> RF (`ReplicaPlacement.replicationFactor`) OTHER replicas CAUGHT_UP — a cluster-shrink reshuffle uses the
+> clamped RF so it never demands copies the shrunk cluster cannot host — AND (b) the **owner rule**: a node
+> that lost the HRW OWNER role but is still named by the committed `StreamPartitionOwnershipValue` holds until
+> the 1d-iii driver commits the ownership change elsewhere. Release frees the ring `Arena` + its budget
+> reservation (which lets the same-tick queue drain admit a deferred partition); **WAL files stay on disk**
+> (cheap re-hydration on flap-back + crash-recovery value — reaper cleanup is future work). The atomic
+> `materialized`-map remove mirrors the `reapIfIdle` discipline (in-flight reads/appends finish against the
+> resolved ring; a new access forwards).
+
 ### 5.4 Edge cases
 
 - **Membership flapping.** Debounce release: a node de-assigned then re-assigned before its replacement
-  is caught up keeps its ring (cancel a pending release). Reconcile is idempotent.
+  is caught up keeps its ring (cancel a pending release). Reconcile is idempotent. *(Increment 5,
+  implemented: a role-loss to NONE starts candidacy; release fires only after the partition survives
+  `RELEASE_DEBOUNCE_TICKS = 2` reconcile ticks — ≈10s at the 5s reconcile cadence — as a candidate; a role
+  regained within the window cancels candidacy at zero cost, no re-materialize.)*
 - **Owner death mid-backfill.** The backfill source dies → re-target the next-best `SERVING` source;
   if none, the partition is degraded (surface a cluster event; see §11).
 - **Pre-membership boot.** Before the placement ref is populated, a node must not eagerly materialize
@@ -316,6 +331,16 @@ tail are reconciled at the offset where backfill catches the source head.
 both an old and a new ring's worth for migrating partitions. Budget headroom must tolerate this:
 reserve the new ring against budget; if it would exceed, the reshuffle for that partition is **paced**
 (serialized) rather than rejected — releasing some old ring first — never silently over-subscribing.
+
+**System-stream budget exemption (owner decision 2026-07-05, amends this section for `system:*` only).**
+The reject-when-over-budget rule above applies to **app streams only**. A `system:*` stream (cluster-events
+and any future cluster-critical audit stream) **bypasses the budget reject**: it always materializes,
+oversubscribing past the cap when necessary, and emits a distinct named `SYSTEM_OVERSUBSCRIBE` event
+(separate from the app-stream `CREATE_FLOOR` deferral) so the oversubscription is operator-visible. In the
+reshuffle materialization queue, system streams are ordered **first**. *Rationale:* cluster-critical streams
+must not defer behind app-stream budget pressure, and their footprint is bounded — few streams, full-cluster
+placement is deliberate (§3, `ReplicaPlacement.systemReplicationFactor`). This restores, scoped to system
+streams, the old unconditional over-subscribe behavior §6 removed for app streams; app streams still defer.
 
 ---
 
@@ -454,7 +479,7 @@ Risk-first; foundational seams before the lifecycle.
 | 1 — gate hydration | `hydrateEntry` materializes iff OWNER/REPLICA; non-replica = metadata-only catalog entry | `StreamPartitionManager.java:475-499` |
 | 2 — budget reframe | remove unconditional over-subscribe; budget rejects over-budget materialize; reshuffle pacing | `:465-486` |
 | 3 — backfill fix (#261) | unconditional `onBecameReplica` trigger; coverage-gated `CAUGHT_UP` | `:461-464`; `ReplicaRegistry.java:69-79`; `PartitionBackfill.java:205-211` |
-| 4 — reshuffle lifecycle | materialize-before-release with catch-up gate; flap debounce; release frees `Arena` | `ReplicaSetController.java:250-275` |
+| 4 — reshuffle lifecycle | **DONE (increment 5)** — materialize-before-release with catch-up + owner gate; flap debounce (2 ticks); release frees ring `Arena` + budget (WAL kept); `reshuffle_concurrency = 2` slot pacing; `system:*` budget exemption + system-first drain | `StreamPartitionManager.reconcileReshuffle`; `ReplicaSetController.java:250-275` |
 | 5 — partition cap | derived cap + create-time enforcement + follower ceiling event; management/CLI read | `StreamConfigParser.java:285-304`; `StreamPartitionManager.java:232` |
 | 6 — verification | memory test: 100 streams × default partitions within budget on a 5-node cluster; reshuffle history-preservation test (owner kill → replica serves complete history) | `aether/tests/integration` |
 
@@ -476,7 +501,7 @@ serves complete history.
 | HRW replica set + reshuffle trigger | wired | reuse as the placement function | **DONE (reuse)** | `ReplicaSetController.java:208-275` |
 | `onBecameReplica` → backfill | fires unconditionally on becoming replica; owner-first + probed-survivor fallback | as targeted | **DONE (#261, §14.3)** | `ReplicaSetController.reconcilePartition:337-347`; `PartitionBackfill.probeThenPromoteOwner:665` |
 | `CAUGHT_UP` promotion | coverage-from-earliest-retained gate | as targeted | **DONE (#261)** | `ReplicaRegistry.updateWatermark:116-122` |
-| Reshuffle ring materialize/release | registry only; buffers untouched | add/drop rings, catch-up-gated | **MISSING** | `ReplicaSetController.java:250-275` |
+| Reshuffle ring materialize/release | registry only; buffers untouched | add/drop rings, catch-up-gated | **DONE (increment 5)** | `StreamPartitionManager.reconcileReshuffle`, `buildAndInstall` |
 | Read/write forwarding | wired, owner-fallback on absent buffer | reuse for non-replicas | **DONE (reuse)** | `AetherNode.java:2704,2735` |
 | Partition cap | none | derived + create-time + follower ceiling | **MISSING** | `StreamConfig.java:15`; `StreamConfigParser.java:285-304` |
 | Create-path budget rejection | rejects with `STREAM_MEMORY_EXCEEDED` | keep; extend to cap | **DONE** | `createFreshStream:232-249` |
@@ -497,7 +522,12 @@ that landed after this spec was drafted, two by default-setting (config-knobbed,
 2. **Reshuffle pacing. RESOLVED: bounded concurrency window, default 2 partitions per node,**
    config `[streams] reshuffle_concurrency = 2`. One-at-a-time starves large reshuffles; unbounded
    floods backfill. A small window is the standard middle; tune against backfill throughput once
-   §12's implementation exposes the reshuffle-lag metric.
+   §12's implementation exposes the reshuffle-lag metric. *(Increment 5, implemented:
+   `RESHUFFLE_CONCURRENCY = 2` slots gate REPLICA materialize+backfill at the `buildAndInstall` seam —
+   an OWNER ring, which has no backfill, is never paced. Excess queues **system-first, then FIFO**; a
+   queued app partition proceeds only when a slot AND budget headroom both exist (budget-AND; system
+   streams: slot only). A completed backfill (self CAUGHT_UP) or a release frees a slot; `materializeQueueDepth`
+   is surfaced in the hydration snapshot.)*
 3. **Backfill source selection. RESOLVED: owner-first with probed-survivor fallback — the mechanism
    that now exists.** Post-#410, `PartitionBackfill` pulls from the owner (`backfillFromOwner`), and
    an owner with a blind local registry probes peers' real tails and catches up from the best

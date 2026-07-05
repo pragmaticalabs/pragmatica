@@ -116,6 +116,7 @@ import org.pragmatica.aether.stream.StreamError;
 import org.pragmatica.aether.slice.stream.StreamNamespacesService;
 import org.pragmatica.aether.stream.KvStreamOwnerEpochSource;
 import org.pragmatica.aether.stream.KvCommittedStreamOwnerSource;
+import org.pragmatica.aether.stream.CommittedStreamOwnerSource;
 import org.pragmatica.aether.stream.StreamPartitionManager;
 import org.pragmatica.aether.stream.StreamReadRouter;
 import org.pragmatica.aether.stream.consumer.ConsumerGroupCoordinator;
@@ -136,6 +137,7 @@ import org.pragmatica.aether.stream.replication.StreamPartitionOwnershipWriter;
 import org.pragmatica.aether.stream.replication.ReplicaWatermarkProbe;
 import org.pragmatica.aether.stream.replication.ReplicationManager;
 import org.pragmatica.aether.stream.replication.ReplicationMessage;
+import org.pragmatica.aether.stream.replication.ReplicationState;
 import org.pragmatica.aether.stream.replication.ReplicationReceiveHandler;
 import org.pragmatica.aether.stream.replication.SelfWatermark;
 import org.pragmatica.aether.stream.replication.StreamPartitionRecovery;
@@ -700,6 +702,14 @@ public interface AetherNode extends ManageableNode {
     /// and is a no-op on every healthy node thereafter.
     TimeSpan NDM_ACTIVATION_RECONCILE_INTERVAL = TimeSpan.timeSpan(5).seconds();
 
+    /// Cadence for the #265 increment-5 reshuffle-lifecycle reconcile
+    /// ({@link StreamPartitionManager#reconcileReshuffle}): frees reshuffle-concurrency slots for
+    /// finished/lost partitions, evaluates release candidates (role-loss debounce → catch-up + owner gate →
+    /// release), and drains the materialization queue. Matches the 5s reconcile cadence, so the
+    /// {@code RELEASE_DEBOUNCE_TICKS = 2} flap-debounce window is ≈10s wall-clock (spec §5.4). A no-op tick is
+    /// cheap (a sweep of the materialized partitions + empty queues) so a steady-state node pays almost nothing.
+    TimeSpan STREAM_RESHUFFLE_RECONCILE_INTERVAL = TimeSpan.timeSpan(5).seconds();
+
     /// Per-node, restart-stable data dir for the disk-backed stream storage. Derived as a sibling of
     /// the node's artifact disk path (the artifacts/content convention, `StorageConfig.diskPath()`)
     /// suffixed with the node id, so that (a) it lives under the same durable `${data.dir}` mount in
@@ -788,6 +798,37 @@ public interface AetherNode extends ManageableNode {
                                                                                         partition,
                                                                                         cause.message()));
         backfill.backfill(streamName, partition);
+    }
+
+    /// #265 increment 5: the live replica catch-up view for the release gate + slot completion, read from the
+    /// [ReplicaRegistry]. `caughtUpReplicaCount` is the number of OTHER (non-self) replicas of the current
+    /// registered replica set that have reached CAUGHT_UP (the release catch-up gate compares it against the
+    /// effective, clamped RF); `selfCaughtUp` is whether THIS node has finished backfilling the partition (so
+    /// its reshuffle slot may free). Self is excluded from the count so the "≥ RF caught-up remain AFTER I
+    /// release" invariant holds regardless of whether the controller has already unregistered self.
+    private static StreamPartitionManager.ReplicaCatchupSource.CatchupView streamCatchupView(ReplicaRegistry registry,
+                                                                                             NodeId self,
+                                                                                             String stream,
+                                                                                             int partition) {
+        var replicas = registry.replicasFor(stream, partition);
+        var caughtUpOthers = (int) replicas.stream()
+                                           .filter(descriptor -> descriptor.state() == ReplicationState.CAUGHT_UP && !descriptor.nodeId().equals(self))
+                                           .count();
+        var selfCaughtUp = replicas.stream()
+                                   .anyMatch(descriptor -> descriptor.nodeId().equals(self) && descriptor.state() == ReplicationState.CAUGHT_UP);
+
+        return new StreamPartitionManager.ReplicaCatchupSource.CatchupView(caughtUpOthers, selfCaughtUp);
+    }
+
+    /// #265 increment 5: the committed-ownership release guard. Safe to release (on the ownership axis) when
+    /// the committed `StreamPartitionOwnershipValue.owner` names a node OTHER than self, or no ownership record
+    /// is committed yet. While the committed owner is still self, the node holds the ring until the 1d-iii
+    /// reshuffle driver commits the ownership change — a deposed-but-still-committed owner must not release.
+    private static boolean committedOwnerElsewhere(CommittedStreamOwnerSource source,
+                                                   NodeId self,
+                                                   String stream,
+                                                   int partition) {
+        return source.committedOwner(stream, partition).map(owner -> !owner.owner().equals(self)).or(true);
     }
 
     private static void snapshotAllSetups(Map<String, StorageFactory.StorageSetup> storageSetups) {
@@ -2928,6 +2969,19 @@ public interface AetherNode extends ManageableNode {
         // node count matches placement. The default `() -> 0` in Forge/unit/legacy managers disables the
         // aggregate guard (only the per-stream ceiling applies).
         streamPartitionManager.clusterSizeSupplier(clusterTopologyManager.observer()::clusterSize);
+        // #265 increment 5: reshuffle lifecycle. The release catch-up gate reads the live replica registry
+        // (self-excluded CAUGHT_UP count + self caught-up flag); the owner rule reads the committed
+        // StreamPartitionOwnershipValue (release only once ownership names a DIFFERENT node than self). Both
+        // are bound through static helpers so the supplier lambdas stay single-expression.
+        var streamCommittedOwnerSource = KvCommittedStreamOwnerSource.kvCommittedStreamOwnerSource(kvStore);
+        streamPartitionManager.replicaCatchupSource((stream, partition) -> streamCatchupView(streamReplicaRegistry,
+                                                                                             config.self(),
+                                                                                             stream,
+                                                                                             partition));
+        streamPartitionManager.ownerReleaseGuard((stream, partition) -> committedOwnerElsewhere(streamCommittedOwnerSource,
+                                                                                                config.self(),
+                                                                                                stream,
+                                                                                                partition));
         // Reconcile on every membership decision (all variants via the tail helper) and on
         // ClusterStateNotification edges (PASSIVE suppresses; PASSIVE->ACTIVE re-reconciles).
         wireMembershipDecisionTail(allEntries, streamReplicaSetController::onMembershipDecision);
@@ -2956,6 +3010,14 @@ public interface AetherNode extends ManageableNode {
         // cheap when nothing new has sealed. Driven off the durable sealed bound (not the void
         // eviction->seal listener) to avoid any truncated-before-durable window.
         SharedScheduler.scheduleAtFixedRate(streamPartitionManager::truncateWalsToSealed, WAL_TRUNCATE_INTERVAL);
+        // #265 increment 5 reshuffle-lifecycle driver: each tick frees reshuffle-concurrency slots for
+        // finished (self CAUGHT_UP) / owner / role-lost partitions, evaluates release candidates (role-loss
+        // debounce → catch-up + owner gate → release, freeing ring memory + budget while KEEPING the WAL on
+        // disk), then drains the materialization queue (system first) so budget a release just freed admits a
+        // queued partition in the same tick. 5s cadence → the 2-tick flap debounce is ≈10s; a steady-state
+        // tick is a cheap sweep of materialized partitions over empty queues.
+        SharedScheduler.scheduleAtFixedRate(streamPartitionManager::reconcileReshuffle,
+                                            STREAM_RESHUFFLE_RECONCILE_INTERVAL);
         var streamingCoordinator = StreamingCoordinator.streamingCoordinator(streamFailoverHandler,
                                                                              streamRetentionEnforcer,
                                                                              streamPartitionManager,

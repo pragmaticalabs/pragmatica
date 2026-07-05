@@ -687,6 +687,9 @@ public sealed interface ManagementApiResponses {
                                    long currentAggregatePartitionSlots,
                                    long aggregateHeadroom,
                                    int configOverCeilingStreams,
+                                   long releaseCandidates,
+                                   long releasedPartitionsSinceBoot,
+                                   long materializeQueueDepth,
                                    List<StreamHydrationDetail> streams) {}
 
     /// Per-stream hydration row: `partitionsDeclared` the configured partition count,

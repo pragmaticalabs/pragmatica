@@ -246,6 +246,9 @@ public final class StreamRoutes implements RouteSource {
                                            snapshot.currentAggregatePartitionSlots(),
                                            snapshot.aggregateHeadroom(),
                                            snapshot.configOverCeilingStreams(),
+                                           snapshot.releaseCandidates(),
+                                           snapshot.releasedPartitionsSinceBoot(),
+                                           snapshot.materializeQueueDepth(),
                                            snapshot.streams().stream().map(StreamRoutes::toHydrationDetail).toList());
     }
 
