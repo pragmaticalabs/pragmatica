@@ -1,12 +1,28 @@
 # Runtime-Switchable System Observability Aspects — Design Specification
 
-**Version:** 0.1
-**Status:** Draft
-**Date:** 2026-06-24
+**Version:** 0.3
+**Status:** In revision — mechanism shipped (#277 increments 1–5b), diverged from the original plan
+**Date:** 2026-06-24 (rev. 2026-07-05)
 **Author:** design-stream
 **Issue:** #277 (runtime aspect switching not wired)
 **Related:** #278/#279/#280 (interceptor *bugs* — separate; this spec does not touch them), #304 (trace waterfall — consumes this seam)
 **Realizes:** RFC-0010 (unified invocation observability — runtime reconfiguration). **Leaves unchanged:** RFC-0008 (compile-time aspect/interceptor framework).
+
+> **Shipped reality (2026-07-05, supersedes the codegen-weave plan below).** The mechanism is
+> **runtime strategy cells attached at the two native dispatch seams** (`ObservabilityInterceptor.intercept`
+> for east-west/topic/timer — now absorbed — and `SliceRouter.invokeHandler` for north-south HTTP entry),
+> **not** a generated per-call-site wrapper or an `AspectFactory` codegen path. The slice-processor codegen
+> sections (§5, §11 IP-table / always-generate-wrapper) are **NOT built** and are retained only as the
+> superseded design record; the dormant factory `Aspect` seam is slated for deletion in a final cleanup
+> increment (no envelope bump). One `AtomicStrategy` volatile lambda per `(artifactBase, methodName)` cell
+> carries the behaviour; the write-side `ObservabilityConfigRegistry` pre-composes the KV config into an
+> "around" strategy and swaps it in wholesale. **Posture (variant C, single engine):** an unconfigured
+> injection point runs the **baseline** (ambient facets — depth-leveled logging, sampled tracing, invocation
+> counting, spans off; the retired `ObservabilityInterceptor`'s behaviour folded in), an explicit non-off
+> config runs **only the facets its toggles select** (composed from the *same* facet bodies as the
+> baseline), and an explicit all-off config is **identity** (one volatile read — surgical darkening). See
+> the decision trail in the [#277 comments](https://github.com/pragmaticalabs/pragmatica/issues/277) and
+> the STEP-0 micro-bench (`ObservabilityStep0BenchTest`) for measured per-invocation costs.
 
 ---
 
@@ -62,8 +78,10 @@ local instance state.
   toggleable (+ depth) for a given slice-method or resource-call.
 - **G-5 — Interceptors untouched.** User aspects stay frozen at construction (RFC-0008); this spec is
   orthogonal to them.
-- **G-6 — Near-zero when off.** All-off cost = one `volatile` load + one predicted branch; no allocation,
-  no shared access.
+- **G-6 — Near-zero when off.** Explicit all-off (darkened) cost = one `volatile` load + one invoke of the
+  identity singleton; no allocation, no shared access. *(As shipped: "off" means the operator's explicit
+  all-off. An **unconfigured** point is not off — it runs the baseline ambient facets at a **measured**
+  cost; see §6.1 + the STEP-0 bench. The "microscope" per-injection facets add zero until enabled.)*
 
 ### 1.4 Non-Goals
 
@@ -202,6 +220,11 @@ boundaries (slice entry, cross-slice, resource call) map 1:1 onto these.
 
 ## 5. The always-on aspect seam
 
+> **⚠ SUPERSEDED (2026-07-05).** This section describes the generated-wrapper / factory-`Aspect`-seam
+> mechanism, which was **NOT built**. As shipped, observation attaches at the two native dispatch seams
+> as runtime strategy cells (see the banner + §6.1); the dormant factory `Aspect` seam is slated for
+> deletion. Retained as the superseded design record.
+
 > **Decision.** (a) **Slice:** replace the hardcoded `Aspect.identity()` (`SliceFactory.java:143`) with
 > the **system observability aspect** for that injection point. (b) **Resource:** make
 > `ResourceProviderFacade.provide(...)` always return `aspect.apply(resource)` with the system aspect
@@ -257,15 +280,40 @@ co-design the wrap so it composes with the unified lifecycle.
 
 ### 6.1 Hot-path cost
 
+**As shipped** (dispatch-seam strategy cell, not a generated wrapper): each seam holds one
+`AtomicStrategy` — a volatile lambda per `(artifactBase, methodName)` cell:
+
 ```
-T method(...) {                                 // generated wrapper / resource proxy
-    var cfg = this.observabilityConfig;         // ONE volatile load (no lookup, no alloc)
-    if (cfg.allOff()) return delegate(...);     // predicted branch → straight through
-    // else: emit per active facet at cfg.depth, then delegate
+Promise<R> around(proceed) {
+    var strategy = this.strategy;      // ONE volatile load
+    return strategy.around(proceed);   // one invoke
 }
 ```
-**All-off cost: one volatile load + one predicted branch.** Negligible against any real slice/resource
-work (a DB query, an HTTP call).
+
+- **Explicit all-off (darkened) = identity singleton:** `proceed.apply()` verbatim — one volatile load +
+  one invoke, **zero allocation**. This is the "microscope facets add zero until enabled" cost.
+- **Baseline (unconfigured) = ambient facets on:** the sampler is ticked, the `InvocationContext` spine is
+  captured once, and — on the sampled/failure result path — an `InvocationNode` is recorded and a
+  depth-leveled line logged. **Measured**, not free (see STEP-0 bench below).
+- **Configured:** only the facets the config's toggles select run (composed from the *same* bodies as the
+  baseline), so enabling nothing beyond `metrics` adds only one `incrementAndGet`.
+
+STEP-0 in-JVM micro-bench (`aether/node` `ObservabilityStep0BenchTest`, indicative ns/op, one JVM,
+5M iterations after warmup, end-to-end incl. the context-bind harness): IDENTITY ≈ counting ≈ baseline
+fast path; the sampled fleet path adds the record + node-build cost. The delta between IDENTITY and
+counting is a single `incrementAndGet`; the counting facet's `AtomicLong` is contended-slow vs a
+`LongAdder` under many writer threads (a noted future swap, not taken in this increment).
+
+> **Superseded plan (retained for the record).** The original design assumed a generated per-call-site
+> wrapper reading a config snapshot:
+> ```
+> T method(...) {                                 // generated wrapper / resource proxy — NOT BUILT
+>     var cfg = this.observabilityConfig;         // ONE volatile load (no lookup, no alloc)
+>     if (cfg.allOff()) return delegate(...);     // predicted branch → straight through
+> }
+> ```
+> The shipped mechanism swaps *behaviour* (the pre-composed strategy), not a config snapshot, so the
+> per-call branch on `cfg.allOff()` does not exist — darkening installs the identity singleton instead.
 
 ### 6.2 Lifecycle
 
@@ -389,6 +437,16 @@ push keeps its last-good snapshot — fail-safe, observability must never break 
 ---
 
 ## 11. Implementation Plan
+
+> **⚠ SUPERSEDED (2026-07-05).** The plan below (slice-processor codegen, `AspectFactory`,
+> always-generate-wrapper, manifest IP table, envelope bump) was **NOT the path taken**. The realized
+> increments are: (1) config substrate (`AspectObservabilityConfig`, `ObservabilityConfigKey/Value` +
+> serializer, `ObservabilityConfigRegistry`); (2) `ObservabilityStrategyCell` at both dispatch seams,
+> passthrough; (3) e2e switch proof; (4) scope hierarchy + absence-default → counting baseline; (5) the
+> `ObservabilityInterceptor` fleet layer absorbed into the baseline (single engine), depth store unified;
+> (5b) configured facets compose the shared baseline bodies by toggle, the REST/CLI/docs management triad,
+> the STEP-0 bench, and the dormant `ObservabilityDepthKey/Value` cleanup; (6, pending) delete the dead
+> factory `Aspect` seam. No envelope implications for the core mechanism. Retained as the superseded plan.
 
 | Phase | Scope | Anchors |
 |---|---|---|

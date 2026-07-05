@@ -910,7 +910,8 @@ The `inject` subcommand inserts a synthetic trace entry directly into the node-l
 
 #### observability
 
-Manage observability depth configuration:
+Manage runtime observability. Two related surfaces share one config store (#277): **depth**
+(the logging-ladder threshold) and **config** (the per-injection-point facet snapshot).
 
 ```bash
 # List all depth overrides
@@ -923,6 +924,10 @@ aether observability depth-set <artifact#method> <threshold>
 aether observability depth-remove <artifact#method>
 ```
 
+`depth-set` **materializes** a method-scope config: on an unconfigured method it pins the
+baseline-equivalent facets (logging + metrics + tracing on, spans off) with the new depth — so
+setting a depth never darkens an injection point, it only changes the logging-ladder threshold.
+
 Example:
 ```bash
 # Set depth threshold to 3 for a specific method
@@ -933,6 +938,40 @@ aether observability depth
 
 # Remove override
 aether observability depth-remove org.example:order-processor:1.0.0#processOrder
+```
+
+Per-injection-point facet control. Each injection point resolves to an effective state —
+`baseline` (no config; ambient facets run), `configured` (only the toggled facets run), or
+`darkened` (explicit all-off = identity). Scope hierarchy: method → artifact (`*` method) →
+global (`*` artifact + `*` method) → baseline; nearest scope wins whole.
+
+```bash
+# List every injection point's effective state (baseline|configured|darkened) + invocation counts
+aether observability config
+
+# Show the effective state for one artifact/method (use * for the artifact or global scope)
+aether observability config-get <artifact> <method>
+
+# Set a config snapshot for a scope (absent facet flags = off; --depth default 1)
+aether observability config-set <artifact|*> <method|*> [--logging] [--metrics] [--tracing] [--spans] [--depth N]
+
+# Remove the config at a scope (falls back per hierarchy)
+aether observability config-remove <artifact|*> <method|*>
+```
+
+Example:
+```bash
+# Enable logging + metrics for one method at depth 2
+aether observability config-set org.example:order-processor processOrder --logging --metrics --depth 2
+
+# Darken (identity) every injection point of an artifact
+aether observability config-set org.example:order-processor '*'
+
+# Darken the whole cluster (explicit all-off at the global scope)
+aether observability config-set '*' '*'
+
+# Fall back to baseline for one method
+aether observability config-remove org.example:order-processor processOrder
 ```
 
 #### config

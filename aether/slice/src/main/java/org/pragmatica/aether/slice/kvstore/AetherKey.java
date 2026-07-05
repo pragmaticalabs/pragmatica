@@ -354,42 +354,6 @@ public sealed interface AetherKey extends StructuredKey {
         }
     }
 
-    record ObservabilityDepthKey(String artifactBase, String methodName) implements AetherKey {
-        private static final String PREFIX = "obs-depth/";
-
-        @Override
-        public String asString() {
-            return PREFIX + artifactBase + "/" + methodName;
-        }
-
-        @Override
-        public String toString() {
-            return asString();
-        }
-
-        public static ObservabilityDepthKey observabilityDepthKey(String artifactBase, String methodName) {
-            return new ObservabilityDepthKey(artifactBase, methodName);
-        }
-
-        public static Result<ObservabilityDepthKey> observabilityDepthKey(String key) {
-            if (!key.startsWith(PREFIX)) {
-                return OBSERVABILITY_DEPTH_KEY_FORMAT_ERROR.apply(key).result();
-            }
-
-            var content = key.substring(PREFIX.length());
-            var slashIndex = content.indexOf('/');
-
-            if (slashIndex == -1 || slashIndex == 0 || slashIndex == content.length() - 1) {
-                return OBSERVABILITY_DEPTH_KEY_FORMAT_ERROR.apply(key).result();
-            }
-
-            var artifactBase = content.substring(0, slashIndex);
-            var methodName = content.substring(slashIndex + 1);
-
-            return success(new ObservabilityDepthKey(artifactBase, methodName));
-        }
-    }
-
     record ObservabilityConfigKey(String artifactBase, String methodName) implements AetherKey {
         private static final String PREFIX = "obs-config/";
 
@@ -1188,8 +1152,6 @@ public sealed interface AetherKey extends StructuredKey {
     Fn1<Cause, String> ALERT_THRESHOLD_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid alert-threshold key format: %s");
 
     Fn1<Cause, String> LOG_LEVEL_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid log-level key format: %s");
-
-    Fn1<Cause, String> OBSERVABILITY_DEPTH_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid obs-depth key format: %s");
 
     Fn1<Cause, String> OBSERVABILITY_CONFIG_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid obs-config key format: %s");
 

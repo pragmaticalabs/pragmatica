@@ -245,6 +245,10 @@ public enum ManagementRoute {
     OBSERVABILITY_DEPTH_GET(GET, "/api/observability/depth", List.of(), LEADER),
     OBSERVABILITY_DEPTH_SET(POST, "/api/observability/depth", List.of(), LEADER),
     OBSERVABILITY_DEPTH_DELETE(DELETE, "/api/observability/depth", List.of("artifact", "methodName"), LEADER),
+    OBSERVABILITY_CONFIG_GET(GET, "/api/observability/config", List.of(), LEADER),
+    OBSERVABILITY_CONFIG_GET_ONE(GET, "/api/observability/config", List.of("artifact", "method"), LEADER),
+    OBSERVABILITY_CONFIG_SET(POST, "/api/observability/config", List.of(), LEADER),
+    OBSERVABILITY_CONFIG_DELETE(DELETE, "/api/observability/config", List.of("artifact", "method"), LEADER),
     DHT_INJECT(POST, "/api/dht/inject", List.of(), LOCAL),
     DHT_REPLICATION_MAP(GET, "/api/dht/replication-map", List.of(), LOCAL);
     private final HttpMethod method;

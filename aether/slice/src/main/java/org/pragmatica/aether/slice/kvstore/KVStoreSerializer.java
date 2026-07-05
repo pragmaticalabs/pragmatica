@@ -146,7 +146,6 @@ public final class KVStoreSerializer {
             case PreviousVersionKey _ -> "previous-version";
             case HttpNodeRouteKey _ -> "http-node-routes";
             case LogLevelKey _ -> "log-level";
-            case ObservabilityDepthKey _ -> "obs-depth";
             case ObservabilityConfigKey _ -> "obs-config";
             case AlertThresholdKey _ -> "alert-threshold";
             case TopicSubscriptionKey _ -> "topic-sub";
@@ -222,7 +221,6 @@ public final class KVStoreSerializer {
             case HttpNodeRouteValue v -> serializeHttpNodeRoute(v);
             case AlertThresholdValue v -> serializeAlertThreshold(v);
             case LogLevelValue v -> serializeLogLevel(v);
-            case ObservabilityDepthValue v -> serializeObservabilityDepth(v);
             case ObservabilityConfigValue v -> serializeObsConfig(v);
             case ConfigValue v -> serializeConfig(v);
             case WorkerSliceDirectiveValue v -> serializeWorkerDirective(v);
@@ -379,10 +377,6 @@ public final class KVStoreSerializer {
         return v.loggerName() + PIPE + v.level() + PIPE + v.updatedAt();
     }
 
-    private static String serializeObservabilityDepth(ObservabilityDepthValue v) {
-        return v.artifactBase() + PIPE + v.methodName() + PIPE + v.depthThreshold() + PIPE + v.updatedAt();
-    }
-
     private static String serializeObsConfig(ObservabilityConfigValue v) {
         return v.artifactBase() + PIPE + v.methodName() + PIPE + v.logging() + PIPE + v.metrics() + PIPE + v.spans() + PIPE + v.tracing() + PIPE + v.depth() + PIPE + v.updatedAt();
     }
@@ -502,7 +496,6 @@ public final class KVStoreSerializer {
             case "previous-version" -> parsePreviousVersionEntry(identity, rawValue);
             case "http-node-routes" -> parseHttpNodeRouteEntry(identity, rawValue);
             case "log-level" -> parseLogLevelEntry(identity, rawValue);
-            case "obs-depth" -> parseObsDepthEntry(identity, rawValue);
             case "obs-config" -> parseObsConfigEntry(identity, rawValue);
             case "alert-threshold" -> parseAlertThresholdEntry(identity, rawValue);
             case "topic-sub" -> parseTopicSubEntry(identity, rawValue);
@@ -694,20 +687,6 @@ public final class KVStoreSerializer {
                                                                                  new LogLevelValue(parts[0],
                                                                                                    parts[1],
                                                                                                    Long.parseLong(parts[2]))));
-    }
-
-    private static Result<Map.Entry<AetherKey, AetherValue>> parseObsDepthEntry(String identity, String raw) {
-        var parts = raw.split("\\|", -1);
-
-        if (parts.length != 4) {
-            return parseFailure("obs-depth value requires 4 fields, got " + parts.length);
-        }
-
-        return ObservabilityDepthKey.observabilityDepthKey("obs-depth/" + identity).map(key -> entry(key,
-                                                                                                     new ObservabilityDepthValue(parts[0],
-                                                                                                                                 parts[1],
-                                                                                                                                 Integer.parseInt(parts[2]),
-                                                                                                                                 Long.parseLong(parts[3]))));
     }
 
     private static Result<Map.Entry<AetherKey, AetherValue>> parseObsConfigEntry(String identity, String raw) {

@@ -91,7 +91,10 @@ class ObservabilityConfigRegistryTest {
 
     @Test
     void register_afterPut_seedsFromLastKnownSnapshot() {
-        registry.onObservabilityConfigPut(put(true, false, true, false, 5));
+        // metrics=true so the counting facet runs on the counting-only baseline (this registry has no
+        // sampler/trace-store substrate, so logging/tracing facets cannot execute here — the metrics facet
+        // is what makes the seeded strategy non-identity).
+        registry.onObservabilityConfigPut(put(true, true, true, false, 5));
         var cell = ObservabilityStrategyCell.observabilityStrategyCell(ARTIFACT, METHOD);
 
         cell.swap(sentinel());
@@ -327,6 +330,51 @@ class ObservabilityConfigRegistryTest {
         var writeRegistry = depthRegistry(7);
 
         assertThat(writeRegistry.effectiveDepth(ARTIFACT, METHOD)).isEqualTo(7);
+    }
+
+    @Test
+    void effectiveConfig_absent_materializesBaselineDefaults() {
+        var writeRegistry = depthRegistry(7);
+        var config = writeRegistry.effectiveConfig(ARTIFACT, METHOD);
+
+        // Baseline-materialized: logging + metrics + tracing on, spans off, at the baseline default depth.
+        assertThat(config.logging()).isTrue();
+        assertThat(config.metrics()).isTrue();
+        assertThat(config.spans()).isFalse();
+        assertThat(config.tracing()).isTrue();
+        assertThat(config.depth()).isEqualTo(7);
+    }
+
+    @Test
+    void effectiveEntry_configuredPoint_carriesStateConfigAndCount() {
+        var cell = ObservabilityStrategyCell.observabilityStrategyCell(ARTIFACT, METHOD);
+
+        registry.register(cell);
+        registry.onObservabilityConfigPut(put(false, true, false, false, 2));
+        cell.around(() -> Promise.success("x")).await();
+        var entry = registry.effectiveEntry(ARTIFACT, METHOD);
+
+        assertThat(entry.artifactBase()).isEqualTo(ARTIFACT);
+        assertThat(entry.methodName()).isEqualTo(METHOD);
+        assertThat(entry.state()).isInstanceOf(ObservabilityState.Configured.class);
+        assertThat(entry.effectiveConfig().metrics()).isTrue();
+        assertThat(entry.invocationCount()).isEqualTo(Option.some(1L));
+    }
+
+    @Test
+    void allEffectiveStates_unionsLiveCellsAndConfigScopes() {
+        var cell = ObservabilityStrategyCell.observabilityStrategyCell(ARTIFACT, METHOD);
+
+        registry.register(cell);
+        // A wildcard artifact-scope config with no live cell of its own, plus the live baseline cell above.
+        registry.onObservabilityConfigPut(putScope(ARTIFACT, WILDCARD, false, false, false, false, 0));
+        var states = registry.allEffectiveStates();
+        var keys = states.stream()
+                         .map(entry -> entry.artifactBase() + "/" + entry.methodName())
+                         .toList();
+
+        // The live method cell (baseline resolved under the artifact all-off = darkened) AND the wildcard scope.
+        assertThat(keys).contains(KEY, ARTIFACT + "/" + WILDCARD);
     }
 
     @Test

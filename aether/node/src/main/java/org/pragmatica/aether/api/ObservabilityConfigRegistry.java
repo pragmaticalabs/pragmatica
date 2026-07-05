@@ -52,10 +52,12 @@ import org.slf4j.LoggerFactory;
 // control-plane work: the artifact/global fan-out scans `instances` — acceptable off the hot path.
 //
 // Absence-default posture (variant C): a cell with NO config at any scope resolves to the BASELINE
-// strategy (this increment: counting into the cell's storage), not identity. An explicit `allOff()` config
-// at any scope resolves to identity — the operator's deliberate darkening. The baseline collaborators
-// (sampler, trace store, logger) are injected through ObservabilityBaseline at construction (counting-only
-// for now); increment 5 moves the fleet facets into the baseline there.
+// strategy (all ambient facets on: logging + metrics/counting + tracing, spans off), not identity. An
+// explicit `allOff()` config at any scope resolves to identity — the operator's deliberate darkening. An
+// explicit non-off config composes the SAME facet bodies the baseline uses (ObservabilityBaseline.compose),
+// selected by its toggles (#277 increment 5b). The baseline collaborators (sampler, trace store, logger)
+// are injected through ObservabilityBaseline at construction; a counting-only baseline (observability
+// disabled) layers no ambient facets, so absence == counting there.
 //
 // Distinct from ObservabilityDepthRegistry (depth / trace-rate tuning, read-on-demand): this registry
 // holds live cell references and swaps their behaviour. It IS the ObservabilityCellRegistrar the dispatch
@@ -288,14 +290,51 @@ public class ObservabilityConfigRegistry implements ObservabilityCellRegistrar {
     }
 
     /// The three-case effective posture for an injection point, distinguishing the two states `getConfig`
-    /// conflates into `OFF` (absence vs. explicit all-off). Increment 5b's management surface reads this;
-    /// the depth routes and the strategy resolution share the same scope hierarchy underneath. BASELINE =
-    /// no config at any scope (fleet baseline runs); CONFIGURED = an explicit non-off config (its facets,
-    /// counting-only until 5b wires the toggles); DARKENED = an explicit all-off config (identity, the
-    /// operator's deliberate opt-out).
+    /// conflates into `OFF` (absence vs. explicit all-off). The management surface reads this; the depth
+    /// routes and the strategy resolution share the same scope hierarchy underneath. BASELINE = no config
+    /// at any scope (fleet baseline runs); CONFIGURED = an explicit non-off config (its selected facets);
+    /// DARKENED = an explicit all-off config (identity, the operator's deliberate opt-out).
     public ObservabilityState effectiveState(String artifactBase, String methodName) {
         return effectiveConfigFor(artifactBase + "/" + methodName).map(ObservabilityState::of)
                                  .or(ObservabilityState.BASELINE);
+    }
+
+    /// The effective AspectObservabilityConfig for an injection point, baseline-materialized: the nearest-
+    /// scope config if present, else the baseline-equivalent set (logging + metrics + tracing on, spans off)
+    /// at the baseline default depth. Lets the management surface show what actually runs even for a
+    /// Baseline point (#277 increment 5b).
+    public AspectObservabilityConfig effectiveConfig(String artifactBase, String methodName) {
+        return effectiveConfigFor(artifactBase + "/" + methodName).or(baselineDefaults());
+    }
+
+    /// Every effective observability posture the node knows: the union of the configured/darkened scopes
+    /// (replicated config keys, including the wildcard scopes) and the live baseline cells (per-node
+    /// injection points with no config). Each entry carries the resolved state, the baseline-materialized
+    /// effective config, and the per-node invocation count. Read path for `GET /api/observability/config`.
+    /// The per-node live-cell fields (invocation count, and baseline cells with no config key) reflect the
+    /// responding node — the replicated config fields are cluster-consistent.
+    public List<EffectiveEntry> allEffectiveStates() {
+        return Stream.concat(configs.keySet().stream(), instances.keySet().stream())
+                     .distinct()
+                     .map(this::effectiveEntryFor)
+                     .toList();
+    }
+
+    /// The effective posture for a single injection point / config scope — the read path for
+    /// `GET /api/observability/config/{artifactBase}/{methodName}`. Wildcards (`*`) are accepted as scope
+    /// segments; `invocationCount` is None unless a live cell is registered for the exact key.
+    public EffectiveEntry effectiveEntry(String artifactBase, String methodName) {
+        return new EffectiveEntry(artifactBase,
+                                  methodName,
+                                  effectiveState(artifactBase, methodName),
+                                  effectiveConfig(artifactBase, methodName),
+                                  invocationCount(artifactBase, methodName));
+    }
+
+    private EffectiveEntry effectiveEntryFor(String key) {
+        var slash = key.indexOf('/');
+
+        return effectiveEntry(key.substring(0, slash), key.substring(slash + 1));
     }
 
     /// Effective depth threshold for an injection point: the nearest-scope config's depth, else the baseline
@@ -409,34 +448,52 @@ public class ObservabilityConfigRegistry implements ObservabilityCellRegistrar {
     }
 
     /// The three-case absence-default posture (variant C). No config at any scope -> the BASELINE strategy
-    /// (this increment: counting only). An explicit `allOff()` config -> the zero-cost identity singleton
-    /// (the operator's deliberate darkening). Any explicit non-off config -> the counting strategy (the
-    /// metrics facet in embryonic form, #277 increment 3). Baseline and non-off both count for now but are
-    /// kept as distinct call sites so increment 5 diverges them (the baseline gains the fleet facets)
-    /// without touching this resolution.
+    /// (all ambient facets on: logging + metrics/counting + tracing, spans off). An explicit `allOff()`
+    /// config -> the zero-cost identity singleton (the operator's deliberate darkening). Any explicit
+    /// non-off config -> the facets its toggles select, composed from the SAME bodies the baseline uses
+    /// (#277 increment 5b). Baseline and configured share ObservabilityBaseline.compose; only the selected
+    /// facet set and depth differ.
     private InvocationStrategy strategyFor(ObservabilityStrategyCell cell,
                                            Option<AspectObservabilityConfig> effective) {
         return effective.map(config -> configuredStrategy(cell, config))
                         .or(() -> baselineStrategy(cell));
     }
 
-    private static InvocationStrategy configuredStrategy(ObservabilityStrategyCell cell,
-                                                         AspectObservabilityConfig config) {
+    /// An explicit non-off config composes the SAME facet bodies the baseline uses (#277 increment 5b),
+    /// selected by the config's toggles: the metrics facet is the counting inner when `metrics` is on (else
+    /// identity), and the baseline layers the logging + tracing facets from `config.logging()` /
+    /// `config.tracing()` around it at the config's own depth. `spans` is a reserved toggle with no body
+    /// yet (#304). An explicit all-off config is the zero-cost identity singleton (deliberate darkening).
+    private InvocationStrategy configuredStrategy(ObservabilityStrategyCell cell,
+                                                  AspectObservabilityConfig config) {
         return config.allOff()
                ? InvocationStrategy.IDENTITY
-               : countingStrategy(cell.storage());
+               : baseline.compose(innerFacet(cell, config),
+                                  cell.key(),
+                                  config.depth(),
+                                  config.logging(),
+                                  config.tracing());
     }
 
-    /// The absence default: a cell with no config at any scope runs the fleet baseline (this increment 5a:
-    /// sampling + tracing + depth-leveled logging + counting) rather than running blind. The baseline
-    /// decorates the shared counting inner (the metrics-facet embryo) with its fleet facets; the
-    /// counting-only baseline (observability disabled) adds none, so absence == counting. The facet is
-    /// per-cell (hence the cell): each cell counts into its own AtomicLong, so the two seams of one method
-    /// never share a counter. The logging ladder's depth threshold is resolved from the effective config
-    /// (AspectObservabilityConfig.depth) else the baseline default; in the absence case that is always the
-    /// baseline default, but the read is kept honest against the registry's own config.
+    // The metrics facet: the counting inner when the config selects `metrics`, else identity. The logging
+    // and tracing facets are layered by ObservabilityBaseline.compose from the config's toggles — the same
+    // facet bodies the baseline runs.
+    private static InvocationStrategy innerFacet(ObservabilityStrategyCell cell, AspectObservabilityConfig config) {
+        return config.metrics()
+               ? countingStrategy(cell.storage())
+               : InvocationStrategy.IDENTITY;
+    }
+
+    /// The absence default: a cell with no config at any scope runs the fleet baseline — ALL ambient facets
+    /// on (logging + metrics/counting + tracing, spans off) rather than running blind. The baseline composes
+    /// its facets around the shared counting inner; the counting-only baseline (observability disabled) adds
+    /// none, so absence == counting. The facet is per-cell (hence the cell): each cell counts into its own
+    /// AtomicLong, so the two seams of one method never share a counter. The logging ladder's depth threshold
+    /// is resolved from the effective config (AspectObservabilityConfig.depth) else the baseline default; in
+    /// the absence case that is always the baseline default, but the read is kept honest against the
+    /// registry's own config.
     private InvocationStrategy baselineStrategy(ObservabilityStrategyCell cell) {
-        return baseline.decorate(countingStrategy(cell.storage()), cell.key(), effectiveDepthFor(cell.key()));
+        return baseline.compose(countingStrategy(cell.storage()), cell.key(), effectiveDepthFor(cell.key()), true, true);
     }
 
     private int effectiveDepthFor(String cellKey) {
@@ -470,9 +527,9 @@ public class ObservabilityConfigRegistry implements ObservabilityCellRegistrar {
                                                                    value.depth());
     }
 
-    /// The three-case absence-default posture as a value (#277 increment 5a), resolving the getConfig
-    /// absence-vs-off conflation for increment 5b's management surface. BASELINE = no config at any scope;
-    /// CONFIGURED carries the explicit non-off config; DARKENED carries the explicit all-off config.
+    /// The three-case absence-default posture as a value (#277), resolving the getConfig absence-vs-off
+    /// conflation for the management surface. BASELINE = no config at any scope; CONFIGURED carries the
+    /// explicit non-off config; DARKENED carries the explicit all-off config.
     public sealed interface ObservabilityState {
         ObservabilityState BASELINE = new Baseline();
 
@@ -488,4 +545,14 @@ public class ObservabilityConfigRegistry implements ObservabilityCellRegistrar {
                    : new Configured(config);
         }
     }
+
+    /// One effective observability posture for the management list surface (#277 increment 5b): the
+    /// injection-point / config-scope identity, its resolved state, the baseline-materialized effective
+    /// config (so the view can show what actually runs even for a Baseline point), and the per-node live
+    /// invocation count (None when no live cell is registered for the key — e.g. a wildcard config scope).
+    public record EffectiveEntry(String artifactBase,
+                                 String methodName,
+                                 ObservabilityState state,
+                                 AspectObservabilityConfig effectiveConfig,
+                                 Option<Long> invocationCount) {}
 }

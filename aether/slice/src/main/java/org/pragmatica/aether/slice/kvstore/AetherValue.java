@@ -365,14 +365,6 @@ public sealed interface AetherValue {
         }
     }
 
-    record ObservabilityDepthValue(String artifactBase, String methodName, int depthThreshold, long updatedAt) implements AetherValue {
-        public static ObservabilityDepthValue observabilityDepthValue(String artifactBase,
-                                                                      String methodName,
-                                                                      int depthThreshold) {
-            return new ObservabilityDepthValue(artifactBase, methodName, depthThreshold, System.currentTimeMillis());
-        }
-    }
-
     record ObservabilityConfigValue(String artifactBase,
                                     String methodName,
                                     boolean logging,

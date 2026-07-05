@@ -51,6 +51,7 @@ Roles are hierarchical: ADMIN has all OPERATOR permissions, and OPERATOR has all
 | Backup restore | ADMIN | `POST /api/backups/restore/{id}` |
 | Log level changes | ADMIN | `PUT /api/logging/levels` |
 | Observability depth | ADMIN | `PUT /api/observability/depth` |
+| Observability config (write) | ADMIN | `POST`/`DELETE /api/observability/config` |
 | Blueprint deploy (from artifact) | OPERATOR | `POST /api/blueprints/deploy` |
 | Blueprint validate | VIEWER | `POST /api/blueprints/validate` |
 | Node drain | OPERATOR | `POST /api/nodes/drain/{id}` |
@@ -1858,6 +1859,14 @@ that name.
 
 ## Observability Depth
 
+Per-method logging-ladder depth thresholds. Since #277 these routes are backed by the unified
+observability config store (see [Observability Config](#observability-config) below), not a
+separate depth registry. `POST /api/observability/depth` **materializes** a method-scope config:
+on an unconfigured method it pins the baseline-equivalent toggles (logging + metrics + tracing on,
+spans off) with the requested depth — so setting a depth never darkens an injection point, it only
+changes the logging-ladder threshold. `DELETE` removes the method-scope config, falling back to the
+next-broader scope (else the baseline default depth).
+
 ### GET /api/observability/depth
 
 List all configured per-method depth overrides.
@@ -1912,6 +1921,106 @@ curl -X DELETE http://localhost:8080/api/observability/depth/org.example:my-slic
 {
   "status": "depth_removed",
   "artifact": "org.example:my-slice:1.0.0",
+  "method": "processOrder"
+}
+```
+
+---
+
+## Observability Config
+
+Per-injection-point runtime observability facet control (#277). An injection point is one
+`artifactBase/methodName` dispatch seam; each resolves to one of three **effective states**:
+
+- **`baseline`** — no config at any scope. The ambient facets run (depth-leveled logging, sampled
+  tracing, invocation counting), spans off. "Off means baseline, not blind."
+- **`configured`** — an explicit non-off config. Only the facets its toggles select run
+  (`logging`, `metrics`, `tracing`; `spans` is reserved, no body yet — #304), at the config's own
+  `depth`. Logging and tracing share one sampling decision, so a logging-only config logs sampled
+  successes plus all failures.
+- **`darkened`** — an explicit all-off config. Identity: the call runs untouched (one volatile
+  read), the operator's deliberate opt-out.
+
+**Scope hierarchy** (nearest wins, whole-snapshot — never a per-field merge): method scope
+(`artifactBase` + `methodName`) → artifact scope (`artifactBase` + `*`) → global scope (`*` + `*`)
+→ baseline. Pass `*` in the artifact and/or method segment to address the artifact or global scope.
+
+> Reads are leader-forwarded. The replicated config fields (`state`, toggles, `depth`) are
+> cluster-consistent; the per-node live field `invocationCount` (and baseline cells that have no
+> config key) reflect the responding leader node.
+
+### GET /api/observability/config
+
+List the effective observability state of every known injection point and config scope.
+
+**Response:**
+```json
+[
+  {
+    "artifactBase": "org.example:my-slice",
+    "methodName": "processOrder",
+    "state": "configured",
+    "logging": true,
+    "metrics": true,
+    "spans": false,
+    "tracing": true,
+    "depth": 2,
+    "invocationCount": 1421
+  }
+]
+```
+
+`invocationCount` is `null` when no live cell is registered for the key (e.g. a wildcard scope).
+For a `baseline` entry the toggle fields show the baseline-equivalent set (what actually runs).
+
+### GET /api/observability/config/{artifactBase}/{methodName}
+
+Effective state for a single injection point or scope. `*` is accepted for the artifact (`base/*`)
+and global (`*/*`) scopes.
+
+### POST /api/observability/config
+
+Set a whole config snapshot at a scope (ADMIN). Absent boolean fields are `false` (facet off).
+
+**Request:**
+```json
+{
+  "artifact": "org.example:my-slice",
+  "method": "processOrder",
+  "logging": true,
+  "metrics": true,
+  "spans": false,
+  "tracing": true,
+  "depth": 2
+}
+```
+
+**Response:**
+```json
+{
+  "status": "config_set",
+  "artifact": "org.example:my-slice",
+  "method": "processOrder",
+  "logging": true,
+  "metrics": true,
+  "spans": false,
+  "tracing": true,
+  "depth": 2
+}
+```
+
+Use `*` for `artifact` and/or `method` to set the artifact or global scope.
+
+### DELETE /api/observability/config/{artifactBase}/{methodName}
+
+Remove the config at a scope (ADMIN); resolution falls back to the next-broader scope (else the
+baseline).
+
+**Response:**
+```json
+{
+  "status": "config_removed",
+  "artifact": "org.example:my-slice",
   "method": "processOrder"
 }
 ```
@@ -3350,6 +3459,10 @@ Conclude the A/B test and promote the winning variant. Requires leader node.
 | GET | `/api/observability/depth` | Observability Depth |
 | POST | `/api/observability/depth` | Observability Depth |
 | DELETE | `/api/observability/depth/{artifact}/{method}` | Observability Depth |
+| GET | `/api/observability/config` | Observability Config |
+| GET | `/api/observability/config/{artifactBase}/{methodName}` | Observability Config |
+| POST | `/api/observability/config` | Observability Config |
+| DELETE | `/api/observability/config/{artifactBase}/{methodName}` | Observability Config |
 | GET | `/api/dht/replication-map` | DHT |
 | POST | `/api/dht/inject` | DHT (dev-mode only) |
 | GET | `/api/storage` | Storage (per-node) |

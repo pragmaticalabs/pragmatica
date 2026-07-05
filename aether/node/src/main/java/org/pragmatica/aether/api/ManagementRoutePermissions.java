@@ -67,7 +67,7 @@ public sealed interface ManagementRoutePermissions {
     }
 
     /// Destructive / identity-affecting mutations — ADMIN only: raw blueprint publish + delete, node
-    /// shutdown/promote, backup restore, log-level and observability-depth changes, config-node
+    /// shutdown/promote, backup restore, log-level and observability depth/config changes, config-node
     /// delete, API-key create/revoke, dev-only inject endpoints.
     private static void assignAdminMutations(Map<ManagementRoute, RoutePermission> table) {
         for (var route : adminRoutes()) {
@@ -137,6 +137,8 @@ public sealed interface ManagementRoutePermissions {
                        ManagementRoute.LOG_LEVEL_RESET,
                        ManagementRoute.OBSERVABILITY_DEPTH_SET,
                        ManagementRoute.OBSERVABILITY_DEPTH_DELETE,
+                       ManagementRoute.OBSERVABILITY_CONFIG_SET,
+                       ManagementRoute.OBSERVABILITY_CONFIG_DELETE,
                        ManagementRoute.CONFIG_NODE_DELETE,
                        ManagementRoute.CLUSTER_KEYS_CREATE,
                        ManagementRoute.CLUSTER_KEYS_REVOKE,

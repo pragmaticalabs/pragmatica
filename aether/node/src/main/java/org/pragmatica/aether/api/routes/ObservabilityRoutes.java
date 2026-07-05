@@ -6,6 +6,8 @@ package org.pragmatica.aether.api.routes;
 
 import org.pragmatica.aether.api.ManagementApiResponses.TraceInjectResponse;
 import org.pragmatica.aether.api.ObservabilityConfigRegistry;
+import org.pragmatica.aether.api.ObservabilityConfigRegistry.EffectiveEntry;
+import org.pragmatica.aether.api.ObservabilityConfigRegistry.ObservabilityState;
 import org.pragmatica.aether.invoke.InvocationNode;
 import org.pragmatica.aether.invoke.InvocationTraceStore;
 import org.pragmatica.aether.invoke.InvocationTraceStore.TraceStats;
@@ -72,6 +74,42 @@ public final class ObservabilityRoutes implements RouteSource {
 
     public record DepthRemovedResponse(String status, String artifact, String method) {}
 
+    /// Body for `POST /api/observability/config` — a whole config snapshot for a scope. `artifact` and
+    /// `method` accept the wildcard `*` for the artifact (`base/*`) and global (`*/*`) scopes. Absent
+    /// boolean fields deserialize to false (facet off); `depth` is the logging-ladder threshold.
+    record SetConfigRequest(String artifact,
+                            String method,
+                            boolean logging,
+                            boolean metrics,
+                            boolean spans,
+                            boolean tracing,
+                            int depth) {}
+
+    /// Effective observability posture for one injection point / config scope. `state` is
+    /// `baseline` | `configured` | `darkened`; the facet fields + `depth` are the effective config
+    /// (baseline-materialized for a baseline point, so the view always shows what actually runs);
+    /// `invocationCount` is the responding node's live count, `null` when no live cell is registered.
+    public record ObservabilityConfigView(String artifactBase,
+                                          String methodName,
+                                          String state,
+                                          boolean logging,
+                                          boolean metrics,
+                                          boolean spans,
+                                          boolean tracing,
+                                          int depth,
+                                          Long invocationCount) {}
+
+    public record ConfigSetResponse(String status,
+                                    String artifact,
+                                    String method,
+                                    boolean logging,
+                                    boolean metrics,
+                                    boolean spans,
+                                    boolean tracing,
+                                    int depth) {}
+
+    public record ConfigRemovedResponse(String status, String artifact, String method) {}
+
     @Override
     public Stream<Route<?>> routes() {
         return Stream.of(ManagementRoutes.<List<TraceView>> route(ManagementRoute.TRACES_QUERY)
@@ -98,6 +136,20 @@ public final class ObservabilityRoutes implements RouteSource {
                                          .withPath(aString(),
                                                    aString())
                                          .to(this::handleDeleteDepth)
+                                         .asJson(),
+                         ManagementRoutes.<List<ObservabilityConfigView>> route(ManagementRoute.OBSERVABILITY_CONFIG_GET).toJson(this::handleListConfigs),
+                         ManagementRoutes.<ObservabilityConfigView> route(ManagementRoute.OBSERVABILITY_CONFIG_GET_ONE)
+                                         .withPath(aString(),
+                                                   aString())
+                                         .toValue(this::handleGetConfig)
+                                         .asJson(),
+                         ManagementRoutes.<ConfigSetResponse> route(ManagementRoute.OBSERVABILITY_CONFIG_SET)
+                                         .withBody(SetConfigRequest.class)
+                                         .toJson(this::handleSetConfig),
+                         ManagementRoutes.<ConfigRemovedResponse> route(ManagementRoute.OBSERVABILITY_CONFIG_DELETE)
+                                         .withPath(aString(),
+                                                   aString())
+                                         .to(this::handleDeleteConfig)
                                          .asJson());
     }
 
@@ -168,6 +220,87 @@ public final class ObservabilityRoutes implements RouteSource {
 
         return configRegistry.removeDepth(artifact, method)
                              .map(_ -> new DepthRemovedResponse("depth_removed", artifact, method));
+    }
+
+    private List<ObservabilityConfigView> handleListConfigs() {
+        return configRegistry.allEffectiveStates()
+                             .stream()
+                             .map(ObservabilityRoutes::toConfigView)
+                             .toList();
+    }
+
+    private ObservabilityConfigView handleGetConfig(String artifact, String method) {
+        return toConfigView(configRegistry.effectiveEntry(artifact, method));
+    }
+
+    private Promise<ConfigSetResponse> handleSetConfig(SetConfigRequest req) {
+        return validateSetConfigRequest(req).async()
+                                      .flatMap(valid -> configRegistry.setConfig(valid.artifact(),
+                                                                                 valid.method(),
+                                                                                 valid.logging(),
+                                                                                 valid.metrics(),
+                                                                                 valid.spans(),
+                                                                                 valid.tracing(),
+                                                                                 valid.depth())
+                                                                      .map(_ -> toConfigSetResponse(valid)));
+    }
+
+    private Promise<ConfigRemovedResponse> handleDeleteConfig(String artifact, String method) {
+        if (artifact.isEmpty() || method.isEmpty()) {
+            return ObservabilityError.CONFIG_KEY_REQUIRED.promise();
+        }
+
+        return configRegistry.removeConfig(artifact, method)
+                             .map(_ -> new ConfigRemovedResponse("config_removed", artifact, method));
+    }
+
+    private static Result<SetConfigRequest> validateSetConfigRequest(SetConfigRequest req) {
+        if (req.artifact() == null || req.artifact().isEmpty()) {
+            return ObservabilityError.CONFIG_MISSING_FIELDS.result();
+        }
+
+        if (req.method() == null || req.method().isEmpty()) {
+            return ObservabilityError.CONFIG_MISSING_FIELDS.result();
+        }
+
+        if (req.depth() < 0) {
+            return ObservabilityError.INVALID_DEPTH.result();
+        }
+
+        return Result.success(req);
+    }
+
+    private static ConfigSetResponse toConfigSetResponse(SetConfigRequest req) {
+        return new ConfigSetResponse("config_set",
+                                     req.artifact(),
+                                     req.method(),
+                                     req.logging(),
+                                     req.metrics(),
+                                     req.spans(),
+                                     req.tracing(),
+                                     req.depth());
+    }
+
+    private static ObservabilityConfigView toConfigView(EffectiveEntry entry) {
+        var config = entry.effectiveConfig();
+
+        return new ObservabilityConfigView(entry.artifactBase(),
+                                           entry.methodName(),
+                                           stateLabel(entry.state()),
+                                           config.logging(),
+                                           config.metrics(),
+                                           config.spans(),
+                                           config.tracing(),
+                                           config.depth(),
+                                           entry.invocationCount().or((Long) null));
+    }
+
+    private static String stateLabel(ObservabilityState state) {
+        return switch (state) {
+            case ObservabilityState.Baseline ignored -> "baseline";
+            case ObservabilityState.Configured ignored -> "configured";
+            case ObservabilityState.Darkened ignored -> "darkened";
+        };
     }
 
     private static Result<SetDepthRequest> validateSetDepthRequest(SetDepthRequest req) {
@@ -247,7 +380,9 @@ public final class ObservabilityRoutes implements RouteSource {
         MISSING_FIELDS("Missing artifact, method, or depthThreshold field"),
         INVALID_DEPTH("Depth threshold must be non-negative"),
         REQUEST_ID_REQUIRED("Request ID required"),
-        KEY_REQUIRED("Depth config key required in format: artifactBase/methodName");
+        KEY_REQUIRED("Depth config key required in format: artifactBase/methodName"),
+        CONFIG_MISSING_FIELDS("Missing artifact or method field"),
+        CONFIG_KEY_REQUIRED("Config key required in format: artifactBase/methodName");
         private final String message;
         ObservabilityError(String message) {
             this.message = message;

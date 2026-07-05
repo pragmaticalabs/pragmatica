@@ -2962,7 +2962,7 @@ public class AetherCli implements Runnable {
         }
     }
 
-    @Command(name = "observability", description = "Manage observability configuration", subcommands = {ObservabilityCommand.DepthListCommand.class, ObservabilityCommand.DepthSetCommand.class, ObservabilityCommand.DepthRemoveCommand.class})
+    @Command(name = "observability", description = "Manage observability configuration", subcommands = {ObservabilityCommand.DepthListCommand.class, ObservabilityCommand.DepthSetCommand.class, ObservabilityCommand.DepthRemoveCommand.class, ObservabilityCommand.ConfigListCommand.class, ObservabilityCommand.ConfigGetCommand.class, ObservabilityCommand.ConfigSetCommand.class, ObservabilityCommand.ConfigRemoveCommand.class})
     static class ObservabilityCommand implements Runnable {
         @CommandLine.ParentCommand
         private AetherCli parent;
@@ -3051,6 +3051,107 @@ public class AetherCli implements Runnable {
                 return OutputFormatter.printAction(response,
                                                    obsParent.parent.outputOptions(),
                                                    "Depth override removed for " + target);
+            }
+        }
+
+        @Command(name = "config", description = "List effective observability config (baseline|configured|darkened) per injection point")
+        static class ConfigListCommand implements Callable<Integer> {
+            @CommandLine.ParentCommand
+            private ObservabilityCommand obsParent;
+
+            @Override
+            public Integer call() {
+                var response = obsParent.parent.fetch(OBSERVABILITY_CONFIG_GET);
+
+                return OutputFormatter.printQuery(response, obsParent.parent.outputOptions());
+            }
+        }
+
+        @Command(name = "config-get", description = "Show effective observability config for one artifact/method")
+        static class ConfigGetCommand implements Callable<Integer> {
+            @CommandLine.ParentCommand
+            private ObservabilityCommand obsParent;
+
+            @Parameters(index = "0", description = "Artifact base (groupId:artifactId), or * for the global scope")
+            private String artifact;
+
+            @Parameters(index = "1", description = "Method name, or * for the artifact scope")
+            private String method;
+
+            @Override
+            public Integer call() {
+                var response = obsParent.parent.fetch(OBSERVABILITY_CONFIG_GET_ONE, List.of(artifact, method));
+
+                return OutputFormatter.printQuery(response, obsParent.parent.outputOptions());
+            }
+        }
+
+        @Command(name = "config-set", description = "Set the observability config snapshot for a scope (absent facet flags = off)")
+        static class ConfigSetCommand implements Callable<Integer> {
+            @CommandLine.ParentCommand
+            private ObservabilityCommand obsParent;
+
+            @Parameters(index = "0", description = "Artifact base (groupId:artifactId), or * for the global scope")
+            private String artifact;
+
+            @Parameters(index = "1", description = "Method name, or * for the artifact scope")
+            private String method;
+
+            @CommandLine.Option(names = {"--logging"}, description = "Enable the logging facet")
+            private boolean logging;
+
+            @CommandLine.Option(names = {"--metrics"}, description = "Enable the metrics (counting) facet")
+            private boolean metrics;
+
+            @CommandLine.Option(names = {"--tracing"}, description = "Enable the tracing facet")
+            private boolean tracing;
+
+            @CommandLine.Option(names = {"--spans"}, description = "Enable the spans facet (reserved, no body yet; #304)")
+            private boolean spans;
+
+            @CommandLine.Option(names = {"--depth"}, description = "Logging-ladder depth threshold (default 1)", defaultValue = "1")
+            private int depth;
+
+            @Override
+            public Integer call() {
+                var body = buildConfigSetBody();
+                var response = obsParent.parent.post(OBSERVABILITY_CONFIG_SET, body);
+
+                return OutputFormatter.printAction(response,
+                                                   obsParent.parent.outputOptions(),
+                                                   "Observability config set for " + artifact + "/" + method);
+            }
+
+            private String buildConfigSetBody() {
+                return "{\"artifact\":\"" + artifact
+                     + "\",\"method\":\"" + method
+                     + "\",\"logging\":" + logging
+                     + ",\"metrics\":" + metrics
+                     + ",\"spans\":" + spans
+                     + ",\"tracing\":" + tracing
+                     + ",\"depth\":" + depth
+                     + "}";
+            }
+        }
+
+        @Command(name = "config-remove", description = "Remove the observability config at a scope (resolution falls back per hierarchy)")
+        static class ConfigRemoveCommand implements Callable<Integer> {
+            @CommandLine.ParentCommand
+            private ObservabilityCommand obsParent;
+
+            @Parameters(index = "0", description = "Artifact base (groupId:artifactId), or * for the global scope")
+            private String artifact;
+
+            @Parameters(index = "1", description = "Method name, or * for the artifact scope")
+            private String method;
+
+            @Override
+            public Integer call() {
+                var response = obsParent.parent.delete(OBSERVABILITY_CONFIG_DELETE, List.of(artifact, method));
+
+                return OutputFormatter.printAction(response,
+                                                   obsParent.parent.outputOptions(),
+                                                   "Observability config removed for " + artifact + "/" + method);
             }
         }
     }
