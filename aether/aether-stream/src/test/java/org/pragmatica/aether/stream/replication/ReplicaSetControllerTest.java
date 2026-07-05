@@ -332,6 +332,28 @@ class ReplicaSetControllerTest {
     }
 
     @Test
+    void systemStream_roleForNeverNone_soEveryCoreMaterializes() {
+        // #265 increment 2 / spec §4 reconcile: system:* streams place on the FULL cluster
+        // (systemReplicationFactor = N), so roleFor reports OWNER or REPLICA on EVERY core member and
+        // NEVER NONE. Placement-gated materialization therefore builds the ring on every node — system
+        // streams are never metadata-only, preserving their full-cluster hydration (the placement-gating
+        // input the StreamPartitionManager gate consults, one layer below the registry-level RF proof).
+        var systemStream = "system:cluster-events:1.0.0";
+        var members = nodes("n0", "n1", "n2", "n3", "n4");
+        var catalog = new FakeCatalog(List.of(new StreamCatalog.StreamSpec(systemStream, 1, 1, 1)));
+
+        for (var self : members) {
+            var ctrl = controller(ReplicaRegistry.replicaRegistry(),
+                                  self,
+                                  new AtomicReference<>(members),
+                                  catalog,
+                                  (_, _) -> {});
+
+            assertThat(ctrl.roleFor(systemStream, 0)).isIn(Role.OWNER, Role.REPLICA);
+        }
+    }
+
+    @Test
     void steadyStateSingleNode_isOwner_afterReconcile() {
         // B3: a steady-state single-node cluster IS the owner and emits.
         var members = new AtomicReference<>(nodes("solo"));

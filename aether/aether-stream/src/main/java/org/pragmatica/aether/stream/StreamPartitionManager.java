@@ -41,6 +41,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Consumer;
+import java.util.function.IntPredicate;
 import java.util.function.LongConsumer;
 import java.util.function.LongPredicate;
 import java.util.stream.Collectors;
@@ -98,12 +99,13 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// wiring binds it to the node's [org.pragmatica.aether.stream.segment.SegmentIndex].
     private final LastSealedOffsetSource lastSealedOffset;
     private volatile Consumer<Exhaustion> exhaustionSink = NOOP_SINK;
-    /// Placement-role seam (#265 increment 1): consulted per `(stream, partition)` so a later increment
-    /// can gate ring materialization on placement (materialize iff OWNER/REPLICA). Defaults to
-    /// [#ALWAYS_OWNER]; `AetherNode` late-binds [ReplicaSetController#roleFor] AFTER the controller is
-    /// constructed (it is built after this manager — the same construction-order inversion the
-    /// `streamPartitionManagerRef` seam resolves). Volatile: set once at wiring, read on the snapshot
-    /// path. Increment 1 only plumbs it in ready-to-use; buildPartitions still materializes every ring.
+    /// Placement-role seam (#265 increment 1/2): consulted per `(stream, partition)` to GATE ring
+    /// materialization on placement — a ring is built iff `roleFor` reports OWNER/REPLICA (increment 2).
+    /// Defaults to [#ALWAYS_OWNER] (materialize-everything, byte-identical to the pre-seam behavior);
+    /// `AetherNode` late-binds [ReplicaSetController#roleFor] AFTER the controller is constructed (it is
+    /// built after this manager — the same construction-order inversion the `streamPartitionManagerRef`
+    /// seam resolves). Volatile: set once at wiring, read on the hydrate/create, snapshot, and lazy-
+    /// materialize paths.
     private volatile PlacementRoleSupplier placementRoleSupplier = ALWAYS_OWNER;
 
     private StreamPartitionManager(long maxTotalBytes,
@@ -394,9 +396,9 @@ public final class StreamPartitionManager implements AutoCloseable {
             return StreamError.General.AHSE_REQUIRED_FOR_STRONG.result();
         }
 
-        var floorBytes = floorBytes(config);
+        var floorBytes = materializedFloorBytes(config);
 
-        if (!tryReserve(floorBytes)) {
+        if (floorBytes > 0 && !tryReserve(floorBytes)) {
             return reportFloorExhaustion(config, floorBytes);
         }
 
@@ -404,6 +406,7 @@ public final class StreamPartitionManager implements AutoCloseable {
                                       evictionListener,
                                       bytes -> reserveForGrowth(config, bytes),
                                       this::release,
+                                      partition -> shouldMaterialize(config.name(), partition),
                                       walBaseDir,
                                       lastSealedOffset)
                           .onFailure(_ -> release(floorBytes))
@@ -666,42 +669,54 @@ public final class StreamPartitionManager implements AutoCloseable {
         option(streams.remove(streamName)).onPresent(this::closeAndRelease);
     }
 
-    /// Follower (apply/notification-thread) materialization from a committed `StreamConfigKey` Put.
-    /// Reserves only the FLOOR (keeps apply-thread allocation small — strictly less work than the old
-    /// eager full allocation). Per spec §5.2.4 / §8 / decision #6: if the floor cannot be admitted
-    /// within budget, the entry is created ANYWAY — a follower must NOT diverge from committed cluster
-    /// config. In that case the floor is added UNCONDITIONALLY (`addAndGet`, transient over-subscription
-    /// past `maxTotalBytes`) rather than dropped, so the reserve/release accounting stays SYMMETRIC:
-    /// the buffers always seed + release their first-segment via the seam and the manager always
-    /// releases the control bytes on destroy. Dropping the floor here would leave the buffer seam
-    /// releasing bytes the pool never reserved (a NEGATIVE leak). The growth seam still gates every
-    /// later segment against the pool normally. WARN + event make the over-subscription visible.
+    /// Follower (apply/notification-thread) materialization from a committed `StreamConfigKey` Put. With
+    /// placement-gating (#265 increment 2) only the partitions THIS node is OWNER/REPLICA of are
+    /// materialized, so the reserved floor is `perPartitionFloor × materializedCount` (not × declared) —
+    /// a non-replica reserves ZERO and holds the stream metadata-only. Per spec §5.4/§6: when placement
+    /// is not yet known (bootstrap window, `roleFor == NONE` for every partition) the entry is created
+    /// metadata-only and the rings materialize later on the reconcile hook / owner-append safety valve.
+    /// If the (non-zero) held floor cannot be admitted within budget the entry is created ANYWAY — a
+    /// follower must NOT diverge from committed cluster config — with the floor added UNCONDITIONALLY
+    /// (`addAndGet`, transient over-subscription past `maxTotalBytes`, WARN + event) so the reserve/release
+    /// accounting stays SYMMETRIC. (Removing the over-subscription entirely is increment 3, gated by the
+    /// partition cap.) The growth seam still gates every later segment against the pool normally.
     private StreamEntry hydrateEntry(StreamConfig config) {
-        var floorBytes = floorBytes(config);
+        var floorBytes = materializedFloorBytes(config);
 
-        if (!tryReserve(floorBytes)) {
-            totalAllocatedBytes.addAndGet(floorBytes);
-            log.warn("Follower over-subscribed floor ({} bytes) for committed stream '{}' to avoid cluster divergence (now {} of {})",
-                     floorBytes,
-                     config.name(),
-                     totalAllocatedBytes.get(),
-                     maxTotalBytes);
-            exhaustionSink.accept(Exhaustion.createFloor(config, floorBytes, availableBytes(), maxTotalBytes));
+        if (floorBytes > 0 && !tryReserve(floorBytes)) {
+            oversubscribeFloor(config, floorBytes);
         }
         // fromConfig threads the per-partition floor-allocation Result (bug #6): a native-OOM on any
-        // partition closes the built siblings and fails. On that (rare) failure we release the reserved
-        // floor budget and insert NO entry (computeIfAbsent null) — the node physically cannot allocate
-        // the memory, so there is no committed partition to diverge from. markCommitted on success keeps
-        // the follower's later createStream short-circuiting (no re-publish).
+        // held partition closes the built siblings and fails. On that (rare) failure we release the
+        // reserved floor budget and insert NO entry (computeIfAbsent null) — the node physically cannot
+        // allocate the memory, so there is no committed partition to diverge from. markCommitted on
+        // success keeps the follower's later createStream short-circuiting (no re-publish).
         return StreamEntry.fromConfig(config,
                                       evictionListener,
                                       bytes -> reserveForGrowth(config, bytes),
                                       this::release,
+                                      partition -> shouldMaterialize(config.name(), partition),
                                       walBaseDir,
                                       lastSealedOffset)
                           .onSuccess(StreamEntry::markCommitted)
                           .onFailure(_ -> hydrationFailed(config, floorBytes))
                           .or((StreamEntry) null);
+    }
+
+    /// Add the held floor to the pool UNCONDITIONALLY (past `maxTotalBytes` when the pool is exhausted),
+    /// keeping reserve/release symmetric so a follower does not diverge from committed config (spec §6).
+    /// WARN + exhaustion event make the transient over-subscription operator-visible. Shared by
+    /// {@link #hydrateEntry} and the lazy {@link #buildAndInstall} materialize path. Increment 3 removes
+    /// the over-subscribe once the create-time partition cap bounds the aggregate.
+    @Contract
+    private void oversubscribeFloor(StreamConfig config, long floorBytes) {
+        totalAllocatedBytes.addAndGet(floorBytes);
+        log.warn("Follower over-subscribed floor ({} bytes) for committed stream '{}' to avoid cluster divergence (now {} of {})",
+                 floorBytes,
+                 config.name(),
+                 totalAllocatedBytes.get(),
+                 maxTotalBytes);
+        exhaustionSink.accept(Exhaustion.createFloor(config, floorBytes, availableBytes(), maxTotalBytes));
     }
 
     @Contract
@@ -838,9 +853,31 @@ public final class StreamPartitionManager implements AutoCloseable {
                                            long timestamp,
                                            Epoch ownerEpoch) {
         return ensureNotStale(streamName, partition, ownerEpoch).flatMap(_ -> checkEventSize(entry, payload))
-                             .flatMap(_ -> resolvePartitionBuffer(streamName, partition))
+                             .flatMap(_ -> resolveAppendTarget(streamName, partition, entry))
                              .flatMap(buffer -> buffer.append(payload, timestamp))
                              .onSuccess(_ -> entry.updateActivity());
+    }
+
+    /// Resolve the ring to append into, materializing it lazily on the OWNER/REPLICA path (#265 increment
+    /// 2 safety valve, spec §5.4). An already-materialized partition returns its ring directly. A
+    /// metadata-only partition is materialized ONLY when this node is its OWNER/REPLICA (a publish/replica-
+    /// receive that lands here because reconcile has not fired yet must not drop the write); a genuine
+    /// non-replica (`NONE`) is rejected with `PARTITION_NOT_LOCAL` so the caller forwards to a holder (the
+    /// read/write routers already fall back to owner-forward on an absent local buffer — spec §8). The
+    /// READ path never materializes — it forwards.
+    private Result<OffHeapRingBuffer> resolveAppendTarget(String streamName, int partition, StreamEntry entry) {
+        if (partition < 0 || partition >= entry.declaredPartitions()) {
+            return new StreamError.PartitionOutOfRange(streamName, partition, entry.declaredPartitions()).result();
+        }
+
+        return entry.ringFor(partition).fold(() -> materializeIfHeld(streamName, partition, entry), buffer -> success(buffer));
+    }
+
+    private Result<OffHeapRingBuffer> materializeIfHeld(String streamName, int partition, StreamEntry entry) {
+        return switch (placementRoleSupplier.roleFor(streamName, partition)) {
+            case OWNER, REPLICA -> buildAndInstall(entry, partition);
+            case NONE -> StreamError.General.PARTITION_NOT_LOCAL.result();
+        };
     }
 
     /// The owner-epoch fence (#345 item 1d-ii, spec §5b/§6): reject the append when `ownerEpoch` is
@@ -905,13 +942,14 @@ public final class StreamPartitionManager implements AutoCloseable {
         return new HydrationSnapshot(allocated, maxTotalBytes, allocated > maxTotalBytes, streamViews);
     }
 
-    /// Assemble one stream's hydration view. `ringsMaterialized` is the count of partition rings
-    /// actually built locally (`entry.partitions().length`) — equal to `partitionsDeclared` today; a
-    /// later increment gates materialization so non-replicas build fewer, and this diverges. Floor
-    /// bytes are the per-partition floor times the materialized ring count.
+    /// Assemble one stream's hydration view. `ringsMaterialized` is the count of partition rings actually
+    /// built locally ({@link StreamEntry#ringsMaterialized}) — with placement-gating (#265 increment 2) it
+    /// diverges from `partitionsDeclared` on a node that is not OWNER/REPLICA of every partition. Floor
+    /// bytes are the per-partition floor times the materialized ring count (the REAL off-heap cost of this
+    /// stream on this node).
     private StreamHydration streamHydration(String name, StreamEntry entry) {
         var declared = entry.config().partitions();
-        var materialized = entry.partitions().length;
+        var materialized = entry.ringsMaterialized();
 
         return new StreamHydration(name,
                                    declared,
@@ -961,7 +999,7 @@ public final class StreamPartitionManager implements AutoCloseable {
 
     private void reapIfIdle(String name, StreamEntry entry, long now, AtomicInteger reaped) {
         var maxAge = entry.config().retention().maxAgeMs();
-        var isEmpty = java.util.Arrays.stream(entry.partitions()).allMatch(b -> b.eventCount() == 0);
+        var isEmpty = entry.materializedRings().stream().allMatch(b -> b.eventCount() == 0);
         var isExpired = (now - entry.createdAt()) > maxAge;
         var isIdle = (now - entry.lastActivity()) > maxAge;
 
@@ -1001,10 +1039,8 @@ public final class StreamPartitionManager implements AutoCloseable {
 
     @Contract
     private void truncateStreamWals(String streamName, StreamEntry entry) {
-        var wals = entry.wals();
-
-        for (int partition = 0; partition < wals.size(); partition++) {
-            truncatePartitionToSealed(streamName, partition, wals.get(partition));
+        for (int partition = 0; partition < entry.declaredPartitions(); partition++) {
+            truncatePartitionToSealed(streamName, partition, entry.walFor(partition));
         }
     }
 
@@ -1052,26 +1088,30 @@ public final class StreamPartitionManager implements AutoCloseable {
                      .flatMap(entry -> resolvePartitionInEntry(streamName, partition, entry));
     }
 
+    /// Resolve the local ring for a READ (`readLocal` / `partitionBuffer` / offsets / info). An in-range
+    /// but metadata-only partition (this node is not a materialized holder) yields `PARTITION_NOT_LOCAL`,
+    /// which `partitionBuffer(...).option()` collapses to [Option#none] so the read routers forward to a
+    /// holder (spec §8). The READ path never materializes — only the append path (safety valve) does.
     private static Result<OffHeapRingBuffer> resolvePartitionInEntry(String streamName,
                                                                      int partition,
                                                                      StreamEntry entry) {
-        if (partition < 0 || partition >= entry.partitions().length) {
-            return new StreamError.PartitionOutOfRange(streamName, partition, entry.partitions().length).result();
+        if (partition < 0 || partition >= entry.declaredPartitions()) {
+            return new StreamError.PartitionOutOfRange(streamName, partition, entry.declaredPartitions()).result();
         }
 
-        return success(entry.partitions() [partition]);
+        return entry.ringFor(partition).toResult(StreamError.General.PARTITION_NOT_LOCAL);
     }
 
     private static StreamInfo buildStreamInfo(String name, StreamEntry entry) {
         var totalEvents = 0L;
         var totalBytes = 0L;
 
-        for (var buffer : entry.partitions()) {
+        for (var buffer : entry.materializedRings()) {
             totalEvents += buffer.eventCount();
             totalBytes += buffer.allocatedBytes();
         }
 
-        return StreamInfo.streamInfo(name, entry.partitions().length, totalEvents, totalBytes);
+        return StreamInfo.streamInfo(name, entry.declaredPartitions(), totalEvents, totalBytes);
     }
 
     /// Close a genuinely-removed stream (destroy / config-remove / idle-reap) and reclaim its budget,
@@ -1102,17 +1142,103 @@ public final class StreamPartitionManager implements AutoCloseable {
         entry.close();
     }
 
-    /// Per-stream floor = `Σ_partitions OffHeapRingBuffer.floorBytes(maxCount, maxBytes)` =
-    /// `(header + index + first-data-segment)` per partition. This is exactly the bytes the buffer
-    /// allocates at construction (which it does NOT gate through the seam), so the manager owns the
-    /// floor admission. See spec §4.1.
-    private static long floorBytes(StreamConfig config) {
-        return perPartitionFloorBytes(config) * config.partitions();
+    /// Held-floor = `perPartitionFloor × materializedCount` (#265 increment 2): the off-heap floor for
+    /// ONLY the partitions THIS node materializes (OWNER/REPLICA under the current placement). A
+    /// non-replica node reserves ZERO here and holds the stream metadata-only — the O(streams × partitions
+    /// × nodes) blow-up becomes O(streams × partitions × RF). See spec §4/§6.
+    private long materializedFloorBytes(StreamConfig config) {
+        return perPartitionFloorBytes(config) * materializedCount(config);
+    }
+
+    /// Count of partitions THIS node materializes under the current placement supplier — the declared
+    /// partitions for which {@link #shouldMaterialize} holds (OWNER/REPLICA). `0` on a non-replica node
+    /// or during the pre-membership window when `roleFor` cannot yet resolve a role (spec §5.4 defer).
+    private int materializedCount(StreamConfig config) {
+        return (int) IntStream.range(0, config.partitions())
+                              .filter(partition -> shouldMaterialize(config.name(), partition))
+                              .count();
+    }
+
+    /// The placement gate (#265 increment 2): materialize `(stream, partition)`'s ring iff this node is
+    /// its OWNER or a (non-owner) REPLICA under the current supplier. `NONE` — a genuine non-replica OR
+    /// the pre-membership window where placement is not yet known — is metadata-only; when a `NONE`
+    /// partition later resolves to OWNER/REPLICA the ring materializes on the reconcile hook
+    /// ({@link #materializePartition}) or the owner-append safety valve (spec §5.4 defer-then-materialize).
+    private boolean shouldMaterialize(String streamName, int partition) {
+        return switch (placementRoleSupplier.roleFor(streamName, partition)) {
+            case OWNER, REPLICA -> true;
+            case NONE -> false;
+        };
+    }
+
+    /// Lazily materialize a single held partition's ring (#265 increment 2). Two callers: the
+    /// materialize-on-reconcile hook (`AetherNode` binds this behind the controller's `onBecameReplica`
+    /// seam, which fires for owner-or-replica the moment self joins a partition's replica set) and the
+    /// owner-append safety valve ({@link #resolveAppendTarget}). IDEMPOTENT: an already-materialized
+    /// partition returns its existing ring with no new allocation, so the hook firing after a create-time
+    /// materialize is a no-op — a ring, once materialized, STAYS until release (increment 5). A
+    /// `StreamNotFound` (config not yet hydrated) is a benign no-op; the config-put path materializes it.
+    public Result<OffHeapRingBuffer> materializePartition(String streamName, int partition) {
+        return resolveStreamEntry(streamName).flatMap(entry -> materializePartitionInEntry(streamName, partition, entry));
+    }
+
+    private Result<OffHeapRingBuffer> materializePartitionInEntry(String streamName, int partition, StreamEntry entry) {
+        if (partition < 0 || partition >= entry.declaredPartitions()) {
+            return new StreamError.PartitionOutOfRange(streamName, partition, entry.declaredPartitions()).result();
+        }
+
+        return entry.ringFor(partition).fold(() -> buildAndInstall(entry, partition), buffer -> success(buffer));
+    }
+
+    /// Reserve the per-partition floor (over-subscribing past budget rather than diverging, like
+    /// {@link #hydrateEntry}), build the ring + WAL + replay tail, and install it into the entry. On a
+    /// build failure the reserved floor is released; on a lost install race (a concurrent reconcile-hook /
+    /// safety-valve materialize won) the duplicate is closed WITHOUT seam-release and its floor released,
+    /// and the winner's ring is returned. Reserve/release stays symmetric on destroy.
+    private Result<OffHeapRingBuffer> buildAndInstall(StreamEntry entry, int partition) {
+        var config = entry.config();
+        var floorBytes = perPartitionFloorBytes(config);
+
+        reserveFloor(config, floorBytes);
+
+        return StreamEntry.materializeOne(config,
+                                          partition,
+                                          evictionListener,
+                                          bytes -> reserveForGrowth(config, bytes),
+                                          this::release,
+                                          walBaseDir,
+                                          lastSealedOffset)
+                          .onFailure(_ -> release(floorBytes))
+                          .map(candidate -> installOrRelease(entry, partition, candidate, floorBytes));
+    }
+
+    /// Admit the single-partition floor: reserve it if the pool has headroom, else over-subscribe (spec §6
+    /// must-not-diverge, increment 3 removes this). Either way the floor is counted, so a later
+    /// {@link #release} of the same amount is symmetric.
+    @Contract
+    private void reserveFloor(StreamConfig config, long floorBytes) {
+        if (!tryReserve(floorBytes)) {
+            oversubscribeFloor(config, floorBytes);
+        }
+    }
+
+    private OffHeapRingBuffer installOrRelease(StreamEntry entry,
+                                               int partition,
+                                               StreamEntry.MaterializedPartition candidate,
+                                               long floorBytes) {
+        var winner = entry.installPartition(partition, candidate);
+
+        if (winner != candidate) {
+            release(floorBytes);
+            candidate.closeWithoutRelease();
+        }
+
+        return winner.ring();
     }
 
     /// Per-partition floor = `OffHeapRingBuffer.floorBytes(maxCount, maxBytes)` = `(header + index +
     /// first-data-segment)` — the bytes one partition ring allocates at construction. Shared by the
-    /// per-stream floor admission and the #265 hydration snapshot's per-materialized-ring byte tally.
+    /// per-stream held-floor admission and the #265 hydration snapshot's per-materialized-ring byte tally.
     private static long perPartitionFloorBytes(StreamConfig config) {
         var retention = config.retention();
 
@@ -1131,16 +1257,26 @@ public final class StreamPartitionManager implements AutoCloseable {
                      .map(StreamPartitionManager::buildAllPartitionInfo);
     }
 
+    /// One [PartitionInfo] per DECLARED partition, in index order (#265 increment 2). A materialized
+    /// partition reports its live ring head/tail/count; a metadata-only partition (not held on this node)
+    /// reports an empty `(-1, -1, 0)` so the listing still has one entry per declared partition.
     private static List<PartitionInfo> buildAllPartitionInfo(StreamEntry entry) {
         var infos = new ArrayList<PartitionInfo>();
 
-        for (int i = 0; i < entry.partitions().length; i++) {
-            var buffer = entry.partitions() [i];
-
-            infos.add(PartitionInfo.partitionInfo(i, buffer.headOffset(), buffer.tailOffset(), buffer.eventCount()));
+        for (int i = 0; i < entry.declaredPartitions(); i++) {
+            infos.add(partitionInfoFor(entry, i));
         }
 
         return List.copyOf(infos);
+    }
+
+    private static PartitionInfo partitionInfoFor(StreamEntry entry, int partition) {
+        return entry.ringFor(partition)
+                    .map(buffer -> PartitionInfo.partitionInfo(partition,
+                                                               buffer.headOffset(),
+                                                               buffer.tailOffset(),
+                                                               buffer.eventCount()))
+                    .or(PartitionInfo.partitionInfo(partition, -1L, -1L, 0L));
     }
 
     public record StreamInfo(String name, int partitions, long totalEvents, long totalBytes) {
@@ -1243,82 +1379,176 @@ public final class StreamPartitionManager implements AutoCloseable {
     }
 
     record StreamEntry(StreamConfig config,
-                       OffHeapRingBuffer[] partitions,
-                       List<Option<PartitionWal>> wals,
+                       int declaredPartitions,
+                       ConcurrentHashMap<Integer, MaterializedPartition> materialized,
                        long createdAt,
                        AtomicLong lastActivityRef,
                        AtomicBoolean configCommitted) implements AutoCloseable {
-        /// Build all partition buffers, threading the per-partition floor-allocation `Result` (bug #6):
-        /// if any partition's floor `arena.allocate` fails with native OOM, the buffers that DID build
-        /// are CLOSED (releasing their seam-accounted data bytes) and the failure is returned so the
-        /// manager releases the reserved floor budget — no Arena leak, no budget leak, no escaped error.
-        /// The aggregated failure is collapsed back to the canonical `STREAM_MEMORY_EXCEEDED` enum (every
-        /// partition failure is that same cause) so the downstream identity / `transientCapacity()`
-        /// retry-classification (StreamError §1) is preserved rather than buried in an `allOf` composite.
-        /// On full success the rings are paired with their per-partition WAL (`walBaseDir`, W6) into a
-        /// committed-ready entry; a WAL-open failure closes the built rings and propagates with its own
-        /// cause (it is NOT collapsed to `STREAM_MEMORY_EXCEEDED`). When a partition has a WAL the
-        /// un-sealed tail is replayed back into its fresh ring at the ORIGINAL offsets (streaming-
-        /// persistence W4), bounded by `lastSealedOffset` so already-sealed records (served by the tiered
-        /// reader) are NOT re-added; a replay failure likewise closes the built rings and propagates.
+        /// A locally-materialized partition (#265 increment 2): its [OffHeapRingBuffer] plus the optional
+        /// per-partition [PartitionWal]. Only OWNER/REPLICA partitions (under the current placement) are
+        /// materialized; a metadata-only (non-replica) partition has NO entry in `materialized` — no ring,
+        /// no reserved off-heap bytes. Rings are only ever ADDED this increment (at hydrate for held
+        /// partitions, lazily via the reconcile hook / owner-append safety valve); release-on-role-loss is
+        /// increment 5.
+        record MaterializedPartition(OffHeapRingBuffer ring, Option<PartitionWal> wal) {
+            /// Genuine removal / shutdown close: the ring `close()` seam-releases its first-segment +
+            /// grown data bytes; the WAL channel is flushed + closed (the file is kept for a later replay).
+            @Contract
+            void close() {
+                ring.close();
+                closeWal(wal);
+            }
+
+            /// Close a duplicate that LOST the install race (or whose WAL open/recovery failed): free the
+            /// native Arena WITHOUT seam-releasing (the manager releases the reserved floor lump itself)
+            /// and close the WAL channel WITHOUT deleting the file (the install winner shares the same
+            /// `<base>/<stream>/<partition>.wal`). Mirrors `closeBuilt`'s `closeWithoutRelease` contract.
+            @Contract
+            void closeWithoutRelease() {
+                ring.closeWithoutRelease();
+                closeWal(wal);
+            }
+
+            @Contract
+            void deleteWal() {
+                deleteWalFile(wal);
+            }
+        }
+
+        /// Materialize the partitions THIS node holds (#265 increment 2). `shouldMaterialize` gates each
+        /// declared partition on placement — a ring is built iff `roleFor(stream, partition) ∈ {OWNER,
+        /// REPLICA}`; a non-replica partition is metadata-only (absent from `materialized`, no ring, no
+        /// bytes). The selected rings thread the per-partition floor-allocation `Result` (bug #6): a
+        /// native-OOM ring alloc closes the siblings already built and returns the canonical
+        /// `STREAM_MEMORY_EXCEEDED` (preserving `transientCapacity()` retry-classification). Each built
+        /// ring is paired with its per-partition WAL (`walBaseDir`, W6) and its un-sealed tail replayed at
+        /// ORIGINAL offsets (W4, bounded by `lastSealedOffset`); a WAL-open/replay failure closes the built
+        /// rings and propagates with its own cause. When NO partition is held (non-replica node) the entry
+        /// is built with an EMPTY `materialized` map — metadata present, zero off-heap bytes reserved.
         static Result<StreamEntry> fromConfig(StreamConfig config,
                                               EvictionListener listener,
                                               LongPredicate reserve,
                                               LongConsumer release,
+                                              IntPredicate shouldMaterialize,
                                               Option<Path> walBaseDir,
                                               LastSealedOffsetSource lastSealedOffset) {
-            var results = buildPartitions(config, listener, reserve, release);
+            var selected = selectedPartitions(config, shouldMaterialize);
+            var ringResults = buildRings(config, selected, listener, reserve, release);
 
-            return Result.allOf(results)
+            return Result.allOf(ringResults)
                          .mapError(_ -> StreamError.General.STREAM_MEMORY_EXCEEDED)
-                         .flatMap(buffers -> openEntryWals(config, buffers, walBaseDir, lastSealedOffset))
-                         .onFailure(_ -> closeBuilt(results));
+                         .flatMap(rings -> openEntryWals(config, selected, rings, walBaseDir, lastSealedOffset))
+                         .onFailure(_ -> closeBuilt(ringResults));
         }
 
-        private static List<Result<OffHeapRingBuffer>> buildPartitions(StreamConfig config,
-                                                                       EvictionListener listener,
-                                                                       LongPredicate reserve,
-                                                                       LongConsumer release) {
+        /// The declared partitions THIS node materializes under the current placement — the ordered subset
+        /// of `[0, partitions)` for which `shouldMaterialize` holds (OWNER/REPLICA). Empty on a non-replica
+        /// node.
+        private static List<Integer> selectedPartitions(StreamConfig config, IntPredicate shouldMaterialize) {
+            return IntStream.range(0, config.partitions())
+                            .filter(shouldMaterialize)
+                            .boxed()
+                            .toList();
+        }
+
+        private static List<Result<OffHeapRingBuffer>> buildRings(StreamConfig config,
+                                                                  List<Integer> selected,
+                                                                  EvictionListener listener,
+                                                                  LongPredicate reserve,
+                                                                  LongConsumer release) {
+            return selected.stream()
+                           .map(partition -> buildRing(config, partition, listener, reserve, release))
+                           .toList();
+        }
+
+        private static Result<OffHeapRingBuffer> buildRing(StreamConfig config,
+                                                          int partition,
+                                                          EvictionListener listener,
+                                                          LongPredicate reserve,
+                                                          LongConsumer release) {
             var retention = config.retention();
-            var policy = deriveEvictionPolicy(config);
-            var results = new ArrayList<Result<OffHeapRingBuffer>>(config.partitions());
 
-            for (int i = 0; i < config.partitions(); i++) {
-                results.add(OffHeapRingBuffer.offHeapRingBuffer(config.name(),
-                                                                i,
-                                                                retention.maxCount(),
-                                                                retention.maxBytes(),
-                                                                listener,
-                                                                policy,
-                                                                reserve,
-                                                                release));
-            }
+            return OffHeapRingBuffer.offHeapRingBuffer(config.name(),
+                                                       partition,
+                                                       retention.maxCount(),
+                                                       retention.maxBytes(),
+                                                       listener,
+                                                       deriveEvictionPolicy(config),
+                                                       reserve,
+                                                       release);
+        }
 
-            return results;
+        /// Lazily materialize ONE held partition (#265 increment 2 — the reconcile hook + owner-append
+        /// safety valve). Builds the ring (collapsing a native-OOM to `STREAM_MEMORY_EXCEEDED`), opens its
+        /// per-partition WAL and replays the un-sealed tail (W4/W6). On any failure the ring is freed
+        /// WITHOUT seam-release (the manager releases the reserved floor lump) so there is no Arena leak.
+        static Result<MaterializedPartition> materializeOne(StreamConfig config,
+                                                           int partition,
+                                                           EvictionListener listener,
+                                                           LongPredicate reserve,
+                                                           LongConsumer release,
+                                                           Option<Path> walBaseDir,
+                                                           LastSealedOffsetSource lastSealedOffset) {
+            return buildRing(config, partition, listener, reserve, release)
+                         .mapError(_ -> StreamError.General.STREAM_MEMORY_EXCEEDED)
+                         .flatMap(ring -> openAndRecoverOne(config, partition, ring, walBaseDir, lastSealedOffset));
+        }
+
+        private static Result<MaterializedPartition> openAndRecoverOne(StreamConfig config,
+                                                                      int partition,
+                                                                      OffHeapRingBuffer ring,
+                                                                      Option<Path> walBaseDir,
+                                                                      LastSealedOffsetSource lastSealedOffset) {
+            return openWal(config, partition, walBaseDir)
+                         .onFailure(_ -> ring.closeWithoutRelease())
+                         .flatMap(wal -> recoverOne(config, partition, ring, wal, lastSealedOffset));
+        }
+
+        private static Result<MaterializedPartition> recoverOne(StreamConfig config,
+                                                              int partition,
+                                                              OffHeapRingBuffer ring,
+                                                              Option<PartitionWal> wal,
+                                                              LastSealedOffsetSource lastSealedOffset) {
+            return recoverPartition(config.name(), partition, ring, wal, lastSealedOffset)
+                         .map(_ -> new MaterializedPartition(ring, wal))
+                         .onFailure(_ -> closeRingAndWal(ring, wal));
+        }
+
+        @Contract
+        private static void closeRingAndWal(OffHeapRingBuffer ring, Option<PartitionWal> wal) {
+            ring.closeWithoutRelease();
+            closeWal(wal);
         }
 
         private static StreamEntry entryOf(StreamConfig config,
-                                           OffHeapRingBuffer[] buffers,
+                                           List<Integer> selected,
+                                           List<OffHeapRingBuffer> rings,
                                            List<Option<PartitionWal>> wals) {
+            var map = new ConcurrentHashMap<Integer, MaterializedPartition>();
+
+            for (int i = 0; i < selected.size(); i++) {
+                map.put(selected.get(i), new MaterializedPartition(rings.get(i), wals.get(i)));
+            }
+
             var now = System.currentTimeMillis();
 
-            return new StreamEntry(config, buffers, wals, now, new AtomicLong(now), new AtomicBoolean(false));
+            return new StreamEntry(config, config.partitions(), map, now, new AtomicLong(now), new AtomicBoolean(false));
         }
 
-        /// Pair the freshly-built rings with a per-partition [PartitionWal] (streaming-persistence W6)
-        /// and replay each WAL's un-sealed tail back into its ring (W4). A [Option#none] `walBaseDir`
-        /// yields a partition-aligned list of [Option#none] (no WAL ⇒ unchanged behavior); a present base
-        /// dir opens `<base>/<stream>/<partition>.wal` for each partition and recovers its tail. A WAL-open
-        /// or replay failure closes the WALs already opened and propagates, leaving the caller to free the
-        /// rings.
+        /// Pair the freshly-built held rings with their per-partition [PartitionWal] (W6) and replay each
+        /// WAL's un-sealed tail back into its ring (W4). A [Option#none] `walBaseDir` yields a
+        /// selected-aligned list of [Option#none] (no WAL ⇒ unchanged behavior); a present base dir opens
+        /// `<base>/<stream>/<partition>.wal` for each SELECTED partition index and recovers its tail. A
+        /// WAL-open or replay failure closes the WALs already opened and propagates, leaving the caller to
+        /// free the rings.
         private static Result<StreamEntry> openEntryWals(StreamConfig config,
-                                                         List<OffHeapRingBuffer> buffers,
+                                                         List<Integer> selected,
+                                                         List<OffHeapRingBuffer> rings,
                                                          Option<Path> walBaseDir,
                                                          LastSealedOffsetSource lastSealedOffset) {
-            return openWals(config, walBaseDir).flatMap(wals -> recoverWals(config, buffers, wals, lastSealedOffset))
-                           .map(wals -> entryOf(config,
-                                                buffers.toArray(OffHeapRingBuffer[]::new),
-                                                wals));
+            return openWals(config, selected, walBaseDir)
+                         .flatMap(wals -> recoverWals(config, selected, rings, wals, lastSealedOffset))
+                         .map(wals -> entryOf(config, selected, rings, wals));
         }
 
         /// Replay every partition's un-sealed WAL tail into its fresh ring (streaming-persistence W4),
@@ -1327,13 +1557,14 @@ public final class StreamPartitionManager implements AutoCloseable {
         /// replayed events land at their original offsets. On any partition's replay failure the WALs are
         /// closed and the failure propagates (the rings are freed by the caller).
         private static Result<List<Option<PartitionWal>>> recoverWals(StreamConfig config,
-                                                                      List<OffHeapRingBuffer> buffers,
+                                                                      List<Integer> selected,
+                                                                      List<OffHeapRingBuffer> rings,
                                                                       List<Option<PartitionWal>> wals,
                                                                       LastSealedOffsetSource lastSealedOffset) {
-            var results = new ArrayList<Result<Unit>>(buffers.size());
+            var results = new ArrayList<Result<Unit>>(rings.size());
 
-            for (int i = 0; i < buffers.size(); i++) {
-                results.add(recoverPartition(config.name(), i, buffers.get(i), wals.get(i), lastSealedOffset));
+            for (int i = 0; i < rings.size(); i++) {
+                results.add(recoverPartition(config.name(), selected.get(i), rings.get(i), wals.get(i), lastSealedOffset));
             }
 
             return Result.allOf(results)
@@ -1392,19 +1623,30 @@ public final class StreamPartitionManager implements AutoCloseable {
             return ring.append(record.payload(), record.timestampMillis());
         }
 
-        private static Result<List<Option<PartitionWal>>> openWals(StreamConfig config, Option<Path> walBaseDir) {
-            return walBaseDir.map(baseDir -> openAllWals(config, baseDir))
-                             .or(() -> success(noWals(config.partitions())));
+        private static Result<List<Option<PartitionWal>>> openWals(StreamConfig config,
+                                                                   List<Integer> selected,
+                                                                   Option<Path> walBaseDir) {
+            return walBaseDir.map(baseDir -> openSelectedWals(config, selected, baseDir))
+                             .or(() -> success(noWals(selected.size())));
         }
 
-        private static Result<List<Option<PartitionWal>>> openAllWals(StreamConfig config, Path baseDir) {
-            var results = new ArrayList<Result<Option<PartitionWal>>>(config.partitions());
-
-            for (int i = 0; i < config.partitions(); i++) {
-                results.add(openPartitionWal(baseDir, config.name(), i).map(Option::some));
-            }
+        private static Result<List<Option<PartitionWal>>> openSelectedWals(StreamConfig config,
+                                                                           List<Integer> selected,
+                                                                           Path baseDir) {
+            var results = selected.stream()
+                                  .map(partition -> openPartitionWal(baseDir, config.name(), partition).map(Option::some))
+                                  .toList();
 
             return Result.allOf(results).onFailure(_ -> closeOpenedWals(results));
+        }
+
+        /// Open (or no-WAL) the [PartitionWal] for a single lazily-materialized partition index. Mirrors
+        /// {@link #openSelectedWals} for the one-partition materialize path ({@link #materializeOne}).
+        private static Result<Option<PartitionWal>> openWal(StreamConfig config,
+                                                            int partition,
+                                                            Option<Path> walBaseDir) {
+            return walBaseDir.map(baseDir -> openPartitionWal(baseDir, config.name(), partition).map(Option::some))
+                             .or(() -> success(Option.none()));
         }
 
         private static Result<PartitionWal> openPartitionWal(Path baseDir, String streamName, int partition) {
@@ -1431,12 +1673,37 @@ public final class StreamPartitionManager implements AutoCloseable {
             wal.onPresent(PartitionWal::close);
         }
 
-        /// The [PartitionWal] for `partition`, or [Option#none] when no WAL is configured (or the
-        /// partition index is out of range). The list is always partition-aligned with `partitions`.
+        /// The [PartitionWal] for `partition`, or [Option#none] when the partition is metadata-only (not
+        /// materialized on this node), out of range, or no WAL is configured.
         Option<PartitionWal> walFor(int partition) {
-            return partition >= 0 && partition < wals.size()
-                   ? wals.get(partition)
-                   : Option.none();
+            return option(materialized.get(partition)).flatMap(MaterializedPartition::wal);
+        }
+
+        /// The materialized [OffHeapRingBuffer] for `partition`, or [Option#none] when the partition is
+        /// metadata-only on this node (non-replica, or not yet materialized in the deferred window) or out
+        /// of range. Every consumer routes through this — a metadata-only partition never yields a ring.
+        Option<OffHeapRingBuffer> ringFor(int partition) {
+            return option(materialized.get(partition)).map(MaterializedPartition::ring);
+        }
+
+        /// All rings actually materialized on this node (the OWNER/REPLICA partitions), in no particular
+        /// order. Used by telemetry / release accounting, which sum only over held rings.
+        List<OffHeapRingBuffer> materializedRings() {
+            return materialized.values().stream().map(MaterializedPartition::ring).toList();
+        }
+
+        /// Count of partition rings actually built locally (`≤ declaredPartitions`). Diverges from the
+        /// declared count on a node that is not OWNER/REPLICA of every partition (#265 increment 2).
+        int ringsMaterialized() {
+            return materialized.size();
+        }
+
+        /// Install a lazily-built [MaterializedPartition] iff `partition` is not already materialized,
+        /// returning the WINNER — `candidate` when it won the race, or the already-installed partition when
+        /// a concurrent materialize (reconcile hook vs owner-append safety valve) beat it. The caller
+        /// closes + releases the losing duplicate. `putIfAbsent` makes this a CAS at the map slot.
+        MaterializedPartition installPartition(int partition, MaterializedPartition candidate) {
+            return option(materialized.putIfAbsent(partition, candidate)).or(candidate);
         }
 
         /// On a partial-build failure, close every partition buffer that DID allocate (the others never
@@ -1449,26 +1716,27 @@ public final class StreamPartitionManager implements AutoCloseable {
             results.forEach(r -> r.onSuccess(OffHeapRingBuffer::closeWithoutRelease));
         }
 
-        /// Live bytes allocated across all partitions (control + allocated data segments). Used by
-        /// telemetry and as the release-on-destroy basis. See spec §4.3.
+        /// Live bytes allocated across all MATERIALIZED partitions (control + allocated data segments).
+        /// Used by telemetry and as the release-on-destroy basis. Metadata-only partitions contribute
+        /// nothing. See spec §4.3.
         long allocatedBytes() {
             var total = 0L;
 
-            for (var buffer : partitions) {
+            for (var buffer : materializedRings()) {
                 total += buffer.allocatedBytes();
             }
 
             return total;
         }
 
-        /// Control-region bytes (header + index) summed across partitions. This is the portion of the
-        /// floor the manager reserved but the buffer's growth/close seam does NOT account, so the
+        /// Control-region bytes (header + index) summed across MATERIALIZED partitions. This is the portion
+        /// of the floor the manager reserved but the buffer's growth/close seam does NOT account, so the
         /// manager releases exactly this on destroy (the buffer releases its data bytes itself). See
         /// spec §4.3.
         long controlBytes() {
             var total = 0L;
 
-            for (var buffer : partitions) {
+            for (var buffer : materializedRings()) {
                 total += buffer.controlBytes();
             }
 
@@ -1496,12 +1764,12 @@ public final class StreamPartitionManager implements AutoCloseable {
         }
 
         /// Adopt a stronger committed config onto THIS entry's live rings / WALs and durability state: a
-        /// copy that swaps ONLY the [StreamConfig], reusing the SAME partition buffers, WAL handles,
-        /// commit latch and activity clock so no buffered data is dropped and no off-heap bytes are
+        /// copy that swaps ONLY the [StreamConfig], reusing the SAME materialized-partition map, declared
+        /// count, commit latch and activity clock so no buffered data is dropped and no off-heap bytes are
         /// re-reserved. Called only from the notification-thread config reconcile
         /// ({@link StreamPartitionManager#adoptConfig}) with a partition-count-compatible config.
         StreamEntry withConfig(StreamConfig newConfig) {
-            return new StreamEntry(newConfig, partitions, wals, createdAt, lastActivityRef, configCommitted);
+            return new StreamEntry(newConfig, declaredPartitions, materialized, createdAt, lastActivityRef, configCommitted);
         }
 
         private static EvictionPolicy deriveEvictionPolicy(StreamConfig config) {
@@ -1510,26 +1778,23 @@ public final class StreamPartitionManager implements AutoCloseable {
                    : EvictionPolicy.DROP_OLDEST;
         }
 
-        /// Close every partition ring and its WAL channel (flush + fsync + close). Process-shutdown
-        /// safe: this only closes channels and KEEPS the WAL files on disk for a later replay — file
-        /// deletion happens exclusively on genuine stream removal via {@link #deleteWals}.
+        /// Close every MATERIALIZED partition ring and its WAL channel (flush + fsync + close). Process-
+        /// shutdown safe: this only closes channels and KEEPS the WAL files on disk for a later replay —
+        /// file deletion happens exclusively on genuine stream removal via {@link #deleteWals}. Metadata-
+        /// only partitions hold nothing and are untouched.
         @Contract
         @Override
         public void close() {
-            for (var buffer : partitions) {
-                buffer.close();
-            }
-
-            wals.forEach(StreamEntry::closeWal);
+            materialized.values().forEach(MaterializedPartition::close);
         }
 
-        /// Delete every partition's WAL file — called ONLY when the stream is genuinely removed
+        /// Delete every MATERIALIZED partition's WAL file — called ONLY when the stream is genuinely removed
         /// (destroy / config-remove / idle-reap), never on process shutdown or a put-if-absent loser.
         /// The channels are already closed by {@link #close}; deletion is best-effort and a failure is
         /// logged, not propagated.
         @Contract
         void deleteWals() {
-            wals.forEach(StreamEntry::deleteWalFile);
+            materialized.values().forEach(MaterializedPartition::deleteWal);
         }
 
         @Contract

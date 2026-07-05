@@ -769,6 +769,28 @@ public interface AetherNode extends ManageableNode {
                                                                                                      key.partition())));
     }
 
+    /// #265 increment 2 materialize-on-reconcile hook. Fired (on the backfill executor) behind the
+    /// controller's `onBecameReplica` seam — which triggers the instant `self` joins a partition's replica
+    /// set (owner-inclusive: the HRW owner is index 0 of the owner-first replica set). It MATERIALIZES the
+    /// held partition's ring FIRST, then runs the existing backfill. This resolves the spec §5.4
+    /// defer-then-materialize case: a config committed before placement was known is hydrated metadata-only,
+    /// and the ring is built here the moment the role resolves to OWNER/REPLICA. Materialize is idempotent
+    /// (a ring built at hydrate time is a no-op) and runs before backfill so the recovered events have a
+    /// ring to land in; a materialize failure is logged and backfill still attempts (the owner-append
+    /// safety valve is the backstop).
+    @Contract
+    private static void materializeThenBackfill(StreamPartitionManager manager,
+                                                PartitionBackfill backfill,
+                                                String streamName,
+                                                int partition) {
+        manager.materializePartition(streamName, partition)
+               .onFailure(cause -> LOG.warn("Stream partition {}[{}] materialize-on-reconcile failed: {} — backfill will still attempt",
+                                            streamName,
+                                            partition,
+                                            cause.message()));
+        backfill.backfill(streamName, partition);
+    }
+
     private static void snapshotAllSetups(Map<String, StorageFactory.StorageSetup> storageSetups) {
         storageSetups.values().forEach(setup -> setup.snapshotManager()
                                                      .maybeSnapshot());
@@ -2879,8 +2901,10 @@ public interface AetherNode extends ManageableNode {
                                                                                                                            .coreNodes()),
                                                                                    clusterTopologyManager.observer()::clusterSize,
                                                                                    streamPartitionManager.replicaCatalog(),
-                                                                                   (streamName, partition) -> streamBackfillExecutor.execute(() -> streamPartitionBackfill.backfill(streamName,
-                                                                                                                                                                                    partition)),
+                                                                                   (streamName, partition) -> streamBackfillExecutor.execute(() -> materializeThenBackfill(streamPartitionManager,
+                                                                                                                                                                          streamPartitionBackfill,
+                                                                                                                                                                          streamName,
+                                                                                                                                                                          partition)),
                                                                                    (streamName, partition) -> driveStreamOwnership(streamOwnershipWriter,
                                                                                                                                    clusterCommandApplier,
                                                                                                                                    streamName,
@@ -2890,13 +2914,15 @@ public interface AetherNode extends ManageableNode {
         // against the current topology, independent of reconcile, so it is correct as soon as members
         // are visible (and true for a steady-state single-node cluster).
         clusterEventsControllerRef.set(streamReplicaSetController);
-        // #265 increment 1: late-bind the placement-role supplier now that the controller exists. The
+        // #265 increment 1/2: late-bind the placement-role supplier now that the controller exists. The
         // controller is constructed AFTER StreamPartitionManager (it consumes replicaCatalog()), so this
         // is the same construction-order inversion the streamPartitionManagerRef seam resolves above —
-        // resolved here by a settable field rather than an AtomicReference. Until this point (and in
-        // Forge/unit managers) the manager's default supplier reports OWNER for every partition
-        // (always-materialize); buildPartitions still materializes every ring, so this is zero behavior
-        // change — a later increment flips the gate to consult this role.
+        // resolved here by a settable field rather than an AtomicReference. Increment 2 flipped the gate:
+        // hydrate/create now materialize a partition ring IFF roleFor(stream, partition) ∈ {OWNER, REPLICA},
+        // so a non-replica node holds the partition metadata-only (no ring, no off-heap bytes) — THE memory
+        // win. The reconcile hook (materializeThenBackfill, bound above via onBecameReplica) and the
+        // owner-append safety valve materialize a deferred ring once the role resolves. Forge/unit managers
+        // keep the default always-OWNER supplier (materialize-everything, unchanged).
         streamPartitionManager.placementRoleSupplier(streamReplicaSetController::roleFor);
         // Reconcile on every membership decision (all variants via the tail helper) and on
         // ClusterStateNotification edges (PASSIVE suppresses; PASSIVE->ACTIVE re-reconciles).
