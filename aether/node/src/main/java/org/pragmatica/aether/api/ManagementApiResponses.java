@@ -667,23 +667,28 @@ public sealed interface ManagementApiResponses {
     /// #265 increment 0 per-node hydration observability — the §6 regression sensor. Assembled ON
     /// REQUEST from the answering node's `StreamPartitionManager` snapshot (live `streams` map + budget
     /// counters, no hot-path accounting). PER-NODE: `totalAllocatedBytes` / `maxTotalBytes` are that
-    /// node's off-heap budget, `overBudget` its follower over-subscribe condition. `streams` carries
-    /// one row per live stream. A later increment gates materialization on placement, at which point
-    /// `ringsMaterialized` drops below `partitionsDeclared` on non-replicas — this surface is how that
-    /// memory win is observed.
+    /// node's off-heap budget, `overBudget` its follower over-subscribe condition (false in steady state
+    /// since increment 3 removed over-subscription). `deferredPartitions` (#265 increment 3) is the
+    /// node-wide count of held-but-not-yet-materialized partitions — the budget-defer sensor (spec §6).
+    /// `streams` carries one row per live stream. A later increment gates materialization on placement, at
+    /// which point `ringsMaterialized` drops below `partitionsDeclared` on non-replicas — this surface is
+    /// how that memory win is observed.
     record StreamHydrationResponse(long totalAllocatedBytes,
                                    long maxTotalBytes,
                                    boolean overBudget,
+                                   long deferredPartitions,
                                    List<StreamHydrationDetail> streams) {}
 
     /// Per-stream hydration row: `partitionsDeclared` the configured partition count,
-    /// `ringsMaterialized` the rings actually built on this node (equal today; a later increment gates
-    /// it below declared on non-replicas), `floorBytesAllocated` the per-partition floor times the
+    /// `ringsMaterialized` the rings actually built on this node (gated below declared on non-replicas),
+    /// `partitionsDeferred` (#265 increment 3) the held partitions not yet materialized (budget-deferred
+    /// per spec §6 or pre-membership), `floorBytesAllocated` the per-partition floor times the
     /// materialized ring count, and `ownerPartitions` / `replicaPartitions` / `nonePartitions` the
     /// placement-role tally for this node under the current supplier (default: all OWNER).
     record StreamHydrationDetail(String stream,
                                  int partitionsDeclared,
                                  int ringsMaterialized,
+                                 int partitionsDeferred,
                                  long floorBytesAllocated,
                                  int ownerPartitions,
                                  int replicaPartitions,

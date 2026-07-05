@@ -675,16 +675,16 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// a non-replica reserves ZERO and holds the stream metadata-only. Per spec §5.4/§6: when placement
     /// is not yet known (bootstrap window, `roleFor == NONE` for every partition) the entry is created
     /// metadata-only and the rings materialize later on the reconcile hook / owner-append safety valve.
-    /// If the (non-zero) held floor cannot be admitted within budget the entry is created ANYWAY — a
-    /// follower must NOT diverge from committed cluster config — with the floor added UNCONDITIONALLY
-    /// (`addAndGet`, transient over-subscription past `maxTotalBytes`, WARN + event) so the reserve/release
-    /// accounting stays SYMMETRIC. (Removing the over-subscription entirely is increment 3, gated by the
-    /// partition cap.) The growth seam still gates every later segment against the pool normally.
+    /// If the (non-zero) held floor cannot be admitted within budget the entry is DEFERRED (#265
+    /// increment 3, spec §6): the former unconditional over-subscription is GONE — a follower still does
+    /// NOT diverge (the committed config is present metadata-only, zero bytes past the cap), and the held
+    /// partitions materialize later through the single deferred-retry entry point once budget frees (see
+    /// {@link #deferHydration}). The growth seam still gates every later segment against the pool normally.
     private StreamEntry hydrateEntry(StreamConfig config) {
         var floorBytes = materializedFloorBytes(config);
 
         if (floorBytes > 0 && !tryReserve(floorBytes)) {
-            oversubscribeFloor(config, floorBytes);
+            return deferHydration(config, floorBytes);
         }
         // fromConfig threads the per-partition floor-allocation Result (bug #6): a native-OOM on any
         // held partition closes the built siblings and fails. On that (rare) failure we release the
@@ -703,18 +703,36 @@ public final class StreamPartitionManager implements AutoCloseable {
                           .or((StreamEntry) null);
     }
 
-    /// Add the held floor to the pool UNCONDITIONALLY (past `maxTotalBytes` when the pool is exhausted),
-    /// keeping reserve/release symmetric so a follower does not diverge from committed config (spec §6).
-    /// WARN + exhaustion event make the transient over-subscription operator-visible. Shared by
-    /// {@link #hydrateEntry} and the lazy {@link #buildAndInstall} materialize path. Increment 3 removes
-    /// the over-subscribe once the create-time partition cap bounds the aggregate.
+    /// Budget-deferred hydration (#265 increment 3, spec §6). The held floor does NOT fit the off-heap
+    /// budget, so — replacing the former unconditional over-subscription — NO ring is built: the stream
+    /// is created METADATA-ONLY (present in the catalog so the follower does not diverge from committed
+    /// config, ZERO off-heap bytes reserved past the cap) with every held partition DEFERRED, exactly like
+    /// the pre-membership case. Each materializes later through the single deferred-retry entry point
+    /// ({@link #buildAndInstall}) — the reconcile hook or the owner-append safety valve — once budget
+    /// frees. A named budget event goes to the exhaustion sink (WARN + `CREATE_FLOOR` event) and the
+    /// deferral is visible in the hydration snapshot (`partitionsDeferred`). The entry is marked committed
+    /// so the follower's later createStream still short-circuits.
+    private StreamEntry deferHydration(StreamConfig config, long floorBytes) {
+        reportHydrationDeferred(config, floorBytes);
+
+        var entry = StreamEntry.metadataOnly(config);
+
+        entry.markCommitted();
+
+        return entry;
+    }
+
+    /// Emit the budget-deferred hydration signal (#265 increment 3, spec §6/§11): WARN + a `CREATE_FLOOR`
+    /// exhaustion event so the deferral is operator-visible via the existing sink. Unlike the removed
+    /// `oversubscribeFloor`, the floor is NEVER added past `maxTotalBytes` — the held partitions stay
+    /// metadata-only until budget frees.
     @Contract
-    private void oversubscribeFloor(StreamConfig config, long floorBytes) {
-        totalAllocatedBytes.addAndGet(floorBytes);
-        log.warn("Follower over-subscribed floor ({} bytes) for committed stream '{}' to avoid cluster divergence (now {} of {})",
-                 floorBytes,
+    private void reportHydrationDeferred(StreamConfig config, long floorBytes) {
+        log.warn("Off-heap budget exhausted hydrating committed stream '{}' ({} parts): need {} floor bytes, {} available of {} — held partitions deferred metadata-only",
                  config.name(),
-                 totalAllocatedBytes.get(),
+                 config.partitions(),
+                 floorBytes,
+                 availableBytes(),
                  maxTotalBytes);
         exhaustionSink.accept(Exhaustion.createFloor(config, floorBytes, availableBytes(), maxTotalBytes));
     }
@@ -938,22 +956,28 @@ public final class StreamPartitionManager implements AutoCloseable {
                                  .stream()
                                  .map(e -> streamHydration(e.getKey(), e.getValue()))
                                  .toList();
+        var deferred = streamViews.stream().mapToLong(StreamHydration::partitionsDeferred).sum();
 
-        return new HydrationSnapshot(allocated, maxTotalBytes, allocated > maxTotalBytes, streamViews);
+        return new HydrationSnapshot(allocated, maxTotalBytes, allocated > maxTotalBytes, deferred, streamViews);
     }
 
     /// Assemble one stream's hydration view. `ringsMaterialized` is the count of partition rings actually
     /// built locally ({@link StreamEntry#ringsMaterialized}) — with placement-gating (#265 increment 2) it
-    /// diverges from `partitionsDeclared` on a node that is not OWNER/REPLICA of every partition. Floor
-    /// bytes are the per-partition floor times the materialized ring count (the REAL off-heap cost of this
-    /// stream on this node).
+    /// diverges from `partitionsDeclared` on a node that is not OWNER/REPLICA of every partition.
+    /// `partitionsDeferred` (#265 increment 3) is the count of partitions this node SHOULD hold
+    /// (OWNER/REPLICA) but has NOT yet materialized — clamped at zero so the create-time-materialized /
+    /// supplier-flipped-to-NONE gate/release asymmetry never reports negative. It unifies the two defer
+    /// causes: budget-deferred (spec §6) and pre-membership (spec §5.4). Floor bytes are the per-partition
+    /// floor times the materialized ring count (the REAL off-heap cost of this stream on this node).
     private StreamHydration streamHydration(String name, StreamEntry entry) {
         var declared = entry.config().partitions();
         var materialized = entry.ringsMaterialized();
+        var deferred = Math.max(0, heldCount(name, declared) - materialized);
 
         return new StreamHydration(name,
                                    declared,
                                    materialized,
+                                   deferred,
                                    perPartitionFloorBytes(entry.config()) * materialized,
                                    roleCounts(name, declared));
     }
@@ -1154,8 +1178,15 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// partitions for which {@link #shouldMaterialize} holds (OWNER/REPLICA). `0` on a non-replica node
     /// or during the pre-membership window when `roleFor` cannot yet resolve a role (spec §5.4 defer).
     private int materializedCount(StreamConfig config) {
-        return (int) IntStream.range(0, config.partitions())
-                              .filter(partition -> shouldMaterialize(config.name(), partition))
+        return heldCount(config.name(), config.partitions());
+    }
+
+    /// Count of the `[0, partitions)` this node HOLDS (OWNER/REPLICA) under the current supplier — the
+    /// placement-decided cardinality shared by the floor admission ({@link #materializedCount}) and the
+    /// hydration snapshot's `partitionsDeferred = held − materialized` (#265 increment 3).
+    private int heldCount(String streamName, int partitions) {
+        return (int) IntStream.range(0, partitions)
+                              .filter(partition -> shouldMaterialize(streamName, partition))
                               .count();
     }
 
@@ -1190,16 +1221,23 @@ public final class StreamPartitionManager implements AutoCloseable {
         return entry.ringFor(partition).fold(() -> buildAndInstall(entry, partition), buffer -> success(buffer));
     }
 
-    /// Reserve the per-partition floor (over-subscribing past budget rather than diverging, like
-    /// {@link #hydrateEntry}), build the ring + WAL + replay tail, and install it into the entry. On a
-    /// build failure the reserved floor is released; on a lost install race (a concurrent reconcile-hook /
-    /// safety-valve materialize won) the duplicate is closed WITHOUT seam-release and its floor released,
-    /// and the winner's ring is returned. Reserve/release stays symmetric on destroy.
+    /// Materialize ONE held partition's ring behind the SINGLE deferred-retry entry point (#265 increment
+    /// 3 — the pacing seam increment 5's `reshuffle_concurrency` will throttle). Both callers funnel here:
+    /// the materialize-on-reconcile hook ({@link #materializePartition}) and the owner-append safety valve
+    /// ({@link #resolveAppendTarget}). Reserve the per-partition floor against the budget; if it does NOT
+    /// fit the ring is NOT built (the former over-subscription is GONE) and a named
+    /// {@link StreamError.MaterializeBudgetExceeded} is returned — the partition stays DEFERRED and the
+    /// next reconcile tick (or the next owner-append) retries once budget frees. On a build failure the
+    /// reserved floor is released; on a lost install race (a concurrent reconcile-hook / safety-valve
+    /// materialize won) the duplicate is closed WITHOUT seam-release and its floor released, and the
+    /// winner's ring is returned. Reserve/release stays symmetric on destroy.
     private Result<OffHeapRingBuffer> buildAndInstall(StreamEntry entry, int partition) {
         var config = entry.config();
         var floorBytes = perPartitionFloorBytes(config);
 
-        reserveFloor(config, floorBytes);
+        if (!tryReserve(floorBytes)) {
+            return reportMaterializeDeferred(config, partition, floorBytes);
+        }
 
         return StreamEntry.materializeOne(config,
                                           partition,
@@ -1212,14 +1250,26 @@ public final class StreamPartitionManager implements AutoCloseable {
                           .map(candidate -> installOrRelease(entry, partition, candidate, floorBytes));
     }
 
-    /// Admit the single-partition floor: reserve it if the pool has headroom, else over-subscribe (spec §6
-    /// must-not-diverge, increment 3 removes this). Either way the floor is counted, so a later
-    /// {@link #release} of the same amount is symmetric.
-    @Contract
-    private void reserveFloor(StreamConfig config, long floorBytes) {
-        if (!tryReserve(floorBytes)) {
-            oversubscribeFloor(config, floorBytes);
-        }
+    /// Budget-deferred single-partition materialization (#265 increment 3, spec §6/§11): the per-partition
+    /// floor does not fit, so NO ring is built (no over-subscription). Emit the named budget event to the
+    /// sink + WARN and return {@link StreamError.MaterializeBudgetExceeded} — DISTINCT from
+    /// {@link StreamError.General#PARTITION_NOT_LOCAL} (a genuine non-replica the caller FORWARDS): this
+    /// node IS the holder, so the caller RETRIES (reconcile hook next tick / owner-append client retry),
+    /// never a forward loop. The partition stays DEFERRED (metadata-only) until budget frees.
+    private Result<OffHeapRingBuffer> reportMaterializeDeferred(StreamConfig config, int partition, long floorBytes) {
+        log.warn("Off-heap budget exhausted materializing {}[{}]: need {} floor bytes, {} available of {} — partition deferred metadata-only",
+                 config.name(),
+                 partition,
+                 floorBytes,
+                 availableBytes(),
+                 maxTotalBytes);
+        exhaustionSink.accept(Exhaustion.createFloor(config, floorBytes, availableBytes(), maxTotalBytes));
+
+        return new StreamError.MaterializeBudgetExceeded(config.name(),
+                                                         partition,
+                                                         floorBytes,
+                                                         availableBytes(),
+                                                         maxTotalBytes).result();
     }
 
     private OffHeapRingBuffer installOrRelease(StreamEntry entry,
@@ -1292,21 +1342,27 @@ public final class StreamPartitionManager implements AutoCloseable {
     }
 
     /// Per-node hydration snapshot (#265 increment 0). `totalAllocatedBytes` / `maxTotalBytes` are the
-    /// live budget counters; `overBudget` is `totalAllocatedBytes > maxTotalBytes` (the follower
-    /// over-subscribe condition, spec §6). `streams` carries one [StreamHydration] per live stream.
+    /// live budget counters; `overBudget` is `totalAllocatedBytes > maxTotalBytes` — a follower can no
+    /// longer over-subscribe as of increment 3 (spec §6), so this stays false in steady state and is
+    /// retained as a belt-and-braces sensor. `deferredPartitions` (#265 increment 3) is the node-wide
+    /// count of held-but-not-yet-materialized partitions across all streams — the budget-defer sensor
+    /// (spec §6). `streams` carries one [StreamHydration] per live stream.
     public record HydrationSnapshot(long totalAllocatedBytes,
                                     long maxTotalBytes,
                                     boolean overBudget,
+                                    long deferredPartitions,
                                     List<StreamHydration> streams) {}
 
     /// Per-stream hydration view (#265 increment 0). `partitionsDeclared` is the configured partition
-    /// count; `ringsMaterialized` the number of partition rings actually built locally (equal today, a
-    /// later increment gates materialization so non-replicas build fewer); `floorBytesAllocated` the
-    /// per-partition floor times the materialized ring count; `roleCounts` the placement-role tally
-    /// under the current supplier (default: all OWNER).
+    /// count; `ringsMaterialized` the number of partition rings actually built locally (a non-replica
+    /// builds fewer, increment 2); `partitionsDeferred` (#265 increment 3) the held partitions NOT yet
+    /// materialized (`max(0, held − materialized)` — budget-deferred per spec §6 or pre-membership per
+    /// §5.4); `floorBytesAllocated` the per-partition floor times the materialized ring count;
+    /// `roleCounts` the placement-role tally under the current supplier (default: all OWNER).
     public record StreamHydration(String name,
                                   int partitionsDeclared,
                                   int ringsMaterialized,
+                                  int partitionsDeferred,
                                   long floorBytesAllocated,
                                   Map<ReplicaSetController.Role, Long> roleCounts) {}
 
@@ -1439,6 +1495,22 @@ public final class StreamPartitionManager implements AutoCloseable {
                          .mapError(_ -> StreamError.General.STREAM_MEMORY_EXCEEDED)
                          .flatMap(rings -> openEntryWals(config, selected, rings, walBaseDir, lastSealedOffset))
                          .onFailure(_ -> closeBuilt(ringResults));
+        }
+
+        /// Metadata-only entry (#265 increment 3): the committed config with an EMPTY `materialized` map —
+        /// no ring, no reserved off-heap bytes, no WAL. Used when hydration is DEFERRED by budget (spec §6):
+        /// the follower holds the stream metadata (does not diverge from committed config) while its held
+        /// partitions materialize later through the deferred-retry entry point once budget frees. Cannot
+        /// fail (nothing is allocated), so — unlike {@link #fromConfig} — it returns the entry directly.
+        static StreamEntry metadataOnly(StreamConfig config) {
+            var now = System.currentTimeMillis();
+
+            return new StreamEntry(config,
+                                   config.partitions(),
+                                   new ConcurrentHashMap<>(),
+                                   now,
+                                   new AtomicLong(now),
+                                   new AtomicBoolean(false));
         }
 
         /// The declared partitions THIS node materializes under the current placement — the ordered subset

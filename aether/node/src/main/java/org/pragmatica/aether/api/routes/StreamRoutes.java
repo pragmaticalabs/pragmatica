@@ -241,6 +241,7 @@ public final class StreamRoutes implements RouteSource {
         return new StreamHydrationResponse(snapshot.totalAllocatedBytes(),
                                            snapshot.maxTotalBytes(),
                                            snapshot.overBudget(),
+                                           snapshot.deferredPartitions(),
                                            snapshot.streams().stream().map(StreamRoutes::toHydrationDetail).toList());
     }
 
@@ -250,6 +251,7 @@ public final class StreamRoutes implements RouteSource {
         return new StreamHydrationDetail(stream.name(),
                                          stream.partitionsDeclared(),
                                          stream.ringsMaterialized(),
+                                         stream.partitionsDeferred(),
                                          stream.floorBytesAllocated(),
                                          roleCount(roles, Role.OWNER),
                                          roleCount(roles, Role.REPLICA),

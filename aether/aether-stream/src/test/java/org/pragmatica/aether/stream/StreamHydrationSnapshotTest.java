@@ -24,15 +24,17 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.fail;
 import static org.pragmatica.aether.stream.StreamPartitionManager.streamPartitionManager;
 
-/// #265 increments 0-2: hydration observability snapshot (0), placement-role seam (1), and
-/// placement-gated ring materialization (2). Verifies the snapshot reads real state (materialized-ring
-/// count, per-partition floor × rings, per-node budget + over-budget flag), that the placement-role
-/// supplier defaults to always-OWNER and is settable, and — increment 2 — that a partition ring
-/// materializes IFF this node is its OWNER/REPLICA: a non-replica holds the stream metadata-only (zero
-/// off-heap bytes), and a deferred partition materializes on the reconcile hook / owner-append safety
-/// valve. Separate file to avoid churning `StreamBudgetAccountingTest`'s line baseline (same harness
-/// convention). The default-supplier Snapshot tests materialize every ring (`ringsMaterialized ==
-/// partitionsDeclared`) because the bare manager reports OWNER for every partition.
+/// #265 increments 0-3: hydration observability snapshot (0), placement-role seam (1), placement-gated
+/// ring materialization (2), and the budget reject/defer reframe (3). Verifies the snapshot reads real
+/// state (materialized-ring count, per-partition floor × rings, per-node budget + over-budget flag +
+/// deferred-partition count), that the placement-role supplier defaults to always-OWNER and is settable,
+/// and — increment 2 — that a partition ring materializes IFF this node is its OWNER/REPLICA: a
+/// non-replica holds the stream metadata-only (zero off-heap bytes), and a deferred partition
+/// materializes on the reconcile hook / owner-append safety valve. Increment 3: a follower that cannot
+/// admit a held floor no longer over-subscribes — it holds the stream metadata-only and reports the held
+/// partitions as DEFERRED. Separate file to avoid churning `StreamBudgetAccountingTest`'s line baseline
+/// (same harness convention). The default-supplier Snapshot tests materialize every ring
+/// (`ringsMaterialized == partitionsDeclared`) because the bare manager reports OWNER for every partition.
 class StreamHydrationSnapshotTest {
 
     private static final long SEGMENT = 256 * 1024L;
@@ -132,18 +134,23 @@ class StreamHydrationSnapshotTest {
         }
 
         @Test
-        void hydrationSnapshot_overBudget_whenFollowerOversubscribes() {
-            // 1 KiB budget: the follower hydrate path over-subscribes the floor to avoid cluster
-            // divergence (StreamBudgetAccountingTest.Hydration), so the pool exceeds maxTotalBytes.
+        void hydrationSnapshot_deferred_whenFollowerCannotAdmitFloor() {
+            // 1 KiB budget: per spec §6 (increment 3) the follower NO LONGER over-subscribes — the held
+            // floor doesn't fit, so the stream hydrates metadata-only with its partitions DEFERRED. The
+            // pool never exceeds the cap; the snapshot's deferred count is the budget-defer sensor.
             var manager = streamPartitionManager(1024);
             try {
                 manager.onStreamConfigPut(streamConfigPut(mgmtDefault("committed")));
 
                 var snapshot = manager.hydrationSnapshot();
 
-                assertThat(snapshot.overBudget()).isTrue();
-                assertThat(snapshot.totalAllocatedBytes()).isGreaterThan(snapshot.maxTotalBytes());
-                assertThat(find(snapshot, "committed").ringsMaterialized()).isEqualTo(4);
+                assertThat(snapshot.overBudget()).isFalse();
+                assertThat(snapshot.totalAllocatedBytes()).isEqualTo(0L);
+                assertThat(snapshot.totalAllocatedBytes()).isLessThanOrEqualTo(snapshot.maxTotalBytes());
+                assertThat(snapshot.deferredPartitions()).isEqualTo(4L);
+                var view = find(snapshot, "committed");
+                assertThat(view.ringsMaterialized()).isEqualTo(0);
+                assertThat(view.partitionsDeferred()).isEqualTo(4);
             } finally {
                 manager.close();
             }

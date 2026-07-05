@@ -90,6 +90,31 @@ public sealed interface StreamError extends Cause {
         }
     }
 
+    /// Budget-deferred materialization (#265 increment 3, spec §6/§11): a HELD (OWNER/REPLICA) partition
+    /// could not be materialized because reserving its per-partition floor would exceed this node's
+    /// off-heap budget, so — instead of the former unconditional over-subscription — NO ring is built and
+    /// the partition stays metadata-only/DEFERRED until budget frees. DISTINCT from
+    /// {@link General#PARTITION_NOT_LOCAL} (a genuine non-replica the caller FORWARDS): this node IS the
+    /// holder, so the caller RETRIES — the reconcile hook re-fires next tick, and an owner-append surfaces
+    /// this for client retry rather than looping a forward. Implements {@link ResourceCapacityExhausted}
+    /// (transient by default) so the resource/slice-loading path classifies it retryable like
+    /// `STREAM_MEMORY_EXCEEDED`. `requestedBytes` is the per-partition floor that did not fit;
+    /// `availableBytes` / `maxTotalBytes` frame the shortfall.
+    record MaterializeBudgetExceeded(String streamName,
+                                     int partition,
+                                     long requestedBytes,
+                                     long availableBytes,
+                                     long maxTotalBytes) implements StreamError, ResourceCapacityExhausted {
+        @Override
+        public String message() {
+            return "Materialize of %s[%d] deferred: per-partition floor %d bytes exceeds budget (%d available of %d)".formatted(streamName,
+                                                                                                                               partition,
+                                                                                                                               requestedBytes,
+                                                                                                                               availableBytes,
+                                                                                                                               maxTotalBytes);
+        }
+    }
+
     record EventProcessingFailed(String streamName, int partition, long offset, String reason) implements StreamError {
         @Override
         public String message() {

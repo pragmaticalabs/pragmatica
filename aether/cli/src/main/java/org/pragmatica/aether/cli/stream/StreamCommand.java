@@ -266,15 +266,19 @@ public class StreamCommand implements Runnable {
     }
 
     /// Per-stream rows are drawn from the `streams` array; the per-node fields (`totalAllocatedBytes`,
-    /// `maxTotalBytes`, `overBudget`) live at the response root and are visible in `--format json`.
-    /// DECLARED/RINGS diverge once a later increment gates materialization on placement (non-replicas
-    /// materialize fewer rings); OWNER/REPLICA/NONE are this node's placement-role tally per stream.
+    /// `maxTotalBytes`, `overBudget`, `deferredPartitions`) live at the response root and are visible in
+    /// `--format json`. DECLARED/RINGS diverge once materialization is placement-gated (non-replicas
+    /// materialize fewer rings); DEFERRED counts held partitions not yet materialized (budget-deferred per
+    /// spec §6 or pre-membership); OWNER/REPLICA/NONE are this node's placement-role tally per stream.
     private static final TableSpec HYDRATION_TABLE_SPEC = new TableSpec("Stream Hydration",
                                                                         List.of(new Column("STREAM", "stream", 32),
                                                                                 new Column("DECLARED",
                                                                                            "partitionsDeclared",
                                                                                            9),
                                                                                 new Column("RINGS", "ringsMaterialized", 6),
+                                                                                new Column("DEFERRED",
+                                                                                           "partitionsDeferred",
+                                                                                           9),
                                                                                 new Column("FLOOR-BYTES",
                                                                                            "floorBytesAllocated",
                                                                                            14),
