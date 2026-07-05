@@ -124,8 +124,8 @@ Verified against source on the release tip. **Ticket line numbers were stale; co
 | Budget not enforced on followers | floor added **unconditionally**, WARN+event only | `DEFAULT_MAX_TOTAL_BYTES:47`; over-subscribe `:478-486`; must-not-diverge rule `:465-474` |
 | Placement not visible at hydration site | `StreamPartitionManager` (built `:2460`) holds no replica-set ref; `ReplicaSetController` built later (`:2630`) | `AetherNode.java:2452-2474`, `:2630-2650` |
 | Reshuffle doesn't touch buffers | `onBecameReplica`/unregister update the registry only, not rings | `ReplicaSetController.java:250-275` |
-| Backfill never fires for fresh replica (#261) | trigger gated on **local** buffer non-empty; fresh ring is empty → skipped | `StreamPartitionManager.java:461-464`; `ReplicaSetController.java:265-268` |
-| False CAUGHT_UP (#261) | any live ack promotes SYNCING→CAUGHT_UP | `ReplicaRegistry.java:69-79`; `PartitionBackfill.java:205-211` |
+| ~~Backfill never fires for fresh replica (#261)~~ **DONE** | now fires unconditionally on becoming a replica (owner-first with probed-survivor fallback, §14.3); #261 closed | `ReplicaSetController.reconcilePartition:337-347`; `PartitionBackfill.probeThenPromoteOwner:665` |
+| ~~False CAUGHT_UP (#261)~~ **DONE** | now coverage-gated — `CAUGHT_UP` only after coverage from the earliest retained offset; #261 closed | `ReplicaRegistry.updateWatermark:116-122` |
 | No partition-count cap | `partitions` unvalidated; parser has no bound | `StreamConfig.java:15,23`; `StreamConfigParser.parseStreamSection:285-304` |
 
 ### 2.3 The two hard seams
@@ -248,6 +248,11 @@ exists. Until the ref is populated (early boot, pre-membership), see the bootstr
 > only the post-join suffix becomes a read target and backfill source serving incomplete history
 > (`PartitionBackfill.java:205-211`). Coverage-confirmed promotion is what makes `CAUGHT_UP` mean what
 > it says and makes the replica a safe read/backfill source.
+>
+> **Status (HEAD): DONE (#261 closed).** Implemented — `CAUGHT_UP` is now coverage-gated via
+> `ReplicaRegistry.updateWatermark:116-122`, and backfill fires unconditionally on becoming a replica
+> with owner-first + probed-survivor fallback (`PartitionBackfill.probeThenPromoteOwner:665`; §14.3).
+> The "Today any live ack flips `CAUGHT_UP`" text above is the pre-fix rationale, retained for context.
 >
 > **Rejected alternative.** *Promote on first ack* (status quo) — the #261 fiction. *Promote on
 > offset-count parity* — fails with compaction/retention gaps; coverage-from-earliest-retained is the
@@ -469,8 +474,8 @@ serves complete history.
 | Placement at hydration site | not injected; build-order inverted | `roleFor` supplier via `AtomicReference` seam | **MISSING** | `AetherNode.java:2452,2460,2630` |
 | Budget enforcement (follower) | unconditional over-subscribe, WARN-only | reject over-budget materialize; pace reshuffle | **WRONG** | `StreamPartitionManager.java:465-486` |
 | HRW replica set + reshuffle trigger | wired | reuse as the placement function | **DONE (reuse)** | `ReplicaSetController.java:208-275` |
-| `onBecameReplica` → backfill | wired but trigger gated on non-empty local buffer | fire unconditionally on becoming replica | **WRONG (#261)** | `:265-271`; `StreamPartitionManager.java:461-464` |
-| `CAUGHT_UP` promotion | any live ack promotes | coverage-from-earliest-retained gate | **WRONG (#261)** | `ReplicaRegistry.java:69-79`; `PartitionBackfill.java:205-211` |
+| `onBecameReplica` → backfill | fires unconditionally on becoming replica; owner-first + probed-survivor fallback | as targeted | **DONE (#261, §14.3)** | `ReplicaSetController.reconcilePartition:337-347`; `PartitionBackfill.probeThenPromoteOwner:665` |
+| `CAUGHT_UP` promotion | coverage-from-earliest-retained gate | as targeted | **DONE (#261)** | `ReplicaRegistry.updateWatermark:116-122` |
 | Reshuffle ring materialize/release | registry only; buffers untouched | add/drop rings, catch-up-gated | **MISSING** | `ReplicaSetController.java:250-275` |
 | Read/write forwarding | wired, owner-fallback on absent buffer | reuse for non-replicas | **DONE (reuse)** | `AetherNode.java:2704,2735` |
 | Partition cap | none | derived + create-time + follower ceiling | **MISSING** | `StreamConfig.java:15`; `StreamConfigParser.java:285-304` |

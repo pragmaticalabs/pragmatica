@@ -664,6 +664,31 @@ public sealed interface ManagementApiResponses {
     /// response's `ownerHeadOffset` to detect the #333 lag residual.
     record ReplicaStateDetail(String nodeId, String state, long confirmedOffset, boolean isHrwOwner) {}
 
+    /// #265 increment 0 per-node hydration observability — the §6 regression sensor. Assembled ON
+    /// REQUEST from the answering node's `StreamPartitionManager` snapshot (live `streams` map + budget
+    /// counters, no hot-path accounting). PER-NODE: `totalAllocatedBytes` / `maxTotalBytes` are that
+    /// node's off-heap budget, `overBudget` its follower over-subscribe condition. `streams` carries
+    /// one row per live stream. A later increment gates materialization on placement, at which point
+    /// `ringsMaterialized` drops below `partitionsDeclared` on non-replicas — this surface is how that
+    /// memory win is observed.
+    record StreamHydrationResponse(long totalAllocatedBytes,
+                                   long maxTotalBytes,
+                                   boolean overBudget,
+                                   List<StreamHydrationDetail> streams) {}
+
+    /// Per-stream hydration row: `partitionsDeclared` the configured partition count,
+    /// `ringsMaterialized` the rings actually built on this node (equal today; a later increment gates
+    /// it below declared on non-replicas), `floorBytesAllocated` the per-partition floor times the
+    /// materialized ring count, and `ownerPartitions` / `replicaPartitions` / `nonePartitions` the
+    /// placement-role tally for this node under the current supplier (default: all OWNER).
+    record StreamHydrationDetail(String stream,
+                                 int partitionsDeclared,
+                                 int ringsMaterialized,
+                                 long floorBytesAllocated,
+                                 int ownerPartitions,
+                                 int replicaPartitions,
+                                 int nonePartitions) {}
+
     record ClusterStatusResponse(String clusterName,
                                  String desiredVersion,
                                  int desiredCoreCount,

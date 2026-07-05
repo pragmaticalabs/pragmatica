@@ -30,7 +30,7 @@ import picocli.CommandLine.Parameters;
 /// Exit codes follow [StreamExitCode]: 0=success, 1=error, 2=validation, 3=user-cancelled,
 /// 4=not-found, 5=conflict, 6=gone. HTTP errors are scraped from the JSON envelope returned by
 /// the base CLI HTTP helpers (see [StreamHttpResponse]).
-@Command(name = "stream", description = "Manage event streams (list, show, tail, delete, group create/delete)", subcommands = {StreamCommand.ListCommand.class, StreamCommand.ShowCommand.class, StreamCommand.ReplicasCommand.class, StreamCommand.TailCommand.class, StreamCommand.DeleteCommand.class, StreamCommand.GroupCommand.class})
+@Command(name = "stream", description = "Manage event streams (list, show, tail, delete, group create/delete)", subcommands = {StreamCommand.ListCommand.class, StreamCommand.ShowCommand.class, StreamCommand.ReplicasCommand.class, StreamCommand.HydrationCommand.class, StreamCommand.TailCommand.class, StreamCommand.DeleteCommand.class, StreamCommand.GroupCommand.class})
 public class StreamCommand implements Runnable {
     @CommandLine.ParentCommand
     private AetherCli parent;
@@ -93,6 +93,17 @@ public class StreamCommand implements Runnable {
         @Override
         public Integer call() {
             return fetchReplicas(stream, partition, streamParent.parent());
+        }
+    }
+
+    @Command(name = "hydration", description = "Show per-node stream hydration state (materialized rings, floor bytes, placement-role counts, budget) — the #265 memory/placement observability sensor")
+    public static class HydrationCommand implements Callable<Integer> {
+        @CommandLine.ParentCommand
+        private StreamCommand streamParent;
+
+        @Override
+        public Integer call() {
+            return fetchHydration(streamParent.parent());
         }
     }
 
@@ -252,6 +263,37 @@ public class StreamCommand implements Runnable {
         }
 
         return OutputFormatter.printQuery(response, cli.outputOptions(), REPLICAS_TABLE_SPEC);
+    }
+
+    /// Per-stream rows are drawn from the `streams` array; the per-node fields (`totalAllocatedBytes`,
+    /// `maxTotalBytes`, `overBudget`) live at the response root and are visible in `--format json`.
+    /// DECLARED/RINGS diverge once a later increment gates materialization on placement (non-replicas
+    /// materialize fewer rings); OWNER/REPLICA/NONE are this node's placement-role tally per stream.
+    private static final TableSpec HYDRATION_TABLE_SPEC = new TableSpec("Stream Hydration",
+                                                                        List.of(new Column("STREAM", "stream", 32),
+                                                                                new Column("DECLARED",
+                                                                                           "partitionsDeclared",
+                                                                                           9),
+                                                                                new Column("RINGS", "ringsMaterialized", 6),
+                                                                                new Column("FLOOR-BYTES",
+                                                                                           "floorBytesAllocated",
+                                                                                           14),
+                                                                                new Column("OWNER", "ownerPartitions", 6),
+                                                                                new Column("REPLICA",
+                                                                                           "replicaPartitions",
+                                                                                           8),
+                                                                                new Column("NONE", "nonePartitions", 5)),
+                                                                        "streams");
+
+    private static int fetchHydration(AetherCli cli) {
+        var response = cli.fetch(ManagementRoute.STREAM_HYDRATION, List.of());
+        var errorCode = OutputFormatter.checkResponseError(response, cli.outputOptions(), "Failed to load hydration state");
+
+        if (errorCode >= 0) {
+            return mapHttpErrorOrFallback(response, errorCode);
+        }
+
+        return OutputFormatter.printQuery(response, cli.outputOptions(), HYDRATION_TABLE_SPEC);
     }
 
     /// Polling-based tail (Wave 6B). SSE/WebSocket on `/tail` is deferred to issue #212; this

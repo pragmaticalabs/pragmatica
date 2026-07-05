@@ -4147,6 +4147,44 @@ Replication/backfill-health sensor for the stream-replication class (#260/#261/#
 | `replicas[].confirmedOffset` | The replica's acked confirmed watermark |
 | `replicas[].isHrwOwner` | Whether this replica is the resolved HRW owner |
 
+### Stream Hydration Snapshot
+
+```
+GET /api/streams/hydration
+```
+
+**Auth:** ALL_AUTHENTICATED · **Routing:** STREAMING task group
+
+Per-node hydration observability for the placement-aware-stream-hydration work (#265) — the §6 regression sensor. Assembled ON REQUEST from the answering node's `StreamPartitionManager` (the live `streams` map plus the off-heap budget counters; no hot-path accounting is added). PER-NODE: `totalAllocatedBytes` / `maxTotalBytes` are that node's off-heap budget and `overBudget` its follower over-subscribe condition (`totalAllocatedBytes > maxTotalBytes`). Each `streams[]` row reports `partitionsDeclared` (configured partition count), `ringsMaterialized` (rings actually built on this node), `floorBytesAllocated` (per-partition floor × materialized ring count), and the placement-role tally `ownerPartitions` / `replicaPartitions` / `nonePartitions` for this node.
+
+Today `ringsMaterialized == partitionsDeclared` and every partition is OWNER-tallied (materialization is not yet placement-gated). A later increment gates materialization on placement, at which point `ringsMaterialized` drops below `partitionsDeclared` on non-replicas and `replicaPartitions` / `nonePartitions` become non-zero — this surface is how that memory win is observed, so it is additive and safe to poll now.
+
+**Response:**
+```json
+{
+  "totalAllocatedBytes": 10641408,
+  "maxTotalBytes": 134217728,
+  "overBudget": false,
+  "streams": [
+    {"stream": "orders", "partitionsDeclared": 4, "ringsMaterialized": 4, "floorBytesAllocated": 5320704, "ownerPartitions": 4, "replicaPartitions": 0, "nonePartitions": 0},
+    {"stream": "system:cluster-events:1.0.0", "partitionsDeclared": 1, "ringsMaterialized": 1, "floorBytesAllocated": 2660352, "ownerPartitions": 1, "replicaPartitions": 0, "nonePartitions": 0}
+  ]
+}
+```
+
+| Field | Description |
+|-------|-------------|
+| `totalAllocatedBytes` | This node's live off-heap bytes reserved across all streams |
+| `maxTotalBytes` | This node's off-heap budget ceiling |
+| `overBudget` | Whether `totalAllocatedBytes > maxTotalBytes` (follower over-subscribe, §6) |
+| `streams[].stream` | Partition manager's local stream name |
+| `streams[].partitionsDeclared` | Configured partition count for the stream |
+| `streams[].ringsMaterialized` | Partition rings actually built on this node (equal to declared until materialization is placement-gated) |
+| `streams[].floorBytesAllocated` | Per-partition floor × materialized ring count |
+| `streams[].ownerPartitions` | Partitions this node OWNS under the current placement supplier |
+| `streams[].replicaPartitions` | Partitions this node is a non-owner REPLICA of |
+| `streams[].nonePartitions` | Partitions this node neither owns nor replicates |
+
 ### Create Stream
 
 ```

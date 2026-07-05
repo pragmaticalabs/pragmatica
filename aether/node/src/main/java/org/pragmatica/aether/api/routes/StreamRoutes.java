@@ -5,6 +5,8 @@
 package org.pragmatica.aether.api.routes;
 
 import org.pragmatica.aether.api.ManagementApiResponses.ReplicaStateDetail;
+import org.pragmatica.aether.api.ManagementApiResponses.StreamHydrationDetail;
+import org.pragmatica.aether.api.ManagementApiResponses.StreamHydrationResponse;
 import org.pragmatica.aether.api.ManagementApiResponses.StreamReplicasResponse;
 import org.pragmatica.aether.management.route.ManagementRoute;
 import org.pragmatica.aether.node.ManageableNode;
@@ -16,7 +18,9 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.StreamConfigValue;
 import org.pragmatica.aether.stream.OffHeapRingBuffer;
 import org.pragmatica.aether.stream.StreamCreateOutcome;
 import org.pragmatica.aether.stream.StreamPartitionManager;
+import org.pragmatica.aether.stream.StreamPartitionManager.HydrationSnapshot;
 import org.pragmatica.aether.stream.StreamPartitionManager.PartitionInfo;
+import org.pragmatica.aether.stream.StreamPartitionManager.StreamHydration;
 import org.pragmatica.aether.stream.StreamPartitionManager.StreamInfo;
 import org.pragmatica.aether.stream.StreamReadRouter;
 import org.pragmatica.aether.stream.StreamReadRouter.ReplicaSetView;
@@ -24,6 +28,7 @@ import org.pragmatica.aether.stream.StreamReadRouter.ReplicaView;
 import org.pragmatica.aether.stream.consumer.ConsumerGroupCoordinator;
 import org.pragmatica.aether.stream.consumer.ConsumerGroupCoordinator.ConsumerInfo;
 import org.pragmatica.aether.stream.consumer.ConsumerGroupRegistry;
+import org.pragmatica.aether.stream.replication.ReplicaSetController.Role;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.http.routing.PathParameter;
 import org.pragmatica.http.routing.QueryParameter;
@@ -137,6 +142,8 @@ public final class StreamRoutes implements RouteSource {
                                                    PathParameter.aInteger())
                                          .toResult(this::replicaDetails)
                                          .asJson(),
+                         ManagementRoutes.<StreamHydrationResponse> route(ManagementRoute.STREAM_HYDRATION)
+                                         .toJson(this::streamHydration),
                          ManagementRoutes.<PublishResponse> route(ManagementRoute.STREAM_PUBLISH)
                                          .withPath(PathParameter.aString())
                                          .withBody(PublishRequest.class)
@@ -221,6 +228,36 @@ public final class StreamRoutes implements RouteSource {
 
     private static ReplicaStateDetail toReplicaStateDetail(ReplicaView replica) {
         return new ReplicaStateDetail(replica.nodeId(), replica.state(), replica.confirmedOffset(), replica.hrwOwner());
+    }
+
+    /// #265 increment 0 per-node hydration snapshot handler (a Leaf — pure read of already-computed
+    /// state off the local `StreamPartitionManager`). Always succeeds; an empty cluster yields an empty
+    /// `streams` list with the node's live budget totals, itself the operator-meaningful answer.
+    private StreamHydrationResponse streamHydration() {
+        return toHydrationResponse(streamManager().hydrationSnapshot());
+    }
+
+    private static StreamHydrationResponse toHydrationResponse(HydrationSnapshot snapshot) {
+        return new StreamHydrationResponse(snapshot.totalAllocatedBytes(),
+                                           snapshot.maxTotalBytes(),
+                                           snapshot.overBudget(),
+                                           snapshot.streams().stream().map(StreamRoutes::toHydrationDetail).toList());
+    }
+
+    private static StreamHydrationDetail toHydrationDetail(StreamHydration stream) {
+        var roles = stream.roleCounts();
+
+        return new StreamHydrationDetail(stream.name(),
+                                         stream.partitionsDeclared(),
+                                         stream.ringsMaterialized(),
+                                         stream.floorBytesAllocated(),
+                                         roleCount(roles, Role.OWNER),
+                                         roleCount(roles, Role.REPLICA),
+                                         roleCount(roles, Role.NONE));
+    }
+
+    private static int roleCount(Map<Role, Long> roles, Role role) {
+        return roles.getOrDefault(role, 0L).intValue();
     }
 
     private Promise<PublishResponse> publishEvent(String name, PublishRequest request) {

@@ -1607,6 +1607,26 @@ core-3    CAUGHT_UP  255        no
 core-4    SYNCING    240        no
 ```
 
+### `aether stream hydration`
+
+Show per-node stream hydration state — the memory/placement observability sensor for placement-aware-stream-hydration (#265). Renders a per-stream table (each stream's `DECLARED` partition count, `RINGS` materialized locally, `FLOOR-BYTES` reserved, and the node's `OWNER`/`REPLICA`/`NONE` placement-role tally) and surfaces the per-node budget fields (`totalAllocatedBytes`, `maxTotalBytes`, `overBudget`) in `--format json`. Answered by the STREAMING-capable node from its own `StreamPartitionManager` — a PER-NODE view, not leader-forwarded.
+
+Today `RINGS == DECLARED` and every partition is `OWNER`-tallied (materialization is not yet placement-gated). A later increment gates materialization on placement; when it lands, `RINGS` drops below `DECLARED` on non-replicas and `REPLICA`/`NONE` become non-zero — this command is how that memory win is observed. Wraps `GET /api/streams/hydration`.
+
+```bash
+aether stream hydration
+
+# Machine-readable (includes totalAllocatedBytes / maxTotalBytes / overBudget)
+aether stream hydration --format json
+```
+
+Example output (table):
+```
+STREAM                        DECLARED  RINGS  FLOOR-BYTES     OWNER  REPLICA  NONE
+orders                        4         4      5320704         4      0        0
+system:cluster-events:1.0.0   1         1      2660352         1      0        0
+```
+
 ### `aether stream tail <namespace:stream:version> [options]`
 
 Tail events from a stream version. Tailing is **polling-based** (paginated GETs against

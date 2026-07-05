@@ -13,6 +13,7 @@ import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.StreamConfigKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.StreamConfigValue;
+import org.pragmatica.aether.stream.replication.ReplicaSetController;
 import org.pragmatica.aether.stream.replication.ReplicationManager;
 import org.pragmatica.aether.stream.wal.PartitionWal;
 import org.pragmatica.aether.stream.wal.PartitionWal.WalRecord;
@@ -42,6 +43,8 @@ import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Consumer;
 import java.util.function.LongConsumer;
 import java.util.function.LongPredicate;
+import java.util.stream.Collectors;
+import java.util.stream.IntStream;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -59,6 +62,11 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// Default exhaustion sink — no-op. Wave 3 (`AetherNode`) replaces it with a binding to the
     /// cluster-event aggregator. See spec §4.5c.
     private static final Consumer<Exhaustion> NOOP_SINK = _ -> {};
+
+    /// Default placement-role supplier (#265 increment 1): reports [ReplicaSetController.Role#OWNER]
+    /// for every `(stream, partition)` — the always-materialize behavior that preserves the pre-seam
+    /// semantics exactly. `AetherNode` late-binds the real [ReplicaSetController#roleFor].
+    private static final PlacementRoleSupplier ALWAYS_OWNER = (_, _) -> ReplicaSetController.Role.OWNER;
 
     private final ConcurrentHashMap<String, StreamEntry> streams = new ConcurrentHashMap<>();
     private final AtomicLong totalAllocatedBytes = new AtomicLong(0);
@@ -90,6 +98,13 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// wiring binds it to the node's [org.pragmatica.aether.stream.segment.SegmentIndex].
     private final LastSealedOffsetSource lastSealedOffset;
     private volatile Consumer<Exhaustion> exhaustionSink = NOOP_SINK;
+    /// Placement-role seam (#265 increment 1): consulted per `(stream, partition)` so a later increment
+    /// can gate ring materialization on placement (materialize iff OWNER/REPLICA). Defaults to
+    /// [#ALWAYS_OWNER]; `AetherNode` late-binds [ReplicaSetController#roleFor] AFTER the controller is
+    /// constructed (it is built after this manager — the same construction-order inversion the
+    /// `streamPartitionManagerRef` seam resolves). Volatile: set once at wiring, read on the snapshot
+    /// path. Increment 1 only plumbs it in ready-to-use; buildPartitions still materializes every ring.
+    private volatile PlacementRoleSupplier placementRoleSupplier = ALWAYS_OWNER;
 
     private StreamPartitionManager(long maxTotalBytes,
                                    EvictionListener evictionListener,
@@ -232,6 +247,16 @@ public final class StreamPartitionManager implements AutoCloseable {
                                           LastSealedOffsetSource.none());
     }
 
+    /// Placement-role supplier seam (#265 increment 1). Reports whether THIS node is the OWNER, a
+    /// (non-owner) REPLICA, or NONE for a `(stream, partition)` under the current HRW placement, so a
+    /// later increment can gate ring materialization on placement (materialize iff OWNER/REPLICA). The
+    /// default ([#ALWAYS_OWNER]) reports OWNER for every partition — always-materialize, byte-identical
+    /// to the pre-seam behavior. `AetherNode` late-binds [ReplicaSetController#roleFor].
+    @FunctionalInterface
+    public interface PlacementRoleSupplier {
+        ReplicaSetController.Role roleFor(String stream, int partition);
+    }
+
     public long totalAllocatedBytes() {
         return totalAllocatedBytes.get();
     }
@@ -251,6 +276,15 @@ public final class StreamPartitionManager implements AutoCloseable {
     @Contract
     public void exhaustionSink(Consumer<Exhaustion> sink) {
         this.exhaustionSink = sink;
+    }
+
+    /// Late-bind the placement-role supplier (#265 increment 1). `AetherNode` wires this to
+    /// [ReplicaSetController#roleFor] after the controller is constructed (it is built after this
+    /// manager). Until then — and in Forge/unit/legacy managers — the default reports OWNER for every
+    /// partition (always-materialize). Set once at wiring; read on the snapshot path.
+    @Contract
+    public void placementRoleSupplier(PlacementRoleSupplier supplier) {
+        this.placementRoleSupplier = supplier;
     }
 
     /// Atomically reserve `bytes` against the shared pool. Returns true iff the reservation fit under
@@ -856,6 +890,44 @@ public final class StreamPartitionManager implements AutoCloseable {
                       .toList();
     }
 
+    /// Cheap point-in-time view of per-node hydration state (#265 increment 0 — the §6 regression
+    /// sensor). Assembled ON REQUEST from the live `streams` map and the budget counters; adds NO
+    /// hot-path accounting. Per stream it reports partitions declared, rings materialized, floor bytes
+    /// allocated, and the placement-role counts under the current supplier; per node it reports total
+    /// allocated / max budget and whether the pool is over budget.
+    public HydrationSnapshot hydrationSnapshot() {
+        var allocated = totalAllocatedBytes.get();
+        var streamViews = streams.entrySet()
+                                 .stream()
+                                 .map(e -> streamHydration(e.getKey(), e.getValue()))
+                                 .toList();
+
+        return new HydrationSnapshot(allocated, maxTotalBytes, allocated > maxTotalBytes, streamViews);
+    }
+
+    /// Assemble one stream's hydration view. `ringsMaterialized` is the count of partition rings
+    /// actually built locally (`entry.partitions().length`) — equal to `partitionsDeclared` today; a
+    /// later increment gates materialization so non-replicas build fewer, and this diverges. Floor
+    /// bytes are the per-partition floor times the materialized ring count.
+    private StreamHydration streamHydration(String name, StreamEntry entry) {
+        var declared = entry.config().partitions();
+        var materialized = entry.partitions().length;
+
+        return new StreamHydration(name,
+                                   declared,
+                                   materialized,
+                                   perPartitionFloorBytes(entry.config()) * materialized,
+                                   roleCounts(name, declared));
+    }
+
+    /// Placement-role tally across a stream's declared partitions under the current supplier (#265
+    /// increment 1). Cheap — one supplier call per partition, absent roles simply do not appear.
+    private Map<ReplicaSetController.Role, Long> roleCounts(String streamName, int partitions) {
+        return IntStream.range(0, partitions)
+                        .mapToObj(partition -> placementRoleSupplier.roleFor(streamName, partition))
+                        .collect(Collectors.groupingBy(role -> role, Collectors.counting()));
+    }
+
     /// Adapt this manager to the narrow {@link org.pragmatica.aether.stream.replication.StreamCatalog}
     /// consumed by `ReplicaSetController`. Exposes `(name, partitions, replicas, minSyncReplicas)` per
     /// stream — placement uses `replicas` (the replication factor), while `minSyncReplicas` (the write-
@@ -1035,9 +1107,16 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// allocates at construction (which it does NOT gate through the seam), so the manager owns the
     /// floor admission. See spec §4.1.
     private static long floorBytes(StreamConfig config) {
+        return perPartitionFloorBytes(config) * config.partitions();
+    }
+
+    /// Per-partition floor = `OffHeapRingBuffer.floorBytes(maxCount, maxBytes)` = `(header + index +
+    /// first-data-segment)` — the bytes one partition ring allocates at construction. Shared by the
+    /// per-stream floor admission and the #265 hydration snapshot's per-materialized-ring byte tally.
+    private static long perPartitionFloorBytes(StreamConfig config) {
         var retention = config.retention();
 
-        return OffHeapRingBuffer.floorBytes(retention.maxCount(), retention.maxBytes()) * config.partitions();
+        return OffHeapRingBuffer.floorBytes(retention.maxCount(), retention.maxBytes());
     }
 
     public Result<PartitionInfo> partitionInfo(String streamName, int partition) {
@@ -1075,6 +1154,25 @@ public final class StreamPartitionManager implements AutoCloseable {
             return new PartitionInfo(partition, headOffset, tailOffset, eventCount);
         }
     }
+
+    /// Per-node hydration snapshot (#265 increment 0). `totalAllocatedBytes` / `maxTotalBytes` are the
+    /// live budget counters; `overBudget` is `totalAllocatedBytes > maxTotalBytes` (the follower
+    /// over-subscribe condition, spec §6). `streams` carries one [StreamHydration] per live stream.
+    public record HydrationSnapshot(long totalAllocatedBytes,
+                                    long maxTotalBytes,
+                                    boolean overBudget,
+                                    List<StreamHydration> streams) {}
+
+    /// Per-stream hydration view (#265 increment 0). `partitionsDeclared` is the configured partition
+    /// count; `ringsMaterialized` the number of partition rings actually built locally (equal today, a
+    /// later increment gates materialization so non-replicas build fewer); `floorBytesAllocated` the
+    /// per-partition floor times the materialized ring count; `roleCounts` the placement-role tally
+    /// under the current supplier (default: all OWNER).
+    public record StreamHydration(String name,
+                                  int partitionsDeclared,
+                                  int ringsMaterialized,
+                                  long floorBytesAllocated,
+                                  Map<ReplicaSetController.Role, Long> roleCounts) {}
 
     /// Off-heap budget exhaustion signal handed to the injected sink. Node-id-agnostic by design —
     /// the Wave 3 aggregator stamps the node id when it converts this into a `ClusterEvent`. `phase`

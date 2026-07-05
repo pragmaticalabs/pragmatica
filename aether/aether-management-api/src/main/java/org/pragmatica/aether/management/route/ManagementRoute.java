@@ -152,6 +152,12 @@ public enum ManagementRoute {
     // a `RouteTarget` variant (the owner is computed from name+partition, not a path param), so the
     // response is owner-aware rather than owner-forwarded.
     STREAM_REPLICAS(GET, "/api/streams/replicas", List.of("name", "partition"), taskGroup(STREAMING)),
+    // #265 increment 0 per-node hydration observability. Static prefix `/api/streams/hydration` (0
+    // params) is matched before `/api/streams/{name}` (STREAM_GET, 1 param) by the longest-static-prefix
+    // rule in RouteMatcher, so there is no collision. taskGroup(STREAMING) lands it on a STREAMING-capable
+    // node; the handler assembles the snapshot from that node's local StreamPartitionManager (per-node
+    // materialized-ring / floor-byte / placement-role view — the §6 regression sensor).
+    STREAM_HYDRATION(GET, "/api/streams/hydration", List.of(), taskGroup(STREAMING)),
     CONSUMER_GROUP_JOIN(POST, "/api/streams/groups/join", List.of(), taskGroup(STREAMING)),
     CONSUMER_GROUP_LEAVE(POST, "/api/streams/groups/leave", List.of(), taskGroup(STREAMING)),
     CONSUMER_GROUP_STATUS(GET, "/api/streams/groups", List.of("id"), taskGroup(STREAMING)),

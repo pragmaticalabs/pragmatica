@@ -2890,6 +2890,14 @@ public interface AetherNode extends ManageableNode {
         // against the current topology, independent of reconcile, so it is correct as soon as members
         // are visible (and true for a steady-state single-node cluster).
         clusterEventsControllerRef.set(streamReplicaSetController);
+        // #265 increment 1: late-bind the placement-role supplier now that the controller exists. The
+        // controller is constructed AFTER StreamPartitionManager (it consumes replicaCatalog()), so this
+        // is the same construction-order inversion the streamPartitionManagerRef seam resolves above —
+        // resolved here by a settable field rather than an AtomicReference. Until this point (and in
+        // Forge/unit managers) the manager's default supplier reports OWNER for every partition
+        // (always-materialize); buildPartitions still materializes every ring, so this is zero behavior
+        // change — a later increment flips the gate to consult this role.
+        streamPartitionManager.placementRoleSupplier(streamReplicaSetController::roleFor);
         // Reconcile on every membership decision (all variants via the tail helper) and on
         // ClusterStateNotification edges (PASSIVE suppresses; PASSIVE->ACTIVE re-reconciles).
         wireMembershipDecisionTail(allEntries, streamReplicaSetController::onMembershipDecision);
