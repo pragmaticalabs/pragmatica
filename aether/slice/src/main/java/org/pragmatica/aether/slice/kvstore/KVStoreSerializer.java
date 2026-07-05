@@ -1268,8 +1268,8 @@ public final class KVStoreSerializer {
 
         return config.partitions() + PIPE + config.autoOffsetReset() + PIPE + config.maxEventSizeBytes() + PIPE + config.consistencyMode()
                                                                                                                         .name() + PIPE + config.replicas() + PIPE + config.minSyncReplicas() + PIPE + config.compression()
-                                                                                                                                                                                 .name() + PIPE + encryptionKeyId + PIPE + retention.maxCount() + PIPE + retention.maxBytes() + PIPE + retention.maxAgeMs() + PIPE + retention.mode()
-                                                                                                                                                                                                                                                                                                                              .name() + PIPE + v.createdAt();
+                                                                                                                                                                                                            .name() + PIPE + encryptionKeyId + PIPE + retention.maxCount() + PIPE + retention.maxBytes() + PIPE + retention.maxAgeMs() + PIPE + retention.mode()
+                                                                                                                                                                                                                                                                                                                                                         .name() + PIPE + v.createdAt();
     }
 
     private static Result<Map.Entry<AetherKey, AetherValue>> parseStreamConfigEntry(String identity, String raw) {

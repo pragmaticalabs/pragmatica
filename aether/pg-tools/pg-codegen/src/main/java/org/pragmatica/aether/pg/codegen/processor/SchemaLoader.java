@@ -111,10 +111,9 @@ public final class SchemaLoader {
     /// directory can be enumerated (for example schema packaged inside a jar), discovery falls
     /// back to the manifest if one is present.
     private List<String> discoverMigrationFiles(String schemaPath) {
-        return orderMigrations(collectRawNames(schemaPath))
-            .onFailure(cause -> reportDiscoveryError(schemaPath, cause))
-            .map(names -> resolveDiscovered(schemaPath, names))
-            .or(List.of());
+        return orderMigrations(collectRawNames(schemaPath)).onFailure(cause -> reportDiscoveryError(schemaPath, cause))
+                              .map(names -> resolveDiscovered(schemaPath, names))
+                              .or(List.of());
     }
 
     private List<String> resolveDiscovered(String schemaPath, List<String> globbed) {
@@ -140,7 +139,7 @@ public final class SchemaLoader {
             var outcome = classifyMigration(fileName, byVersion);
 
             if (outcome.isFailure()) {
-                return outcome.map(_ -> List.<String>of());
+                return outcome.map(_ -> List.<String> of());
             }
         }
 
@@ -151,8 +150,9 @@ public final class SchemaLoader {
         var strict = STRICT_MIGRATION.matcher(fileName);
 
         if (strict.matches()) {
-            return parseVersion(strict.group(1), fileName)
-                .flatMap(version -> recordMigration(version, fileName, byVersion));
+            return parseVersion(strict.group(1), fileName).flatMap(version -> recordMigration(version,
+                                                                                              fileName,
+                                                                                              byVersion));
         }
 
         if (MIGRATION_SHAPED.matcher(fileName).matches()) {
@@ -163,18 +163,16 @@ public final class SchemaLoader {
     }
 
     private static Result<Integer> parseVersion(String digits, String fileName) {
-        return Number.parseInt(digits)
-                     .mapError(_ -> new MigrationDiscoveryError.MalformedVersion(fileName));
+        return Number.parseInt(digits).mapError(_ -> new MigrationDiscoveryError.MalformedVersion(fileName));
     }
 
     private static Result<Unit> recordMigration(int version, String fileName, Map<Integer, String> byVersion) {
-        var conflict = Option.option(byVersion.get(version))
-                             .filter(existing -> !existing.equals(fileName));
+        var conflict = Option.option(byVersion.get(version)).filter(existing -> !existing.equals(fileName));
 
         if (conflict.isPresent()) {
             return new MigrationDiscoveryError.DuplicateVersion(version,
-                                                               conflict.expect("checked with isPresent above"),
-                                                               fileName).result();
+                                                                conflict.expect("checked with isPresent above"),
+                                                                fileName).result();
         }
 
         byVersion.put(version, fileName);
@@ -208,8 +206,7 @@ public final class SchemaLoader {
 
     private Option<Path> classOutputDir(String schemaPath) {
         try {
-            var anchor = processingEnv.getFiler()
-                                      .getResource(StandardLocation.CLASS_OUTPUT, "", schemaPath + PROBE_NAME);
+            var anchor = processingEnv.getFiler().getResource(StandardLocation.CLASS_OUTPUT, "", schemaPath + PROBE_NAME);
 
             return Option.option(Paths.get(anchor.toUri()).getParent());
         } catch (IOException | RuntimeException e) {
@@ -236,7 +233,8 @@ public final class SchemaLoader {
 
         try (var stream = Files.list(dir)) {
             return stream.filter(Files::isRegularFile)
-                         .map(path -> path.getFileName().toString())
+                         .map(path -> path.getFileName()
+                                          .toString())
                          .toList();
         } catch (IOException e) {
             return List.of();
@@ -244,14 +242,14 @@ public final class SchemaLoader {
     }
 
     private List<String> manifestFileNames(String schemaPath) {
-        return readSchemaResource(schemaPath, MANIFEST_NAME)
-            .map(SchemaLoader::parseManifestLines)
-            .or(List.of());
+        return readSchemaResource(schemaPath, MANIFEST_NAME).map(SchemaLoader::parseManifestLines)
+                                 .or(List.of());
     }
 
     private void warnUnlistedMigrations(String schemaPath, List<String> discovered) {
-        readSchemaResource(schemaPath, MANIFEST_NAME)
-            .onPresent(content -> warnAgainstManifest(schemaPath, discovered, content));
+        readSchemaResource(schemaPath, MANIFEST_NAME).onPresent(content -> warnAgainstManifest(schemaPath,
+                                                                                               discovered,
+                                                                                               content));
     }
 
     private void warnAgainstManifest(String schemaPath, List<String> discovered, String manifestContent) {
@@ -265,15 +263,13 @@ public final class SchemaLoader {
     }
 
     private void warnUnlisted(String schemaPath, String fileName) {
-        processingEnv.getMessager()
-                     .printMessage(Diagnostic.Kind.WARNING,
-                                   ProcessorError.unlistedMigration(fileName, schemaPath));
+        processingEnv.getMessager().printMessage(Diagnostic.Kind.WARNING,
+                                                 ProcessorError.unlistedMigration(fileName, schemaPath));
     }
 
     private void reportDiscoveryError(String schemaPath, Cause cause) {
-        processingEnv.getMessager()
-                     .printMessage(Diagnostic.Kind.ERROR,
-                                   ProcessorError.schemaLoadFailed(schemaPath, cause.message()));
+        processingEnv.getMessager().printMessage(Diagnostic.Kind.ERROR,
+                                                 ProcessorError.schemaLoadFailed(schemaPath, cause.message()));
     }
 
     private static List<String> parseManifestLines(String content) {

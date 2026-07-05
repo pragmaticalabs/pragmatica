@@ -39,7 +39,11 @@ public final class FactoryGenerator {
     /// A column read by a generated row mapper. `liftExpr`, when non-empty, is a value-object
     /// `lift` function reference (e.g. `SeatState.valueMapping().lift()`): the raw column value is
     /// decoded through it and the result guarded with a typed `RowDecode` cause.
-    public record MapperColumn(String columnName, String accessorMethod, String fieldName, String typeArg, String liftExpr) {
+    public record MapperColumn(String columnName,
+                               String accessorMethod,
+                               String fieldName,
+                               String typeArg,
+                               String liftExpr) {
         public static MapperColumn plain(String columnName, String accessorMethod, String fieldName, String typeArg) {
             return new MapperColumn(columnName, accessorMethod, fieldName, typeArg, "");
         }
@@ -55,7 +59,7 @@ public final class FactoryGenerator {
         }
 
         public boolean hasLift() {
-            return !liftExpr.isEmpty();
+            return ! liftExpr.isEmpty();
         }
     }
 
@@ -473,7 +477,8 @@ public final class FactoryGenerator {
     }
 
     private static boolean hasValueObjectColumn(MethodInfo method) {
-        return method.mapperColumns.stream().anyMatch(MapperColumn::hasLift);
+        return method.mapperColumns.stream()
+                                   .anyMatch(MapperColumn::hasLift);
     }
 
     private static void appendClassEnd(StringBuilder sb) {

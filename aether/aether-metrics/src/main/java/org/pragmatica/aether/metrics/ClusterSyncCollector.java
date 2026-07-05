@@ -647,8 +647,7 @@ class ClusterSyncCollectorImpl implements ClusterSyncCollector {
     @Override
     @Contract
     public void reportUnreachable(NodeId peer) {
-        unreachableReporter.get()
-                           .accept(peer);
+        unreachableReporter.get().accept(peer);
     }
 
     @Override

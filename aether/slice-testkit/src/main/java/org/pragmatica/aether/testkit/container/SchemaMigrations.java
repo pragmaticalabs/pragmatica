@@ -27,7 +27,7 @@ import java.util.List;
 public sealed interface SchemaMigrations {
     static Promise<Unit> apply(SqlConnector connector, String location) {
         return loadStatements(location).async()
-                                       .flatMap(statements -> applyFrom(connector, statements, 0));
+                             .flatMap(statements -> applyFrom(connector, statements, 0));
     }
 
     private static Result<List<String>> loadStatements(String location) {
@@ -41,8 +41,7 @@ public sealed interface SchemaMigrations {
     // classpath directory lookup is a nullable JDK boundary; checked IO is lifted by loadStatements
     @SuppressWarnings({"JBCT-NULL-01", "JBCT-EX-01"})
     private static List<String> readStatements(String location) throws IOException, URISyntaxException {
-        var resource = SchemaMigrations.class.getClassLoader()
-                                             .getResource(location);
+        var resource = SchemaMigrations.class.getClassLoader().getResource(location);
 
         if (resource == null) {
             return List.of();
@@ -57,11 +56,8 @@ public sealed interface SchemaMigrations {
         var script = new StringBuilder();
 
         try (var files = Files.list(directory)) {
-            for (var file : files.filter(SchemaMigrations::isSqlFile)
-                                 .sorted()
-                                 .toList()) {
-                script.append(Files.readString(file))
-                      .append('\n');
+            for (var file : files.filter(SchemaMigrations::isSqlFile).sorted().toList()) {
+                script.append(Files.readString(file)).append('\n');
             }
         }
 

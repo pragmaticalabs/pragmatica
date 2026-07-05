@@ -20,7 +20,8 @@ public sealed interface TestKitError extends Cause {
     record MissingResource(String resourceType, String configSection) implements TestKitError {
         @Override
         public String message() {
-            return "No fake or container registered for " + resourceType + ":" + configSection
+            return "No fake or container registered for " + resourceType
+                 + ":" + configSection
                  + ". Register one with withResource(...)/withContainer(...) or a typed helper (withHttp/withPublisher/withNotifications) before build().";
         }
     }

@@ -7,6 +7,7 @@ package org.pragmatica.aether.resource.db;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Result;
 
+
 /// Typed failure raised when a row value cannot be decoded into its target value object.
 ///
 /// Value-object columns are decoded with the value object's fallible `lift` (parse-don't-validate

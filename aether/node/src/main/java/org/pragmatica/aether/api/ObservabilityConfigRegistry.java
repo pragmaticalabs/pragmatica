@@ -314,10 +314,10 @@ public class ObservabilityConfigRegistry implements ObservabilityCellRegistrar {
     /// The per-node live-cell fields (invocation count, and baseline cells with no config key) reflect the
     /// responding node — the replicated config fields are cluster-consistent.
     public List<EffectiveEntry> allEffectiveStates() {
-        return Stream.concat(configs.keySet().stream(), instances.keySet().stream())
-                     .distinct()
-                     .map(this::effectiveEntryFor)
-                     .toList();
+        return Stream.concat(configs.keySet().stream(),
+                             instances.keySet().stream()).distinct()
+                            .map(this::effectiveEntryFor)
+                            .toList();
     }
 
     /// The effective posture for a single injection point / config scope — the read path for
@@ -464,8 +464,7 @@ public class ObservabilityConfigRegistry implements ObservabilityCellRegistrar {
     /// identity), and the baseline layers the logging + tracing facets from `config.logging()` /
     /// `config.tracing()` around it at the config's own depth. `spans` is a reserved toggle with no body
     /// yet (#304). An explicit all-off config is the zero-cost identity singleton (deliberate darkening).
-    private InvocationStrategy configuredStrategy(ObservabilityStrategyCell cell,
-                                                  AspectObservabilityConfig config) {
+    private InvocationStrategy configuredStrategy(ObservabilityStrategyCell cell, AspectObservabilityConfig config) {
         return config.allOff()
                ? InvocationStrategy.IDENTITY
                : baseline.compose(innerFacet(cell, config),

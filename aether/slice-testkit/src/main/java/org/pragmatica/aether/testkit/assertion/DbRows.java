@@ -37,7 +37,9 @@ public final class DbRows {
     /// return the list for AssertJ/JUnit assertions.
     @TerminalOperation
     public <T> List<T> map(Fn1<T, DbRow> mapper) {
-        return connector.queryList(sql, accessor -> Result.success(mapper.apply(new LiveDbRow(accessor))), params)
+        return connector.queryList(sql,
+                                   accessor -> Result.success(mapper.apply(new LiveDbRow(accessor))),
+                                   params)
                         .await(TIMEOUT)
                         .or(List.of());
     }
@@ -45,23 +47,20 @@ public final class DbRows {
     /// Number of rows returned.
     @TerminalOperation
     public int count() {
-        return map(row -> Boolean.TRUE)
-                     .size();
+        return map(row -> Boolean.TRUE).size();
     }
 
     /// True if at least one row satisfies the predicate.
     @TerminalOperation
     public boolean anyMatch(Predicate<DbRow> predicate) {
-        return map(predicate::test)
-                     .stream()
-                     .anyMatch(Boolean::booleanValue);
+        return map(predicate::test).stream()
+                  .anyMatch(Boolean::booleanValue);
     }
 
     /// True if every returned row satisfies the predicate (vacuously true for no rows).
     @TerminalOperation
     public boolean allMatch(Predicate<DbRow> predicate) {
-        return map(predicate::test)
-                     .stream()
-                     .allMatch(Boolean::booleanValue);
+        return map(predicate::test).stream()
+                  .allMatch(Boolean::booleanValue);
     }
 }

@@ -15,13 +15,13 @@ import org.pragmatica.lang.type.TypeToken;
 /// silently returning a broken handle.
 enum NoOpSliceInvoker implements SliceInvokerFacade {
     INSTANCE;
-
     @Override
     public <R, T> Result<MethodHandle<R, T>> methodHandle(String sliceArtifact,
                                                           String methodName,
                                                           TypeToken<T> requestType,
                                                           TypeToken<R> responseType) {
-        return new TestKitError.UnscriptedInteraction("Slice-to-slice invocation is not supported by the slice test kit MVP: "
-                                                      + sliceArtifact + "." + methodName + "() (assumption A6)").result();
+        return new TestKitError.UnscriptedInteraction("Slice-to-slice invocation is not supported by the slice test kit MVP: " + sliceArtifact
+                                                     + "." + methodName
+                                                     + "() (assumption A6)").result();
     }
 }

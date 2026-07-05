@@ -7,6 +7,7 @@ package org.pragmatica.aether.slice.mapping;
 import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Result;
 
+
 /// Pure, reflection-free, boundary-neutral descriptor of how a value object `T` maps to and from a
 /// single primitive representation `P`. It is the pair of functions a value object already owns:
 ///

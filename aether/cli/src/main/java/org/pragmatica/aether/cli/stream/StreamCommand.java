@@ -278,7 +278,9 @@ public class StreamCommand implements Runnable {
                                                                                 new Column("DECLARED",
                                                                                            "partitionsDeclared",
                                                                                            9),
-                                                                                new Column("RINGS", "ringsMaterialized", 6),
+                                                                                new Column("RINGS",
+                                                                                           "ringsMaterialized",
+                                                                                           6),
                                                                                 new Column("DEFERRED",
                                                                                            "partitionsDeferred",
                                                                                            9),
@@ -295,7 +297,9 @@ public class StreamCommand implements Runnable {
 
     private static int fetchHydration(AetherCli cli) {
         var response = cli.fetch(ManagementRoute.STREAM_HYDRATION, List.of());
-        var errorCode = OutputFormatter.checkResponseError(response, cli.outputOptions(), "Failed to load hydration state");
+        var errorCode = OutputFormatter.checkResponseError(response,
+                                                           cli.outputOptions(),
+                                                           "Failed to load hydration state");
 
         if (errorCode >= 0) {
             return mapHttpErrorOrFallback(response, errorCode);

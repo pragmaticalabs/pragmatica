@@ -59,6 +59,7 @@ import static org.pragmatica.lang.Unit.unit;
 public final class StreamPartitionManager implements AutoCloseable {
     private static final long DEFAULT_MAX_TOTAL_BYTES = 128 * 1024 * 1024L;
     private static final TimeSpan COMMIT_TIMEOUT = TimeSpan.timeSpan(10).seconds();
+
     private static final Logger log = LoggerFactory.getLogger(StreamPartitionManager.class);
 
     /// Absolute per-stream partition ceiling (#265 increment 4, spec §7/§10). Enforced PRE-COMMIT in
@@ -482,7 +483,8 @@ public final class StreamPartitionManager implements AutoCloseable {
                                       evictionListener,
                                       bytes -> reserveForGrowth(config, bytes),
                                       this::release,
-                                      partition -> shouldMaterialize(config.name(), partition),
+                                      partition -> shouldMaterialize(config.name(),
+                                                                     partition),
                                       walBaseDir,
                                       lastSealedOffset)
                           .onFailure(_ -> release(floorBytes))
@@ -712,7 +714,8 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// kept). Equal or weaker configs keep the existing entry (the `computeIfAbsent` idempotence this
     /// replaces).
     private StreamEntry adoptIfMoreDurable(StreamConfig config, StreamEntry existing) {
-        return config.partitions() == existing.config().partitions() && strongerDurability(config, existing.config())
+        return config.partitions() == existing.config()
+                                              .partitions() && strongerDurability(config, existing.config())
                ? adoptConfig(config, existing)
                : existing;
     }
@@ -758,7 +761,6 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// {@link #deferHydration}). The growth seam still gates every later segment against the pool normally.
     private StreamEntry hydrateEntry(StreamConfig config) {
         reportOverCeilingIfViolating(config);
-
         var floorBytes = materializedFloorBytes(config);
 
         if (floorBytes > 0 && !tryReserve(floorBytes)) {
@@ -773,7 +775,8 @@ public final class StreamPartitionManager implements AutoCloseable {
                                       evictionListener,
                                       bytes -> reserveForGrowth(config, bytes),
                                       this::release,
-                                      partition -> shouldMaterialize(config.name(), partition),
+                                      partition -> shouldMaterialize(config.name(),
+                                                                     partition),
                                       walBaseDir,
                                       lastSealedOffset)
                           .onSuccess(StreamEntry::markCommitted)
@@ -792,7 +795,6 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// so the follower's later createStream still short-circuits.
     private StreamEntry deferHydration(StreamConfig config, long floorBytes) {
         reportHydrationDeferred(config, floorBytes);
-
         var entry = StreamEntry.metadataOnly(config);
 
         entry.markCommitted();
@@ -910,7 +912,9 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// publish must await `minSyncReplicas - 1` distinct non-self replica acks. Read straight from the
     /// stream's committed config so the REST publish path can gate on the stream's durability setting.
     public int minSyncReplicasFor(String streamName) {
-        return option(streams.get(streamName)).map(entry -> entry.config().minSyncReplicas()).or(0);
+        return option(streams.get(streamName)).map(entry -> entry.config()
+                                                                 .minSyncReplicas())
+                     .or(0);
     }
 
     /// Append a backfilled event into the local partition ring WITHOUT re-triggering replication.
@@ -985,7 +989,9 @@ public final class StreamPartitionManager implements AutoCloseable {
             return new StreamError.PartitionOutOfRange(streamName, partition, entry.declaredPartitions()).result();
         }
 
-        return entry.ringFor(partition).fold(() -> materializeIfHeld(streamName, partition, entry), buffer -> success(buffer));
+        return entry.ringFor(partition)
+                    .fold(() -> materializeIfHeld(streamName, partition, entry),
+                          buffer -> success(buffer));
     }
 
     private Result<OffHeapRingBuffer> materializeIfHeld(String streamName, int partition, StreamEntry entry) {
@@ -1049,10 +1055,7 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// allocated / max budget and whether the pool is over budget.
     public HydrationSnapshot hydrationSnapshot() {
         var allocated = totalAllocatedBytes.get();
-        var streamViews = streams.entrySet()
-                                 .stream()
-                                 .map(e -> streamHydration(e.getKey(), e.getValue()))
-                                 .toList();
+        var streamViews = streams.entrySet().stream().map(e -> streamHydration(e.getKey(), e.getValue())).toList();
         var deferred = streamViews.stream().mapToLong(StreamHydration::partitionsDeferred).sum();
         var overCeiling = (int) streamViews.stream().filter(StreamHydration::overCeiling).count();
         var clusterSize = clusterSizeSupplier.getAsInt();
@@ -1101,7 +1104,8 @@ public final class StreamPartitionManager implements AutoCloseable {
     private Map<ReplicaSetController.Role, Long> roleCounts(String streamName, int partitions) {
         return IntStream.range(0, partitions)
                         .mapToObj(partition -> placementRoleSupplier.roleFor(streamName, partition))
-                        .collect(Collectors.groupingBy(role -> role, Collectors.counting()));
+                        .collect(Collectors.groupingBy(role -> role,
+                                                       Collectors.counting()));
     }
 
     /// Adapt this manager to the narrow {@link org.pragmatica.aether.stream.replication.StreamCatalog}
@@ -1237,7 +1241,8 @@ public final class StreamPartitionManager implements AutoCloseable {
             return new StreamError.PartitionOutOfRange(streamName, partition, entry.declaredPartitions()).result();
         }
 
-        return entry.ringFor(partition).toResult(StreamError.General.PARTITION_NOT_LOCAL);
+        return entry.ringFor(partition)
+                    .toResult(StreamError.General.PARTITION_NOT_LOCAL);
     }
 
     private static StreamInfo buildStreamInfo(String name, StreamEntry entry) {
@@ -1321,7 +1326,10 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// (metadata-only on non-replicas), so the local `streams` map is a full cluster view. Shared by the
     /// create-time aggregate guard ({@link #enforceAggregateGuard}) and the hydration snapshot's headroom.
     private long currentAggregateSlots() {
-        return streams.values().stream().mapToLong(entry -> partitionSlots(entry.config())).sum();
+        return streams.values()
+                      .stream()
+                      .mapToLong(entry -> partitionSlots(entry.config()))
+                      .sum();
     }
 
     private static long partitionSlots(StreamConfig config) {
@@ -1331,7 +1339,9 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// Largest declared `replicas` across known streams (min 1) — the `maxDeclaredReplicas` factor of the
     /// aggregate guard `100 × nodes × maxDeclaredReplicas` (spec §10).
     private int maxDeclaredReplicas() {
-        return Math.max(1, streams.values().stream().mapToInt(entry -> entry.config().replicas()).max().orElse(1));
+        return Math.max(1,
+                        streams.values().stream().mapToInt(entry -> entry.config()
+                                                                         .replicas()).max().orElse(1));
     }
 
     /// The aggregate partition guard `100 × clusterSize × maxDeclaredReplicas`, or `-1` when the cluster size
@@ -1359,7 +1369,9 @@ public final class StreamPartitionManager implements AutoCloseable {
             return new StreamError.PartitionOutOfRange(streamName, partition, entry.declaredPartitions()).result();
         }
 
-        return entry.ringFor(partition).fold(() -> buildAndInstall(entry, partition), buffer -> success(buffer));
+        return entry.ringFor(partition)
+                    .fold(() -> buildAndInstall(entry, partition),
+                          buffer -> success(buffer));
     }
 
     /// Materialize ONE held partition's ring behind the SINGLE deferred-retry entry point (#265 increment
@@ -1585,7 +1597,9 @@ public final class StreamPartitionManager implements AutoCloseable {
 
         private String ceilingSummary() {
             return "Committed stream config over per-stream partition ceiling for stream '" + streamName
-                 + "' (" + partitions + " partitions, ceiling " + MAX_PARTITIONS_PER_STREAM_CEILING + ")";
+                 + "' (" + partitions
+                 + " partitions, ceiling " + MAX_PARTITIONS_PER_STREAM_CEILING
+                 + ")";
         }
 
         private String budgetSummary() {
@@ -1635,7 +1649,9 @@ public final class StreamPartitionManager implements AutoCloseable {
         }
 
         private String phaseLabel() {
-            return phase.name().toLowerCase().replace('_', '-');
+            return phase.name()
+                        .toLowerCase()
+                        .replace('_', '-');
         }
     }
 
@@ -1722,10 +1738,10 @@ public final class StreamPartitionManager implements AutoCloseable {
         /// of `[0, partitions)` for which `shouldMaterialize` holds (OWNER/REPLICA). Empty on a non-replica
         /// node.
         private static List<Integer> selectedPartitions(StreamConfig config, IntPredicate shouldMaterialize) {
-            return IntStream.range(0, config.partitions())
-                            .filter(shouldMaterialize)
-                            .boxed()
-                            .toList();
+            return IntStream.range(0,
+                                   config.partitions()).filter(shouldMaterialize)
+                                  .boxed()
+                                  .toList();
         }
 
         private static List<Result<OffHeapRingBuffer>> buildRings(StreamConfig config,
@@ -1739,10 +1755,10 @@ public final class StreamPartitionManager implements AutoCloseable {
         }
 
         private static Result<OffHeapRingBuffer> buildRing(StreamConfig config,
-                                                          int partition,
-                                                          EvictionListener listener,
-                                                          LongPredicate reserve,
-                                                          LongConsumer release) {
+                                                           int partition,
+                                                           EvictionListener listener,
+                                                           LongPredicate reserve,
+                                                           LongConsumer release) {
             var retention = config.retention();
 
             return OffHeapRingBuffer.offHeapRingBuffer(config.name(),
@@ -1760,35 +1776,36 @@ public final class StreamPartitionManager implements AutoCloseable {
         /// per-partition WAL and replays the un-sealed tail (W4/W6). On any failure the ring is freed
         /// WITHOUT seam-release (the manager releases the reserved floor lump) so there is no Arena leak.
         static Result<MaterializedPartition> materializeOne(StreamConfig config,
-                                                           int partition,
-                                                           EvictionListener listener,
-                                                           LongPredicate reserve,
-                                                           LongConsumer release,
-                                                           Option<Path> walBaseDir,
-                                                           LastSealedOffsetSource lastSealedOffset) {
-            return buildRing(config, partition, listener, reserve, release)
-                         .mapError(_ -> StreamError.General.STREAM_MEMORY_EXCEEDED)
-                         .flatMap(ring -> openAndRecoverOne(config, partition, ring, walBaseDir, lastSealedOffset));
+                                                            int partition,
+                                                            EvictionListener listener,
+                                                            LongPredicate reserve,
+                                                            LongConsumer release,
+                                                            Option<Path> walBaseDir,
+                                                            LastSealedOffsetSource lastSealedOffset) {
+            return buildRing(config, partition, listener, reserve, release).mapError(_ -> StreamError.General.STREAM_MEMORY_EXCEEDED)
+                            .flatMap(ring -> openAndRecoverOne(config, partition, ring, walBaseDir, lastSealedOffset));
         }
 
         private static Result<MaterializedPartition> openAndRecoverOne(StreamConfig config,
-                                                                      int partition,
-                                                                      OffHeapRingBuffer ring,
-                                                                      Option<Path> walBaseDir,
-                                                                      LastSealedOffsetSource lastSealedOffset) {
-            return openWal(config, partition, walBaseDir)
-                         .onFailure(_ -> ring.closeWithoutRelease())
-                         .flatMap(wal -> recoverOne(config, partition, ring, wal, lastSealedOffset));
+                                                                       int partition,
+                                                                       OffHeapRingBuffer ring,
+                                                                       Option<Path> walBaseDir,
+                                                                       LastSealedOffsetSource lastSealedOffset) {
+            return openWal(config, partition, walBaseDir).onFailure(_ -> ring.closeWithoutRelease())
+                          .flatMap(wal -> recoverOne(config, partition, ring, wal, lastSealedOffset));
         }
 
         private static Result<MaterializedPartition> recoverOne(StreamConfig config,
-                                                              int partition,
-                                                              OffHeapRingBuffer ring,
-                                                              Option<PartitionWal> wal,
-                                                              LastSealedOffsetSource lastSealedOffset) {
-            return recoverPartition(config.name(), partition, ring, wal, lastSealedOffset)
-                         .map(_ -> new MaterializedPartition(ring, wal))
-                         .onFailure(_ -> closeRingAndWal(ring, wal));
+                                                                int partition,
+                                                                OffHeapRingBuffer ring,
+                                                                Option<PartitionWal> wal,
+                                                                LastSealedOffsetSource lastSealedOffset) {
+            return recoverPartition(config.name(),
+                                    partition,
+                                    ring,
+                                    wal,
+                                    lastSealedOffset).map(_ -> new MaterializedPartition(ring, wal))
+                                   .onFailure(_ -> closeRingAndWal(ring, wal));
         }
 
         @Contract
@@ -1804,7 +1821,8 @@ public final class StreamPartitionManager implements AutoCloseable {
             var map = new ConcurrentHashMap<Integer, MaterializedPartition>();
 
             for (int i = 0; i < selected.size(); i++) {
-                map.put(selected.get(i), new MaterializedPartition(rings.get(i), wals.get(i)));
+                map.put(selected.get(i),
+                        new MaterializedPartition(rings.get(i), wals.get(i)));
             }
 
             var now = System.currentTimeMillis();
@@ -1823,9 +1841,12 @@ public final class StreamPartitionManager implements AutoCloseable {
                                                          List<OffHeapRingBuffer> rings,
                                                          Option<Path> walBaseDir,
                                                          LastSealedOffsetSource lastSealedOffset) {
-            return openWals(config, selected, walBaseDir)
-                         .flatMap(wals -> recoverWals(config, selected, rings, wals, lastSealedOffset))
-                         .map(wals -> entryOf(config, selected, rings, wals));
+            return openWals(config, selected, walBaseDir).flatMap(wals -> recoverWals(config,
+                                                                                      selected,
+                                                                                      rings,
+                                                                                      wals,
+                                                                                      lastSealedOffset))
+                           .map(wals -> entryOf(config, selected, rings, wals));
         }
 
         /// Replay every partition's un-sealed WAL tail into its fresh ring (streaming-persistence W4),
@@ -1910,9 +1931,7 @@ public final class StreamPartitionManager implements AutoCloseable {
         private static Result<List<Option<PartitionWal>>> openSelectedWals(StreamConfig config,
                                                                            List<Integer> selected,
                                                                            Path baseDir) {
-            var results = selected.stream()
-                                  .map(partition -> openPartitionWal(baseDir, config.name(), partition).map(Option::some))
-                                  .toList();
+            var results = selected.stream().map(partition -> openPartitionWal(baseDir, config.name(), partition).map(Option::some)).toList();
 
             return Result.allOf(results).onFailure(_ -> closeOpenedWals(results));
         }
@@ -1922,7 +1941,9 @@ public final class StreamPartitionManager implements AutoCloseable {
         private static Result<Option<PartitionWal>> openWal(StreamConfig config,
                                                             int partition,
                                                             Option<Path> walBaseDir) {
-            return walBaseDir.map(baseDir -> openPartitionWal(baseDir, config.name(), partition).map(Option::some))
+            return walBaseDir.map(baseDir -> openPartitionWal(baseDir,
+                                                              config.name(),
+                                                              partition).map(Option::some))
                              .or(() -> success(Option.none()));
         }
 
@@ -1966,7 +1987,10 @@ public final class StreamPartitionManager implements AutoCloseable {
         /// All rings actually materialized on this node (the OWNER/REPLICA partitions), in no particular
         /// order. Used by telemetry / release accounting, which sum only over held rings.
         List<OffHeapRingBuffer> materializedRings() {
-            return materialized.values().stream().map(MaterializedPartition::ring).toList();
+            return materialized.values()
+                               .stream()
+                               .map(MaterializedPartition::ring)
+                               .toList();
         }
 
         /// Count of partition rings actually built locally (`≤ declaredPartitions`). Diverges from the
@@ -2046,7 +2070,12 @@ public final class StreamPartitionManager implements AutoCloseable {
         /// re-reserved. Called only from the notification-thread config reconcile
         /// ({@link StreamPartitionManager#adoptConfig}) with a partition-count-compatible config.
         StreamEntry withConfig(StreamConfig newConfig) {
-            return new StreamEntry(newConfig, declaredPartitions, materialized, createdAt, lastActivityRef, configCommitted);
+            return new StreamEntry(newConfig,
+                                   declaredPartitions,
+                                   materialized,
+                                   createdAt,
+                                   lastActivityRef,
+                                   configCommitted);
         }
 
         private static EvictionPolicy deriveEvictionPolicy(StreamConfig config) {

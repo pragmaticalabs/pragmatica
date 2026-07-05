@@ -4,7 +4,6 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.testkit.container;
 
-
 /// Entry point for testcontainer-backed resources (spec §5.2). Opt into a real backend per resource
 /// with `.withContainer(type, section, Containers.postgres()...)`.
 public sealed interface Containers {

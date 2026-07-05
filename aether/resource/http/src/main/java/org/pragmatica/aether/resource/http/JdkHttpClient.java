@@ -53,7 +53,8 @@ final class JdkHttpClient implements HttpClient {
     // NOTE: despite the name, this type now also produces a Netty-backed HttpOperations when
     //       HttpClientConfig.backend() selects NETTY. Renaming JdkHttpClient is out of scope.
     static HttpOperations createOperations(HttpClientConfig config) {
-        return switch (config.backend().or(HttpClientConfig.HttpBackend.JDK)) {
+        return switch (config.backend()
+                             .or(HttpClientConfig.HttpBackend.JDK)) {
             case JDK -> jdkOperations(config);
             case NETTY -> NettyHttpOperations.nettyHttpOperations();
         };

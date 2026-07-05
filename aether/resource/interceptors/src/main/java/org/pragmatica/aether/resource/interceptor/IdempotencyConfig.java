@@ -11,10 +11,7 @@ import static org.pragmatica.lang.Verify.ensure;
 
 
 public record IdempotencyConfig(String storeName, int retentionSeconds, int maxEntries, CacheMode mode) {
-    private static final IdempotencyConfig DEFAULTS = new IdempotencyConfig("default",
-                                                                            3600,
-                                                                            10_000,
-                                                                            CacheMode.LOCAL);
+    private static final IdempotencyConfig DEFAULTS = new IdempotencyConfig("default", 3600, 10_000, CacheMode.LOCAL);
 
     public static IdempotencyConfig idempotencyConfig() {
         return DEFAULTS;

@@ -409,7 +409,9 @@ public final class ClusterSyncContext {
         // unreachable hint would be self-defeating. The `PingTimeout` signal above is still emitted —
         // it is advisory liveness telemetry the SWIM-gated FSM arbitrates independently.
         if (collector.peerLocallyAlive(peer)) {
-            log.debug("ClusterSync: skipping ping-timeout unreachable hint for {} — SWIM says ALIVE (missed={})", peer, missed);
+            log.debug("ClusterSync: skipping ping-timeout unreachable hint for {} — SWIM says ALIVE (missed={})",
+                      peer,
+                      missed);
 
             return;
         }

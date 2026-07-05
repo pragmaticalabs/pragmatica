@@ -16,7 +16,6 @@ import org.pragmatica.lang.Promise;
 public interface ContainerResource<R> {
     /// The runtime type the generated factory resolves — the map key's type component.
     Class<R> resourceType();
-
     /// Start the container and provision the real connector (with migrations applied).
     Promise<R> provision();
 

@@ -70,7 +70,9 @@ public final class ProcessorError {
     }
 
     public static String unlistedMigration(String fileName, String schemaPath) {
-        return PREFIX + "Migration '" + fileName + "' in '" + schemaPath
+        return PREFIX
+             + "Migration '" + fileName
+             + "' in '" + schemaPath
              + "' is not listed in migrations.list (kept via auto-discovery)";
     }
 
@@ -80,16 +82,21 @@ public final class ProcessorError {
 
     public static String missingValueMappingForParam(String param, String type) {
         return PREFIX
-             + "Parameter '" + param + "' has type '" + type
+             + "Parameter '" + param
+             + "' has type '" + type
              + "' which is neither a supported column type nor a value object exposing "
-             + "'static ValueMapping<" + type + ", P> valueMapping()'. Add a ValueMapping or use a raw column type.";
+             + "'static ValueMapping<" + type
+             + ", P> valueMapping()'. Add a ValueMapping or use a raw column type.";
     }
 
     public static String missingValueMappingForField(String field, String type, String recordType) {
         return PREFIX
-             + "Field '" + field + "' of return type " + recordType + " has type '" + type
+             + "Field '" + field
+             + "' of return type " + recordType
+             + " has type '" + type
              + "' which is neither a supported column type nor a value object exposing "
-             + "'static ValueMapping<" + type + ", P> valueMapping()'. Add a ValueMapping or use a raw column type.";
+             + "'static ValueMapping<" + type
+             + ", P> valueMapping()'. Add a ValueMapping or use a raw column type.";
     }
 
     public static String sqlConnectorWithQueryAnnotation(String interfaceName) {

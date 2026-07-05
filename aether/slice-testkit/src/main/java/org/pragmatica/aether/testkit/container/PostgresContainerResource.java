@@ -13,6 +13,7 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.utils.Causes;
+
 import org.testcontainers.containers.PostgreSQLContainer;
 
 import static org.pragmatica.lang.Option.none;
@@ -59,8 +60,7 @@ public final class PostgresContainerResource implements ContainerResource<PgSqlC
 
     @Override
     public Promise<PgSqlConnector> provision() {
-        return Promise.lift(Causes::fromThrowable, this::startContainer)
-                      .flatMap(this::provisionConnector);
+        return Promise.lift(Causes::fromThrowable, this::startContainer).flatMap(this::provisionConnector);
     }
 
     /// Container lifecycle stop — fire-and-forget void mutation on an external API.
@@ -81,8 +81,8 @@ public final class PostgresContainerResource implements ContainerResource<PgSqlC
 
     private Promise<PgSqlConnector> provisionConnector(PostgreSQLContainer<?> postgres) {
         return connectorConfig(postgres).async()
-                                        .flatMap(config -> new PgSqlConnectorFactory().provision(config))
-                                        .flatMap(this::applySchema);
+                              .flatMap(config -> new PgSqlConnectorFactory().provision(config))
+                              .flatMap(this::applySchema);
     }
 
     private static Result<DatabaseConnectorConfig> connectorConfig(PostgreSQLContainer<?> postgres) {
@@ -102,8 +102,7 @@ public final class PostgresContainerResource implements ContainerResource<PgSqlC
     }
 
     private Promise<PgSqlConnector> applySchema(PgSqlConnector connector) {
-        return schemaLocation.map(location -> SchemaMigrations.apply(connector, location)
-                                                              .map(_ -> connector))
+        return schemaLocation.map(location -> SchemaMigrations.apply(connector, location).map(_ -> connector))
                              .or(Promise.success(connector));
     }
 }

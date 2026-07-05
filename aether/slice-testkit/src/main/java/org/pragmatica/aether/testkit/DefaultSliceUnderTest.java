@@ -29,9 +29,7 @@ import static org.pragmatica.lang.Option.option;
 /// Default [SliceUnderTest]. Capture handles are resolved by looking up the resource map at the same
 /// `(type, section)` coordinate the generated factory used — so a `CapturingPublisher` at topic
 /// `T` is found under `(Publisher, T)`, a `FakeHttpClient` under `(HttpClient, section)`, etc.
-record DefaultSliceUnderTest<T>(T client,
-                                Map<ResourceKey, Object> resources,
-                                List<ContainerResource<?>> containers) implements SliceUnderTest<T> {
+record DefaultSliceUnderTest<T>(T client, Map<ResourceKey, Object> resources, List<ContainerResource<?>> containers) implements SliceUnderTest<T> {
     static <T> SliceUnderTest<T> defaultSliceUnderTest(T client,
                                                        Map<ResourceKey, Object> resources,
                                                        List<ContainerResource<?>> containers) {
@@ -73,22 +71,29 @@ record DefaultSliceUnderTest<T>(T client,
     }
 
     private <X> X lookup(Class<?> type, String section, Class<X> expected) {
-        return option(resources.get(new ResourceKey(type, section)))
-                     .filter(expected::isInstance)
+        return option(resources.get(new ResourceKey(type, section))).filter(expected::isInstance)
                      .map(expected::cast)
-                     .fold(() -> TestKitFailures.raise(missing(expected.getSimpleName(), type, section)), value -> value);
+                     .fold(() -> TestKitFailures.raise(missing(expected.getSimpleName(),
+                                                               type,
+                                                               section)),
+                           value -> value);
     }
 
     private SqlConnector connector(String section) {
-        return option(resources.get(new ResourceKey(PgSqlConnector.class, section)))
-                     .orElse(() -> option(resources.get(new ResourceKey(SqlConnector.class, section))))
+        return option(resources.get(new ResourceKey(PgSqlConnector.class, section))).orElse(() -> option(resources.get(new ResourceKey(SqlConnector.class,
+                                                                                                                                       section))))
                      .filter(SqlConnector.class::isInstance)
                      .map(SqlConnector.class::cast)
-                     .fold(() -> TestKitFailures.raise(missing(SqlConnector.class.getSimpleName(), SqlConnector.class, section)), value -> value);
+                     .fold(() -> TestKitFailures.raise(missing(SqlConnector.class.getSimpleName(),
+                                                               SqlConnector.class,
+                                                               section)),
+                           value -> value);
     }
 
     private static Cause missing(String expected, Class<?> type, String section) {
-        return new TestKitError.UnscriptedInteraction("No " + expected + " registered for " + type.getSimpleName() + ":" + section
-                                                      + " — register it before build() to assert on it.");
+        return new TestKitError.UnscriptedInteraction("No " + expected
+                                                     + " registered for " + type.getSimpleName()
+                                                     + ":" + section
+                                                     + " — register it before build() to assert on it.");
     }
 }

@@ -419,14 +419,11 @@ public final class StreamApiRoutes implements RouteSource {
     /// management default over it. Falls back to the management default only for a genuinely
     /// management-only stream with no committed entry.
     private Result<org.pragmatica.lang.Unit> ensureStreamExists(String streamName) {
-        var config = nodeSupplier.get()
-                                 .kvStore()
-                                 .getTyped(StreamConfigKey.streamConfigKey(streamName), StreamConfigValue.class)
-                                 .map(StreamConfigValue::config)
-                                 .or(() -> StreamConfig.streamConfig(streamName,
-                                                                     DEFAULT_PARTITIONS,
-                                                                     MANAGEMENT_API_RETENTION,
-                                                                     "latest"));
+        var config = nodeSupplier.get().kvStore().getTyped(StreamConfigKey.streamConfigKey(streamName),
+                                                           StreamConfigValue.class).map(StreamConfigValue::config).or(() -> StreamConfig.streamConfig(streamName,
+                                                                                                                                                      DEFAULT_PARTITIONS,
+                                                                                                                                                      MANAGEMENT_API_RETENTION,
+                                                                                                                                                      "latest"));
 
         return streamManager().ensureStreamMaterialized(config)
                             .recover(_ -> org.pragmatica.lang.Unit.unit());

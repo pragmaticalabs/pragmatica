@@ -28,8 +28,8 @@ public record MapResourceProvider(Map<ResourceKey, Object> resources) implements
     @Override
     @SuppressWarnings("unchecked")
     public <T> Promise<T> provide(Class<T> resourceType, String configSection) {
-        return option((T) resources.get(new ResourceKey(resourceType, configSection)))
-                     .async(new TestKitError.MissingResource(resourceType.getName(), configSection));
+        return option((T) resources.get(new ResourceKey(resourceType, configSection))).async(new TestKitError.MissingResource(resourceType.getName(),
+                                                                                                                              configSection));
     }
 
     @Override

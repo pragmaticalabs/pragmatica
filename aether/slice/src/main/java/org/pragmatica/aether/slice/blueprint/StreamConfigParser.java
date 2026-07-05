@@ -246,9 +246,10 @@ public interface StreamConfigParser {
                                                              String section,
                                                              String streamName,
                                                              StreamVersionSpec spec) {
-        return validatePartitionCeiling(streamName, parseStreamSection(doc, section, streamName))
-                   .flatMap(config -> validateReplication(streamName, config))
-                   .map(config -> StreamResource.owned(streamName, spec, config));
+        return validatePartitionCeiling(streamName,
+                                        parseStreamSection(doc, section, streamName)).flatMap(config -> validateReplication(streamName,
+                                                                                                                            config))
+                                       .map(config -> StreamResource.owned(streamName, spec, config));
     }
 
     /// Spec §7/§10: a blueprint declaring more than [#MAX_PARTITIONS_PER_STREAM_CEILING] partitions for one
@@ -258,9 +259,9 @@ public interface StreamConfigParser {
     /// applied there too.
     private static Result<StreamConfig> validatePartitionCeiling(String streamName, StreamConfig config) {
         if (config.partitions() > MAX_PARTITIONS_PER_STREAM_CEILING) {
-            return Causes.<Cause> cause("Stream resource '" + streamName + "' declares " + config.partitions()
-                                       + " partitions, over the per-stream ceiling of "
-                                       + MAX_PARTITIONS_PER_STREAM_CEILING).result();
+            return Causes.<Cause> cause("Stream resource '" + streamName
+                                       + "' declares " + config.partitions()
+                                       + " partitions, over the per-stream ceiling of " + MAX_PARTITIONS_PER_STREAM_CEILING).result();
         }
 
         return success(config);
@@ -273,13 +274,15 @@ public interface StreamConfigParser {
     /// path used for the rest of the parser's config rejections.
     private static Result<StreamConfig> validateReplication(String streamName, StreamConfig config) {
         if (config.replicas() < 1) {
-            return Causes.<Cause> cause("Stream resource '" + streamName + "' has replicas="
-                                       + config.replicas() + "; replicas must be >= 1").result();
+            return Causes.<Cause> cause("Stream resource '" + streamName
+                                       + "' has replicas=" + config.replicas()
+                                       + "; replicas must be >= 1").result();
         }
 
         if (config.minSyncReplicas() > config.replicas()) {
-            return Causes.<Cause> cause("Stream resource '" + streamName + "' has min-sync-replicas="
-                                       + config.minSyncReplicas() + " > replicas=" + config.replicas()
+            return Causes.<Cause> cause("Stream resource '" + streamName
+                                       + "' has min-sync-replicas=" + config.minSyncReplicas()
+                                       + " > replicas=" + config.replicas()
                                        + "; min-sync-replicas must not exceed replicas").result();
         }
 

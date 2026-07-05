@@ -30,6 +30,7 @@ import static org.pragmatica.lang.Option.some;
 /// the honest-guarantees boundary of the fake path (spec §4.3).
 final class StatementRecorder {
     private static final int DEFAULT_AFFECTED = 1;
+
     private static final DatabaseConnectorConfig FAKE_CONFIG = new DatabaseConnectorConfig(some("testkit"),
                                                                                            some(DatabaseType.POSTGRESQL),
                                                                                            some("localhost"),
@@ -69,22 +70,22 @@ final class StatementRecorder {
         recordStatement(sql, params);
 
         return matchRows(sql).flatMap(rows -> firstRow(rows, sql))
-                             .flatMap(row -> mapper.map(new MapRowAccessor(row)))
-                             .async();
+                        .flatMap(row -> mapper.map(new MapRowAccessor(row)))
+                        .async();
     }
 
     <T> Promise<Option<T>> queryOptional(String sql, RowMapper<T> mapper, Object[] params) {
         recordStatement(sql, params);
 
         return matchRows(sql).flatMap(rows -> mapOptional(mapper, rows))
-                             .async();
+                        .async();
     }
 
     <T> Promise<List<T>> queryList(String sql, RowMapper<T> mapper, Object[] params) {
         recordStatement(sql, params);
 
         return matchRows(sql).flatMap(rows -> mapAll(mapper, rows))
-                             .async();
+                        .async();
     }
 
     Promise<Integer> update(String sql, Object[] params) {
@@ -95,7 +96,6 @@ final class StatementRecorder {
 
     Promise<int[]> batch(String sql, List<Object[]> paramsList) {
         paramsList.forEach(params -> recordStatement(sql, params));
-
         var counts = new int[paramsList.size()];
 
         Arrays.fill(counts, findScript(updateScripts, sql).or(DEFAULT_AFFECTED));
@@ -113,20 +113,20 @@ final class StatementRecorder {
     }
 
     private static Result<Map<String, Object>> firstRow(List<Map<String, Object>> rows, String sql) {
-        return option(rows.isEmpty() ? null : rows.getFirst())
-                     .toResult(new TestKitError.UnscriptedInteraction("Scripted result set is empty for SQL: " + sql));
+        return option(rows.isEmpty()
+                      ? null
+                      : rows.getFirst()).toResult(new TestKitError.UnscriptedInteraction("Scripted result set is empty for SQL: " + sql));
     }
 
     private static <T> Result<Option<T>> mapOptional(RowMapper<T> mapper, List<Map<String, Object>> rows) {
         return rows.isEmpty()
                ? Result.success(none())
-               : mapper.map(new MapRowAccessor(rows.getFirst())).map(Option::some);
+               : mapper.map(new MapRowAccessor(rows.getFirst()))
+                       .map(Option::some);
     }
 
     private static <T> Result<List<T>> mapAll(RowMapper<T> mapper, List<Map<String, Object>> rows) {
-        return Result.allOf(rows.stream()
-                                .map(row -> mapper.map(new MapRowAccessor(row)))
-                                .toList());
+        return Result.allOf(rows.stream().map(row -> mapper.map(new MapRowAccessor(row))).toList());
     }
 
     private static <V> Option<V> findScript(Map<String, V> scripts, String sql) {

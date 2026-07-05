@@ -133,7 +133,9 @@ public record ObservabilityBaseline(Option<AdaptiveSampler> sampler,
 
         return capture.traced()
                ? inner.onSuccess(_ -> onSuccess(context, capture))
-                      .onFailure(cause -> onFailure(context, capture, cause.message()))
+                      .onFailure(cause -> onFailure(context,
+                                                    capture,
+                                                    cause.message()))
                : inner.onFailure(cause -> onFailure(context, capture, cause.message()));
     }
 

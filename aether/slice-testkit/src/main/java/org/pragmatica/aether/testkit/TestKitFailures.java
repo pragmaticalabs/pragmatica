@@ -10,7 +10,7 @@ import org.pragmatica.lang.Cause;
 /// The single boundary where the kit surfaces a [Cause] as a JUnit test failure. Kept in one place
 /// so the rest of the kit stays exception-free and composes over `Result`/`Promise`.
 sealed interface TestKitFailures {
-    @SuppressWarnings("JBCT-EX-01") // sole throw site: turns a kit Cause into a test-failing AssertionError
+    @SuppressWarnings("JBCT-EX-01")  // sole throw site: turns a kit Cause into a test-failing AssertionError
     static <T> T raise(Cause cause) {
         throw new AssertionError(cause.message());
     }

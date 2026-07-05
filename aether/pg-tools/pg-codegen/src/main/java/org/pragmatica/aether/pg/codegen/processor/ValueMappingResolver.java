@@ -14,6 +14,7 @@ import javax.lang.model.element.TypeElement;
 import javax.lang.model.type.DeclaredType;
 import javax.lang.model.type.TypeMirror;
 
+
 /// Discovers the `ValueMapping` descriptor a value object declares, via the reflection-free
 /// convention that the value object exposes a `public static ValueMapping<Self, P> valueMapping()`
 /// method. The processor never invokes the method; it reads the declared return type at compile time
@@ -50,11 +51,11 @@ public final class ValueMappingResolver {
     /// Returns the `ValueMapping` binding for the given type, or empty when the type declares no
     /// conforming `static valueMapping()` method.
     public static Option<Binding> resolve(TypeMirror type) {
-        if (!(type instanceof DeclaredType declaredType)) {
+        if (! (type instanceof DeclaredType declaredType)) {
             return Option.empty();
         }
 
-        if (!(declaredType.asElement() instanceof TypeElement voType)) {
+        if (! (declaredType.asElement() instanceof TypeElement voType)) {
             return Option.empty();
         }
 
@@ -74,14 +75,11 @@ public final class ValueMappingResolver {
     }
 
     private static Option<Binding> bindingFor(TypeElement voType, ExecutableElement method) {
-        if (!method.getSimpleName().contentEquals("valueMapping")
-            || !method.getModifiers().contains(Modifier.STATIC)
-            || !method.getParameters().isEmpty()) {
+        if (!method.getSimpleName().contentEquals("valueMapping") || !method.getModifiers().contains(Modifier.STATIC) || !method.getParameters().isEmpty()) {
             return Option.empty();
         }
 
-        if (!(method.getReturnType() instanceof DeclaredType returnType)
-            || !returnType.asElement().getSimpleName().contentEquals("ValueMapping")) {
+        if (! (method.getReturnType() instanceof DeclaredType returnType) || !returnType.asElement().getSimpleName().contentEquals("ValueMapping")) {
             return Option.empty();
         }
 
@@ -91,6 +89,7 @@ public final class ValueMappingResolver {
             return Option.empty();
         }
 
-        return Option.present(new Binding(voType.getSimpleName().toString(), typeArgs.get(1).toString()));
+        return Option.present(new Binding(voType.getSimpleName().toString(),
+                                          typeArgs.get(1).toString()));
     }
 }

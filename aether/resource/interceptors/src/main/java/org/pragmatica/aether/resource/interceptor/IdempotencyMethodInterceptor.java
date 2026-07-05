@@ -42,7 +42,8 @@ import java.util.concurrent.ConcurrentHashMap;
 public record IdempotencyMethodInterceptor(CacheBackend store,
                                            ConcurrentHashMap<Object, Promise<Object>> claims,
                                            Fn1<Object, ?> keyExtractor) implements MethodInterceptor {
-    public static IdempotencyMethodInterceptor idempotencyMethodInterceptor(CacheBackend store, Fn1<Object, ?> keyExtractor) {
+    public static IdempotencyMethodInterceptor idempotencyMethodInterceptor(CacheBackend store,
+                                                                            Fn1<Object, ?> keyExtractor) {
         return new IdempotencyMethodInterceptor(store, new ConcurrentHashMap<>(), keyExtractor);
     }
 
@@ -53,20 +54,28 @@ public record IdempotencyMethodInterceptor(CacheBackend store,
 
     private <R, T> Promise<R> dedup(T request, Fn1<Promise<R>, T> method) {
         var key = extractKey(request);
-        var sentinel = Promise.<Object>promise();
+        var sentinel = Promise.<Object> promise();
         var claimed = claims.computeIfAbsent(key, _ -> sentinel);
 
-        return (Promise<R>) (claimed == sentinel ? runClaim(key, request, method, sentinel) : claimed);
+        return (Promise<R>)(claimed == sentinel
+                            ? runClaim(key, request, method, sentinel)
+                            : claimed);
     }
 
-    private <R, T> Promise<Object> runClaim(Object key, T request, Fn1<Promise<R>, T> method, Promise<Object> sentinel) {
+    private <R, T> Promise<Object> runClaim(Object key,
+                                            T request,
+                                            Fn1<Promise<R>, T> method,
+                                            Promise<Object> sentinel) {
         return store.get(key)
                     .flatMap(recorded -> resolveRecorded(recorded, key, request, method))
                     .onResultRun(() -> claims.remove(key, sentinel))
                     .onResult(sentinel::resolve);
     }
 
-    private <R, T> Promise<Object> resolveRecorded(Option<Object> recorded, Object key, T request, Fn1<Promise<R>, T> method) {
+    private <R, T> Promise<Object> resolveRecorded(Option<Object> recorded,
+                                                   Object key,
+                                                   T request,
+                                                   Fn1<Promise<R>, T> method) {
         return recorded.map(Promise::success)
                        .or(() -> run(key, request, method));
     }
@@ -83,6 +92,6 @@ public record IdempotencyMethodInterceptor(CacheBackend store,
 
     @SuppressWarnings("unchecked")
     private <T> Object extractKey(T request) {
-        return ((Fn1<Object, T>) (Fn1<?, ?>) keyExtractor).apply(request);
+        return ((Fn1<Object, T>)(Fn1<?, ?>) keyExtractor).apply(request);
     }
 }

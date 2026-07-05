@@ -22,7 +22,9 @@ public sealed interface HttpResults {
 
     /// A response with the given status code and string body.
     static HttpResult<String> status(int statusCode, String body) {
-        return new HttpResult<>(statusCode, HttpHeaders.of(Map.of(), HttpResults::acceptAll), body);
+        return new HttpResult<>(statusCode,
+                                HttpHeaders.of(Map.of(), HttpResults::acceptAll),
+                                body);
     }
 
     private static boolean acceptAll(String name, String value) {

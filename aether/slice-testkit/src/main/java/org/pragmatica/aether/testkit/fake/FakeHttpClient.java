@@ -84,8 +84,8 @@ public final class FakeHttpClient implements HttpClient {
     private Promise<HttpResult<String>> respond(String method, String path, Option<String> body) {
         calls.add(new HttpCall(method, path, body));
 
-        return option(scripts.get(new CallKey(method, path)))
-                     .async(new TestKitError.UnscriptedInteraction("No scripted HTTP " + method + " response for path: " + path));
+        return option(scripts.get(new CallKey(method, path))).async(new TestKitError.UnscriptedInteraction("No scripted HTTP " + method
+                                                                                                          + " response for path: " + path));
     }
 
     @Override
@@ -159,7 +159,10 @@ public final class FakeHttpClient implements HttpClient {
     }
 
     @Override
-    public <T> Promise<T> postJson(String path, Object body, TypeToken<T> responseType, Option<TypeToken<?>> errorType) {
+    public <T> Promise<T> postJson(String path,
+                                   Object body,
+                                   TypeToken<T> responseType,
+                                   Option<TypeToken<?>> errorType) {
         return unsupported("postJson " + path);
     }
 
@@ -169,7 +172,10 @@ public final class FakeHttpClient implements HttpClient {
     }
 
     @Override
-    public <T> Promise<T> patchJson(String path, Object body, TypeToken<T> responseType, Option<TypeToken<?>> errorType) {
+    public <T> Promise<T> patchJson(String path,
+                                    Object body,
+                                    TypeToken<T> responseType,
+                                    Option<TypeToken<?>> errorType) {
         return unsupported("patchJson " + path);
     }
 
@@ -185,7 +191,7 @@ public final class FakeHttpClient implements HttpClient {
 
     private <T> Promise<T> unsupported(String operation) {
         return new TestKitError.UnscriptedInteraction("FakeHttpClient scripts string-body HTTP only; " + operation
-                                                      + " is unsupported (MVP). Use onGet/onPost/... or a real backend.").promise();
+                                                     + " is unsupported (MVP). Use onGet/onPost/... or a real backend.").promise();
     }
 
     private record CallKey(String method, String path) {}

@@ -108,10 +108,10 @@ public sealed interface StreamError extends Cause {
         @Override
         public String message() {
             return "Materialize of %s[%d] deferred: per-partition floor %d bytes exceeds budget (%d available of %d)".formatted(streamName,
-                                                                                                                               partition,
-                                                                                                                               requestedBytes,
-                                                                                                                               availableBytes,
-                                                                                                                               maxTotalBytes);
+                                                                                                                                partition,
+                                                                                                                                requestedBytes,
+                                                                                                                                availableBytes,
+                                                                                                                                maxTotalBytes);
         }
     }
 
@@ -147,18 +147,14 @@ public sealed interface StreamError extends Cause {
     /// the presented config (retrying the same create without shrinking existing streams or growing the
     /// cluster always fails). `requestedSlots` is the projected cluster total; `guard`/`nodeCount`/`maxReplicas`
     /// frame the limit.
-    record PartitionCapExceeded(String streamName,
-                                long requestedSlots,
-                                long guard,
-                                int nodeCount,
-                                int maxReplicas) implements StreamError {
+    record PartitionCapExceeded(String streamName, long requestedSlots, long guard, int nodeCount, int maxReplicas) implements StreamError {
         @Override
         public String message() {
             return "Stream '%s' admission would raise cluster partition slots to %d, over the aggregate guard %d (100 × %d nodes × %d max-replicas)".formatted(streamName,
-                                                                                                                                                              requestedSlots,
-                                                                                                                                                              guard,
-                                                                                                                                                              nodeCount,
-                                                                                                                                                              maxReplicas);
+                                                                                                                                                               requestedSlots,
+                                                                                                                                                               guard,
+                                                                                                                                                               nodeCount,
+                                                                                                                                                               maxReplicas);
         }
     }
 

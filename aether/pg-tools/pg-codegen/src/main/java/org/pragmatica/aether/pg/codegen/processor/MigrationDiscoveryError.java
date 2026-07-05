@@ -6,6 +6,7 @@ package org.pragmatica.aether.pg.codegen.processor;
 
 import org.pragmatica.lang.Cause;
 
+
 /// Failures raised while discovering and ordering PostgreSQL migration files.
 public sealed interface MigrationDiscoveryError extends Cause {
     /// Two distinct files claim the same numeric version.

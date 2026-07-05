@@ -12,26 +12,31 @@ import org.pragmatica.aether.resource.db.RowMapper;
 record LiveDbRow(RowMapper.RowAccessor accessor) implements DbRow {
     @Override
     public String string(String column) {
-        return accessor.getString(column).or("");
+        return accessor.getString(column)
+                       .or("");
     }
 
     @Override
     public long integer(String column) {
-        return accessor.getLong(column).or(0L);
+        return accessor.getLong(column)
+                       .or(0L);
     }
 
     @Override
     public double number(String column) {
-        return accessor.getDouble(column).or(0.0);
+        return accessor.getDouble(column)
+                       .or(0.0);
     }
 
     @Override
     public boolean bool(String column) {
-        return accessor.getBoolean(column).or(false);
+        return accessor.getBoolean(column)
+                       .or(false);
     }
 
     @Override
     public byte[] bytes(String column) {
-        return accessor.getBytes(column).or(new byte[0]);
+        return accessor.getBytes(column)
+                       .or(new byte[0]);
     }
 }

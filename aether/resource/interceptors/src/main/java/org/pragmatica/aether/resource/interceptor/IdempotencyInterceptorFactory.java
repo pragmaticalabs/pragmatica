@@ -21,6 +21,7 @@ import static org.pragmatica.lang.Result.success;
 
 public final class IdempotencyInterceptorFactory implements ResourceFactory<IdempotencyMethodInterceptor, IdempotencyConfig> {
     private final Map<String, CacheBackend> storeRegistry = new ConcurrentHashMap<>();
+
     private final Map<String, ConcurrentHashMap<Object, Promise<Object>>> claimRegistry = new ConcurrentHashMap<>();
 
     @Override
@@ -46,9 +47,7 @@ public final class IdempotencyInterceptorFactory implements ResourceFactory<Idem
 
         return createStore(config, context).map(store -> storeRegistry.computeIfAbsent(config.storeName(),
                                                                                        _ -> store))
-                          .map(store -> new IdempotencyMethodInterceptor(store,
-                                                                         claims,
-                                                                         keyExtractor))
+                          .map(store -> new IdempotencyMethodInterceptor(store, claims, keyExtractor))
                           .async();
     }
 

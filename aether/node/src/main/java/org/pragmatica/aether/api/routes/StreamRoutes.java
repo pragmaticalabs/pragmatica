@@ -142,8 +142,7 @@ public final class StreamRoutes implements RouteSource {
                                                    PathParameter.aInteger())
                                          .toResult(this::replicaDetails)
                                          .asJson(),
-                         ManagementRoutes.<StreamHydrationResponse> route(ManagementRoute.STREAM_HYDRATION)
-                                         .toJson(this::streamHydration),
+                         ManagementRoutes.<StreamHydrationResponse> route(ManagementRoute.STREAM_HYDRATION).toJson(this::streamHydration),
                          ManagementRoutes.<PublishResponse> route(ManagementRoute.STREAM_PUBLISH)
                                          .withPath(PathParameter.aString())
                                          .withBody(PublishRequest.class)
@@ -265,7 +264,8 @@ public final class StreamRoutes implements RouteSource {
     }
 
     private static int roleCount(Map<Role, Long> roles, Role role) {
-        return roles.getOrDefault(role, 0L).intValue();
+        return roles.getOrDefault(role, 0L)
+                    .intValue();
     }
 
     private Promise<PublishResponse> publishEvent(String name, PublishRequest request) {
@@ -280,20 +280,24 @@ public final class StreamRoutes implements RouteSource {
         var payload = request.data().getBytes(StandardCharsets.UTF_8);
 
         return ensureStreamExists(name).async()
-                                       .flatMap(_ -> publishAndAwaitSync(name, payload));
+                                 .flatMap(_ -> publishAndAwaitSync(name, payload));
     }
 
     private Promise<PublishResponse> publishAndAwaitSync(String name, byte[] payload) {
-        return streamManager().publishLocal(name, 0, payload, System.currentTimeMillis())
-                              .async()
-                              .flatMap(offset -> awaitSyncBarrier(name, offset));
+        return streamManager().publishLocal(name,
+                                            0,
+                                            payload,
+                                            System.currentTimeMillis())
+                            .async()
+                            .flatMap(offset -> awaitSyncBarrier(name, offset));
     }
 
     private Promise<PublishResponse> awaitSyncBarrier(String name, long offset) {
         var minSyncReplicas = streamManager().minSyncReplicasFor(name);
 
         return minSyncReplicas > 1
-               ? streamManager().awaitReplication(name, 0, offset, minSyncReplicas - 1).map(_ -> new PublishResponse(offset))
+               ? streamManager().awaitReplication(name, 0, offset, minSyncReplicas - 1)
+                              .map(_ -> new PublishResponse(offset))
                : Promise.success(new PublishResponse(offset));
     }
 
@@ -346,14 +350,11 @@ public final class StreamRoutes implements RouteSource {
     /// committed config so the auto-create preserves RF; fall back to the management default only for a
     /// genuinely management-only stream that has no committed entry.
     private Result<Unit> materializeAbsentStream(String name) {
-        var config = nodeSupplier.get()
-                                 .kvStore()
-                                 .getTyped(StreamConfigKey.streamConfigKey(name), StreamConfigValue.class)
-                                 .map(StreamConfigValue::config)
-                                 .or(() -> StreamConfig.streamConfig(name,
-                                                                     DEFAULT_PARTITIONS,
-                                                                     MANAGEMENT_API_RETENTION,
-                                                                     "latest"));
+        var config = nodeSupplier.get().kvStore().getTyped(StreamConfigKey.streamConfigKey(name),
+                                                           StreamConfigValue.class).map(StreamConfigValue::config).or(() -> StreamConfig.streamConfig(name,
+                                                                                                                                                      DEFAULT_PARTITIONS,
+                                                                                                                                                      MANAGEMENT_API_RETENTION,
+                                                                                                                                                      "latest"));
 
         return StreamCreateOutcome.tolerateAlreadyExists(streamManager().createStream(config));
     }

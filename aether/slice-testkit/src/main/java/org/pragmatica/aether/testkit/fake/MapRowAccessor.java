@@ -52,8 +52,8 @@ record MapRowAccessor(Map<String, Object> row) implements RowMapper.RowAccessor 
     }
 
     private <V> Result<V> value(String column, Class<V> type) {
-        return option(row.get(column))
-                     .toResult(new TestKitError.UnscriptedInteraction("No scripted column '" + column + "' in row: " + row))
+        return option(row.get(column)).toResult(new TestKitError.UnscriptedInteraction("No scripted column '" + column
+                                                                                      + "' in row: " + row))
                      .map(type::cast);
     }
 }

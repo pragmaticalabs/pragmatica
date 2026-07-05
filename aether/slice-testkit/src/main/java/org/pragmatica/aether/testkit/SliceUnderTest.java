@@ -19,16 +19,12 @@ import java.util.List;
 public interface SliceUnderTest<T> extends AutoCloseable {
     /// The slice's own generated interface — call its methods directly (no reflection, no codec).
     T client();
-
     /// Events published to `topic` through a registered [org.pragmatica.aether.testkit.fake.CapturingPublisher].
     <E> List<E> published(String topic);
-
     /// Notifications sent through registered capturing senders.
     List<Notification> notifications();
-
     /// Outbound HTTP calls recorded by the [org.pragmatica.aether.testkit.fake.FakeHttpClient] at `section`.
     List<HttpCall> httpCalls(String section);
-
     /// Row-assertion helper for the connector registered at `section` (container path).
     DbAssertions db(String section);
 

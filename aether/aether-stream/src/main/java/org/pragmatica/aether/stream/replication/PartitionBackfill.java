@@ -319,7 +319,8 @@ public final class PartitionBackfill {
     /// backfill value while its ring tail is correct. Keyed off the RING tail (authoritative), never a peer
     /// watermark, so the reseat converges to real, locally-held data.
     private boolean ownerRegistryBelowRingTail(ReplicaDescriptor descriptor) {
-        return descriptor.confirmedOffset() < selfWatermark.localWatermark(descriptor.streamName(), descriptor.partition());
+        return descriptor.confirmedOffset() < selfWatermark.localWatermark(descriptor.streamName(),
+                                                                           descriptor.partition());
     }
 
     /// True when `descriptor` (self's CAUGHT_UP descriptor) needs an owner re-verify: self is NOT the HRW
@@ -458,12 +459,11 @@ public final class PartitionBackfill {
     /// nothing is sent. Idempotent under redrive: a re-completed backfill re-acks the same tail, a no-op on
     /// the owner.
     private void ackBackfillToOwner(String streamName, int partition, long watermark) {
-        hrwOwner(streamName, partition).filter(owner -> !owner.equals(self))
-                                       .onPresent(owner -> replicationTransport.send(owner,
-                                                                                     replicateAck(self,
-                                                                                                  streamName,
-                                                                                                  partition,
-                                                                                                  watermark)));
+        hrwOwner(streamName, partition).filter(owner -> !owner.equals(self)).onPresent(owner -> replicationTransport.send(owner,
+                                                                                                                          replicateAck(self,
+                                                                                                                                       streamName,
+                                                                                                                                       partition,
+                                                                                                                                       watermark)));
     }
 
     /// Apply every recovered event in order via a sequential fail-fast fold. A truncated response
@@ -559,7 +559,10 @@ public final class PartitionBackfill {
     private Promise<Long> promoteOwner(String streamName, int partition, List<ReplicaDescriptor> replicas) {
         var localWatermark = selfWatermark.localWatermark(streamName, partition);
 
-        return aheadSurvivor(replicas, localWatermark).fold(() -> probeThenPromoteOwner(streamName, partition, replicas, localWatermark),
+        return aheadSurvivor(replicas, localWatermark).fold(() -> probeThenPromoteOwner(streamName,
+                                                                                        partition,
+                                                                                        replicas,
+                                                                                        localWatermark),
                                                             survivor -> catchupOwnerFromSurvivor(streamName,
                                                                                                  partition,
                                                                                                  survivor,
@@ -574,9 +577,9 @@ public final class PartitionBackfill {
     /// a different acked subset.
     private Option<ReplicaDescriptor> aheadSurvivor(List<ReplicaDescriptor> replicas, long localWatermark) {
         return Option.from(replicas.stream()
-                                   .filter(descriptor -> !descriptor.nodeId().equals(self))
-                                   .max(Comparator.comparingLong(ReplicaDescriptor::confirmedOffset)))
-                     .filter(survivor -> survivor.confirmedOffset() > localWatermark);
+                                   .filter(descriptor -> !descriptor.nodeId()
+                                                                    .equals(self))
+                                   .max(Comparator.comparingLong(ReplicaDescriptor::confirmedOffset))).filter(survivor -> survivor.confirmedOffset() > localWatermark);
     }
 
     /// Hold self NON-authoritative (SYNCING at the local watermark, so the read path forwards to the
@@ -590,7 +593,11 @@ public final class PartitionBackfill {
                                                    int partition,
                                                    ReplicaDescriptor survivor,
                                                    long localWatermark) {
-        return catchupOwnerFromSurvivor(streamName, partition, survivor.nodeId(), survivor.confirmedOffset(), localWatermark);
+        return catchupOwnerFromSurvivor(streamName,
+                                        partition,
+                                        survivor.nodeId(),
+                                        survivor.confirmedOffset(),
+                                        localWatermark);
     }
 
     /// Core promoted-owner catch-up against an explicit `(survivorNode, survivorTail)`. The local-registry
@@ -619,7 +626,10 @@ public final class PartitionBackfill {
         return transport.requestCatchup(survivorNode, request)
                         .flatMap(response -> applyAndPromote(streamName, partition, survivorTail, response))
                         .onSuccess(_ -> recordSurvivorConfirmed(streamName, partition, survivorNode, survivorTail))
-                        .fold(result -> result.fold(cause -> escapeOwnerCatchup(streamName, partition, localWatermark, cause),
+                        .fold(result -> result.fold(cause -> escapeOwnerCatchup(streamName,
+                                                                                partition,
+                                                                                localWatermark,
+                                                                                cause),
                                                     Promise::success));
     }
 
@@ -646,7 +656,8 @@ public final class PartitionBackfill {
     private long recordedOffset(String streamName, int partition, NodeId nodeId) {
         return registry.replicasFor(streamName, partition)
                        .stream()
-                       .filter(descriptor -> descriptor.nodeId().equals(nodeId))
+                       .filter(descriptor -> descriptor.nodeId()
+                                                       .equals(nodeId))
                        .mapToLong(ReplicaDescriptor::confirmedOffset)
                        .findFirst()
                        .orElse(-1L);
@@ -672,8 +683,11 @@ public final class PartitionBackfill {
             return ownerSelfPromote(streamName, partition);
         }
 
-        return Promise.allOf(blind.stream().map(peer -> probe.probe(peer, streamName, partition)).toList())
-                      .flatMap(results -> decideOwnerCatchup(streamName, partition, blind, localWatermark, results));
+        return Promise.allOf(blind.stream().map(peer -> probe.probe(peer, streamName, partition)).toList()).flatMap(results -> decideOwnerCatchup(streamName,
+                                                                                                                                                  partition,
+                                                                                                                                                  blind,
+                                                                                                                                                  localWatermark,
+                                                                                                                                                  results));
     }
 
     /// The non-self survivors whose LOCAL watermark is unknown (registration default `-1`, i.e. blind under
@@ -682,7 +696,8 @@ public final class PartitionBackfill {
     /// no redundant probe is issued and the local-registry HIT path stays authoritative.
     private List<NodeId> blindPeers(List<ReplicaDescriptor> replicas) {
         return replicas.stream()
-                       .filter(descriptor -> !descriptor.nodeId().equals(self))
+                       .filter(descriptor -> !descriptor.nodeId()
+                                                        .equals(self))
                        .filter(descriptor -> descriptor.confirmedOffset() < 0)
                        .map(ReplicaDescriptor::nodeId)
                        .sorted()
@@ -704,7 +719,11 @@ public final class PartitionBackfill {
         var bestTail = results.stream().mapToLong(result -> result.or(-1L)).max().orElse(-1L);
 
         if (bestTail > localWatermark) {
-            return catchupOwnerFromSurvivor(streamName, partition, peerWithTail(peers, results, bestTail), bestTail, localWatermark);
+            return catchupOwnerFromSurvivor(streamName,
+                                            partition,
+                                            peerWithTail(peers, results, bestTail),
+                                            bestTail,
+                                            localWatermark);
         }
 
         if (results.stream().anyMatch(Result::isFailure)) {

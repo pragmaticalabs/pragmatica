@@ -98,7 +98,8 @@ public final class SliceTestKit<T> {
 
         return factory.apply(ctx)
                       .await(BUILD_TIMEOUT)
-                      .fold(TestKitFailures::raise, client -> DefaultSliceUnderTest.defaultSliceUnderTest(client, resources, provisioned));
+                      .fold(TestKitFailures::raise,
+                            client -> DefaultSliceUnderTest.defaultSliceUnderTest(client, resources, provisioned));
     }
 
     private List<ContainerResource<?>> provisionContainers() {

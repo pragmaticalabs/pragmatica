@@ -59,13 +59,14 @@ public final class QueryValidator {
     }
 
     private static boolean isDataModifying(CstNavigator cteDef) {
-        return containsKeyword(cteDef, "InsertKW")
-               || containsKeyword(cteDef, "DeleteKW")
-               || containsKeyword(cteDef, "UpdateKW") && containsKeyword(cteDef, "SetKW");
+        return containsKeyword(cteDef, "InsertKW") || containsKeyword(cteDef, "DeleteKW") || containsKeyword(cteDef,
+                                                                                                             "UpdateKW") && containsKeyword(cteDef,
+                                                                                                                                            "SetKW");
     }
 
     private static boolean containsKeyword(CstNavigator nav, String keywordRule) {
-        return !nav.findAll(keywordRule).isEmpty();
+        return ! nav.findAll(keywordRule)
+                    .isEmpty();
     }
 
     /// Resolves the list of output column NAMES produced by the query's single top-level SELECT.
@@ -134,7 +135,8 @@ public final class QueryValidator {
 
         if (node.children().size() != 1) return Option.empty();
 
-        return node.firstChild().flatMap(QueryValidator::bareColumnName);
+        return node.firstChild()
+                   .flatMap(QueryValidator::bareColumnName);
     }
 
     public ValidationResult validate(CstNode cst) {

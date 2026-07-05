@@ -235,14 +235,14 @@ public final class ObservabilityRoutes implements RouteSource {
 
     private Promise<ConfigSetResponse> handleSetConfig(SetConfigRequest req) {
         return validateSetConfigRequest(req).async()
-                                      .flatMap(valid -> configRegistry.setConfig(valid.artifact(),
-                                                                                 valid.method(),
-                                                                                 valid.logging(),
-                                                                                 valid.metrics(),
-                                                                                 valid.spans(),
-                                                                                 valid.tracing(),
-                                                                                 valid.depth())
-                                                                      .map(_ -> toConfigSetResponse(valid)));
+                                       .flatMap(valid -> configRegistry.setConfig(valid.artifact(),
+                                                                                  valid.method(),
+                                                                                  valid.logging(),
+                                                                                  valid.metrics(),
+                                                                                  valid.spans(),
+                                                                                  valid.tracing(),
+                                                                                  valid.depth())
+                                                                       .map(_ -> toConfigSetResponse(valid)));
     }
 
     private Promise<ConfigRemovedResponse> handleDeleteConfig(String artifact, String method) {

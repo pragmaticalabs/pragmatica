@@ -6,6 +6,7 @@ package org.pragmatica.aether.slice;
 
 import org.pragmatica.lang.Unit;
 
+
 // Registry-agnostic seam by which the lower dispatch modules (aether-invoke bridge/router wiring) hand a
 // freshly minted per-injection-point ObservabilityStrategyCell to the node-level write-side registry and
 // take it back at unload (#277 increment 2). The registry (aether/node) implements this; the lower
@@ -16,9 +17,7 @@ import org.pragmatica.lang.Unit;
 // behaviour a node wired without observability (and every stub) needs.
 public interface ObservabilityCellRegistrar {
     Unit register(ObservabilityStrategyCell cell);
-
     Unit deregister(ObservabilityStrategyCell cell);
-
     ObservabilityCellRegistrar NOOP = new Noop();
 
     record Noop() implements ObservabilityCellRegistrar {

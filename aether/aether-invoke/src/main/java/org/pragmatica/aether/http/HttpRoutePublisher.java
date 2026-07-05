@@ -243,8 +243,9 @@ class HttpRoutePublisherImpl implements HttpRoutePublisher {
         // #277 increment 2: rewrap each route's handler once with its per-injection-point observability
         // cell (north-south seam). Cells are minted+registered here and dropped at unpublishRoutes.
         var cells = new ArrayList<ObservabilityStrategyCell>();
-        var router = baseRouter.withObservability(sliceLabel(artifact), forwardingSink)
-                               .withInvocationCells(route -> decorateRoute(artifact, route, cells));
+        var router = baseRouter.withObservability(sliceLabel(artifact), forwardingSink).withInvocationCells(route -> decorateRoute(artifact,
+                                                                                                                                   route,
+                                                                                                                                   cells));
 
         routeCells.put(artifact, List.copyOf(cells));
         sliceRouters.put(artifact, router);
@@ -401,19 +402,18 @@ class HttpRoutePublisherImpl implements HttpRoutePublisher {
     /// back to the path for un-`.named()` routes) and rewrap its handler over `cell.around(...)`. The
     /// minted cell is collected so unpublishRoutes can deregister it.
     private Route<?> decorateRoute(Artifact artifact, Route<?> route, List<ObservabilityStrategyCell> collected) {
-        var cell = ObservabilityStrategyCell.observabilityStrategyCell(artifact.base()
-                                                                               .asString(),
+        var cell = ObservabilityStrategyCell.observabilityStrategyCell(artifact.base().asString(),
                                                                        routeCellKey(route));
 
-        cellRegistrar.get()
-                     .register(cell);
+        cellRegistrar.get().register(cell);
         collected.add(cell);
 
         return wrapHandler(cell, route);
     }
 
     private static String routeCellKey(Route<?> route) {
-        return route.name().isEmpty()
+        return route.name()
+                    .isEmpty()
                ? stripTrailingSlash(route.path())
                : route.name();
     }
@@ -443,9 +443,8 @@ class HttpRoutePublisherImpl implements HttpRoutePublisher {
     }
 
     private void deregisterRouteCells(Artifact artifact) {
-        Option.option(routeCells.remove(artifact))
-              .onPresent(cells -> cells.forEach(cell -> cellRegistrar.get()
-                                                                     .deregister(cell)));
+        Option.option(routeCells.remove(artifact)).onPresent(cells -> cells.forEach(cell -> cellRegistrar.get()
+                                                                                                         .deregister(cell)));
     }
 
     @Override

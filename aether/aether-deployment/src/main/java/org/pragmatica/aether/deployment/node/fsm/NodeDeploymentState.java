@@ -878,7 +878,7 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
             for (var entry : reactive) {
                 if ("subscription".equals(entry.category())) {
                     resolveSubscriptionAddress(artifact, entry).flatMap(address -> MethodName.methodName(entry.method()).map(method -> new SubscriptionManifestEntry(address,
-                                                                                                                                                                       method))).option().onPresent(result::add);
+                                                                                                                                                                     method))).option().onPresent(result::add);
                 }
             }
 
@@ -892,6 +892,7 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
         /// back to the legacy `config`-section lookup for subscriptions declared the old way.
         private Result<ResourceAddress> resolveSubscriptionAddress(Artifact artifact, ReactiveManifestEntry entry) {
             var manifestTopicName = entry.getProperty("topicName");
+
             return manifestTopicName.isEmpty()
                    ? resolveTopicAddress(artifact, entry.config())
                    : TopicAddressResolver.resolve(artifact, manifestTopicName);

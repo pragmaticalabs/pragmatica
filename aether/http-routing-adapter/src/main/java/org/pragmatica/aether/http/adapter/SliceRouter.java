@@ -117,9 +117,7 @@ public interface SliceRouter {
             /// decorated list so every dispatch shape is covered.
             @Override
             public SliceRouter withInvocationCells(RouteDecorator decorator) {
-                var decorated = composedRoutes.stream()
-                                              .map(decorator::decorate)
-                                              .toList();
+                var decorated = composedRoutes.stream().map(decorator::decorate).toList();
                 var newVersioned = mountMode.isHeaderMode() && versionRegistry.isVersioned()
                                    ? perVersionRouters(decorated)
                                    : Map.<Integer, RequestRouter> of();
@@ -348,8 +346,7 @@ public interface SliceRouter {
                 return Option.from(cause.stream()
                                         .filter(HttpError.class::isInstance)
                                         .map(HttpError.class::cast)
-                                        .findFirst())
-                             .or(() -> errorMapper.map(cause));
+                                        .findFirst()).or(() -> errorMapper.map(cause));
             }
 
             private HttpResponseData notFound(HttpRequestContext request) {

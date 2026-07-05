@@ -251,10 +251,11 @@ public final class SpiResourceProvider implements ResourceProvider {
                                       Class<C> configType,
                                       org.pragmatica.lang.Option<ProvisioningContext> contextOpt) {
         var loaded = (Result<Object>) resolveConfigLoader(contextOpt).apply(section, configType);
-        return topicNameFallback(section, configType, loaded)
-                                  .mapError(cause -> new SliceLoadingFailure.Fatal.ConfigurationFailed(section, cause))
-                                  .map(obj -> (C) obj)
-                                  .async();
+
+        return topicNameFallback(section, configType, loaded).mapError(cause -> new SliceLoadingFailure.Fatal.ConfigurationFailed(section,
+                                                                                                                                  cause))
+                                .map(obj -> (C) obj)
+                                .async();
     }
 
     /// Route a typed-topic publisher's address off the manifest-derived topic name (#396): the

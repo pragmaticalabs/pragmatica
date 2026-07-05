@@ -783,11 +783,10 @@ public interface AetherNode extends ManageableNode {
                                                 PartitionBackfill backfill,
                                                 String streamName,
                                                 int partition) {
-        manager.materializePartition(streamName, partition)
-               .onFailure(cause -> LOG.warn("Stream partition {}[{}] materialize-on-reconcile failed: {} — backfill will still attempt",
-                                            streamName,
-                                            partition,
-                                            cause.message()));
+        manager.materializePartition(streamName, partition).onFailure(cause -> LOG.warn("Stream partition {}[{}] materialize-on-reconcile failed: {} — backfill will still attempt",
+                                                                                        streamName,
+                                                                                        partition,
+                                                                                        cause.message()));
         backfill.backfill(streamName, partition);
     }
 
@@ -2902,9 +2901,9 @@ public interface AetherNode extends ManageableNode {
                                                                                    clusterTopologyManager.observer()::clusterSize,
                                                                                    streamPartitionManager.replicaCatalog(),
                                                                                    (streamName, partition) -> streamBackfillExecutor.execute(() -> materializeThenBackfill(streamPartitionManager,
-                                                                                                                                                                          streamPartitionBackfill,
-                                                                                                                                                                          streamName,
-                                                                                                                                                                          partition)),
+                                                                                                                                                                           streamPartitionBackfill,
+                                                                                                                                                                           streamName,
+                                                                                                                                                                           partition)),
                                                                                    (streamName, partition) -> driveStreamOwnership(streamOwnershipWriter,
                                                                                                                                    clusterCommandApplier,
                                                                                                                                    streamName,

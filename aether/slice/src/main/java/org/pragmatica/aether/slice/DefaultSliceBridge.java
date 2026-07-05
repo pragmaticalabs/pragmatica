@@ -33,8 +33,7 @@ public record DefaultSliceBridge(Artifact artifact,
                                  ObservabilityStrategyCell cell) {}
 
     public static DefaultSliceBridge defaultSliceBridge(Artifact artifact, Slice slice, SliceCodec codec) {
-        var artifactBase = artifact.base()
-                                   .asString();
+        var artifactBase = artifact.base().asString();
         var methodMap = slice.methods().stream().collect(Collectors.toMap(m -> m.name()
                                                                                 .name(),
                                                                           m -> new InternalMethod(m,
