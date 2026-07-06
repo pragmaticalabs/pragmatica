@@ -79,4 +79,34 @@ public sealed interface DurableEntityError extends Cause {
             return "Durable entity storage operation failed for key '" + key + "': " + cause.message();
         }
     }
+
+    /// A [ReadConsistency#LINEARIZABLE] [DurableEntity#get] reached a node that is NOT the committed
+    /// owner of the entity key's `(keyspace, partition)` ownership arc. No entity read-forward transport
+    /// exists yet (#345 item 1e-b), so the read is rejected here rather than forwarded; the caller
+    /// re-resolves the current owner and retries there. `committedOwner` names the node that IS the
+    /// committed owner. The read-side sibling of the stream's `StreamError.NotCurrentOwner`;
+    /// owner-forwarding an entity read cross-node is a follow-up.
+    record NotCurrentOwner(String key, String committedOwner) implements DurableEntityError {
+        @Override
+        public String message() {
+            return "Linearizable read for durable entity key '" + key
+                 + "' reached a non-owner; committed owner is " + committedOwner;
+        }
+    }
+
+    /// A [ReadConsistency#LINEARIZABLE] read at the committed owner found the committed owner epoch
+    /// STRICTLY older than the entity key's `(keyspace, partition)` ownership-arc high-water — self is a
+    /// deposed owner whose committed record is now stale (a newer owner took over, possibly during the
+    /// no-op round). The read-side sibling of [StaleOwner] and the stream's `StreamError.StaleEpochRead`:
+    /// the read is rejected rather than served stale, so the caller re-resolves the current owner.
+    /// `presentedEpoch` is the stale committed stamp; `highWaterEpoch` the committed high-water that
+    /// out-ranked it (both `term:counter`).
+    record StaleEpochRead(String key, String presentedEpoch, String highWaterEpoch) implements DurableEntityError {
+        @Override
+        public String message() {
+            return "Linearizable read for durable entity key '" + key
+                 + "' rejected: committed owner epoch " + presentedEpoch
+                 + " is stale (deposed) — arc high-water is " + highWaterEpoch;
+        }
+    }
 }

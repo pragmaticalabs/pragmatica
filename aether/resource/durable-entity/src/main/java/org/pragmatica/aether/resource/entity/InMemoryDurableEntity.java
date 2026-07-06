@@ -4,6 +4,10 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.resource.entity;
 
+import org.pragmatica.aether.dht.CommittedPartitionOwnerSource;
+import org.pragmatica.aether.dht.EntityPartitionArc;
+import org.pragmatica.aether.slice.fence.OwnershipEpochHighWater;
+import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
@@ -25,19 +29,58 @@ import static org.pragmatica.lang.Promise.unitPromise;
 /// on `state` is race-free without any explicit lock), while different keys proceed concurrently. See
 /// [PerKeySerialExecutor] for the lock-free `AtomicReference.getAndSet` tail-swap + `Promise`-chaining idiom.
 ///
+/// ## Read consistency (spec §8.1)
+///
+/// [#get(Object)] and [#get(Object, ReadConsistency)] with [ReadConsistency#BOUNDED_STALE] serve the
+/// local committed-prefix read. [ReadConsistency#LINEARIZABLE] routes through an optional
+/// [LinearizableEntityServe] (committed-owner routing + no-op round + post-round epoch fence); when that
+/// component is absent — the default factory product, and the single-owner in-memory cut generally — a
+/// `LINEARIZABLE` read degrades to the local read, which on a single owner already reflects every
+/// acknowledged write. The wired form ([#inMemoryDurableEntity(NodeId, EntityPartitionArc,
+/// CommittedPartitionOwnerSource, Option, Option)]) is exercised by tests today and lands in production
+/// with the entity node wiring (#277).
+///
 /// @param <K> entity key type
 /// @param <S> entity state type (immutable)
 final class InMemoryDurableEntity<K, S> implements DurableEntity<K, S> {
     private final ConcurrentHashMap<K, S> state;
     private final PerKeySerialExecutor<K> serializer;
+    private final Option<LinearizableEntityServe<K, S>> linearizableServe;
 
     private InMemoryDurableEntity() {
         this.state = new ConcurrentHashMap<>();
         this.serializer = PerKeySerialExecutor.perKeySerialExecutor();
+        this.linearizableServe = Option.none();
+    }
+
+    private InMemoryDurableEntity(NodeId selfNodeId,
+                                  EntityPartitionArc arc,
+                                  CommittedPartitionOwnerSource committedOwnerSource,
+                                  Option<OwnershipEpochHighWater> epochHighWater,
+                                  Option<EntityLinearizableBarrier> barrier) {
+        this.state = new ConcurrentHashMap<>();
+        this.serializer = PerKeySerialExecutor.perKeySerialExecutor();
+        this.linearizableServe = Option.some(LinearizableEntityServe.linearizableEntityServe(selfNodeId,
+                                                                                             arc,
+                                                                                             committedOwnerSource,
+                                                                                             epochHighWater,
+                                                                                             barrier,
+                                                                                             this::get));
     }
 
     static <K, S> DurableEntity<K, S> inMemoryDurableEntity() {
         return new InMemoryDurableEntity<>();
+    }
+
+    /// Linearizable-capable in-memory entity: a [ReadConsistency#LINEARIZABLE] read routes to the key's
+    /// committed partition owner via [LinearizableEntityServe] (owner-serve pipeline over the shared
+    /// ownership substrate). Used by tests today and by the entity node wiring (#277) in production.
+    static <K, S> DurableEntity<K, S> inMemoryDurableEntity(NodeId selfNodeId,
+                                                            EntityPartitionArc arc,
+                                                            CommittedPartitionOwnerSource committedOwnerSource,
+                                                            Option<OwnershipEpochHighWater> epochHighWater,
+                                                            Option<EntityLinearizableBarrier> barrier) {
+        return new InMemoryDurableEntity<>(selfNodeId, arc, committedOwnerSource, epochHighWater, barrier);
     }
 
     @Override
@@ -48,6 +91,24 @@ final class InMemoryDurableEntity<K, S> implements DurableEntity<K, S> {
     @Override
     public Promise<Option<S>> get(K key) {
         return serializer.submit(key, () -> doGet(key));
+    }
+
+    /// [ReadConsistency#BOUNDED_STALE] serves the local read [#get]; [ReadConsistency#LINEARIZABLE] routes
+    /// through the owner-serve pipeline when wired, else degrades to the local read.
+    @Override
+    public Promise<Option<S>> get(K key, ReadConsistency consistency) {
+        return switch (consistency) {
+            case BOUNDED_STALE -> get(key);
+            case LINEARIZABLE -> readLinearizable(key);
+        };
+    }
+
+    private Promise<Option<S>> readLinearizable(K key) {
+        // Unwired fold-to-local is honest ONLY while this entity is process-local single-copy (one map,
+        // one serialized writer => a local get is trivially linearizable). The moment the entity gains
+        // cross-node replication (#349 / Phase 3), an unwired LINEARIZABLE read MUST become a named
+        // rejection (LinearizableUnavailable), never a silent local read — revisit this fold there.
+        return linearizableServe.fold(() -> get(key), serve -> serve.serve(key));
     }
 
     @Override

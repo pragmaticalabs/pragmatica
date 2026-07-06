@@ -24,12 +24,14 @@ import java.time.Duration;
 ///   - **Pure mutator.** [#update] runs a pure `S → S` mutator inside the per-key serialization;
 ///     it performs no IO. Side effects belong to the caller, which consumes the returned state
 ///     (spec §10).
-///   - **Process-local get (NOT linearizable — #382).** [#get] reads this process's in-memory map
-///     for the key. In the HA-only in-memory cut it is a local, process-local read — it does NOT
-///     reflect writes applied on other owners and is not linearizable. Per-call `ReadConsistency`
-///     (a `LINEARIZABLE` option served by owner-routing + the no-op consensus round, #345 item 1e)
-///     arrives on the entity surface in slice 1e-b; the stream read path already carries that
-///     mechanism (`ForwardingReadRouter` / `LinearizableOwnerServe`).
+///   - **Per-call read consistency (spec §8.1, resolves S5 / #382).** Reads take an optional
+///     [ReadConsistency]. The no-arg [#get] and [#get(Object, ReadConsistency)] with
+///     [ReadConsistency#BOUNDED_STALE] read this process's committed-prefix map for the key — a local,
+///     single-writer-serialized read (the honest current semantics of the HA-only in-memory cut).
+///     [ReadConsistency#LINEARIZABLE] routes to the key's committed partition owner and orders a no-op
+///     consensus round + post-round epoch fence before serving (#345 item 1e-b); when the owner-routing
+///     substrate is not yet wired (#277) it degrades to the local read, which on a single owner already
+///     reflects every acknowledged write.
 ///
 /// ## Slice boundary (this cut)
 ///
@@ -53,17 +55,37 @@ public interface DurableEntity<K, S> {
     /// @return the created state, or a failure if the key already exists
     Promise<S> create(K key, S initial);
 
-    /// Read the current state for `key`.
-    ///
-    /// Process-local read of this process's in-memory map (NOT linearizable — #382): reflects
-    /// [#create]/[#update] applied on THIS owner, not writes on other owners. Per-call
-    /// `ReadConsistency` (a `LINEARIZABLE` option) arrives on this surface in slice 1e-b.
-    /// Returns [Option#none()] when no state exists for the key.
+    /// Read the current state for `key` with [ReadConsistency#BOUNDED_STALE] — the local committed-prefix
+    /// read of this process's in-memory map (reflects [#create]/[#update] applied on THIS owner). Returns
+    /// [Option#none()] when no state exists for the key. Equivalent to
+    /// [#get(Object, ReadConsistency)] with [ReadConsistency#BOUNDED_STALE].
     ///
     /// @param key entity key
     ///
     /// @return the current state if present, otherwise empty
     Promise<Option<S>> get(K key);
+
+    /// Read the current state for `key` with the requested [ReadConsistency] (spec §8.1). Returns
+    /// [Option#none()] when no state exists for the key.
+    ///
+    /// [ReadConsistency#BOUNDED_STALE] serves the local committed-prefix read (identical to [#get]).
+    /// [ReadConsistency#LINEARIZABLE] reflects every write acknowledged before the read began — routed to
+    /// the key's committed partition owner + no-op round + post-round epoch fence (#345 item 1e-b).
+    ///
+    /// This default serves BOTH consistencies with the local read [#get]: on a single-owner cut (the
+    /// HA-only in-memory / fenced backings) the local committed-prefix read already reflects every
+    /// acknowledged write, so `LINEARIZABLE` is served correctly by the local read. Cluster-wired
+    /// implementations override this to route a `LINEARIZABLE` read to the committed owner; when the
+    /// owner-routing substrate is absent or no ownership record is committed for the arc, they too degrade
+    /// to the local read.
+    ///
+    /// @param key         entity key
+    /// @param consistency requested read consistency
+    ///
+    /// @return the current state if present, otherwise empty
+    default Promise<Option<S>> get(K key, ReadConsistency consistency) {
+        return get(key);
+    }
 
     /// Apply a pure `mutator` to the current state for `key`, committing the result.
     ///

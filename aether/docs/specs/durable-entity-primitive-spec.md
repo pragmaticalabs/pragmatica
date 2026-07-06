@@ -827,7 +827,17 @@ read-linearization = "no-op-round"   # "no-op-round" (default) | "lease"
   assumptions; correct on Rabia by construction. Cost ~0.5–2 ms per batch (concurrent LINEARIZABLE
   reads on the same arc share a round via the content-derived batch id). Wired on the stream read
   path (`ForwardingReadRouter` / `LinearizableOwnerServe` / `LinearizableBarrier`); the forwarded
-  read path re-runs the same owner-side pipeline. The entity surface exposes it per-call in 1e-b.
+  read path re-runs the same owner-side pipeline. The entity surface exposes it per-call via
+  `DurableEntity.get(key, ReadConsistency)` — **IMPLEMENTED (#345 item 1e-b).** The entity-native
+  `LinearizableEntityServe` re-runs the same owner-side pipeline (committed-owner routing → no-op
+  round → post-round epoch fence) over the SHARED `StreamPartitionOwnershipValue` ownership substrate
+  (`CommittedPartitionOwnerSource` / `OwnershipEpochHighWater` / `EntityPartitionArc`), entity-shaped
+  and rejecting with typed `DurableEntityError` causes. A read reaching a non-owner is rejected
+  `DurableEntityError.NotCurrentOwner` (owner-forwarding an entity read cross-node needs transport
+  that does not exist yet — a follow-up); a deposed owner is rejected
+  `DurableEntityError.StaleEpochRead`; and the un-wired in-memory cut (production cluster wiring is
+  #277) degrades a LINEARIZABLE read to the local read, which on a single owner already reflects every
+  acknowledged write.
 - **`lease`** — **FUTURE (rejected at config parse until validated).** The owner serves LINEARIZABLE
   reads locally while holding a time-bounded ownership lease. Near-BOUNDED_STALE cost when healthy;
   **correctness depends on bounded clock skew** — the lease TTL must dominate `max_clock_skew`, the
