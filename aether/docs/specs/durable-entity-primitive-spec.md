@@ -821,19 +821,25 @@ caller-visible — swapping it never changes what callers may assume):
 read-linearization = "no-op-round"   # "no-op-round" (default) | "lease"
 ```
 
-- **`no-op-round`** (default): the read is ordered through a no-op consensus round and served
-  after the local apply reaches it. No clock assumptions; correct on Rabia by construction.
-  Cost ~0.5–2 ms per batch (concurrent LINEARIZABLE reads share a round).
-- **`lease`**: the owner serves LINEARIZABLE reads locally while holding a time-bounded
-  ownership lease. Near-BOUNDED_STALE cost when healthy; **correctness depends on bounded
-  clock skew** — the lease TTL must dominate `max_clock_skew`, the runtime monitors skew and
-  fails the mechanism closed (falls back to `no-op-round`) when the bound is violated, and
-  reads block up to lease-TTL after owner death. **Validation gate:** the lease mechanism
-  ships only with a dedicated clock-skew chaos suite (skewed-clock + partition scenarios);
-  until that suite is green on real infra, deployments run `no-op-round`.
+- **`no-op-round`** (default) — **IMPLEMENTED (#345 item 1e-a).** The read is ordered through a
+  no-op consensus round (the owner submits a `KVCommand.Noop` and awaits its OWN local apply of it)
+  and served after the local apply reaches it, re-checking the epoch fence AFTER the round. No clock
+  assumptions; correct on Rabia by construction. Cost ~0.5–2 ms per batch (concurrent LINEARIZABLE
+  reads on the same arc share a round via the content-derived batch id). Wired on the stream read
+  path (`ForwardingReadRouter` / `LinearizableOwnerServe` / `LinearizableBarrier`); the forwarded
+  read path re-runs the same owner-side pipeline. The entity surface exposes it per-call in 1e-b.
+- **`lease`** — **FUTURE (rejected at config parse until validated).** The owner serves LINEARIZABLE
+  reads locally while holding a time-bounded ownership lease. Near-BOUNDED_STALE cost when healthy;
+  **correctness depends on bounded clock skew** — the lease TTL must dominate `max_clock_skew`, the
+  runtime monitors skew and fails the mechanism closed (falls back to `no-op-round`) when the bound
+  is violated, and reads block up to lease-TTL after owner death. **Validation gate:** the lease
+  mechanism ships only with a dedicated clock-skew chaos suite (skewed-clock + partition scenarios);
+  until that suite is green on real infra it is **rejected at config parse** (`ConfigLoader` fails a
+  `read-linearization = "lease"` load with a named error) and deployments run `no-op-round`.
 
-Both mechanisms ship in v1 (owner decision, 2026-07-04 — accepting the validation surface).
-Per-call semantics + configurable mechanism means: callers can mix fast polling
+The `no-op-round` mechanism ships in v1 (implemented #345 item 1e-a); `lease` is deferred and
+rejected at config parse until its clock-skew chaos validation gate is green (owner decision,
+2026-07-04 — accepting the validation surface). Per-call semantics + configurable mechanism means: callers can mix fast polling
 (BOUNDED_STALE) with decision-point reads (LINEARIZABLE) in one application, and ops can
 trade the lease's performance for the no-op round's assumption-freedom without touching code.
 

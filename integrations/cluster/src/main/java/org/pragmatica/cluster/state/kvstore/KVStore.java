@@ -3,6 +3,7 @@ package org.pragmatica.cluster.state.kvstore;
 import org.pragmatica.consensus.StateMachine;
 import org.pragmatica.consensus.StateMachine.Batch;
 import org.pragmatica.cluster.state.kvstore.KVCommand.Get;
+import org.pragmatica.cluster.state.kvstore.KVCommand.Noop;
 import org.pragmatica.cluster.state.kvstore.KVCommand.Put;
 import org.pragmatica.cluster.state.kvstore.KVCommand.Remove;
 import org.pragmatica.cluster.state.kvstore.KVStoreLocalIO.Request.Find;
@@ -64,6 +65,7 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
             case Get<?> get -> handleGet((Get<K>) get);
             case Put<?, ?> put -> handlePut((Put<K, V>) put);
             case Remove<?> remove -> handleRemove((Remove<K>) remove);
+            case Noop<?> ignored -> Option.none();
         };
     }
 

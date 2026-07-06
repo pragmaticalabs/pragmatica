@@ -70,10 +70,33 @@ public final class ConfigLoader {
 
             mergeCliOverrides(overrides, builder);
 
-            return success(builder.build());
+            return parseReadLinearization(doc).map(mode -> applyReadLinearization(builder.build(), mode));
         } catch (IllegalArgumentException e) {
             return ConfigError.invalidConfig(e.getMessage()).result();
         }
+    }
+
+    /// Parse the `[durable-entity] read-linearization` ops knob (spec §8.1, durable-entity primitive).
+    /// Absent → the default no-op round. `no-op-round` → [ReadLinearizationMode#NO_OP_ROUND]. `lease` →
+    /// REJECTED with a named error: the lease mechanism ships only once its clock-skew chaos validation
+    /// gate is green, so deployments run no-op-round until then. Any other value is an invalid config.
+    /// Result-based (like {@code Environment.environment}), so a rejection fails the whole config load.
+    private static Result<ReadLinearizationMode> parseReadLinearization(TomlDocument doc) {
+        return doc.getString("durable-entity", "read-linearization")
+                  .fold(() -> success(StreamingConfig.DEFAULT_READ_LINEARIZATION),
+                        ConfigLoader::readLinearizationOf);
+    }
+
+    private static Result<ReadLinearizationMode> readLinearizationOf(String raw) {
+        return switch (raw.trim()) {
+            case "no-op-round" -> success(ReadLinearizationMode.NO_OP_ROUND);
+            case "lease" -> ConfigError.invalidConfig("lease linearization not implemented — use no-op-round").result();
+            default -> ConfigError.invalidConfig("unknown read-linearization '" + raw + "' — use no-op-round").result();
+        };
+    }
+
+    private static AetherConfig applyReadLinearization(AetherConfig config, ReadLinearizationMode mode) {
+        return config.withStreaming(config.streaming().withReadLinearization(mode));
     }
 
     private static AetherConfig.Builder populateBuilder(TomlDocument doc, Environment environment) {

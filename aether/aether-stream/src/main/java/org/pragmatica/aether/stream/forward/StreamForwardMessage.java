@@ -83,19 +83,35 @@ public sealed interface StreamForwardMessage extends ProtocolMessage {
         }
     }
 
+    /// A forwarded read. `linearizable` (#345 item 1e-a) marks a `LINEARIZABLE`-class read so the
+    /// forwarded-to node re-runs the SAME owner-side serve pipeline the local path uses (committed-owner
+    /// check + epoch fence + no-op round + catch-up gate) instead of an unguarded local read — closing
+    /// the forward-guard asymmetry. A `false` value (the default factory) means a replica-class read
+    /// served by a plain local read, exactly as before.
     record ReadForward(NodeId sender,
                        String correlationId,
                        String streamName,
                        int partition,
                        long fromOffset,
-                       int maxEvents) implements StreamForwardMessage {
+                       int maxEvents,
+                       boolean linearizable) implements StreamForwardMessage {
         public static ReadForward readForward(NodeId sender,
                                               String correlationId,
                                               String streamName,
                                               int partition,
                                               long fromOffset,
                                               int maxEvents) {
-            return new ReadForward(sender, correlationId, streamName, partition, fromOffset, maxEvents);
+            return new ReadForward(sender, correlationId, streamName, partition, fromOffset, maxEvents, false);
+        }
+
+        public static ReadForward readForward(NodeId sender,
+                                              String correlationId,
+                                              String streamName,
+                                              int partition,
+                                              long fromOffset,
+                                              int maxEvents,
+                                              boolean linearizable) {
+            return new ReadForward(sender, correlationId, streamName, partition, fromOffset, maxEvents, linearizable);
         }
     }
 

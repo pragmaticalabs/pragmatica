@@ -7,6 +7,7 @@ package org.pragmatica.aether.stream.forward;
 import org.pragmatica.aether.stream.forward.StreamForwardMessage.PublishForwardResponse;
 import org.pragmatica.aether.stream.forward.StreamForwardMessage.ReadForward;
 import org.pragmatica.aether.stream.forward.StreamForwardMessage.ReadForwardResponse;
+import org.pragmatica.aether.slice.ReadPreference;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.io.TimeSpan;
@@ -36,6 +37,20 @@ public interface StreamForwardClient {
                                           int partition,
                                           long fromOffset,
                                           int maxEvents);
+
+    /// #345 item 1e-a: forward a read tagged with its routing preference, so a `LINEARIZABLE` forward is
+    /// re-guarded at the committed owner (the owner-side serve pipeline) rather than served by an
+    /// unguarded local read. The default drops the tag and forwards plainly — it matters only on the
+    /// production transport ({@link DefaultStreamForwardClient}), which stamps it into the
+    /// {@link ReadForward} message; test fakes and {@link #NOOP} inherit the plain forward.
+    default Promise<ReadForwardResult> readRemote(NodeId replicaId,
+                                                  String streamName,
+                                                  int partition,
+                                                  long fromOffset,
+                                                  int maxEvents,
+                                                  ReadPreference preference) {
+        return readRemote(replicaId, streamName, partition, fromOffset, maxEvents);
+    }
 
     @MessageReceiver
     @SuppressWarnings("JBCT-RET-01")
@@ -175,22 +190,39 @@ final class DefaultStreamForwardClient implements StreamForwardClient {
                                                  int partition,
                                                  long fromOffset,
                                                  int maxEvents) {
+        return readRemote(replicaId, streamName, partition, fromOffset, maxEvents, ReadPreference.GOVERNOR);
+    }
+
+    @Override
+    public Promise<ReadForwardResult> readRemote(NodeId replicaId,
+                                                 String streamName,
+                                                 int partition,
+                                                 long fromOffset,
+                                                 int maxEvents,
+                                                 ReadPreference preference) {
         metrics.recordAttempt();
         var correlationId = UUID.randomUUID().toString();
         Promise<ReadForwardResult> promise = Promise.promise();
 
         pendingReads.put(correlationId, promise);
         SharedScheduler.schedule(() -> timeoutRead(correlationId), readTimeout);
-        var message = readForward(selfNodeId, correlationId, streamName, partition, fromOffset, maxEvents);
+        var message = readForward(selfNodeId,
+                                  correlationId,
+                                  streamName,
+                                  partition,
+                                  fromOffset,
+                                  maxEvents,
+                                  preference == ReadPreference.LINEARIZABLE);
 
         transport.send(replicaId, message);
-        log.trace("Sent ReadForward to {} for {}[{}] fromOffset={} maxEvents={} correlationId={}",
+        log.trace("Sent ReadForward to {} for {}[{}] fromOffset={} maxEvents={} correlationId={} preference={}",
                   replicaId,
                   streamName,
                   partition,
                   fromOffset,
                   maxEvents,
-                  correlationId);
+                  correlationId,
+                  preference);
 
         return promise;
     }

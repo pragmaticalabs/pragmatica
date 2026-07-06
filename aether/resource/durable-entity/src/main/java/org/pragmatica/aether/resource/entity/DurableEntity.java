@@ -24,7 +24,12 @@ import java.time.Duration;
 ///   - **Pure mutator.** [#update] runs a pure `S → S` mutator inside the per-key serialization;
 ///     it performs no IO. Side effects belong to the caller, which consumes the returned state
 ///     (spec §10).
-///   - **Linearizable get.** [#get] reflects the last committed state for the key (or a later one).
+///   - **Process-local get (NOT linearizable — #382).** [#get] reads this process's in-memory map
+///     for the key. In the HA-only in-memory cut it is a local, process-local read — it does NOT
+///     reflect writes applied on other owners and is not linearizable. Per-call `ReadConsistency`
+///     (a `LINEARIZABLE` option served by owner-routing + the no-op consensus round, #345 item 1e)
+///     arrives on the entity surface in slice 1e-b; the stream read path already carries that
+///     mechanism (`ForwardingReadRouter` / `LinearizableOwnerServe`).
 ///
 /// ## Slice boundary (this cut)
 ///
@@ -50,7 +55,9 @@ public interface DurableEntity<K, S> {
 
     /// Read the current state for `key`.
     ///
-    /// Linearizable: reflects the last committed [#create]/[#update] for the key, or a later one.
+    /// Process-local read of this process's in-memory map (NOT linearizable — #382): reflects
+    /// [#create]/[#update] applied on THIS owner, not writes on other owners. Per-call
+    /// `ReadConsistency` (a `LINEARIZABLE` option) arrives on this surface in slice 1e-b.
     /// Returns [Option#none()] when no state exists for the key.
     ///
     /// @param key entity key

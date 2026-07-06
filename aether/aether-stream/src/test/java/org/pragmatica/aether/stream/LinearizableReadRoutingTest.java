@@ -29,6 +29,7 @@ import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Unit;
 import org.pragmatica.messaging.MessageRouter;
 import org.pragmatica.serialization.Deserializer;
 import org.pragmatica.serialization.Serializer;
@@ -36,6 +37,7 @@ import org.pragmatica.serialization.Serializer;
 import io.netty.buffer.ByteBuf;
 
 import java.util.List;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.aether.slice.StreamConfig.streamConfig;
@@ -205,12 +207,127 @@ class LinearizableReadRoutingTest {
         }
     }
 
+    /// #345 item 1e-a — the no-op consensus round that precedes serving a `LINEARIZABLE` read at the
+    /// committed owner. The round is modelled by an injected {@link LinearizableBarrier}; these tests
+    /// prove it is (a) ordered BEFORE the post-round fence decision — a deposal committed during the
+    /// read is observed by the round and rejects the stale serve, (b) issued ONLY for `LINEARIZABLE`
+    /// reads, and (c) fails the read with a named cause on timeout rather than serving a pre-round view.
+    @Nested
+    class NoOpRound {
+        /// The owner's deposal is committed-but-not-yet-applied when the read starts (pre-round
+        /// committed epoch 3 is NOT below the pre-round high-water 3, so it would serve). The no-op
+        /// round applies the deposal — modelled by the barrier advancing the high-water to 9 — so the
+        /// POST-round fence observes it and rejects `StaleEpochRead`. This is the window the round
+        /// closes: without the round the read would have served stale.
+        @Test
+        void route_rejectsStaleEpochRead_whenRoundObservesDeposalCommittedDuringRead() {
+            publish("e0");
+            markSelfCaughtUp(0L);
+            var highWater = highWaterAt(Epoch.epoch(3, 0));
+            var barrier = advancingBarrier(highWater, Epoch.epoch(9, 0));
+
+            var router = routerWithBarrier(hrwOwner(SELF),
+                                           committedOwner(SELF, Epoch.epoch(3, 0)),
+                                           Option.some(highWater),
+                                           Option.some(barrier));
+
+            router.read(STREAM, PARTITION, 0, 10, ReadPreference.LINEARIZABLE)
+                  .await()
+                  .onSuccess(events -> Assertions.fail("expected StaleEpochRead after the round observed the deposal, got " + events.size() + " events"))
+                  .onFailure(cause -> assertThat(cause).isInstanceOf(StreamError.StaleEpochRead.class));
+        }
+
+        /// Control: an owner still current after the round serves — the round is not a blanket reject.
+        @Test
+        void route_serves_whenRoundObservesNoDeposal() {
+            publish("e0");
+            markSelfCaughtUp(0L);
+
+            var router = routerWithBarrier(hrwOwner(SELF),
+                                           committedOwner(SELF, Epoch.ZERO),
+                                           noHighWater(),
+                                           Option.some(countingBarrier(new AtomicInteger())));
+
+            router.read(STREAM, PARTITION, 0, 10, ReadPreference.LINEARIZABLE)
+                  .await()
+                  .onFailure(LinearizableReadRoutingTest::failUnexpected)
+                  .onSuccess(events -> assertThat(events).hasSize(1));
+        }
+
+        /// The round runs ONLY for `LINEARIZABLE` reads. GOVERNOR / NEAREST / ANY_REPLICA reads never
+        /// touch the barrier; the single LINEARIZABLE read issues exactly one round.
+        @Test
+        void route_issuesRoundOnlyForLinearizable() {
+            publish("e0");
+            markSelfCaughtUp(0L);
+            var roundCount = new AtomicInteger();
+
+            var router = routerWithBarrier(hrwOwner(SELF),
+                                           committedOwner(SELF, Epoch.ZERO),
+                                           noHighWater(),
+                                           Option.some(countingBarrier(roundCount)));
+
+            router.read(STREAM, PARTITION, 0, 10, ReadPreference.GOVERNOR).await();
+            router.read(STREAM, PARTITION, 0, 10, ReadPreference.NEAREST).await();
+            router.read(STREAM, PARTITION, 0, 10, ReadPreference.ANY_REPLICA).await();
+            assertThat(roundCount.get()).isZero();
+
+            router.read(STREAM, PARTITION, 0, 10, ReadPreference.LINEARIZABLE).await();
+            assertThat(roundCount.get()).isEqualTo(1);
+        }
+
+        /// The round await expiring rejects the read with the named
+        /// {@link StreamError.LinearizableRoundTimeout} — never a serve from the pre-round view.
+        @Test
+        void route_rejectsRoundTimeout_whenRoundAwaitExpires() {
+            publish("e0");
+            markSelfCaughtUp(0L);
+
+            var router = routerWithBarrier(hrwOwner(SELF),
+                                           committedOwner(SELF, Epoch.ZERO),
+                                           noHighWater(),
+                                           Option.some(timingOutBarrier()));
+
+            router.read(STREAM, PARTITION, 0, 10, ReadPreference.LINEARIZABLE)
+                  .await()
+                  .onSuccess(events -> Assertions.fail("expected LinearizableRoundTimeout, got " + events.size() + " events"))
+                  .onFailure(cause -> assertThat(cause).isInstanceOf(StreamError.LinearizableRoundTimeout.class));
+        }
+    }
+
     // ---- helpers -------------------------------------------------------------------------------
 
     private void publish(String... payloads) {
         for (var payload : payloads) {
             partitionManager.publishLocal(STREAM, PARTITION, payload.getBytes(), 1L);
         }
+    }
+
+    private static LinearizableBarrier advancingBarrier(OwnershipEpochHighWater highWater, Epoch newEpoch) {
+        return (stream, partition) -> advanceThenSucceed(highWater, stream, partition, newEpoch);
+    }
+
+    private static Promise<Unit> advanceThenSucceed(OwnershipEpochHighWater highWater,
+                                                    String stream,
+                                                    int partition,
+                                                    Epoch newEpoch) {
+        highWater.advance(OwnershipDomain.streamPartition(stream, partition), newEpoch);
+
+        return Promise.success(Unit.unit());
+    }
+
+    private static LinearizableBarrier countingBarrier(AtomicInteger counter) {
+        return (_, _) -> countThenSucceed(counter);
+    }
+
+    private static Promise<Unit> countThenSucceed(AtomicInteger counter) {
+        counter.incrementAndGet();
+
+        return Promise.success(Unit.unit());
+    }
+
+    private static LinearizableBarrier timingOutBarrier() {
+        return (stream, partition) -> new StreamError.LinearizableRoundTimeout(stream, partition).promise();
     }
 
     private void markSelfCaughtUp(long confirmedOffset) {
@@ -221,6 +338,13 @@ class LinearizableReadRoutingTest {
     private StreamReadRouter router(ForwardingReadRouter.OwnerResolver hrwResolver,
                                     Option<CommittedStreamOwnerSource> committedOwnerSource,
                                     Option<OwnershipEpochHighWater> highWater) {
+        return routerWithBarrier(hrwResolver, committedOwnerSource, highWater, Option.none());
+    }
+
+    private StreamReadRouter routerWithBarrier(ForwardingReadRouter.OwnerResolver hrwResolver,
+                                               Option<CommittedStreamOwnerSource> committedOwnerSource,
+                                               Option<OwnershipEpochHighWater> highWater,
+                                               Option<LinearizableBarrier> barrier) {
         return StreamReadRouter.streamReadRouter(partitionManager,
                                                  Option.some(replicaRegistry),
                                                  Option.none(),
@@ -228,7 +352,8 @@ class LinearizableReadRoutingTest {
                                                  hrwResolver,
                                                  StreamReadForwardMetrics.NOOP,
                                                  committedOwnerSource,
-                                                 highWater);
+                                                 highWater,
+                                                 barrier);
     }
 
     private StreamReadRouter routerWithForward(ForwardingReadRouter.OwnerResolver hrwResolver,
@@ -242,7 +367,8 @@ class LinearizableReadRoutingTest {
                                                  hrwResolver,
                                                  StreamReadForwardMetrics.NOOP,
                                                  committedOwnerSource,
-                                                 highWater);
+                                                 highWater,
+                                                 Option.none());
     }
 
     private static ForwardingReadRouter.OwnerResolver hrwOwner(NodeId owner) {

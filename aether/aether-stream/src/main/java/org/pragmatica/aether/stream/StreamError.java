@@ -235,4 +235,18 @@ public sealed interface StreamError extends Cause {
                                                                                                                                        partition);
         }
     }
+
+    /// Linearizable-read no-op round timeout (#345 item 1e-a): the committed owner issued the no-op
+    /// consensus round that precedes serving a `LINEARIZABLE` read (spec §8.1 `no-op-round`), but the
+    /// round did not reach this owner's local apply within the read's timeout budget — consensus is
+    /// unavailable, paused, or the owner is mid-churn. The read is rejected (NOT served from a
+    /// pre-round view) so the client retries once the round can complete; serving without the round
+    /// would forfeit linearizability.
+    record LinearizableRoundTimeout(String streamName, int partition) implements StreamError {
+        @Override
+        public String message() {
+            return "Linearizable read rejected for %s[%d]: the no-op consensus round did not apply within the read timeout budget".formatted(streamName,
+                                                                                                                                             partition);
+        }
+    }
 }

@@ -117,6 +117,9 @@ import org.pragmatica.aether.slice.stream.StreamNamespacesService;
 import org.pragmatica.aether.stream.KvStreamOwnerEpochSource;
 import org.pragmatica.aether.stream.KvCommittedStreamOwnerSource;
 import org.pragmatica.aether.stream.CommittedStreamOwnerSource;
+import org.pragmatica.aether.stream.LinearizableBarrier;
+import org.pragmatica.aether.stream.LinearizableOwnerServe;
+import org.pragmatica.aether.stream.OffHeapRingBuffer;
 import org.pragmatica.aether.stream.StreamPartitionManager;
 import org.pragmatica.aether.stream.StreamReadRouter;
 import org.pragmatica.aether.stream.consumer.ConsumerGroupCoordinator;
@@ -171,6 +174,7 @@ import org.pragmatica.aether.worker.mutation.MutationForwarder;
 import org.pragmatica.aether.config.AppHttpConfig;
 import org.pragmatica.aether.config.BackupConfig;
 import org.pragmatica.aether.config.BuildInfo;
+import org.pragmatica.aether.config.ReadLinearizationMode;
 import org.pragmatica.aether.config.StorageConfig;
 import org.pragmatica.aether.config.WorkerConfig;
 import org.pragmatica.cluster.metrics.DeploymentMetricsMessage;
@@ -3057,19 +3061,43 @@ public interface AetherNode extends ManageableNode {
 
         allEntries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
                                                  bootstrapAdminKeyRegistrar::onLeaderChange));
+        // #345 item 1e-a: the committed-owner source, the linearizable no-op-round barrier, and the
+        // shared owner-side serve pipeline. The barrier orders one no-op consensus round through the
+        // cluster apply path and awaits this node's local apply of it (spec §8.1 `no-op-round`); the
+        // mode is the parsed `[durable-entity] read-linearization` knob (only NO_OP_ROUND ships — a
+        // `lease` value is rejected at config parse). The owner-serve pipeline is shared by the local
+        // read path (StreamReadRouter) AND the forwarded read path (StreamForwardHandler) so a
+        // forwarded LINEARIZABLE read is re-guarded at the owner instead of served unguarded.
+        var committedStreamOwnerSource = KvCommittedStreamOwnerSource.kvCommittedStreamOwnerSource(kvStore);
+        Option<LinearizableBarrier> linearizableBarrier = streamingConfig.readLinearization() == ReadLinearizationMode.NO_OP_ROUND
+                                                          ? Option.some(LinearizableBarrier.noOpRound(clusterCommandApplier,
+                                                                                                      streamingConfig.readForwardTimeout()))
+                                                          : Option.none();
+        var linearizableOwnerServe = LinearizableOwnerServe.<OffHeapRingBuffer.RawEvent> linearizableOwnerServe(config.self(),
+                                                                                                                Option.some(streamReplicaRegistry),
+                                                                                                                Option.some(committedStreamOwnerSource),
+                                                                                                                Option.some(ownershipEpochHighWater),
+                                                                                                                linearizableBarrier,
+                                                                                                                (stream, partition, fromOffset, maxEvents) -> streamPartitionManager.readLocal(stream,
+                                                                                                                                                                                              partition,
+                                                                                                                                                                                              fromOffset,
+                                                                                                                                                                                              maxEvents)
+                                                                                                                                                                                    .async());
         var streamForwardHandler = StreamForwardHandler.streamForwardHandler(config.self(),
                                                                              streamPartitionManager,
                                                                              streamForwardTransport,
                                                                              streamingConfig.maxReadResponseBytes(),
-                                                                             streamReadForwardMetrics);
+                                                                             streamReadForwardMetrics,
+                                                                             Option.some(linearizableOwnerServe));
         var streamReadRouter = StreamReadRouter.streamReadRouter(streamPartitionManager,
                                                                  Option.some(streamReplicaRegistry),
                                                                  Option.some(streamForwardClient),
                                                                  config.self(),
                                                                  streamReplicaSetController::ownerFor,
                                                                  streamReadForwardMetrics,
-                                                                 Option.some(KvCommittedStreamOwnerSource.kvCommittedStreamOwnerSource(kvStore)),
-                                                                 Option.some(ownershipEpochHighWater));
+                                                                 Option.some(committedStreamOwnerSource),
+                                                                 Option.some(ownershipEpochHighWater),
+                                                                 linearizableBarrier);
 
         allEntries.add(MessageRouter.Entry.route(StreamForwardMessage.PublishForward.class,
                                                  streamForwardHandler::onPublishForward));

@@ -35,6 +35,7 @@ public final class StreamReadRouter {
     private final StreamReadForwardMetrics metrics;
     private final Option<CommittedStreamOwnerSource> committedOwnerSource;
     private final Option<OwnershipEpochHighWater> epochHighWater;
+    private final Option<LinearizableBarrier> barrier;
 
     private StreamReadRouter(StreamPartitionManager partitionManager,
                              Option<ReplicaRegistry> replicaRegistry,
@@ -43,7 +44,8 @@ public final class StreamReadRouter {
                              OwnerResolver ownerResolver,
                              StreamReadForwardMetrics metrics,
                              Option<CommittedStreamOwnerSource> committedOwnerSource,
-                             Option<OwnershipEpochHighWater> epochHighWater) {
+                             Option<OwnershipEpochHighWater> epochHighWater,
+                             Option<LinearizableBarrier> barrier) {
         this.partitionManager = partitionManager;
         this.replicaRegistry = replicaRegistry;
         this.forwardClient = forwardClient;
@@ -52,6 +54,7 @@ public final class StreamReadRouter {
         this.metrics = metrics;
         this.committedOwnerSource = committedOwnerSource;
         this.epochHighWater = epochHighWater;
+        this.barrier = barrier;
     }
 
     public static StreamReadRouter streamReadRouter(StreamPartitionManager partitionManager,
@@ -67,12 +70,14 @@ public final class StreamReadRouter {
                                     ownerResolver,
                                     metrics,
                                     Option.none(),
+                                    Option.none(),
                                     Option.none());
     }
 
-    /// #345 item 1e overload: also wires the COMMITTED-owner source + the ownership epoch high-water so a
-    /// `LINEARIZABLE` read routes to the fenced owner and runs the owner-side guards. Non-linearizable
-    /// reads are unaffected.
+    /// #345 item 1e overload: also wires the COMMITTED-owner source + the ownership epoch high-water +
+    /// the linearizable no-op-round barrier (1e-a) so a `LINEARIZABLE` read routes to the fenced owner,
+    /// runs the owner-side guards, and orders the no-op round before serving. Non-linearizable reads are
+    /// unaffected.
     public static StreamReadRouter streamReadRouter(StreamPartitionManager partitionManager,
                                                     Option<ReplicaRegistry> replicaRegistry,
                                                     Option<StreamForwardClient> forwardClient,
@@ -80,7 +85,8 @@ public final class StreamReadRouter {
                                                     OwnerResolver ownerResolver,
                                                     StreamReadForwardMetrics metrics,
                                                     Option<CommittedStreamOwnerSource> committedOwnerSource,
-                                                    Option<OwnershipEpochHighWater> epochHighWater) {
+                                                    Option<OwnershipEpochHighWater> epochHighWater,
+                                                    Option<LinearizableBarrier> barrier) {
         return new StreamReadRouter(partitionManager,
                                     replicaRegistry,
                                     forwardClient,
@@ -88,7 +94,8 @@ public final class StreamReadRouter {
                                     ownerResolver,
                                     metrics,
                                     committedOwnerSource,
-                                    epochHighWater);
+                                    epochHighWater,
+                                    barrier);
     }
 
     public static StreamReadRouter localOnly(StreamPartitionManager partitionManager) {
@@ -98,6 +105,7 @@ public final class StreamReadRouter {
                                     NO_SELF,
                                     (_, _) -> Option.none(),
                                     StreamReadForwardMetrics.NOOP,
+                                    Option.none(),
                                     Option.none(),
                                     Option.none());
     }
@@ -116,10 +124,11 @@ public final class StreamReadRouter {
                                                                                       StreamReadRouter::toRawEvents,
                                                                                       metrics,
                                                                                       committedOwnerSource,
-                                                                                      epochHighWater).route(streamName,
-                                                                                                            partition,
-                                                                                                            fromOffset,
-                                                                                                            maxEvents);
+                                                                                      epochHighWater,
+                                                                                      barrier).route(streamName,
+                                                                                                     partition,
+                                                                                                     fromOffset,
+                                                                                                     maxEvents);
     }
 
     private Promise<List<OffHeapRingBuffer.RawEvent>> readLocal(String streamName,
