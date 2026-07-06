@@ -627,21 +627,26 @@ public sealed interface ManagementApiResponses {
                                 boolean strictCore,
                                 boolean countsTowardEffective) {}
 
-    /// #345 item 1f committed-ownership view for `GET /api/ownership/{domain}`. PER-NODE (not
-    /// leader/owner-forwarded): every entry is read from the answering node's committed KV-Store, so
-    /// `owner`/`epoch` reflect the fenced owner THIS node has applied. The ownership fence (#345 piece
-    /// 1a) rejects a deposed owner's strictly-older epoch in the Rabia applier, so the committed
-    /// `epoch` is the live fencing token — the diagnostic that lets the cloud handover test verify the
-    /// fence engaged. `entries` is sorted by `identity` for stable output; an empty list means no
-    /// ownership of that domain is committed yet (the operator-meaningful answer, not an error).
+    /// #345 item 1f committed-ownership + fence-diagnostic view for `GET /api/ownership/{domain}`.
+    /// PER-NODE (not leader/owner-forwarded): every entry is read from the answering node's committed
+    /// KV-Store and its LOCAL epoch high-water table, so `owner`/`epoch`/`highWater`/`fenced` reflect
+    /// what THIS node has applied. The ownership fence (#345 piece 1a) rejects a deposed owner's
+    /// strictly-older epoch in the Rabia applier, so the committed `epoch` is the live fencing token —
+    /// the diagnostic that lets the cloud handover test verify the fence engaged. `entries` is sorted
+    /// by `identity` for stable output; an empty list means no ownership of that domain is committed
+    /// yet (the operator-meaningful answer, not an error).
     record OwnershipResponse(String domain, List<OwnershipEntry> entries) {}
 
-    /// Per-partition/key committed ownership row: `identity` is the domain-specific partition/key
-    /// (community id, DHT partition id, or `{stream}:{partition}`), `owner` the committed owner
-    /// `NodeId`, `epoch` the committed fence `Epoch` (`fenceEpoch`) carried as the same
-    /// `(rabiaTerm, localCounter)` pair used elsewhere. Compare `epoch` across reads to confirm a
-    /// takeover advanced the fence.
-    record OwnershipEntry(String identity, String owner, EpochInfo epoch) {}
+    /// Per-partition/key committed-ownership + fence row: `identity` is the domain-specific
+    /// partition/key (community id, DHT partition id, or `{stream}:{partition}`), `owner` the
+    /// committed owner `NodeId`, `epoch` the committed fence `Epoch` (`fenceEpoch`), and `highWater`
+    /// the answering node's LOCAL per-domain monotonic epoch high-water — both carried as the same
+    /// `(rabiaTerm, localCounter)` pair used elsewhere. `fenced` is `true` when `highWater` is
+    /// strictly after `epoch`: the deposed-owner window in which this node has already observed a
+    /// newer epoch than the committed owner record shows, so the committed owner would be rejected as
+    /// stale here. In steady state `highWater` equals `epoch` and `fenced` is `false`; a `true`
+    /// pinpoints the node/arc where a takeover has advanced past the still-visible committed owner.
+    record OwnershipEntry(String identity, String owner, EpochInfo epoch, EpochInfo highWater, boolean fenced) {}
 
     /// #260/#261/#333 regression-sensor surface — the per-partition replica-set state as seen by the
     /// answering node's `ReplicaRegistry`, with the deterministic HRW owner resolved via the read

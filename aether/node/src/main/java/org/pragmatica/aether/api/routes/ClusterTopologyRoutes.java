@@ -37,6 +37,8 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.GovernorAnnouncementValue
 import org.pragmatica.aether.slice.kvstore.AetherValue.ProvisioningSlotValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.StreamPartitionOwnershipValue;
 import org.pragmatica.aether.slice.generation.Epoch;
+import org.pragmatica.aether.slice.fence.OwnershipDomain;
+import org.pragmatica.aether.slice.fence.OwnershipEpochHighWater;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.NodeInfo;
 import org.pragmatica.consensus.topology.NodeHealth;
@@ -242,50 +244,80 @@ public final class ClusterTopologyRoutes implements RouteSource {
 
     /// Package-visible assembler (mirrors `assembleMembershipResponse`) so the ownership view is unit
     /// testable off a seeded `KVStore` without the HTTP layer. Routes by `domain`; an unrecognized
-    /// domain yields `OwnershipError.UnknownDomain` (typed `Cause`, not an exception).
+    /// domain yields `OwnershipError.UnknownDomain` (typed `Cause`, not an exception). Each entry pairs
+    /// the committed owner/epoch (from the KV-Store) with THIS node's LOCAL per-domain epoch high-water
+    /// snapshot, so `fenced` marks the deposed-owner window (high-water strictly after committed epoch).
     static Result<OwnershipResponse> assembleOwnershipResponse(ManageableNode node, String domain) {
+        var highWater = highWaterSnapshot(node);
+
         return switch (domain) {
-            case DOMAIN_COMMUNITY -> Result.success(new OwnershipResponse(domain, communityOwnership(node)));
-            case DOMAIN_DHT -> Result.success(new OwnershipResponse(domain, dhtOwnership(node)));
-            case DOMAIN_STREAM -> Result.success(new OwnershipResponse(domain, streamOwnership(node)));
+            case DOMAIN_COMMUNITY -> Result.success(new OwnershipResponse(domain, communityOwnership(node, highWater)));
+            case DOMAIN_DHT -> Result.success(new OwnershipResponse(domain, dhtOwnership(node, highWater)));
+            case DOMAIN_STREAM -> Result.success(new OwnershipResponse(domain, streamOwnership(node, highWater)));
             default -> new OwnershipError.UnknownDomain(domain).result();
         };
     }
 
-    private static List<OwnershipEntry> communityOwnership(ManageableNode node) {
+    /// This node's LOCAL per-ownership-domain epoch high-water snapshot, or an empty map when the node
+    /// exposes no fence table (test proxies) — in which case every entry reports `highWater == epoch`
+    /// and `fenced == false` (the committed epoch is the floor).
+    private static Map<OwnershipDomain, Epoch> highWaterSnapshot(ManageableNode node) {
+        return node.ownershipEpochHighWater()
+                   .map(OwnershipEpochHighWater::snapshot)
+                   .or(Map.of());
+    }
+
+    private static List<OwnershipEntry> communityOwnership(ManageableNode node, Map<OwnershipDomain, Epoch> highWater) {
         var entries = new ArrayList<OwnershipEntry>();
 
         node.kvStore().forEach(GovernorAnnouncementKey.class,
                                GovernorAnnouncementValue.class,
-                               (key, value) -> entries.add(new OwnershipEntry(key.communityId(),
-                                                                              value.governorId().id(),
-                                                                              epochInfo(value.fenceEpoch()))));
+                               (key, value) -> entries.add(ownershipEntry(key.communityId(),
+                                                                          value.governorId().id(),
+                                                                          value.fenceEpoch(),
+                                                                          highWater.get(OwnershipDomain.community(key.communityId())))));
 
         return sortedByIdentity(entries);
     }
 
-    private static List<OwnershipEntry> dhtOwnership(ManageableNode node) {
+    private static List<OwnershipEntry> dhtOwnership(ManageableNode node, Map<OwnershipDomain, Epoch> highWater) {
         var entries = new ArrayList<OwnershipEntry>();
 
         node.kvStore().forEach(DhtPartitionOwnershipKey.class,
                                DhtPartitionOwnershipValue.class,
-                               (key, value) -> entries.add(new OwnershipEntry(key.partitionId(),
-                                                                              value.ownerNodeId().id(),
-                                                                              epochInfo(value.fenceEpoch()))));
+                               (key, value) -> entries.add(ownershipEntry(key.partitionId(),
+                                                                          value.ownerNodeId().id(),
+                                                                          value.fenceEpoch(),
+                                                                          highWater.get(OwnershipDomain.dhtPartition(key.partitionId())))));
 
         return sortedByIdentity(entries);
     }
 
-    private static List<OwnershipEntry> streamOwnership(ManageableNode node) {
+    private static List<OwnershipEntry> streamOwnership(ManageableNode node, Map<OwnershipDomain, Epoch> highWater) {
         var entries = new ArrayList<OwnershipEntry>();
 
         node.kvStore().forEach(StreamPartitionOwnershipKey.class,
                                StreamPartitionOwnershipValue.class,
-                               (key, value) -> entries.add(new OwnershipEntry(key.stream() + ":" + key.partition(),
-                                                                              value.owner().id(),
-                                                                              epochInfo(value.fenceEpoch()))));
+                               (key, value) -> entries.add(ownershipEntry(key.stream() + ":" + key.partition(),
+                                                                          value.owner().id(),
+                                                                          value.fenceEpoch(),
+                                                                          highWater.get(OwnershipDomain.streamPartition(key.stream(), key.partition())))));
 
         return sortedByIdentity(entries);
+    }
+
+    /// Builds one ownership row. `observedHighWater` is the nullable per-domain high-water snapshot
+    /// value (absent when the node has no fence table or has never observed the arc): it floors to the
+    /// committed `epoch` so `highWater` is never behind `epoch`, and `fenced` is `true` only when the
+    /// observed high-water is strictly after the committed epoch (the deposed-owner window).
+    private static OwnershipEntry ownershipEntry(String identity, String owner, Epoch epoch, Epoch observedHighWater) {
+        var highWater = Option.option(observedHighWater).or(epoch);
+
+        return new OwnershipEntry(identity,
+                                  owner,
+                                  epochInfo(epoch),
+                                  epochInfo(highWater),
+                                  highWater.isStrictlyAfter(epoch));
     }
 
     private static List<OwnershipEntry> sortedByIdentity(List<OwnershipEntry> entries) {

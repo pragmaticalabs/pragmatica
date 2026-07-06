@@ -1075,6 +1075,7 @@ public interface AetherNode extends ManageableNode {
         record aetherNode(AetherNodeConfig config,
                           MessageRouter.DelegateRouter router,
                           KVStore<AetherKey, AetherValue> kvStore,
+                          OwnershipEpochHighWater ownershipEpochHighWaterInstance,
                           SliceRegistry sliceRegistry,
                           SliceStore sliceStore,
                           RabiaNode<KVCommand<AetherKey>> clusterNode,
@@ -1405,6 +1406,11 @@ public interface AetherNode extends ManageableNode {
             @Override
             public Option<QuorumLossSnapshot> quorumLossSnapshot() {
                 return Option.option(quorumLossDetector).map(QuorumLossSnapshot::from);
+            }
+
+            @Override
+            public Option<OwnershipEpochHighWater> ownershipEpochHighWater() {
+                return Option.some(ownershipEpochHighWaterInstance);
             }
 
             @Override
@@ -3147,6 +3153,7 @@ public interface AetherNode extends ManageableNode {
         var node = new aetherNode(config,
                                   delegateRouter,
                                   kvStore,
+                                  ownershipEpochHighWater,
                                   sliceRegistry,
                                   sliceStore,
                                   clusterNode,
@@ -3263,6 +3270,7 @@ public interface AetherNode extends ManageableNode {
                 return new aetherNode(config,
                                       delegateRouter,
                                       kvStore,
+                                      ownershipEpochHighWater,
                                       sliceRegistry,
                                       sliceStore,
                                       clusterNode,

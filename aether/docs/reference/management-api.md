@@ -2463,7 +2463,7 @@ Membership diagnostics — the responding node's authoritative `MembershipFsm` l
 
 ### GET /api/ownership/{domain}
 
-Committed ownership/fence diagnostics (#345 item 1f) — the owner `NodeId` and current fence `Epoch` of every partition/key in the requested domain, read from the responding node's committed KV-Store. Purpose: let an operator (or the cloud handover test) verify that the ownership fence engaged after a takeover — the committed `epoch` is the live fencing token the Rabia applier compares to reject a deposed owner's strictly-older epoch. **Per-node local view** (each node serves its own committed state); read-only; **not leader/owner-forwarded**. The committed ownership atoms are Rabia-replicated, so a read off any caught-up node reflects the fenced owner.
+Committed ownership + fence diagnostics (#345 item 1f) — for every partition/key in the requested domain: the owner `NodeId`, the committed fence `Epoch`, the responding node's LOCAL per-domain epoch high-water, and a `fenced` flag. Purpose: let an operator (or the cloud handover test) verify that the ownership fence engaged after a takeover — the committed `epoch` is the live fencing token the Rabia applier compares to reject a deposed owner's strictly-older epoch, and `fenced` pinpoints the node/arc that has already observed a newer epoch than the still-committed owner (the deposed-owner window). **Per-node local view** (each node serves its own committed state and its own high-water table); read-only; **not leader/owner-forwarded**. The committed ownership atoms are Rabia-replicated, so a read off any caught-up node reflects the fenced owner; the high-water is per-node, so `fenced` is answered from THIS node's fence table.
 
 `{domain}` is one of `community` (governor ownership of a community — identity is the community id, owner is the governor), `dht` (DHT partition ownership — identity is the partition id), or `stream` (stream-partition ownership — identity is `{stream}:{partition}`). Entries are sorted by `identity`; an empty `entries[]` means no ownership of that domain is committed yet. Any other `{domain}` value is rejected with a `400` (`Unknown ownership domain '<value>' …`).
 
@@ -2474,8 +2474,8 @@ Committed ownership/fence diagnostics (#345 item 1f) — the owner `NodeId` and 
 {
   "domain": "stream",
   "entries": [
-    {"identity": "orders:0", "owner": "core-1", "epoch": {"rabiaTerm": 7, "localCounter": 3}},
-    {"identity": "orders:1", "owner": "core-2", "epoch": {"rabiaTerm": 7, "localCounter": 1}}
+    {"identity": "orders:0", "owner": "core-1", "epoch": {"rabiaTerm": 7, "localCounter": 3}, "highWater": {"rabiaTerm": 7, "localCounter": 3}, "fenced": false},
+    {"identity": "orders:1", "owner": "core-2", "epoch": {"rabiaTerm": 7, "localCounter": 1}, "highWater": {"rabiaTerm": 8, "localCounter": 0}, "fenced": true}
   ]
 }
 ```
@@ -2487,6 +2487,8 @@ Committed ownership/fence diagnostics (#345 item 1f) — the owner `NodeId` and 
 | `entries[].identity` | Domain-specific partition/key: community id (`community`), partition id (`dht`), or `{stream}:{partition}` (`stream`) |
 | `entries[].owner` | Committed owner `NodeId` (governor id for `community`) |
 | `entries[].epoch` | Committed fence `Epoch` (`fenceEpoch`) as `{rabiaTerm, localCounter}` — the fencing token |
+| `entries[].highWater` | This node's LOCAL per-domain monotonic epoch high-water as `{rabiaTerm, localCounter}`; equals `epoch` in steady state, floors to `epoch` when the arc has not been observed |
+| `entries[].fenced` | `true` when `highWater` is strictly after `epoch` — the deposed-owner window in which this node has observed a newer epoch than the committed owner record shows, so the committed owner would be rejected as stale here (`false` in steady state) |
 
 ### GET /api/cluster/generation
 

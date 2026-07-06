@@ -60,6 +60,44 @@ class OwnershipEpochHighWaterTest {
     }
 
     @Nested
+    class Snapshot {
+        @Test
+        void snapshot_advancedDomains_carriesEachHighWater() {
+            var table = emptyHighWater();
+            var community = OwnershipDomain.community("c");
+            var partition = OwnershipDomain.dhtPartition("p-1");
+
+            table.advance(community, Epoch.epoch(2, 0));
+            table.advance(partition, Epoch.epoch(4, 1));
+
+            var snapshot = table.snapshot();
+
+            assertThat(snapshot).hasSize(2)
+                                .containsEntry(community, Epoch.epoch(2, 0))
+                                .containsEntry(partition, Epoch.epoch(4, 1));
+        }
+
+        @Test
+        void snapshot_emptyTable_isEmptyMap() {
+            assertThat(emptyHighWater().snapshot()).isEmpty();
+        }
+
+        @Test
+        void snapshot_isPointInTimeCopy_notReflectingLaterAdvance() {
+            var table = emptyHighWater();
+            var domain = OwnershipDomain.community("c");
+
+            table.advance(domain, Epoch.epoch(1, 0));
+
+            var snapshot = table.snapshot();
+
+            table.advance(domain, Epoch.epoch(9, 0));
+
+            assertThat(snapshot).containsEntry(domain, Epoch.epoch(1, 0));
+        }
+    }
+
+    @Nested
     class Advance {
         @Test
         void advance_newerEpoch_advancesHighWater() {

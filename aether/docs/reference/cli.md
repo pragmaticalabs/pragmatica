@@ -1944,7 +1944,7 @@ strict=2  threshold=3  below=true  armed=true
 
 ### `aether cluster ownership`
 
-Show the queried node's committed ownership view (#345 item 1f) for a domain — the owner `NodeId` and current fence `Epoch` of every partition/key the responding node has committed in that domain. Renders a per-entry table (`identity`, `owner`, and the fence epoch split into `EPOCH-TERM`/`EPOCH-COUNTER`). Use to verify the ownership fence engaged after a takeover: the committed epoch is the fencing token the Rabia applier uses to reject a deposed owner's strictly-older epoch. **Per-node local view** (not leader/owner-forwarded) — target a specific node (`-c <host>`) to read its committed view. Wraps `GET /api/ownership/{domain}`.
+Show the queried node's committed ownership + fence view (#345 item 1f) for a domain — for every partition/key the responding node has committed in that domain: the owner `NodeId`, the committed fence `Epoch`, the node's LOCAL per-domain epoch high-water, and whether the entry is `fenced`. Renders a per-entry table (`identity`, `owner`, the committed epoch split into `EPOCH-TERM`/`EPOCH-CTR`, the local high-water split into `HW-TERM`/`HW-CTR`, and `FENCED`). Use to verify the ownership fence engaged after a takeover: the committed epoch is the fencing token the Rabia applier uses to reject a deposed owner's strictly-older epoch, and `FENCED=true` pinpoints the node/arc that has already observed a newer epoch than the still-committed owner (the deposed-owner window). **Per-node local view** (not leader/owner-forwarded) — target a specific node (`-c <host>`) to read its committed + high-water view. Wraps `GET /api/ownership/{domain}`.
 
 The `<domain>` argument is one of `community` (governor ownership — identity is the community id, owner is the governor), `dht` (DHT partition ownership — identity is the partition id), or `stream` (stream-partition ownership — identity is `{stream}:{partition}`). Any other value is rejected with an error.
 
@@ -1964,11 +1964,13 @@ aether cluster ownership community --format json
 | `<domain>` | Ownership domain: `community`, `dht`, or `stream` (required positional argument) |
 | `--format` | Output format: `table` (default), `json`, `value`, `csv` |
 
+`FENCED` is `true` when the local high-water is strictly after the committed epoch — this node has observed a newer epoch than the committed owner record shows, so the committed owner would be rejected as stale here. In steady state `HW-TERM`/`HW-CTR` equal `EPOCH-TERM`/`EPOCH-CTR` and `FENCED` is `false`.
+
 Example output (table):
 ```
-IDENTITY  OWNER   EPOCH-TERM  EPOCH-COUNTER
-orders:0  core-1  7           3
-orders:1  core-2  7           1
+IDENTITY  OWNER   EPOCH-TERM  EPOCH-CTR  HW-TERM  HW-CTR  FENCED
+orders:0  core-1  7           3          7        3       false
+orders:1  core-2  7           1          8        0       true
 ```
 
 ### `aether cluster journal`

@@ -10,6 +10,8 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.api.ManagementApiResponses.OwnershipResponse;
 import org.pragmatica.aether.node.ManageableNode;
+import org.pragmatica.aether.slice.fence.OwnershipDomain;
+import org.pragmatica.aether.slice.fence.OwnershipEpochHighWater;
 import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.DhtPartitionOwnershipKey;
@@ -23,6 +25,7 @@ import org.pragmatica.cluster.state.kvstore.KVCommand.Put;
 import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.hlc.HlcTimestamp;
+import org.pragmatica.lang.Option;
 import org.pragmatica.messaging.MessageRouter;
 import org.pragmatica.serialization.Deserializer;
 import org.pragmatica.serialization.Serializer;
@@ -34,10 +37,13 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.fail;
 
 
-/// #345 item 1f — exercises the committed-ownership assembler behind `GET /api/ownership/{domain}`.
-/// Seeds a real `KVStore` with one ownership atom of each type and asserts the per-domain response
-/// carries the right identity/owner/fence-epoch, that an unknown domain is a clean typed failure (not
-/// an exception), and that an empty domain yields an empty (successful) list.
+/// #345 item 1f — exercises the committed-ownership + fence-diagnostic assembler behind
+/// `GET /api/ownership/{domain}`. Seeds a real `KVStore` with one ownership atom of each type, builds
+/// the node's LOCAL epoch high-water table over it, and asserts the per-domain response carries the
+/// right identity/owner/fence-epoch, that `highWater` mirrors the committed epoch (so `fenced` is
+/// `false`) in steady state, that advancing a domain's high-water past the committed epoch flips
+/// `fenced` to `true`, that an unknown domain is a clean typed failure (not an exception), and that
+/// an empty domain yields an empty (successful) list.
 class ClusterOwnershipRoutesTest {
     private static final NodeId GOVERNOR = NodeId.nodeId("gov-1").unwrap();
     private static final NodeId DHT_OWNER = NodeId.nodeId("core-1").unwrap();
@@ -47,12 +53,12 @@ class ClusterOwnershipRoutesTest {
     private static final Epoch STREAM_EPOCH = Epoch.epoch(7, 3);
 
     private KVStore<AetherKey, AetherValue> store;
+    private OwnershipEpochHighWater highWater;
     private ManageableNode node;
 
     @BeforeEach
     void setUp() {
         store = new KVStore<>(MessageRouter.mutable(), stubSerializer(), stubDeserializer());
-        node = nodeOver(store);
         seed(GovernorAnnouncementKey.forCommunity("prod:us-east-1"),
              GovernorAnnouncementValue.governorAnnouncementValue(GOVERNOR,
                                                                  List.of(GOVERNOR),
@@ -74,6 +80,8 @@ class ClusterOwnershipRoutesTest {
                                                                          STREAM_EPOCH,
                                                                          STREAM_EPOCH.localCounter(),
                                                                          HlcTimestamp.ZERO));
+        highWater = OwnershipEpochHighWater.ownershipEpochHighWater(store);
+        node = nodeOver(store, highWater);
     }
 
     @Nested
@@ -92,6 +100,9 @@ class ClusterOwnershipRoutesTest {
                                      assertThat(entry.owner()).isEqualTo("gov-1");
                                      assertThat(entry.epoch().rabiaTerm()).isEqualTo(5);
                                      assertThat(entry.epoch().localCounter()).isEqualTo(2);
+                                     assertThat(entry.highWater().rabiaTerm()).isEqualTo(5);
+                                     assertThat(entry.highWater().localCounter()).isEqualTo(2);
+                                     assertThat(entry.fenced()).isFalse();
                                  });
         }
 
@@ -109,6 +120,9 @@ class ClusterOwnershipRoutesTest {
                                      assertThat(entry.owner()).isEqualTo("core-1");
                                      assertThat(entry.epoch().rabiaTerm()).isEqualTo(6);
                                      assertThat(entry.epoch().localCounter()).isEqualTo(1);
+                                     assertThat(entry.highWater().rabiaTerm()).isEqualTo(6);
+                                     assertThat(entry.highWater().localCounter()).isEqualTo(1);
+                                     assertThat(entry.fenced()).isFalse();
                                  });
         }
 
@@ -126,6 +140,42 @@ class ClusterOwnershipRoutesTest {
                                      assertThat(entry.owner()).isEqualTo("core-2");
                                      assertThat(entry.epoch().rabiaTerm()).isEqualTo(7);
                                      assertThat(entry.epoch().localCounter()).isEqualTo(3);
+                                     assertThat(entry.highWater().rabiaTerm()).isEqualTo(7);
+                                     assertThat(entry.highWater().localCounter()).isEqualTo(3);
+                                     assertThat(entry.fenced()).isFalse();
+                                 });
+        }
+    }
+
+    @Nested
+    class FenceWindow {
+        @Test
+        void assembleOwnershipResponse_highWaterAheadOfCommitted_marksEntryFenced() {
+            highWater.advance(OwnershipDomain.dhtPartition("partition-3"), Epoch.epoch(9, 0));
+
+            ClusterTopologyRoutes.assembleOwnershipResponse(node, "dht")
+                                 .onFailure(cause -> fail("dht ownership must succeed: " + cause.message()))
+                                 .onSuccess(response -> {
+                                     var entry = response.entries().getFirst();
+
+                                     assertThat(entry.fenced()).isTrue();
+                                     assertThat(entry.epoch().rabiaTerm()).isEqualTo(6);
+                                     assertThat(entry.epoch().localCounter()).isEqualTo(1);
+                                     assertThat(entry.highWater().rabiaTerm()).isEqualTo(9);
+                                     assertThat(entry.highWater().localCounter()).isEqualTo(0);
+                                 });
+        }
+
+        @Test
+        void assembleOwnershipResponse_highWaterEqualsCommitted_isNotFenced() {
+            ClusterTopologyRoutes.assembleOwnershipResponse(node, "stream")
+                                 .onFailure(cause -> fail("stream ownership must succeed: " + cause.message()))
+                                 .onSuccess(response -> {
+                                     var entry = response.entries().getFirst();
+
+                                     assertThat(entry.fenced()).isFalse();
+                                     assertThat(entry.highWater().rabiaTerm()).isEqualTo(7);
+                                     assertThat(entry.highWater().localCounter()).isEqualTo(3);
                                  });
         }
     }
@@ -142,7 +192,8 @@ class ClusterOwnershipRoutesTest {
 
         @Test
         void assembleOwnershipResponse_emptyStore_isEmptySuccessList() {
-            var emptyNode = nodeOver(new KVStore<>(MessageRouter.mutable(), stubSerializer(), stubDeserializer()));
+            var emptyStore = new KVStore<AetherKey, AetherValue>(MessageRouter.mutable(), stubSerializer(), stubDeserializer());
+            var emptyNode = nodeOver(emptyStore, OwnershipEpochHighWater.ownershipEpochHighWater(emptyStore));
 
             ClusterTopologyRoutes.assembleOwnershipResponse(emptyNode, "dht")
                                  .onFailure(cause -> fail("empty store must succeed: " + cause.message()))
@@ -161,12 +212,14 @@ class ClusterOwnershipRoutesTest {
         store.process(store.createBatch(List.of(new Put<>(key, value))));
     }
 
-    private static ManageableNode nodeOver(KVStore<AetherKey, AetherValue> store) {
+    private static ManageableNode nodeOver(KVStore<AetherKey, AetherValue> store, OwnershipEpochHighWater highWater) {
         return (ManageableNode) Proxy.newProxyInstance(ManageableNode.class.getClassLoader(),
                                                        new Class[]{ManageableNode.class},
-                                                       (_, method, _) -> "kvStore".equals(method.getName())
-                                                                         ? store
-                                                                         : unsupported(method.getName()));
+                                                       (_, method, _) -> switch (method.getName()) {
+                                                           case "kvStore" -> store;
+                                                           case "ownershipEpochHighWater" -> Option.some(highWater);
+                                                           default -> unsupported(method.getName());
+                                                       });
     }
 
     private static Object unsupported(String name) {

@@ -25,17 +25,23 @@ import static org.pragmatica.aether.management.route.ManagementRoute.CLUSTER_OWN
 @SuppressWarnings("JBCT-RET-01")
 class ClusterOwnershipCommand implements Callable<Integer> {
     // One row per committed ownership atom from the `entries` array; `identity` is the
-    // domain-specific partition/key, `owner` the committed owner NodeId, and the fence Epoch is split
-    // into its (rabiaTerm, localCounter) columns. The view is PER-NODE local — the table shows the
-    // committed ownership as applied by whichever node served the request. `--format json` exposes the
-    // full nested `epoch` object plus the `domain` at the response root.
+    // domain-specific partition/key, `owner` the committed owner NodeId, the committed fence Epoch is
+    // split into its (rabiaTerm, localCounter) columns, and the responding node's LOCAL per-domain
+    // epoch high-water is split into HW-TERM/HW-CTR. FENCED is `true` when the high-water is strictly
+    // after the committed epoch — the deposed-owner window in which this node has observed a newer
+    // epoch than the committed owner shows (so the committed owner would be rejected as stale here);
+    // in steady state high-water equals the committed epoch and FENCED is `false`. The view is
+    // PER-NODE local — the table shows ownership + fence state as applied by whichever node served the
+    // request. `--format json` exposes the full nested `epoch`/`highWater` objects, the `fenced` flag,
+    // plus the `domain` at the response root.
     private static final TableSpec TABLE_SPEC = new TableSpec("Local Ownership View",
-                                                              List.of(new Column("IDENTITY", "identity", 28),
-                                                                      new Column("OWNER", "owner", 18),
+                                                              List.of(new Column("IDENTITY", "identity", 24),
+                                                                      new Column("OWNER", "owner", 16),
                                                                       new Column("EPOCH-TERM", "epoch.rabiaTerm", 11),
-                                                                      new Column("EPOCH-COUNTER",
-                                                                                 "epoch.localCounter",
-                                                                                 14)),
+                                                                      new Column("EPOCH-CTR", "epoch.localCounter", 10),
+                                                                      new Column("HW-TERM", "highWater.rabiaTerm", 8),
+                                                                      new Column("HW-CTR", "highWater.localCounter", 7),
+                                                                      new Column("FENCED", "fenced", 7)),
                                                               "entries");
 
     @CommandLine.ParentCommand

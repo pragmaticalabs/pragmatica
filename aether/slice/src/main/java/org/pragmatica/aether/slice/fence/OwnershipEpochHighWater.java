@@ -77,6 +77,15 @@ public final class OwnershipEpochHighWater {
         return Option.option(highWaterMarks.get(domain));
     }
 
+    /// An immutable point-in-time snapshot of every observed domain's current high-water [Epoch] —
+    /// the read-only view the #345 item 1f ownership-observability endpoint (`GET /api/ownership`)
+    /// assembles its per-entry `highWater`/`fenced` columns from. No locking change: [Map#copyOf]
+    /// drains the [ConcurrentHashMap]'s weakly-consistent iterator, so a concurrent [#advance] is
+    /// simply included-or-not, never a torn read. The returned map is safe to iterate freely.
+    public Map<OwnershipDomain, Epoch> snapshot() {
+        return Map.copyOf(highWaterMarks);
+    }
+
     /// `true` iff there IS a recorded high-water for the domain AND `presentedEpoch` is strictly
     /// older than it. Unknown domain (the floor) and equal-or-newer presented epochs are NOT stale.
     public boolean isStale(OwnershipDomain domain, Epoch presentedEpoch) {

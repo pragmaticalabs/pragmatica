@@ -16,6 +16,7 @@ import org.pragmatica.aether.deployment.membership.ntt.QuorumLossSnapshot;
 import org.pragmatica.aether.node.journal.TransitionJournal;
 import org.pragmatica.aether.node.lifecycle.NodeLifecycle;
 import org.pragmatica.aether.slice.delegation.TaskGroup;
+import org.pragmatica.aether.slice.fence.OwnershipEpochHighWater;
 import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Result;
 import org.pragmatica.aether.http.AppHttpServer;
@@ -136,8 +137,18 @@ public interface ManageableNode {
         return Option.none();
     }
 
-    Option<CertificateRenewalScheduler> certRenewalScheduler();
-    /// Runtime TLS posture. `true` when the node's app-HTTP server is bound with TLS
+    /// #345 item 1f — the node's live per-ownership-domain epoch high-water table (the DATA-plane
+    /// mirror of the committed ownership records). `GET /api/ownership/{domain}` reads its
+    /// [OwnershipEpochHighWater#snapshot] to surface each entry's LOCAL `highWater` epoch and the
+    /// `fenced` deposed-owner-window flag (local high-water strictly after the committed owner
+    /// epoch). PER-NODE local state, never leader/owner-forwarded — each node answers from its own
+    /// table. Default `Option.none()` keeps `ManageableNode` test proxies compiling; the production
+    /// node record supplies the live table.
+    default Option<OwnershipEpochHighWater> ownershipEpochHighWater() {
+        return Option.none();
+    }
+
+    Option<CertificateRenewalScheduler> certRenewalScheduler();    /// Runtime TLS posture. `true` when the node's app-HTTP server is bound with TLS
     /// (equivalent to `AetherNodeConfig.tls().isPresent()` — i.e. `AetherConfig.tlsEnabled()`
     /// was true at startup and a `CertificateProvider` resolved). Surfaced through
     /// `GET /api/certificates` so integration tooling can assert active TLS without
