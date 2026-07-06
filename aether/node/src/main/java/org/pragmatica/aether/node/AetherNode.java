@@ -3134,7 +3134,10 @@ public interface AetherNode extends ManageableNode {
                                         serializer,
                                         deserializer,
                                         config.self(),
-                                        streamReplicaRegistry);
+                                        streamReplicaRegistry,
+                                        committedStreamOwnerSource,
+                                        ownershipEpochHighWater,
+                                        linearizableBarrier);
         var certRenewalScheduler = createCertRenewalScheduler(config,
                                                               clusterNode,
                                                               appHttpServer,
@@ -4808,7 +4811,10 @@ public interface AetherNode extends ManageableNode {
                                                         Serializer serializer,
                                                         Deserializer deserializer,
                                                         NodeId self,
-                                                        ReplicaRegistry streamReplicaRegistry) {
+                                                        ReplicaRegistry streamReplicaRegistry,
+                                                        CommittedStreamOwnerSource committedStreamOwnerSource,
+                                                        OwnershipEpochHighWater ownershipEpochHighWater,
+                                                        Option<LinearizableBarrier> linearizableBarrier) {
         resourceProviderSetup.spiProvider().onPresent(spi -> registerForwardExtensionsOnSpi(spi,
                                                                                             forwardClient,
                                                                                             ownerResolver,
@@ -4819,7 +4825,10 @@ public interface AetherNode extends ManageableNode {
                                                                                             serializer,
                                                                                             deserializer,
                                                                                             self,
-                                                                                            streamReplicaRegistry));
+                                                                                            streamReplicaRegistry,
+                                                                                            committedStreamOwnerSource,
+                                                                                            ownershipEpochHighWater,
+                                                                                            linearizableBarrier));
     }
 
     private static void registerForwardExtensionsOnSpi(SpiResourceProvider spi,
@@ -4832,7 +4841,10 @@ public interface AetherNode extends ManageableNode {
                                                        Serializer serializer,
                                                        Deserializer deserializer,
                                                        NodeId self,
-                                                       ReplicaRegistry streamReplicaRegistry) {
+                                                       ReplicaRegistry streamReplicaRegistry,
+                                                       CommittedStreamOwnerSource committedStreamOwnerSource,
+                                                       OwnershipEpochHighWater ownershipEpochHighWater,
+                                                       Option<LinearizableBarrier> linearizableBarrier) {
         spi.registerExtension(StreamForwardClient.class, forwardClient);
         spi.registerExtension(StreamPartitionManager.class, streamPartitionManager);
         spi.registerExtension(CursorStore.class, streamCursorStore);
@@ -4855,6 +4867,14 @@ public interface AetherNode extends ManageableNode {
                               new StreamPublisherFactory.GovernorResolver(() -> ownerResolver.apply(TaskGroup.STREAMING)
                                                                                              .option(),
                                                                           Option.some(partitionOwnerResolver)));
+        // #345 item 1e-c: expose the LINEARIZABLE pipeline components so the app StreamAccessFactory
+        // wires a typed LINEARIZABLE read through the SAME committed-owner routing + owner-side
+        // fence/round/catch-up pipeline as the raw StreamReadRouter path (1e-a). The barrier is present
+        // only when [durable-entity] read-linearization is NO_OP_ROUND; when absent the typed
+        // LINEARIZABLE arm degrades to the replica-routed read exactly as the raw path does.
+        spi.registerExtension(CommittedStreamOwnerSource.class, committedStreamOwnerSource);
+        spi.registerExtension(OwnershipEpochHighWater.class, ownershipEpochHighWater);
+        linearizableBarrier.onPresent(barrier -> spi.registerExtension(LinearizableBarrier.class, barrier));
     }
 
     /// Project the aggregator's materialised `ClusterEvent` view onto

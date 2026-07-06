@@ -6,6 +6,7 @@ package org.pragmatica.aether.stream;
 
 import org.pragmatica.aether.slice.ReadPreference;
 import org.pragmatica.aether.slice.StreamAccess;
+import org.pragmatica.aether.slice.fence.OwnershipEpochHighWater;
 import org.pragmatica.aether.stream.forward.RawEventDto;
 import org.pragmatica.aether.stream.forward.StreamForwardClient;
 import org.pragmatica.aether.stream.forward.StreamReadForwardMetrics;
@@ -65,6 +66,9 @@ public final class PartitionedStreamAccess<T> implements StreamAccess<T> {
     private final Option<Function<Integer, Option<NodeId>>> partitionOwnerResolver;
     private final StreamReadForwardMetrics metrics;
     private final int minSyncReplicas;
+    private final Option<CommittedStreamOwnerSource> committedOwnerSource;
+    private final Option<OwnershipEpochHighWater> epochHighWater;
+    private final Option<LinearizableBarrier> barrier;
     private final AtomicLong roundRobinCounter;
     private final ConcurrentHashMap<ConsumerPartitionKey, Long> committedOffsets;
 
@@ -85,6 +89,53 @@ public final class PartitionedStreamAccess<T> implements StreamAccess<T> {
                                     Option<Function<Integer, Option<NodeId>>> partitionOwnerResolver,
                                     StreamReadForwardMetrics metrics,
                                     int minSyncReplicas) {
+        this(partitionManager,
+             serializer,
+             deserializer,
+             streamName,
+             partitionCount,
+             partitionKeyExtractor,
+             cursorWriter,
+             tieredReader,
+             cursorStore,
+             readPreference,
+             replicaRegistry,
+             forwardClient,
+             selfNodeId,
+             ownerResolver,
+             partitionOwnerResolver,
+             metrics,
+             minSyncReplicas,
+             Option.none(),
+             Option.none(),
+             Option.none());
+    }
+
+    /// #345 item 1e-c: full constructor adding the three `LINEARIZABLE` pipeline components — the
+    /// committed-owner source, the ownership epoch high-water, and the no-op-round barrier — that the
+    /// typed read path threads into {@link #forwardingReadRouter()} so a `LINEARIZABLE` read runs the
+    /// same owner-routed fence/round/catch-up pipeline as the raw {@link StreamReadRouter} path. Every
+    /// other overload delegates here with [Option#none] components (no behaviour change).
+    private PartitionedStreamAccess(StreamPartitionManager partitionManager,
+                                    Serializer serializer,
+                                    Deserializer deserializer,
+                                    String streamName,
+                                    int partitionCount,
+                                    Option<Function<T, Object>> partitionKeyExtractor,
+                                    CursorCheckpointWriter cursorWriter,
+                                    Option<TieredStreamReader> tieredReader,
+                                    Option<CursorStore> cursorStore,
+                                    ReadPreference readPreference,
+                                    Option<ReplicaRegistry> replicaRegistry,
+                                    Option<StreamForwardClient> forwardClient,
+                                    NodeId selfNodeId,
+                                    Option<Fn0<Option<NodeId>>> ownerResolver,
+                                    Option<Function<Integer, Option<NodeId>>> partitionOwnerResolver,
+                                    StreamReadForwardMetrics metrics,
+                                    int minSyncReplicas,
+                                    Option<CommittedStreamOwnerSource> committedOwnerSource,
+                                    Option<OwnershipEpochHighWater> epochHighWater,
+                                    Option<LinearizableBarrier> barrier) {
         this.partitionManager = partitionManager;
         this.serializer = serializer;
         this.deserializer = deserializer;
@@ -102,6 +153,9 @@ public final class PartitionedStreamAccess<T> implements StreamAccess<T> {
         this.partitionOwnerResolver = partitionOwnerResolver;
         this.metrics = metrics;
         this.minSyncReplicas = minSyncReplicas;
+        this.committedOwnerSource = committedOwnerSource;
+        this.epochHighWater = epochHighWater;
+        this.barrier = barrier;
         this.roundRobinCounter = new AtomicLong(0);
         this.committedOffsets = new ConcurrentHashMap<>();
     }
@@ -197,6 +251,53 @@ public final class PartitionedStreamAccess<T> implements StreamAccess<T> {
                                                               Option<TieredStreamReader> tieredReader,
                                                               Option<CursorStore> cursorStore,
                                                               Option<ReplicaRegistry> replicaRegistry) {
+        return streamAccess(partitionManager,
+                            serializer,
+                            deserializer,
+                            streamName,
+                            partitionCount,
+                            partitionKeyExtractor,
+                            forwardClient,
+                            selfNodeId,
+                            ownerResolver,
+                            partitionOwnerResolver,
+                            minSyncReplicas,
+                            tieredReader,
+                            cursorStore,
+                            replicaRegistry,
+                            ReadPreference.NEAREST,
+                            Option.none(),
+                            Option.none(),
+                            Option.none());
+    }
+
+    /// #345 item 1e-c: the full-component durable owner-routed overload — the same wiring as the
+    /// 14-arg overload above PLUS an explicit `readPreference` and the three `LINEARIZABLE` pipeline
+    /// components (the committed-owner source, the ownership epoch high-water, and the no-op-round
+    /// barrier). Threaded from `AetherNode` through `StreamAccessFactory` so a typed `LINEARIZABLE`
+    /// read runs the SAME committed-owner routing + owner-side fence/round/catch-up pipeline as the raw
+    /// {@link StreamReadRouter} path (1e-a), instead of degrading to the replica-routed read. The
+    /// non-linearizable preferences ignore the three components, so `NEAREST` (the app default the
+    /// 14-arg overload delegates with) stays byte-for-byte unchanged; with [Option#none] components the
+    /// `LINEARIZABLE` arm falls back to the replica-routed read so nothing breaks.
+    public static <T> PartitionedStreamAccess<T> streamAccess(StreamPartitionManager partitionManager,
+                                                              Serializer serializer,
+                                                              Deserializer deserializer,
+                                                              String streamName,
+                                                              int partitionCount,
+                                                              Option<Function<T, Object>> partitionKeyExtractor,
+                                                              Option<StreamForwardClient> forwardClient,
+                                                              NodeId selfNodeId,
+                                                              Option<Fn0<Option<NodeId>>> ownerResolver,
+                                                              Option<Function<Integer, Option<NodeId>>> partitionOwnerResolver,
+                                                              int minSyncReplicas,
+                                                              Option<TieredStreamReader> tieredReader,
+                                                              Option<CursorStore> cursorStore,
+                                                              Option<ReplicaRegistry> replicaRegistry,
+                                                              ReadPreference readPreference,
+                                                              Option<CommittedStreamOwnerSource> committedOwnerSource,
+                                                              Option<OwnershipEpochHighWater> epochHighWater,
+                                                              Option<LinearizableBarrier> barrier) {
         var cursorWriter = cursorStore.map(cs -> (CursorCheckpointWriter)(stream, group, partition, offset) -> cs.commit(group,
                                                                                                                          stream,
                                                                                                                          partition,
@@ -211,14 +312,17 @@ public final class PartitionedStreamAccess<T> implements StreamAccess<T> {
                                              cursorWriter,
                                              tieredReader,
                                              cursorStore,
-                                             ReadPreference.NEAREST,
+                                             readPreference,
                                              replicaRegistry,
                                              forwardClient,
                                              selfNodeId,
                                              ownerResolver,
                                              partitionOwnerResolver,
                                              StreamReadForwardMetrics.NOOP,
-                                             minSyncReplicas);
+                                             minSyncReplicas,
+                                             committedOwnerSource,
+                                             epochHighWater,
+                                             barrier);
     }
 
     /// A4+A5: durable plain overload — the same cursor/tiered durability wiring as the owner-routed
@@ -625,6 +729,12 @@ public final class PartitionedStreamAccess<T> implements StreamAccess<T> {
     /// A non-owner / still-catching-up node thus forwards to a caught-up replica or the deterministic HRW
     /// owner instead of reading its own empty local partition (`200 []`); GOVERNOR / no-registry paths
     /// stay byte-identical local reads.
+    ///
+    /// #345 item 1e-c: threads the committed-owner source + ownership epoch high-water + no-op-round
+    /// barrier so a typed `LINEARIZABLE` read runs the same committed-owner routing + owner-side
+    /// fence/round/catch-up pipeline as the raw {@link StreamReadRouter} path (1e-a). With [Option#none]
+    /// components the `LINEARIZABLE` arm degrades to the replica-routed read; the non-linearizable arms
+    /// ignore all three.
     private ForwardingReadRouter<StreamEvent<T>> forwardingReadRouter() {
         return ForwardingReadRouter.forwardingReadRouter(replicaRegistry,
                                                          selfNodeId,
@@ -635,7 +745,10 @@ public final class PartitionedStreamAccess<T> implements StreamAccess<T> {
                                                                                                                 fromOffset,
                                                                                                                 maxEvents),
                                                          this::decodeAll,
-                                                         metrics);
+                                                         metrics,
+                                                         committedOwnerSource,
+                                                         epochHighWater,
+                                                         barrier);
     }
 
     private List<StreamEvent<T>> decodeAll(List<RawEventDto> events, int partition) {

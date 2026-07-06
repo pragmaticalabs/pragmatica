@@ -6,8 +6,10 @@ package org.pragmatica.aether.stream;
 
 import org.pragmatica.aether.resource.ResourceFactory;
 import org.pragmatica.aether.slice.ProvisioningContext;
+import org.pragmatica.aether.slice.ReadPreference;
 import org.pragmatica.aether.slice.StreamAccess;
 import org.pragmatica.aether.slice.StreamConfig;
+import org.pragmatica.aether.slice.fence.OwnershipEpochHighWater;
 import org.pragmatica.aether.stream.StreamPublisherFactory.GovernorResolver;
 import org.pragmatica.aether.stream.forward.StreamForwardClient;
 import org.pragmatica.aether.stream.replication.ReplicaRegistry;
@@ -127,6 +129,15 @@ public final class StreamAccessFactory implements ResourceFactory<StreamAccess, 
         var streamName = config.name();
         Option<Function<Integer, Option<NodeId>>> partitionOwnerResolver = governor.flatMap(GovernorResolver::partitionOwnerResolver).map(resolver -> partition -> resolver.apply(streamName,
                                                                                                                                                                                   partition));
+        // #345 item 1e-c: thread the three LINEARIZABLE pipeline components (committed-owner source,
+        // ownership epoch high-water, no-op-round barrier) from the node runtime so a typed LINEARIZABLE
+        // read runs the SAME owner-routed fence/round/catch-up pipeline as the raw StreamReadRouter path.
+        // Absent (minimal runtimes / tests) => the LINEARIZABLE arm degrades to the replica-routed read.
+        // The read preference stays NEAREST — the app default is unchanged; the components are inert for
+        // every non-linearizable preference.
+        var committedOwnerSource = context.extension(CommittedStreamOwnerSource.class).option();
+        var epochHighWater = context.extension(OwnershipEpochHighWater.class).option();
+        var linearizableBarrier = context.extension(LinearizableBarrier.class).option();
 
         return PartitionedStreamAccess.streamAccess(manager,
                                                     serializer,
@@ -141,7 +152,11 @@ public final class StreamAccessFactory implements ResourceFactory<StreamAccess, 
                                                     config.minSyncReplicas(),
                                                     tieredReader,
                                                     cursorStore,
-                                                    replicaRegistry);
+                                                    replicaRegistry,
+                                                    ReadPreference.NEAREST,
+                                                    committedOwnerSource,
+                                                    epochHighWater,
+                                                    linearizableBarrier);
     }
 
     @SuppressWarnings("unchecked")

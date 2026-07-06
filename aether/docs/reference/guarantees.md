@@ -48,7 +48,7 @@
 | 15 | Streams | `stream.append` (sync-replicated) | quorum-durable *intended* | — | — | — | ✅ RESOLVED #262 two-knob (RF = `replicas` knob; barrier awaits `min-sync-replicas − 1` distinct peer acks; supersedes the interim #378 `RF = minSyncReplicas+1` derivation) |
 | 16 | Streams | `stream.read` (GOVERNOR, default) | eventual / local | — | — | local node | LIVE |
 | 17 | Streams | `stream.read` (NEAREST, app default) | read-your-writes via owner-on-empty; else eventual | — | — | local, forward-to-owner on empty | LIVE |
-| 18 | Streams | `stream.read` (LINEARIZABLE) | linearizable (owner-routed + no-op consensus round + post-round epoch fence + catch-up gate) | — | — | owner | LIVE *(no-op-round mode; degrades to ANY_REPLICA if owner-source unwired)* |
+| 18 | Streams | `stream.read` (LINEARIZABLE) | linearizable (owner-routed + no-op consensus round + post-round epoch fence + catch-up gate) | — | — | owner | LIVE *(no-op-round mode; both the generic-read (`StreamReadRouter`) and typed-access (`PartitionedStreamAccess`) entry points now run the same pipeline — #345 item 1e-c; degrades to ANY_REPLICA if owner-source unwired)* |
 | 19 | Streams | `stream.consume` | per-partition order | cursor RAM→periodic checkpoint | **at-least-once** | owner side; **RF=1: empty after failover** | LIVE |
 | 20 | Streams | `cursor.commit` (PG-tx) | — | — | **effectively-once** (dedup `(group,stream,partition)`) | — | PLANNED (not wired in bootstrap) |
 | 21 | Streams | `publish` (STRONG / consensus) | total order across nodes | — | — | — | PLANNED (unwired) |
