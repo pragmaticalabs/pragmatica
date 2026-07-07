@@ -65,10 +65,14 @@ echo "Step 4/6: Build e2e and forge tests..."
 mvn_quiet compile test-compile -Pwith-e2e -pl aether/e2e-tests,aether/forge/forge-tests
 
 # Step 5: Build test blueprints
+# ALWAYS clean: these are standalone poms whose slice sources rarely change, so Maven incremental
+# compilation skips annotation processing and re-jars STALE generated factories after any
+# slice-processor codegen change (rebuild-together violation — bit the 2026-07-06 cloud gate:
+# envelope-1005/Aspect-param factories shipped against a 1007 runtime, rejected at slice load).
 echo ""
 echo "Step 5/6: Build test blueprints..."
 for bp in aether/tests/blueprints/test-echo aether/tests/blueprints/test-persistence aether/tests/blueprints/test-full aether/tests/blueprints/test-stream aether/tests/blueprints/test-stream-repl; do
-    mvn_quiet -f "$bp/pom.xml" install -DskipTests
+    mvn_quiet -f "$bp/pom.xml" clean install -DskipTests
 done
 
 # Step 6: Lint integration test infra (ratchet against baseline)
