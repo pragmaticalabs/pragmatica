@@ -109,7 +109,12 @@ public final class QuorumLossDetector {
     /// the SWIM-alive count decays 4→3→2 before first probe-acks land, crossing threshold and
     /// self-fencing healthy nodes). Default never-suppresses (legacy) until the wiring layer injects the
     /// supplier. Symmetric with the SWIM cold-boot FAULTY-suppression; a genuine minority simply
-    /// self-fences once the bounded window elapses.
+    /// self-fences once the bounded window elapses. The deferral is NOT a drop (#415): both intent
+    /// producers are one-shot (a single firing check per below-edge / PASSIVE edge), so [`#emitIntent`]
+    /// re-arms the originating check at `splitTimeout` cadence while suppressed — the drain fires once
+    /// the window closes (guaranteed within [`AetherNode#COLD_BOOT_CONVERGENCE_WINDOW_MS`] of boot,
+    /// since a node that ever reached quorum reads RECOVERING — never COLD_BOOT — so only the bounded
+    /// wall-clock arm stays live).
     private volatile BooleanSupplier coldBootSupplier = () -> false;
 
     private QuorumLossDetector(MembershipConfig config,
@@ -325,7 +330,7 @@ public final class QuorumLossDetector {
 
         var intent = QuorumLossIntent.quorumLossIntent(armedAtNanos, currentMemberCount(), threshold);
 
-        emitIntent(intent);
+        emitIntent(intent, () -> schedulePresenceCheck(armedAtNanos));
     }
 
     private synchronized void onFiringCheck(long windowStartNanos) {
@@ -347,7 +352,7 @@ public final class QuorumLossDetector {
         pendingFuture.set(null);
         var intent = QuorumLossIntent.quorumLossIntent(timeSource.nanoTime(), quorumCount, threshold);
 
-        emitIntent(intent);
+        emitIntent(intent, () -> scheduleFiringCheck(windowStartNanos));
     }
 
     /// Fix C co-confirmation gate (refined to per-member sufficiency). SUPPRESS the QUORUM_LOSS
@@ -396,7 +401,7 @@ public final class QuorumLossDetector {
     /// gate computed: when it is `< threshold` the fence is genuine; a fire with effective `>=`
     /// threshold would be a co-confirmation/gate bug, made visible by this very line).
     @Contract
-    private void emitIntent(QuorumLossIntent intent) {
+    private void emitIntent(QuorumLossIntent intent, Runnable coldBootRearm) {
         if (coldBootSupplier.getAsBoolean()) {
             log.warn("QUORUM_LOSS drain SUPPRESSED (cold-boot convergence): observedStrictQuorumCount={} "
                     + "requiredThreshold={} — node is still forming and SWIM has not yet confirmed peers "
@@ -404,6 +409,13 @@ public final class QuorumLossDetector {
                     + "nodes self-draining on a simultaneous full-cluster restart)",
                      intent.observedLocalQuorumCount(),
                      intent.requiredThreshold());
+            // #415: re-arm the originating check instead of dropping the intent. Both producers fire
+            // once per edge and the latched window/presence state never re-schedules, so a bare return
+            // strands the self-fence permanently. Re-arming at `splitTimeout` cadence retries the check
+            // until the bounded cold-boot window elapses; recovery cancels the re-armed future through
+            // the path's own scheduling slot (pendingFuture / presenceFuture), and the cancel-prior idiom
+            // in those schedulers keeps exactly one re-check in flight (no pile-up under repeated ticks).
+            coldBootRearm.run();
 
             return;
         }
