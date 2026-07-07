@@ -6,6 +6,7 @@ package org.pragmatica.aether.api.routes;
 
 import org.pragmatica.aether.management.route.ManagementRoute;
 import org.pragmatica.aether.node.ManageableNode;
+import org.pragmatica.aether.slice.ReadPreference;
 import org.pragmatica.aether.slice.RetentionPolicy;
 import org.pragmatica.aether.slice.StreamConfig;
 import org.pragmatica.aether.slice.kvstore.AetherKey.StreamConfigKey;
@@ -16,6 +17,8 @@ import org.pragmatica.aether.slice.stream.StreamRegistry;
 import org.pragmatica.aether.slice.stream.StreamRegistryEntry;
 import org.pragmatica.aether.slice.stream.StreamVersionSpec;
 import org.pragmatica.aether.stream.StreamPartitionManager;
+import org.pragmatica.aether.stream.StreamReadRouter;
+import org.pragmatica.aether.stream.StreamWriteRouter;
 import org.pragmatica.aether.stream.consumer.ConsumerGroupCoordinator;
 import org.pragmatica.aether.stream.consumer.ConsumerGroupCoordinator.ConsumerInfo;
 import org.pragmatica.http.routing.PathParameter;
@@ -24,11 +27,13 @@ import org.pragmatica.http.routing.Route;
 import org.pragmatica.http.routing.RouteSource;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.utils.Causes;
 
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import java.util.function.Supplier;
@@ -195,7 +200,7 @@ public final class StreamApiRoutes implements RouteSource {
                                   PathParameter.aString())
                         .withQuery(QueryParameter.aLong("fromOffset"),
                                    QueryParameter.aInteger("maxEvents"))
-                        .toResult(this::streamEvents)
+                        .to(this::streamEvents)
                         .asJson(),
 
         // ---------- Write routes (OPERATOR_AND_ABOVE for /api/streams) ----------
@@ -204,14 +209,14 @@ public final class StreamApiRoutes implements RouteSource {
                                   PathParameter.aString(),
                                   PathParameter.aString())
                         .withBody(PublishRequest.class)
-                        .toResult(this::publishEvent)
+                        .to(this::publishEvent)
                         .asJson(),
                          ManagementRoutes.<PublishBatchResponse> route(ManagementRoute.STREAMS_PUBLISH_BATCH)
                                          .withPath(PathParameter.aString(),
                                                    PathParameter.aString(),
                                                    PathParameter.aString())
                                          .withBody(PublishRequest[].class)
-                                         .toResult(this::publishBatch)
+                                         .to(this::publishBatch)
                                          .asJson(),
                          ManagementRoutes.<GroupResponse> route(ManagementRoute.STREAMS_GROUP_CREATE)
                                          .withPath(PathParameter.aString(),
@@ -307,28 +312,35 @@ public final class StreamApiRoutes implements RouteSource {
 
     /// Spec event-stream-namespaces §16: paginated event read for polling-based tail subscription.
     /// Resolves the address, verifies the registry entry exists (404 via [StreamRegistryError.General.NOT_FOUND]
-    /// otherwise), then drains events from partition 0 starting at `fromOffset`. Partition 0 is the
+    /// otherwise), then reads partition 0 starting at `fromOffset` through the owner-routing
+    /// [StreamReadRouter] with [ReadPreference#NEAREST] — local-first, forwarding to the partition owner
+    /// when this node is metadata-only (#265) rather than reading its own empty ring. Partition 0 is the
     /// canonical write target for `STREAMS_PUBLISH`/`STREAMS_PUBLISH_BATCH` in this wave; multi-partition
     /// reads are out of scope until partitioning is exposed to the public publish API.
-    private Result<StreamEventsResponse> streamEvents(String namespace,
-                                                      String stream,
-                                                      String version,
-                                                      Option<Long> fromOffset,
-                                                      Option<Integer> maxEvents) {
+    private Promise<StreamEventsResponse> streamEvents(String namespace,
+                                                       String stream,
+                                                       String version,
+                                                       Option<Long> fromOffset,
+                                                       Option<Integer> maxEvents) {
         var offset = fromOffset.or(0L);
         var limit = clampMaxEvents(maxEvents.or(DEFAULT_MAX_EVENTS));
 
-        return ResourceAddress.resourceAddress(namespace, stream, version).flatMap(addr -> readEventsAtAddress(addr,
-                                                                                                               offset,
-                                                                                                               limit));
+        return ResourceAddress.resourceAddress(namespace, stream, version)
+                              .async()
+                              .flatMap(addr -> readEventsAtAddress(addr, offset, limit));
     }
 
-    private Result<StreamEventsResponse> readEventsAtAddress(ResourceAddress addr, long fromOffset, int maxEvents) {
+    private Promise<StreamEventsResponse> readEventsAtAddress(ResourceAddress addr, long fromOffset, int maxEvents) {
         var streamName = addr.asString();
 
         return namespacesService.lookup(addr)
                                 .toResult(StreamRegistry.StreamRegistryError.General.NOT_FOUND)
-                                .flatMap(_ -> streamManager().readLocal(streamName, 0, fromOffset, maxEvents))
+                                .async()
+                                .flatMap(_ -> streamReadRouter().read(streamName,
+                                                                      0,
+                                                                      fromOffset,
+                                                                      maxEvents,
+                                                                      ReadPreference.NEAREST))
                                 .map(events -> buildEventsResponse(addr, events, fromOffset, maxEvents));
     }
 
@@ -367,35 +379,51 @@ public final class StreamApiRoutes implements RouteSource {
     private static final int DEFAULT_MAX_EVENTS = 100;
     private static final int MAX_EVENTS_PER_PAGE = 1000;
 
-    private Result<PublishResponse> publishEvent(String namespace,
-                                                 String stream,
-                                                 String version,
-                                                 PublishRequest request) {
-        return ResourceAddress.resourceAddress(namespace, stream, version).flatMap(addr -> publishOne(addr, request).map(offset -> new PublishResponse(addr.asString(),
-                                                                                                                                                       offset)));
+    private Promise<PublishResponse> publishEvent(String namespace,
+                                                  String stream,
+                                                  String version,
+                                                  PublishRequest request) {
+        return ResourceAddress.resourceAddress(namespace, stream, version)
+                              .async()
+                              .flatMap(addr -> publishOne(addr, request).map(offset -> new PublishResponse(addr.asString(),
+                                                                                                           offset)));
     }
 
-    private Result<PublishBatchResponse> publishBatch(String namespace,
-                                                      String stream,
-                                                      String version,
-                                                      PublishRequest[] requests) {
-        return ResourceAddress.resourceAddress(namespace, stream, version).flatMap(addr -> publishMany(addr, requests));
+    private Promise<PublishBatchResponse> publishBatch(String namespace,
+                                                       String stream,
+                                                       String version,
+                                                       PublishRequest[] requests) {
+        return ResourceAddress.resourceAddress(namespace, stream, version)
+                              .async()
+                              .flatMap(addr -> publishMany(addr, requests));
     }
 
-    private Result<PublishBatchResponse> publishMany(ResourceAddress addr, PublishRequest[] requests) {
-        var perEvent = java.util.Arrays.stream(requests).map(req -> publishOne(addr, req)).toList();
+    private Promise<PublishBatchResponse> publishMany(ResourceAddress addr, PublishRequest[] requests) {
+        var perEvent = Arrays.stream(requests).map(req -> publishOne(addr, req)).toList();
 
-        return Result.allOf(perEvent).map(offsets -> new PublishBatchResponse(addr.asString(), offsets.size(), offsets));
+        return Promise.allOf(perEvent).flatMap(results -> collectOffsets(addr, results));
     }
 
-    private Result<Long> publishOne(ResourceAddress addr, PublishRequest request) {
+    private Promise<PublishBatchResponse> collectOffsets(ResourceAddress addr, List<Result<Long>> results) {
+        return Result.allOf(results)
+                     .map(offsets -> new PublishBatchResponse(addr.asString(),
+                                                              offsets.size(),
+                                                              offsets))
+                     .async();
+    }
+
+    /// Owner-routed publish to partition 0. When this node is metadata-only (#265) the write is
+    /// forwarded to the partition owner via [StreamWriteRouter] instead of failing PARTITION_NOT_LOCAL
+    /// on a local append; an owner node appends locally (and awaits the min-sync barrier).
+    private Promise<Long> publishOne(ResourceAddress addr, PublishRequest request) {
         var streamName = addr.asString();
         var payload = decodePayload(request.data());
 
-        return ensureStreamExists(streamName).flatMap(_ -> streamManager().publishLocal(streamName,
-                                                                                        0,
-                                                                                        payload,
-                                                                                        System.currentTimeMillis()));
+        return ensureStreamExists(streamName).async()
+                                 .flatMap(_ -> streamWriteRouter().publish(streamName,
+                                                                           0,
+                                                                           payload,
+                                                                           System.currentTimeMillis()));
     }
 
     /// Adapter boundary: JSON `data` may legally be absent (null on the wire). Wrap into Option,
@@ -486,6 +514,16 @@ public final class StreamApiRoutes implements RouteSource {
     private StreamPartitionManager streamManager() {
         return nodeSupplier.get()
                            .streamPartitionManager();
+    }
+
+    private StreamReadRouter streamReadRouter() {
+        return nodeSupplier.get()
+                           .streamReadRouter();
+    }
+
+    private StreamWriteRouter streamWriteRouter() {
+        return nodeSupplier.get()
+                           .streamWriteRouter();
     }
 
     private static int defaultPartitionCount() {

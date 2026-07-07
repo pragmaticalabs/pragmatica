@@ -25,6 +25,7 @@ import org.pragmatica.aether.stream.StreamPartitionManager.StreamInfo;
 import org.pragmatica.aether.stream.StreamReadRouter;
 import org.pragmatica.aether.stream.StreamReadRouter.ReplicaSetView;
 import org.pragmatica.aether.stream.StreamReadRouter.ReplicaView;
+import org.pragmatica.aether.stream.StreamWriteRouter;
 import org.pragmatica.aether.stream.consumer.ConsumerGroupCoordinator;
 import org.pragmatica.aether.stream.consumer.ConsumerGroupCoordinator.ConsumerInfo;
 import org.pragmatica.aether.stream.consumer.ConsumerGroupRegistry;
@@ -286,22 +287,16 @@ public final class StreamRoutes implements RouteSource {
                                  .flatMap(_ -> publishAndAwaitSync(name, payload));
     }
 
+    /// Publish to partition 0 (single-partition Management-API scope) through the owner-routing
+    /// [StreamWriteRouter]: an owner appends locally and awaits the min-sync barrier; a metadata-only
+    /// node (#265) write-forwards to the partition owner instead of failing PARTITION_NOT_LOCAL. A
+    /// replication failure propagates as an error response.
     private Promise<PublishResponse> publishAndAwaitSync(String name, byte[] payload) {
-        return streamManager().publishLocal(name,
-                                            0,
-                                            payload,
-                                            System.currentTimeMillis())
-                            .async()
-                            .flatMap(offset -> awaitSyncBarrier(name, offset));
-    }
-
-    private Promise<PublishResponse> awaitSyncBarrier(String name, long offset) {
-        var minSyncReplicas = streamManager().minSyncReplicasFor(name);
-
-        return minSyncReplicas > 1
-               ? streamManager().awaitReplication(name, 0, offset, minSyncReplicas - 1)
-                              .map(_ -> new PublishResponse(offset))
-               : Promise.success(new PublishResponse(offset));
+        return streamWriteRouter().publish(name,
+                                           0,
+                                           payload,
+                                           System.currentTimeMillis())
+                                .map(PublishResponse::new);
     }
 
     private Result<StreamCreateResponse> createStream(StreamCreateRequest request) {
@@ -435,5 +430,10 @@ public final class StreamRoutes implements RouteSource {
     private StreamReadRouter streamReadRouter() {
         return nodeSupplier.get()
                            .streamReadRouter();
+    }
+
+    private StreamWriteRouter streamWriteRouter() {
+        return nodeSupplier.get()
+                           .streamWriteRouter();
     }
 }

@@ -122,6 +122,7 @@ import org.pragmatica.aether.stream.LinearizableOwnerServe;
 import org.pragmatica.aether.stream.OffHeapRingBuffer;
 import org.pragmatica.aether.stream.StreamPartitionManager;
 import org.pragmatica.aether.stream.StreamReadRouter;
+import org.pragmatica.aether.stream.StreamWriteRouter;
 import org.pragmatica.aether.stream.consumer.ConsumerGroupCoordinator;
 import org.pragmatica.aether.stream.consumer.ConsumerGroupRegistry;
 import org.pragmatica.aether.stream.StreamPublisherFactory;
@@ -700,6 +701,7 @@ public interface AetherNode extends ManageableNode {
     /// (cheap when nothing new has sealed), so a modest 30s tick keeps the WAL bounded without contending
     /// with the publish fsync path.
     TimeSpan WAL_TRUNCATE_INTERVAL = TimeSpan.timeSpan(30).seconds();
+
     /// Cadence for the NodeDeploymentManager activation level-heal. On a cold-start
     /// `restart_all_nodes` the single CAS-latched `ClusterStateNotification.ACTIVE` edge can be
     /// dropped while the message-router delegate is being rebuilt, leaving NDM stuck in `Dormant`
@@ -818,11 +820,10 @@ public interface AetherNode extends ManageableNode {
                                                                                              String stream,
                                                                                              int partition) {
         var replicas = registry.replicasFor(stream, partition);
-        var caughtUpOthers = (int) replicas.stream()
-                                           .filter(descriptor -> descriptor.state() == ReplicationState.CAUGHT_UP && !descriptor.nodeId().equals(self))
-                                           .count();
-        var selfCaughtUp = replicas.stream()
-                                   .anyMatch(descriptor -> descriptor.nodeId().equals(self) && descriptor.state() == ReplicationState.CAUGHT_UP);
+        var caughtUpOthers = (int) replicas.stream().filter(descriptor -> descriptor.state() == ReplicationState.CAUGHT_UP && !descriptor.nodeId()
+                                                                                                                                         .equals(self)).count();
+        var selfCaughtUp = replicas.stream().anyMatch(descriptor -> descriptor.nodeId()
+                                                                              .equals(self) && descriptor.state() == ReplicationState.CAUGHT_UP);
 
         return new StreamPartitionManager.ReplicaCatchupSource.CatchupView(caughtUpOthers, selfCaughtUp);
     }
@@ -835,7 +836,10 @@ public interface AetherNode extends ManageableNode {
                                                    NodeId self,
                                                    String stream,
                                                    int partition) {
-        return source.committedOwner(stream, partition).map(owner -> !owner.owner().equals(self)).or(true);
+        return source.committedOwner(stream, partition)
+                     .map(owner -> !owner.owner()
+                                         .equals(self))
+                     .or(true);
     }
 
     private static void snapshotAllSetups(Map<String, StorageFactory.StorageSetup> storageSetups) {
@@ -872,6 +876,7 @@ public interface AetherNode extends ManageableNode {
         if (commands.isEmpty()) {
             return;
         }
+
         applier.apply(commands).onFailure(cause -> LOG.warn("Stream ownership batch write for {} moved partition(s) failed: {} — re-driven on next reconcile",
                                                             commands.size(),
                                                             cause.message()));
@@ -1116,6 +1121,7 @@ public interface AetherNode extends ManageableNode {
                           BackupService backupService,
                           StreamPartitionManager streamPartitionManager,
                           StreamReadRouter streamReadRouter,
+                          StreamWriteRouter streamWriteRouter,
                           ConsumerGroupCoordinator consumerGroupCoordinator,
                           ConsumerGroupRegistry consumerGroupRegistry,
                           StreamNamespacesService streamNamespacesService,
@@ -2973,8 +2979,8 @@ public interface AetherNode extends ManageableNode {
                                                                                                                                                                            streamName,
                                                                                                                                                                            partition)),
                                                                                    (List<PartitionKey> reconciled) -> driveStreamOwnership(streamOwnershipWriter,
-                                                                                                                                          clusterCommandApplier,
-                                                                                                                                          reconciled));
+                                                                                                                                           clusterCommandApplier,
+                                                                                                                                           reconciled));
         // B5b: bind the owner-gate ref so ClusterEventAggregator.emit can consult isOwner(...) for
         // (system:cluster-events:1.0.0, partition 0). isOwner is computed from the live HRW placement
         // against the current topology, independent of reconcile, so it is correct as soon as members
@@ -3000,6 +3006,7 @@ public interface AetherNode extends ManageableNode {
         // StreamPartitionOwnershipValue (release only once ownership names a DIFFERENT node than self). Both
         // are bound through static helpers so the supplier lambdas stay single-expression.
         var streamCommittedOwnerSource = KvCommittedStreamOwnerSource.kvCommittedStreamOwnerSource(kvStore);
+
         streamPartitionManager.replicaCatchupSource((stream, partition) -> streamCatchupView(streamReplicaRegistry,
                                                                                              config.self(),
                                                                                              stream,
@@ -3098,9 +3105,9 @@ public interface AetherNode extends ManageableNode {
                                                                                                                 Option.some(ownershipEpochHighWater),
                                                                                                                 linearizableBarrier,
                                                                                                                 (stream, partition, fromOffset, maxEvents) -> streamPartitionManager.readLocal(stream,
-                                                                                                                                                                                              partition,
-                                                                                                                                                                                              fromOffset,
-                                                                                                                                                                                              maxEvents)
+                                                                                                                                                                                               partition,
+                                                                                                                                                                                               fromOffset,
+                                                                                                                                                                                               maxEvents)
                                                                                                                                                                                     .async());
         var streamForwardHandler = StreamForwardHandler.streamForwardHandler(config.self(),
                                                                              streamPartitionManager,
@@ -3117,6 +3124,13 @@ public interface AetherNode extends ManageableNode {
                                                                  Option.some(committedStreamOwnerSource),
                                                                  Option.some(ownershipEpochHighWater),
                                                                  linearizableBarrier);
+        // Publish-side mirror: same forward client + HRW owner resolver the read router uses, so a
+        // management publish landing on a metadata-only node write-forwards to the owner (#265) instead
+        // of failing PARTITION_NOT_LOCAL on a local append.
+        var streamWriteRouter = StreamWriteRouter.streamWriteRouter(streamPartitionManager,
+                                                                    Option.some(streamForwardClient),
+                                                                    config.self(),
+                                                                    streamReplicaSetController::ownerFor);
 
         allEntries.add(MessageRouter.Entry.route(StreamForwardMessage.PublishForward.class,
                                                  streamForwardHandler::onPublishForward));
@@ -3205,6 +3219,7 @@ public interface AetherNode extends ManageableNode {
                                   BackupService.disabled(),
                                   streamPartitionManager,
                                   streamReadRouter,
+                                  streamWriteRouter,
                                   consumerGroupCoordinator,
                                   consumerGroupRegistry,
                                   streamNamespacesService,
@@ -3322,6 +3337,7 @@ public interface AetherNode extends ManageableNode {
                                       BackupService.disabled(),
                                       streamPartitionManager,
                                       streamReadRouter,
+                                      streamWriteRouter,
                                       consumerGroupCoordinator,
                                       consumerGroupRegistry,
                                       streamNamespacesService,

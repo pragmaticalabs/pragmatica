@@ -36,6 +36,7 @@ import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.stream.StreamPartitionManager;
 import org.pragmatica.aether.stream.StreamReadRouter;
+import org.pragmatica.aether.stream.StreamWriteRouter;
 import org.pragmatica.aether.stream.consumer.ConsumerGroupCoordinator;
 import org.pragmatica.aether.stream.consumer.ConsumerGroupRegistry;
 import org.pragmatica.aether.ttm.TTMManager;
@@ -102,6 +103,16 @@ public interface ManageableNode {
     BackupService backupService();
     StreamPartitionManager streamPartitionManager();
     StreamReadRouter streamReadRouter();
+
+    /// Owner-routed publish path — the write-side mirror of [#streamReadRouter]. Since #265 made
+    /// non-owner nodes metadata-only, a management publish landing on an arbitrary node must reach the
+    /// partition owner rather than fail `PARTITION_NOT_LOCAL` on a local append. The production node
+    /// record supplies the fully-wired router (forward client + HRW owner resolver); the default keeps
+    /// `ManageableNode` test proxies compiling with a local-only writer.
+    default StreamWriteRouter streamWriteRouter() {
+        return StreamWriteRouter.localOnly(streamPartitionManager());
+    }
+
     ConsumerGroupCoordinator consumerGroupCoordinator();
     ConsumerGroupRegistry consumerGroupRegistry();
     org.pragmatica.aether.slice.stream.StreamNamespacesService streamNamespacesService();
@@ -148,7 +159,7 @@ public interface ManageableNode {
         return Option.none();
     }
 
-    Option<CertificateRenewalScheduler> certRenewalScheduler();    /// Runtime TLS posture. `true` when the node's app-HTTP server is bound with TLS
+    Option<CertificateRenewalScheduler> certRenewalScheduler();  /// Runtime TLS posture. `true` when the node's app-HTTP server is bound with TLS
     /// (equivalent to `AetherNodeConfig.tls().isPresent()` — i.e. `AetherConfig.tlsEnabled()`
     /// was true at startup and a `CertificateProvider` resolved). Surfaced through
     /// `GET /api/certificates` so integration tooling can assert active TLS without
