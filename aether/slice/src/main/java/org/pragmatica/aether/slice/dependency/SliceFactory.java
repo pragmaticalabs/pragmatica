@@ -8,6 +8,7 @@ import org.pragmatica.aether.slice.Slice;
 import org.pragmatica.aether.slice.SliceCreationContext;
 import org.pragmatica.aether.slice.SliceLoadingFailure;
 import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.utils.Causes;
@@ -17,6 +18,8 @@ import java.lang.reflect.Modifier;
 import java.lang.reflect.ParameterizedType;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Objects;
+import java.util.stream.Stream;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -41,7 +44,7 @@ public interface SliceFactory {
         } catch (Throwable t) {
             log.error("Exception in findFactoryMethod for {}: {}", sliceClass.getName(), t.getMessage(), t);
 
-            return new SliceLoadingFailure.Fatal.ClassLoadFailed(sliceClass.getName(), Causes.fromThrowable(t)).promise();
+            return classLoadFailure(sliceClass.getName(), t).promise();
         }
 
         var verifiedResult = factoryMethodResult.onFailure(cause -> log.error("Failed to find factory method for {}: {}",
@@ -77,7 +80,7 @@ public interface SliceFactory {
         } catch (Throwable t) {
             log.error("findFactoryMethod: getDeclaredMethods FAILED for {}: {}", sliceClass.getName(), t.getMessage(), t);
 
-            return new SliceLoadingFailure.Fatal.ClassLoadFailed(sliceClass.getName(), Causes.fromThrowable(t)).result();
+            return classLoadFailure(sliceClass.getName(), t).result();
         }
 
         return Arrays.stream(methods)
@@ -111,15 +114,22 @@ public interface SliceFactory {
                                                    Class<?> sliceClass,
                                                    List<Slice> dependencies,
                                                    List<DependencyDescriptor> descriptors) {
-        var parameters = method.getParameters();
+        Class<?>[] parameterTypes;
 
-        if (parameters.length != 1) {
-            return parameterCountMismatch(method.getName(), 1, parameters.length).result();
+        try {
+            parameterTypes = method.getParameterTypes();
+        } catch (Throwable t) {
+            log.error("Failed to inspect factory parameters for {}: {}", method.getName(), t.getMessage(), t);
+
+            return incompatibleRuntime(method.getName(), t).result();
         }
 
-        if (!parameters[0].getType().equals(SliceCreationContext.class)) {
-            return firstParameterMustBeCreationContext(method.getName(),
-                                                       parameters[0].getType().getName()).result();
+        if (parameterTypes.length != 1) {
+            return parameterCountMismatch(method.getName(), 1, parameterTypes.length).result();
+        }
+
+        if (!parameterTypes[0].equals(SliceCreationContext.class)) {
+            return firstParameterMustBeCreationContext(method.getName(), parameterTypes[0].getName()).result();
         }
 
         return success(method);
@@ -179,6 +189,47 @@ public interface SliceFactory {
         return new SliceLoadingFailure.Fatal.ParameterMismatch(methodName,
                                                                "factory parameter 0 must be SliceCreationContext, got " + actual
                                                               + " — slice was compiled against an older runtime; rebuild against this runtime version");
+    }
+
+    private static Cause incompatibleRuntime(String context, Throwable t) {
+        return new SliceLoadingFailure.Fatal.ParameterMismatch(context,
+                                                               "slice was compiled against an older runtime"
+                                                              + " (references removed class " + missingClassName(t)
+                                                              + ");"
+                                                              + " rebuild against this runtime version");
+    }
+
+    /// Reflective factory resolution that dies on a removed class (an rc1-built slice referencing the
+    /// deleted Aspect type) surfaces a class-resolution Throwable — as a NoClassDefFoundError from
+    /// getDeclaredMethods on eager JVMs, or a ClassNotFoundException from parameter inspection on lazy
+    /// ones. Map those to the actionable "rebuild" cause; keep the generic ClassLoadFailed otherwise.
+    private static Cause classLoadFailure(String className, Throwable t) {
+        return isMissingClass(t)
+               ? incompatibleRuntime(className, t)
+               : new SliceLoadingFailure.Fatal.ClassLoadFailed(className, Causes.fromThrowable(t));
+    }
+
+    private static boolean isMissingClass(Throwable t) {
+        return causeChain(t).anyMatch(SliceFactory::isResolutionError);
+    }
+
+    private static boolean isResolutionError(Throwable t) {
+        return t instanceof NoClassDefFoundError || t instanceof ClassNotFoundException || t instanceof TypeNotPresentException;
+    }
+
+    private static String missingClassName(Throwable t) {
+        return causeChain(t).filter(SliceFactory::isResolutionError)
+                         .findFirst()
+                         .map(SliceFactory::throwableLabel)
+                         .orElseGet(() -> throwableLabel(t));
+    }
+
+    private static String throwableLabel(Throwable t) {
+        return Option.option(t.getMessage()).or(t.getClass().getName());
+    }
+
+    private static Stream<Throwable> causeChain(Throwable t) {
+        return Stream.iterate(t, Objects::nonNull, Throwable::getCause);
     }
 
     private static Cause parameterTypeMismatch(int index, String expected, String actual) {
