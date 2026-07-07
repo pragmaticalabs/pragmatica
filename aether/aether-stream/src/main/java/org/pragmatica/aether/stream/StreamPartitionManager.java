@@ -24,6 +24,7 @@ import org.pragmatica.cluster.node.ClusterNode;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValueRemove;
+import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.NullReturn;
 import org.pragmatica.lang.Option;
@@ -162,6 +163,14 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// SAME source [ReplicaSetController] uses for HRW placement, so the guard's node count matches placement.
     /// Volatile: set once at wiring, read on the create-admission and snapshot paths.
     private volatile IntSupplier clusterSizeSupplier = () -> 0;
+
+    /// Committed-config source for the owner-side forwarded-publish race recovery (write-forward race fix,
+    /// see {@link CommittedConfigSource} / {@link #publishForwarded}). Defaults to "not visible on this
+    /// node" (Forge/unit/legacy managers and the pre-wiring window), which makes a forwarded publish for a
+    /// stream this owner cannot yet see resolve to the retryable {@link StreamError.StreamConfigNotYetVisible}
+    /// rather than a permanent failure; `AetherNode` late-binds the node's committed KV state. Volatile:
+    /// set once at wiring, read only on the forwarded-publish recovery path.
+    private volatile CommittedConfigSource committedConfigSource = _ -> Option.none();
 
     /// Default replica-catch-up source (#265 increment 5): reports "everyone caught up" — a large
     /// other-caught-up count (so the release catch-up gate always passes) and `selfCaughtUp = true` (so an
@@ -393,6 +402,17 @@ public final class StreamPartitionManager implements AutoCloseable {
         boolean committedOwnerElsewhere(String stream, int partition);
     }
 
+    /// Committed-config source for the owner-side forwarded-publish race recovery (write-forward race fix).
+    /// Reports the LOCALLY-VISIBLE committed `StreamConfig` for a stream, read straight from applied KV
+    /// state, so the {@link #publishForwarded} path can lazily materialize a partition whose config commit
+    /// has not yet reached this owner's `onStreamConfigPut` notification. [Option#none] means "not visible
+    /// on this node yet" (the bootstrap window / Forge/unit/legacy managers); `AetherNode` binds it to the
+    /// node's committed KV state so the committed replication factor is preserved on materialization.
+    @FunctionalInterface
+    public interface CommittedConfigSource {
+        Option<StreamConfig> committedConfig(String streamName);
+    }
+
     /// Value key for a single `(stream, partition)` arc — the map/set key for the reshuffle in-flight set,
     /// materialization queues, and release candidacy (#265 increment 5). Record equality gives correct
     /// hashing without a hand-rolled key.
@@ -454,6 +474,17 @@ public final class StreamPartitionManager implements AutoCloseable {
     @Contract
     public void ownerReleaseGuard(OwnerReleaseGuard guard) {
         this.ownerReleaseGuard = guard;
+    }
+
+    /// Late-bind the committed-config source for the owner-side forwarded-publish race recovery
+    /// (write-forward race fix). `AetherNode` wires this to the node's committed KV state so a forwarded
+    /// publish that races ahead of this owner's `onStreamConfigPut` can lazily materialize from the
+    /// committed `StreamConfigKey` (preserving RF). Until then — and in Forge/unit/legacy managers — the
+    /// default reports "not visible" so the recovery yields the retryable `StreamConfigNotYetVisible`. Set
+    /// once at wiring; read only on the {@link #publishForwarded} recovery path.
+    @Contract
+    public void committedConfigSource(CommittedConfigSource source) {
+        this.committedConfigSource = source;
     }
 
     /// Atomically reserve `bytes` against the shared pool. Returns true iff the reservation fit under
@@ -1004,6 +1035,56 @@ public final class StreamPartitionManager implements AutoCloseable {
                      MAX_PARTITIONS_PER_STREAM_CEILING);
             exhaustionSink.accept(Exhaustion.overCeiling(config));
         }
+    }
+
+    /// Owner-side forwarded-publish entry (write-forward race fix). A metadata-only node auto-creates +
+    /// commits a stream's `StreamConfigKey` and forwards the FIRST publish to the HRW owner IMMEDIATELY, so
+    /// this owner's KV apply of that config can lag the forward — a plain {@link #publishLocal} then fails
+    /// `StreamNotFound` for a stream that genuinely exists cluster-wide. This recovers ONLY that race: on
+    /// `StreamNotFound` it lazily materializes from the LOCALLY-VISIBLE committed `StreamConfigKey`
+    /// (preserving the committed RF) and retries the append ONCE; if the committed config is not yet visible
+    /// on this node it returns the RETRYABLE {@link StreamError.StreamConfigNotYetVisible} so the forwarder
+    /// backs off and retries rather than surfacing a spurious permanent failure. Any OTHER `publishLocal`
+    /// failure (event too large, partition out of range, a genuine non-owner `PARTITION_NOT_LOCAL`, a stale
+    /// epoch) propagates UNCHANGED — no lazy create, no retry.
+    public Result<Long> publishForwarded(String streamName, int partition, byte[] payload, long timestamp) {
+        return publishLocal(streamName, partition, payload, timestamp).fold(cause -> recoverForwardedPublish(cause,
+                                                                                                             streamName,
+                                                                                                             partition,
+                                                                                                             payload,
+                                                                                                             timestamp),
+                                                                            Result::success);
+    }
+
+    private Result<Long> recoverForwardedPublish(Cause cause,
+                                                 String streamName,
+                                                 int partition,
+                                                 byte[] payload,
+                                                 long timestamp) {
+        return cause instanceof StreamError.StreamNotFound
+               ? materializeThenRetryPublish(streamName, partition, payload, timestamp)
+               : cause.result();
+    }
+
+    /// Lazily materialize from the locally-visible committed config, then retry the append once. When the
+    /// committed config is not yet visible on this node the append cannot be recovered here, so the
+    /// retryable {@link StreamError.StreamConfigNotYetVisible} is returned for the forwarder to back off on.
+    private Result<Long> materializeThenRetryPublish(String streamName, int partition, byte[] payload, long timestamp) {
+        return committedConfigSource.committedConfig(streamName)
+                                    .fold(() -> new StreamError.StreamConfigNotYetVisible(streamName).result(),
+                                          config -> materializeThenPublish(config,
+                                                                           streamName,
+                                                                           partition,
+                                                                           payload,
+                                                                           timestamp));
+    }
+
+    private Result<Long> materializeThenPublish(StreamConfig config,
+                                                String streamName,
+                                                int partition,
+                                                byte[] payload,
+                                                long timestamp) {
+        return ensureStreamMaterialized(config).flatMap(_ -> publishLocal(streamName, partition, payload, timestamp));
     }
 
     public Result<Long> publishLocal(String streamName, int partition, byte[] payload, long timestamp) {

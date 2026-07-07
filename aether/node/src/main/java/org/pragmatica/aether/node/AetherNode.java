@@ -3001,6 +3001,13 @@ public interface AetherNode extends ManageableNode {
         // node count matches placement. The default `() -> 0` in Forge/unit/legacy managers disables the
         // aggregate guard (only the per-stream ceiling applies).
         streamPartitionManager.clusterSizeSupplier(clusterTopologyManager.observer()::clusterSize);
+        // Write-forward race fix: bind the owner-side forwarded-publish config source to committed KV state
+        // so a forwarded publish that races ahead of this owner's onStreamConfigPut can lazily materialize
+        // from the committed StreamConfigKey (preserving RF); absent config yields the retryable
+        // StreamConfigNotYetVisible the forwarder backs off on. Forge/unit managers keep the default (none).
+        streamPartitionManager.committedConfigSource(name -> kvStore.getTyped(AetherKey.StreamConfigKey.streamConfigKey(name),
+                                                                              AetherValue.StreamConfigValue.class)
+                                                                    .map(AetherValue.StreamConfigValue::config));
         // #265 increment 5: reshuffle lifecycle. The release catch-up gate reads the live replica registry
         // (self-excluded CAUGHT_UP count + self caught-up flag); the owner rule reads the committed
         // StreamPartitionOwnershipValue (release only once ownership names a DIFFERENT node than self). Both

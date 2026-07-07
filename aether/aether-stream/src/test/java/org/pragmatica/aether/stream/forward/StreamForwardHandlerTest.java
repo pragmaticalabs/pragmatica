@@ -14,6 +14,7 @@ import org.pragmatica.aether.stream.forward.StreamForwardMessage.PublishForwardR
 import org.pragmatica.aether.stream.forward.StreamForwardMessage.ReadForward;
 import org.pragmatica.aether.stream.forward.StreamForwardMessage.ReadForwardResponse;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.lang.Option;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -88,7 +89,9 @@ class StreamForwardHandlerTest {
     class FailureTests {
 
         @Test
-        void onPublishForward_streamNotFound_respondsWithError() {
+        void onPublishForward_configNotVisible_respondsRetryable() {
+            // No committed config visible on this owner (default source) — the forwarder just committed it,
+            // so the owner treats the absent-config publish as the retryable config-visibility race.
             var request = publishForward(REQUESTER, CORRELATION_ID, "nonexistent", PARTITION, PAYLOAD, TIMESTAMP);
 
             handler.onPublishForward(request);
@@ -96,7 +99,8 @@ class StreamForwardHandlerTest {
             assertThat(sentMessages).hasSize(1);
             var response = (PublishForwardResponse) sentMessages.getFirst().message();
             assertThat(response.success()).isFalse();
-            assertThat(response.errorMessage()).contains("not found");
+            assertThat(response.retryable()).isTrue();
+            assertThat(response.errorMessage()).contains("not yet visible");
             assertThat(response.correlationId()).isEqualTo(CORRELATION_ID);
         }
 
@@ -110,7 +114,31 @@ class StreamForwardHandlerTest {
             assertThat(sentMessages).hasSize(1);
             var response = (PublishForwardResponse) sentMessages.getFirst().message();
             assertThat(response.success()).isFalse();
+            assertThat(response.retryable()).isFalse();
             assertThat(response.errorMessage()).contains("out of range");
+        }
+    }
+
+    @Nested
+    class LazyMaterializationTests {
+
+        @Test
+        void onPublishForward_materializesFromCommittedConfig_whenConfigVisibleButNotMaterialized() {
+            // Config committed-visible on this owner but the stream is not yet in the local map (the owner's
+            // onStreamConfigPut notification lagged the forward): the owner lazily materializes and appends.
+            partitionManager.committedConfigSource(name -> Option.some(streamConfig(name)));
+            var request = publishForward(REQUESTER, CORRELATION_ID, STREAM, PARTITION, PAYLOAD, TIMESTAMP);
+
+            handler.onPublishForward(request);
+
+            assertThat(sentMessages).hasSize(1);
+            var response = (PublishForwardResponse) sentMessages.getFirst().message();
+            assertThat(response.success()).isTrue();
+            assertThat(response.offset()).isGreaterThanOrEqualTo(0L);
+
+            var events = partitionManager.readLocal(STREAM, PARTITION, 0L, 10);
+            assertThat(events.isSuccess()).isTrue();
+            events.onSuccess(list -> assertThat(list).hasSize(1));
         }
     }
 

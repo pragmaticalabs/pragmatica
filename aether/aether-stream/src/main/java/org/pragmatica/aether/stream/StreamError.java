@@ -81,6 +81,22 @@ public sealed interface StreamError extends Cause {
         }
     }
 
+    /// Owner-side forwarded-publish config-visibility race (write-forward race fix): a metadata-only node
+    /// auto-creates + commits this stream's `StreamConfigKey` and forwards the FIRST publish to the HRW
+    /// owner IMMEDIATELY, so the owner's KV apply of that config can lag the forward — the owner then
+    /// cannot yet see the config to materialize the partition. RETRYABLE and DISTINCT from a permanent
+    /// {@link StreamNotFound}: the committed config is in flight, so the forwarder backs off and retries a
+    /// BOUNDED number of times rather than surfacing a spurious permanent failure; by the retry the config
+    /// is visible (via the owner's KV apply or this node's own lazy materialization from the committed
+    /// `StreamConfigKey`). Not a capacity shortage, so it does NOT implement
+    /// {@link org.pragmatica.aether.slice.ResourceCapacityExhausted}.
+    record StreamConfigNotYetVisible(String streamName) implements StreamError {
+        @Override
+        public String message() {
+            return "Stream config not yet visible on this node: " + streamName;
+        }
+    }
+
     record PartitionOutOfRange(String streamName, int partition, int partitionCount) implements StreamError {
         @Override
         public String message() {

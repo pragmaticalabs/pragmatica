@@ -245,8 +245,18 @@ final class DefaultStreamForwardClient implements StreamForwardClient {
         if (response.success()) {
             promise.succeed(response.offset());
         } else {
-            promise.resolve(new StreamForwardError.RemotePublishFailed(response.errorMessage()).result());
+            promise.resolve(publishFailureCause(response).result());
         }
+    }
+
+    /// Rebuild the typed forward-publish cause from the wire response, preserving the owner's
+    /// retryable/permanent classification (write-forward race fix): a `retryable` response becomes
+    /// {@link StreamForwardError.RemotePublishRetryable} so the forwarder bounded-retries, otherwise a
+    /// permanent {@link StreamForwardError.RemotePublishFailed}.
+    private static StreamForwardError publishFailureCause(PublishForwardResponse response) {
+        return response.retryable()
+               ? new StreamForwardError.RemotePublishRetryable(response.errorMessage())
+               : new StreamForwardError.RemotePublishFailed(response.errorMessage());
     }
 
     private void resolveFromReadResponse(Promise<ReadForwardResult> promise, ReadForwardResponse response) {

@@ -4,14 +4,17 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.stream.forward;
 
+import org.pragmatica.aether.slice.ResourceCapacityExhausted;
 import org.pragmatica.aether.stream.LinearizableOwnerServe;
 import org.pragmatica.aether.stream.OffHeapRingBuffer;
+import org.pragmatica.aether.stream.StreamError;
 import org.pragmatica.aether.stream.StreamPartitionManager;
 import org.pragmatica.aether.stream.forward.StreamForwardMessage.PublishForward;
 import org.pragmatica.aether.stream.forward.StreamForwardMessage.PublishForwardResponse;
 import org.pragmatica.aether.stream.forward.StreamForwardMessage.ReadForward;
 import org.pragmatica.aether.stream.forward.StreamForwardMessage.ReadForwardResponse;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
@@ -118,9 +121,11 @@ final class DefaultStreamForwardHandler implements StreamForwardHandler {
     @Override
     @SuppressWarnings("JBCT-RET-01")
     public void onPublishForward(PublishForward request) {
-        partitionManager.publishLocal(request.streamName(), request.partition(), request.payload(), request.timestamp()).onSuccess(offset -> sendSuccessResponse(request,
-                                                                                                                                                                 offset)).onFailure(cause -> sendFailureResponse(request,
-                                                                                                                                                                                                                 cause.message()));
+        partitionManager.publishForwarded(request.streamName(),
+                                          request.partition(),
+                                          request.payload(),
+                                          request.timestamp()).onSuccess(offset -> sendSuccessResponse(request, offset)).onFailure(cause -> sendPublishFailure(request,
+                                                                                                                                                               cause));
     }
 
     @Contract
@@ -178,6 +183,35 @@ final class DefaultStreamForwardHandler implements StreamForwardHandler {
 
         transport.send(request.sender(), response);
         log.warn("Forwarded publish failed for {}[{}] correlationId={}: {}",
+                 request.streamName(),
+                 request.partition(),
+                 request.correlationId(),
+                 errorMessage);
+    }
+
+    /// Owner-side forwarded-publish failure dispatch (write-forward race fix): a cause the owner deems
+    /// transient — its committed config not yet visible ({@link StreamError.StreamConfigNotYetVisible}) or a
+    /// capacity-deferred partition ({@link ResourceCapacityExhausted}) — is sent as a RETRYABLE response so
+    /// the forwarder backs off and retries a bounded number of times; every other cause is permanent.
+    @Contract
+    private void sendPublishFailure(PublishForward request, Cause cause) {
+        if (isRetryable(cause)) {
+            sendRetryableResponse(request, cause.message());
+        } else {
+            sendFailureResponse(request, cause.message());
+        }
+    }
+
+    private static boolean isRetryable(Cause cause) {
+        return cause instanceof StreamError.StreamConfigNotYetVisible || ResourceCapacityExhausted.isTransientCapacity(cause);
+    }
+
+    @Contract
+    private void sendRetryableResponse(PublishForward request, String errorMessage) {
+        var response = PublishForwardResponse.retryableResponse(selfNodeId, request.correlationId(), errorMessage);
+
+        transport.send(request.sender(), response);
+        log.warn("Forwarded publish retryable for {}[{}] correlationId={}: {}",
                  request.streamName(),
                  request.partition(),
                  request.correlationId(),
