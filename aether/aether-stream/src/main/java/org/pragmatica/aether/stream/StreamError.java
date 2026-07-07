@@ -130,8 +130,8 @@ public sealed interface StreamError extends Cause {
         @Override
         public String message() {
             return "Materialize of %s[%d] paced: node already has %d partitions in materialize+backfill (reshuffle_concurrency)".formatted(streamName,
-                                                                                                                                            partition,
-                                                                                                                                            inFlightLimit);
+                                                                                                                                           partition,
+                                                                                                                                           inFlightLimit);
         }
     }
 

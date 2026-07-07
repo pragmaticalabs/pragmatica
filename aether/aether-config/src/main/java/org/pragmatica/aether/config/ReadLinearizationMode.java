@@ -4,7 +4,6 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.config;
 
-
 /// The `LINEARIZABLE`-read mechanism (spec §8.1, durable-entity primitive) — an ops knob, not
 /// caller-visible: swapping it never changes what callers may assume, only the cost/assumption
 /// profile of a linearizable read. Parsed from `[durable-entity] read-linearization`.

@@ -91,6 +91,7 @@ import static org.pragmatica.lang.Option.some;
 public final class ReplicaSetController implements AutoCloseable {
     private static final Logger log = LoggerFactory.getLogger(ReplicaSetController.class);
     private static final String SYSTEM_NAMESPACE_PREFIX = "system:";
+
     /// Explicitly-typed no-op default for the batch driver seam. Needed to disambiguate the factory
     /// delegation from the sibling `Executor`-tailed overload: a bare `_ -> {}` would match both the
     /// single-arg `Consumer<List<PartitionKey>>` and `Executor` functional interfaces.
@@ -311,6 +312,7 @@ public final class ReplicaSetController implements AutoCloseable {
         for (var spec : catalog.streams()) {
             reconcileStream(spec, members, clusterSize, reconciled);
         }
+
         onReconcilePassComplete.accept(List.copyOf(reconciled));
     }
 
@@ -339,7 +341,10 @@ public final class ReplicaSetController implements AutoCloseable {
     /// BEFORE any committed-state read) and nothing for an unchanged owner (its `decide` returns
     /// [Option#none]). So a full reshuffle emits at most one consensus BATCH per pass, holding one Put per
     /// genuinely-moved partition, only from the leader.
-    private void reconcilePlacement(String streamName, int partition, Placement placement, List<PartitionKey> reconciled) {
+    private void reconcilePlacement(String streamName,
+                                    int partition,
+                                    Placement placement,
+                                    List<PartitionKey> reconciled) {
         reconcilePartition(streamName, partition, placement);
         reconciled.add(PartitionKey.partitionKey(streamName, partition));
     }

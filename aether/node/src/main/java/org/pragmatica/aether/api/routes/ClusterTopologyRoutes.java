@@ -301,7 +301,8 @@ public final class ClusterTopologyRoutes implements RouteSource {
                                (key, value) -> entries.add(ownershipEntry(key.stream() + ":" + key.partition(),
                                                                           value.owner().id(),
                                                                           value.fenceEpoch(),
-                                                                          highWater.get(OwnershipDomain.streamPartition(key.stream(), key.partition())))));
+                                                                          highWater.get(OwnershipDomain.streamPartition(key.stream(),
+                                                                                                                        key.partition())))));
 
         return sortedByIdentity(entries);
     }

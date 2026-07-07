@@ -100,7 +100,8 @@ public interface StreamPartitionOwnershipWriter {
     /// partitions — yields an empty list and the caller applies nothing.
     default List<KVCommand<AetherKey>> writeOwnershipChanges(List<PartitionKey> partitions) {
         return partitions.stream()
-                         .map(partition -> writeOwnershipChange(partition.streamName(), partition.partition()))
+                         .map(partition -> writeOwnershipChange(partition.streamName(),
+                                                                partition.partition()))
                          .flatMap(Option::stream)
                          .toList();
     }

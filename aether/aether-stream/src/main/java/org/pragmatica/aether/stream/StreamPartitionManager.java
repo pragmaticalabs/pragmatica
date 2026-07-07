@@ -155,6 +155,7 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// seam resolves). Volatile: set once at wiring, read on the hydrate/create, snapshot, and lazy-
     /// materialize paths.
     private volatile PlacementRoleSupplier placementRoleSupplier = ALWAYS_OWNER;
+
     /// Live cluster-size source for the aggregate partition guard (#265 increment 4). Defaults to `() -> 0`
     /// (cluster size UNKNOWN — Forge/unit/legacy managers), which DISABLES the aggregate guard so only the
     /// per-stream ceiling applies; `AetherNode` late-binds this to the topology observer's live count — the
@@ -167,7 +168,8 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// in-flight slot frees on the next tick). Forge/unit/legacy managers keep this; `AetherNode` late-binds
     /// the real registry-backed view. The release gate never fires on those managers anyway, because the
     /// periodic {@link #reconcileReshuffle} is only scheduled on a real node.
-    private static final ReplicaCatchupSource ALL_CAUGHT_UP = (_, _) -> new ReplicaCatchupSource.CatchupView(Integer.MAX_VALUE, true);
+    private static final ReplicaCatchupSource ALL_CAUGHT_UP = (_, _) -> new ReplicaCatchupSource.CatchupView(Integer.MAX_VALUE,
+                                                                                                             true);
 
     /// Default owner-release guard (#265 increment 5): reports "committed owner is elsewhere" for every arc,
     /// so the owner rule never blocks release on a manager with no committed-ownership source. `AetherNode`
@@ -190,6 +192,7 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// partition reaches CAUGHT_UP / loses the role / is released. Fair=false (throughput over ordering; the
     /// queue provides the ordering).
     private final Semaphore reshuffleSlots = new Semaphore(RESHUFFLE_CONCURRENCY);
+
     /// Partitions currently holding a reshuffle slot (materialize+backfill in flight). Membership set paired
     /// with {@link #reshuffleSlots}: `add` is the "acquire", `remove`+release is the "free". Swept each tick
     /// so a completed/lost partition frees its slot.
@@ -203,10 +206,12 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// Dedup set across both queues + a fast "is queued" membership test — a repeat materialize request for an
     /// already-queued partition is a no-op (idempotent, like the lazy-materialize path itself).
     private final Set<PartitionRef> queuedMaterializations = ConcurrentHashMap.newKeySet();
+
     /// Release candidacy (#265 increment 5): a materialized partition whose role went NONE maps to the
     /// reconcile tick at which candidacy started. Debounced (survive [#RELEASE_DEBOUNCE_TICKS] ticks) then
     /// gated (catch-up + owner) before release. A role regained removes the entry (flap cancel).
     private final ConcurrentHashMap<PartitionRef, Long> releaseCandidacy = new ConcurrentHashMap<>();
+
     /// Monotonic reconcile-tick counter driving the debounce (one increment per {@link #reconcileReshuffle}).
     private final AtomicLong reconcileTick = new AtomicLong(0);
     /// Count of partition rings released on role loss since boot (#265 increment 5 observability).
@@ -607,6 +612,7 @@ public final class StreamPartitionManager implements AutoCloseable {
             if (!isSystemStream(config.name())) {
                 return reportFloorExhaustion(config, floorBytes);
             }
+
             forceReserveForSystem(config, floorBytes);
         }
 
@@ -898,6 +904,7 @@ public final class StreamPartitionManager implements AutoCloseable {
             if (!isSystemStream(config.name())) {
                 return deferHydration(config, floorBytes);
             }
+
             forceReserveForSystem(config, floorBytes);
         }
         // fromConfig threads the per-partition floor-allocation Result (bug #6): a native-OOM on any
@@ -1232,7 +1239,7 @@ public final class StreamPartitionManager implements AutoCloseable {
                                      overCeiling,
                                      releaseCandidacy.size(),
                                      releasedSinceBoot.get(),
-                                     (long) (systemMaterializeQueue.size() + appMaterializeQueue.size()),
+                                     (long)(systemMaterializeQueue.size() + appMaterializeQueue.size()),
                                      streamViews);
     }
 
@@ -1551,7 +1558,6 @@ public final class StreamPartitionManager implements AutoCloseable {
     private Result<OffHeapRingBuffer> buildAndInstall(StreamEntry entry, int partition) {
         var config = entry.config();
         var role = placementRoleSupplier.roleFor(config.name(), partition);
-
         // OWNER materialize has no history backfill (it IS the source), so it is NEVER paced by the reshuffle
         // concurrency window (#265 increment 5) — pacing it would only stall the owner write path with zero
         // throughput benefit. Only REPLICA (or a not-yet-resolved) materialize, which triggers a history
@@ -1574,6 +1580,7 @@ public final class StreamPartitionManager implements AutoCloseable {
         if (!system && availableBytes() < perPartitionFloorBytes(config)) {
             return reportMaterializeDeferred(config, partition, perPartitionFloorBytes(config));
         }
+
         if (!tryAcquireReshuffleSlot(ref)) {
             return enqueueMaterialize(ref, system);
         }
@@ -1613,9 +1620,11 @@ public final class StreamPartitionManager implements AutoCloseable {
         if (tryReserve(floorBytes)) {
             return true;
         }
+
         if (!isSystemStream(config.name())) {
             return false;
         }
+
         forceReserveForSystem(config, floorBytes);
 
         return true;
@@ -1636,7 +1645,6 @@ public final class StreamPartitionManager implements AutoCloseable {
     @Contract
     private void releaseFailedMaterialize(PartitionRef ref, long floorBytes, boolean slotHeld) {
         release(floorBytes);
-
         if (slotHeld) {
             freeReshuffleSlot(ref);
         }
@@ -1649,9 +1657,11 @@ public final class StreamPartitionManager implements AutoCloseable {
         if (!inFlightMaterializations.add(ref)) {
             return true;
         }
+
         if (reshuffleSlots.tryAcquire()) {
             return true;
         }
+
         inFlightMaterializations.remove(ref);
 
         return false;
@@ -1670,7 +1680,9 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// (reconcile hook next tick / owner-append client retry), never forwards.
     private Result<OffHeapRingBuffer> enqueueMaterialize(PartitionRef ref, boolean system) {
         if (queuedMaterializations.add(ref)) {
-            (system ? systemMaterializeQueue : appMaterializeQueue).add(ref);
+            (system
+             ? systemMaterializeQueue
+             : appMaterializeQueue).add(ref);
         }
 
         return new StreamError.ReshufflePaced(ref.streamName(), ref.partition(), RESHUFFLE_CONCURRENCY).result();
@@ -1713,12 +1725,14 @@ public final class StreamPartitionManager implements AutoCloseable {
             return true;
         }
 
-        return placementRoleSupplier.roleFor(ref.streamName(), ref.partition()) != Role.REPLICA
-            || catchupSource.catchupView(ref.streamName(), ref.partition()).selfCaughtUp();
+        return placementRoleSupplier.roleFor(ref.streamName(), ref.partition()) != Role.REPLICA || catchupSource.catchupView(ref.streamName(),
+                                                                                                                             ref.partition())
+                                                                                                                .selfCaughtUp();
     }
 
     private boolean isMaterialized(PartitionRef ref) {
-        return option(streams.get(ref.streamName())).flatMap(entry -> entry.ringFor(ref.partition())).isPresent();
+        return option(streams.get(ref.streamName())).flatMap(entry -> entry.ringFor(ref.partition()))
+                     .isPresent();
     }
 
     private void evaluateReleaseCandidates() {
@@ -1748,6 +1762,7 @@ public final class StreamPartitionManager implements AutoCloseable {
         if (since == null || reconcileTick.get() - since < RELEASE_DEBOUNCE_TICKS) {
             return;
         }
+
         if (releaseAllowed(name, partition)) {
             releasePartitionRing(name, entry, ref);
         }
@@ -1763,7 +1778,7 @@ public final class StreamPartitionManager implements AutoCloseable {
 
     private boolean caughtUpEnough(String name, int partition) {
         return option(streams.get(name)).map(entry -> catchupSource.catchupView(name, partition)
-                                                                    .caughtUpReplicaCount() >= effectiveReplicationFactor(entry.config()))
+                                                                   .caughtUpReplicaCount() >= effectiveReplicationFactor(entry.config()))
                      .or(false);
     }
 
@@ -1816,7 +1831,6 @@ public final class StreamPartitionManager implements AutoCloseable {
     @Contract
     private void drainClass(Deque<PartitionRef> queue, boolean system) {
         queue.removeIf(this::purgeStaleQueued);
-
         while (!queue.isEmpty() && reshuffleSlots.availablePermits() > 0 && headCanProceed(queue.peekFirst(), system)) {
             materializeQueued(queue.removeFirst());
         }
@@ -1835,11 +1849,13 @@ public final class StreamPartitionManager implements AutoCloseable {
     }
 
     private boolean drainEligible(PartitionRef ref) {
-        return option(streams.get(ref.streamName())).map(entry -> drainEligibleIn(ref, entry)).or(false);
+        return option(streams.get(ref.streamName())).map(entry -> drainEligibleIn(ref, entry))
+                     .or(false);
     }
 
     private boolean drainEligibleIn(PartitionRef ref, StreamEntry entry) {
-        return entry.ringFor(ref.partition()).isEmpty() && shouldMaterialize(ref.streamName(), ref.partition());
+        return entry.ringFor(ref.partition())
+                    .isEmpty() && shouldMaterialize(ref.streamName(), ref.partition());
     }
 
     /// A queued head may materialize when a slot is free (the caller's guard) and — for an APP stream — the
@@ -1850,17 +1866,17 @@ public final class StreamPartitionManager implements AutoCloseable {
     }
 
     private long floorFor(PartitionRef ref) {
-        return option(streams.get(ref.streamName())).map(entry -> perPartitionFloorBytes(entry.config())).or(0L);
+        return option(streams.get(ref.streamName())).map(entry -> perPartitionFloorBytes(entry.config()))
+                     .or(0L);
     }
 
     @Contract
     private void materializeQueued(PartitionRef ref) {
         queuedMaterializations.remove(ref);
-        materializePartition(ref.streamName(),
-                             ref.partition()).onFailure(cause -> log.debug("Queued materialize of {}[{}] did not complete this tick: {}",
-                                                                           ref.streamName(),
-                                                                           ref.partition(),
-                                                                           cause.message()));
+        materializePartition(ref.streamName(), ref.partition()).onFailure(cause -> log.debug("Queued materialize of {}[{}] did not complete this tick: {}",
+                                                                                             ref.streamName(),
+                                                                                             ref.partition(),
+                                                                                             cause.message()));
     }
 
     /// Budget-deferred single-partition materialization (#265 increment 3, spec §6/§11): the per-partition

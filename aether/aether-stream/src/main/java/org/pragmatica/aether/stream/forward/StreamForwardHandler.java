@@ -127,8 +127,8 @@ final class DefaultStreamForwardHandler implements StreamForwardHandler {
     @Override
     @SuppressWarnings("JBCT-RET-01")
     public void onReadForward(ReadForward request) {
-        serveRead(request).onSuccess(events -> sendReadSuccess(request, events))
-                          .onFailure(cause -> sendReadFailure(request, cause.message()));
+        serveRead(request).onSuccess(events -> sendReadSuccess(request, events)).onFailure(cause -> sendReadFailure(request,
+                                                                                                                    cause.message()));
     }
 
     /// A `LINEARIZABLE`-class forwarded read re-runs the shared owner-side serve pipeline
