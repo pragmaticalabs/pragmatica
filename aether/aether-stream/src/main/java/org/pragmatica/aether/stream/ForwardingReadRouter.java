@@ -28,9 +28,13 @@ import java.util.concurrent.ThreadLocalRandom;
 /// ({@link PartitionedStreamAccess}) and the raw-event reader ({@link StreamReadRouter}) cannot drift.
 ///
 /// Routing precedence ({@link #route}):
-///   1. `GOVERNOR` reads local. `NEAREST` is LOCAL-FIRST: read local when self covers the partition
-///      (caught-up replica, or no registry), else forward to the HRW owner — never to a lagging remote.
-///      `ANY_REPLICA` enters remote-preferring replica selection (no registry → local).
+///   1. `GOVERNOR` reads local, forwarding to the HRW owner ONLY when the local read fails
+///      `PARTITION_NOT_LOCAL` (a metadata-only node that holds the stream config but never the ring — the
+///      metadata-only-node read recovery); any other local failure propagates. `NEAREST` is LOCAL-FIRST:
+///      read local when self covers the partition (caught-up replica, or no registry), else forward to the
+///      HRW owner — never to a lagging remote — and, like `GOVERNOR`, forward on a `PARTITION_NOT_LOCAL`
+///      local failure rather than surfacing it. `ANY_REPLICA` enters remote-preferring replica selection
+///      (no registry → local).
 ///   2. `LINEARIZABLE` routes strictly to the COMMITTED owner (#345 item 1e): the read goes to
 ///      `StreamPartitionOwnershipValue.owner` (the fenced owner), NOT the on-the-fly HRW owner, so it
 ///      observes the authoritative log even when a reshuffle has made the two diverge. When self IS the
@@ -158,36 +162,94 @@ public final class ForwardingReadRouter<E> {
 
     public Promise<List<E>> route(String streamName, int partition, long fromOffset, int maxEvents) {
         return switch (readPreference) {
-            case GOVERNOR -> localReader.read(streamName, partition, fromOffset, maxEvents);
+            case GOVERNOR -> localOrForwardOnNotLocal(streamName, partition, fromOffset, maxEvents);
             case NEAREST -> readLocalFirstThenOwner(streamName, partition, fromOffset, maxEvents);
             case ANY_REPLICA -> readFromReplicaOrLocal(streamName, partition, fromOffset, maxEvents);
             case LINEARIZABLE -> readLinearizable(streamName, partition, fromOffset, maxEvents);
         };
     }
 
-    /// `NEAREST` routing: LOCAL-FIRST, forward only on a local MISS. If self is a registered caught-up
+    /// `NEAREST` routing: LOCAL-FIRST, forward on a local MISS. If self is a registered caught-up
     /// replica it is authoritative — read LOCAL (no forward even at the tail, so steady-state polling stays
     /// cheap). Otherwise read local and return it WHEN NON-EMPTY (the node holds the partition's data even
     /// though placement/registry hasn't marked it a replica — e.g. an in-memory stream whose owner-routed
-    /// publish landed locally; the fan-out case), forwarding to the deterministic HRW owner ONLY when the
-    /// local read is empty (the genuine non-replica / post-restart-recovery consumer — the A6 case),
-    /// failing soft to local when the owner is unknown/self or no forward client is wired. Never forwards
-    /// to a remote replica that may lag — that is the {@link #readFromReplicaOrLocal} (`ANY_REPLICA`) path.
+    /// publish landed locally; the fan-out case), forwarding to the deterministic HRW owner when the local
+    /// read is empty (the genuine non-replica / post-restart-recovery consumer — the A6 case) OR fails
+    /// `PARTITION_NOT_LOCAL` (a metadata-only node that never materialized the ring — the metadata-only-node
+    /// read recovery, on both the no-registry arm and the non-covering arm), failing soft to local when the
+    /// owner is unknown/self or no forward client is wired. Never forwards to a remote replica that may lag
+    /// — that is the {@link #readFromReplicaOrLocal} (`ANY_REPLICA`) path.
     private Promise<List<E>> readLocalFirstThenOwner(String streamName, int partition, long fromOffset, int maxEvents) {
-        return registry.fold(() -> localReader.read(streamName, partition, fromOffset, maxEvents),
+        return registry.fold(() -> localOrForwardOnNotLocal(streamName, partition, fromOffset, maxEvents),
                              reg -> selfCoversPartition(reg, streamName, partition)
                                     ? localReader.read(streamName, partition, fromOffset, maxEvents)
                                     : localThenForwardIfEmpty(streamName, partition, fromOffset, maxEvents));
     }
 
-    /// Read local; forward to the HRW owner ONLY when the local read came back empty. Keeps a node that
-    /// actually holds the data serving it (no needless forward), while a genuinely data-less node forwards
-    /// to recover the log from the owner.
+    /// Read local; forward to the HRW owner when the local read came back empty OR failed
+    /// `PARTITION_NOT_LOCAL`. Empty keeps a node that actually holds the data serving it (no needless
+    /// forward) while a data-less node forwards to recover the log; the `PARTITION_NOT_LOCAL` recovery
+    /// covers a metadata-only node that never materialized the ring (the A6 / metadata-only-node case) —
+    /// without it the FAILED local read short-circuits and surfaces the 500 instead of forwarding. Any
+    /// other local-read failure propagates unchanged.
     private Promise<List<E>> localThenForwardIfEmpty(String streamName, int partition, long fromOffset, int maxEvents) {
         return localReader.read(streamName, partition, fromOffset, maxEvents)
-                          .flatMap(local -> local.isEmpty()
-                                            ? forwardToOwner(streamName, partition, fromOffset, maxEvents)
-                                            : Promise.success(local));
+                          .fold(result -> result.fold(cause -> recoverNotLocal(cause,
+                                                                               streamName,
+                                                                               partition,
+                                                                               fromOffset,
+                                                                               maxEvents),
+                                                      local -> forwardIfEmpty(local,
+                                                                              streamName,
+                                                                              partition,
+                                                                              fromOffset,
+                                                                              maxEvents)));
+    }
+
+    /// Read local; on a `PARTITION_NOT_LOCAL` failure — a metadata-only node that holds only the stream
+    /// config, never the ring — forward to the HRW owner instead of surfacing the failure (the
+    /// metadata-only-node read 500). Any OTHER local-read failure, and any successful read, propagates
+    /// unchanged. {@link #forwardToOwner} itself soft-fails back to a local read (re-raising the original
+    /// `PARTITION_NOT_LOCAL`) when the owner is unknown/self or no forward client is wired, so an
+    /// un-forwardable read surfaces the honest error rather than looping.
+    private Promise<List<E>> localOrForwardOnNotLocal(String streamName,
+                                                      int partition,
+                                                      long fromOffset,
+                                                      int maxEvents) {
+        return localReader.read(streamName, partition, fromOffset, maxEvents)
+                          .fold(result -> result.fold(cause -> recoverNotLocal(cause,
+                                                                               streamName,
+                                                                               partition,
+                                                                               fromOffset,
+                                                                               maxEvents),
+                                                      Promise::success));
+    }
+
+    private Promise<List<E>> forwardIfEmpty(List<E> local,
+                                            String streamName,
+                                            int partition,
+                                            long fromOffset,
+                                            int maxEvents) {
+        return local.isEmpty()
+               ? forwardToOwner(streamName, partition, fromOffset, maxEvents)
+               : Promise.success(local);
+    }
+
+    /// Recover ONLY the typed `PARTITION_NOT_LOCAL` local-read failure by forwarding to the owner; every
+    /// other cause propagates. Matches the enum singleton, so the discrimination is typed — no string
+    /// matching.
+    private Promise<List<E>> recoverNotLocal(Cause cause,
+                                             String streamName,
+                                             int partition,
+                                             long fromOffset,
+                                             int maxEvents) {
+        return isPartitionNotLocal(cause)
+               ? forwardToOwner(streamName, partition, fromOffset, maxEvents)
+               : cause.promise();
+    }
+
+    private static boolean isPartitionNotLocal(Cause cause) {
+        return cause == StreamError.General.PARTITION_NOT_LOCAL;
     }
 
     /// #345 item 1e: route a `LINEARIZABLE` read to the COMMITTED owner of `(streamName, partition)`. The
