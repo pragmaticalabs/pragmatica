@@ -1,7 +1,8 @@
-# The `click-events` topic is declared once as the shared Topic<ClickEvent> CLICK_EVENTS constant
-# (see shared/Topics.java) and referenced from both slices via @ResourceQualifier(config =
-# "CLICK_EVENTS"). Its name is generated into each slice manifest by the slice processor (#396), so
-# no [click-events] topic_name section is written here.
+# The `click-events` topic is referenced from both slices via @ResourceQualifier(config =
+# "CLICK_EVENTS") (shared Topic<ClickEvent> CLICK_EVENTS constant, see shared/Topics.java, #396).
+# The slice-processor resource-config validation still requires the backing topic section here.
+[click-events]
+topic_name = "click-events"
 
 [database]
 type = "POSTGRESQL"
