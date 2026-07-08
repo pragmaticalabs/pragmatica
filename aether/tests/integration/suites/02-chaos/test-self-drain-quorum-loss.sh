@@ -280,6 +280,10 @@ test_initial_state() {
     wait_for_phase "NORMAL" 180 || \
         log_warn "Cluster phase did not reach NORMAL within 180s — self-drain timing may be elongated by cold-start aggregator behavior"
     wait_for_leader 60
+    # Poll-with-settle (up to 60s): the prior suite's restore gates on leader
+    # deficit=0 which can precede active core count convergence by up to one
+    # reconciler tick while a CTM replacement finalises admission.
+    wait_for "Initial: 5 healthy cores" '[ "$(cluster_active_core_count)" -ge 5 ]' 60 || true
     local count
     count=$(cluster_active_core_count)
     assert_eq "$count" "5" "Initial: 5 healthy cores"

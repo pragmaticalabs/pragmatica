@@ -26,6 +26,10 @@ test_initial_state() {
     # Wait for phase=NORMAL to bypass SWIM cold-boot suppression of NODE_FAILED events.
     wait_for_phase "NORMAL" 180 || log_warn "Cluster phase still COLD_BOOT; chaos kill may produce UnknownObserved (no NODE_FAILED event)"
     wait_for_leader 60
+    # Poll-with-settle (up to 60s): the prior suite's restore gates on leader
+    # deficit=0 which can precede generation snapshot convergence by up to one
+    # reconciler tick while a CTM replacement finalises admission.
+    wait_for "Initial: at least 5 nodes" '[ "$(cluster_member_count)" -ge 5 ]' 60 || true
     local count
     count=$(cluster_member_count)
     assert_ge "$count" "5" "Initial: at least 5 nodes (${count})"
@@ -42,8 +46,10 @@ test_kill_during_load() {
     # resolved from APP_PORT inside the helper), probing /api/echo/health until
     # routed. Mirrors 08-resources; without it the load hits the dead LB port 9090
     # and every request fails.
-    retarget_app_endpoint_to_active_slice "$ECHO_BLUEPRINT" "/api/echo/health" 90 \
-        || log_warn "kill-under-load: could not retarget APP_ENDPOINT to echo owner; load will probe ${APP_ENDPOINT}"
+    retarget_app_endpoint_to_active_slice "$ECHO_BLUEPRINT" "/api/echo/health" 90 || {
+        log_fail "kill-under-load: no ACTIVE owner resolved for ${ECHO_BLUEPRINT} within 90s — cannot measure error rate against a dead endpoint; aborting"
+        return 1
+    }
 
     start_load "$LOAD_RPS" "$LOAD_DURATION" GET "/api/echo/health" "" "$ECHO_BLUEPRINT"
 

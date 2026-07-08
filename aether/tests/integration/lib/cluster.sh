@@ -1226,7 +1226,18 @@ retarget_app_endpoint_to_active_slice() {
                    | tr -d '\n' \
                    | grep -oE '"artifact"[[:space:]]*:[[:space:]]*"[^"]*"|"state"[[:space:]]*:[[:space:]]*"[A-Z_]*"' \
                    | tr '\n' ' ')
-        log_warn "retarget: no ACTIVE owner found for ${coords}; APP_ENDPOINT unchanged. /api/slices: ${diag:-<empty>}"
+        # Fallback port (docker only): set APP_ENDPOINT to the first live seed's
+        # host-mapped app port so that if the caller ignores this error, load hits a
+        # real port rather than the dead default LB port (e.g. TARGET_HOST:9090).
+        # On cloud there is no seed-port mapping so APP_ENDPOINT is left unchanged.
+        if [ "${ENV_TYPE:-docker}" != "cloud" ]; then
+            local _fallback_port
+            _fallback_port=$(first_seed_host_app_port "${APP_PORT:-8070}" 2>/dev/null || true)
+            if [ -n "$_fallback_port" ]; then
+                APP_ENDPOINT="http://${TARGET_HOST}:${_fallback_port}"
+            fi
+        fi
+        log_error "retarget: no ACTIVE owner found for ${coords} — /api/slices: ${diag:-<empty>}; APP_ENDPOINT=${APP_ENDPOINT}"
         return 1
     fi
     RETARGETED_SLICE_OWNER="$owner"

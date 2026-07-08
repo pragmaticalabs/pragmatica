@@ -13,6 +13,10 @@ test_initial_state() {
     # Wait for phase=NORMAL to bypass SWIM cold-boot suppression of NODE_FAILED events.
     wait_for_phase "NORMAL" 180 || log_warn "Cluster phase still COLD_BOOT; chaos kill may produce UnknownObserved (no NODE_FAILED event)"
     wait_for_leader 60
+    # Poll-with-settle (up to 60s): the prior suite's restore gates on leader
+    # deficit=0 which can precede generation snapshot convergence by up to one
+    # reconciler tick while a CTM replacement finalises admission.
+    wait_for "Initial: at least 5 nodes" '[ "$(cluster_member_count)" -ge 5 ]' 60 || true
     local count
     count=$(cluster_member_count)
     assert_ge "$count" "5" "Initial: at least 5 nodes (${count})"

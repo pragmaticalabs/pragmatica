@@ -1,7 +1,7 @@
-[R1] aether/tests/integration/suites/02-chaos/test-self-drain-quorum-loss.sh:547 — warn-then-pass-demotion (preceding log_warn at line 544)
-[R1] aether/tests/integration/suites/02-chaos/test-self-drain-quorum-loss.sh:552 — warn-then-pass-demotion (preceding log_warn at line 549)
-[R1] aether/tests/integration/suites/02-chaos/test-self-drain-quorum-loss.sh:585 — warn-then-pass-demotion (preceding log_warn at line 583)
-[R1] aether/tests/integration/suites/02-chaos/test-self-drain-quorum-loss.sh:591 — warn-then-pass-demotion (preceding log_warn at line 589)
+[R1] aether/tests/integration/suites/02-chaos/test-self-drain-quorum-loss.sh:551 — warn-then-pass-demotion (preceding log_warn at line 548)
+[R1] aether/tests/integration/suites/02-chaos/test-self-drain-quorum-loss.sh:556 — warn-then-pass-demotion (preceding log_warn at line 553)
+[R1] aether/tests/integration/suites/02-chaos/test-self-drain-quorum-loss.sh:589 — warn-then-pass-demotion (preceding log_warn at line 587)
+[R1] aether/tests/integration/suites/02-chaos/test-self-drain-quorum-loss.sh:595 — warn-then-pass-demotion (preceding log_warn at line 593)
 [R1] aether/tests/integration/suites/04-streaming/test-stream-consumer.sh:14 — warn-then-pass-demotion (preceding log_warn at line 13)
 [R1] aether/tests/integration/suites/04-streaming/test-stream-publish.sh:14 — warn-then-pass-demotion (preceding log_warn at line 13)
 [R1] aether/tests/integration/suites/04-streaming/test-stream-replication.sh:15 — warn-then-pass-demotion (preceding log_warn at line 14)
@@ -26,8 +26,8 @@
 [R2] aether/tests/integration/suites/01-stability/test-soak-4h.sh:95 — wait "$pid" 2>/dev/null || true
 [R2] aether/tests/integration/suites/02-chaos/test-joining-window-kill.sh:144 — 2>/dev/null || true
 [R2] aether/tests/integration/suites/02-chaos/test-joining-window-kill.sh:231 — name=$(remote_exec "docker ps --filter 'label=aether.node-id=${node_id}' ${cluster_filter} --format '{{.Names}}' | head -1" 2>/dev/null || true)
-[R2] aether/tests/integration/suites/02-chaos/test-joining-window-kill.sh:415 — candidates=$(pick_non_leader "$leader" 3 2>/dev/null || true)
-[R2] aether/tests/integration/suites/02-chaos/test-kill-under-load.sh:92 — wait "$pid" 2>/dev/null || true
+[R2] aether/tests/integration/suites/02-chaos/test-joining-window-kill.sh:419 — candidates=$(pick_non_leader "$leader" 3 2>/dev/null || true)
+[R2] aether/tests/integration/suites/02-chaos/test-kill-under-load.sh:98 — wait "$pid" 2>/dev/null || true
 [R2] aether/tests/integration/suites/03-scaling/test-03-scale-down.sh:118 — wait "$pid" 2>/dev/null || true
 [R2] aether/tests/integration/suites/06-deployment/test-schema-migration.sh:111 — body=$(api_post "/api/schema/retry/${DATASOURCE}" "{}" 2>/dev/null || true)
 [R2] aether/tests/integration/suites/07-cluster-mgmt/test-destroy.sh:35 — # Don't `2>/dev/null || true` — that hides stderr AND ignores rc, so a
