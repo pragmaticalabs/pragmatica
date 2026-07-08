@@ -1,10 +1,10 @@
 # Session Handover — 2026-07-08
 
-**Branch:** `release-1.0.0-rc2` · **HEAD:** `71a4aa599` (pushed, tree clean, `v1.0.0-rc2-candidate` on HEAD) · **⚠ Gate run 4 IN FLIGHT at handover** — see "Live state" below; its outcome is the next session's first input.
+**Branch:** `release-1.0.0-rc2` · **HEAD:** `4fb6c5774` + this handover update (pushed, tree clean, `v1.0.0-rc2-candidate` current) · **Cloud: FULLY REAPED** (0 containers on `$TARGET_HOST`; test-PG VM untouched).
 
 ## TL;DR
 
-Gate-driven hardening arc. Run 3a (remote containerized, 15 suites): 10/15 green, **every red root-caused by paired forensics agents and either fixed or filed**. Fixed this session: #415 (cloud-proven), mgmt stream publish owner-routing + CNFE mapping + rc2 fixtures (the run-2 debt), **two new product streaming bugs** (read-recovery + write-race), and two harness defects. Filed: **#420** (real artifact-DHT data loss under churn — design fork prepared, **milestone decision OPEN**) and **#421** (unreproduced ring-vanish anomaly). **Run 4 is executing on the fully-fixed build right now.** After its verdict: #421 repro + 1f fence probe + reap, then the open user decisions, then release cut.
+Gate-driven hardening arc, COMPLETE through run 4. Run 3a: 10/15, every red root-caused → fixed or filed. **Run 4 (fixed build): 14/15 suites green — 03-scaling, 04-streaming, 06-deployment, 08-resources, 13-edge-cases ALL green; both streaming fixes + #415 + the fixture/CNFE class are cloud-validated.** Sole red: 02-chaos 4p/3f, fully triaged → **#426 filed** (new product finding: 21.5-min membership removal of a never-HEALTHY replacement), one auto-heal budget miss (recovered; poll-endpoint ambiguity), one loud-abort that is the harness fix working as designed. Cloud reaped. **Release-gating now hinges on the open decisions below, not on unknown failures.**
 
 ## Commits this session (oldest first)
 
@@ -31,17 +31,36 @@ FAIL→forensicated: 04 (3p/1f), 08 (4p/1f), 13 (3p/1f) = the two streaming bugs
 - **#420 artifact-DHT durability (REAL data loss, cloud-proven)** — marker 404 on all 5 nodes after 5→7→5 churn; mechanisms verified: no join-migration (`DHTTopologyListener.onNodeJoined`), survivor-primary-only rebalance (`DHTRebalancer.onNodeRemoved`), anti-entropy exists but current-replica-set-only + can't resurrect 0 copies, no read-repair/hinted-handoff, chunk amplification (one 64KB chunk kills the artifact). **Scope is a CLASS**: artifacts (memory+DHT ONLY), content-blocks (same), stream-segments (memory+disk+DHT — DHT is the node-loss recovery path). FULL-pin is NOT safe (fire-and-forget, anti-entropy disabled, no eviction anywhere). Design fork on the issue: A = durable blob tier (consensus placement + reconciler, pattern exists in stream ownership, nothing pre-built), B = complete DHT machinery, C = layered (C1 departing-push kills the observed mode, C2 resolve-time alternate-target fallback, C3 join backfill). **My standing recommendation: rc2 ships with documented caveat; C1+C2 open rc3; A-vs-B design session gates GA. User chose "design talk first" — the fork analysis was delivered in-session; MILESTONE DECISION STILL OPEN.**
 - **#421 ring-vanish anomaly (unverified)** — probe stream's owner stored 24 events then ring gone (~1min, headOffset:-1, no release log); suspect = double-materialization via bug-B's raced first publish; repro protocol on the issue — run it on the FIXED build (next session).
 
-## Live state at handover
+## Run 4 final verdict (fixed build: jar w/ both streaming fixes + harness fixes)
 
-- **Run 4 in flight**: `env -u HCLOUD_TOKEN ./run-tests.sh --env remote --skip-build --skip-teardown`, launched after remote reap (0 containers) + fresh jar (Jul 8 14:39, contains both streaming fixes). Log: session scratchpad `cloud-gate-run4.log`; background task `bzrdxbbs2`, monitor `bumgn2c67`. Deploy step had just started. **Expected**: 04/08/13 flip green; 02-chaos preconditions settle; kill-under-load either measures a real endpoint or fails loudly WITH the `/api/slices` diagnostic (answering the open "why was it empty" question); 03-scaling No_data_loss is probabilistic (#420 — a red there is NOT new information). If the session died mid-run: `aether/tests/integration/test-results.json` + the log are authoritative; clusters left up (`--skip-teardown`).
-- **Next after run 4** (in order): (1) #421 repro on the live fixed cluster (protocol on issue); (2) **manual 1f fence probe** — `aether cluster ownership` during an owner-kill: deposed node `fenced=true`, steady `highWater==epoch`; (3) reap remote (`docker rm -f $(docker ps -aq)` on `$TARGET_HOST`).
+`test-results.json`: 14/15 passed. 00:2/0, 02:**4/3**, 03:3/0, 04:4/0, 05:3/0, 06:5/0, 07:4/0, 08:5/0, 09:3/0, 10:3/0, 11:6/0, 12:4/0, 13:4/0, 14:2/0, 15:1/0. Log: session scratchpad `cloud-gate-run4.log` (session-scoped — durable facts are here + in the issues).
+
+**The three 02-chaos failures, triaged to conclusion:**
+1. **S01 removal latency → #426 (NEW product finding).** Replacement killed in `SYNCING` (never HEALTHY) → membership removal took **1293s vs 90s budget** (eventual convergence, not a wedge). Suspected mechanism: SWIM transport-veto arm pins FAULTY→UnknownObserved demotion while a stale transport entry for the killed container reads "connected" (`SwimProtocol.emitFaultyOrUnknown`, #415 family — the OTHER never-HEALTHY suppression arm). Container logs for the window were LOST (S20 recreated the b-nodes), so mechanism is hypothesis-with-code-basis; **in-JVM repro plan is on the issue**. Run 3a passed this only because its replacement raced to READY pre-kill (ever-HEALTHY path). Secondary harness bug in the same test (contradictory FAIL/PASS pair, rc=0) also on #426.
+2. **Auto-heal_restores_to_5 (kill-node file): 360s budget miss with a `count=0` trough — then FULL recovery to baseline** (5 cores, deficit=0, quiesced) before the next test. Unresolved ambiguity: real zero-member trough vs the count polling a dead endpoint mid-churn; possibly S01's ghost-member aftermath (same run, same cluster). No issue filed — re-observe on the next run; if it recurs green-side-adjacent to #426's fix, it was the ghost.
+3. **Kill_node_during_active_load: the NEW loud-abort fired as designed** — `retarget: no ACTIVE owner for test-echo; /api/slices: <empty>`. This ANSWERS run-3a's open question (the load target genuinely had no ACTIVE slices; nothing was mismeasured). WHY echo had zero ACTIVE instances after the churn is UNRESOLVED — candidates: #420 artifact-loss chain, CDM redeploy gap after heal, or prior-file cleanup — post-hoc probes inconclusive (artifact resolves 200 NOW, but two later test files overwrote cluster state). The diagnostic now prints the raw `/api/slices` on every recurrence, so the next occurrence self-explains.
+
+## Cleanup state (this session's end)
+
+- Remote `$TARGET_HOST`: **all containers removed** (clusters A+B, forge-postgres) — `docker ps -aq` = 0. Images retained for fast redeploy. Test-PG VM untouched (cloud discipline).
+- Run-4 log monitor stopped. MAILBOX mtime monitor was session-scoped (dies with session) — **re-arm next session**.
+- NOT done (needs a live cluster — fold into the next deploy/run): **#421 repro** (protocol on issue) and the **manual 1f fence probe** (`aether cluster ownership` during owner-kill: deposed `fenced=true`, steady `highWater==epoch`).
 
 ## ⭐ Open user decisions (do not proceed without)
 
-1. **#420 milestone** (recommendation above).
-2. **Cloud-JVM run 3b** before release cut? Plan agreed earlier: `--env cloud --runtime jvm` (TOMLs exist: `env/cloud-hetzner-jvm*.toml`, selector `--runtime`), fresh Hetzner VMs, `--skip-teardown` + cluster-scoped reap + preserve test-PG. First-ever JVM-flavor 15-suite run — treat first failures as probable env-debt, not product.
-3. **Streaming coverage gaps** (user asked for assessment; delivered): top-3 pre-GA = multi-partition e2e fixture (everything runs partitions=1), publish-under-load-during-reshuffle chaos test, hard-kill (`kill -9`) crash-durability e2e (current proof is graceful-restart only). Offered to file as rc3/GA issues — awaiting go-ahead.
-4. Release cut when gate verdict accepted: `/pre-release-check` → `/release` (closes #403).
+1. **#420 milestone** (recommendation above). User chose "design talk first"; the fork analysis was delivered in-conversation and is summarized on the issue.
+2. **#426 disposition**: my assessment — investigate-first (in-JVM repro per the issue's plan, cheap); if the transport-veto pin confirms and the fix is the bounded-deferral shape (#415 precedent, ~small), it is rc2-worthy; if it balloons, rc3 with a release-note (one occurrence, eventual convergence, ever-HEALTHY path unaffected).
+3. **Cloud-JVM run 3b** before release cut? (`--env cloud --runtime jvm`, TOMLs exist, first-ever JVM-flavor 15-suite run — treat first failures as probable env-debt.) Also the natural vehicle for the pending #421 repro + 1f fence probe if run on containers first.
+4. **Streaming coverage gaps** (assessment delivered): top-3 pre-GA = multi-partition e2e fixture, publish-under-load-during-reshuffle chaos test, hard-kill crash-durability e2e. Awaiting go-ahead to file as rc3/GA issues.
+5. Release cut when gate verdict accepted: `/pre-release-check` → `/release` (closes #403). Run-4 posture: 14/15 with the sole red fully triaged (#426 + one recovered budget miss + one working-as-designed abort) — arguably cut-ready pending decisions 1-3.
+
+## ⭐ Next session — exact sequence
+
+1. Re-arm MAILBOX monitor (memory `project_gap_drain_loop_mailbox`).
+2. Resolve decisions 1-3 with the user (one at a time).
+3. If #426 investigate-first: jbct-coder/investigator on the in-JVM repro (plan on issue) — one code track.
+4. If run 3b approved: `cd aether/tests/integration && ./run-tests.sh --env cloud --runtime jvm --skip-teardown` (HCLOUD_TOKEN needed by bootstrap — do NOT strip it there, but NEVER run maven with it set; use --skip-build). Cluster-scoped reap after; preserve test-PG. Fold in #421 repro + 1f fence probe (containerized remote redeploy also works for those two).
+5. `/pre-release-check` → `/release`.
 
 ## Working notes for the next session
 
