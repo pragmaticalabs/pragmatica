@@ -277,6 +277,11 @@ _resolve_live_endpoint() {
             done
         fi
         # No surviving VM responded; fall back so the caller surfaces a curl failure.
+        # #426 item 4: this was a silent fallback (comment-only) — a dead pinned
+        # endpoint returned here reads downstream as an ordinary empty/absent API
+        # response, indistinguishable from a genuine 404. Log it loud so a reader
+        # of the run's output can tell "no VM answered" from "the API said so".
+        log_error "_resolve_live_endpoint: no surviving cloud VM answered /health/live (seed IPs + live hcloud enumeration both exhausted) — falling back to the dead pinned endpoint ${CLUSTER_ENDPOINT}; callers will see a transport failure" >&2
         echo "${CLUSTER_ENDPOINT}"
         return 1
     fi
@@ -309,11 +314,29 @@ _resolve_live_endpoint() {
     # still reachable for management. This is the robust last resort: it returns a
     # usable host:port whenever ANY live aether-${CLUSTER_ID} container exists (seed
     # OR replacement), even when every fixed seed port is dead (#33).
-    local discovered
-    if discovered=$(_discover_endpoint_by_label); then
-        echo "$discovered"
-        return 0
-    fi
+    #
+    # Retry (#426 item 4): a single SSH round-trip (remote_exec inside
+    # _discover_endpoint_by_label) has no bound on remote COMMAND execution time —
+    # ssh's ConnectTimeout=10 only guards connection setup, not a hung `docker ps`/
+    # `docker port` on a contended daemon. On a fully-ULID cluster (every seed
+    # replaced) that single call is the ONLY discovery path, so one transient
+    # SSH/Docker hiccup used to cause total resolution failure for the whole call —
+    # cascading into every downstream api_get reading a false "0"/"empty" state.
+    # Retry a few times with a short pause before declaring the cluster unreachable.
+    local discover_attempts="${ENDPOINT_DISCOVERY_ATTEMPTS:-3}"
+    local discovered attempt=1
+    while [ "$attempt" -le "$discover_attempts" ]; do
+        if discovered=$(_discover_endpoint_by_label); then
+            echo "$discovered"
+            return 0
+        fi
+        [ "$attempt" -lt "$discover_attempts" ] && sleep 1
+        attempt=$((attempt + 1))
+    done
+    # #426 item 4: was a silent fallback (comment-only, no logged diagnostic) — a
+    # dead pinned endpoint returned here reads downstream as an ordinary
+    # empty/absent API response, indistinguishable from a genuine 404.
+    log_error "_resolve_live_endpoint: pinned endpoint dead, seed port range ${MGMT_PORT}-$((MGMT_PORT + NODE_COUNT - 1)) exhausted, and label discovery failed after ${discover_attempts} attempt(s) — falling back to the dead pinned endpoint ${CLUSTER_ENDPOINT}; callers will see a transport failure" >&2
     echo "${CLUSTER_ENDPOINT}"  # fall back; caller will see curl failure
     return 1
 }
@@ -344,6 +367,19 @@ api_get() {
     _api_call GET "${endpoint}${path}"
 }
 
+# Like api_get, but the LAST line of stdout is a `__API_HTTP_STATUS:NNN__`
+# marker carrying the raw HTTP status ("000" when curl never got a response —
+# a transport failure, not a server-issued status). Callers that must
+# distinguish a genuine 4xx/5xx response from an unreachable endpoint (rather
+# than collapsing both to "empty body") should parse this instead of using
+# api_get — see kv_lifecycle_state in lib/topology.sh (#426 item 2).
+api_get_with_status() {
+    local path="$1"
+    local endpoint
+    endpoint=$(_resolve_live_endpoint)
+    _api_call GET "${endpoint}${path}" "" "1"
+}
+
 api_post() {
     local path="$1"
     local body="${2:-"{}"}"
@@ -362,7 +398,7 @@ api_put() {
 # diagnostic logging. The original `curl -sf` was silently dropping HTTP error bodies,
 # which made cloud failures (e.g. "NotLeader", "TaskGroupInactive") invisible.
 _api_call() {
-    local method="$1" url="$2" body="${3:-}"
+    local method="$1" url="$2" body="${3:-}" want_status="${4:-}"
     local response status body_only
     # Cloud poll-loop hygiene: a just-killed node's pinned endpoint is a DEAD
     # public IP. With the default `-m 30` (no connect cap), each call to a dead
@@ -389,9 +425,15 @@ _api_call() {
     body_only=$(printf '%s' "$response" | sed '$d')
     if [ -n "$status" ] && [ "$status" -ge 200 ] && [ "$status" -lt 400 ] 2>/dev/null; then
         printf '%s' "$body_only"
+        # want_status: append the raw HTTP status as a trailing marker line so a
+        # single command-substitution capture can recover it (printf -v inside a
+        # $(...) caller would set the variable in the subshell, not the caller —
+        # see api_get_with_status). "000" means curl never got a response at all.
+        [ -n "$want_status" ] && printf '\n__API_HTTP_STATUS:%s__' "${status:-000}"
         return 0
     fi
     log_warn "api ${method} ${url#http://*/} status=${status:-000}: $(printf '%s' "$body_only" | head -c 300)" >&2
+    [ -n "$want_status" ] && printf '%s\n__API_HTTP_STATUS:%s__' "$body_only" "${status:-000}"
     return 1
 }
 

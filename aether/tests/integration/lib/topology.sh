@@ -366,20 +366,42 @@ wait_for_self_drain_event() {
 # Read R's KV-backed lifecycle state via /api/nodes/lifecycle/<id>, which reads
 # the lifecycle projection straight out of KV-Store regardless of SWIM state.
 # Returns the state string on stdout (empty when the atom is absent / HTTP 404).
+#
+# rc contract (#426 item 2 — callers MUST check rc, not just stdout emptiness):
+#   0 with non-empty stdout — state found.
+#   0 with empty stdout     — genuine 404 (lifecycle atom absent). This is the
+#                              ONLY case that legitimately means "removed".
+#   1 with empty stdout     — transport failure (curl never reached the
+#                              endpoint) or an unexpected non-404/non-2xx
+#                              status. UNKNOWN, not absent — the old code did
+#                              `api_get ... || true` and treated ANY empty body
+#                              (including a dead endpoint) as "atom absent",
+#                              which let a transport outage masquerade as a
+#                              successful node removal. Callers must keep
+#                              polling on rc=1, mirroring the already-correct
+#                              pattern in node_absent_from_status/status_node_ids
+#                              below (transport failure -> assume still present).
 kv_lifecycle_state() {
     local target="$1"
-    # /api/nodes/lifecycle/<id> returns JSON {"nodeId":"...","state":"...","updatedAt":N}
-    # or HTTP 404 with cause "Node lifecycle not found" when the atom is absent.
-    # api_get returns empty stdout + non-zero rc on HTTP error; ignore rc, parse stdout.
-    local body
-    body=$(api_get "/api/nodes/lifecycle/${target}" 2>/dev/null || true)
-    if [ -z "$body" ]; then
-        return 0  # empty (KV atom absent)
-    fi
-    printf '%s' "$body" \
-        | grep -o '"state"[[:space:]]*:[[:space:]]*"[^"]*"' \
-        | head -1 \
-        | sed 's/"state"[[:space:]]*:[[:space:]]*"\([^"]*\)"/\1/'
+    local raw status body
+    raw=$(api_get_with_status "/api/nodes/lifecycle/${target}" 2>/dev/null)
+    status=$(printf '%s' "$raw" | grep -oE '__API_HTTP_STATUS:[0-9]+__' | tail -1 | sed 's/__API_HTTP_STATUS://;s/__//')
+    body=$(printf '%s' "$raw" | sed '$d')
+    case "$status" in
+        404)
+            return 0  # genuine 404 — lifecycle atom absent
+            ;;
+        2??|3??)
+            printf '%s' "$body" \
+                | grep -o '"state"[[:space:]]*:[[:space:]]*"[^"]*"' \
+                | head -1 \
+                | sed 's/"state"[[:space:]]*:[[:space:]]*"\([^"]*\)"/\1/'
+            return 0
+            ;;
+        *)
+            return 1  # transport failure ("000") or unexpected status — UNKNOWN
+            ;;
+    esac
 }
 
 # Report whether $target is ABSENT from /api/nodes/status cluster.nodes[].
@@ -446,25 +468,49 @@ status_node_ids() {
 # state and NO decommission-reason domain event. The authoritative v2 removal
 # signal is twofold (either is sufficient):
 #   (a) /api/nodes/lifecycle/<R> returns HTTP 404 (LIFECYCLE_NOT_FOUND) — the
-#       lifecycle endpoint reports the node as unknown. api_get yields an empty
-#       body on 404, which `kv_lifecycle_state` surfaces as the empty string.
+#       lifecycle endpoint reports the node as unknown. kv_lifecycle_state
+#       surfaces this as rc=0 + empty stdout (see its contract comment).
 #   (b) R is absent from /api/nodes/status cluster.nodes[].
 # Returns 0 as soon as either holds; 1 on timeout.
 wait_for_node_removed() {
     local target="$1" timeout="${2:-8}"
     local deadline=$((SECONDS + timeout))
-    while [ $SECONDS -lt $deadline ]; do
-        local state
+    while :; do
+        # Wall-clock ceiling (#426 item 1) checked BEFORE every blocking sub-call,
+        # not just between loop iterations. kv_lifecycle_state and
+        # node_absent_from_status both resolve through _resolve_live_endpoint,
+        # which on docker/remote can fall through to an SSH-based label discovery
+        # with no bound on remote command execution time (ssh ConnectTimeout=10
+        # only guards connection setup, not a hung remote docker daemon call). A
+        # single such call has been observed to block far longer than the nominal
+        # timeout (1293s against an 8s-90s budget) — checking the deadline only at
+        # the top of the loop let one wedged read consume the entire run.
+        if [ $SECONDS -ge $deadline ]; then
+            return 1
+        fi
+        local state rc
         state=$(kv_lifecycle_state "$target")
-        # (a) lifecycle endpoint reports the node unknown (404 → empty state).
-        if [ -z "$state" ]; then
+        rc=$?
+        # Re-check immediately after the call returns, before acting on its
+        # result — a late-returning read must not buy itself another iteration.
+        if [ $SECONDS -ge $deadline ]; then
+            return 1
+        fi
+        # (a) genuine 404 — rc=0 with empty state (see kv_lifecycle_state
+        # contract). rc=1 means the read failed (transport failure or an
+        # unexpected status) and is NEVER a removal signal, even though its
+        # stdout is also empty — #426 item 2: the old code could not tell the
+        # two apart and treated a dead endpoint as "node removed".
+        if [ $rc -eq 0 ] && [ -z "$state" ]; then
             return 0
         fi
         # (b) node has dropped out of the status projection's cluster.nodes[].
         if node_absent_from_status "$target"; then
             return 0
         fi
+        if [ $SECONDS -ge $deadline ]; then
+            return 1
+        fi
         sleep 1
     done
-    return 1
 }

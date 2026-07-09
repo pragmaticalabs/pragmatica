@@ -387,7 +387,14 @@ test_decommission_within_budget() {
 
     now=$(date +%s)
     elapsed=$((now - kill_ts))
-    assert_ge "$DECOMMISSION_BUDGET_S" "$elapsed" "Replacement ${replacement} removed from membership within ${DECOMMISSION_BUDGET_S}s budget (actual=${elapsed}s)"
+    # #426 item 3: assert_ge's rc was previously discarded — `set -e` is masked
+    # once run_test invokes this function via `if "$fn"; then` (see run_test's
+    # design comment in lib/common.sh), so a failing assert_ge did NOT abort the
+    # script and the unconditional log_pass below ran anyway, producing a
+    # contradictory FAIL-then-PASS pair for the same check. Propagate the rc.
+    if ! assert_ge "$DECOMMISSION_BUDGET_S" "$elapsed" "Replacement ${replacement} removed from membership within ${DECOMMISSION_BUDGET_S}s budget (actual=${elapsed}s)"; then
+        return 1
+    fi
     log_pass "S01 timing budget met: ${replacement} left the cluster (404 from /api/nodes/lifecycle OR absent from /api/nodes/status) in ${elapsed}s (within ${DECOMMISSION_BUDGET_S}s budget)"
 }
 

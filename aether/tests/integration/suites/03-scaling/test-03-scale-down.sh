@@ -40,6 +40,31 @@ test_seed_config() {
 }
 
 test_seed_marker() {
+    # #426 item 6 / #420 disposition: gate the seed write on generation
+    # quiescence before pushing — writing the no-data-loss marker while the
+    # cluster is still converging (mid re-election, mid CTM churn from the
+    # prior suite) seeds into an in-flux ring, which would make a later
+    # resolve failure ambiguous (real data loss vs a routing table that moved
+    # before the write ever committed). Poll-with-settle + loud-abort, mirroring
+    # 71a4aa599: retry across transient misses (await_generation_quiesced
+    # returns 1 on a genuine timeout, 2 when the endpoint was merely
+    # unreachable — see lib/generation.sh — neither means "give up
+    # immediately"), then hard-fail rather than seed against an unsettled
+    # cluster.
+    local quiesce_attempts=5 quiesce_ok=false i
+    for i in $(seq 1 "$quiesce_attempts"); do
+        if await_generation_quiesced "${CLUSTER_ENDPOINT}" "current" 30; then
+            quiesce_ok=true
+            break
+        fi
+        log_warn "test_seed_marker: generation not quiesced yet (attempt ${i}/${quiesce_attempts}) — retrying before seeding the no-data-loss marker"
+        sleep 2
+    done
+    if [ "$quiesce_ok" != "true" ]; then
+        log_fail "test_seed_marker: cluster did not quiesce after ${quiesce_attempts} attempts — refusing to seed the no-data-loss marker into an in-flux ring"
+        return 1
+    fi
+
     # Push a unique random artifact through the management API before any
     # scaling happens. The repository path is unique per test process so reruns
     # never collide. Persisting the SHA-256 + path to disk (rather than env

@@ -2315,7 +2315,38 @@ restart_all_nodes() {
         # transition that didn't happen).
         reset_provisioning_circuit || true
     fi
-    log_info "restart_all_nodes: cluster recovered (${NODE_COUNT:-5} nodes, leader elected, generation quiesced, all nodes ready)"
+    # Re-establish the blueprint baseline wiped by `docker compose down -v` above —
+    # that command performs a full VOLUME wipe (see the "Why" comment near the top
+    # of this function), so the artifact repository and every deployed slice are
+    # gone and the cluster returns at a fresh generation with zero slices. Without
+    # this, ANY test that runs after a destructive restart_all_nodes() — directly
+    # (e.g. S20 in test-self-drain-quorum-loss.sh) or indirectly via
+    # restore_cluster_baseline's step-0 leader-unreachable escalation — inherits an
+    # empty artifact repository, and load/echo traffic silently 404s instead of
+    # measuring the scenario under test (#426 item 5: this exact gap left no ACTIVE
+    # echo owner for kill-under-load's retarget to resolve on 2026-07-08, correctly
+    # triggering the loud-abort added in 71a4aa599 rather than a silent 100%-error
+    # false read). This mirrors the redeploy S20 already does locally after its own
+    # restart_all_nodes call; centralizing it here covers every caller, including
+    # restore_cluster_baseline's escalation path which had no redeploy step at all.
+    # restore_cluster_baseline itself deliberately does NOT restore blueprint state
+    # (see its step-8 design comment — that exclusion is intentional and scoped to
+    # non-destructive baseline checks); this is the destructive-recovery counterpart,
+    # scoped to the one function that actually wipes the volumes.
+    local baseline_bp="${ECHO_BLUEPRINT:-org.pragmatica.aether.test:test-echo:1.0.0}"
+    log_info "restart_all_nodes: re-establishing ${baseline_bp} baseline wiped by 'compose down -v'"
+    if ! push_blueprint "$baseline_bp" >/dev/null; then
+        log_fail "restart_all_nodes: failed to re-push ${baseline_bp} after the volume wipe"
+        return 1
+    fi
+    deploy_blueprint "$baseline_bp" >/dev/null 2>&1 || true
+    if ! wait_for "echo blueprint all target instances ACTIVE after restart (scoped to ${baseline_bp})" \
+        "[ \$(slices_active_instances_for '${baseline_bp}') -ge \$(slices_target_total_for '${baseline_bp}') ] && [ \$(slices_target_total_for '${baseline_bp}') -gt 0 ]" \
+        120; then
+        log_fail "restart_all_nodes: ${baseline_bp} did not reach all-target-instances ACTIVE after post-wipe redeploy ($(slices_active_instances_for "$baseline_bp")/$(slices_target_total_for "$baseline_bp") active) — deployment baseline not restored"
+        return 1
+    fi
+    log_info "restart_all_nodes: cluster recovered (${NODE_COUNT:-5} nodes, leader elected, generation quiesced, all nodes ready, ${baseline_bp} baseline restored)"
     return 0
 }
 
