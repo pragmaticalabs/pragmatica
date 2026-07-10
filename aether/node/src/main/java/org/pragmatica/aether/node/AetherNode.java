@@ -173,6 +173,7 @@ import org.pragmatica.aether.worker.governor.GovernorMesh;
 import org.pragmatica.aether.worker.group.GroupMembershipTracker;
 import org.pragmatica.aether.worker.metrics.CommunityMetricsSnapshot;
 import org.pragmatica.aether.worker.metrics.CommunityScalingRequest;
+import org.pragmatica.aether.worker.metrics.WorkerMetricsAggregator;
 import org.pragmatica.aether.worker.mutation.MutationForwarder;
 import org.pragmatica.aether.config.AppHttpConfig;
 import org.pragmatica.aether.config.BackupConfig;
@@ -1098,6 +1099,7 @@ public interface AetherNode extends ManageableNode {
                           DeploymentMetricsCollector deploymentMetricsCollector,
                           DeploymentMetricsScheduler deploymentMetricsScheduler,
                           ControlLoop controlLoop,
+                          WorkerMetricsAggregator workerMetricsAggregator,
                           SliceInvoker sliceInvoker,
                           InvocationHandler invocationHandler,
                           BlueprintService blueprintService,
@@ -1175,6 +1177,7 @@ public interface AetherNode extends ManageableNode {
             public Promise<Unit> start() {
                 log.info("Starting Aether node {}", self());
                 snapshotCollector.start();
+                workerMetricsAggregator.start();
                 SliceRuntime.setSliceInvoker(sliceInvoker);
                 certRenewalScheduler.onPresent(CertificateRenewalScheduler::start);
 
@@ -1200,6 +1203,7 @@ public interface AetherNode extends ManageableNode {
                 router.route(ClusterStateNotification.passive());
                 router.quiesce();
                 controlLoop.stop();
+                workerMetricsAggregator.stop();
                 metricsScheduler.stop();
                 deploymentMetricsScheduler.stop();
                 ttmManager.stop();
@@ -1950,6 +1954,11 @@ public interface AetherNode extends ManageableNode {
                                                   config.controllerConfig().scalingConfig().evaluationInterval(),
                                                   config.controllerConfig(),
                                                   delegateRouter::route);
+        var workerMetricsAggregator = WorkerMetricsAggregator.workerMetricsAggregator(config.self(),
+                                                                                      () -> config.self().id(),
+                                                                                      invocationMetrics,
+                                                                                      snapshot -> delegateRouter.route(new NetworkServiceMessage.Broadcast(snapshot)),
+                                                                                      config.controllerConfig().scalingConfig().evaluationInterval().millis());
         var rollbackManager = config.rollback().enabled()
                               ? RollbackManager.rollbackManager(config.self(),
                                                                 config.rollback(),
@@ -3220,6 +3229,7 @@ public interface AetherNode extends ManageableNode {
                                   deploymentMetricsCollector,
                                   deploymentMetricsScheduler,
                                   controlLoop,
+                                  workerMetricsAggregator,
                                   sliceInvoker,
                                   invocationHandler,
                                   blueprintService,
@@ -3338,6 +3348,7 @@ public interface AetherNode extends ManageableNode {
                                       deploymentMetricsCollector,
                                       deploymentMetricsScheduler,
                                       controlLoop,
+                                      workerMetricsAggregator,
                                       sliceInvoker,
                                       invocationHandler,
                                       blueprintService,

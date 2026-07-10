@@ -162,10 +162,11 @@ class CompositeLoadFactorTest {
         void compute_weightsAffectCompositeScoreProportionally() {
             fillAllWindows(10.0);
 
-            // The score should be proportionally weighted
+            // The score should be proportionally weighted. CPU carries zero weight (#422) and is
+            // therefore excluded from the components; the per-slice signals remain.
             var result = loadFactor.compute();
 
-            assertThat(result.components()).containsKey(ScalingMetric.CPU);
+            assertThat(result.components()).doesNotContainKey(ScalingMetric.CPU);
             assertThat(result.components()).containsKey(ScalingMetric.ACTIVE_INVOCATIONS);
             assertThat(result.components()).containsKey(ScalingMetric.P95_LATENCY);
         }

@@ -7,18 +7,36 @@ package org.pragmatica.aether.worker.metrics;
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.serialization.Codec;
 
+import java.util.List;
+
 
 @Codec
 public record PerSliceMetrics(Artifact artifact,
                               long activeInvocations,
                               double p95LatencyMs,
                               double errorRate,
-                              long totalCalls) {
+                              long totalCalls,
+                              List<PerMethodMetrics> methods) {
+    public PerSliceMetrics {
+        methods = methods == null
+                  ? List.of()
+                  : List.copyOf(methods);
+    }
+
+    public static PerSliceMetrics perSliceMetrics(Artifact artifact,
+                                                  long activeInvocations,
+                                                  double p95LatencyMs,
+                                                  double errorRate,
+                                                  long totalCalls,
+                                                  List<PerMethodMetrics> methods) {
+        return new PerSliceMetrics(artifact, activeInvocations, p95LatencyMs, errorRate, totalCalls, methods);
+    }
+
     public static PerSliceMetrics perSliceMetrics(Artifact artifact,
                                                   long activeInvocations,
                                                   double p95LatencyMs,
                                                   double errorRate,
                                                   long totalCalls) {
-        return new PerSliceMetrics(artifact, activeInvocations, p95LatencyMs, errorRate, totalCalls);
+        return new PerSliceMetrics(artifact, activeInvocations, p95LatencyMs, errorRate, totalCalls, List.of());
     }
 }

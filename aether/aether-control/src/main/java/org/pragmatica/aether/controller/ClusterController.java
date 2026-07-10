@@ -16,38 +16,27 @@ import java.util.Map;
 public interface ClusterController {
     Promise<ControlDecisions> evaluate(ControlContext context);
 
-    record ControlContext(Map<NodeId, Map<String, Double>> metrics,
+    /// Per-artifact scaling context (#423). Each artifact's decision is driven solely by its own
+    /// composite load, computed from that artifact's per-slice metric windows — no cluster-wide
+    /// average, no cross-artifact gossip. `canScale` reflects window readiness; `errorRateHigh`
+    /// gates both directions.
+    record ControlContext(Map<Artifact, ArtifactLoad> artifactLoads,
                           Map<Artifact, Blueprint> blueprints,
                           List<NodeId> activeNodes) {
-        public double avgMetric(String metricName) {
-            var values = metrics.values().stream().map(m -> m.get(metricName)).flatMap(v -> Option.option(v).stream()).mapToDouble(Double::doubleValue).toArray();
-
-            if (values.length == 0) {
-                return 0.0;
-            }
-
-            return java.util.Arrays.stream(values)
-                                   .average()
-                                   .orElse(0.0);
+        public Option<ArtifactLoad> loadFor(Artifact artifact) {
+            return Option.option(artifactLoads.get(artifact));
         }
+    }
 
-        public double maxMetric(String metricName) {
-            return metrics.values()
-                          .stream()
-                          .map(m -> m.get(metricName))
-                          .flatMap(v -> Option.option(v).stream())
-                          .mapToDouble(Double::doubleValue)
-                          .max()
-                          .orElse(0.0);
-        }
-
-        public double totalCalls(String methodName) {
-            return metrics.values()
-                          .stream()
-                          .map(m -> m.get("method." + methodName + ".calls"))
-                          .flatMap(v -> Option.option(v).stream())
-                          .mapToDouble(Double::doubleValue)
-                          .sum();
+    record ArtifactLoad(double compositeScore,
+                        boolean canScale,
+                        boolean errorRateHigh,
+                        Map<ScalingMetric, Double> components) {
+        public static ArtifactLoad artifactLoad(double compositeScore,
+                                                boolean canScale,
+                                                boolean errorRateHigh,
+                                                Map<ScalingMetric, Double> components) {
+            return new ArtifactLoad(compositeScore, canScale, errorRateHigh, Map.copyOf(components));
         }
     }
 
