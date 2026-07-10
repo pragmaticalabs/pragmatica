@@ -10,6 +10,7 @@ import org.pragmatica.aether.api.ManagementApiResponses.EvaluationTriggeredRespo
 import org.pragmatica.aether.api.ManagementApiResponses.TtmForecast;
 import org.pragmatica.aether.api.ManagementApiResponses.TtmStatusResponse;
 import org.pragmatica.aether.controller.ControllerConfig;
+import org.pragmatica.aether.controller.fsm.ScalingDecisionRecord;
 import org.pragmatica.aether.management.route.ManagementRoute;
 import org.pragmatica.aether.node.ManageableNode;
 import org.pragmatica.aether.ttm.model.TTMForecast;
@@ -55,16 +56,72 @@ public final class ControllerRoutes implements RouteSource {
                                    Double callRateScaleUpThreshold,
                                    Long evaluationIntervalMs) {}
 
+    /// Response for `GET /api/controller/decisions` (#425). `clusterCpuContext` is the cluster-average
+    /// CPU usage surfaced as honest node-capacity context (never acted on by the autoscaler); each
+    /// entry in `decisions` is the latest per-artifact decision snapshot.
+    record ControllerDecisionsResponse(double clusterCpuContext, List<ScalingDecisionView> decisions) {
+        static ControllerDecisionsResponse controllerDecisionsResponse(double clusterCpuContext,
+                                                                       List<ScalingDecisionView> decisions) {
+            return new ControllerDecisionsResponse(clusterCpuContext, decisions);
+        }
+    }
+
+    record ScalingDecisionView(String artifact,
+                               String outcome,
+                               String guard,
+                               double loadFactor,
+                               int currentInstances,
+                               int requestedInstances,
+                               int cappedInstances,
+                               long atMs) {
+        static ScalingDecisionView scalingDecisionView(String artifact,
+                                                       String outcome,
+                                                       String guard,
+                                                       double loadFactor,
+                                                       int currentInstances,
+                                                       int requestedInstances,
+                                                       int cappedInstances,
+                                                       long atMs) {
+            return new ScalingDecisionView(artifact,
+                                           outcome,
+                                           guard,
+                                           loadFactor,
+                                           currentInstances,
+                                           requestedInstances,
+                                           cappedInstances,
+                                           atMs);
+        }
+    }
+
     @Override
     public Stream<Route<?>> routes() {
         return Stream.of(ManagementRoutes.<ControllerConfig> route(ManagementRoute.CONTROLLER_CONFIG_GET).toJson(this::buildControllerConfigResponse),
                          ManagementRoutes.<ControllerStatusResponse> route(ManagementRoute.CONTROLLER_STATUS).toJson(this::buildControllerStatusResponse),
+                         ManagementRoutes.<ControllerDecisionsResponse> route(ManagementRoute.CONTROLLER_DECISIONS).toJson(this::buildDecisionsResponse),
                          ManagementRoutes.<TtmStatusResponse> route(ManagementRoute.TTM_STATUS).toJson(this::buildTtmStatusResponse),
                          ManagementRoutes.<ControllerConfigUpdatedResponse> route(ManagementRoute.CONTROLLER_CONFIG_SET)
                                          .withBody(ControllerConfigRequest.class)
                                          .toJson(this::handleControllerConfig),
                          ManagementRoutes.<EvaluationTriggeredResponse> route(ManagementRoute.CONTROLLER_EVALUATE).toJson(() -> new EvaluationTriggeredResponse("evaluation_triggered")),
                          ManagementRoutes.<List<TrainingDataPoint>> route(ManagementRoute.TTM_TRAINING_DATA).toJson(this::buildTrainingDataResponse));
+    }
+
+    private ControllerDecisionsResponse buildDecisionsResponse() {
+        var controlLoop = nodeSupplier.get().controlLoop();
+        var decisions = controlLoop.scalingDecisions().values().stream().map(ControllerRoutes::toDecisionView).toList();
+
+        return ControllerDecisionsResponse.controllerDecisionsResponse(controlLoop.clusterCpuContext(), decisions);
+    }
+
+    private static ScalingDecisionView toDecisionView(ScalingDecisionRecord decision) {
+        return ScalingDecisionView.scalingDecisionView(decision.artifact().asString(),
+                                                       decision.outcome().name(),
+                                                       decision.guard().name(),
+                                                       decision.loadFactor(),
+                                                       decision.currentInstances(),
+                                                       decision.requestedInstances(),
+                                                       decision.cappedInstances(),
+                                                       decision.atMs());
     }
 
     private Promise<ControllerConfigUpdatedResponse> handleControllerConfig(ControllerConfigRequest req) {

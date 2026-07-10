@@ -1955,7 +1955,8 @@ public interface AetherNode extends ManageableNode {
                                                   config.controllerConfig(),
                                                   delegateRouter::route);
         var workerMetricsAggregator = WorkerMetricsAggregator.workerMetricsAggregator(config.self(),
-                                                                                      () -> config.self().id(),
+                                                                                      () -> config.self()
+                                                                                                  .id(),
                                                                                       invocationMetrics,
                                                                                       snapshot -> delegateRouter.route(new NetworkServiceMessage.Broadcast(snapshot)),
                                                                                       config.controllerConfig().scalingConfig().evaluationInterval().millis());
@@ -4659,6 +4660,7 @@ public interface AetherNode extends ManageableNode {
                                               eventAggregator::onSliceFailure));
         entries.add(MessageRouter.Entry.route(ScalingEvent.ScaledUp.class, eventAggregator::onScaledUp));
         entries.add(MessageRouter.Entry.route(ScalingEvent.ScaledDown.class, eventAggregator::onScaledDown));
+        entries.add(MessageRouter.Entry.route(ScalingEvent.ScaleCapped.class, eventAggregator::onScaleCapped));
         entries.add(MessageRouter.Entry.route(ClusterDeploymentManager.ReconciliationAdjustment.class,
                                               eventAggregator::onReconciliationAdjustment));
         entries.add(MessageRouter.Entry.route(CommunityScalingRequest.class, controlLoop::onCommunityScalingRequest));

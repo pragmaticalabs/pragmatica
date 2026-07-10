@@ -18,15 +18,15 @@ import java.util.Map;
 /// {@link ExtendedEvent} non-sealed extension hatch for framework plugins to introduce
 /// additional variants without modifying the sealed parent.
 ///
-/// Closed-set count is **32 variants** (25 prior framework events + STREAM_REGISTERED/DELETED +
+/// Closed-set count is **33 variants** (25 prior framework events + STREAM_REGISTERED/DELETED +
 /// ALERT_INJECTED/TRACE_INJECTED/SELF_DRAIN_INITIATED + STREAM_MEMORY_EXCEEDED +
-/// DEPARTURE_PUSH_INCOMPLETE).
+/// DEPARTURE_PUSH_INCOMPLETE + SCALE_CAPPED).
 ///
 /// Consumers exhaust the sealed parent via pattern-matching `switch`; the compiler enforces that
 /// every closed variant is handled and that an `ExtendedEvent` arm is present (typically a
 /// discriminator-keyed dispatch, structured log, or no-op).
 @Codec
-public sealed interface ClusterEvent permits ClusterEvent.NodeJoined, ClusterEvent.NodeLeft, ClusterEvent.NodeFailed, ClusterEvent.LeaderElected, ClusterEvent.LeaderLost, ClusterEvent.QuorumEstablished, ClusterEvent.QuorumLost, ClusterEvent.DeploymentStarted, ClusterEvent.DeploymentCompleted, ClusterEvent.DeploymentFailed, ClusterEvent.ScaleUp, ClusterEvent.ScaleDown, ClusterEvent.SliceFailure, ClusterEvent.ConnectionEstablished, ClusterEvent.ConnectionFailed, ClusterEvent.CommunityScaleRequest, ClusterEvent.CommunityMetricsSnapshot, ClusterEvent.AccessDenied, ClusterEvent.NodeLifecycleChanged, ClusterEvent.ConfigChanged, ClusterEvent.BackupCreated, ClusterEvent.BackupRestored, ClusterEvent.BlueprintDeployed, ClusterEvent.BlueprintDeleted, ClusterEvent.GenerationChanged, ClusterEvent.StreamRegistered, ClusterEvent.StreamDeleted, ClusterEvent.AlertInjected, ClusterEvent.TraceInjected, ClusterEvent.SelfDrainInitiated, ClusterEvent.StreamMemoryExceeded, ClusterEvent.DeparturePushIncomplete, ExtendedEvent {
+public sealed interface ClusterEvent permits ClusterEvent.NodeJoined, ClusterEvent.NodeLeft, ClusterEvent.NodeFailed, ClusterEvent.LeaderElected, ClusterEvent.LeaderLost, ClusterEvent.QuorumEstablished, ClusterEvent.QuorumLost, ClusterEvent.DeploymentStarted, ClusterEvent.DeploymentCompleted, ClusterEvent.DeploymentFailed, ClusterEvent.ScaleUp, ClusterEvent.ScaleDown, ClusterEvent.SliceFailure, ClusterEvent.ConnectionEstablished, ClusterEvent.ConnectionFailed, ClusterEvent.CommunityScaleRequest, ClusterEvent.CommunityMetricsSnapshot, ClusterEvent.AccessDenied, ClusterEvent.NodeLifecycleChanged, ClusterEvent.ConfigChanged, ClusterEvent.BackupCreated, ClusterEvent.BackupRestored, ClusterEvent.BlueprintDeployed, ClusterEvent.BlueprintDeleted, ClusterEvent.GenerationChanged, ClusterEvent.StreamRegistered, ClusterEvent.StreamDeleted, ClusterEvent.AlertInjected, ClusterEvent.TraceInjected, ClusterEvent.SelfDrainInitiated, ClusterEvent.StreamMemoryExceeded, ClusterEvent.DeparturePushIncomplete, ClusterEvent.ScaleCapped, ExtendedEvent {
     /// Restart-safe identity + total cluster ordering: HLC physical micros + logical counter + origin nodeId.
     HlcTimestamp at();
 
@@ -175,4 +175,12 @@ public sealed interface ClusterEvent permits ClusterEvent.NodeJoined, ClusterEve
     /// keys are named for operator follow-up, never silently lost — principles P3/P4). `details`
     /// carries `nodeId`, `keysAtRisk` (count) and `sampleKeys` (bounded, comma-joined hex sample).
     record DeparturePushIncomplete(HlcTimestamp at, Severity severity, String summary, Map<String, String> details) implements ClusterEvent {}
+
+    /// Emitted by the leader control loop when the autoscaler's requested instance count is reduced by
+    /// a cap before being applied (#425). A leader-side scaling-attribution signal (the control loop
+    /// runs on the leader), surfaced through the aggregator's leader-gated `emit` path. Severity
+    /// WARNING (the slice wants more capacity than policy or the cluster currently allows — operators
+    /// should notice a slice pinned at its cap). `details` carries `artifact`, `requestedInstances`,
+    /// `cappedAtInstances`, and `reason` (one of `max-instances` | `cluster-cap`).
+    record ScaleCapped(HlcTimestamp at, Severity severity, String summary, Map<String, String> details) implements ClusterEvent {}
 }

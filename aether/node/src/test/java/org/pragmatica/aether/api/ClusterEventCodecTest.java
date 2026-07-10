@@ -28,6 +28,7 @@ import org.pragmatica.aether.api.ClusterEvent.NodeLeft;
 import org.pragmatica.aether.api.ClusterEvent.NodeLifecycleChanged;
 import org.pragmatica.aether.api.ClusterEvent.QuorumEstablished;
 import org.pragmatica.aether.api.ClusterEvent.QuorumLost;
+import org.pragmatica.aether.api.ClusterEvent.ScaleCapped;
 import org.pragmatica.aether.api.ClusterEvent.ScaleDown;
 import org.pragmatica.aether.api.ClusterEvent.ScaleUp;
 import org.pragmatica.aether.api.ClusterEvent.SelfDrainInitiated;
@@ -221,6 +222,26 @@ class ClusterEventCodecTest {
     }
 
     @Test
+    void scaleCapped_roundTrips() {
+        var original = new ScaleCapped(at(8_500L, 2, "leader"),
+                                       Severity.WARNING,
+                                       "org.test:hot:1.0.0 scaling capped at 3 instances (requested 5, reason: max-instances)",
+                                       details("artifact",
+                                               "org.test:hot:1.0.0",
+                                               "requestedInstances",
+                                               "5",
+                                               "cappedAtInstances",
+                                               "3",
+                                               "reason",
+                                               "max-instances"));
+        var decoded = roundTrip(original);
+
+        assertThat(decoded).isEqualTo(original);
+        assertThat(decoded.severity()).isEqualTo(Severity.WARNING);
+        assertThat(decoded.details()).containsEntry("reason", "max-instances").containsEntry("cappedAtInstances", "3");
+    }
+
+    @Test
     void emptyDetailsMap_roundTrips() {
         var original = new ScaleUp(at(9_000L, 0, "n8"), Severity.INFO, "scale up", Map.of());
         var decoded = roundTrip(original);
@@ -264,7 +285,7 @@ class ClusterEventCodecTest {
         assertThat(CODEC.encode(original)).isEqualTo(CODEC.encode(original));
     }
 
-    /// Encode all 32 closed-set variants into a single buffer (a list), decode them back, and
+    /// Encode all 33 closed-set variants into a single buffer (a list), decode them back, and
     /// assert order and concrete type are preserved through the polymorphic tag dispatch.
     @Test
     void allClosedVariants_listRoundTrip_preservesOrderAndType() {
@@ -331,7 +352,8 @@ class ClusterEventCodecTest {
                        new TraceInjected(ts, sev, "TraceInjected", d),
                        new SelfDrainInitiated(ts, sev, "SelfDrainInitiated", d),
                        new StreamMemoryExceeded(ts, sev, "StreamMemoryExceeded", d),
-                       new DeparturePushIncomplete(ts, sev, "DeparturePushIncomplete", d));
+                       new DeparturePushIncomplete(ts, sev, "DeparturePushIncomplete", d),
+                       new ScaleCapped(ts, sev, "ScaleCapped", d));
     }
 
     /// `ExtendedEvent` is the non-sealed extension hatch: it gets NO parent-level codec (the

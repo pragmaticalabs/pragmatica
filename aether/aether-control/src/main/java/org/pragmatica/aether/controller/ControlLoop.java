@@ -9,6 +9,7 @@ import org.pragmatica.aether.controller.fsm.ControlLoopContext;
 import org.pragmatica.aether.controller.fsm.ControlLoopEvents.Activate;
 import org.pragmatica.aether.controller.fsm.ControlLoopEvents.Deactivate;
 import org.pragmatica.aether.controller.fsm.ControlLoopState;
+import org.pragmatica.aether.controller.fsm.ScalingDecisionRecord;
 import org.pragmatica.aether.metrics.ClusterSyncCollector;
 import org.pragmatica.aether.metrics.invocation.InvocationMetricsCollector;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
@@ -87,6 +88,12 @@ public interface ControlLoop {
     void onCommunityScalingRequest(CommunityScalingRequest request);
     void onCommunityMetricsSnapshot(CommunityMetricsSnapshot snapshot);
     Map<String, CommunityMetricsSnapshot> communitySnapshots();
+    /// Bounded snapshot of the latest per-artifact scaling decision (#425). Leader-only observability
+    /// surface; empty on nodes whose control loop has not evaluated.
+    Map<Artifact, ScalingDecisionRecord> scalingDecisions();
+    /// Cluster-average CPU usage surfaced alongside [scalingDecisions] as honest node-capacity
+    /// context (never acted on by the autoscaler).
+    double clusterCpuContext();
 
     static ControlLoop controlLoop(NodeId self,
                                    ClusterController controller,
@@ -283,6 +290,16 @@ public interface ControlLoop {
         @Override
         public Map<String, CommunityMetricsSnapshot> communitySnapshots() {
             return ctx.communitySnapshots();
+        }
+
+        @Override
+        public Map<Artifact, ScalingDecisionRecord> scalingDecisions() {
+            return ctx.scalingDecisions();
+        }
+
+        @Override
+        public double clusterCpuContext() {
+            return ctx.clusterCpuContext();
         }
     }
 }

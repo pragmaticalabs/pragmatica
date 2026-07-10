@@ -2506,7 +2506,7 @@ public class AetherCli implements Runnable {
         }
     }
 
-    @Command(name = "controller", description = "Controller configuration and status", subcommands = {ControllerCommand.ConfigCommand.class, ControllerCommand.StatusCommand.class, ControllerCommand.EvaluateCommand.class})
+    @Command(name = "controller", description = "Controller configuration and status", subcommands = {ControllerCommand.ConfigCommand.class, ControllerCommand.StatusCommand.class, ControllerCommand.DecisionsCommand.class, ControllerCommand.EvaluateCommand.class})
     static class ControllerCommand implements Runnable {
         @CommandLine.ParentCommand
         private AetherCli parent;
@@ -2574,6 +2574,19 @@ public class AetherCli implements Runnable {
             @Override
             public Integer call() {
                 var response = controllerParent.parent.fetch(CONTROLLER_STATUS);
+
+                return OutputFormatter.printQuery(response, controllerParent.parent.outputOptions());
+            }
+        }
+
+        @Command(name = "decisions", description = "Show per-slice scaling decision snapshot")
+        static class DecisionsCommand implements Callable<Integer> {
+            @CommandLine.ParentCommand
+            private ControllerCommand controllerParent;
+
+            @Override
+            public Integer call() {
+                var response = controllerParent.parent.fetch(CONTROLLER_DECISIONS);
 
                 return OutputFormatter.printQuery(response, controllerParent.parent.outputOptions());
             }

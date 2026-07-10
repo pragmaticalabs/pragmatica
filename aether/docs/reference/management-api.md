@@ -427,6 +427,7 @@ curl "http://localhost:8080/api/events?sinceEpoch=3&sinceSeq=42"
 - `SELF_DRAIN_INITIATED` -- the draining node reports its own drain start (per-node fact, NOT leader-gated; see below). Severity WARNING.
 - `STREAM_MEMORY_EXCEEDED` -- a node's off-heap stream budget was exhausted at stream create or growth (per-node fact, NOT leader-gated; throttled per `(stream, phase)`). Severity WARNING.
 - `DEPARTURE_PUSH_INCOMPLETE` -- a gracefully-departing node could not confirm, within the drain grace window, that every locally-held DHT chunk reached a surviving replica (per-node fact, NOT leader-gated; see below). Severity WARNING.
+- `SCALE_CAPPED` -- the leader autoscaler's requested instance count for an artifact was reduced by a cap before being applied (leader-side; emitted only on a real reduction). Severity WARNING.
 
 `GENERATION_CHANGED` events are emitted by the leader's `HealthReconciler` whenever the cluster generation epoch advances. `details` carries `oldEpoch`, `newEpoch`, and `reason` (a `GenerationReason` enum name). See [`cluster-generation-spec.md`](../specs/cluster-generation-spec.md) §14.4.
 
@@ -1307,6 +1308,39 @@ Trigger immediate controller evaluation.
 ```json
 {
   "status": "evaluation_triggered"
+}
+```
+
+### GET /api/controller/decisions
+
+Get the leader control loop's per-slice scaling decision snapshot (#425). Returns the latest
+decision recorded for each registered artifact during the most recent evaluation cycle, plus the
+cluster-average CPU usage surfaced as honest node-capacity context (`clusterCpuContext` is never
+acted on by the autoscaler — the per-artifact composite load is the sole scaling driver). Snapshot
+read only, no hot-path cost. LEADER-bound (the control loop runs on the leader).
+
+Each decision carries an `outcome` (one of `SCALED_UP`, `SCALED_DOWN`, `HELD`, `BLOCKED`, `CAPPED`)
+and the `guard` that shaped it (one of `NONE`, `WINDOW_NOT_FULL`, `SLICE_IN_PROGRESS`, `COOLDOWN`,
+`MAX_INSTANCES`, `CLUSTER_CAP`, `ERROR_BLOCK`), together with the driving `loadFactor` and the
+instance arithmetic (`currentInstances`, `requestedInstances`, `cappedInstances`) and the `atMs`
+timestamp.
+
+**Response:**
+```json
+{
+  "clusterCpuContext": 0.42,
+  "decisions": [
+    {
+      "artifact": "org.example:orders:1.0.0",
+      "outcome": "CAPPED",
+      "guard": "MAX_INSTANCES",
+      "loadFactor": 1.8,
+      "currentInstances": 2,
+      "requestedInstances": 5,
+      "cappedInstances": 3,
+      "atMs": 1720512000000
+    }
+  ]
 }
 ```
 
@@ -3477,6 +3511,7 @@ Conclude the A/B test and promote the winning variant. Requires leader node.
 | GET | `/api/controller/config` | Controller |
 | POST | `/api/controller/config` | Controller |
 | GET | `/api/controller/status` | Controller |
+| GET | `/api/controller/decisions` | Controller |
 | POST | `/api/controller/evaluate` | Controller |
 | GET | `/api/ttm/status` | TTM |
 | GET | `/api/ttm/training-data` | TTM |

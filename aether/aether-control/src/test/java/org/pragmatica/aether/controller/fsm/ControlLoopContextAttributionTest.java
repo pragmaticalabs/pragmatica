@@ -146,6 +146,74 @@ class ControlLoopContextAttributionTest {
         }
     }
 
+    /// #425 per-slice decision snapshot: a real cap reduction emits [ScalingEvent.ScaleCapped] to the
+    /// event sink AND records outcome CAPPED with the bound-specific guard; a clean scale-up records
+    /// SCALED_UP. A stub controller emits a fixed ScaleUp so the recording is isolated from
+    /// metric-window composite scoring.
+    @Nested
+    class DecisionSnapshot {
+        private static final List<NodeId> FIVE_NODES = List.of(SELF,
+                                                               WORKER,
+                                                               NodeId.nodeId("n3").unwrap(),
+                                                               NodeId.nodeId("n4").unwrap(),
+                                                               NodeId.nodeId("n5").unwrap());
+
+        private final List<ScalingEvent> events = new ArrayList<>();
+
+        @Test
+        void runEvaluationCycle_maxInstancesCapReducesRequest_emitsScaleCappedAndRecordsCapped() {
+            cluster = new CapturingClusterNode();
+            var capCtx = buildContext(scaleUpBy(3), events::add);
+
+            capCtx.putBlueprint(HOT, 2, 1, Option.some(3), Option.none(), Option.none());
+            capCtx.setTopology(FIVE_NODES);
+
+            capCtx.runEvaluationCycle();
+
+            var capped = events.stream()
+                               .filter(event -> event instanceof ScalingEvent.ScaleCapped)
+                               .map(event -> (ScalingEvent.ScaleCapped) event)
+                               .findFirst()
+                               .orElseThrow();
+
+            assertThat(capped.artifact()).isEqualTo(HOT);
+            assertThat(capped.requestedInstances()).isEqualTo(5);
+            assertThat(capped.cappedAtInstances()).isEqualTo(3);
+            assertThat(capped.reason()).isEqualTo("max-instances");
+
+            var decision = capCtx.scalingDecisions().get(HOT);
+
+            assertThat(decision.outcome()).isEqualTo(ScalingDecisionRecord.Outcome.CAPPED);
+            assertThat(decision.guard()).isEqualTo(ScalingDecisionRecord.Guard.MAX_INSTANCES);
+            assertThat(decision.requestedInstances()).isEqualTo(5);
+            assertThat(decision.cappedInstances()).isEqualTo(3);
+        }
+
+        @Test
+        void runEvaluationCycle_cleanScaleUp_recordsScaledUpWithNoGuard() {
+            cluster = new CapturingClusterNode();
+            var capCtx = buildContext(scaleUpBy(2), events::add);
+
+            capCtx.putBlueprint(HOT, 2, 1);
+            capCtx.setTopology(FIVE_NODES);
+
+            capCtx.runEvaluationCycle();
+
+            assertThat(events).noneMatch(event -> event instanceof ScalingEvent.ScaleCapped);
+
+            var decision = capCtx.scalingDecisions().get(HOT);
+
+            assertThat(decision.outcome()).isEqualTo(ScalingDecisionRecord.Outcome.SCALED_UP);
+            assertThat(decision.guard()).isEqualTo(ScalingDecisionRecord.Guard.NONE);
+            assertThat(decision.requestedInstances()).isEqualTo(4);
+            assertThat(decision.cappedInstances()).isEqualTo(4);
+        }
+
+        private ClusterController scaleUpBy(int additional) {
+            return _ -> Promise.success(ControlDecisions.controlDecisions(new BlueprintChange.ScaleUp(HOT, additional)));
+        }
+    }
+
     private void fillWindows() {
         for (int i = 0; i < WINDOW; i++) {
             ingest(2, 2);
@@ -169,9 +237,12 @@ class ControlLoopContextAttributionTest {
     }
 
     private ControlLoopContext buildContext(ClusterController controller) {
+        return buildContext(controller, _ -> {});
+    }
+
+    private ControlLoopContext buildContext(ClusterController controller, Consumer<ScalingEvent> sink) {
         var config = ControllerConfig.DEFAULT.withScalingConfig(smallWindowConfig());
         var ctxHolder = new AtomicReference<ControlLoopContext>();
-        Consumer<ScalingEvent> sink = _ -> {};
         Function<Fsm<ControlLoopState, ClusterFsmEvent>, ControlLoopState> factory =
                 fsm -> holdContext(ctxHolder, fsm, controller, config, sink);
 

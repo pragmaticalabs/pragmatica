@@ -13,6 +13,8 @@ import org.pragmatica.aether.controller.CompositeLoadFactor;
 import org.pragmatica.aether.controller.ControllerConfig;
 import org.pragmatica.aether.controller.ScalingEvent;
 import org.pragmatica.aether.controller.ScalingMetric;
+import org.pragmatica.aether.controller.fsm.ScalingDecisionRecord.Guard;
+import org.pragmatica.aether.controller.fsm.ScalingDecisionRecord.Outcome;
 import org.pragmatica.aether.metrics.ClusterSyncCollector;
 import org.pragmatica.aether.metrics.invocation.InvocationMetricsCollector;
 import org.pragmatica.aether.slice.SliceState;
@@ -84,6 +86,12 @@ public final class ControlLoopContext {
     // the latest snapshot each remote node reported per artifact; the leader folds its own
     // InvocationMetricsCollector directly during evaluation.
     private final ConcurrentHashMap<Artifact, CompositeLoadFactor> artifactLoadFactors = new ConcurrentHashMap<>();
+
+    // Per-artifact decision snapshot (#425). One record per artifact per evaluation cycle capturing
+    // the terminal outcome, the guard that shaped it, the driving load factor, and the instance
+    // arithmetic. Pruned to the registered blueprint set like `artifactLoadFactors`; snapshot-read
+    // only via `scalingDecisions()`, so the sole hot-path cost is a map put per evaluation.
+    private final ConcurrentHashMap<Artifact, ScalingDecisionRecord> lastDecisions = new ConcurrentHashMap<>();
 
     private final ConcurrentHashMap<Artifact, ConcurrentHashMap<NodeId, PerSliceMetrics>> perNodeSliceMetrics = new ConcurrentHashMap<>();
 
@@ -266,6 +274,16 @@ public final class ControlLoopContext {
                                                             .artifact() + " in progress state: " + e.getValue()));
     }
 
+    private Option<Artifact> inProgressArtifact() {
+        return Option.from(sliceStates.entrySet()
+                                      .stream()
+                                      .filter(e -> e.getValue()
+                                                    .isInProgress())
+                                      .findFirst()
+                                      .map(e -> e.getKey()
+                                                 .artifact()));
+    }
+
     public Map<Artifact, Long> sliceCooldownsSnapshot() {
         return Map.copyOf(sliceActivationTimes);
     }
@@ -336,6 +354,7 @@ public final class ControlLoopContext {
 
         if (sliceInProgress.isPresent()) {
             sliceInProgress.onPresent(reason -> log.debug("Auto-scaling paused: {}", reason));
+            inProgressArtifact().onPresent(this::recordSliceInProgress);
 
             return;
         }
@@ -394,6 +413,7 @@ public final class ControlLoopContext {
     private Map<Artifact, ArtifactLoad> computeArtifactLoads() {
         artifactLoadFactors.keySet().retainAll(blueprints.keySet());
         perNodeSliceMetrics.keySet().retainAll(blueprints.keySet());
+        lastDecisions.keySet().retainAll(blueprints.keySet());
         var loads = new HashMap<Artifact, ArtifactLoad>();
 
         blueprints.keySet().forEach(artifact -> loads.put(artifact, computeArtifactLoad(artifact)));
@@ -407,6 +427,8 @@ public final class ControlLoopContext {
 
         sample.forEach(loadFactor::recordSample);
         var result = loadFactor.computeWithCurrentValues(sample);
+
+        recordBaseline(artifact, result.compositeScore(), result.canScale(), loadFactor.isErrorRateHigh());
 
         return ArtifactLoad.artifactLoad(result.compositeScore(),
                                          result.canScale(),
@@ -471,6 +493,7 @@ public final class ControlLoopContext {
 
         if (isArtifactInCooldown(artifact)) {
             log.debug("Scaling decision for {} blocked: cooldown active", artifact);
+            recordBlocked(artifact);
 
             return Option.none();
         }
@@ -497,12 +520,28 @@ public final class ControlLoopContext {
                                                                   ClusterController.Blueprint currentBlueprint) {
         var requestedInstances = computeRequestedInstances(change, currentBlueprint);
         var clusterSize = effectiveClusterSize();
-        var newInstances = cap(artifact, requestedInstances, currentBlueprint.maxInstances(), clusterSize);
+        var capResult = applyCap(requestedInstances, currentBlueprint.maxInstances(), clusterSize);
+        var newInstances = capResult.value();
+        var capped = capResult.reason().isPresent();
 
+        capResult.reason().onPresent(reason -> emitCapped(artifact,
+                                                          currentBlueprint,
+                                                          requestedInstances,
+                                                          newInstances,
+                                                          reason));
         if (newInstances == currentBlueprint.instances()) {
             return Option.none();
         }
 
+        return applyScaling(change, artifact, currentBlueprint, requestedInstances, newInstances, capped);
+    }
+
+    private Option<KVCommand<AetherKey>> applyScaling(BlueprintChange change,
+                                                      Artifact artifact,
+                                                      ClusterController.Blueprint currentBlueprint,
+                                                      int requestedInstances,
+                                                      int newInstances,
+                                                      boolean capped) {
         log.info("Applying scaling decision: {} from {} to {} instances",
                  artifact,
                  currentBlueprint.instances(),
@@ -514,6 +553,7 @@ public final class ControlLoopContext {
                      currentBlueprint.scaleUpThreshold(),
                      currentBlueprint.scaleDownThreshold());
         publishScalingEvent(change, artifact, currentBlueprint.instances(), newInstances);
+        recordScaled(change, artifact, currentBlueprint, requestedInstances, newInstances, capped);
         var key = SliceTargetKey.sliceTargetKey(artifact.base());
         var value = SliceTargetValue.sliceTargetValue(artifact.version(),
                                                       newInstances,
@@ -542,20 +582,180 @@ public final class ControlLoopContext {
                : size;
     }
 
-    private static int cap(Artifact artifact, int requestedInstances, Option<Integer> maxInstances, int clusterSize) {
-        var maxCapped = maxInstances.map(max -> Math.min(requestedInstances, max)).or(requestedInstances);
+    /// Cap the requested instance count to the tighter of the blueprint's `maxInstances` bound and
+    /// the cluster size. The result value never exceeds `requestedInstances` (the arithmetic matches
+    /// #424). `reason` is present only when a real reduction happened: `CLUSTER_CAP` when the cluster
+    /// size is the strictly-tighter bound, otherwise `MAX_INSTANCES` (a tie is attributed to the
+    /// explicitly-configured max).
+    private static CapResult applyCap(int requestedInstances, Option<Integer> maxInstances, int clusterSize) {
+        var maxBound = maxInstances.map(max -> Math.min(requestedInstances, max)).or(requestedInstances);
+        var value = Math.min(maxBound, clusterSize);
 
-        if (maxCapped < requestedInstances) {
-            log.debug("Scaling {} capped at maxInstances {} (requested {})", artifact, maxCapped, requestedInstances);
+        if (value >= requestedInstances) {
+            return new CapResult(requestedInstances, Option.none());
         }
 
-        if (maxCapped > clusterSize) {
-            log.debug("Scaling {} capped at cluster size {} (requested {})", artifact, clusterSize, maxCapped);
+        var reason = clusterSize < maxBound
+                     ? CapReason.CLUSTER_CAP
+                     : CapReason.MAX_INSTANCES;
 
-            return clusterSize;
+        return new CapResult(value, Option.some(reason));
+    }
+
+    private record CapResult(int value, Option<CapReason> reason) {}
+
+    private enum CapReason {
+        MAX_INSTANCES("max-instances", Guard.MAX_INSTANCES),
+        CLUSTER_CAP("cluster-cap", Guard.CLUSTER_CAP);
+        private final String label;
+        private final Guard guard;
+        CapReason(String label, Guard guard) {
+            this.label = label;
+            this.guard = guard;
+        }
+        String label() {
+            return label;
+        }
+        Guard guard() {
+            return guard;
+        }
+    }
+
+    private void emitCapped(Artifact artifact,
+                            ClusterController.Blueprint currentBlueprint,
+                            int requestedInstances,
+                            int cappedInstances,
+                            CapReason reason) {
+        log.debug("Scaling {} capped ({}) from requested {} to {}",
+                  artifact,
+                  reason.label(),
+                  requestedInstances,
+                  cappedInstances);
+        eventPublisher.accept(ScalingEvent.ScaleCapped.scaleCapped(artifact,
+                                                                   requestedInstances,
+                                                                   cappedInstances,
+                                                                   reason.label()));
+        recordDecision(artifact,
+                       Outcome.CAPPED,
+                       reason.guard(),
+                       priorLoadFactor(artifact),
+                       currentBlueprint.instances(),
+                       requestedInstances,
+                       cappedInstances);
+    }
+
+    private void recordScaled(BlueprintChange change,
+                              Artifact artifact,
+                              ClusterController.Blueprint currentBlueprint,
+                              int requestedInstances,
+                              int newInstances,
+                              boolean capped) {
+        if (capped) {
+            return;
         }
 
-        return maxCapped;
+        recordDecision(artifact,
+                       scaledOutcome(change),
+                       Guard.NONE,
+                       priorLoadFactor(artifact),
+                       currentBlueprint.instances(),
+                       requestedInstances,
+                       newInstances);
+    }
+
+    private static Outcome scaledOutcome(BlueprintChange change) {
+        return switch (change) {
+            case BlueprintChange.ScaleUp _ -> Outcome.SCALED_UP;
+            case BlueprintChange.ScaleDown _ -> Outcome.SCALED_DOWN;
+        };
+    }
+
+    private void recordBaseline(Artifact artifact, double compositeScore, boolean canScale, boolean errorRateHigh) {
+        var instances = artifactInstances(artifact);
+
+        recordDecision(artifact,
+                       Outcome.HELD,
+                       baselineGuard(canScale, errorRateHigh),
+                       compositeScore,
+                       instances,
+                       instances,
+                       instances);
+    }
+
+    private static Guard baselineGuard(boolean canScale, boolean errorRateHigh) {
+        if (!canScale) {
+            return Guard.WINDOW_NOT_FULL;
+        }
+
+        return errorRateHigh
+               ? Guard.ERROR_BLOCK
+               : Guard.NONE;
+    }
+
+    private void recordSliceInProgress(Artifact artifact) {
+        var instances = artifactInstances(artifact);
+
+        recordDecision(artifact, Outcome.HELD, Guard.SLICE_IN_PROGRESS, 0.0, instances, instances, instances);
+    }
+
+    private void recordBlocked(Artifact artifact) {
+        var instances = artifactInstances(artifact);
+
+        recordDecision(artifact,
+                       Outcome.BLOCKED,
+                       Guard.COOLDOWN,
+                       priorLoadFactor(artifact),
+                       instances,
+                       instances,
+                       instances);
+    }
+
+    private void recordDecision(Artifact artifact,
+                                Outcome outcome,
+                                Guard guard,
+                                double loadFactor,
+                                int currentInstances,
+                                int requestedInstances,
+                                int cappedInstances) {
+        lastDecisions.put(artifact,
+                          ScalingDecisionRecord.scalingDecisionRecord(artifact,
+                                                                      outcome,
+                                                                      guard,
+                                                                      loadFactor,
+                                                                      currentInstances,
+                                                                      requestedInstances,
+                                                                      cappedInstances,
+                                                                      nowMs()));
+    }
+
+    private int artifactInstances(Artifact artifact) {
+        return blueprint(artifact).map(ClusterController.Blueprint::instances)
+                        .or(0);
+    }
+
+    private double priorLoadFactor(Artifact artifact) {
+        return Option.option(lastDecisions.get(artifact))
+                     .map(ScalingDecisionRecord::loadFactor)
+                     .or(0.0);
+    }
+
+    /// Snapshot of the latest per-artifact decision, bounded by the registered blueprint set.
+    public Map<Artifact, ScalingDecisionRecord> scalingDecisions() {
+        return Map.copyOf(lastDecisions);
+    }
+
+    /// Cluster-average CPU usage, surfaced alongside the decision snapshot as honest node-capacity
+    /// context (never acted on by the autoscaler — the per-artifact composite load is the sole
+    /// scaling driver). Averages the `cpu.usage` metric across every node the metrics collector
+    /// currently sees; `0.0` when no node reports CPU.
+    public double clusterCpuContext() {
+        return metricsCollector.allMetrics()
+                               .values()
+                               .stream()
+                               .filter(metrics -> metrics.containsKey(ClusterSyncCollector.CPU_USAGE))
+                               .mapToDouble(metrics -> metrics.get(ClusterSyncCollector.CPU_USAGE))
+                               .average()
+                               .orElse(0.0);
     }
 
     private boolean isStaleEvidence(CommunityScalingRequest request) {

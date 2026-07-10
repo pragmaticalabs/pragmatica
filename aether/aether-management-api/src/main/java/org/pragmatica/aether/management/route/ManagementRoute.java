@@ -237,6 +237,9 @@ public enum ManagementRoute {
     CONFIG_NODE_DELETE(DELETE, "/api/config/nodes", List.of("id", "key"), taskGroup(DEPLOYMENT)),
     CONTROLLER_CONFIG_GET(GET, "/api/controller/config", List.of(), LEADER),
     CONTROLLER_STATUS(GET, "/api/controller/status", List.of(), LEADER),
+    // #425 per-slice scaling decision snapshot. LEADER-bound: the control loop runs on the leader,
+    // so the decision map + cluster-CPU context live there. Pure snapshot read (no hot-path cost).
+    CONTROLLER_DECISIONS(GET, "/api/controller/decisions", List.of(), LEADER),
     CONTROLLER_CONFIG_SET(POST, "/api/controller/config", List.of(), LEADER),
     CONTROLLER_EVALUATE(POST, "/api/controller/evaluate", List.of(), LEADER),
     TTM_STATUS(GET, "/api/ttm/status", List.of(), LOCAL),

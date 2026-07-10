@@ -819,6 +819,10 @@ aether controller config --cpu-up 0.8 --cpu-down 0.3
 # Show controller status
 aether controller status
 
+# Show per-slice scaling decision snapshot (outcome, guard, load factor, instance arithmetic)
+# plus cluster-average CPU as node-capacity context
+aether controller decisions
+
 # Force evaluation cycle
 aether controller evaluate
 ```

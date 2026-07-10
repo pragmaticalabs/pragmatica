@@ -25,6 +25,7 @@ import org.pragmatica.aether.api.ClusterEvent.NodeLeft;
 import org.pragmatica.aether.api.ClusterEvent.NodeLifecycleChanged;
 import org.pragmatica.aether.api.ClusterEvent.QuorumEstablished;
 import org.pragmatica.aether.api.ClusterEvent.QuorumLost;
+import org.pragmatica.aether.api.ClusterEvent.ScaleCapped;
 import org.pragmatica.aether.api.ClusterEvent.ScaleDown;
 import org.pragmatica.aether.api.ClusterEvent.ScaleUp;
 import org.pragmatica.aether.api.ClusterEvent.Severity;
@@ -684,6 +685,25 @@ public final class ClusterEventAggregator {
                                   String.valueOf(event.previousInstances()),
                                   "newInstances",
                                   String.valueOf(event.newInstances()))));
+    }
+
+    @Contract
+    public void onScaleCapped(ScalingEvent.ScaleCapped event) {
+        emit(new ScaleCapped(hlcClock.now(),
+                             Severity.WARNING,
+                             event.artifact().asString()
+                            + " scaling capped at " + event.cappedAtInstances()
+                            + " instances (requested " + event.requestedInstances()
+                            + ", reason: " + event.reason()
+                            + ")",
+                             Map.of("artifact",
+                                    event.artifact().asString(),
+                                    "requestedInstances",
+                                    String.valueOf(event.requestedInstances()),
+                                    "cappedAtInstances",
+                                    String.valueOf(event.cappedAtInstances()),
+                                    "reason",
+                                    event.reason())));
     }
 
     @Contract
