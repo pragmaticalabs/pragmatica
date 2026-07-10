@@ -220,6 +220,7 @@ import org.pragmatica.dht.DHTMessage;
 import org.pragmatica.dht.DHTNetwork;
 import org.pragmatica.dht.DHTNode;
 import org.pragmatica.dht.DHTRebalancer;
+import org.pragmatica.dht.DeparturePushObserver;
 import org.pragmatica.dht.DHTTopologyListener;
 import org.pragmatica.dht.DistributedDHTClient;
 import org.pragmatica.dht.storage.MemoryStorageEngine;
@@ -1789,10 +1790,19 @@ public interface AetherNode extends ManageableNode {
         // the aggregator is bound. Kept as a Consumer<DrainReason> so aether-deployment stays free
         // of any ClusterEvent dependency.
         var clusterEventDrainEmitterRef = new java.util.concurrent.atomic.AtomicReference<java.util.function.Consumer<org.pragmatica.aether.deployment.cluster.DrainReason>>(reason -> {});
+        // #427 graceful-departure push: the leaving node pushes its held DHT chunks to their new
+        // replicas, ack-gated, before it halts. The DrainProcedure invokes this supplier once at
+        // DRAINING and its quiesced-fork exit waits for it (bounded by the push's own budget; the
+        // grace fork never does). The observer — resolved once the ClusterEventAggregator is bound
+        // below — turns a budget overrun into a DeparturePushIncomplete event; it stays a no-op until
+        // then, keeping aether-deployment free of any ClusterEvent / DHT-event dependency.
+        var departurePushObserverRef = new java.util.concurrent.atomic.AtomicReference<>(DeparturePushObserver.noop());
+        Supplier<Promise<Unit>> departurePush = () -> dhtRebalancer.pushOnDeparture(departurePushObserverRef.get());
         var drainProcedure = DrainProcedure.drainProcedure(inFlightTrackerForDrain,
                                                            () -> {},
                                                            reason -> clusterEventDrainEmitterRef.get()
                                                                                                 .accept(reason),
+                                                           departurePush,
                                                            jvmExit);
         Supplier<Option<NodeId>> healthLeaderSupplier = () -> clusterNode.leaderManager()
                                                                          .leader();
@@ -1910,6 +1920,11 @@ public interface AetherNode extends ManageableNode {
                                                                                                                         .id(),
                                                                                                                   "reason",
                                                                                                                   String.valueOf(reason)))));
+        // #427: resolve the departure-push observer now the aggregator is bound — a budget overrun
+        // during graceful departure emits DeparturePushIncomplete (per-node fact, un-gated emitLocal).
+        departurePushObserverRef.set((keysAtRisk, sampleKeys) -> eventAggregator.onDeparturePushIncomplete(config.self(),
+                                                                                                           keysAtRisk,
+                                                                                                           sampleKeys));
         // Operator-driven inject endpoints replicate via the events stream so peer nodes return
         // injected items on cross-node reads. AlertManager emits AlertInjected; InvocationTraceStore
         // emits TraceInjected through a thin sink that keeps the aether-invoke module free of any
@@ -2104,6 +2119,9 @@ public interface AetherNode extends ManageableNode {
                                                                                                                               response))));
         aetherEntries.add(MessageRouter.Entry.route(DHTMessage.MigrationDataResponse.class,
                                                     dhtAntiEntropy::onMigrationDataResponse));
+        // #427: a graceful-departure push's ack resolves the departing node's pending push, so its
+        // drain can confirm the chunk reached a surviving replica before halting.
+        aetherEntries.add(MessageRouter.Entry.route(DHTMessage.MigrationDataAck.class, dhtRebalancer::onMigrationDataAck));
         aetherEntries.add(MessageRouter.Entry.route(MembershipDecision.NodeJoined.class,
                                                     dhtTopologyListener::onNodeJoined));
         aetherEntries.add(MessageRouter.Entry.route(MembershipDecision.NodeRemoved.class,

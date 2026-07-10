@@ -17,6 +17,7 @@ import org.pragmatica.aether.api.ClusterEvent.CommunityScaleRequest;
 import org.pragmatica.aether.api.ClusterEvent.ConfigChanged;
 import org.pragmatica.aether.api.ClusterEvent.ConnectionEstablished;
 import org.pragmatica.aether.api.ClusterEvent.ConnectionFailed;
+import org.pragmatica.aether.api.ClusterEvent.DeparturePushIncomplete;
 import org.pragmatica.aether.api.ClusterEvent.DeploymentCompleted;
 import org.pragmatica.aether.api.ClusterEvent.DeploymentFailed;
 import org.pragmatica.aether.api.ClusterEvent.DeploymentStarted;
@@ -293,7 +294,8 @@ class ClusterEventCodecTest {
             new AlertInjected(ts, sev, "AlertInjected", d),
             new TraceInjected(ts, sev, "TraceInjected", d),
             new SelfDrainInitiated(ts, sev, "SelfDrainInitiated", d),
-            new StreamMemoryExceeded(ts, sev, "StreamMemoryExceeded", d)
+            new StreamMemoryExceeded(ts, sev, "StreamMemoryExceeded", d),
+            new DeparturePushIncomplete(ts, sev, "DeparturePushIncomplete", d)
         );
     }
 

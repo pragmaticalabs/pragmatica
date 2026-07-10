@@ -12,6 +12,7 @@ import org.pragmatica.aether.api.ClusterEvent.BlueprintDeployed;
 import org.pragmatica.aether.api.ClusterEvent.ConfigChanged;
 import org.pragmatica.aether.api.ClusterEvent.ConnectionEstablished;
 import org.pragmatica.aether.api.ClusterEvent.ConnectionFailed;
+import org.pragmatica.aether.api.ClusterEvent.DeparturePushIncomplete;
 import org.pragmatica.aether.api.ClusterEvent.DeploymentCompleted;
 import org.pragmatica.aether.api.ClusterEvent.DeploymentFailed;
 import org.pragmatica.aether.api.ClusterEvent.DeploymentStarted;
@@ -559,6 +560,33 @@ public final class ClusterEventAggregator {
                                     Severity.CRITICAL,
                                     "Node " + departed.id() + " failed (confirmed departure)",
                                     Map.of("nodeId", departed.id())));
+    }
+
+    /// Departure-push overrun sink (issue #427, D4). The gracefully-departing node reports the chunks
+    /// it could not confirm reached a surviving replica within the drain grace window. A per-node fact
+    /// — the leaving node is the only source of truth for its own unpushed chunks — so it is emitted
+    /// through the un-gated {@link #emitLocal} path (mirrors the `SelfDrainInitiated` / per-node
+    /// contract), not owner- or leader-gated. Best-effort observability: the keys are named for
+    /// operator follow-up, never silently lost.
+    @Contract
+    public void onDeparturePushIncomplete(NodeId departingNode, int keysAtRisk, List<String> sampleKeys) {
+        emitLocal(new DeparturePushIncomplete(hlcClock.now(),
+                                              Severity.WARNING,
+                                              "Departure push incomplete on " + departingNode.id()
+                                             + ": " + keysAtRisk
+                                             + " chunk(s) at risk",
+                                              buildDepartureDetails(departingNode, keysAtRisk, sampleKeys)));
+    }
+
+    private static Map<String, String> buildDepartureDetails(NodeId departingNode,
+                                                             int keysAtRisk,
+                                                             List<String> sampleKeys) {
+        return Map.of("nodeId",
+                      departingNode.id(),
+                      "keysAtRisk",
+                      String.valueOf(keysAtRisk),
+                      "sampleKeys",
+                      String.join(",", sampleKeys));
     }
 
     @Contract

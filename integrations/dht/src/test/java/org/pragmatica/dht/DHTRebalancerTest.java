@@ -16,6 +16,7 @@
 
 package org.pragmatica.dht;
 
+import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
@@ -24,19 +25,26 @@ import org.pragmatica.consensus.ProtocolMessage;
 import org.pragmatica.consensus.topology.MembershipDecision;
 
 import java.nio.charset.StandardCharsets;
+import java.util.HashSet;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Consumer;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.dht.ConsistentHashRing.consistentHashRing;
 import static org.pragmatica.dht.DHTNode.dhtNode;
 import static org.pragmatica.dht.DHTRebalancer.dhtRebalancer;
 import static org.pragmatica.dht.storage.MemoryStorageEngine.memoryStorageEngine;
+import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 class DHTRebalancerTest {
     private static final NodeId LOCAL = new NodeId("local");
     private static final NodeId PEER_A = new NodeId("peer-a");
     private static final NodeId PEER_B = new NodeId("peer-b");
+    private static final NodeId PEER_C = new NodeId("peer-c");
+    private static final NodeId PEER_D = new NodeId("peer-d");
     private static final NodeId REMOVED = new NodeId("removed");
 
     private static byte[] key(String s) {
@@ -261,16 +269,225 @@ class DHTRebalancerTest {
         }
     }
 
+    /// Departing-node self-push (issue #427). A 5-node ring (rf=3) guarantees a genuine post-departure
+    /// newcomer for some keys, so the delta target set is non-empty and the loss mode is reproducible.
+    @Nested
+    class DepartureSelfPush {
+        private static final DHTConfig CONFIG = new DHTConfig(3, 2, 2, DHTConfig.DEFAULT_TIMEOUT);
+
+        private ConsistentHashRing<NodeId> fiveNodeRing() {
+            var ring = ConsistentHashRing.<NodeId>consistentHashRing();
+            ring.addNode(LOCAL);
+            ring.addNode(PEER_A);
+            ring.addNode(PEER_B);
+            ring.addNode(PEER_C);
+            ring.addNode(PEER_D);
+            return ring;
+        }
+
+        @Test
+        void pushOnDeparture_uniquelyHeldKey_pushedToNewcomerWithAck() {
+            var ring = fiveNodeRing();
+            var node = dhtNode(LOCAL, memoryStorageEngine(), ring, CONFIG);
+            var replicationFactor = CONFIG.effectiveReplicationFactor(ring.nodeCount());
+            var probe = findKeyWithNewcomer(ring, LOCAL, replicationFactor);
+            var expectedTargets = departureTargets(ring, probe, LOCAL, replicationFactor);
+
+            node.putLocal(probe, value("payload")).await();
+
+            var network = new AckingNetwork();
+            var rebalancer = dhtRebalancer(node, network, CONFIG);
+            network.ackVia(rebalancer::onMigrationDataAck);
+            var observer = new RecordingObserver();
+
+            rebalancer.pushOnDeparture(observer).await().onFailure(cause -> Assertions.fail(cause.message()));
+
+            var pushes = network.migrationResponses();
+            assertThat(pushes).isNotEmpty();
+            pushes.forEach(response -> assertThat(response.ackRequested()).isTrue());
+            pushes.forEach(response -> assertThat(response.sender()).isEqualTo(LOCAL));
+            assertThat(network.targets()).containsExactlyInAnyOrderElementsOf(expectedTargets);
+            assertThat(pushedKeys(pushes)).contains(asString(probe));
+            assertThat(observer.incompleteCount()).isZero();
+        }
+
+        @Test
+        void pushOnDeparture_alreadyReplicatedKey_notReSentToExistingReplicas() {
+            var ring = fiveNodeRing();
+            var node = dhtNode(LOCAL, memoryStorageEngine(), ring, CONFIG);
+            var replicationFactor = CONFIG.effectiveReplicationFactor(ring.nodeCount());
+            var probe = findKeyWithNewcomer(ring, LOCAL, replicationFactor);
+            var existingReplicas = existingReplicas(ring, probe, LOCAL, replicationFactor);
+
+            node.putLocal(probe, value("payload")).await();
+
+            var network = new AckingNetwork();
+            var rebalancer = dhtRebalancer(node, network, CONFIG);
+            network.ackVia(rebalancer::onMigrationDataAck);
+
+            rebalancer.pushOnDeparture(new RecordingObserver()).await();
+
+            assertThat(network.targets()).doesNotContainAnyElementsOf(existingReplicas);
+            assertThat(network.targets()).doesNotContain(LOCAL);
+        }
+
+        @Test
+        void pushOnDeparture_budgetOverrun_emitsIncomplete() {
+            var ring = fiveNodeRing();
+            var node = dhtNode(LOCAL, memoryStorageEngine(), ring, CONFIG);
+            var replicationFactor = CONFIG.effectiveReplicationFactor(ring.nodeCount());
+            var probe = findKeyWithNewcomer(ring, LOCAL, replicationFactor);
+
+            node.putLocal(probe, value("payload")).await();
+
+            var network = new CapturingNetwork();  // never acks — forces the budget to expire
+            var rebalancer = dhtRebalancer(node, network, CONFIG);
+            var observer = new RecordingObserver();
+
+            rebalancer.pushOnDeparture(timeSpan(200).millis(), observer).await().onFailure(cause -> Assertions.fail(cause.message()));
+
+            assertThat(observer.incompleteCount()).isEqualTo(1);
+            assertThat(observer.lastKeysAtRisk()).isGreaterThanOrEqualTo(1);
+            assertThat(observer.lastSample()).isNotEmpty();
+        }
+
+        @Test
+        void pushOnDeparture_fullReplication_noOp() {
+            var ring = fiveNodeRing();
+            var node = dhtNode(LOCAL, memoryStorageEngine(), ring, DHTConfig.FULL);
+            node.putLocal(key("k1"), value("v1")).await();
+            var network = new CapturingNetwork();
+            var rebalancer = dhtRebalancer(node, network, DHTConfig.FULL);
+            var observer = new RecordingObserver();
+
+            rebalancer.pushOnDeparture(observer).await().onFailure(cause -> Assertions.fail(cause.message()));
+
+            assertThat(network.captured).isEmpty();
+            assertThat(observer.incompleteCount()).isZero();
+        }
+
+        @Test
+        void pushOnDeparture_emptyStorage_noOp() {
+            var ring = fiveNodeRing();
+            var node = dhtNode(LOCAL, memoryStorageEngine(), ring, CONFIG);
+            var network = new CapturingNetwork();
+            var rebalancer = dhtRebalancer(node, network, CONFIG);
+            var observer = new RecordingObserver();
+
+            rebalancer.pushOnDeparture(observer).await().onFailure(cause -> Assertions.fail(cause.message()));
+
+            assertThat(network.captured).isEmpty();
+            assertThat(observer.incompleteCount()).isZero();
+        }
+
+        private List<String> pushedKeys(List<DHTMessage.MigrationDataResponse> pushes) {
+            return pushes.stream()
+                         .flatMap(response -> response.entries().stream())
+                         .map(kv -> asString(kv.key()))
+                         .toList();
+        }
+
+        private byte[] findKeyWithNewcomer(ConsistentHashRing<NodeId> ring, NodeId self, int replicationFactor) {
+            for (int i = 0; i < 20_000; i++) {
+                var candidate = key("dep-probe-" + i);
+                if (ring.nodesFor(candidate, replicationFactor).contains(self)
+                    && !departureTargets(ring, candidate, self, replicationFactor).isEmpty()) {
+                    return candidate;
+                }
+            }
+            throw new AssertionError("no key with a post-departure newcomer found");
+        }
+
+        private List<NodeId> departureTargets(ConsistentHashRing<NodeId> ring, byte[] probe, NodeId self, int replicationFactor) {
+            var newSet = ring.nodesFor(probe, replicationFactor, candidate -> !candidate.equals(self));
+            var existing = existingReplicas(ring, probe, self, replicationFactor);
+            return newSet.stream()
+                         .filter(candidate -> !existing.contains(candidate))
+                         .toList();
+        }
+
+        private HashSet<NodeId> existingReplicas(ConsistentHashRing<NodeId> ring, byte[] probe, NodeId self, int replicationFactor) {
+            var existing = new HashSet<>(ring.nodesFor(probe, replicationFactor));
+            existing.remove(self);
+            return existing;
+        }
+
+        private String asString(byte[] bytes) {
+            return new String(bytes, StandardCharsets.UTF_8);
+        }
+    }
+
     // --- Test infrastructure ---
 
     private record CapturedMessage(NodeId target, ProtocolMessage message) {}
-
     private static final class CapturingNetwork implements DHTNetwork {
         final CopyOnWriteArrayList<CapturedMessage> captured = new CopyOnWriteArrayList<>();
 
         @Override
         public void send(NodeId nodeId, ProtocolMessage message) {
             captured.add(new CapturedMessage(nodeId, message));
+        }
+    }
+
+    /// Captures sends AND, for a departure push (ackRequested), immediately routes a matching
+    /// [DHTMessage.MigrationDataAck] back into the sender's rebalancer — modelling a surviving replica
+    /// that applies and acknowledges the pushed chunk.
+    private static final class AckingNetwork implements DHTNetwork {
+        final CopyOnWriteArrayList<CapturedMessage> captured = new CopyOnWriteArrayList<>();
+        private final AtomicReference<Consumer<DHTMessage.MigrationDataAck>> ackSink = new AtomicReference<>(ack -> {});
+
+        void ackVia(Consumer<DHTMessage.MigrationDataAck> sink) {
+            ackSink.set(sink);
+        }
+
+        @Override
+        public void send(NodeId target, ProtocolMessage message) {
+            captured.add(new CapturedMessage(target, message));
+            if (message instanceof DHTMessage.MigrationDataResponse response && response.ackRequested()) {
+                ackSink.get().accept(new DHTMessage.MigrationDataAck(response.requestId(), target));
+            }
+        }
+
+        List<DHTMessage.MigrationDataResponse> migrationResponses() {
+            return captured.stream()
+                           .map(CapturedMessage::message)
+                           .filter(m -> m instanceof DHTMessage.MigrationDataResponse)
+                           .map(m -> (DHTMessage.MigrationDataResponse) m)
+                           .toList();
+        }
+
+        List<NodeId> targets() {
+            return captured.stream()
+                           .filter(m -> m.message() instanceof DHTMessage.MigrationDataResponse)
+                           .map(CapturedMessage::target)
+                           .toList();
+        }
+    }
+
+    /// Records departure-push overrun notifications for assertions.
+    private static final class RecordingObserver implements DeparturePushObserver {
+        private final AtomicInteger incompleteCount = new AtomicInteger();
+        private final AtomicInteger lastKeysAtRisk = new AtomicInteger();
+        private final CopyOnWriteArrayList<String> lastSample = new CopyOnWriteArrayList<>();
+
+        @Override
+        public void onIncomplete(int keysAtRisk, List<String> sampleKeys) {
+            incompleteCount.incrementAndGet();
+            lastKeysAtRisk.set(keysAtRisk);
+            lastSample.clear();
+            lastSample.addAll(sampleKeys);
+        }
+
+        int incompleteCount() {
+            return incompleteCount.get();
+        }
+
+        int lastKeysAtRisk() {
+            return lastKeysAtRisk.get();
+        }
+
+        List<String> lastSample() {
+            return List.copyOf(lastSample);
         }
     }
 }

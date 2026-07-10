@@ -246,10 +246,12 @@ public final class DHTNode {
         storage.entriesForPartition(ring, partition)
                .onSuccess(entries -> responseHandler.accept(new DHTMessage.MigrationDataResponse(request.requestId(),
                                                                                                   nodeId,
-                                                                                                  entries)))
+                                                                                                  entries,
+                                                                                                  false)))
                .onFailure(_ -> responseHandler.accept(new DHTMessage.MigrationDataResponse(request.requestId(),
                                                                                             nodeId,
-                                                                                            java.util.List.of())));
+                                                                                            java.util.List.of(),
+                                                                                            false)));
     }
 
     /// Apply migration data by merging received entries into local storage using versioned puts,
