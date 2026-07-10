@@ -73,7 +73,13 @@ public interface ControlLoop {
     @MessageReceiver
     void onQuorumStateChange(ClusterStateNotification notification);
 
-    void registerBlueprint(Artifact artifact, int instances, int minInstances);
+    void registerBlueprint(Artifact artifact,
+                           int instances,
+                           int minInstances,
+                           Option<Integer> maxInstances,
+                           Option<Double> scaleUpThreshold,
+                           Option<Double> scaleDownThreshold);
+
     void unregisterBlueprint(Artifact artifact);
     ControllerConfig configuration();
     void updateConfiguration(ControllerConfig config);
@@ -195,7 +201,10 @@ public interface ControlLoop {
 
             registerBlueprint(key.artifactBase().withVersion(value.currentVersion()),
                               value.targetInstances(),
-                              value.effectiveMinInstances());
+                              value.effectiveMinInstances(),
+                              value.maxInstances(),
+                              value.scaleUpThreshold(),
+                              value.scaleDownThreshold());
         }
 
         @Override
@@ -220,9 +229,18 @@ public interface ControlLoop {
         }
 
         @Override
-        public void registerBlueprint(Artifact artifact, int instances, int minInstances) {
-            ctx.putBlueprint(artifact, instances, minInstances);
-            log.info("Registered blueprint: {} with {} instances (min: {})", artifact, instances, minInstances);
+        public void registerBlueprint(Artifact artifact,
+                                      int instances,
+                                      int minInstances,
+                                      Option<Integer> maxInstances,
+                                      Option<Double> scaleUpThreshold,
+                                      Option<Double> scaleDownThreshold) {
+            ctx.putBlueprint(artifact, instances, minInstances, maxInstances, scaleUpThreshold, scaleDownThreshold);
+            log.info("Registered blueprint: {} with {} instances (min: {}, max: {})",
+                     artifact,
+                     instances,
+                     minInstances,
+                     maxInstances);
         }
 
         @Override

@@ -189,6 +189,9 @@ public interface BlueprintExpander {
                                                                                              spec.instances(),
                                                                                              spec.minAvailable(),
                                                                                              false,
-                                                                                             deps));
+                                                                                             deps,
+                                                                                             spec.maxInstances(),
+                                                                                             spec.scaleUpThreshold(),
+                                                                                             spec.scaleDownThreshold()));
     }
 }

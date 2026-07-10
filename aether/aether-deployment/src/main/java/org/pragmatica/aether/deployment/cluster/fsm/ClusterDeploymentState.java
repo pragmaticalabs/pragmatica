@@ -960,6 +960,11 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                     continue;
                 }
 
+                if (slice.instances() > slice.minAvailable() && slice.maxInstances().isEmpty()) {
+                    log.warn("Autoscalable slice {} deployed without maxInstances — scale-up bounded only by cluster size",
+                             artifact);
+                }
+
                 blueprints.put(artifact,
                                Blueprint.blueprint(artifact,
                                                    slice.instances(),
@@ -970,7 +975,10 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                                                           SliceTargetValue.sliceTargetValue(artifact.version(),
                                                                                             slice.instances(),
                                                                                             slice.minAvailable(),
-                                                                                            Option.some(expanded.id()))));
+                                                                                            Option.some(expanded.id()),
+                                                                                            slice.maxInstances(),
+                                                                                            slice.scaleUpThreshold(),
+                                                                                            slice.scaleDownThreshold())));
             }
 
             collectStreamMetadataCommands(expanded.id(), consensusCommands);

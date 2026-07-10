@@ -95,19 +95,22 @@ public interface DecisionTreeController extends ClusterController {
                 return Option.none();
             }
 
-            if (load.compositeScore() >= scalingConfig.scaleUpThreshold()) {
+            double scaleUpThreshold = blueprint.scaleUpThreshold().or(scalingConfig.scaleUpThreshold());
+            double scaleDownThreshold = blueprint.scaleDownThreshold().or(scalingConfig.scaleDownThreshold());
+
+            if (load.compositeScore() >= scaleUpThreshold) {
                 log.info("Rule triggered: high load ({} >= {}), scaling up {}",
                          load.compositeScore(),
-                         scalingConfig.scaleUpThreshold(),
+                         scaleUpThreshold,
                          artifact);
 
                 return Option.some(new BlueprintChange.ScaleUp(artifact, 1));
             }
 
-            if (load.compositeScore() <= scalingConfig.scaleDownThreshold() && blueprint.instances() > blueprint.minInstances()) {
+            if (load.compositeScore() <= scaleDownThreshold && blueprint.instances() > blueprint.minInstances()) {
                 log.debug("Rule triggered: low load ({} <= {}), scaling down {}",
                           load.compositeScore(),
-                          scalingConfig.scaleDownThreshold(),
+                          scaleDownThreshold,
                           artifact);
 
                 return Option.some(new BlueprintChange.ScaleDown(artifact, 1));

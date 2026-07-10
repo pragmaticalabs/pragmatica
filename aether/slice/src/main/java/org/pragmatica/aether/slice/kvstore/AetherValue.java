@@ -40,13 +40,49 @@ public sealed interface AetherValue {
                             int minInstances,
                             Option<BlueprintId> owningBlueprint,
                             String placement,
-                            long updatedAt) implements AetherValue {
+                            long updatedAt,
+                            Option<Integer> maxInstances,
+                            Option<Double> scaleUpThreshold,
+                            Option<Double> scaleDownThreshold) implements AetherValue {
         private static final String DEFAULT_PLACEMENT = "CORE_ONLY";
 
         public SliceTargetValue {
             if (placement == null || placement.isEmpty()) {
                 placement = DEFAULT_PLACEMENT;
             }
+
+            if (maxInstances == null) {
+                maxInstances = none();
+            }
+
+            if (scaleUpThreshold == null) {
+                scaleUpThreshold = none();
+            }
+
+            if (scaleDownThreshold == null) {
+                scaleDownThreshold = none();
+            }
+        }
+
+        /// Backward-compatible constructor — pre-existing call sites pass the six historical fields;
+        /// the per-slice autoscaler overrides (#424) default to `none()`. Mirrors the trailing-field
+        /// backward-compat idiom used across `AetherValue` (cf. `AppBlueprintValue`,
+        /// `ProvisioningSlotValue`).
+        public SliceTargetValue(Version currentVersion,
+                                int targetInstances,
+                                int minInstances,
+                                Option<BlueprintId> owningBlueprint,
+                                String placement,
+                                long updatedAt) {
+            this(currentVersion,
+                 targetInstances,
+                 minInstances,
+                 owningBlueprint,
+                 placement,
+                 updatedAt,
+                 none(),
+                 none(),
+                 none());
         }
 
         public static SliceTargetValue sliceTargetValue(Version version, int instances, Option<BlueprintId> owner) {
@@ -55,7 +91,10 @@ public sealed interface AetherValue {
                                         instances,
                                         owner,
                                         DEFAULT_PLACEMENT,
-                                        System.currentTimeMillis());
+                                        System.currentTimeMillis(),
+                                        none(),
+                                        none(),
+                                        none());
         }
 
         public static SliceTargetValue sliceTargetValue(Version version, int instances) {
@@ -64,7 +103,10 @@ public sealed interface AetherValue {
                                         instances,
                                         none(),
                                         DEFAULT_PLACEMENT,
-                                        System.currentTimeMillis());
+                                        System.currentTimeMillis(),
+                                        none(),
+                                        none(),
+                                        none());
         }
 
         public static SliceTargetValue sliceTargetValue(Version version, int instances, int minInstances) {
@@ -73,7 +115,10 @@ public sealed interface AetherValue {
                                         minInstances,
                                         none(),
                                         DEFAULT_PLACEMENT,
-                                        System.currentTimeMillis());
+                                        System.currentTimeMillis(),
+                                        none(),
+                                        none(),
+                                        none());
         }
 
         public static SliceTargetValue sliceTargetValue(Version version,
@@ -85,14 +130,45 @@ public sealed interface AetherValue {
                                         minInstances,
                                         owner,
                                         DEFAULT_PLACEMENT,
-                                        System.currentTimeMillis());
+                                        System.currentTimeMillis(),
+                                        none(),
+                                        none(),
+                                        none());
         }
 
         public static SliceTargetValue sliceTargetValue(Version version,
                                                         int instances,
                                                         int minInstances,
                                                         String placement) {
-            return new SliceTargetValue(version, instances, minInstances, none(), placement, System.currentTimeMillis());
+            return new SliceTargetValue(version,
+                                        instances,
+                                        minInstances,
+                                        none(),
+                                        placement,
+                                        System.currentTimeMillis(),
+                                        none(),
+                                        none(),
+                                        none());
+        }
+
+        /// Deploy-time factory (#424) carrying the per-slice autoscaler overrides —
+        /// `maxInstances` bounds scale-up; the threshold overrides win over the cluster tier.
+        public static SliceTargetValue sliceTargetValue(Version version,
+                                                        int instances,
+                                                        int minInstances,
+                                                        Option<BlueprintId> owner,
+                                                        Option<Integer> maxInstances,
+                                                        Option<Double> scaleUpThreshold,
+                                                        Option<Double> scaleDownThreshold) {
+            return new SliceTargetValue(version,
+                                        instances,
+                                        minInstances,
+                                        owner,
+                                        DEFAULT_PLACEMENT,
+                                        System.currentTimeMillis(),
+                                        maxInstances,
+                                        scaleUpThreshold,
+                                        scaleDownThreshold);
         }
 
         public int effectiveMinInstances() {
@@ -109,7 +185,10 @@ public sealed interface AetherValue {
                                         minInstances,
                                         owningBlueprint,
                                         placement,
-                                        System.currentTimeMillis());
+                                        System.currentTimeMillis(),
+                                        maxInstances,
+                                        scaleUpThreshold,
+                                        scaleDownThreshold);
         }
 
         public SliceTargetValue withPlacement(String newPlacement) {
@@ -118,7 +197,10 @@ public sealed interface AetherValue {
                                         minInstances,
                                         owningBlueprint,
                                         newPlacement,
-                                        System.currentTimeMillis());
+                                        System.currentTimeMillis(),
+                                        maxInstances,
+                                        scaleUpThreshold,
+                                        scaleDownThreshold);
         }
 
         public SliceTargetValue withVersion(Version newVersion) {
@@ -127,7 +209,10 @@ public sealed interface AetherValue {
                                         minInstances,
                                         owningBlueprint,
                                         placement,
-                                        System.currentTimeMillis());
+                                        System.currentTimeMillis(),
+                                        maxInstances,
+                                        scaleUpThreshold,
+                                        scaleDownThreshold);
         }
     }
 

@@ -196,7 +196,23 @@ public final class ControlLoopContext {
 
     @Contract
     public void putBlueprint(Artifact artifact, int instances, int minInstances) {
-        blueprints.put(artifact, new ClusterController.Blueprint(artifact, instances, minInstances));
+        putBlueprint(artifact, instances, minInstances, Option.none(), Option.none(), Option.none());
+    }
+
+    @Contract
+    public void putBlueprint(Artifact artifact,
+                             int instances,
+                             int minInstances,
+                             Option<Integer> maxInstances,
+                             Option<Double> scaleUpThreshold,
+                             Option<Double> scaleDownThreshold) {
+        blueprints.put(artifact,
+                       new ClusterController.Blueprint(artifact,
+                                                       instances,
+                                                       minInstances,
+                                                       maxInstances,
+                                                       scaleUpThreshold,
+                                                       scaleDownThreshold));
     }
 
     @Contract
@@ -481,7 +497,7 @@ public final class ControlLoopContext {
                                                                   ClusterController.Blueprint currentBlueprint) {
         var requestedInstances = computeRequestedInstances(change, currentBlueprint);
         var clusterSize = effectiveClusterSize();
-        var newInstances = cap(artifact, requestedInstances, clusterSize);
+        var newInstances = cap(artifact, requestedInstances, currentBlueprint.maxInstances(), clusterSize);
 
         if (newInstances == currentBlueprint.instances()) {
             return Option.none();
@@ -491,10 +507,21 @@ public final class ControlLoopContext {
                  artifact,
                  currentBlueprint.instances(),
                  newInstances);
-        putBlueprint(artifact, newInstances, currentBlueprint.minInstances());
+        putBlueprint(artifact,
+                     newInstances,
+                     currentBlueprint.minInstances(),
+                     currentBlueprint.maxInstances(),
+                     currentBlueprint.scaleUpThreshold(),
+                     currentBlueprint.scaleDownThreshold());
         publishScalingEvent(change, artifact, currentBlueprint.instances(), newInstances);
         var key = SliceTargetKey.sliceTargetKey(artifact.base());
-        var value = SliceTargetValue.sliceTargetValue(artifact.version(), newInstances);
+        var value = SliceTargetValue.sliceTargetValue(artifact.version(),
+                                                      newInstances,
+                                                      newInstances,
+                                                      Option.none(),
+                                                      currentBlueprint.maxInstances(),
+                                                      currentBlueprint.scaleUpThreshold(),
+                                                      currentBlueprint.scaleDownThreshold());
 
         return Option.some(new KVCommand.Put<>(key, value));
     }
@@ -515,14 +542,20 @@ public final class ControlLoopContext {
                : size;
     }
 
-    private static int cap(Artifact artifact, int requestedInstances, int clusterSize) {
-        if (requestedInstances > clusterSize) {
-            log.debug("Scaling {} capped at cluster size {} (requested {})", artifact, clusterSize, requestedInstances);
+    private static int cap(Artifact artifact, int requestedInstances, Option<Integer> maxInstances, int clusterSize) {
+        var maxCapped = maxInstances.map(max -> Math.min(requestedInstances, max)).or(requestedInstances);
+
+        if (maxCapped < requestedInstances) {
+            log.debug("Scaling {} capped at maxInstances {} (requested {})", artifact, maxCapped, requestedInstances);
+        }
+
+        if (maxCapped > clusterSize) {
+            log.debug("Scaling {} capped at cluster size {} (requested {})", artifact, clusterSize, maxCapped);
 
             return clusterSize;
         }
 
-        return requestedInstances;
+        return maxCapped;
     }
 
     private boolean isStaleEvidence(CommunityScalingRequest request) {
@@ -568,14 +601,24 @@ public final class ControlLoopContext {
                  blueprint.instances(),
                  newInstances,
                  request.governorId().id());
-        putBlueprint(request.artifact(), newInstances, blueprint.minInstances());
+        putBlueprint(request.artifact(),
+                     newInstances,
+                     blueprint.minInstances(),
+                     blueprint.maxInstances(),
+                     blueprint.scaleUpThreshold(),
+                     blueprint.scaleDownThreshold());
         var cooldownTimestamp = nowMs();
 
         communityScalingCooldowns.put(artifactKey, cooldownTimestamp);
         persistCooldown(artifactKey, cooldownTimestamp);
         var key = SliceTargetKey.sliceTargetKey(request.artifact().base());
         var value = SliceTargetValue.sliceTargetValue(request.artifact().version(),
-                                                      newInstances);
+                                                      newInstances,
+                                                      newInstances,
+                                                      Option.none(),
+                                                      blueprint.maxInstances(),
+                                                      blueprint.scaleUpThreshold(),
+                                                      blueprint.scaleDownThreshold());
 
         cluster.apply(List.of(new KVCommand.Put<>(key, value))).onFailure(cause -> log.error("Failed to apply community scaling: {}",
                                                                                              cause.message()));

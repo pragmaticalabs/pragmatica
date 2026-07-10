@@ -5,8 +5,12 @@
 package org.pragmatica.aether.controller.fsm;
 
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.artifact.Artifact;
+import org.pragmatica.aether.controller.ClusterController;
+import org.pragmatica.aether.controller.ClusterController.BlueprintChange;
+import org.pragmatica.aether.controller.ClusterController.ControlDecisions;
 import org.pragmatica.aether.controller.ControllerConfig;
 import org.pragmatica.aether.controller.DecisionTreeController;
 import org.pragmatica.aether.controller.ScalingConfig;
@@ -98,6 +102,50 @@ class ControlLoopContextAttributionTest {
         assertThat(cluster.putBases()).isEmpty();
     }
 
+    /// #424 leader cap: `maxInstances` bounds the autoscaler's requested instance count BEFORE the
+    /// cluster-size cap. A stub controller emits a fixed ScaleUp so the cap arithmetic is isolated
+    /// from metric-window composite scoring.
+    @Nested
+    class MaxInstancesCap {
+        private static final List<NodeId> FIVE_NODES = List.of(SELF,
+                                                               WORKER,
+                                                               NodeId.nodeId("n3").unwrap(),
+                                                               NodeId.nodeId("n4").unwrap(),
+                                                               NodeId.nodeId("n5").unwrap());
+
+        @Test
+        void runEvaluationCycle_maxInstancesBelowClusterSize_capsToMaxNotClusterSize() {
+            cluster = new CapturingClusterNode();
+            var capCtx = buildContext(scaleUpBy(2));
+
+            capCtx.putBlueprint(HOT, 2, 1, Option.some(3), Option.none(), Option.none());
+            capCtx.setTopology(FIVE_NODES);
+
+            capCtx.runEvaluationCycle();
+
+            assertThat(cluster.putBases()).contains(HOT.base());
+            assertThat(cluster.lastTargetInstances()).isEqualTo(3);
+        }
+
+        @Test
+        void runEvaluationCycle_noMaxInstances_capsToClusterSizeOnly() {
+            cluster = new CapturingClusterNode();
+            var capCtx = buildContext(scaleUpBy(2));
+
+            capCtx.putBlueprint(HOT, 2, 1);
+            capCtx.setTopology(FIVE_NODES);
+
+            capCtx.runEvaluationCycle();
+
+            assertThat(cluster.putBases()).contains(HOT.base());
+            assertThat(cluster.lastTargetInstances()).isEqualTo(4);
+        }
+
+        private ClusterController scaleUpBy(int additional) {
+            return _ -> Promise.success(ControlDecisions.controlDecisions(new BlueprintChange.ScaleUp(HOT, additional)));
+        }
+    }
+
     private void fillWindows() {
         for (int i = 0; i < WINDOW; i++) {
             ingest(2, 2);
@@ -117,8 +165,11 @@ class ControlLoopContextAttributionTest {
     }
 
     private ControlLoopContext buildContext() {
+        return buildContext(DecisionTreeController.decisionTreeController(ControllerConfig.DEFAULT.withScalingConfig(smallWindowConfig())));
+    }
+
+    private ControlLoopContext buildContext(ClusterController controller) {
         var config = ControllerConfig.DEFAULT.withScalingConfig(smallWindowConfig());
-        var controller = DecisionTreeController.decisionTreeController(config);
         var ctxHolder = new AtomicReference<ControlLoopContext>();
         Consumer<ScalingEvent> sink = _ -> {};
         Function<Fsm<ControlLoopState, ClusterFsmEvent>, ControlLoopState> factory =
@@ -131,7 +182,7 @@ class ControlLoopContextAttributionTest {
 
     private ControlLoopState holdContext(AtomicReference<ControlLoopContext> ctxHolder,
                                          Fsm<ControlLoopState, ClusterFsmEvent> fsm,
-                                         DecisionTreeController controller,
+                                         ClusterController controller,
                                          ControllerConfig config,
                                          Consumer<ScalingEvent> sink) {
         var context = new ControlLoopContext(fsm,
@@ -173,6 +224,16 @@ class ControlLoopContextAttributionTest {
                            .filter(key -> key instanceof SliceTargetKey)
                            .map(key -> (Object) ((SliceTargetKey) key).artifactBase())
                            .toList();
+        }
+
+        int lastTargetInstances() {
+            return commands.stream()
+                           .filter(command -> command instanceof KVCommand.Put)
+                           .map(command -> ((KVCommand.Put<?, ?>) command).value())
+                           .filter(value -> value instanceof AetherValue.SliceTargetValue)
+                           .map(value -> ((AetherValue.SliceTargetValue) value).targetInstances())
+                           .reduce((first, second) -> second)
+                           .orElse(-1);
         }
 
         @Override public NodeId self() { return SELF; }

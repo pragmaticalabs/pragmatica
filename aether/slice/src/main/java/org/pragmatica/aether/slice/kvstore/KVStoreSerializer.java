@@ -329,7 +329,13 @@ public final class KVStoreSerializer {
         return v.currentVersion()
                 .withQualifier() + PIPE + v.targetInstances() + PIPE + v.minInstances() + PIPE + v.owningBlueprint()
                                                                                                   .map(BlueprintId::asString)
-                                                                                                  .or("") + PIPE + v.updatedAt() + PIPE + v.effectivePlacement();
+                                                                                                  .or("") + PIPE + v.updatedAt() + PIPE + v.effectivePlacement() + PIPE + v.maxInstances()
+                                                                                                                                                                           .map(String::valueOf)
+                                                                                                                                                                           .or("") + PIPE + v.scaleUpThreshold()
+                                                                                                                                                                                             .map(String::valueOf)
+                                                                                                                                                                                             .or("") + PIPE + v.scaleDownThreshold()
+                                                                                                                                                                                                               .map(String::valueOf)
+                                                                                                                                                                                                               .or("");
     }
 
     private static String serializeSliceNode(SliceNodeValue v) {
@@ -532,8 +538,8 @@ public final class KVStoreSerializer {
     private static Result<Map.Entry<AetherKey, AetherValue>> parseSliceTargetEntry(String identity, String raw) {
         var parts = raw.split("\\|", -1);
 
-        if (parts.length != 5 && parts.length != 6) {
-            return parseFailure("slice-target value requires 5 or 6 fields, got " + parts.length);
+        if (parts.length < 5 || parts.length > 9) {
+            return parseFailure("slice-target value requires 5 to 9 fields, got " + parts.length);
         }
 
         return SliceTargetKey.sliceTargetKey("slice-target/" + identity).flatMap(key -> buildSliceTargetValue(parts).map(val -> entry(key,
@@ -544,13 +550,25 @@ public final class KVStoreSerializer {
         var placement = parts.length >= 6 && !parts[5].isEmpty()
                         ? parts[5]
                         : "CORE_ONLY";
+        var maxInstances = parts.length >= 7 && !parts[6].isEmpty()
+                           ? Option.some(Integer.parseInt(parts[6]))
+                           : Option.<Integer> none();
+        var scaleUpThreshold = parts.length >= 8 && !parts[7].isEmpty()
+                               ? Option.some(Double.parseDouble(parts[7]))
+                               : Option.<Double> none();
+        var scaleDownThreshold = parts.length >= 9 && !parts[8].isEmpty()
+                                 ? Option.some(Double.parseDouble(parts[8]))
+                                 : Option.<Double> none();
 
         return Version.version(parts[0]).flatMap(ver -> parseOptionalBlueprintId(parts[3]).map(bp -> new SliceTargetValue(ver,
                                                                                                                           Integer.parseInt(parts[1]),
                                                                                                                           Integer.parseInt(parts[2]),
                                                                                                                           bp,
                                                                                                                           placement,
-                                                                                                                          Long.parseLong(parts[4]))));
+                                                                                                                          Long.parseLong(parts[4]),
+                                                                                                                          maxInstances,
+                                                                                                                          scaleUpThreshold,
+                                                                                                                          scaleDownThreshold)));
     }
 
     private static Result<Option<BlueprintId>> parseOptionalBlueprintId(String raw) {

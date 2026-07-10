@@ -14,6 +14,7 @@ import org.pragmatica.aether.controller.ClusterController.Blueprint;
 import org.pragmatica.aether.controller.ClusterController.BlueprintChange;
 import org.pragmatica.aether.controller.ClusterController.ControlContext;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.lang.Option;
 
 import java.util.List;
 import java.util.Map;
@@ -108,6 +109,23 @@ class DecisionTreeControllerTest {
 
             assertThat(decisions.changes()).isEmpty();
         }
+
+        @Test
+        void evaluate_perSliceScaleUpOverrideBelowClusterDefault_scalesUp() {
+            // Cluster default scaleUpThreshold = 1.5 (productionDefaults); a composite of 1.0 does not
+            // trip the cluster tier, but the per-slice override 0.8 does.
+            var clusterDefault = context(Map.of(TEST_ARTIFACT, load(1.0)),
+                                         Map.of(TEST_ARTIFACT, blueprint(2, 1)));
+
+            assertThat(controller.evaluate(clusterDefault).await().unwrap().changes()).isEmpty();
+
+            var perSliceOverride = context(Map.of(TEST_ARTIFACT, load(1.0)),
+                                           Map.of(TEST_ARTIFACT, blueprintWithScaleUpOverride(2, 1, 0.8)));
+            var decisions = controller.evaluate(perSliceOverride).await().unwrap();
+
+            assertThat(decisions.changes()).hasSize(1);
+            assertThat(decisions.changes().getFirst()).isInstanceOf(BlueprintChange.ScaleUp.class);
+        }
     }
 
     /// #422: a hot method on artifact B must scale ONLY B, never the idle artifact A. Before the
@@ -195,6 +213,15 @@ class DecisionTreeControllerTest {
     }
 
     private static Blueprint blueprint(int instances, int minInstances) {
-        return new Blueprint(TEST_ARTIFACT, instances, minInstances);
+        return Blueprint.blueprint(TEST_ARTIFACT, instances, minInstances);
+    }
+
+    private static Blueprint blueprintWithScaleUpOverride(int instances, int minInstances, double scaleUpThreshold) {
+        return new Blueprint(TEST_ARTIFACT,
+                             instances,
+                             minInstances,
+                             Option.none(),
+                             Option.some(scaleUpThreshold),
+                             Option.none());
     }
 }

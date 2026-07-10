@@ -66,7 +66,7 @@ class KVStoreSerializerTest {
                              .onFailureRun(Assertions::fail)
                              .onSuccess(toml -> {
                                  assertThat(toml).contains("[slice-target]");
-                                 assertThat(toml).contains("\"com.example:my-app\" = \"1.0.0|3|2||1710072000000|CORE_ONLY\"");
+                                 assertThat(toml).contains("\"com.example:my-app\" = \"1.0.0|3|2||1710072000000|CORE_ONLY|||\"");
                              });
         }
 
@@ -139,8 +139,8 @@ class KVStoreSerializerTest {
             KVStoreSerializer.toToml(entries, TEST_PHASE, TEST_TIMESTAMP)
                              .onFailureRun(Assertions::fail)
                              .onSuccess(toml -> {
-                                 assertThat(toml).contains("\"com.example:app-a\" = \"1.0.0|2|1||1000|CORE_ONLY\"");
-                                 assertThat(toml).contains("\"com.example:app-b\" = \"1.0.0|4|3||2000|CORE_ONLY\"");
+                                 assertThat(toml).contains("\"com.example:app-a\" = \"1.0.0|2|1||1000|CORE_ONLY|||\"");
+                                 assertThat(toml).contains("\"com.example:app-b\" = \"1.0.0|4|3||2000|CORE_ONLY|||\"");
                                  // Only one section header
                                  assertThat(countOccurrences(toml, "[slice-target]")).isEqualTo(1);
                              });
@@ -329,6 +329,102 @@ class KVStoreSerializerTest {
                                      GossipKeyRotationKey.gossipKeyRotationKey());
                                  assertThat(gk.currentKeyId()).isEqualTo(42);
                                  assertThat(gk.previousKey()).isEqualTo("oldkeydata");
+                             });
+        }
+
+        @Test
+        void roundTrip_sliceTargetWithOverrides_preservesMaxInstancesAndThresholds() {
+            var entries = new LinkedHashMap<AetherKey, AetherValue>();
+            var ab = ArtifactBase.artifactBase("com.example:autoscaled").unwrap();
+            var ver = Version.version("2.0.0").unwrap();
+            var key = SliceTargetKey.sliceTargetKey(ab);
+            var value = new SliceTargetValue(ver,
+                                             5,
+                                             3,
+                                             Option.none(),
+                                             "CORE_ONLY",
+                                             1000L,
+                                             Option.some(7),
+                                             Option.some(1.5),
+                                             Option.some(0.5));
+            entries.put(key, value);
+
+            KVStoreSerializer.toToml(entries, TEST_PHASE, TEST_TIMESTAMP)
+                             .flatMap(KVStoreSerializer::fromToml)
+                             .onFailureRun(Assertions::fail)
+                             .onSuccess(restored -> assertThat(restored.get(key)).isEqualTo(value));
+        }
+
+        @Test
+        void roundTrip_sliceTargetWithoutOverrides_restoresNoneForAllOverrides() {
+            var entries = new LinkedHashMap<AetherKey, AetherValue>();
+            var ab = ArtifactBase.artifactBase("com.example:plain").unwrap();
+            var ver = Version.version("2.0.0").unwrap();
+            var key = SliceTargetKey.sliceTargetKey(ab);
+            var value = new SliceTargetValue(ver, 3, 2, Option.none(), "CORE_ONLY", 1000L);
+            entries.put(key, value);
+
+            KVStoreSerializer.toToml(entries, TEST_PHASE, TEST_TIMESTAMP)
+                             .flatMap(KVStoreSerializer::fromToml)
+                             .onFailureRun(Assertions::fail)
+                             .onSuccess(restored -> {
+                                 var st = (SliceTargetValue) restored.get(key);
+
+                                 assertThat(st.maxInstances()).isEqualTo(Option.none());
+                                 assertThat(st.scaleUpThreshold()).isEqualTo(Option.none());
+                                 assertThat(st.scaleDownThreshold()).isEqualTo(Option.none());
+                                 assertThat(st).isEqualTo(value);
+                             });
+        }
+
+        @Test
+        void fromToml_legacyFiveFieldSliceTarget_parsesWithNoneOverrides() {
+            var toml = """
+                       [meta]
+                       phase = 1
+                       timestamp = "2026-01-01T00:00:00Z"
+
+                       [slice-target]
+                       "com.example:legacy5" = "1.0.0|2|1||1000"
+                       """;
+
+            KVStoreSerializer.fromToml(toml)
+                             .onFailureRun(Assertions::fail)
+                             .onSuccess(map -> {
+                                 var ab = ArtifactBase.artifactBase("com.example:legacy5").unwrap();
+                                 var st = (SliceTargetValue) map.get(SliceTargetKey.sliceTargetKey(ab));
+
+                                 assertThat(st.targetInstances()).isEqualTo(2);
+                                 assertThat(st.effectivePlacement()).isEqualTo("CORE_ONLY");
+                                 assertThat(st.maxInstances()).isEqualTo(Option.none());
+                                 assertThat(st.scaleUpThreshold()).isEqualTo(Option.none());
+                                 assertThat(st.scaleDownThreshold()).isEqualTo(Option.none());
+                             });
+        }
+
+        @Test
+        void fromToml_legacySixFieldSliceTarget_parsesWithNoneOverrides() {
+            var toml = """
+                       [meta]
+                       phase = 1
+                       timestamp = "2026-01-01T00:00:00Z"
+
+                       [slice-target]
+                       "com.example:legacy6" = "1.0.0|4|2||2000|CORE_ONLY"
+                       """;
+
+            KVStoreSerializer.fromToml(toml)
+                             .onFailureRun(Assertions::fail)
+                             .onSuccess(map -> {
+                                 var ab = ArtifactBase.artifactBase("com.example:legacy6").unwrap();
+                                 var st = (SliceTargetValue) map.get(SliceTargetKey.sliceTargetKey(ab));
+
+                                 assertThat(st.targetInstances()).isEqualTo(4);
+                                 assertThat(st.minInstances()).isEqualTo(2);
+                                 assertThat(st.effectivePlacement()).isEqualTo("CORE_ONLY");
+                                 assertThat(st.maxInstances()).isEqualTo(Option.none());
+                                 assertThat(st.scaleUpThreshold()).isEqualTo(Option.none());
+                                 assertThat(st.scaleDownThreshold()).isEqualTo(Option.none());
                              });
         }
 

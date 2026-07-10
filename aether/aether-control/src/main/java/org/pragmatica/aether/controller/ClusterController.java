@@ -40,7 +40,33 @@ public interface ClusterController {
         }
     }
 
-    record Blueprint(Artifact artifact, int instances, int minInstances) {}
+    /// Per-artifact scaling blueprint. `maxInstances` (#424) bounds autoscaler scale-up before the
+    /// cluster-size cap; `scaleUpThreshold`/`scaleDownThreshold` override the cluster ScalingConfig
+    /// tier for this slice when present. All three are optional — absent means "use cluster default".
+    record Blueprint(Artifact artifact,
+                     int instances,
+                     int minInstances,
+                     Option<Integer> maxInstances,
+                     Option<Double> scaleUpThreshold,
+                     Option<Double> scaleDownThreshold) {
+        public Blueprint {
+            if (maxInstances == null) {
+                maxInstances = Option.none();
+            }
+
+            if (scaleUpThreshold == null) {
+                scaleUpThreshold = Option.none();
+            }
+
+            if (scaleDownThreshold == null) {
+                scaleDownThreshold = Option.none();
+            }
+        }
+
+        public static Blueprint blueprint(Artifact artifact, int instances, int minInstances) {
+            return new Blueprint(artifact, instances, minInstances, Option.none(), Option.none(), Option.none());
+        }
+    }
 
     record ControlDecisions(List<BlueprintChange> changes) {
         public static ControlDecisions none() {

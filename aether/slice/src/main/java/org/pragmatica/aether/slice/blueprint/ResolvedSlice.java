@@ -7,12 +7,14 @@ package org.pragmatica.aether.slice.blueprint;
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Functions.Fn1;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.serialization.Codec;
 
 import java.util.Set;
 
+import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Verify.Is;
 import static org.pragmatica.lang.Verify.ensure;
 
@@ -23,31 +25,75 @@ public record ResolvedSlice(Artifact artifact,
                             int instances,
                             int minAvailable,
                             boolean isDependency,
-                            Set<Artifact> dependencies) {
+                            Set<Artifact> dependencies,
+                            Option<Integer> maxInstances,
+                            Option<Double> scaleUpThreshold,
+                            Option<Double> scaleDownThreshold) {
     private static final Cause NULL_ARTIFACT = Causes.cause("Artifact cannot be null");
 
     private static final Fn1<Cause, Integer> INVALID_INSTANCES = Causes.forOneValue("Instances must be positive, got: %s");
+
+    public ResolvedSlice {
+        dependencies = dependencies == null
+                       ? Set.of()
+                       : Set.copyOf(dependencies);
+        if (maxInstances == null) {
+            maxInstances = none();
+        }
+
+        if (scaleUpThreshold == null) {
+            scaleUpThreshold = none();
+        }
+
+        if (scaleDownThreshold == null) {
+            scaleDownThreshold = none();
+        }
+    }
 
     public static Result<ResolvedSlice> resolvedSlice(Artifact artifact,
                                                       int instances,
                                                       int minAvailable,
                                                       boolean isDependency,
-                                                      Set<Artifact> dependencies) {
+                                                      Set<Artifact> dependencies,
+                                                      Option<Integer> maxInstances,
+                                                      Option<Double> scaleUpThreshold,
+                                                      Option<Double> scaleDownThreshold) {
         return ensure(artifact, Is::notNull, NULL_ARTIFACT).filter(INVALID_INSTANCES.apply(instances),
                                                                    _ -> instances > 0)
-                     .map(a -> toResolvedSlice(a, instances, minAvailable, isDependency, dependencies));
+                     .map(a -> toResolvedSlice(a,
+                                               instances,
+                                               minAvailable,
+                                               isDependency,
+                                               dependencies,
+                                               maxInstances,
+                                               scaleUpThreshold,
+                                               scaleDownThreshold));
     }
 
     private static ResolvedSlice toResolvedSlice(Artifact artifact,
                                                  int instances,
                                                  int minAvailable,
                                                  boolean isDependency,
-                                                 Set<Artifact> dependencies) {
-        var safeDeps = dependencies == null
-                       ? Set.<Artifact> of()
-                       : Set.copyOf(dependencies);
+                                                 Set<Artifact> dependencies,
+                                                 Option<Integer> maxInstances,
+                                                 Option<Double> scaleUpThreshold,
+                                                 Option<Double> scaleDownThreshold) {
+        return new ResolvedSlice(artifact,
+                                 instances,
+                                 minAvailable,
+                                 isDependency,
+                                 dependencies,
+                                 maxInstances,
+                                 scaleUpThreshold,
+                                 scaleDownThreshold);
+    }
 
-        return new ResolvedSlice(artifact, instances, minAvailable, isDependency, safeDeps);
+    public static Result<ResolvedSlice> resolvedSlice(Artifact artifact,
+                                                      int instances,
+                                                      int minAvailable,
+                                                      boolean isDependency,
+                                                      Set<Artifact> dependencies) {
+        return resolvedSlice(artifact, instances, minAvailable, isDependency, dependencies, none(), none(), none());
     }
 
     public static Result<ResolvedSlice> resolvedSlice(Artifact artifact,

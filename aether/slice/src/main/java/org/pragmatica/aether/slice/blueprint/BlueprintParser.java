@@ -154,7 +154,12 @@ public interface BlueprintParser {
                                                  .mapError(_ -> INVALID_ARTIFACT.apply(artifactStr))
                                                  .flatMap(artifact -> parseMinAvailable(entry, instanceCount).flatMap(minAvail -> SliceSpec.sliceSpec(artifact,
                                                                                                                                                       instanceCount,
-                                                                                                                                                      minAvail)));
+                                                                                                                                                      minAvail,
+                                                                                                                                                      parseMaxInstances(entry),
+                                                                                                                                                      parseOptionalDouble(entry,
+                                                                                                                                                                          "scaleUpThreshold"),
+                                                                                                                                                      parseOptionalDouble(entry,
+                                                                                                                                                                          "scaleDownThreshold"))));
                               });
     }
 
@@ -164,6 +169,18 @@ public interface BlueprintParser {
         }
 
         return success(Math.ceilDiv(instanceCount, 2));
+    }
+
+    private static Option<Integer> parseMaxInstances(Map<String, Object> entry) {
+        return entry.get("maxInstances") instanceof Number n
+               ? some(n.intValue())
+               : none();
+    }
+
+    private static Option<Double> parseOptionalDouble(Map<String, Object> entry, String key) {
+        return entry.get(key) instanceof Number n
+               ? some(n.doubleValue())
+               : none();
     }
 
     Set<String> KNOWN_SECTIONS = Set.of("",
