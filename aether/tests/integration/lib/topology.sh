@@ -399,6 +399,12 @@ kv_lifecycle_state() {
             return 0
             ;;
         *)
+            # #426 review follow-up (item 6): _api_call's own log_warn is
+            # suppressed above (2>/dev/null) to keep the EXPECTED per-poll 404
+            # quiet; surface everything else here — a transport failure or
+            # unexpected status is never "removed" and must stay visible, not
+            # silently swallowed alongside the benign 404 case.
+            log_warn "kv_lifecycle_state(${target}): non-404 failure (status=${status:-000}) — treating as UNKNOWN, not removed"
             return 1  # transport failure ("000") or unexpected status — UNKNOWN
             ;;
     esac
@@ -451,7 +457,11 @@ node_absent_from_status() {
 # so unrelated future top-level `"id"` fields cannot leak in.
 status_node_ids() {
     local status_payload
-    status_payload=$(api_get "/api/nodes/status" 2>/dev/null || true)
+    # #426 review follow-up (item 6): no expected/benign-failure case here
+    # (unlike kv_lifecycle_state's 404) — unsuppress stderr so a transport
+    # failure or unexpected status surfaces via _api_call's own log_warn
+    # instead of vanishing silently.
+    status_payload=$(api_get "/api/nodes/status") || true
     if [ -z "$status_payload" ]; then
         return 1  # couldn't read
     fi

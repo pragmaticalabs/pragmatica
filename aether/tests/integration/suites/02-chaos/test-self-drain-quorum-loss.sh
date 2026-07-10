@@ -619,34 +619,13 @@ test_cluster_recovers_to_five_on_duty() {
     fi
     assert_cluster_healthy "S20: cluster recovered to 5 healthy cores within ${RECOVERY_BUDGET_S}s of restart"
 
-    # S20's restart_all_nodes performs `docker compose down -v` — a full VOLUME wipe — so the
-    # cluster returns at a fresh generation (1:1) with the artifact repository and ALL deployed
-    # slices gone. The destructive cluster-B chain's later suites (03 scale-under-load, etc.)
-    # depend on the run-start echo baseline that this wipe destroys; without a redeploy here they
-    # hit an empty /api/slices and fall back to a dead endpoint (a false ~70% error rate three
-    # suites downstream). Re-establish the echo baseline at its source and assert that EVERY
-    # target instance activates (not just one) so a partial/failed activation is caught here, in
-    # 02, instead of masquerading as a 03 scaling failure.
-    local echo_bp="${ECHO_BLUEPRINT:-org.pragmatica.aether.test:test-echo:1.0.0}"
-    log_info "S20: re-establishing echo baseline wiped by 'compose down -v' (redeploy ${echo_bp})"
-    if ! push_blueprint "$echo_bp" >/dev/null; then
-        log_fail "S20: failed to re-push ${echo_bp} after the volume wipe"
-        return 1
-    fi
-    deploy_blueprint "$echo_bp" >/dev/null 2>&1 || true
-    # SCOPED assert (not the global wait_for_all_target_instances_active): S20 redeploys
-    # ONLY the echo blueprint, but the global slices_target_total sums targetInstances
-    # across ALL slices. If a sibling blueprint (e.g. persistence, 3 instances) is still
-    # present, the global wait demands echo(3)+persistence(3)=6 ACTIVE and false-fails at
-    # "5/6 active" while the redeployed echo blueprint is in fact fully ACTIVE. Scope the
-    # convergence assert to the blueprint we actually redeployed via the _for helpers.
-    if ! wait_for "echo blueprint all target instances ACTIVE (scoped to ${echo_bp})" \
-        "[ \$(slices_active_instances_for '${echo_bp}') -ge \$(slices_target_total_for '${echo_bp}') ] && [ \$(slices_target_total_for '${echo_bp}') -gt 0 ]" \
-        120; then
-        log_fail "S20: echo slice did not reach all-target-instances ACTIVE after post-wipe redeploy ($(slices_active_instances_for "$echo_bp")/$(slices_target_total_for "$echo_bp") active for ${echo_bp}) — deployment baseline not restored"
-        return 1
-    fi
-    log_info "S20: echo baseline restored — all $(slices_target_total_for "$echo_bp") target instance(s) ACTIVE after recovery"
+    # #426 review follow-up (item 3): the echo-baseline redeploy formerly
+    # duplicated here is now centralized in restart_all_nodes itself
+    # (lib/cluster.sh _reestablish_echo_baseline, called from both its
+    # docker/compose AND cloud branches) — restart_all_nodes at line 607
+    # above already re-pushed/redeployed the echo blueprint and gated on all
+    # target instances ACTIVE before returning. Keeping a second copy here
+    # risked copy-drift between the two call sites; nothing further to do.
 }
 
 cleanup() {

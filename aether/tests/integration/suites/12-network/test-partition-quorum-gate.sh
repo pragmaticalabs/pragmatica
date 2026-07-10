@@ -132,18 +132,19 @@ LEADER_FILE="/tmp/s05-leader.$$"
 # self-drain window. If the gate is doing its job, the minority nodes remain
 # present (and READY) for the entire partition window — premature removal shows up
 # as absence from /api/nodes/status (see node_absent_from_status).
-kv_lifecycle_state() {
-    local target="$1"
-    local body
-    body=$(api_get "/api/nodes/lifecycle/${target}" 2>/dev/null || true)
-    if [ -z "$body" ]; then
-        return 0
-    fi
-    printf '%s' "$body" \
-        | grep -o '"state"[[:space:]]*:[[:space:]]*"[^"]*"' \
-        | head -1 \
-        | sed 's/"state"[[:space:]]*:[[:space:]]*"\([^"]*\)"/\1/'
-}
+#
+# #426 review follow-up (item 4): this used to be a LOCAL shadow of
+# lib/topology.sh's kv_lifecycle_state with the OLD "empty body == absent"
+# semantics (any failure, including a transport outage, silently read as
+# "removed"). Deleted in favor of the shared lib/topology.sh version (sourced
+# above), which distinguishes a genuine 404 (rc 0, empty stdout) from a
+# transport failure/unexpected status (rc 1, empty stdout — UNKNOWN, never
+# "removed"). Verified this file's only call site
+# (test_partition_does_not_destabilize_majority below:
+# `pre1=$(kv_lifecycle_state "$m1")` / `assert_eq "$pre1" "READY"`) never
+# inspects the function's rc — it only compares stdout to "READY" — so both
+# the 404 case and the new UNKNOWN/transport-failure case correctly fail the
+# pre-partition READY assertion with no call-site changes required.
 
 # Resolve a NodeId to the Docker container name carrying its
 # aether.node-id label. Returns empty string when no container matches.

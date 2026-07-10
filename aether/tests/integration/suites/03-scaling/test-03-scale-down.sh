@@ -51,9 +51,17 @@ test_seed_marker() {
     # unreachable — see lib/generation.sh — neither means "give up
     # immediately"), then hard-fail rather than seed against an unsettled
     # cluster.
+    #
+    # #426 review follow-up (item 5): pass "" (not the pinned CLUSTER_ENDPOINT)
+    # so await_generation_quiesced re-resolves a live endpoint via
+    # _resolve_live_endpoint on EVERY attempt (its own `${1:-$(_resolve_live_endpoint)}`
+    # default). Re-polling a persistently dead pinned endpoint for all 5
+    # attempts would surface as "did not quiesce" — the same misdiagnosis class
+    # as #126 (an unreachable-endpoint read misreported as a quiescence
+    # failure), even though a live core might have quiesced the whole time.
     local quiesce_attempts=5 quiesce_ok=false i
     for i in $(seq 1 "$quiesce_attempts"); do
-        if await_generation_quiesced "${CLUSTER_ENDPOINT}" "current" 30; then
+        if await_generation_quiesced "" "current" 30; then
             quiesce_ok=true
             break
         fi

@@ -2159,6 +2159,42 @@ cloud_running_cores() {
 ## either a harness bug (wrong tear-down sequence) or a real product reliability
 ## regression (cluster can't recover from the scenario this suite exercised).
 ## Either way, subsequent suites must not inherit a broken cluster under a warn.
+##
+## Re-establish the echo blueprint baseline after a destructive recovery. Shared
+## by BOTH restart_all_nodes branches (#426 review follow-up — the redeploy was
+## previously wired into the docker/compose branch only; the cloud branch
+## returns earlier and never restored the baseline, yet cloud is where the
+## motivating 2026-07-08 run-4 incident actually ran: CTM-replaced/revived VMs
+## converge to an empty artifact repository exactly like a `compose down -v`
+## wipe does, so the gap is not compose-specific). Idempotent: pushing/deploying
+## an already-present artifact is a no-op per push_blueprint's contract.
+_reestablish_echo_baseline() {
+    local baseline_bp="${ECHO_BLUEPRINT:-org.pragmatica.aether.test:test-echo:1.0.0}"
+    log_info "restart_all_nodes: re-establishing ${baseline_bp} baseline after destructive recovery"
+    if ! push_blueprint "$baseline_bp" >/dev/null; then
+        log_fail "restart_all_nodes: failed to re-push ${baseline_bp} after recovery"
+        return 1
+    fi
+    # Capture rc + stderr instead of `... >/dev/null 2>&1 || true` (#426 review
+    # follow-up, house rule: transport/API failures must stay LOUD). Still
+    # non-fatal here — the scoped wait_for below is the authoritative gate — but
+    # a failing deploy call must not vanish silently.
+    local deploy_out deploy_rc
+    deploy_out=$(deploy_blueprint "$baseline_bp" 2>&1)
+    deploy_rc=$?
+    if [ "$deploy_rc" -ne 0 ]; then
+        log_warn "restart_all_nodes: deploy_blueprint ${baseline_bp} returned rc=${deploy_rc} (non-fatal — readiness wait below is authoritative): ${deploy_out}"
+    fi
+    if ! wait_for "echo blueprint all target instances ACTIVE after restart (scoped to ${baseline_bp})" \
+        "[ \$(slices_active_instances_for '${baseline_bp}') -ge \$(slices_target_total_for '${baseline_bp}') ] && [ \$(slices_target_total_for '${baseline_bp}') -gt 0 ]" \
+        120; then
+        log_fail "restart_all_nodes: ${baseline_bp} did not reach all-target-instances ACTIVE after post-recovery redeploy ($(slices_active_instances_for "$baseline_bp")/$(slices_target_total_for "$baseline_bp") active) — deployment baseline not restored"
+        return 1
+    fi
+    log_info "restart_all_nodes: ${baseline_bp} baseline restored — all $(slices_target_total_for "$baseline_bp") target instance(s) ACTIVE"
+    return 0
+}
+
 restart_all_nodes() {
     log_info "Restoring cluster to baseline (CLUSTER_NAME=${CLUSTER_NAME:-aether-b-node-})..."
     if [ "$CLOUD_MODE" = "true" ]; then
@@ -2202,6 +2238,10 @@ restart_all_nodes() {
             log_warn "restart_all_nodes: cloud cluster not fully ready within 120s (proceeding — downstream suite has its own readiness gate)"
         fi
         log_info "restart_all_nodes: cloud cluster recovered (>=${floor} healthy cores, leader elected)"
+        # #426 review follow-up (SEVERE): this branch used to return here,
+        # before the echo-baseline redeploy — cloud never got the rebaseline
+        # even though cloud is where the motivating incident happened.
+        _reestablish_echo_baseline || return 1
         return 0
     fi
     # Why: `docker start` on exited containers re-uses identical NodeIds / addresses,
@@ -2326,27 +2366,16 @@ restart_all_nodes() {
     # measuring the scenario under test (#426 item 5: this exact gap left no ACTIVE
     # echo owner for kill-under-load's retarget to resolve on 2026-07-08, correctly
     # triggering the loud-abort added in 71a4aa599 rather than a silent 100%-error
-    # false read). This mirrors the redeploy S20 already does locally after its own
-    # restart_all_nodes call; centralizing it here covers every caller, including
-    # restore_cluster_baseline's escalation path which had no redeploy step at all.
-    # restore_cluster_baseline itself deliberately does NOT restore blueprint state
-    # (see its step-8 design comment — that exclusion is intentional and scoped to
-    # non-destructive baseline checks); this is the destructive-recovery counterpart,
-    # scoped to the one function that actually wipes the volumes.
-    local baseline_bp="${ECHO_BLUEPRINT:-org.pragmatica.aether.test:test-echo:1.0.0}"
-    log_info "restart_all_nodes: re-establishing ${baseline_bp} baseline wiped by 'compose down -v'"
-    if ! push_blueprint "$baseline_bp" >/dev/null; then
-        log_fail "restart_all_nodes: failed to re-push ${baseline_bp} after the volume wipe"
+    # false read). restore_cluster_baseline itself deliberately does NOT restore
+    # blueprint state (see its step-8 design comment — that exclusion is
+    # intentional and scoped to non-destructive baseline checks); this is the
+    # destructive-recovery counterpart, scoped to the one function that actually
+    # wipes the volumes. See _reestablish_echo_baseline above for the (now
+    # runtime-agnostic) redeploy logic shared with the cloud branch.
+    if ! _reestablish_echo_baseline; then
         return 1
     fi
-    deploy_blueprint "$baseline_bp" >/dev/null 2>&1 || true
-    if ! wait_for "echo blueprint all target instances ACTIVE after restart (scoped to ${baseline_bp})" \
-        "[ \$(slices_active_instances_for '${baseline_bp}') -ge \$(slices_target_total_for '${baseline_bp}') ] && [ \$(slices_target_total_for '${baseline_bp}') -gt 0 ]" \
-        120; then
-        log_fail "restart_all_nodes: ${baseline_bp} did not reach all-target-instances ACTIVE after post-wipe redeploy ($(slices_active_instances_for "$baseline_bp")/$(slices_target_total_for "$baseline_bp") active) — deployment baseline not restored"
-        return 1
-    fi
-    log_info "restart_all_nodes: cluster recovered (${NODE_COUNT:-5} nodes, leader elected, generation quiesced, all nodes ready, ${baseline_bp} baseline restored)"
+    log_info "restart_all_nodes: cluster recovered (${NODE_COUNT:-5} nodes, leader elected, generation quiesced, all nodes ready)"
     return 0
 }
 
