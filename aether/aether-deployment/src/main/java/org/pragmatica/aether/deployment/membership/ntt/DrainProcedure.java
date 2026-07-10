@@ -14,6 +14,7 @@ import org.pragmatica.lang.utils.SharedScheduler;
 
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Consumer;
 import java.util.function.Supplier;
 
 import org.slf4j.Logger;
@@ -70,7 +71,7 @@ public final class DrainProcedure {
 
     private final InFlightRequestTracker tracker;
     private final Runnable swimLeaveEmitter;
-    private final java.util.function.Consumer<DrainReason> drainInitiatedEmitter;
+    private final Consumer<DrainReason> drainInitiatedEmitter;
     private final Supplier<Promise<Unit>> departurePush;
     private final Runnable jvmExit;
     private final TimeSpan drainTimeout;
@@ -84,7 +85,7 @@ public final class DrainProcedure {
 
     private DrainProcedure(InFlightRequestTracker tracker,
                            Runnable swimLeaveEmitter,
-                           java.util.function.Consumer<DrainReason> drainInitiatedEmitter,
+                           Consumer<DrainReason> drainInitiatedEmitter,
                            Supplier<Promise<Unit>> departurePush,
                            Runnable jvmExit,
                            TimeSpan drainTimeout) {
@@ -132,7 +133,7 @@ public final class DrainProcedure {
     /// does not interrupt the drain.
     public static DrainProcedure drainProcedure(InFlightRequestTracker tracker,
                                                 Runnable swimLeaveEmitter,
-                                                java.util.function.Consumer<DrainReason> drainInitiatedEmitter,
+                                                Consumer<DrainReason> drainInitiatedEmitter,
                                                 Runnable jvmExit) {
         return new DrainProcedure(tracker,
                                   swimLeaveEmitter,
@@ -147,11 +148,12 @@ public final class DrainProcedure {
     /// chunks to their new replicas and settles when the pushes are acknowledged or its own budget
     /// expires. The quiesced-fork exit waits for it (alongside the in-flight tracker); the
     /// grace-deadline fork does not, so it never gates the halt beyond the grace window. The supplier
-    /// is invoked once, right after the tracker gate closes; a synchronous throw is isolated and the
-    /// drain proceeds as if the push had settled.
+    /// is invoked once the in-flight tracker has QUIESCED (post-quiesce, so the chunk snapshot follows
+    /// the last in-flight write); a synchronous throw is isolated and the drain proceeds as if the
+    /// push had settled.
     public static DrainProcedure drainProcedure(InFlightRequestTracker tracker,
                                                 Runnable swimLeaveEmitter,
-                                                java.util.function.Consumer<DrainReason> drainInitiatedEmitter,
+                                                Consumer<DrainReason> drainInitiatedEmitter,
                                                 Supplier<Promise<Unit>> departurePush,
                                                 Runnable jvmExit) {
         return drainProcedure(tracker,
@@ -165,7 +167,7 @@ public final class DrainProcedure {
     /// Fully-explicit variant of the issue #427 factory with a caller-supplied drain grace window.
     public static DrainProcedure drainProcedure(InFlightRequestTracker tracker,
                                                 Runnable swimLeaveEmitter,
-                                                java.util.function.Consumer<DrainReason> drainInitiatedEmitter,
+                                                Consumer<DrainReason> drainInitiatedEmitter,
                                                 Supplier<Promise<Unit>> departurePush,
                                                 Runnable jvmExit,
                                                 TimeSpan drainTimeout) {
@@ -186,15 +188,17 @@ public final class DrainProcedure {
                  drainTimeout.millis());
         emitDrainInitiatedSafely(reason);
         tracker.setAcceptingNewWork(false);
-        startDeparturePush();
         tracker.onAllDrained(this::onTrackerDrained);
         SharedScheduler.schedule(this::onGraceExpired, drainTimeout);
     }
 
-    /// Kick off the bounded graceful-departure push (issue #427). The supplier's own budget bounds
-    /// it; `onResult` fires on settle (acks in OR budget expired) and flips the `pushSettled` gate. A
-    /// synchronous throw from the supplier is isolated — the push is best-effort observability, never
-    /// a correctness requirement, and the drain must proceed regardless.
+    /// Kick off the bounded graceful-departure push (issue #427, D1). Started ONLY from the
+    /// tracker-quiesced continuation ([#onTrackerDrained]) — after in-flight accepted requests have
+    /// completed — so the chunk enumeration snapshots storage AFTER the last in-flight write lands,
+    /// never concurrently with it. The supplier's own budget bounds it; `onResult` fires on settle
+    /// (acks in OR budget expired) and flips the `pushSettled` gate. A synchronous throw from the
+    /// supplier is isolated — the push is best-effort observability, never a correctness requirement,
+    /// and the drain must proceed regardless.
     private void startDeparturePush() {
         runDeparturePushSafely().onResult(_ -> onPushSettled());
     }
@@ -226,9 +230,9 @@ public final class DrainProcedure {
     }
 
     private void onTrackerDrained() {
-        log.warn("DrainProcedure: in-flight tracker drained");
+        log.warn("DrainProcedure: in-flight tracker drained — starting departure push");
         trackerDrained.set(true);
-        maybeExit();
+        startDeparturePush();
     }
 
     /// Departure-push settled (acks in, or its bounded budget expired). Flips the second exit gate.

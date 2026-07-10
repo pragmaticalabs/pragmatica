@@ -393,11 +393,46 @@ curl "http://localhost:8080/api/events?sinceEpoch=3&sinceSeq=42"
 ]
 ```
 
-**Event Types:** `NODE_JOINED`, `NODE_LEFT`, `NODE_FAILED`, `LEADER_ELECTED`, `LEADER_LOST`, `QUORUM_ESTABLISHED`, `QUORUM_LOST`, `DEPLOYMENT_STARTED`, `DEPLOYMENT_COMPLETED`, `DEPLOYMENT_FAILED`, `SLICE_FAILURE`, `CONNECTION_ESTABLISHED`, `CONNECTION_FAILED`, `GENERATION_CHANGED`, `SELF_DRAIN_INITIATED`
+**Event Types** (the 32 closed-set `ClusterEvent` variants; the `type` discriminator is the SCREAMING_SNAKE_CASE of the record name):
+
+- `NODE_JOINED` -- a node joined the cluster (sourced from the transport `PeerJoined` handshake; leader-gated). Severity INFO.
+- `NODE_LEFT` -- a node gracefully departed (consensus-committed decommission/drain decision; leader-gated). Severity WARNING.
+- `NODE_FAILED` -- a node departure was confirmed via the FSM DEAD edge (the signal that also drives auto-heal; leader-gated). Severity CRITICAL.
+- `LEADER_ELECTED` -- a node was elected cluster leader (leader-gated). Severity INFO.
+- `LEADER_LOST` -- leadership was lost and an election is in progress (leader-gated). Severity WARNING.
+- `QUORUM_ESTABLISHED` -- cluster quorum was (re-)established (leader-gated). Severity INFO.
+- `QUORUM_LOST` -- cluster quorum was lost (leader-gated). Severity CRITICAL.
+- `DEPLOYMENT_STARTED` -- an artifact began deploying to a node. Severity INFO.
+- `DEPLOYMENT_COMPLETED` -- an artifact finished deploying on a node (`details` may carry `durationMs`). Severity INFO.
+- `DEPLOYMENT_FAILED` -- an artifact deployment failed on a node (`details` carries `reason`). Severity WARNING.
+- `SCALE_UP` -- an artifact was scaled up to more instances. Severity INFO.
+- `SCALE_DOWN` -- an artifact was scaled down to fewer instances. Severity INFO.
+- `SLICE_FAILURE` -- all instances of a slice method failed. Severity CRITICAL.
+- `CONNECTION_ESTABLISHED` -- a transport connection to a peer was established. Severity INFO.
+- `CONNECTION_FAILED` -- a transport connection to a peer failed. Severity WARNING.
+- `COMMUNITY_SCALE_REQUEST` -- a community-tier scale request was recorded. Severity INFO.
+- `COMMUNITY_METRICS_SNAPSHOT` -- a community-tier metrics snapshot was recorded. Severity INFO.
+- `ACCESS_DENIED` -- an operation was denied by RBAC (`details` carries `principal`, `method`, `path`, `requiredRole`, `actualRole`). Severity WARNING.
+- `NODE_LIFECYCLE_CHANGED` -- a node lifecycle transition was requested/applied (leader-gated). Severity INFO.
+- `CONFIG_CHANGED` -- dynamic config was added, updated, or removed. Severity INFO.
+- `BACKUP_CREATED` -- a KV backup/commit was created. Severity INFO.
+- `BACKUP_RESTORED` -- a KV backup was restored. Severity WARNING.
+- `BLUEPRINT_DEPLOYED` -- a blueprint was deployed. Severity INFO.
+- `BLUEPRINT_DELETED` -- a blueprint was deleted. Severity INFO.
+- `GENERATION_CHANGED` -- the cluster generation epoch advanced (leader-gated; see below). Severity INFO.
+- `STREAM_REGISTERED` -- a stream was registered (carries the stream `ResourceAddress`). Severity INFO.
+- `STREAM_DELETED` -- a stream was deleted (carries the stream `ResourceAddress`). Severity INFO.
+- `ALERT_INJECTED` -- an operator-injected synthetic alert, replicated cluster-wide so every node serves it on `/api/alerts`. Severity per inject.
+- `TRACE_INJECTED` -- an operator-injected synthetic invocation trace, replicated cluster-wide so every node serves it on `/api/traces`.
+- `SELF_DRAIN_INITIATED` -- the draining node reports its own drain start (per-node fact, NOT leader-gated; see below). Severity WARNING.
+- `STREAM_MEMORY_EXCEEDED` -- a node's off-heap stream budget was exhausted at stream create or growth (per-node fact, NOT leader-gated; throttled per `(stream, phase)`). Severity WARNING.
+- `DEPARTURE_PUSH_INCOMPLETE` -- a gracefully-departing node could not confirm, within the drain grace window, that every locally-held DHT chunk reached a surviving replica (per-node fact, NOT leader-gated; see below). Severity WARNING.
 
 `GENERATION_CHANGED` events are emitted by the leader's `HealthReconciler` whenever the cluster generation epoch advances. `details` carries `oldEpoch`, `newEpoch`, and `reason` (a `GenerationReason` enum name). See [`cluster-generation-spec.md`](../specs/cluster-generation-spec.md) §14.4.
 
 `SELF_DRAIN_INITIATED` (severity `WARNING`) is emitted by the draining node itself when its `SelfDrainCoordinator` flips from `ACTIVE` to `DRAINING` (see `aether/docs/specs/membership-architecture-v2-spec.md`). Unlike most other events, this one is NOT leader-gated — a partition victim is the only authoritative source for "I'm self-draining" and may not be able to reach the leader at all. `details` carries `nodeId` (the draining node), `reason` (one of `sustained-below-quorum`, `quorum-disappeared`, `rabia-paused`), and `graceMs` (the configured in-flight grace before forced halt). Best-effort: if the publish does not reach a quorum before `Runtime.halt(2)` lands, the event is lost.
+
+`DEPARTURE_PUSH_INCOMPLETE` (severity `WARNING`, issue #427) is emitted by a gracefully-departing node when its bounded departure-push (which forwards every locally-held DHT chunk to its new replicas before the node halts) could not confirm all chunks reached a surviving replica within the drain grace window. Like `SELF_DRAIN_INITIATED` it is NOT leader-gated — the leaving node is the only source of truth for its own unpushed chunks. `details` carries `nodeId`, `keysAtRisk` (count of unconfirmed chunks), and `sampleKeys` (a bounded, comma-joined hex sample of the at-risk keys, for operator follow-up). Best-effort: the keys are named rather than silently lost, but if the publish does not land before `Runtime.halt(2)`, the event is lost.
 
 **Severity Levels:** `INFO`, `WARNING`, `CRITICAL`
 

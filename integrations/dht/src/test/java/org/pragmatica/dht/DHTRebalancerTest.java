@@ -332,6 +332,34 @@ class DHTRebalancerTest {
         }
 
         @Test
+        void pushOnDeparture_selfAlreadyPruned_pushesToWholeNewSet() {
+            var ring = fiveNodeRing();
+            var node = dhtNode(LOCAL, memoryStorageEngine(), ring, CONFIG);
+            var replicationFactor = CONFIG.effectiveReplicationFactor(ring.nodeCount());
+            var probe = findKeyWithNewcomer(ring, LOCAL, replicationFactor);
+            var origReplicas = existingReplicas(ring, probe, LOCAL, replicationFactor);
+
+            node.putLocal(probe, value("payload")).await();
+
+            // Prune-ahead-of-drain ordering (Case B): self leaves the ring BEFORE the push runs.
+            ring.removeNode(LOCAL);
+            var postSet = ring.nodesFor(probe, CONFIG.effectiveReplicationFactor(ring.nodeCount()));
+
+            var network = new AckingNetwork();
+            var rebalancer = dhtRebalancer(node, network, CONFIG);
+            network.ackVia(rebalancer::onMigrationDataAck);
+
+            rebalancer.pushOnDeparture(new RecordingObserver()).await().onFailure(cause -> Assertions.fail(cause.message()));
+
+            // With self no longer identifiable in the ring, push to the WHOLE post-departure responsible
+            // set: newcomers get the chunk, and existing replicas tolerate the idempotent versioned
+            // re-put (the storm guard cannot apply without self in the ring).
+            assertThat(network.targets()).containsExactlyInAnyOrderElementsOf(postSet);
+            assertThat(network.targets()).containsAll(origReplicas);
+            assertThat(network.targets()).doesNotContain(LOCAL);
+        }
+
+        @Test
         void pushOnDeparture_budgetOverrun_emitsIncomplete() {
             var ring = fiveNodeRing();
             var node = dhtNode(LOCAL, memoryStorageEngine(), ring, CONFIG);
