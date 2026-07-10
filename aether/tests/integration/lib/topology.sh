@@ -404,7 +404,7 @@ kv_lifecycle_state() {
             # quiet; surface everything else here — a transport failure or
             # unexpected status is never "removed" and must stay visible, not
             # silently swallowed alongside the benign 404 case.
-            log_warn "kv_lifecycle_state(${target}): non-404 failure (status=${status:-000}) — treating as UNKNOWN, not removed"
+            log_warn "kv_lifecycle_state(${target}): non-404 failure (status=${status:-000}) — treating as UNKNOWN, not removed" >&2
             return 1  # transport failure ("000") or unexpected status — UNKNOWN
             ;;
     esac
