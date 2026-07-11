@@ -804,6 +804,14 @@ if [ "$SKIP_DEPLOY" = false ]; then
                 CLOUD_TOML_A="$toml_a_tmp"
                 CLOUD_TOML_B="$toml_b_tmp"
             fi
+            # #441 S20: export the FINAL (possibly snapshot-rewritten) TOML paths so a
+            # mid-run recovery call from inside a suite subshell (restart_all_nodes'
+            # cloud full-self-drain branch, lib/cluster.sh) can re-bootstrap with the
+            # SAME TOML this run used, without re-deriving CLOUD_RUNTIME/SNAPSHOT_ID_VAR
+            # (neither of which is exported). CLOUD_TOML_TMPDIR (if used) is only
+            # cleaned up in teardown()'s EXIT trap, so these paths stay valid for the
+            # entire run.
+            export CLOUD_TOML_A CLOUD_TOML_B
             if [ ${#A_SUITES[@]} -gt 0 ]; then
                 aether cluster bootstrap "$CLOUD_TOML_A" --cluster "$CLUSTER_A_NAME" --yes --wait --timeout 300
                 # Cloud override: derive endpoints from the freshly-provisioned VM's public IP.

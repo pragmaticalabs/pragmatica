@@ -2195,6 +2195,92 @@ _reestablish_echo_baseline() {
     return 0
 }
 
+## #441 S20: cluster-scoped reap + fresh bootstrap — the cloud analog of the
+## docker/compose branch's `docker compose down -v && up -d` full reset. This is
+## the ONLY path capable of recovering a CONFIRMED FULL self-drain: every core
+## has halted (`--restart no` on all launch paths, by design — a self-fenced
+## node must never auto-return on VM reboot), so there is no leader and no CTM
+## (CTM itself runs on a leader that no longer exists) to auto-heal, and
+## `cloud_revive_vm` is poweron-only — a no-op against a VM that is still
+## powered ON (self-drain halts the container/JVM, not the VM) or against a VM
+## the chaos-kill primitive already DELETED. Cloud-init also does not re-run on
+## an already-provisioned VM, so there is no lighter-weight recovery available.
+##
+## NEVER touches the shared test-PG VM or its firewall (tools/pg-firewall.sh):
+## every call below is scoped to `--cluster <name>`, and cloud-reaper.sh's own
+## label filtering (aether-cluster=<name> / orphaned aether-node-id) cannot
+## match the PG VM, which carries neither label.
+_cloud_full_drain_recover() {
+    local cluster_name="${BOOTSTRAP_CLUSTER_NAME:-}"
+    if [ -z "$cluster_name" ]; then
+        log_fail "_cloud_full_drain_recover: BOOTSTRAP_CLUSTER_NAME unset — refusing an unscoped reap (would risk resources outside this cluster, including the shared test-PG VM)"
+        return 1
+    fi
+    # Locate tools/cloud-reaper.sh relative to THIS file (lib/cluster.sh), not the
+    # caller's SCRIPT_DIR — SCRIPT_DIR points at the calling suite's own
+    # suites/NN-name/ directory, not aether/tests/integration, so it cannot be
+    # used to reach the top-level tools/ dir. Same BASH_SOURCE-relative pattern
+    # as _cloud_transport_ports above. lib/ -> integration -> tests -> aether ->
+    # pragmatica -> tools.
+    local reaper
+    reaper="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../../tools" 2>/dev/null && pwd)/cloud-reaper.sh"
+    if [ ! -x "$reaper" ]; then
+        log_fail "_cloud_full_drain_recover: tools/cloud-reaper.sh not found or not executable (resolved path: ${reaper})"
+        return 1
+    fi
+    log_warn "_cloud_full_drain_recover: full self-drain confirmed (0 active cores) — reaping all VMs for cluster '${cluster_name}' (no partial-recovery path exists once every core has halted)"
+    local reap_out reap_rc
+    reap_out=$("$reaper" --cluster "$cluster_name" --destroy --force 2>&1)
+    reap_rc=$?
+    # Reaper rc contract: 0=clean, 1=usage/setup error (fatal — e.g. missing
+    # HCLOUD_TOKEN, bad invocation), 2=one-or-more-deletions-failed (orphans
+    # remain, but the reap otherwise ran — fresh VMs from the rebootstrap below
+    # get new IDs and won't collide with lingering orphans, so this is a
+    # degraded-but-proceedable state, not fatal).
+    case "$reap_rc" in
+        0) log_info "_cloud_full_drain_recover: reap of '${cluster_name}' clean" ;;
+        2) log_warn "_cloud_full_drain_recover: reap of '${cluster_name}' left orphan resources behind (rc=2) — proceeding to rebootstrap anyway: ${reap_out}" ;;
+        *) log_fail "_cloud_full_drain_recover: cloud-reaper.sh --cluster ${cluster_name} --destroy --force failed (rc=${reap_rc}): ${reap_out}"; return 1 ;;
+    esac
+
+    # Select the SAME TOML this run bootstrapped with (run-tests.sh exports
+    # CLOUD_TOML_A/CLOUD_TOML_B — the final, possibly snapshot-rewritten paths —
+    # and CLUSTER_ID per-suite, both already visible in this subshell).
+    local toml
+    case "${CLUSTER_ID:-}" in
+        a) toml="${CLOUD_TOML_A:-}" ;;
+        b) toml="${CLOUD_TOML_B:-}" ;;
+        *) log_fail "_cloud_full_drain_recover: unrecognized CLUSTER_ID='${CLUSTER_ID:-}' (expected 'a' or 'b') — cannot select a bootstrap TOML"; return 1 ;;
+    esac
+    if [ -z "$toml" ] || [ ! -f "$toml" ]; then
+        log_fail "_cloud_full_drain_recover: no readable bootstrap TOML for cluster '${cluster_name}' (CLUSTER_ID='${CLUSTER_ID:-}', resolved path='${toml}') — run-tests.sh must export CLOUD_TOML_A/CLOUD_TOML_B"
+        return 1
+    fi
+
+    # Bare `aether` resolved from PATH — the gate run environment prepends its
+    # own CLI shim to PATH; a hardcoded path would silently bypass it. PG env
+    # vars (PG_USER/PG_PASSWORD/PG_HOST/PG_DB) referenced via ${env:...} in the
+    # TOML are already ambient in this shell (run-tests.sh inherits them from
+    # the operator's environment; this subshell inherits them from run-tests.sh).
+    log_info "_cloud_full_drain_recover: fresh bootstrap of '${cluster_name}' from ${toml}"
+    local boot_out boot_rc
+    boot_out=$(aether cluster bootstrap "$toml" --cluster "$cluster_name" --yes --wait --timeout 300 2>&1)
+    boot_rc=$?
+    if [ "$boot_rc" -ne 0 ]; then
+        log_fail "_cloud_full_drain_recover: aether cluster bootstrap '${cluster_name}' failed (rc=${boot_rc}): ${boot_out}"
+        return 1
+    fi
+    log_info "_cloud_full_drain_recover: bootstrap complete: $(printf '%s' "$boot_out" | tail -3)"
+
+    # The fresh cluster's VMs have new IPs — the pinned CLUSTER_ENDPOINT/
+    # MGMT_ENTRY_POINT from before the drain is stale.
+    if ! _refresh_mgmt_entry_point; then
+        log_fail "_cloud_full_drain_recover: no live endpoint to pin after rebootstrap"
+        return 1
+    fi
+    return 0
+}
+
 restart_all_nodes() {
     log_info "Restoring cluster to baseline (CLUSTER_NAME=${CLUSTER_NAME:-aether-b-node-})..."
     if [ "$CLOUD_MODE" = "true" ]; then
@@ -2222,10 +2308,33 @@ restart_all_nodes() {
         # Re-pin the mgmt endpoint to a live core, then wait on readiness via the API.
         _refresh_mgmt_entry_point || log_warn "restart_all_nodes: no live endpoint to re-pin (proceeding with ${CLUSTER_ENDPOINT})"
         local floor=$(( ${NODE_COUNT:-5} - 1 ))
-        if ! wait_for "${floor}+ healthy cores present (cloud baseline)" \
-            "[ \$(cluster_active_core_count) -ge ${floor} ]" 600; then
-            log_fail "restart_all_nodes: cloud cluster did not reach ${floor}+ healthy cores within 600s (current=$(cluster_active_core_count))"
-            return 1
+
+        # #441 S20: the poweron loop above assumes a PARTIAL drain (some seed VMs
+        # stopped, CTM auto-heals the rest back to floor) — it cannot recover a
+        # FULL self-drain (every core halted; see _cloud_full_drain_recover's
+        # header for why). Probe with a SHORT bounded wait first — do NOT burn
+        # the full 600s budget before deciding — then only escalate to the
+        # destructive reap+rebootstrap on a CONFIRMED full drain (0 active
+        # cores). A genuine partial shortfall (some but not enough cores back)
+        # keeps today's behavior: keep waiting on the remaining budget.
+        local short_wait=120 full_budget=600
+        if ! wait_for "${floor}+ healthy cores present (cloud baseline, ${short_wait}s probe)" \
+            "[ \$(cluster_active_core_count) -ge ${floor} ]" "$short_wait"; then
+            local active_now
+            active_now=$(cluster_active_core_count)
+            if [ "${active_now:-0}" -eq 0 ]; then
+                if ! _cloud_full_drain_recover; then
+                    log_fail "restart_all_nodes: cloud full-drain recovery (cluster-scoped reap + rebootstrap) failed"
+                    return 1
+                fi
+            else
+                log_info "restart_all_nodes: ${active_now}/${floor}+ active cores after ${short_wait}s probe — partial recovery in progress (not a full drain), continuing on the remaining budget"
+                if ! wait_for "${floor}+ healthy cores present (cloud baseline, remaining budget)" \
+                    "[ \$(cluster_active_core_count) -ge ${floor} ]" $((full_budget - short_wait)); then
+                    log_fail "restart_all_nodes: cloud cluster did not reach ${floor}+ healthy cores within ${full_budget}s total (current=$(cluster_active_core_count))"
+                    return 1
+                fi
+            fi
         fi
         if ! wait_for_leader 120; then
             log_fail "restart_all_nodes: no leader elected within 120s on cloud baseline restore"

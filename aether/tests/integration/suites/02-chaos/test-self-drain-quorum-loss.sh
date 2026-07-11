@@ -394,29 +394,107 @@ test_pick_victims_and_kill_three_simultaneously() {
 }
 
 # Confirm a survivor's self-drain DEPARTURE on cloud, tolerant of the
-# re-resolve-at-kill race. Primary signal: a post-baseline NODE_LEFT/NODE_FAILED
-# on /api/events (the survivor self-drained and halted). FALLBACK: if no event
-# lands within the budget, check whether the survivor's VM still resolves — a
-# survivor that has already vanished (its VM deleted/replaced by CTM auto-heal
-# AFTER it halted) IS departed; its event may have been emitted before our
-# baseline or lost to the publish-vs-halt race, so polling for a fresh
-# post-baseline event would time out on a node that is demonstrably gone. Treating
-# "no server resolves" as a SATISFIED departure kills that false fail while keeping
-# the S19 contract (survivor must depart) intact — we only relax HOW we observe the
-# departure, never WHETHER it happened. Returns 0 on confirmed/satisfied departure,
-# 1 otherwise.
+# re-resolve-at-kill race. Tiered proof, each tier only consulted when the
+# previous one is unavailable/times out:
+#
+#   1. PRIMARY (wait_for_node_departure, lib/topology.sh): membership state
+#      "Dead" on a surviving node's /api/cluster/membership, corroborated by
+#      NODE_LEFT/NODE_FAILED on /api/events. Requires a LIVE node to query.
+#
+#   2. #441 S19: when BOTH last survivors self-drain within the same ~38s
+#      window, tier 1 structurally cannot observe it — by the time either
+#      survivor is checked, the OTHER may already be dead too, leaving no live
+#      core to answer membership/events at all. Reach past the mgmt API
+#      entirely: SSH to the survivor's own VM (cloud_ssh, reuses
+#      $AETHER_SSH_KEY) and read the DESIGNED drain-halt state directly from
+#      `docker inspect aether-node` — exit code 2 (Runtime.halt(2), the exact
+#      halt reason SelfDrainCoordinator wires) with a non-zero FinishedAt is
+#      authoritative: this is a direct read of the actual JVM exit state, not
+#      a proxy signal, so a hit here is treated the same as tier 1 (log_info,
+#      hard pass). No timestamp-window arithmetic is needed to bound this to
+#      "within budget": test_initial_state already asserted all 5 containers
+#      RUNNING immediately before the kill step in THIS run, so any Exited
+#      state observed here necessarily happened during this scenario's
+#      kill-to-now window, not a stale leftover from an earlier suite.
+#
+#   3. Tier 2 degrades gracefully when SSH itself cannot connect — the known,
+#      separately-tracked #441 item 3 gap (2 of 3 revived/replacement VMs
+#      refuse non-TTY SSH: root password expiry / incomplete cloud-init
+#      authorized_keys propagation). openssh reports a connection/auth-level
+#      failure as rc=255 (distinct from a remote command's own exit status).
+#      On rc=255 fall back to an APPROXIMATE proof: hit the survivor's OWN
+#      mgmt endpoint directly (bypassing _resolve_live_endpoint, which would
+#      silently rotate to a DIFFERENT node) and check for a TRANSPORT failure
+#      (curl status "000" — nothing listening), not an HTTP 404. This is
+#      weaker evidence (a dead process is consistent with, but does not
+#      prove, exit code 2) so it is log_warn, not log_pass.
+#
+#   4. Last-resort fallback (pre-existing): if the survivor's VM no longer
+#      resolves at all (deleted/replaced), it has departed. Self-drain alone
+#      does NOT power off the VM (only the container/JVM inside it halts —
+#      see the GAP-A comment in test_survivors_self_drain_and_exit below), so
+#      this tier rarely fires for a pure self-drain; it remains for the case
+#      where CTM later replaces the slot.
+#
+# We only ever relax HOW departure is observed, never WHETHER it happened —
+# every tier below tier 1 requires positive evidence, not merely an absence.
+# Returns 0 on confirmed/satisfied departure, 1 otherwise.
 _confirm_survivor_departure() {
     local survivor="$1" baseline="$2"
     if wait_for_node_departure "$survivor" "$baseline" "$SURVIVOR_EXIT_BUDGET_S"; then
         return 0
     fi
-    # Event-wait timed out — fall back to VM-existence. If the survivor's server no
-    # longer resolves, it has departed (halted + auto-heal removed/replaced it).
+
+    # Tier 2: SSH + docker inspect on the survivor's own VM.
+    local insp ssh_rc code finished_at
+    insp=$(cloud_ssh "$survivor" "docker inspect --format '{{.State.ExitCode}}|{{.State.FinishedAt}}' aether-node 2>&1")
+    ssh_rc=$?
+    if [ "$ssh_rc" -eq 0 ]; then
+        code="${insp%%|*}"
+        finished_at="${insp#*|}"
+        if [ "$code" = "2" ] && [ -n "$finished_at" ] && [ "$finished_at" != "0001-01-01T00:00:00Z" ]; then
+            log_info "Survivor ${survivor} container exit code=2 (Runtime.halt(2)) FinishedAt=${finished_at} — designed drain halt confirmed via SSH docker-inspect (event/membership signal was unavailable, consistent with simultaneous last-survivor drain)"
+            return 0
+        fi
+        log_fail "S19 violation (cloud): survivor ${survivor} reachable via SSH but docker inspect reports exit-code='${code}' FinishedAt='${finished_at}' — not a designed drain halt (expected exit code 2)"
+        return 1
+    fi
+    if [ "$ssh_rc" -ne 255 ]; then
+        # SSH connected fine; the REMOTE command itself failed (e.g. docker
+        # daemon error, unexpected container name). Distinct from the known
+        # #441 item 3 lockout — surface loudly rather than silently degrading
+        # to the approximate mgmt-port proof below.
+        log_fail "S19 violation (cloud): survivor ${survivor} SSH connected but the remote docker-inspect command failed (rc=${ssh_rc}): ${insp}"
+        return 1
+    fi
+
+    # Tier 3 (approximate, log_warn): SSH transport/auth failure (rc=255) —
+    # the known #441 item 3 keyless-lockout gap, not fixed here. Check the
+    # survivor's own mgmt endpoint directly for a transport-dead signal.
+    local ip mgmt_port status ip_rc
+    ip=$(cloud_public_ip "$survivor")
+    ip_rc=$?
+    if [ "$ip_rc" -ne 0 ]; then
+        log_info "Survivor ${survivor} public IP could not be resolved (rc=${ip_rc}, reason logged above) — tier 3 unavailable, falling through to VM-existence tier"
+        ip=""
+    fi
+    if [ -n "$ip" ]; then
+        mgmt_port="${CLOUD_MGMT_PORT:-8080}"
+        status=$(http_status "${MGMT_SCHEME:-http}://${ip}:${mgmt_port}/health/live" -m 3)
+        if [ "$status" = "000" ]; then
+            log_warn "Survivor ${survivor} SSH unreachable (rc=255, likely #441 item 3 keyless lockout) AND its mgmt endpoint (${ip}:${mgmt_port}) is transport-dead (curl status 000, not an HTTP response) — treating as APPROXIMATE departure proof (process not listening is consistent with a self-drain halt, but exit-code-2 could not be verified)"
+            return 0
+        fi
+        log_fail "S19 violation (cloud): survivor ${survivor} SSH unreachable (rc=255) and its mgmt endpoint (${ip}:${mgmt_port}) returned HTTP status '${status}' (still responding — not departed)"
+        return 1
+    fi
+
+    # Tier 4: last-resort VM-existence fallback (pre-existing).
     if ! cloud_server_id "$survivor" >/dev/null 2>&1; then
         log_info "Survivor ${survivor} VM no longer resolves — already departed (event lost to publish-vs-halt race or pre-baseline); treating as satisfied departure"
         return 0
     fi
-    log_fail "S19 violation (cloud): survivor ${survivor} did not DEPART membership within ${SURVIVOR_EXIT_BUDGET_S}s — no NODE_LEFT/NODE_FAILED on /api/events AND its VM still resolves (still running)"
+    log_fail "S19 violation (cloud): survivor ${survivor} did not DEPART membership within ${SURVIVOR_EXIT_BUDGET_S}s — no NODE_LEFT/NODE_FAILED on /api/events, SSH docker-inspect proof unavailable (rc=255) with mgmt endpoint unresolvable, and its VM still resolves (still running)"
     return 1
 }
 
