@@ -73,10 +73,8 @@ public interface WorkerMetricsAggregator {
             public CommunityMetricsSnapshot buildSnapshot() {
                 return CommunityMetricsSnapshot.communityMetricsSnapshot(communityIdSupplier.get(),
                                                                          self,
-                                                                         0L,
                                                                          1,
-                                                                         collectOwnMetrics(),
-                                                                         List.of());
+                                                                         collectOwnMetrics());
             }
 
             @Contract

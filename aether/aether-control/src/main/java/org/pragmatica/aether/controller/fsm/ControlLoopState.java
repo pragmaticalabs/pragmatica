@@ -54,7 +54,6 @@ public sealed interface ControlLoopState extends FsmState<ControlLoopState, Clus
         @Contract
         public void onEntry() {
             ctx.resetSliceProtectionState();
-            ctx.restoreCooldownsFromKvStore();
             log.info("Control loop Warmup: activation={}, warmup-period={}ms",
                      activationTimeMs,
                      ctx.config().warmUpPeriod().millis());

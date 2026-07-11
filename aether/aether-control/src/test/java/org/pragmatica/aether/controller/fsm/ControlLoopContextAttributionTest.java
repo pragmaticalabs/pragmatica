@@ -42,7 +42,12 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
+import org.pragmatica.messaging.MessageRouter;
+import org.pragmatica.serialization.Deserializer;
+import org.pragmatica.serialization.Serializer;
 import org.pragmatica.statemachine.Fsm;
+
+import io.netty.buffer.ByteBuf;
 
 import java.util.ArrayList;
 import java.util.EnumMap;
@@ -100,6 +105,29 @@ class ControlLoopContextAttributionTest {
         ctx.runEvaluationCycle();
 
         assertThat(cluster.putBases()).isEmpty();
+    }
+
+    /// Review MAJOR: a departed node's frozen per-artifact metrics must be evicted, not re-summed
+    /// every cycle. Only WORKER feeds HOT here; after WORKER leaves, HOT's active load must fall to
+    /// zero so a scaled-up slice can scale back down — proving the frozen window contribution is gone
+    /// (without eviction the stale active=100 would persist and no scale-down could ever occur).
+    @Test
+    void onNodeDeparted_evictsDepartedNodeMetrics_enablesScaleDown() {
+        ctx.putBlueprint(HOT, 3, 1);
+
+        for (int i = 0; i < WINDOW; i++) {
+            ingest(100, 0);
+            ctx.runEvaluationCycle();
+        }
+
+        assertThat(cluster.putBases()).describedAs("steady high load triggers no scaling").isEmpty();
+
+        ctx.onNodeDeparted(WORKER, List.of(SELF, NodeId.nodeId("n3").unwrap(),
+                                           NodeId.nodeId("n4").unwrap(), NodeId.nodeId("n5").unwrap()));
+        ctx.runEvaluationCycle();
+
+        assertThat(cluster.putBases()).contains(HOT.base());
+        assertThat(cluster.lastTargetInstances()).isEqualTo(2);
     }
 
     /// #424 leader cap: `maxInstances` bounds the autoscaler's requested instance count BEFORE the
@@ -229,7 +257,7 @@ class ControlLoopContextAttributionTest {
         var slices = List.of(PerSliceMetrics.perSliceMetrics(HOT, hotActive, 0.0, 0.0, hotActive),
                              PerSliceMetrics.perSliceMetrics(IDLE, idleActive, 0.0, 0.0, idleActive));
 
-        return CommunityMetricsSnapshot.communityMetricsSnapshot("community", WORKER, 0L, 1, slices, List.of());
+        return CommunityMetricsSnapshot.communityMetricsSnapshot("community", WORKER, 1, slices);
     }
 
     private ControlLoopContext buildContext() {
@@ -323,26 +351,26 @@ class ControlLoopContextAttributionTest {
 
     static final class StubKVStore extends KVStore<AetherKey, AetherValue> {
         StubKVStore() {
-            super(org.pragmatica.messaging.MessageRouter.mutable(),
+            super(MessageRouter.mutable(),
                   StubSerializer.INSTANCE,
                   StubDeserializer.INSTANCE);
         }
     }
 
-    enum StubSerializer implements org.pragmatica.serialization.Serializer {
+    enum StubSerializer implements Serializer {
         INSTANCE;
 
         @Override
-        public <T> void write(io.netty.buffer.ByteBuf byteBuf, T object) {
+        public <T> void write(ByteBuf byteBuf, T object) {
             throw new UnsupportedOperationException("unused");
         }
     }
 
-    enum StubDeserializer implements org.pragmatica.serialization.Deserializer {
+    enum StubDeserializer implements Deserializer {
         INSTANCE;
 
         @Override
-        public <T> T read(io.netty.buffer.ByteBuf byteBuf) {
+        public <T> T read(ByteBuf byteBuf) {
             throw new UnsupportedOperationException("unused");
         }
     }

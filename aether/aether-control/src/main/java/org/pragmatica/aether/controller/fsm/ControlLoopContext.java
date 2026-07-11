@@ -19,14 +19,11 @@ import org.pragmatica.aether.metrics.ClusterSyncCollector;
 import org.pragmatica.aether.metrics.invocation.InvocationMetricsCollector;
 import org.pragmatica.aether.slice.SliceState;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
-import org.pragmatica.aether.slice.kvstore.AetherKey.ConfigKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceNodeKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceTargetKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
-import org.pragmatica.aether.slice.kvstore.AetherValue.ConfigValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceTargetValue;
 import org.pragmatica.aether.worker.metrics.CommunityMetricsSnapshot;
-import org.pragmatica.aether.worker.metrics.CommunityScalingRequest;
 import org.pragmatica.aether.worker.metrics.PerSliceMetrics;
 import org.pragmatica.cluster.node.ClusterNode;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
@@ -35,7 +32,6 @@ import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.fsm.ClusterFsmEvent;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
-import org.pragmatica.lang.parse.Number;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.statemachine.Fsm;
 
@@ -55,8 +51,6 @@ import org.slf4j.LoggerFactory;
 
 
 public final class ControlLoopContext {
-    public static final String COOLDOWN_KEY_PREFIX = "scaling-cooldown/";
-    public static final long STALE_EVIDENCE_MS = 30_000L;
     private static final Logger log = LoggerFactory.getLogger(ControlLoopContext.class);
 
     private final Fsm<ControlLoopState, ClusterFsmEvent> fsm;
@@ -95,7 +89,6 @@ public final class ControlLoopContext {
 
     private final ConcurrentHashMap<Artifact, ConcurrentHashMap<NodeId, PerSliceMetrics>> perNodeSliceMetrics = new ConcurrentHashMap<>();
 
-    private final ConcurrentHashMap<String, Long> communityScalingCooldowns = new ConcurrentHashMap<>();
     private final AtomicLong quorumSequence = new AtomicLong(0);
 
     public ControlLoopContext(Fsm<ControlLoopState, ClusterFsmEvent> fsm,
@@ -192,6 +185,17 @@ public final class ControlLoopContext {
     @Contract
     public void setTopology(List<NodeId> newTopology) {
         topology.set(newTopology);
+    }
+
+    /// Evict a departed node's contribution to the scaling signal (review MAJOR). Without this the
+    /// node's last per-artifact metrics stay frozen in `perNodeSliceMetrics` and are re-summed every
+    /// cycle, permanently inflating the composite so a scaled-up slice can never scale back down
+    /// after a host leaves. Called on the FSM terminal-departure edge (NodeRemoved/NodeDecommissioned).
+    @Contract
+    public void onNodeDeparted(NodeId departed, List<NodeId> newTopology) {
+        topology.set(newTopology);
+        perNodeSliceMetrics.values().forEach(byNode -> byNode.remove(departed));
+        communitySnapshotStore.remove(departed.id());
     }
 
     public Map<Artifact, ClusterController.Blueprint> blueprintsSnapshot() {
@@ -367,21 +371,6 @@ public final class ControlLoopContext {
     }
 
     @Contract
-    public void handleCommunityScalingRequest(CommunityScalingRequest request) {
-        if (isStaleEvidence(request)) {
-            return;
-        }
-
-        if (isInCommunityCooldown(request)) {
-            return;
-        }
-
-        blueprint(request.artifact()).onEmpty(() -> log.info("No blueprint found for community scaling request: {}",
-                                                             request.artifact())).onPresent(blueprint -> applyCommunityScaling(request,
-                                                                                                                               blueprint));
-    }
-
-    @Contract
     public void publishScalingEvent(BlueprintChange change,
                                     Artifact artifact,
                                     int previousInstances,
@@ -396,16 +385,10 @@ public final class ControlLoopContext {
         eventPublisher.accept(event);
     }
 
-    @Contract
-    public void restoreCooldownsFromKvStore() {
-        kvStore.forEach(ConfigKey.class, ConfigValue.class, this::restoreCooldownEntry);
-    }
-
     private void markSliceCooldown(Artifact artifact) {
         var timestamp = nowMs();
 
         sliceActivationTimes.put(artifact, timestamp);
-        persistCooldown(artifact.asString(), timestamp);
         log.debug("Slice {} reached ACTIVE, cooldown started", artifact);
         fsm.dispatch(new ControlLoopEvents.CooldownRequested(artifact, timestamp));
     }
@@ -756,119 +739,5 @@ public final class ControlLoopContext {
                                .mapToDouble(metrics -> metrics.get(ClusterSyncCollector.CPU_USAGE))
                                .average()
                                .orElse(0.0);
-    }
-
-    private boolean isStaleEvidence(CommunityScalingRequest request) {
-        var age = nowMs() - request.evidence().timestampMs();
-
-        if (age > STALE_EVIDENCE_MS) {
-            log.info("Rejecting stale community scaling request from {} (age: {}ms)", request.communityId(), age);
-
-            return true;
-        }
-
-        return false;
-    }
-
-    private boolean isInCommunityCooldown(CommunityScalingRequest request) {
-        var artifactKey = request.artifact().asString();
-        var lastScaling = communityScalingCooldowns.get(artifactKey);
-
-        if (lastScaling != null && (nowMs() - lastScaling) < configRef.get().sliceCooldown().millis()) {
-            log.debug("Community scaling request for {} in cooldown", artifactKey);
-
-            return true;
-        }
-
-        return false;
-    }
-
-    private void applyCommunityScaling(CommunityScalingRequest request, ClusterController.Blueprint blueprint) {
-        var artifactKey = request.artifact().asString();
-        var clusterSize = effectiveClusterSize();
-        var capped = Math.min(request.requestedInstances(), clusterSize);
-        var newInstances = Math.max(capped, blueprint.minInstances());
-
-        if (newInstances == blueprint.instances()) {
-            log.debug("Community scaling request for {} results in no change", artifactKey);
-
-            return;
-        }
-
-        log.info("Applying community scaling {} for {}: {} -> {} (requested by {})",
-                 request.direction(),
-                 request.artifact(),
-                 blueprint.instances(),
-                 newInstances,
-                 request.governorId().id());
-        putBlueprint(request.artifact(),
-                     newInstances,
-                     blueprint.minInstances(),
-                     blueprint.maxInstances(),
-                     blueprint.scaleUpThreshold(),
-                     blueprint.scaleDownThreshold());
-        var cooldownTimestamp = nowMs();
-
-        communityScalingCooldowns.put(artifactKey, cooldownTimestamp);
-        persistCooldown(artifactKey, cooldownTimestamp);
-        var key = SliceTargetKey.sliceTargetKey(request.artifact().base());
-        var value = SliceTargetValue.sliceTargetValue(request.artifact().version(),
-                                                      newInstances,
-                                                      newInstances,
-                                                      Option.none(),
-                                                      blueprint.maxInstances(),
-                                                      blueprint.scaleUpThreshold(),
-                                                      blueprint.scaleDownThreshold());
-
-        cluster.apply(List.of(new KVCommand.Put<>(key, value))).onFailure(cause -> log.error("Failed to apply community scaling: {}",
-                                                                                             cause.message()));
-        publishCommunityScalingEvent(request, blueprint.instances(), newInstances);
-    }
-
-    private void publishCommunityScalingEvent(CommunityScalingRequest request,
-                                              int previousInstances,
-                                              int newInstances) {
-        var scalingEvent = "UP".equals(request.direction())
-                           ? ScalingEvent.ScaledUp.scaledUp(request.artifact(), previousInstances, newInstances)
-                           : ScalingEvent.ScaledDown.scaledDown(request.artifact(), previousInstances, newInstances);
-
-        eventPublisher.accept(scalingEvent);
-    }
-
-    private void persistCooldown(String artifactKey, long timestamp) {
-        var configKey = ConfigKey.forKey(COOLDOWN_KEY_PREFIX + artifactKey);
-        var configValue = ConfigValue.configValue(COOLDOWN_KEY_PREFIX + artifactKey, Long.toString(timestamp));
-
-        cluster.apply(List.of(new KVCommand.Put<>(configKey, configValue))).onFailure(cause -> log.warn("Failed to persist cooldown for {}: {}",
-                                                                                                        artifactKey,
-                                                                                                        cause.message()));
-    }
-
-    @Contract
-    private void restoreCooldownEntry(ConfigKey key, ConfigValue value) {
-        if (!key.key().startsWith(COOLDOWN_KEY_PREFIX)) {
-            return;
-        }
-
-        var artifactKey = key.key().substring(COOLDOWN_KEY_PREFIX.length());
-        var timestamp = parseCooldownTimestamp(value.value());
-
-        if (timestamp <= 0) {
-            return;
-        }
-
-        var now = nowMs();
-        var cooldownMs = configRef.get().sliceCooldown().millis();
-
-        if ((now - timestamp) < cooldownMs) {
-            communityScalingCooldowns.put(artifactKey, timestamp);
-            log.debug("Restored cooldown for {} ({}ms remaining)", artifactKey, cooldownMs - (now - timestamp));
-        }
-    }
-
-    private static long parseCooldownTimestamp(String value) {
-        return Option.option(value)
-                     .flatMap(v -> Number.parseLong(v).option())
-                     .or(-1L);
     }
 }

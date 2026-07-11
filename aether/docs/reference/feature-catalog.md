@@ -48,7 +48,7 @@ Three storage/persistence concepts that are distinct and must not be conflated:
 
 | # | Feature | Status | Description |
 |---|---------|--------|-------------|
-| 7 | Per-slice auto-scaling | Battle-tested | DecisionTreeController evaluates each artifact's own composite load (ACTIVE_INVOCATIONS + P95, error-rate gated) from per-slice `CommunityMetricsSnapshot` metrics; issues ScaleUp/ScaleDown **per slice** via ControlLoop. Cluster-average CPU dropped as a trigger — fixes cross-slice mis-attribution (#422/#423). Optional blueprint `maxInstances` + per-slice threshold overrides (#424); `SCALE_CAPPED` event + `GET /api/controller/decisions` per-slice decision snapshot (#425) |
+| 7 | Per-slice auto-scaling | Partial | DecisionTreeController evaluates each artifact's own composite load (ACTIVE_INVOCATIONS + P95, error-rate gated) from per-slice `CommunityMetricsSnapshot` metrics; issues ScaleUp/ScaleDown **per slice** via ControlLoop. Cluster-average CPU dropped as a trigger — fixes cross-slice mis-attribution (#422/#423). Optional blueprint `maxInstances` + per-slice threshold overrides (#424); `SCALE_CAPPED` event + `GET /api/controller/decisions` per-slice decision snapshot (#425). **Proven by unit + in-JVM forge probe only; cloud/chaos validation, #369 bench tuning, and setpoint/forecast follow-ons (#435–#437) pending** |
 | 8 | minInstances enforcement | Complete | Blueprint minimum instance count as hard floor across auto-scaler, manual API, and rolling updates |
 | 9 | Manual scale API | Complete | `POST /api/scale` with blueprint membership guard and minInstances validation |
 | 10 | Dynamic controller config | Complete | Runtime-adjustable CPU thresholds and evaluation interval |

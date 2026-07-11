@@ -399,7 +399,9 @@ final class DeploymentManagerImpl implements DeploymentManager {
                                        Version version,
                                        int instances) {
         var key = SliceTargetKey.sliceTargetKey(base);
-        var value = SliceTargetValue.sliceTargetValue(version, instances);
+        var value = kvStore.get(key).filter(SliceTargetValue.class::isInstance).map(SliceTargetValue.class::cast).map(current -> current.withVersion(version)
+                                                                                                                                        .withInstances(instances)).or(SliceTargetValue.sliceTargetValue(version,
+                                                                                                                                                                                                        instances));
 
         commands.add(new KVCommand.Put<>(key, value));
     }

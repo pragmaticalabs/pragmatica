@@ -172,7 +172,6 @@ import org.pragmatica.aether.worker.governor.GovernorAnnouncer;
 import org.pragmatica.aether.worker.governor.GovernorMesh;
 import org.pragmatica.aether.worker.group.GroupMembershipTracker;
 import org.pragmatica.aether.worker.metrics.CommunityMetricsSnapshot;
-import org.pragmatica.aether.worker.metrics.CommunityScalingRequest;
 import org.pragmatica.aether.worker.metrics.WorkerMetricsAggregator;
 import org.pragmatica.aether.worker.mutation.MutationForwarder;
 import org.pragmatica.aether.config.AppHttpConfig;
@@ -4663,7 +4662,6 @@ public interface AetherNode extends ManageableNode {
         entries.add(MessageRouter.Entry.route(ScalingEvent.ScaleCapped.class, eventAggregator::onScaleCapped));
         entries.add(MessageRouter.Entry.route(ClusterDeploymentManager.ReconciliationAdjustment.class,
                                               eventAggregator::onReconciliationAdjustment));
-        entries.add(MessageRouter.Entry.route(CommunityScalingRequest.class, controlLoop::onCommunityScalingRequest));
         entries.add(MessageRouter.Entry.route(CommunityMetricsSnapshot.class, controlLoop::onCommunityMetricsSnapshot));
         entries.add(MessageRouter.Entry.route(NetworkServiceMessage.ConnectionEstablished.class,
                                               eventAggregator::onConnectionEstablished));

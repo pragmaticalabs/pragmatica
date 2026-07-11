@@ -20,7 +20,6 @@ import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeArtifactValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceTargetValue;
 import org.pragmatica.aether.worker.metrics.CommunityMetricsSnapshot;
-import org.pragmatica.aether.worker.metrics.CommunityScalingRequest;
 import org.pragmatica.cluster.node.ClusterNode;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStore;
@@ -85,7 +84,6 @@ public interface ControlLoop {
     ControllerConfig configuration();
     void updateConfiguration(ControllerConfig config);
     void stop();
-    void onCommunityScalingRequest(CommunityScalingRequest request);
     void onCommunityMetricsSnapshot(CommunityMetricsSnapshot snapshot);
     Map<String, CommunityMetricsSnapshot> communitySnapshots();
     /// Bounded snapshot of the latest per-artifact scaling decision (#425). Leader-only observability
@@ -178,8 +176,8 @@ public interface ControlLoop {
         public void onMembershipDecision(MembershipDecision decision) {
             switch (decision) {
                 case NodeJoined(_, var newTopology, _, _) -> ctx.setTopology(newTopology);
-                case NodeRemoved(_, var newTopology, _, _) -> ctx.setTopology(newTopology);
-                case NodeDecommissioned(_, var newTopology, _, _) -> ctx.setTopology(newTopology);
+                case NodeRemoved(var departed, var newTopology, _, _) -> ctx.onNodeDeparted(departed, newTopology);
+                case NodeDecommissioned(var departed, var newTopology, _, _) -> ctx.onNodeDeparted(departed, newTopology);
                 // RC1 Step 2 lifecycle-projection variants: ControlLoop reacts to terminal
                 // topology changes only — JOINING / DRAINING / FAILED_DRAIN /
                 // SHUTTING_DOWN do not adjust the committed core set.
@@ -269,17 +267,6 @@ public interface ControlLoop {
         @Override
         public void stop() {
             fsm.dispatch(new ClusterFsmEvent.Shutdown());
-        }
-
-        @Override
-        public void onCommunityScalingRequest(CommunityScalingRequest request) {
-            if (!isActive()) {
-                log.debug("Ignoring community scaling request: not active");
-
-                return;
-            }
-
-            ctx.handleCommunityScalingRequest(request);
         }
 
         @Override

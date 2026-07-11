@@ -399,8 +399,9 @@ public interface RollbackManager {
                                                       String requestId) {
                 var artifactBase = rollbackArtifact.base();
                 var key = SliceTargetKey.sliceTargetKey(artifactBase);
-                var instanceCount = kvStore.get(key).map(v -> ((SliceTargetValue) v).targetInstances()).or(1);
-                var value = SliceTargetValue.sliceTargetValue(decision.targetVersion(), instanceCount);
+                var value = kvStore.get(key).filter(SliceTargetValue.class::isInstance).map(SliceTargetValue.class::cast).map(current -> current.withVersion(decision.targetVersion())).or(SliceTargetValue.sliceTargetValue(decision.targetVersion(),
+                                                                                                                                                                                                                             1));
+                var instanceCount = value.targetInstances();
                 var command = new KVCommand.Put<AetherKey, AetherValue>(key, value);
                 var failedVersion = decision.failedVersion();
                 var targetVersion = decision.targetVersion();

@@ -253,9 +253,24 @@ public interface AbTestManager {
             @SuppressWarnings("unchecked")
             private KVCommand<AetherKey> buildDeployCommand(ArtifactBase artifactBase, Version version) {
                 var key = SliceTargetKey.sliceTargetKey(artifactBase);
-                var value = new SliceTargetValue(version, 1, 1, Option.none(), "CORE_ONLY", System.currentTimeMillis());
+                var value = targetPreservingOverrides(key, version);
 
                 return (KVCommand<AetherKey>)(KVCommand<?>) new KVCommand.Put<>(key, value);
+            }
+
+            /// A/B lifecycle writes must not evaporate the operator's per-slice bounds (#424 review).
+            /// Reads the current SliceTargetValue and carries its `maxInstances`/threshold overrides
+            /// onto the new version (canary/promote/restore stay at 1 instance).
+            private SliceTargetValue targetPreservingOverrides(SliceTargetKey key, Version version) {
+                var current = kvStore.get(key).filter(SliceTargetValue.class::isInstance).map(SliceTargetValue.class::cast);
+
+                return SliceTargetValue.sliceTargetValue(version,
+                                                         1,
+                                                         1,
+                                                         Option.none(),
+                                                         current.flatMap(SliceTargetValue::maxInstances),
+                                                         current.flatMap(SliceTargetValue::scaleUpThreshold),
+                                                         current.flatMap(SliceTargetValue::scaleDownThreshold));
             }
 
             private Promise<AbTestDeployment> activateTest(AbTestDeployment test) {
@@ -291,12 +306,7 @@ public interface AbTestManager {
             private Promise<AbTestDeployment> promoteWinner(AbTestDeployment test, String winningVariant) {
                 var winnerVersion = test.variantVersions().get(winningVariant);
                 var key = SliceTargetKey.sliceTargetKey(test.artifactBase());
-                var value = new SliceTargetValue(winnerVersion,
-                                                 1,
-                                                 1,
-                                                 Option.none(),
-                                                 "CORE_ONLY",
-                                                 System.currentTimeMillis());
+                var value = targetPreservingOverrides(key, winnerVersion);
                 var command = (KVCommand<AetherKey>)(KVCommand<?>) new KVCommand.Put<>(key, value);
 
                 return clusterNode.<Unit> apply(List.of(command))
@@ -324,12 +334,7 @@ public interface AbTestManager {
             private Promise<AbTestDeployment> restoreBaseline(AbTestDeployment test) {
                 log.info("Restoring baseline {} for A/B test {}", test.baselineVersion(), test.testId());
                 var key = SliceTargetKey.sliceTargetKey(test.artifactBase());
-                var value = new SliceTargetValue(test.baselineVersion(),
-                                                 1,
-                                                 1,
-                                                 Option.none(),
-                                                 "CORE_ONLY",
-                                                 System.currentTimeMillis());
+                var value = targetPreservingOverrides(key, test.baselineVersion());
                 var command = (KVCommand<AetherKey>)(KVCommand<?>) new KVCommand.Put<>(key, value);
 
                 return clusterNode.<Unit> apply(List.of(command))
