@@ -1,8 +1,9 @@
 # Cluster B -- Hetzner Cloud (destructive test suites)
 #
-# 5-node cluster on Hetzner cpx31 instances (4 vCPU AMD, 8 GB RAM — the Intel
-# cx-line is chronically capacity-exhausted across fsn1/nbg1/hel1 at EU peak;
-# cpx is the same size class with reliable stock).
+# 5-node cluster on Hetzner ccx23 instances (4 dedicated vCPU, 16 GB RAM).
+# 2026-07-11: ALL shared lines (cx Intel, cpx AMD, cax ARM) capacity-exhausted
+# across fsn1/nbg1/hel1 (verified via `hcloud datacenter describe` — only the
+# dedicated ccx line in stock). ccx23 is the nearest profile with reliable stock.
 # Requires HCLOUD_TOKEN and PG_URL environment variables.
 
 config_version = "1.0.0"
@@ -33,7 +34,7 @@ databases.forge = "${env:PG_URL}"
 
 [source.hetzner-eu.core]
 count = 5
-instance_type = "cpx31"
+instance_type = "ccx23"
 image = "ubuntu-22.04"
 
 [infrastructure.networking]
