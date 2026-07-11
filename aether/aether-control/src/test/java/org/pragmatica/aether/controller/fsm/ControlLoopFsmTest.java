@@ -24,14 +24,12 @@ import org.pragmatica.aether.metrics.invocation.InvocationMetricsCollector;
 import org.pragmatica.aether.slice.MethodName;
 import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
-import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.cluster.metrics.ClusterSyncMessage.ClusterSyncPing;
 import org.pragmatica.cluster.metrics.ClusterSyncMessage.ClusterSyncPong;
 import org.pragmatica.cluster.metrics.CommunityReport;
 import org.pragmatica.cluster.metrics.PeerObservationBuffer;
 import org.pragmatica.cluster.node.ClusterNode;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
-import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.fsm.ClusterFsmEvent;
 import org.pragmatica.consensus.topology.MembershipDecision;
@@ -80,7 +78,6 @@ class ControlLoopFsmTest {
                                          new StubMetricsCollector(),
                                          Option.none(),
                                          new StubClusterNode(),
-                                         new StubKVStore(),
                                          TimeSpan.timeSpan(60_000).millis(),
                                          ControllerConfig.DEFAULT
                                                          .withScalingConfig(ControllerConfig.DEFAULT.scalingConfig()),
@@ -270,32 +267,6 @@ class ControlLoopFsmTest {
         @SuppressWarnings("unchecked")
         public <R> Promise<List<R>> apply(List<KVCommand<AetherKey>> commands) {
             return (Promise<List<R>>) (Promise<?>) Promise.success(List.of());
-        }
-    }
-
-    static final class StubKVStore extends KVStore<AetherKey, AetherValue> {
-        StubKVStore() {
-            super(org.pragmatica.messaging.MessageRouter.mutable(),
-                  StubSerializer.INSTANCE,
-                  StubDeserializer.INSTANCE);
-        }
-    }
-
-    enum StubSerializer implements org.pragmatica.serialization.Serializer {
-        INSTANCE;
-
-        @Override
-        public <T> void write(io.netty.buffer.ByteBuf byteBuf, T object) {
-            throw new UnsupportedOperationException("unused");
-        }
-    }
-
-    enum StubDeserializer implements org.pragmatica.serialization.Deserializer {
-        INSTANCE;
-
-        @Override
-        public <T> T read(io.netty.buffer.ByteBuf byteBuf) {
-            throw new UnsupportedOperationException("unused");
         }
     }
 

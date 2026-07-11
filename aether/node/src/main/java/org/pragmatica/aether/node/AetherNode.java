@@ -1949,7 +1949,6 @@ public interface AetherNode extends ManageableNode {
                                                   metricsCollector,
                                                   Option.some(invocationMetrics),
                                                   clusterNode,
-                                                  kvStore,
                                                   config.controllerConfig().scalingConfig().evaluationInterval(),
                                                   config.controllerConfig(),
                                                   delegateRouter::route);

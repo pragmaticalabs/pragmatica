@@ -21,13 +21,11 @@ import org.pragmatica.aether.slice.SliceState;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceNodeKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceTargetKey;
-import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceTargetValue;
 import org.pragmatica.aether.worker.metrics.CommunityMetricsSnapshot;
 import org.pragmatica.aether.worker.metrics.PerSliceMetrics;
 import org.pragmatica.cluster.node.ClusterNode;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
-import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.fsm.ClusterFsmEvent;
 import org.pragmatica.lang.Contract;
@@ -59,7 +57,6 @@ public final class ControlLoopContext {
     private final ClusterSyncCollector metricsCollector;
     private final Option<InvocationMetricsCollector> invocationMetricsCollector;
     private final ClusterNode<KVCommand<AetherKey>> cluster;
-    private final KVStore<AetherKey, AetherValue> kvStore;
     private final TimeSpan interval;
     private final Consumer<ScalingEvent> eventPublisher;
     private final LongSupplier clock;
@@ -97,7 +94,6 @@ public final class ControlLoopContext {
                               ClusterSyncCollector metricsCollector,
                               Option<InvocationMetricsCollector> invocationMetricsCollector,
                               ClusterNode<KVCommand<AetherKey>> cluster,
-                              KVStore<AetherKey, AetherValue> kvStore,
                               TimeSpan interval,
                               ControllerConfig config,
                               Consumer<ScalingEvent> eventPublisher) {
@@ -107,7 +103,6 @@ public final class ControlLoopContext {
              metricsCollector,
              invocationMetricsCollector,
              cluster,
-             kvStore,
              interval,
              config,
              eventPublisher,
@@ -120,7 +115,6 @@ public final class ControlLoopContext {
                               ClusterSyncCollector metricsCollector,
                               Option<InvocationMetricsCollector> invocationMetricsCollector,
                               ClusterNode<KVCommand<AetherKey>> cluster,
-                              KVStore<AetherKey, AetherValue> kvStore,
                               TimeSpan interval,
                               ControllerConfig config,
                               Consumer<ScalingEvent> eventPublisher,
@@ -131,7 +125,6 @@ public final class ControlLoopContext {
         this.metricsCollector = metricsCollector;
         this.invocationMetricsCollector = invocationMetricsCollector;
         this.cluster = cluster;
-        this.kvStore = kvStore;
         this.interval = interval;
         this.eventPublisher = eventPublisher;
         this.configRef = new AtomicReference<>(config);

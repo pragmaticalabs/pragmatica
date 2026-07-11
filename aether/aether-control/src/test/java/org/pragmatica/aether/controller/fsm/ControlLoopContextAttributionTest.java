@@ -33,7 +33,6 @@ import org.pragmatica.cluster.metrics.CommunityReport;
 import org.pragmatica.cluster.metrics.PeerObservationBuffer;
 import org.pragmatica.cluster.node.ClusterNode;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
-import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.fsm.ClusterFsmEvent;
 import org.pragmatica.consensus.topology.MembershipDecision;
@@ -42,12 +41,8 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
-import org.pragmatica.messaging.MessageRouter;
-import org.pragmatica.serialization.Deserializer;
-import org.pragmatica.serialization.Serializer;
 import org.pragmatica.statemachine.Fsm;
 
-import io.netty.buffer.ByteBuf;
 
 import java.util.ArrayList;
 import java.util.EnumMap;
@@ -290,7 +285,6 @@ class ControlLoopContextAttributionTest {
                                              new StubMetricsCollector(),
                                              Option.none(),
                                              cluster,
-                                             new StubKVStore(),
                                              TimeSpan.timeSpan(5_000).millis(),
                                              config,
                                              sink);
@@ -346,32 +340,6 @@ class ControlLoopContextAttributionTest {
             commands.addAll(toApply);
 
             return (Promise<List<R>>) (Promise<?>) Promise.success(List.of());
-        }
-    }
-
-    static final class StubKVStore extends KVStore<AetherKey, AetherValue> {
-        StubKVStore() {
-            super(MessageRouter.mutable(),
-                  StubSerializer.INSTANCE,
-                  StubDeserializer.INSTANCE);
-        }
-    }
-
-    enum StubSerializer implements Serializer {
-        INSTANCE;
-
-        @Override
-        public <T> void write(ByteBuf byteBuf, T object) {
-            throw new UnsupportedOperationException("unused");
-        }
-    }
-
-    enum StubDeserializer implements Deserializer {
-        INSTANCE;
-
-        @Override
-        public <T> T read(ByteBuf byteBuf) {
-            throw new UnsupportedOperationException("unused");
         }
     }
 
