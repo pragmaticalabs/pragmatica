@@ -1,9 +1,11 @@
 # Cluster B -- Hetzner Cloud (destructive test suites)
 #
-# 5-node cluster on Hetzner ccx23 instances (4 dedicated vCPU, 16 GB RAM).
-# 2026-07-11: ALL shared lines (cx Intel, cpx AMD, cax ARM) capacity-exhausted
-# across fsn1/nbg1/hel1 (verified via `hcloud datacenter describe` — only the
-# dedicated ccx line in stock). ccx23 is the nearest profile with reliable stock.
+# 5-node cluster on Hetzner cx33 instances (4 vCPU, 8 GB RAM).
+# Type notes (2026-07-12): dedicated ccx is NOT viable for chaos suites — the
+# account's dedicated-core limit cannot hold 5 nodes + in-flight churn
+# replacements (Hetzner 403 resource_limit_exceeded; see #442). Shared lines
+# (cx/cpx/cax) can be capacity-exhausted at EU peak — if provisioning fails all
+# zones, retry off-peak rather than switching to ccx.
 # Requires HCLOUD_TOKEN and PG_URL environment variables.
 
 config_version = "1.0.0"
@@ -34,7 +36,7 @@ databases.forge = "${env:PG_URL}"
 
 [source.hetzner-eu.core]
 count = 5
-instance_type = "ccx23"
+instance_type = "cx33"
 image = "ubuntu-22.04"
 
 [infrastructure.networking]
