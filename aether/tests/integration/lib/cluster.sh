@@ -2195,31 +2195,31 @@ _reestablish_echo_baseline() {
     return 0
 }
 
-# #441 review WARNING a: corroboration helper for the S20 full-drain decision.
-# Counts Hetzner VMs in RUNNING power state for a cluster via the hcloud CLI —
-# a signal path completely independent of the mgmt HTTP API (cloud-provider
-# API vs. application health), used to disambiguate "mgmt plane genuinely
-# reports 0 active cores" from "mgmt plane is merely unreachable". Prints the
-# count on stdout; rc distinguishes a TRUSTWORTHY count (0, count may itself
-# legitimately be 0) from corroboration being UNAVAILABLE (1 — no hcloud CLI
-# or the query itself failed), so callers must not treat a printed "0" as
-# meaningful without also checking rc.
-_cloud_running_vm_count() {
+# #441 review v2: corroboration helper for the S20 full-drain decision. Emits
+# the public IPs of Hetzner VMs in RUNNING power state for a cluster (one per
+# line), via the hcloud CLI — a signal path completely independent of the mgmt
+# HTTP API. NOT used as a liveness verdict by itself: a self-drained node's VM
+# stays powered ON with an exited container (`Runtime.halt(2)` kills the
+# container's JVM; the VM itself never reboots), so "VM running" is the NORMAL
+# state during a confirmed full drain, not evidence the cluster is alive.
+# (v1 of this helper counted running VMs and treated count>=1 as "must not
+# reap" — that made S20 permanently unable to recover the real post-self-drain
+# state, since surviving VMs always stay powered on.) Callers must corroborate
+# further by probing each returned IP's mgmt port directly. rc distinguishes a
+# TRUSTWORTHY (possibly empty) list from corroboration being UNAVAILABLE
+# (1 — no hcloud CLI or the query itself failed).
+_cloud_running_vm_ips() {
     local cluster_name="$1"
     if ! command -v hcloud >/dev/null 2>&1; then
-        echo 0
         return 1
     fi
-    local listing hcloud_rc n
-    listing=$(hcloud server list --selector "aether-cluster=${cluster_name}" -o columns=status -o noheader 2>/dev/null)
+    local listing hcloud_rc
+    listing=$(hcloud server list --selector "aether-cluster=${cluster_name}" -o columns=status,ipv4 -o noheader 2>/dev/null)
     hcloud_rc=$?
     if [ "$hcloud_rc" -ne 0 ]; then
-        echo 0
         return 1
     fi
-    n=$(printf '%s\n' "$listing" | grep -c '^running$' || true)
-    [ -z "$n" ] && n=0
-    echo "$n"
+    printf '%s\n' "$listing" | awk '$1 == "running" { print $2 }'
     return 0
 }
 
@@ -2372,8 +2372,7 @@ restart_all_nodes() {
                 # reap a cluster that is still LIVE. Re-probe the same
                 # endpoint directly to tell them apart (empty response =
                 # transport failure, non-empty = a clean parse that legitimately
-                # says 0), then corroborate an ambiguous case against an
-                # independent, non-mgmt-API signal (Hetzner VM power state)
+                # says 0), then corroborate an ambiguous transport-failure case
                 # before treating this as destroy-eligible.
                 local topology_probe
                 topology_probe=$(api_get "/api/cluster/topology" 2>/dev/null || true)
@@ -2384,21 +2383,57 @@ restart_all_nodes() {
                         return 1
                     fi
                 else
-                    local running_vms running_vms_rc
-                    running_vms=$(_cloud_running_vm_count "${BOOTSTRAP_CLUSTER_NAME:-}")
-                    running_vms_rc=$?
-                    if [ "$running_vms_rc" -ne 0 ]; then
-                        log_fail "restart_all_nodes: mgmt API unreachable AND hcloud corroboration unavailable (rc=${running_vms_rc}) — cannot distinguish a full self-drain from a transport outage on a LIVE cluster; refusing to reap. Operator: check mgmt connectivity and hcloud credentials manually."
+                    # #441 review v2: VM power state alone CANNOT distinguish a
+                    # drained cluster from a live one — a self-drained node's
+                    # VM stays powered ON (`Runtime.halt(2)` kills the
+                    # container's JVM; the VM itself never reboots), so
+                    # "hcloud shows running VMs" is the NORMAL state during a
+                    # confirmed full drain, not evidence of life (v1 of this
+                    # branch treated running>=1 as "refuse to reap", which
+                    # made S20 permanently unable to recover the real
+                    # post-self-drain state). Corroborate with a per-VM MGMT
+                    # PORT probe instead: hcloud reachability + VM existence
+                    # rules out "our own egress is broken", then each running
+                    # VM's mgmt port tells us whether a node process is
+                    # actually listening there.
+                    local running_ips running_ips_rc vm_count=0 live_ip="" ip
+                    running_ips=$(_cloud_running_vm_ips "${BOOTSTRAP_CLUSTER_NAME:-}")
+                    running_ips_rc=$?
+                    if [ "$running_ips_rc" -ne 0 ]; then
+                        log_fail "restart_all_nodes: mgmt API unreachable AND hcloud corroboration unavailable — cannot distinguish a full self-drain from a transport outage on a LIVE cluster; refusing to reap. Operator: check mgmt connectivity and hcloud credentials manually."
                         return 1
-                    elif [ "$running_vms" -eq 0 ]; then
+                    elif [ -z "$running_ips" ]; then
                         log_warn "restart_all_nodes: mgmt API unreachable AND hcloud independently confirms 0 running VMs for '${BOOTSTRAP_CLUSTER_NAME}' — both views agree the cluster is dead, proceeding to reap+rebootstrap"
                         if ! _cloud_full_drain_recover; then
                             log_fail "restart_all_nodes: cloud full-drain recovery (cluster-scoped reap + rebootstrap) failed"
                             return 1
                         fi
                     else
-                        log_fail "restart_all_nodes: mgmt API unreachable BUT hcloud shows ${running_vms} running VM(s) for '${BOOTSTRAP_CLUSTER_NAME}' — this looks like a transport outage on a LIVE cluster, NOT a full self-drain; refusing to reap a live cluster. Operator decision required."
-                        return 1
+                        for ip in $running_ips; do
+                            vm_count=$((vm_count + 1))
+                            if curl -sfk -m 2 -H "X-API-Key: ${API_KEY}" "${MGMT_SCHEME:-http}://${ip}:${CLOUD_MGMT_PORT:-8080}/health/live" >/dev/null 2>&1; then
+                                live_ip="$ip"
+                                break
+                            fi
+                        done
+                        if [ -n "$live_ip" ]; then
+                            log_warn "restart_all_nodes: mgmt API unreachable at the pinned endpoint, BUT VM ${live_ip} answers its mgmt port directly — cluster is LIVE behind a stale pinned endpoint, NOT a full drain; re-pinning and continuing on the remaining budget instead of reaping"
+                            if ! _refresh_mgmt_entry_point; then
+                                log_fail "restart_all_nodes: found a live VM (${live_ip}) but could not re-pin the mgmt entry point — aborting without reaping"
+                                return 1
+                            fi
+                            if ! wait_for "${floor}+ healthy cores present (cloud baseline, remaining budget)" \
+                                "[ \$(cluster_active_core_count) -ge ${floor} ]" $((full_budget - short_wait)); then
+                                log_fail "restart_all_nodes: cloud cluster did not reach ${floor}+ healthy cores within ${full_budget}s total (current=$(cluster_active_core_count))"
+                                return 1
+                            fi
+                        else
+                            log_warn "restart_all_nodes: mgmt API unreachable, hcloud shows ${vm_count} running VM(s) for '${BOOTSTRAP_CLUSTER_NAME}', but NONE answer their mgmt port directly (probed ${vm_count} VM(s), 0 listening) — VMs staying powered on with an exited container is the expected post-self-drain state; proceeding to reap+rebootstrap"
+                            if ! _cloud_full_drain_recover; then
+                                log_fail "restart_all_nodes: cloud full-drain recovery (cluster-scoped reap + rebootstrap) failed"
+                                return 1
+                            fi
+                        fi
                     fi
                 fi
             else
