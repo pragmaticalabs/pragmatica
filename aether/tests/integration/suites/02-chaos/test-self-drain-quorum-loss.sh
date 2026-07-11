@@ -475,7 +475,13 @@ _confirm_survivor_departure() {
     ip=$(cloud_public_ip "$survivor")
     ip_rc=$?
     if [ "$ip_rc" -ne 0 ]; then
-        log_info "Survivor ${survivor} public IP could not be resolved (rc=${ip_rc}, reason logged above) — tier 3 unavailable, falling through to VM-existence tier"
+        # cloud_public_ip reports its own failure reason via log_fail, but
+        # log_fail writes to STDOUT (lib/common.sh) — and command substitution
+        # just captured that same stdout into $ip, silently swallowing the
+        # diagnostic instead of ever surfacing it. Re-emit the captured text on
+        # stderr ourselves so the actual reason is visible.
+        printf '%s\n' "$ip" >&2
+        log_info "Survivor ${survivor} public IP could not be resolved (rc=${ip_rc}) — tier 3 unavailable, falling through to VM-existence tier"
         ip=""
     fi
     if [ -n "$ip" ]; then

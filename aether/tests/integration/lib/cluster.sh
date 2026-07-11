@@ -2195,6 +2195,34 @@ _reestablish_echo_baseline() {
     return 0
 }
 
+# #441 review WARNING a: corroboration helper for the S20 full-drain decision.
+# Counts Hetzner VMs in RUNNING power state for a cluster via the hcloud CLI —
+# a signal path completely independent of the mgmt HTTP API (cloud-provider
+# API vs. application health), used to disambiguate "mgmt plane genuinely
+# reports 0 active cores" from "mgmt plane is merely unreachable". Prints the
+# count on stdout; rc distinguishes a TRUSTWORTHY count (0, count may itself
+# legitimately be 0) from corroboration being UNAVAILABLE (1 — no hcloud CLI
+# or the query itself failed), so callers must not treat a printed "0" as
+# meaningful without also checking rc.
+_cloud_running_vm_count() {
+    local cluster_name="$1"
+    if ! command -v hcloud >/dev/null 2>&1; then
+        echo 0
+        return 1
+    fi
+    local listing hcloud_rc n
+    listing=$(hcloud server list --selector "aether-cluster=${cluster_name}" -o columns=status -o noheader 2>/dev/null)
+    hcloud_rc=$?
+    if [ "$hcloud_rc" -ne 0 ]; then
+        echo 0
+        return 1
+    fi
+    n=$(printf '%s\n' "$listing" | grep -c '^running$' || true)
+    [ -z "$n" ] && n=0
+    echo "$n"
+    return 0
+}
+
 ## #441 S20: cluster-scoped reap + fresh bootstrap — the cloud analog of the
 ## docker/compose branch's `docker compose down -v && up -d` full reset. This is
 ## the ONLY path capable of recovering a CONFIRMED FULL self-drain: every core
@@ -2207,15 +2235,42 @@ _reestablish_echo_baseline() {
 ## an already-provisioned VM, so there is no lighter-weight recovery available.
 ##
 ## NEVER touches the shared test-PG VM or its firewall (tools/pg-firewall.sh):
-## every call below is scoped to `--cluster <name>`, and cloud-reaper.sh's own
-## label filtering (aether-cluster=<name> / orphaned aether-node-id) cannot
-## match the PG VM, which carries neither label.
+## the reap call below passes --strict-cluster, which restricts cloud-reaper.sh's
+## Hetzner label selector to an EXACT `aether-cluster=<name>` match only — no
+## `aether-node-id` orphan-capture query at all. The PG VM's aether-cluster
+## label (whatever it is, even empty) can never equal this cluster's exact
+## name, so it is excluded by construction. (#441 review fix: an earlier
+## revision of this comment claimed the PG VM "carries neither label" — that
+## was WRONG, contradicted by a documented incident where an UNSCOPED
+## catch-all reap DID delete the PG VM+firewall, proving it carries at least
+## one aether-* label. Without --strict-cluster, cloud-reaper.sh's
+## orphan-capture post-filter keeps any aether-node-id-labeled row whose
+## aether-cluster label is EMPTY — exactly the shape a mislabeled PG resource
+## could take — so --strict-cluster is required here, not optional.)
 _cloud_full_drain_recover() {
     local cluster_name="${BOOTSTRAP_CLUSTER_NAME:-}"
     if [ -z "$cluster_name" ]; then
         log_fail "_cloud_full_drain_recover: BOOTSTRAP_CLUSTER_NAME unset — refusing an unscoped reap (would risk resources outside this cluster, including the shared test-PG VM)"
         return 1
     fi
+
+    # #441 review WARNING b: prove the re-bootstrap is POSSIBLE before
+    # destroying anything. On a --skip-deploy rerun, CLOUD_TOML_A/B are never
+    # exported (run-tests.sh only exports them inside its deploy branch), so
+    # reaping first and discovering the missing TOML second destroys a cluster
+    # with no way to rebuild it. Preflight the TOML selection first; reap only
+    # once this is guaranteed to succeed.
+    local toml
+    case "${CLUSTER_ID:-}" in
+        a) toml="${CLOUD_TOML_A:-}" ;;
+        b) toml="${CLOUD_TOML_B:-}" ;;
+        *) log_fail "_cloud_full_drain_recover: unrecognized CLUSTER_ID='${CLUSTER_ID:-}' (expected 'a' or 'b') — cannot select a bootstrap TOML"; return 1 ;;
+    esac
+    if [ -z "$toml" ] || [ ! -f "$toml" ]; then
+        log_fail "_cloud_full_drain_recover: no readable bootstrap TOML for cluster '${cluster_name}' (CLUSTER_ID='${CLUSTER_ID:-}', resolved path='${toml}') — run-tests.sh must export CLOUD_TOML_A/CLOUD_TOML_B (not exported on --skip-deploy reruns; full-drain recovery is not possible there — refusing before destroying anything)"
+        return 1
+    fi
+
     # Locate tools/cloud-reaper.sh relative to THIS file (lib/cluster.sh), not the
     # caller's SCRIPT_DIR — SCRIPT_DIR points at the calling suite's own
     # suites/NN-name/ directory, not aether/tests/integration, so it cannot be
@@ -2230,7 +2285,7 @@ _cloud_full_drain_recover() {
     fi
     log_warn "_cloud_full_drain_recover: full self-drain confirmed (0 active cores) — reaping all VMs for cluster '${cluster_name}' (no partial-recovery path exists once every core has halted)"
     local reap_out reap_rc
-    reap_out=$("$reaper" --cluster "$cluster_name" --destroy --force 2>&1)
+    reap_out=$("$reaper" --cluster "$cluster_name" --strict-cluster --destroy --force 2>&1)
     reap_rc=$?
     # Reaper rc contract: 0=clean, 1=usage/setup error (fatal — e.g. missing
     # HCLOUD_TOKEN, bad invocation), 2=one-or-more-deletions-failed (orphans
@@ -2240,22 +2295,8 @@ _cloud_full_drain_recover() {
     case "$reap_rc" in
         0) log_info "_cloud_full_drain_recover: reap of '${cluster_name}' clean" ;;
         2) log_warn "_cloud_full_drain_recover: reap of '${cluster_name}' left orphan resources behind (rc=2) — proceeding to rebootstrap anyway: ${reap_out}" ;;
-        *) log_fail "_cloud_full_drain_recover: cloud-reaper.sh --cluster ${cluster_name} --destroy --force failed (rc=${reap_rc}): ${reap_out}"; return 1 ;;
+        *) log_fail "_cloud_full_drain_recover: cloud-reaper.sh --cluster ${cluster_name} --strict-cluster --destroy --force failed (rc=${reap_rc}): ${reap_out}"; return 1 ;;
     esac
-
-    # Select the SAME TOML this run bootstrapped with (run-tests.sh exports
-    # CLOUD_TOML_A/CLOUD_TOML_B — the final, possibly snapshot-rewritten paths —
-    # and CLUSTER_ID per-suite, both already visible in this subshell).
-    local toml
-    case "${CLUSTER_ID:-}" in
-        a) toml="${CLOUD_TOML_A:-}" ;;
-        b) toml="${CLOUD_TOML_B:-}" ;;
-        *) log_fail "_cloud_full_drain_recover: unrecognized CLUSTER_ID='${CLUSTER_ID:-}' (expected 'a' or 'b') — cannot select a bootstrap TOML"; return 1 ;;
-    esac
-    if [ -z "$toml" ] || [ ! -f "$toml" ]; then
-        log_fail "_cloud_full_drain_recover: no readable bootstrap TOML for cluster '${cluster_name}' (CLUSTER_ID='${CLUSTER_ID:-}', resolved path='${toml}') — run-tests.sh must export CLOUD_TOML_A/CLOUD_TOML_B"
-        return 1
-    fi
 
     # Bare `aether` resolved from PATH — the gate run environment prepends its
     # own CLI shim to PATH; a hardcoded path would silently bypass it. PG env
@@ -2323,9 +2364,42 @@ restart_all_nodes() {
             local active_now
             active_now=$(cluster_active_core_count)
             if [ "${active_now:-0}" -eq 0 ]; then
-                if ! _cloud_full_drain_recover; then
-                    log_fail "restart_all_nodes: cloud full-drain recovery (cluster-scoped reap + rebootstrap) failed"
-                    return 1
+                # #441 review WARNING a: cluster_active_core_count returns a
+                # CLEAN rc=0 "0" on BOTH a genuine 0-active-core reading AND an
+                # unreachable mgmt API (transport failure) — the two are
+                # structurally indistinguishable from that call alone.
+                # Confirming "full drain" on a merely-unreachable read would
+                # reap a cluster that is still LIVE. Re-probe the same
+                # endpoint directly to tell them apart (empty response =
+                # transport failure, non-empty = a clean parse that legitimately
+                # says 0), then corroborate an ambiguous case against an
+                # independent, non-mgmt-API signal (Hetzner VM power state)
+                # before treating this as destroy-eligible.
+                local topology_probe
+                topology_probe=$(api_get "/api/cluster/topology" 2>/dev/null || true)
+                if [ -n "$topology_probe" ]; then
+                    log_warn "restart_all_nodes: mgmt API cleanly reports 0 active cores — confirmed full self-drain, proceeding to reap+rebootstrap"
+                    if ! _cloud_full_drain_recover; then
+                        log_fail "restart_all_nodes: cloud full-drain recovery (cluster-scoped reap + rebootstrap) failed"
+                        return 1
+                    fi
+                else
+                    local running_vms running_vms_rc
+                    running_vms=$(_cloud_running_vm_count "${BOOTSTRAP_CLUSTER_NAME:-}")
+                    running_vms_rc=$?
+                    if [ "$running_vms_rc" -ne 0 ]; then
+                        log_fail "restart_all_nodes: mgmt API unreachable AND hcloud corroboration unavailable (rc=${running_vms_rc}) — cannot distinguish a full self-drain from a transport outage on a LIVE cluster; refusing to reap. Operator: check mgmt connectivity and hcloud credentials manually."
+                        return 1
+                    elif [ "$running_vms" -eq 0 ]; then
+                        log_warn "restart_all_nodes: mgmt API unreachable AND hcloud independently confirms 0 running VMs for '${BOOTSTRAP_CLUSTER_NAME}' — both views agree the cluster is dead, proceeding to reap+rebootstrap"
+                        if ! _cloud_full_drain_recover; then
+                            log_fail "restart_all_nodes: cloud full-drain recovery (cluster-scoped reap + rebootstrap) failed"
+                            return 1
+                        fi
+                    else
+                        log_fail "restart_all_nodes: mgmt API unreachable BUT hcloud shows ${running_vms} running VM(s) for '${BOOTSTRAP_CLUSTER_NAME}' — this looks like a transport outage on a LIVE cluster, NOT a full self-drain; refusing to reap a live cluster. Operator decision required."
+                        return 1
+                    fi
                 fi
             else
                 log_info "restart_all_nodes: ${active_now}/${floor}+ active cores after ${short_wait}s probe — partial recovery in progress (not a full drain), continuing on the remaining budget"
