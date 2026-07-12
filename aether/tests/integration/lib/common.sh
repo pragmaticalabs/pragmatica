@@ -262,12 +262,41 @@ _resolve_live_endpoint() {
         done
         # Seed IPs (bootstrap-state.json) are all dead/replaced. Enumerate the CURRENT
         # cluster VMs straight from the cloud provider — CTM auto-heal REPLACEMENT VMs
-        # carry the cluster label but are NOT recorded in bootstrap-state.json, so the
-        # fixed seed loop above can never find them. This is the anchor-free discovery
-        # that makes resolution survive full owner replacement under chaos.
-        if command -v hcloud >/dev/null 2>&1 && [ -n "${BOOTSTRAP_CLUSTER_NAME:-}" ]; then
-            local cur_ip
-            for cur_ip in $(hcloud server list --selector "aether-cluster=${BOOTSTRAP_CLUSTER_NAME}" -o columns=ipv4 -o noheader 2>/dev/null); do
+        # are NOT recorded in bootstrap-state.json, so the fixed seed loop above can
+        # never find them. This is the anchor-free discovery that makes resolution
+        # survive full owner replacement under chaos.
+        # #441 Defect B follow-up: this used to run its own
+        # `hcloud server list --selector "aether-cluster=${BOOTSTRAP_CLUSTER_NAME}"`
+        # query directly — the SAME selector fixed in lib/cluster.sh's
+        # _cloud_running_vm_ips, and broken for the same reason: provisioned VMs
+        # (seed AND CTM replacement alike) are only ever reliably stamped
+        # `aether-node-id`, not `aether-cluster` (product-side gap, #442 v2b).
+        # Here that meant this anchor-free discovery step silently enumerated
+        # ZERO candidate IPs even against a live cluster — masked because this
+        # is only a PROBE loop (not a drain/reap decision): an empty/exhausted
+        # result already fell through correctly to the loud dead-endpoint
+        # log_error a few lines below. The defect was "misses real candidates,
+        # degrades resolution quality" here rather than cluster.sh's false-reap,
+        # but the root cause and fix are identical — reuse the canonical,
+        # cluster-unambiguous enumeration instead of re-deriving the (broken)
+        # selector a second time.
+        #
+        # `command -v` guard, not a hard dependency: lib/cluster.sh is sourced
+        # alongside lib/common.sh by every real test entry point (run-tests.sh
+        # and every suites/**/*.sh), but two common.sh-only scripts exist
+        # (scripts/cleanup.sh, test/test-cloud-helpers.sh) that never reach this
+        # cloud fallback branch in practice — keep that true structurally
+        # instead of assuming it holds.
+        if [ -n "${BOOTSTRAP_CLUSTER_NAME:-}" ] && command -v _cloud_running_vm_ips >/dev/null 2>&1; then
+            local cur_ip cur_ips
+            # `|| true`: _cloud_running_vm_ips returns 1 when hcloud itself is
+            # missing/fails — this bare assignment must not abort the whole
+            # script under `set -e` (run-tests.sh and every suite file that
+            # reaches here run with `set -euo pipefail`); an empty result
+            # degrades gracefully into the loud dead-endpoint fallback below,
+            # exactly like a genuinely empty enumeration would.
+            cur_ips=$(_cloud_running_vm_ips "${BOOTSTRAP_CLUSTER_NAME}" || true)
+            for cur_ip in $cur_ips; do
                 [ -z "$cur_ip" ] && continue
                 endpoint="${MGMT_SCHEME:-http}://${cur_ip}:${mgmt_port}"
                 if curl -sfk -m 2 -H "X-API-Key: ${API_KEY}" "${endpoint}/health/live" >/dev/null 2>&1; then
