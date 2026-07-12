@@ -47,12 +47,14 @@ import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
+import org.pragmatica.lang.parse.Number;
 import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.lang.utils.SharedScheduler;
 import org.pragmatica.net.tcp.TlsConfig;
 
 import java.net.SocketAddress;
 import java.time.Instant;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -676,7 +678,8 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                             NodeRole intendedRole) {
         return ReplacementNodeConfigComposer.compose(config,
                                                      source,
-                                                     clusterSecretFromEnv()).option()
+                                                     clusterSecretFromEnv(),
+                                                     leaderSshKeyIds()).option()
                                                     .map(this::resolvePlaceholders)
                                                     .map(composed -> NodeUserDataRenderer.render(config,
                                                                                                  source,
@@ -688,6 +691,29 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                                                                                  composed,
                                                                                                  authorizedKeysFrom(config),
                                                                                                  peersList(context)));
+    }
+
+    /// #442 — the operator SSH key ids the LEADER itself was provisioned with, read from its OWN
+    /// resolved `[cloud.compute] ssh_key_ids` (the same `resolvedLocalConfig` the #336 placeholder
+    /// resolution uses). Threaded into the replacement's composed config so a replacement that later
+    /// becomes leader inherits the keys and provisions ITS replacements from config — extending the
+    /// bootstrap-seeded inheritance across replacement generations WITHOUT persisting the ids in the
+    /// KV cluster config (a stored-format change). Empty for non-cloud / tests where no resolved
+    /// local config is available, in which case the provider's name-prefix fallback still applies.
+    private List<Long> leaderSshKeyIds() {
+        return resolvedLocalConfig.get()
+                                  .flatMap(toml -> toml.getString("cloud.compute", "ssh_key_ids"))
+                                  .map(ClusterTopologyManagerRecord::parseSshKeyIds)
+                                  .or(List.of());
+    }
+
+    private static List<Long> parseSshKeyIds(String raw) {
+        return Arrays.stream(raw.split(","))
+                     .map(String::trim)
+                     .filter(s -> !s.isEmpty())
+                     .map(Number::parseLong)
+                     .flatMap(result -> result.option().stream())
+                     .toList();
     }
 
     /// #336 — substitute the literal `${env:...}` / `${secrets:...}` placeholders the composed

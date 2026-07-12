@@ -10,6 +10,7 @@ import org.pragmatica.lang.Option;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
 
@@ -31,12 +32,28 @@ public interface BootstrapOverlayGenerator {
                                 Option<String> apiKey,
                                 Option<String> dockerGid,
                                 Option<String> clusterSecret) {
+        return overlay(config, source, nodeIndex, apiKey, dockerGid, clusterSecret, List.of());
+    }
+
+    /// #442 — `sshKeyIds` carries the operator SSH key ids resolved for the source's cloud provider
+    /// (bootstrap: `BootstrapContext.sshKeyIdsFor`; CTM auto-heal replacement: the leader's own
+    /// resolved `[cloud.compute] ssh_key_ids`). Rendered into `[cloud.compute] ssh_key_ids` so every
+    /// node's runtime config carries them and a leader provisioning a replacement resolves keys from
+    /// config (no API lookup) — closing the PAM wall on keyless replacements. Empty for non-cloud
+    /// sources and when no keys were resolved: the field is then omitted.
+    static TomlDocument overlay(ClusterBootstrapConfig config,
+                                SourceProfile source,
+                                int nodeIndex,
+                                Option<String> apiKey,
+                                Option<String> dockerGid,
+                                Option<String> clusterSecret,
+                                List<Long> sshKeyIds) {
         var fixed = Stream.of(Option.some(clusterSection(config)),
                               Option.some(clusterPortsSection(config)),
                               cloudSection(source),
                               cloudCredentialsSection(source),
                               cloudDiscoverySection(config, source),
-                              sourceSpecificSection(config, source, nodeIndex, apiKey, dockerGid),
+                              sourceSpecificSection(config, source, nodeIndex, apiKey, dockerGid, sshKeyIds),
                               tlsSection(source, clusterSecret)).flatMap(Option::stream);
         var databases = databaseSections(source).stream();
         var sections = Stream.concat(fixed, databases).toList();
@@ -77,10 +94,11 @@ public interface BootstrapOverlayGenerator {
                                                          SourceProfile source,
                                                          int nodeIndex,
                                                          Option<String> apiKey,
-                                                         Option<String> dockerGid) {
+                                                         Option<String> dockerGid,
+                                                         List<Long> sshKeyIds) {
         return switch (source.type()) {
             case DOCKER -> Option.some(dockerComputeSection(config, nodeIndex, apiKey, dockerGid));
-            case CLOUD -> Option.some(cloudComputeSection(source));
+            case CLOUD -> Option.some(cloudComputeSection(source, sshKeyIds));
             case SSH, FORGE -> Option.empty();
         };
     }
@@ -102,13 +120,26 @@ public interface BootstrapOverlayGenerator {
         return Section.section("cloud.compute", values);
     }
 
-    private static Section cloudComputeSection(SourceProfile source) {
+    private static Section cloudComputeSection(SourceProfile source, List<Long> sshKeyIds) {
         var values = new LinkedHashMap<String, Object>();
 
         source.region().onPresent(region -> values.put("region", region));
         coreInstanceType(source).onPresent(serverType -> values.put("server_type", serverType));
+        if (!sshKeyIds.isEmpty()) {
+            values.put("ssh_key_ids", joinLongs(sshKeyIds));
+        }
 
         return Section.section("cloud.compute", values);
+    }
+
+    /// Comma-joined form of the resolved SSH key ids — mirrors `ProviderResolver.joinLongs` so the
+    /// value the node-side `HetznerEnvironmentIntegrationFactory` parses (via `split(",")`) matches
+    /// exactly. Rendered as a scalar string (not a TOML array) because the node reads `[cloud.compute]`
+    /// through `TomlDocument.getSection`, which stringifies every value.
+    private static String joinLongs(List<Long> ids) {
+        return ids.stream()
+                  .map(String::valueOf)
+                  .collect(Collectors.joining(","));
     }
 
     private static Option<Section> cloudSection(SourceProfile source) {

@@ -8,6 +8,8 @@ import org.pragmatica.config.toml.TomlDocument;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 
+import java.util.List;
+
 
 /// Composes the `aether.toml` a CTM auto-heal replacement node runs with, from the persisted
 /// cluster config (`ClusterConfigValue.tomlContent()`) re-parsed into a [ClusterBootstrapConfig].
@@ -29,7 +31,20 @@ public sealed interface ReplacementNodeConfigComposer {
     static Result<TomlDocument> compose(ClusterBootstrapConfig config,
                                         SourceProfile source,
                                         Option<String> clusterSecret) {
-        var overlay = BootstrapOverlayGenerator.overlay(config, source, 0, Option.empty(), Option.empty(), clusterSecret);
+        return compose(config, source, clusterSecret, List.of());
+    }
+
+    /// #442 — `sshKeyIds` are the operator SSH key ids the LEADER itself was provisioned with (read
+    /// from its own resolved `[cloud.compute] ssh_key_ids`). Threaded into the replacement's overlay
+    /// so a replacement that later becomes leader inherits the keys and provisions ITS replacements
+    /// from config — extending the bootstrap-seeded inheritance across replacement generations
+    /// without persisting the ids in the KV cluster config. Empty degrades to the prior behavior
+    /// (no `ssh_key_ids`; the provider's name-prefix fallback then applies).
+    static Result<TomlDocument> compose(ClusterBootstrapConfig config,
+                                        SourceProfile source,
+                                        Option<String> clusterSecret,
+                                        List<Long> sshKeyIds) {
+        var overlay = BootstrapOverlayGenerator.overlay(config, source, 0, Option.empty(), Option.empty(), clusterSecret, sshKeyIds);
 
         return Result.all(DefaultNodeConfig.globalDefault(),
                           DefaultNodeConfig.sourceTypeDefault(source.type()))

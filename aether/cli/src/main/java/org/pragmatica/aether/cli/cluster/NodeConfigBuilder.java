@@ -6,6 +6,7 @@ package org.pragmatica.aether.cli.cluster;
 
 import org.pragmatica.aether.cli.cluster.ClusterBootstrapOrchestrator.BootstrapContext;
 import org.pragmatica.aether.config.cluster.BootstrapOverlayGenerator;
+import org.pragmatica.aether.config.cluster.CloudProviderName;
 import org.pragmatica.aether.config.cluster.DefaultNodeConfig;
 import org.pragmatica.aether.config.cluster.NodeConfigComposer;
 import org.pragmatica.aether.config.cluster.SourceProfile;
@@ -28,7 +29,8 @@ sealed interface NodeConfigBuilder {
                                                         nodeIndex,
                                                         ctx.apiKey(),
                                                         dockerGid,
-                                                        clusterSecret);
+                                                        clusterSecret,
+                                                        ctx.sshKeyIdsFor(providerName(source)));
 
         return Result.all(DefaultNodeConfig.globalDefault(),
                           DefaultNodeConfig.sourceTypeDefault(source.type()))
@@ -36,5 +38,14 @@ sealed interface NodeConfigBuilder {
                                                                               typeDefault,
                                                                               source.nodeConfig(),
                                                                               overlay));
+    }
+
+    /// #442 — the cloud provider key (`hetzner`, …) under which [BootstrapPhaseSshKey] stored the
+    /// resolved operator SSH key ids in the [BootstrapContext]. Empty for non-cloud sources, which
+    /// carry no keys, so `sshKeyIdsFor` returns an empty list and the overlay omits `ssh_key_ids`.
+    private static String providerName(SourceProfile source) {
+        return source.provider()
+                     .map(CloudProviderName::value)
+                     .or("");
     }
 }

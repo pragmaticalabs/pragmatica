@@ -213,12 +213,15 @@ public record HetznerComputeProvider(HetznerClient client, HetznerEnvironmentCon
 
     private Promise<List<Long>> resolveSshKeyIds() {
         if (!config.sshKeyIds().isEmpty()) {
+            log.info("Hetzner provision: SSH key ids resolved from node config (branch=config, count={}) — replacement inherits the cluster's keys",
+                     config.sshKeyIds().size());
+
             return Promise.success(config.sshKeyIds());
         }
 
         return client.listSshKeys()
                      .map(HetznerComputeProvider::bootstrapKeyIds)
-                     .onSuccess(HetznerComputeProvider::warnIfNoBootstrapKeys)
+                     .onSuccess(HetznerComputeProvider::logPrefixBranch)
                      .recover(HetznerComputeProvider::sshKeyLookupUnavailable);
     }
 
@@ -234,16 +237,27 @@ public record HetznerComputeProvider(HetznerClient client, HetznerEnvironmentCon
                                         .startsWith(BOOTSTRAP_KEY_NAME_PREFIX);
     }
 
-    private static void warnIfNoBootstrapKeys(List<Long> ids) {
+    /// #442 — one operator-diagnosable line naming which branch resolved the ssh-key ids the
+    /// replacement was created with. `branch=prefix` when the account carries `aether-bootstrap*`
+    /// keys (the fresh-upload environment), `branch=none` when it carries none — the exact signal
+    /// missing from the field run where a keyless replacement hit the PAM wall and the cause could
+    /// not be told apart from a lookup failure ([#sshKeyLookupUnavailable], `branch=failed`).
+    private static void logPrefixBranch(List<Long> ids) {
         if (ids.isEmpty()) {
-            log.warn("Hetzner provision: no SSH keys named '{}*' on the account; replacement created without an "
+            log.warn("Hetzner provision: no SSH keys named '{}*' on the account (branch=none); replacement created without an "
                     + "ssh_keys param (Hetzner sets a root password; key auth via cloud-init still works)",
                      BOOTSTRAP_KEY_NAME_PREFIX);
+
+            return;
         }
+
+        log.warn("Hetzner provision: SSH key ids resolved by '{}*' name-prefix match (branch=prefix, count={})",
+                 BOOTSTRAP_KEY_NAME_PREFIX,
+                 ids.size());
     }
 
     private static List<Long> sshKeyLookupUnavailable(Cause cause) {
-        log.warn("Hetzner provision: SSH-key lookup failed ({}); creating the replacement without an ssh_keys param "
+        log.warn("Hetzner provision: SSH-key lookup failed (branch=failed: {}); creating the replacement without an ssh_keys param "
                 + "(key auth via cloud-init still works, but a root password will be set)",
                  cause.message());
 

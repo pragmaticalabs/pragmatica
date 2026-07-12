@@ -19,6 +19,7 @@ import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ClusterConfigValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ClusterPhase;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
+import org.pragmatica.config.toml.TomlDocument;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.NetworkServiceMessage;
 import org.pragmatica.consensus.net.NodeInfo;
@@ -165,6 +166,52 @@ class ClusterTopologyManagerRenderUserDataTest {
         assertThat(script)
                 .as("user-data must NOT point the replacement at the dead departed peer")
                 .doesNotContain("node-dead");
+    }
+
+    /// #442 — a replacement can later be elected leader and provision ITS OWN replacements. For that
+    /// to resolve keys from config (no API lookup), the replacement's composed `aether.toml` must
+    /// carry the leader's ssh_key_ids. The CTM reads them from the leader's own resolved
+    /// `[cloud.compute] ssh_key_ids` (`resolvedLocalConfig`) and threads them through
+    /// [ReplacementNodeConfigComposer] into the replacement's cloud-init config — extending the
+    /// bootstrap-seeded inheritance across replacement generations without persisting the ids.
+    @Test
+    void provisionReplacement_threadsLeaderSshKeyIdsIntoReplacementConfig() {
+        clusterStore.seedToml(CLOUD_TOML);
+        var leaderResolved = TomlDocument.EMPTY.with("cloud.compute", "ssh_key_ids", "113681412");
+        var ctmWithKeys = ClusterTopologyManager.clusterTopologyManager(observer,
+                                                                        lifecycleManager,
+                                                                        renderTestAutoHeal(),
+                                                                        DeploymentMap.deploymentMap(),
+                                                                        snapshotSource,
+                                                                        clusterStore::current,
+                                                                        clusterStore::apply,
+                                                                        () -> ClusterPhase.NORMAL,
+                                                                        ignored -> {},
+                                                                        ignored -> {},
+                                                                        () -> Option.some(leaderResolved));
+        ctmWithKeys.activate();
+
+        var result = ctmWithKeys.provisionReplacement(nodeId("node-r3").unwrap(),
+                                                      Option.none(),
+                                                      Set.of(SELF, PEER_A, PEER_B),
+                                                      NodeRole.CORE).await();
+
+        assertThat(result.isSuccess()).isTrue();
+        var script = lifecycleManager.lastSpec().userData().or("");
+        assertThat(script)
+                .as("replacement's composed aether.toml inherits the leader's ssh_key_ids so it "
+                    + "provisions from config when it becomes leader")
+                .contains("ssh_key_ids = \"113681412\"");
+    }
+
+    private static AutoHealConfig renderTestAutoHeal() {
+        return AutoHealConfig.autoHealConfig(timeSpan(60).seconds(),
+                                             timeSpan(1).millis(),
+                                             AutoHealConfig.DEFAULT_STALE_OBSERVATION_TTL,
+                                             AutoHealConfig.DEFAULT_QUIC_MISS_PROMOTION_THRESHOLD,
+                                             AutoHealConfig.DEFAULT_PROVISIONING_TIMEOUT,
+                                             timeSpan(0).millis())
+                             .unwrap();
     }
 
     /// The cluster secret and dev-mode posture are sourced from the running (leader) node's env,
