@@ -4,6 +4,8 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.cli.cluster;
 
+import org.pragmatica.aether.config.cluster.NodeRole;
+import org.pragmatica.aether.config.cluster.RoleSubTable;
 import org.pragmatica.aether.config.cluster.SourceProfile;
 import org.pragmatica.aether.environment.CloudConfig;
 import org.pragmatica.aether.environment.CloudCredentials;
@@ -11,6 +13,7 @@ import org.pragmatica.aether.environment.ComputeProvider;
 import org.pragmatica.aether.environment.EnvironmentIntegration;
 import org.pragmatica.aether.environment.EnvironmentIntegrationFactory;
 import org.pragmatica.aether.environment.FloatingIpProvider;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 
 import java.util.ArrayList;
@@ -155,6 +158,7 @@ public final class ProviderResolver {
 
         source.region().onPresent(r -> compute.put("region", r));
         source.zone().onPresent(z -> compute.put("zone", z));
+        coreInstanceType(source).onPresent(t -> compute.put("server_type", t));
         if (!sshKeyIds.isEmpty()) {
             compute.put("ssh_key_ids", joinLongs(sshKeyIds));
         }
@@ -176,6 +180,14 @@ public final class ProviderResolver {
         return ids.stream()
                   .map(String::valueOf)
                   .collect(Collectors.joining(","));
+    }
+
+    /// #442 — the source's core-role `instance_type`, threaded into the provider's `[cloud.compute]
+    /// server_type` so `config.serverType()` is a meaningful fallback when a [ProvisionSpec] carries
+    /// no concrete type. Mirrors `BootstrapOverlayGenerator.coreInstanceType` (the value rendered into
+    /// each node's runtime config), so the bootstrap-time provider and a running leader agree.
+    private static Option<String> coreInstanceType(SourceProfile source) {
+        return Option.option(source.roles().get(NodeRole.CORE)).flatMap(RoleSubTable::instanceType);
     }
 
     private static CloudConfig dockerCloudConfig() {

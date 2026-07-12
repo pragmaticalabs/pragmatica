@@ -18,12 +18,14 @@ import org.pragmatica.cloud.hetzner.HetznerClient;
 import org.pragmatica.cloud.hetzner.HetznerError;
 import org.pragmatica.cloud.hetzner.api.Server;
 import org.pragmatica.cloud.hetzner.api.Server.CreateServerRequest;
+import org.pragmatica.cloud.hetzner.api.SshKey;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.parse.Number;
+import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.utility.IdGenerator;
 
 import java.util.HashMap;
@@ -51,19 +53,12 @@ public record HetznerComputeProvider(HetznerClient client, HetznerEnvironmentCon
     @Override
     public Promise<InstanceInfo> provision(InstanceType instanceType) {
         var cluster = config.clusterName().or("unknown");
-        var location = config.region();
-        var defaultLabels = buildLabels(cluster, "core", "");
+        var labels = buildLabels(cluster, "core", "");
 
-        defaultLabels.put(NODE_ID_LABEL,
-                          IdGenerator.generate(ProvisionContext.coreNodeNamePrefix(cluster)));
+        labels.put(NODE_ID_LABEL,
+                   IdGenerator.generate(ProvisionContext.coreNodeNamePrefix(cluster)));
 
-        return client.createServer(buildCreateRequest(location,
-                                                      defaultLabels,
-                                                      config.userData())).map(HetznerComputeProvider::toInstanceInfo)
-                                  .flatMap(info -> confirmRunning(info,
-                                                                  ReadinessPolicy.cloudDefault()))
-                                  .onFailure(HetznerComputeProvider::logProvisionFailureRollbackGap)
-                                  .mapError(cause -> toProvisionError(location, cause));
+        return provisionServer(config.region(), "", labels, config.userData());
     }
 
     @Override
@@ -72,12 +67,36 @@ public record HetznerComputeProvider(HetznerClient client, HetznerEnvironmentCon
         var userData = spec.userData().or(config.userData());
         var labels = labelsFor(spec.context());
 
-        return client.createServer(buildCreateRequest(location, labels, userData))
-                     .map(HetznerComputeProvider::toInstanceInfo)
-                     .flatMap(info -> confirmRunning(info,
-                                                     ReadinessPolicy.cloudDefault()))
-                     .onFailure(HetznerComputeProvider::logProvisionFailureRollbackGap)
-                     .mapError(cause -> toProvisionError(location, cause));
+        return provisionServer(location, spec.instanceSize(), labels, userData);
+    }
+
+    /// Provisions a server, resolving the two params that historically diverged between the CLI
+    /// bootstrap and the CTM auto-heal paths (#442): the server type and the SSH key ids.
+    ///
+    /// Server type honors the caller's [ProvisionSpec#instanceSize] when it is a concrete type
+    /// (the per-role `instance_type` bootstrap threads through), otherwise falls back to the
+    /// provider's [HetznerEnvironmentConfig#serverType] (the leader's runtime `[cloud.compute]
+    /// server_type`, which auto-heal relies on). When NEITHER resolves the provision fails loud —
+    /// there is no hardcoded instance-type default.
+    private Promise<InstanceInfo> provisionServer(String location,
+                                                  String serverTypeHint,
+                                                  Map<String, String> labels,
+                                                  String userData) {
+        return resolveServerType(serverTypeHint).async()
+                                .flatMap(serverType -> createAndConfirm(location, serverType, labels, userData))
+                                .mapError(cause -> toProvisionError(location, cause));
+    }
+
+    private Promise<InstanceInfo> createAndConfirm(String location,
+                                                   String serverType,
+                                                   Map<String, String> labels,
+                                                   String userData) {
+        return resolveSshKeyIds().map(sshKeyIds -> buildCreateRequest(location, serverType, sshKeyIds, labels, userData))
+                               .flatMap(client::createServer)
+                               .map(HetznerComputeProvider::toInstanceInfo)
+                               .flatMap(info -> confirmRunning(info,
+                                                               ReadinessPolicy.cloudDefault()))
+                               .onFailure(HetznerComputeProvider::logProvisionFailureRollbackGap);
     }
 
     /// Rollback acknowledgment for Hetzner provisions. `createServer` is atomic from
@@ -158,11 +177,86 @@ public record HetznerComputeProvider(HetznerClient client, HetznerEnvironmentCon
 
     private static final CreateServerRequest.PublicNetSpec IPV4_ONLY = new CreateServerRequest.PublicNetSpec(true, false);
 
-    private CreateServerRequest buildCreateRequest(String location, Map<String, String> labels, String userData) {
+    /// Sentinel the upper layers pass in [ProvisionSpec#instanceSize] when they carry no concrete
+    /// type (CTM auto-heal always passes it; bootstrap passes it for roles with no `instance_type`).
+    /// Treated as "unset" so resolution falls through to the provider config.
+    static final String DEFAULT_INSTANCE_SIZE_SENTINEL = "default";
+    /// Bootstrap uploads operator SSH keys to Hetzner named with this prefix and passes their ids at
+    /// create time, so bootstrap VMs never get a root password. The ids live only in the bootstrap
+    /// CLI process — so a leader provisioning an auto-heal replacement re-derives them here by listing
+    /// the account's keys and matching this prefix (#442, option 3B: no persisted state, self-healing
+    /// against deleted/recreated keys). Mirrors `BootstrapPhaseSshKey.HETZNER_KEY_NAME_PREFIX` — the
+    /// `aether-cli` constant cannot be imported from this provider module.
+    static final String BOOTSTRAP_KEY_NAME_PREFIX = "aether-bootstrap";
+
+    private static final Cause NO_SERVER_TYPE = Causes.cause("No Hetzner server type resolved: neither the provision spec instance type nor the provider's "
+                                                            + "[cloud.compute] server_type is set. Set instance_type on the source's core role (bootstrap) or "
+                                                            + "server_type in the node cloud config so auto-heal replacements inherit the cluster's type.");
+
+    private Result<String> resolveServerType(String specHint) {
+        if (isConcreteType(specHint)) {
+            return success(specHint);
+        }
+
+        var configured = config.serverType();
+
+        return isConcreteType(configured)
+               ? success(configured)
+               : NO_SERVER_TYPE.result();
+    }
+
+    private static boolean isConcreteType(String value) {
+        return value != null
+               && !value.isBlank()
+               && !DEFAULT_INSTANCE_SIZE_SENTINEL.equals(value);
+    }
+
+    private Promise<List<Long>> resolveSshKeyIds() {
+        if (!config.sshKeyIds().isEmpty()) {
+            return Promise.success(config.sshKeyIds());
+        }
+
+        return client.listSshKeys()
+                     .map(HetznerComputeProvider::bootstrapKeyIds)
+                     .onSuccess(HetznerComputeProvider::warnIfNoBootstrapKeys)
+                     .recover(HetznerComputeProvider::sshKeyLookupUnavailable);
+    }
+
+    private static List<Long> bootstrapKeyIds(List<SshKey> keys) {
+        return keys.stream()
+                   .filter(HetznerComputeProvider::isBootstrapKey)
+                   .map(SshKey::id)
+                   .toList();
+    }
+
+    private static boolean isBootstrapKey(SshKey key) {
+        return key.name() != null && key.name()
+                                        .startsWith(BOOTSTRAP_KEY_NAME_PREFIX);
+    }
+
+    private static void warnIfNoBootstrapKeys(List<Long> ids) {
+        if (ids.isEmpty()) {
+            log.warn("Hetzner provision: no SSH keys named '{}*' on the account; replacement created without an "
+                    + "ssh_keys param (Hetzner sets a root password; key auth via cloud-init still works)",
+                     BOOTSTRAP_KEY_NAME_PREFIX);
+        }
+    }
+
+    private static List<Long> sshKeyLookupUnavailable(Cause cause) {
+        log.warn("Hetzner provision: SSH-key lookup failed ({}); creating the replacement without an ssh_keys param "
+                + "(key auth via cloud-init still works, but a root password will be set)",
+                 cause.message());
+
+        return List.of();
+    }
+
+    private CreateServerRequest buildCreateRequest(String location,
+                                                   String serverType,
+                                                   List<Long> sshKeyIds,
+                                                   Map<String, String> labels,
+                                                   String userData) {
         var name = generateServerName();
-        var serverType = config.serverType();
         var image = config.image();
-        var sshKeyIds = config.sshKeyIds();
         var networkIds = config.networkIds();
         var firewallIds = config.firewallIds();
 

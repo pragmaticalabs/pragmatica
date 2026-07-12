@@ -33,7 +33,8 @@ public record HetznerEnvironmentIntegrationFactory() implements EnvironmentInteg
                                      .map(EnvironmentIntegration.class::cast);
     }
 
-    private static final String DEFAULT_SERVER_TYPE = "cx33";
+    // #442: no hardcoded instance-type default. An absent server_type stays empty ("unset") and is
+    // resolved from the ProvisionSpec's per-role instance type — or fails loud — at provision time.
     private static final String DEFAULT_IMAGE = "ubuntu-22.04";
 
     private static Result<HetznerEnvironmentConfig> buildEnvironmentConfig(CloudConfig config) {
@@ -64,7 +65,7 @@ public record HetznerEnvironmentIntegrationFactory() implements EnvironmentInteg
 
         return hetznerEnvironmentConfig(hetznerConfig,
                                         nonBlank(compute.get("server_type"),
-                                                 DEFAULT_SERVER_TYPE),
+                                                 ""),
                                         nonBlank(compute.get("image"),
                                                  DEFAULT_IMAGE),
                                         compute.getOrDefault("region", ""),

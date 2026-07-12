@@ -24,6 +24,7 @@ import org.pragmatica.cloud.hetzner.api.Network;
 import org.pragmatica.cloud.hetzner.api.Server;
 import org.pragmatica.cloud.hetzner.api.Server.CreateServerRequest;
 import org.pragmatica.cloud.hetzner.api.SshKey;
+import org.pragmatica.json.JsonMapper;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
@@ -41,6 +42,14 @@ class HetznerComputeProviderTest {
         "cx22", "ubuntu-24.04", "fsn1",
         List.of(1L, 2L), List.of(10L), List.of(5L),
         "#!/bin/bash\necho hello").unwrap();
+
+    private static HetznerEnvironmentConfig configWith(String serverType, List<Long> sshKeyIds) {
+        return HetznerEnvironmentConfig.hetznerEnvironmentConfig(
+            hetznerConfig("test-token"),
+            serverType, "ubuntu-24.04", "fsn1",
+            sshKeyIds, List.of(10L), List.of(5L),
+            "#!/bin/bash\necho hello").unwrap();
+    }
 
     private TestHetznerClient testClient;
     private HetznerComputeProvider provider;
@@ -141,6 +150,111 @@ class HetznerComputeProviderTest {
             assertThat(testClient.lastLabelSelector)
                     .as("upper-layer dotted aether.node-id translated to native hyphenated form")
                     .isEqualTo("aether-node-id=aether-core-node-x");
+        }
+    }
+
+    @Nested
+    class ProfileInheritanceTests {
+
+        @Test
+        void provision_specConcreteInstanceType_usedAsServerType() {
+            testClient.createServerResponse = Promise.success(runningServer(42, "aether-test"));
+
+            provider.provision(ctmSpec("ccx23")).await().onFailure(cause -> assertThat(cause).isNull());
+
+            assertThat(testClient.lastCreateServerRequest.serverType()).isEqualTo("ccx23");
+        }
+
+        @Test
+        void provision_specDefaultSentinel_fallsBackToConfigServerType() {
+            testClient.createServerResponse = Promise.success(runningServer(42, "aether-test"));
+
+            provider.provision(ctmSpec("default")).await().onFailure(cause -> assertThat(cause).isNull());
+
+            assertThat(testClient.lastCreateServerRequest.serverType()).isEqualTo("cx22");
+        }
+
+        @Test
+        void provision_noServerTypeResolvable_failsLoudWithoutHardcodedDefault() {
+            var typelessProvider = HetznerComputeProvider.hetznerComputeProvider(testClient,
+                                                                                configWith("", List.of(1L, 2L))).unwrap();
+
+            typelessProvider.provision(ctmSpec("default"))
+                            .await()
+                            .onSuccess(info -> assertThat(info).isNull())
+                            .onFailure(HetznerComputeProviderTest::assertProvisionFailedError);
+
+            assertThat(testClient.lastCreateServerRequest)
+                    .as("provision must fail before createServer — no cx33 fallback")
+                    .isNull();
+        }
+
+        @Test
+        void provision_configHasSshKeyIds_usedWithoutLookup() {
+            testClient.createServerResponse = Promise.success(runningServer(42, "aether-test"));
+
+            provider.provision(ctmSpec("cx22")).await().onFailure(cause -> assertThat(cause).isNull());
+
+            assertThat(testClient.lastCreateServerRequest.sshKeys()).containsExactly(1L, 2L);
+            assertThat(testClient.listSshKeysCalled)
+                    .as("config already carries ssh_key_ids — no provider-side lookup")
+                    .isFalse();
+        }
+
+        @Test
+        void provision_emptyConfigSshKeyIds_looksUpBootstrapPrefixedKeys() {
+            var keylessProvider = HetznerComputeProvider.hetznerComputeProvider(testClient,
+                                                                               configWith("cx22", List.of())).unwrap();
+            testClient.createServerResponse = Promise.success(runningServer(42, "aether-test"));
+            testClient.listSshKeysResponse = Promise.success(List.of(
+                new SshKey(7, "aether-bootstrap-op", "aa:bb", "ssh-ed25519 AAAA"),
+                new SshKey(9, "someones-laptop", "cc:dd", "ssh-ed25519 BBBB")));
+
+            keylessProvider.provision(ctmSpec("cx22")).await().onFailure(cause -> assertThat(cause).isNull());
+
+            assertThat(testClient.listSshKeysCalled).isTrue();
+            assertThat(testClient.lastCreateServerRequest.sshKeys())
+                    .as("only aether-bootstrap-prefixed keys are attached")
+                    .containsExactly(7L);
+        }
+
+        @Test
+        void provision_emptyConfigSshKeyIdsAndNoBootstrapKeys_createsWithoutSshKeys() {
+            var keylessProvider = HetznerComputeProvider.hetznerComputeProvider(testClient,
+                                                                               configWith("cx22", List.of())).unwrap();
+            testClient.createServerResponse = Promise.success(runningServer(42, "aether-test"));
+            testClient.listSshKeysResponse = Promise.success(List.of(
+                new SshKey(9, "someones-laptop", "cc:dd", "ssh-ed25519 BBBB")));
+
+            keylessProvider.provision(ctmSpec("cx22")).await().onFailure(cause -> assertThat(cause).isNull());
+
+            assertThat(testClient.lastCreateServerRequest.sshKeys()).isEmpty();
+        }
+
+        @Test
+        void createServerPayload_serializesServerTypeSshKeysAndLabels() {
+            testClient.createServerResponse = Promise.success(runningServer(42, "aether-test"));
+
+            provider.provision(ctmSpec("ccx23")).await().onFailure(cause -> assertThat(cause).isNull());
+
+            var json = JsonMapper.defaultJsonMapper().writeAsString(testClient.lastCreateServerRequest).unwrap();
+
+            assertThat(json)
+                    .contains("\"server_type\":\"ccx23\"")
+                    .contains("\"ssh_keys\":[1,2]")
+                    .contains("\"labels\":")
+                    .contains("aether-cluster")
+                    .contains("aether-node-id");
+        }
+
+        private ProvisionSpec ctmSpec(String instanceSize) {
+            var context = ProvisionContext.provisionContext("cluster-x",
+                                                            "core",
+                                                            "eu-1",
+                                                            ProvisionContext.PROVISIONED_BY_CTM)
+                                          .withNodeId("aether-core-node-test123");
+
+            return ProvisionSpec.provisionSpec(InstanceType.ON_DEMAND, instanceSize, "core", context).unwrap();
         }
     }
 
@@ -498,6 +612,7 @@ class HetznerComputeProviderTest {
         Promise<List<Server>> listServersResponse = Promise.success(List.of());
         Promise<Unit> rebootServerResponse = Promise.success(Unit.unit());
         Promise<Unit> updateLabelsResponse = Promise.success(Unit.unit());
+        Promise<List<SshKey>> listSshKeysResponse = Promise.success(List.of());
 
         long lastDeletedServerId;
         long lastGetServerId;
@@ -506,6 +621,7 @@ class HetznerComputeProviderTest {
         Map<String, String> lastUpdateLabels;
         String lastLabelSelector;
         CreateServerRequest lastCreateServerRequest;
+        boolean listSshKeysCalled;
 
         @Override
         public Promise<Server> createServer(CreateServerRequest request) {
@@ -561,7 +677,8 @@ class HetznerComputeProviderTest {
 
         @Override
         public Promise<List<SshKey>> listSshKeys() {
-            return Promise.success(List.of());
+            listSshKeysCalled = true;
+            return listSshKeysResponse;
         }
 
         @Override
