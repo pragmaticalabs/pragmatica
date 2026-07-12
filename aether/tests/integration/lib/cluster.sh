@@ -3185,12 +3185,19 @@ restore_cluster_baseline() {
     # misreports READY lag as a product failure (it false-failed cluster-B twice, 900s each,
     # while step 8 reported deficit=0 immediately after). aether_failover inside
     # ready_core_count self-resolves a live endpoint, so this loop needs no poll hygiene.
-    local _ready_budget=$(( 120 * ${TIMEOUT_SCALE:-1} )) _ready_waited=0
+    local _ready_budget=$(( 120 * ${TIMEOUT_SCALE:-1} ))
+    # #441 wall-clock audit: ready_core_count self-resolves a live endpoint per call
+    # (see comment above), so a dead/slow cluster makes a single call cost far more
+    # than the nominal 5s sleep — the previous `_ready_waited += 5` counter assumed
+    # otherwise and could silently balloon this advisory wait well past its budget.
+    # Track real elapsed time via $SECONDS (same fix as lib/common.sh wait_for).
+    local _ready_start=$SECONDS
+    local _ready_deadline=$(( _ready_start + _ready_budget ))
     log_info "Advisory wait: ${floor}+ cores reporting READY (target=${target}, budget ${_ready_budget}s, NON-FATAL — leader deficit gate is authoritative)"
-    while [ "$(ready_core_count)" -lt "${floor}" ] && [ "${_ready_waited}" -lt "${_ready_budget}" ]; do
+    while [ "$(ready_core_count)" -lt "${floor}" ] && [ "$SECONDS" -lt "${_ready_deadline}" ]; do
         sleep 5
-        _ready_waited=$(( _ready_waited + 5 ))
     done
+    local _ready_waited=$(( SECONDS - _ready_start ))
     local _ready_now; _ready_now=$(ready_core_count)
     if [ "${_ready_now}" -lt "${floor}" ]; then
         log_warn "restore_cluster_baseline: only ${_ready_now} core(s) reporting READY within ${_ready_budget}s (target=${target}); ADVISORY only (ready_core_count lags) — step 8 leader-deficit gate is authoritative; pick_non_leader --state READY may poll longer for a candidate"

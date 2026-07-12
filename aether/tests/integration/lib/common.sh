@@ -661,7 +661,7 @@ wait_for() {
     # Scale timeouts on slower environments (cloud VMs have higher inter-node latency than
     # docker-localhost). TIMEOUT_SCALE=3 default for cloud, 1 elsewhere — set in run-tests.sh.
     timeout=$((timeout * ${TIMEOUT_SCALE:-1}))
-    local elapsed=0 rc errfile
+    local rc errfile
     errfile=$(mktemp)
     log_info "Waiting for: ${description} (timeout: ${timeout}s)"
     # Cloud poll-loop hygiene: predicates round-trip through _resolve_live_endpoint
@@ -677,12 +677,27 @@ wait_for() {
     # cloud connect-timeout (see CLOUD_API_CONNECT_TIMEOUT) bounds the single
     # straggling call between a refresh and the next predicate. docker/local/remote
     # take neither branch — byte-identical behaviour there.
+    #
+    # #441 run 7 (2026-07-12): the mitigation above assumes a refresh is cheap
+    # ("happy path" -m 2 probe) except right after a kill. That assumption breaks
+    # when the WHOLE cluster is down (self-drain): every refresh takes the full
+    # slow VM-scan/enumerate path, so a single iteration can cost far more than
+    # `interval`. The previous deadline check compared a NOMINAL counter
+    # (`elapsed += interval`, once per iteration) against `timeout`, silently
+    # assuming each iteration costs exactly `interval` seconds — so a configured
+    # 360s budget took a real wall-clock 1h50m to actually expire against a fully
+    # dead cluster. Track the deadline against bash's `$SECONDS` (real elapsed
+    # time regardless of how long a single predicate/refresh call takes) instead —
+    # matching the wall-clock-ceiling pattern already used by
+    # wait_for_node_removed/wait_for_container_exit elsewhere in this codebase.
+    local start_seconds=$SECONDS
+    local deadline=$((start_seconds + timeout))
     local cloud_poll="false"
     if [ "${CLOUD_MODE:-false}" = "true" ]; then
         cloud_poll="true"
         _refresh_mgmt_entry_point >/dev/null 2>&1 || true
     fi
-    while [ "$elapsed" -lt "$timeout" ]; do
+    while [ "$SECONDS" -lt "$deadline" ]; do
         # Capture rc without tripping `set -e` from the caller — `eval` as a standalone
         # command would propagate its non-zero exit and abort the entire script when
         # the predicate is simply false. The `&& rc=0 || rc=$?` idiom swallows the exit
@@ -691,7 +706,7 @@ wait_for() {
         eval "$check_cmd" > /dev/null 2>"$errfile" && rc=0 || rc=$?
         case "$rc" in
             0)
-                log_pass "${description} (${elapsed}s)"
+                log_pass "${description} ($((SECONDS - start_seconds))s)"
                 rm -f "$errfile"
                 return 0
                 ;;
@@ -709,10 +724,11 @@ wait_for() {
         if [ "$cloud_poll" = "true" ]; then
             _refresh_mgmt_entry_point >/dev/null 2>&1 || true
         fi
-        sleep "$interval"
-        elapsed=$((elapsed + interval))
+        # Skip the final sleep once the deadline has already passed — avoids
+        # overshooting the wall-clock ceiling by an extra `interval` for no reason.
+        [ "$SECONDS" -lt "$deadline" ] && sleep "$interval"
     done
-    log_fail "${description} (timed out after ${timeout}s)"
+    log_fail "${description} (timed out after $((SECONDS - start_seconds))s, budget ${timeout}s)"
     rm -f "$errfile"
     return 1
 }

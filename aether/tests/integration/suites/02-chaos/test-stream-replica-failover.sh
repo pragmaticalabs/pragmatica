@@ -244,9 +244,17 @@ has_caught_up_replica_excluding() {
 # receive them. Plain while-poll, NOT wait_for (whose timeout emits [FAIL] + latches
 # TEST_FAIL_COUNT). One log_fail on genuine timeout; returns 0 ready / 1 timeout.
 wait_for_stream_config_committed() {
-    local budget="${1:-60}" interval=2 elapsed=0
+    local budget="${1:-60}" interval=2
     local body served owner nreplicas
-    while [ "$elapsed" -lt "$budget" ]; do
+    # #441 wall-clock audit: replicas_snapshot_owner_view retries internally to
+    # reach the owner (comment above), so a single call can cost far more than
+    # `interval` when the owner is mid-election — a nominal `elapsed += interval`
+    # counter would silently let this loop run past its configured budget, the
+    # same class of bug fixed in lib/common.sh wait_for(). Track a real
+    # $SECONDS-based deadline instead.
+    local _start=$SECONDS
+    local _deadline=$(( _start + budget ))
+    while [ "$SECONDS" -lt "$_deadline" ]; do
         body=$(replicas_snapshot_owner_view 4)          # retries to reach owner; no [FAIL]/[PASS]
         served=$(json_scalar "$body" servedByOwner)
         owner=$(json_scalar "$body" hrwOwner)
@@ -266,7 +274,6 @@ wait_for_stream_config_committed() {
             fi
         fi
         sleep "$interval"
-        elapsed=$((elapsed + interval))
     done
     log_fail "Stream ${STREAM_NAME}/${PARTITION} RF=2 replica set not placed within ${budget}s (last view: ${body:0:300})"
     return 1

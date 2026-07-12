@@ -417,17 +417,26 @@ test_pick_victims_and_kill_three_simultaneously() {
 #      state observed here necessarily happened during this scenario's
 #      kill-to-now window, not a stale leftover from an earlier suite.
 #
-#   3. Tier 2 degrades gracefully when SSH itself cannot connect — the known,
-#      separately-tracked #441 item 3 gap (2 of 3 revived/replacement VMs
-#      refuse non-TTY SSH: root password expiry / incomplete cloud-init
-#      authorized_keys propagation). openssh reports a connection/auth-level
-#      failure as rc=255 (distinct from a remote command's own exit status).
-#      On rc=255 fall back to an APPROXIMATE proof: hit the survivor's OWN
-#      mgmt endpoint directly (bypassing _resolve_live_endpoint, which would
-#      silently rotate to a DIFFERENT node) and check for a TRANSPORT failure
-#      (curl status "000" — nothing listening), not an HTTP 404. This is
-#      weaker evidence (a dead process is consistent with, but does not
-#      prove, exit code 2) so it is log_warn, not log_pass.
+#   3. Tier 2 degrades gracefully whenever SSH-based corroboration is
+#      unavailable or AMBIGUOUS — not only the known, separately-tracked
+#      #441 item 3 gap (2 of 3 revived/replacement VMs refuse non-TTY SSH:
+#      root password expiry / incomplete cloud-init authorized_keys
+#      propagation, surfaced by openssh as a connection/auth-level rc=255),
+#      but also #441 run 7 (2026-07-12): a CTM-replacement VM whose root
+#      password is EXPIRED lets SSH key-auth succeed, then PAM refuses
+#      non-TTY command execution — openssh reports a non-255, non-zero rc
+#      with NO captured output (the PAM refusal text comes back on the ssh
+#      client's stderr — outside a capture whose 2>&1 sits inside the
+#      remote command). Both cases carry NO interpretable diagnostic, so both
+#      degrade to a warning and fall through — a non-255 rc WITH actual
+#      captured output is still a genuine, hard remote-command failure
+#      (S19 violation); only the no-evidence case degrades. On degrade,
+#      fall back to an APPROXIMATE proof: hit the survivor's OWN mgmt
+#      endpoint directly (bypassing _resolve_live_endpoint, which would
+#      silently rotate to a DIFFERENT node) and check for a TRANSPORT
+#      failure (curl status "000" — nothing listening), not an HTTP 404.
+#      This is weaker evidence (a dead process is consistent with, but does
+#      not prove, exit code 2) so it is log_warn, not log_pass.
 #
 #   4. Last-resort fallback (pre-existing): if the survivor's VM no longer
 #      resolves at all (deleted/replaced), it has departed. Self-drain alone
@@ -459,18 +468,36 @@ _confirm_survivor_departure() {
         log_fail "S19 violation (cloud): survivor ${survivor} reachable via SSH but docker inspect reports exit-code='${code}' FinishedAt='${finished_at}' — not a designed drain halt (expected exit code 2)"
         return 1
     fi
-    if [ "$ssh_rc" -ne 255 ]; then
-        # SSH connected fine; the REMOTE command itself failed (e.g. docker
-        # daemon error, unexpected container name). Distinct from the known
-        # #441 item 3 lockout — surface loudly rather than silently degrading
-        # to the approximate mgmt-port proof below.
+    if [ "$ssh_rc" -ne 255 ] && [ -n "$insp" ]; then
+        # SSH connected and returned real diagnostic output; the REMOTE
+        # command itself failed (e.g. docker daemon error, unexpected
+        # container name). Distinct from the known #441 item 3 lockout AND
+        # from the no-evidence probe-infrastructure case below — surface
+        # loudly rather than silently degrading to the approximate mgmt-port
+        # proof.
         log_fail "S19 violation (cloud): survivor ${survivor} SSH connected but the remote docker-inspect command failed (rc=${ssh_rc}): ${insp}"
         return 1
     fi
+    if [ "$ssh_rc" -ne 0 ]; then
+        # Tier-2 corroboration is unavailable/ambiguous, not a genuine,
+        # interpretable command failure: rc=255 is the known #441 item 3
+        # SSH transport/auth lockout; any OTHER non-zero rc with EMPTY
+        # captured output (#441 run 7, 2026-07-12) is a CTM-replacement VM
+        # whose expired root password lets SSH key-auth succeed but then
+        # PAM refuses non-TTY exec — openssh surfaces this as a non-255 rc
+        # with nothing captured (the PAM refusal text comes back on the ssh
+        # client's stderr, outside the remote-side 2>&1). Neither case gives us
+        # anything to interpret, so both degrade to a warning instead of a
+        # hard S19 violation, and fall through to the remaining
+        # corroboration tiers.
+        log_warn "Survivor ${survivor} tier-2 (SSH docker-inspect) corroboration unavailable (rc=${ssh_rc}, no interpretable output — likely #441 item 3 SSH lockout or a non-TTY PAM exec gate, not a genuine command failure) — falling through to mgmt-port/VM-existence corroboration"
+    fi
 
-    # Tier 3 (approximate, log_warn): SSH transport/auth failure (rc=255) —
-    # the known #441 item 3 keyless-lockout gap, not fixed here. Check the
-    # survivor's own mgmt endpoint directly for a transport-dead signal.
+    # Tier 3 (approximate, log_warn): SSH-based corroboration above was
+    # unavailable/ambiguous (rc=${ssh_rc}) — the known #441 item 3
+    # keyless-lockout gap, or the run-7 non-TTY PAM exec gate; neither fixed
+    # here. Check the survivor's own mgmt endpoint directly for a
+    # transport-dead signal.
     local ip mgmt_port status ip_rc
     ip=$(cloud_public_ip "$survivor")
     ip_rc=$?
@@ -488,10 +515,10 @@ _confirm_survivor_departure() {
         mgmt_port="${CLOUD_MGMT_PORT:-8080}"
         status=$(http_status "${MGMT_SCHEME:-http}://${ip}:${mgmt_port}/health/live" -m 3)
         if [ "$status" = "000" ]; then
-            log_warn "Survivor ${survivor} SSH unreachable (rc=255, likely #441 item 3 keyless lockout) AND its mgmt endpoint (${ip}:${mgmt_port}) is transport-dead (curl status 000, not an HTTP response) — treating as APPROXIMATE departure proof (process not listening is consistent with a self-drain halt, but exit-code-2 could not be verified)"
+            log_warn "Survivor ${survivor} tier-2 SSH corroboration unavailable (rc=${ssh_rc}) AND its mgmt endpoint (${ip}:${mgmt_port}) is transport-dead (curl status 000, not an HTTP response) — treating as APPROXIMATE departure proof (process not listening is consistent with a self-drain halt, but exit-code-2 could not be verified)"
             return 0
         fi
-        log_fail "S19 violation (cloud): survivor ${survivor} SSH unreachable (rc=255) and its mgmt endpoint (${ip}:${mgmt_port}) returned HTTP status '${status}' (still responding — not departed)"
+        log_fail "S19 violation (cloud): survivor ${survivor} tier-2 SSH corroboration unavailable (rc=${ssh_rc}) and its mgmt endpoint (${ip}:${mgmt_port}) returned HTTP status '${status}' (still responding — not departed)"
         return 1
     fi
 
@@ -500,7 +527,7 @@ _confirm_survivor_departure() {
         log_info "Survivor ${survivor} VM no longer resolves — already departed (event lost to publish-vs-halt race or pre-baseline); treating as satisfied departure"
         return 0
     fi
-    log_fail "S19 violation (cloud): survivor ${survivor} did not DEPART membership within ${SURVIVOR_EXIT_BUDGET_S}s — no NODE_LEFT/NODE_FAILED on /api/events, SSH docker-inspect proof unavailable (rc=255) with mgmt endpoint unresolvable, and its VM still resolves (still running)"
+    log_fail "S19 violation (cloud): survivor ${survivor} did not DEPART membership within ${SURVIVOR_EXIT_BUDGET_S}s — no NODE_LEFT/NODE_FAILED on /api/events, SSH docker-inspect proof unavailable (rc=${ssh_rc}) with mgmt endpoint unresolvable, and its VM still resolves (still running)"
     return 1
 }
 

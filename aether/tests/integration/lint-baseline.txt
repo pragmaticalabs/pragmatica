@@ -1,7 +1,7 @@
-[R1] aether/tests/integration/suites/02-chaos/test-self-drain-quorum-loss.sh:635 — warn-then-pass-demotion (preceding log_warn at line 632)
-[R1] aether/tests/integration/suites/02-chaos/test-self-drain-quorum-loss.sh:640 — warn-then-pass-demotion (preceding log_warn at line 637)
-[R1] aether/tests/integration/suites/02-chaos/test-self-drain-quorum-loss.sh:673 — warn-then-pass-demotion (preceding log_warn at line 671)
-[R1] aether/tests/integration/suites/02-chaos/test-self-drain-quorum-loss.sh:679 — warn-then-pass-demotion (preceding log_warn at line 677)
+[R1] aether/tests/integration/suites/02-chaos/test-self-drain-quorum-loss.sh:662 — warn-then-pass-demotion (preceding log_warn at line 659)
+[R1] aether/tests/integration/suites/02-chaos/test-self-drain-quorum-loss.sh:667 — warn-then-pass-demotion (preceding log_warn at line 664)
+[R1] aether/tests/integration/suites/02-chaos/test-self-drain-quorum-loss.sh:700 — warn-then-pass-demotion (preceding log_warn at line 698)
+[R1] aether/tests/integration/suites/02-chaos/test-self-drain-quorum-loss.sh:706 — warn-then-pass-demotion (preceding log_warn at line 704)
 [R1] aether/tests/integration/suites/04-streaming/test-stream-consumer.sh:14 — warn-then-pass-demotion (preceding log_warn at line 13)
 [R1] aether/tests/integration/suites/04-streaming/test-stream-publish.sh:14 — warn-then-pass-demotion (preceding log_warn at line 13)
 [R1] aether/tests/integration/suites/04-streaming/test-stream-replication.sh:15 — warn-then-pass-demotion (preceding log_warn at line 14)
@@ -38,8 +38,8 @@
 [R2] aether/tests/integration/suites/12-network/test-partition-quorum-gate.sh:334 — cur_leader=$(cluster_leader 2>/dev/null || true)
 [R2] aether/tests/integration/suites/12-network/test-partition-quorum-gate.sh:371 — m1=$(sed -n '1p' "$MINORITY_FILE" 2>/dev/null || true)
 [R2] aether/tests/integration/suites/12-network/test-partition-quorum-gate.sh:372 — m2=$(sed -n '2p' "$MINORITY_FILE" 2>/dev/null || true)
-[R2] aether/tests/integration/suites/13-edge-cases/test-concurrent-deploys.sh:120 — kill "$pid_a" 2>/dev/null; wait "$pid_a" 2>/dev/null || true
-[R2] aether/tests/integration/suites/13-edge-cases/test-concurrent-deploys.sh:121 — kill "$pid_b" 2>/dev/null; wait "$pid_b" 2>/dev/null || true
+[R2] aether/tests/integration/suites/13-edge-cases/test-concurrent-deploys.sh:125 — kill "$pid_a" 2>/dev/null; wait "$pid_a" 2>/dev/null || true
+[R2] aether/tests/integration/suites/13-edge-cases/test-concurrent-deploys.sh:126 — kill "$pid_b" 2>/dev/null; wait "$pid_b" 2>/dev/null || true
 [R2] aether/tests/integration/suites/13-edge-cases/test-disruption-budget.sh:51 — drain_count=$(grep -cve '^$' "$DRAIN_NODES_FILE" 2>/dev/null || true)
 [R3] aether/tests/integration/suites/04-streaming/test-stream-replication.sh:126 — tautological assert_ne on raw response (var $result from line 117)
 [R3] aether/tests/integration/suites/07-cluster-mgmt/test-bootstrap.sh:69 — tautological assert_ne on raw response (var $status from line 68)

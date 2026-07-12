@@ -109,13 +109,18 @@ test_concurrent_deploy() {
     local pid_b=$!
 
     # Wait for both
-    local timeout=60 elapsed=0
-    while [ "$elapsed" -lt "$timeout" ]; do
+    # #441 wall-clock audit: applying the same $SECONDS-based deadline as
+    # lib/common.sh wait_for() for consistency, even though each iteration here
+    # is cheap (kill -0) and low-risk — a nominal elapsed counter is still an
+    # unnecessary assumption when a real deadline costs nothing extra.
+    local timeout=60
+    local _start=$SECONDS
+    local _deadline=$(( _start + timeout ))
+    while [ "$SECONDS" -lt "$_deadline" ]; do
         if ! kill -0 "$pid_a" 2>/dev/null && ! kill -0 "$pid_b" 2>/dev/null; then
             break
         fi
         sleep 1
-        elapsed=$((elapsed + 1))
     done
     kill "$pid_a" 2>/dev/null; wait "$pid_a" 2>/dev/null || true
     kill "$pid_b" 2>/dev/null; wait "$pid_b" 2>/dev/null || true
