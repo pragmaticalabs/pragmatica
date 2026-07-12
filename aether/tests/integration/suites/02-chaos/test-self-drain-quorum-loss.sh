@@ -109,6 +109,28 @@ KILL_TS_FILE="/tmp/s19-kill-ts.$$"
 # emitted by survivors AFTER the kill landed. Format: ISO-8601 UTC,
 # accepted by /api/events?since= and produced by `topology_now`.
 EVENT_BASELINE_FILE="/tmp/s19-event-baseline.$$"
+# #441 run 8 (Defect A): pre-kill roster + verdict files ferrying state from
+# test_pick_victims_and_kill_three_simultaneously through the new
+# test_confirm_quorum_loss_race arbitration step into
+# test_survivors_self_drain_and_exit.
+PRE_KILL_ROSTER_FILE="/tmp/s19-pre-kill-roster.$$"
+VERDICT_FILE="/tmp/s19-verdict.$$"
+# #441 run 8 (Defect C): the local ssh CLIENT's own stderr (host-key banner,
+# PAM password-expiry refusal text) is captured here rather than left to
+# bleed unrouted into the suite log — see the tier-2 comment in
+# _confirm_survivor_departure below.
+SSH_STDERR_FILE="/tmp/s19-ssh-stderr.$$"
+
+# #441 run 8 (Defect A): CLOUD_MODE-only bound on the auto-heal race —
+# CTM can provision a replacement core fast enough to refill quorum before
+# the two survivors ever cross SelfDrainCoordinator's "sustained below
+# quorum" threshold (observed on run 8: a replacement landed ~60s after the
+# first delete while the cluster was still quorate at 4/5). 180s base,
+# scaled by TIMEOUT_SCALE like every other cloud wait in this file, and
+# QUORUM_RACE_MAX_EXTRA_KILLS caps the newcomer-kill loop so a persistently
+# over-eager auto-heal cannot turn this into an unbounded VM-deletion spree.
+QUORUM_RACE_BOUND_S=180
+QUORUM_RACE_MAX_EXTRA_KILLS=3
 
 # Enumerate the REAL running core containers in this cluster by docker name.
 #
@@ -317,6 +339,10 @@ test_pick_victims_and_kill_three_simultaneously() {
         return 1
     fi
     log_pass "Pre-kill: 5 running core containers ($(printf '%s' "$running" | tr '\n' ' '))"
+    # #441 run 8 (Defect A): persist the pre-kill roster so the race-arbitration
+    # step (test_confirm_quorum_loss_race) can tell an auto-heal REPLACEMENT
+    # apart from an original member when scanning strict-core membership.
+    printf '%s\n' "$running" > "$PRE_KILL_ROSTER_FILE"
 
     # Pick exactly 3 victims (first 3 of the sorted set) and record the
     # remaining 2 as survivors. `running` is already sorted for determinism
@@ -455,9 +481,27 @@ _confirm_survivor_departure() {
     fi
 
     # Tier 2: SSH + docker inspect on the survivor's own VM.
-    local insp ssh_rc code finished_at
-    insp=$(cloud_ssh "$survivor" "docker inspect --format '{{.State.ExitCode}}|{{.State.FinishedAt}}' aether-node 2>&1")
+    #
+    # #441 run 8 (Defect C): the REMOTE command's own stderr is already
+    # merged into $insp via the inline `2>&1` above (inside the quoted
+    # remote command string) — that capture is untouched below and its
+    # empty-vs-nonempty classification (tier-2 hard-fail vs degrade-and-
+    # fall-through) is exactly what the branches beneath this call rely on.
+    # Separately, the LOCAL ssh client process itself writes its own
+    # diagnostics (host-key banner "Warning: Permanently added ... to the
+    # list of known hosts", PAM password-expiry refusal text) to ITS OWN
+    # stderr — a channel `$(...)` never captures. Left unrouted, that text
+    # was bleeding straight into the suite log. Redirect it into
+    # SSH_STDERR_FILE and surface it via log_info (attributed, not a raw
+    # passthrough) instead of silently discarding it.
+    local insp ssh_rc code finished_at ssh_stderr
+    insp=$(cloud_ssh "$survivor" "docker inspect --format '{{.State.ExitCode}}|{{.State.FinishedAt}}' aether-node 2>&1" 2>"$SSH_STDERR_FILE")
     ssh_rc=$?
+    if [ -s "$SSH_STDERR_FILE" ]; then
+        ssh_stderr=$(tr '\n' ' ' < "$SSH_STDERR_FILE" | head -c 300)
+        log_info "cloud_ssh(${survivor}) local client diagnostics (host-key banner / PAM text, not part of the remote command's own output): ${ssh_stderr}"
+    fi
+    rm -f "$SSH_STDERR_FILE"
     if [ "$ssh_rc" -eq 0 ]; then
         code="${insp%%|*}"
         finished_at="${insp#*|}"
@@ -531,6 +575,128 @@ _confirm_survivor_departure() {
     return 1
 }
 
+# Direct membership read from ONE specific survivor's own mgmt endpoint,
+# bypassing _resolve_live_endpoint (which could rotate to a DIFFERENT node
+# and answer for the wrong survivor). Mirrors the existing tier-3 pattern in
+# _confirm_survivor_departure. Prints the raw JSON body on stdout; empty +
+# rc=1 on any resolution/transport failure.
+# Usage: _s19_survivor_membership_direct "$survivor"
+_s19_survivor_membership_direct() {
+    local survivor="$1"
+    local ip
+    ip=$(cloud_public_ip "$survivor" 2>/dev/null) || return 1
+    [ -z "$ip" ] && return 1
+    curl -sfk -m 3 -H "X-API-Key: ${API_KEY}" "${MGMT_SCHEME:-http}://${ip}:${CLOUD_MGMT_PORT:-8080}/api/cluster/membership" 2>/dev/null
+}
+
+# #441 run 8 (Defect A): CLOUD-ONLY arbitration for the auto-heal race. The
+# S19 premise (2 survivors alone see < quorum) only holds if CTM auto-heal
+# does not refill the lost core before the survivors notice. On slow-but-
+# automatic cloud provisioning, a fresh replacement can join and push
+# strictCoreMemberCount back up to >= requiredThreshold while the two
+# original survivors are still merely treating the 3 dead peers as
+# unreachable — the unconditional drain assertion in
+# test_survivors_self_drain_and_exit would then fail on a premise the kill
+# never actually established (run 8: a replacement landed ~60s after the
+# first delete while the cluster was still quorate at 4/5). docker/remote
+# never exercise this: auto-heal there is not slow-but-automatic in the same
+# way, so this whole step is a cloud-only no-op there.
+#
+# Verdict is written to VERDICT_FILE for test_survivors_self_drain_and_exit
+# to consult:
+#   "quorum-lost"  — a survivor directly reported belowThreshold=true (with
+#                    or without a bounded kill-newcomers detour first); the
+#                    unconditional drain assertion applies unchanged. Also
+#                    the SAFE DEFAULT whenever we lack positive evidence
+#                    either way (missing state, unreachable survivors,
+#                    ambiguous reads) — this preserves the pre-fix hard-
+#                    assertion behavior as the fallback.
+#   "quorum-held"  — the bound exhausted with POSITIVE evidence
+#                    (belowThreshold=false observed on a live read) that
+#                    quorum survived a newcomer refill; downstream
+#                    assertion softens to an availability/convergence check
+#                    instead of a hard drain requirement.
+test_confirm_quorum_loss_race() {
+    if [ "${CLOUD_MODE:-false}" != "true" ]; then
+        log_info "Race-arbitration step is cloud-only (docker/remote auto-heal does not exhibit the slow-provisioning race) — skipping"
+        echo "quorum-lost" > "$VERDICT_FILE"
+        return 0
+    fi
+
+    local s1 s2 pre_kill_roster
+    s1=$(sed -n '1p' "$SURVIVORS_FILE")
+    s2=$(sed -n '2p' "$SURVIVORS_FILE")
+    pre_kill_roster=$(cat "$PRE_KILL_ROSTER_FILE" 2>/dev/null || echo "")
+    if [ -z "$s1" ] || [ -z "$s2" ] || [ -z "$pre_kill_roster" ]; then
+        log_warn "Race-arbitration: missing survivors/pre-kill-roster state — defaulting to quorum-lost (existing hard-assertion path)"
+        echo "quorum-lost" > "$VERDICT_FILE"
+        return 0
+    fi
+
+    local bound=$((QUORUM_RACE_BOUND_S * ${TIMEOUT_SCALE:-1}))
+    local deadline=$((SECONDS + bound))
+    local extra_kills=0
+    local verdict="" membership="" below=""
+
+    while [ $SECONDS -lt $deadline ]; do
+        # No outer stderr redirect needed: _s19_survivor_membership_direct
+        # already routes both of its internal commands' stderr (cloud_public_ip
+        # and curl) to /dev/null at the source (lines 587/589 above) — an outer
+        # `2>/dev/null` here would only ever suppress the function-call
+        # boundary itself, which produces none. `|| true` alone keeps this
+        # bare assignment from aborting the whole script under `set -e` when
+        # the function returns 1 (no live read yet).
+        membership=$(_s19_survivor_membership_direct "$s1" || true)
+        [ -z "$membership" ] && membership=$(_s19_survivor_membership_direct "$s2" || true)
+        if [ -n "$membership" ]; then
+            below=$(membership_bool_field "$membership" belowThreshold)
+            if [ "$below" = "true" ]; then
+                verdict="quorum-lost"
+                log_pass "Race-arbitration: belowThreshold=true observed directly on a survivor — quorum-loss confirmed"
+                break
+            fi
+            if [ "$below" = "false" ]; then
+                # Quorum currently held. Look for a NEWCOMER — a strict-core
+                # member not present in the pre-kill roster — evidence
+                # auto-heal refilled the lost slot before the kill was ever
+                # detected as quorum loss.
+                local live newcomer="" id
+                live=$(membership_live_member_ids "$membership")
+                for id in $live; do
+                    if ! printf '%s\n' "$pre_kill_roster" | grep -Fxq -- "$id"; then
+                        newcomer="$id"
+                        break
+                    fi
+                done
+                if [ -n "$newcomer" ] && [ "$extra_kills" -lt "$QUORUM_RACE_MAX_EXTRA_KILLS" ]; then
+                    log_warn "Race-arbitration: auto-heal newcomer '${newcomer}' refilled quorum before belowThreshold tripped (extra kill $((extra_kills + 1))/${QUORUM_RACE_MAX_EXTRA_KILLS}) — killing it and re-polling"
+                    if cloud_kill_vm "$newcomer"; then
+                        extra_kills=$((extra_kills + 1))
+                    else
+                        log_warn "Race-arbitration: cloud_kill_vm failed for newcomer '${newcomer}' — re-polling without crediting an extra kill"
+                    fi
+                fi
+            fi
+        fi
+        sleep 3
+    done
+
+    if [ -z "$verdict" ]; then
+        # Bound exhausted. Only POSITIVE evidence of sustained quorum (a live
+        # read showing belowThreshold=false) earns the softened branch; any
+        # other outcome (never got a usable reading) defaults to the safe,
+        # pre-fix hard-assertion path.
+        if [ -n "$membership" ] && [ "$below" = "false" ]; then
+            verdict="quorum-held"
+            log_warn "Race-arbitration: bound (${bound}s, ${extra_kills} extra kill(s)) exhausted with quorum still held — S19 quorum-loss branch NOT exercised this run (auto-heal outran the kill window)"
+        else
+            verdict="quorum-lost"
+            log_warn "Race-arbitration: bound (${bound}s) exhausted without ever obtaining a usable membership reading from either survivor — defaulting to the existing hard drain-assertion path (no positive evidence either way)"
+        fi
+    fi
+    echo "$verdict" > "$VERDICT_FILE"
+}
+
 test_survivors_self_drain_and_exit() {
     local s1 s2
     s1=$(sed -n '1p' "$SURVIVORS_FILE")
@@ -549,8 +715,27 @@ test_survivors_self_drain_and_exit() {
     # kept only for docker/local (test_survivor_exit_codes_are_two). Best-effort
     # SELF_DRAIN_INITIATED corroboration is asserted in test_drain_trigger_log_signature_present.
     if [ "${CLOUD_MODE:-false}" = "true" ]; then
-        local baseline
+        local baseline verdict
         baseline=$(cat "$EVENT_BASELINE_FILE" 2>/dev/null || echo "")
+        verdict=$(cat "$VERDICT_FILE" 2>/dev/null || echo "quorum-lost")
+
+        if [ "$verdict" = "quorum-held" ]; then
+            # #441 run 8 (Defect A): test_confirm_quorum_loss_race found
+            # POSITIVE evidence that auto-heal refilled quorum before the
+            # survivors ever tripped SelfDrainCoordinator's threshold — the
+            # S19 quorum-loss premise was never established this run.
+            # Asserting an unconditional drain here would fail on a premise
+            # the kill never actually created (exactly the run-8 false
+            # FAIL). Assert availability/convergence instead: the cluster is
+            # still healthy and non-split-brain after the kill + refill.
+            log_warn "S19 (cloud): quorum-loss branch NOT exercised this run (auto-heal outran the kill window) — asserting availability/convergence instead of a hard drain requirement"
+            if ! assert_cluster_healthy "S19 (cloud, quorum-held branch): cluster remains healthy/converged after the triple kill + auto-heal refill"; then
+                return 1
+            fi
+            log_pass "S19 (cloud): quorum-loss race not won this run — availability/convergence branch satisfied instead (honest skip, not a false pass)"
+            return 0
+        fi
+
         log_info "GAP-A (cloud): asserting drain OUTCOME = survivors (${s1}, ${s2}) DEPART membership within ${SURVIVOR_EXIT_BUDGET_S}s (NODE_LEFT/NODE_FAILED on /api/events); exit-code-2 halt-reason is unverifiable without docker"
         if ! _confirm_survivor_departure "$s1" "$baseline"; then
             return 1
@@ -740,7 +925,8 @@ test_cluster_recovers_to_five_on_duty() {
 }
 
 cleanup() {
-    rm -f "$VICTIMS_FILE" "$SURVIVORS_FILE" "$KILL_TS_FILE" "$EVENT_BASELINE_FILE"
+    rm -f "$VICTIMS_FILE" "$SURVIVORS_FILE" "$KILL_TS_FILE" "$EVENT_BASELINE_FILE" \
+        "$PRE_KILL_ROSTER_FILE" "$VERDICT_FILE" "$SSH_STDERR_FILE"
 
     # Semantic baseline restore. After S19+S20 the cluster should already
     # be back at 5 ON_DUTY (restart_all_nodes was invoked in
@@ -761,6 +947,7 @@ trap 'cleanup' EXIT
 
 run_test "Initial 5 healthy cores" test_initial_state
 run_test "Pick 3 victims and kill simultaneously" test_pick_victims_and_kill_three_simultaneously
+run_test "Confirm quorum-loss vs auto-heal race (cloud-only arbitration)" test_confirm_quorum_loss_race
 run_test "Survivors self-drain and exit within ${SURVIVOR_EXIT_BUDGET_S}s (S19)" test_survivors_self_drain_and_exit
 run_test "Survivor exit codes are 2 (Runtime.halt(2))" test_survivor_exit_codes_are_two
 run_test "Drain-trigger log signature present on survivors" test_drain_trigger_log_signature_present

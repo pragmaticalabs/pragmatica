@@ -2205,21 +2205,129 @@ _reestablish_echo_baseline() {
 # (v1 of this helper counted running VMs and treated count>=1 as "must not
 # reap" — that made S20 permanently unable to recover the real post-self-drain
 # state, since surviving VMs always stay powered on.) Callers must corroborate
-# further by probing each returned IP's mgmt port directly. rc distinguishes a
-# TRUSTWORTHY (possibly empty) list from corroboration being UNAVAILABLE
-# (1 — no hcloud CLI or the query itself failed).
+# further by probing each returned IP's mgmt port directly. rc distinguishes
+# the query itself SUCCEEDING (0 — even an empty result is a successful
+# query) from corroboration being UNAVAILABLE (1 — no hcloud CLI or the query
+# itself failed).
+#
+# #441 Defect B (run 8): an rc=0 EMPTY result is NOT equivalent to "confirmed
+# zero VMs" and must NEVER be treated as reap-confirmation by a caller — it is
+# indistinguishable from an enumeration mechanism that failed to match a live
+# VM (exactly what happened here before the label-key+pattern fix below: the
+# selector matched nothing while 6 VMs were running). Full-drain confirmation
+# requires a NON-EMPTY list whose members ALL fail their mgmt probe; an empty
+# list is UNKNOWN and callers must abort loudly rather than reap on it.
 _cloud_running_vm_ips() {
     local cluster_name="$1"
     if ! command -v hcloud >/dev/null 2>&1; then
         return 1
     fi
+    # #441 Defect B: the previous `--selector "aether-cluster=${cluster_name}"`
+    # query structurally never matched — provisioned VMs (seed AND CTM
+    # replacement alike) are only ever stamped with `aether-node-id`;
+    # `aether-cluster` is a separate label that CTM does not currently set on
+    # every VM (product-side gap, tracked separately as #442 v2b). That made
+    # this function's "0 running VMs" result look trustworthy even while VMs
+    # were fully alive, and the caller (restart_all_nodes) treated that
+    # false-empty as confirmed-dead and reaped + rebootstrapped a LIVE
+    # cluster (run 8: 6 live VMs, 3 mgmt endpoints answering 200, reaped
+    # anyway).
+    #
+    # Interim fix: query by label KEY presence (`-l aether-node-id`, matches
+    # regardless of whether `aether-cluster` is ever stamped) and post-filter
+    # each row against two independent, cluster-unambiguous membership tests:
+    #   - CTM auto-heal replacements are named `aether-cloud-<cluster>-node-*`
+    #     (the cluster name is embedded in the `aether-node-id` VALUE itself,
+    #     so this match can never fold in a sibling cluster's replacement).
+    #   - Original bootstrap seeds are named `<CLOUD_SOURCE_NAME>-core-N`,
+    #     which does NOT embed a cluster name — CLOUD_SOURCE_NAME defaults to
+    #     the SAME "hetzner-eu" for every cluster (lib/common.sh, unset by any
+    #     per-cluster override), and cluster A/B run concurrently in a cloud
+    #     gate, so two sibling clusters' seed VMs carry IDENTICAL
+    #     `aether-node-id` label values by construction (confirmed: matching
+    #     by that string, even cross-checked against THIS cluster's own
+    #     provisionedNodeIds list, does NOT disambiguate — both clusters'
+    #     bootstrap-state.json list the same logical names). Seeds are
+    #     therefore matched by IP ADDRESS instead, against THIS cluster's own
+    #     `collectedAddresses` from bootstrap-state.json — the actual
+    #     provisioned IPs are globally unique per VM, so this can never
+    #     collide with a sibling cluster's seed.
+    # The test-PG VM is excluded unconditionally by name prefix, independent
+    # of its labels — it happens not to carry aether-node-id today, but that
+    # must not be load-bearing.
+    local seed_ips
+    seed_ips=$(_cloud_seed_ips "$cluster_name")
     local listing hcloud_rc
-    listing=$(hcloud server list --selector "aether-cluster=${cluster_name}" -o columns=status,ipv4 -o noheader 2>/dev/null)
+    listing=$(hcloud server list -l aether-node-id -o columns=name,status,ipv4,labels -o noheader 2>/dev/null)
     hcloud_rc=$?
     if [ "$hcloud_rc" -ne 0 ]; then
         return 1
     fi
-    printf '%s\n' "$listing" | awk '$1 == "running" { print $2 }'
+    local name status ip labels_blob node_id line
+    while IFS= read -r line; do
+        [ -z "$line" ] && continue
+        name=$(printf '%s' "$line" | awk '{print $1}')
+        status=$(printf '%s' "$line" | awk '{print $2}')
+        ip=$(printf '%s' "$line" | awk '{print $3}')
+        [ "$status" = "running" ] || continue
+        case "$name" in
+            aether-test-pg*) continue ;;
+        esac
+        labels_blob=$(printf '%s' "$line" | sed -E 's/^[^[:space:]]+[[:space:]]+[^[:space:]]+[[:space:]]+[^[:space:]]+[[:space:]]+//')
+        # `|| true`: grep -oE legitimately returns 1 on a non-matching row (should
+        # not happen given the `-l aether-node-id` selector, but this loop body
+        # must never depend on caller-side `set -e` masking to stay alive — see
+        # the run_test() if-masking discussion elsewhere in this harness; a bare
+        # failing command substitution here would abort the whole script under
+        # `set -euo pipefail` whenever this function is invoked outside a masked
+        # context).
+        node_id=$(printf '%s' "$labels_blob" | grep -oE 'aether-node-id=[^,[:space:]]+' | sed 's/aether-node-id=//' || true)
+        [ -z "$node_id" ] && continue
+        case "$node_id" in
+            "aether-cloud-${cluster_name}-node-"*)
+                printf '%s\n' "$ip"
+                ;;
+            *)
+                if printf '%s\n' "$seed_ips" | grep -qxF "$ip"; then
+                    printf '%s\n' "$ip"
+                fi
+                ;;
+        esac
+    done <<< "$listing"
+    return 0
+}
+
+# #441 Defect B: the ORIGINAL bootstrap seed IPs for THIS cluster, read
+# straight from its own bootstrap-state.json `collectedAddresses` (same
+# file/array this cluster's `aether cluster bootstrap` run wrote; same
+# file cloud_public_ip in lib/common.sh reads — deliberately duplicated
+# here rather than reused, since that helper resolves a single node-id's
+# IP, not the full address list, and this file should not reach into
+# lib/common.sh's parsing internals). Matching by IP rather than by
+# `aether-node-id` label VALUE is deliberate: CLOUD_SOURCE_NAME (and hence
+# the seed label naming scheme "<source>-core-N") is shared by every
+# cluster in a run, so two sibling clusters' seed VMs carry identical
+# label values — only the actual provisioned IP is guaranteed unique per
+# VM. Prints one IP per line; prints nothing (not an error) when the state
+# file is missing/unparseable — callers must fall back to the
+# CTM-replacement name-pattern match alone in that case, not treat this as
+# fatal.
+_cloud_seed_ips() {
+    local cluster_name="$1"
+    local state_file="${HOME}/.aether/clusters/${cluster_name}/bootstrap-state.json"
+    [ -f "$state_file" ] || return 0
+    local addrs_raw
+    addrs_raw=$(awk -v RS='' '{
+        match($0, /"collectedAddresses"[[:space:]]*:[[:space:]]*\[[^]]*\]/);
+        if (RSTART > 0) print substr($0, RSTART, RLENGTH);
+    }' "$state_file")
+    [ -z "$addrs_raw" ] && return 0
+    # `|| true`: the final `grep -v` legitimately returns 1 when every entry is
+    # filtered out (e.g. an all-blank-string array) — a bare pipeline failure
+    # here must not depend on the caller's `set -e` masking context (same
+    # rationale as the `|| true` in _cloud_running_vm_ips above).
+    printf '%s' "$addrs_raw" | sed 's/.*\[//; s/\].*//' | tr ',' '\n' \
+        | sed 's/^[[:space:]]*"//; s/"[[:space:]]*$//' | grep -v '^[[:space:]]*$' || true
     return 0
 }
 
@@ -2403,11 +2511,23 @@ restart_all_nodes() {
                         log_fail "restart_all_nodes: mgmt API unreachable AND hcloud corroboration unavailable — cannot distinguish a full self-drain from a transport outage on a LIVE cluster; refusing to reap. Operator: check mgmt connectivity and hcloud credentials manually."
                         return 1
                     elif [ -z "$running_ips" ]; then
-                        log_warn "restart_all_nodes: mgmt API unreachable AND hcloud independently confirms 0 running VMs for '${BOOTSTRAP_CLUSTER_NAME}' — both views agree the cluster is dead, proceeding to reap+rebootstrap"
-                        if ! _cloud_full_drain_recover; then
-                            log_fail "restart_all_nodes: cloud full-drain recovery (cluster-scoped reap + rebootstrap) failed"
-                            return 1
-                        fi
+                        # #441 Defect B (run 8): an EMPTY hcloud enumeration is
+                        # UNKNOWN, not confirmation of death — it is exactly the
+                        # shape a matching failure produces (the run-8 incident:
+                        # 6 VMs running, 3 mgmt endpoints answering 200, yet the
+                        # old cluster-label selector matched nothing, and this
+                        # branch reaped + rebootstrapped a SECOND cluster over
+                        # the live one). Full-drain confirmation requires a
+                        # NON-EMPTY enumerated set whose members ALL fail their
+                        # mgmt probe (the `else` branch below) — never a bare
+                        # empty result, no matter how well-corroborated the
+                        # enumeration mechanism is believed to be. Abort loudly;
+                        # an operator can tell "genuinely 0 VMs" apart from
+                        # "enumeration broken" with a direct
+                        # `hcloud server list -l aether-node-id` and re-run once
+                        # resolved — that decision must not be automated here.
+                        log_fail "restart_all_nodes: mgmt API unreachable AND hcloud enumeration for '${BOOTSTRAP_CLUSTER_NAME}' returned ZERO VMs — this is UNKNOWN, not a confirmed drain (an empty enumeration is indistinguishable from a matching failure); refusing to reap. Operator: verify with 'hcloud server list -l aether-node-id' whether the cluster's VMs still exist before taking any destructive action."
+                        return 1
                     else
                         for ip in $running_ips; do
                             vm_count=$((vm_count + 1))

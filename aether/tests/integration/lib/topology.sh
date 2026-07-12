@@ -185,6 +185,48 @@ membership_node_state() {
         | sed 's/"state"[[:space:]]*:[[:space:]]*"\([^"]*\)"/\1/'
 }
 
+# Extract a top-level boolean field (e.g. "belowThreshold") from a
+# /api/cluster/membership body. Prints "true"/"false" on stdout, empty when
+# absent/unparseable — callers must treat empty as UNKNOWN, never as false.
+# Usage: membership_bool_field "$membership_json" belowThreshold
+membership_bool_field() {
+    local membership_json="$1" field="$2"
+    printf '%s' "$membership_json" \
+        | grep -oE "\"${field}\"[[:space:]]*:[[:space:]]*(true|false)" \
+        | head -1 \
+        | sed -E 's/.*:[[:space:]]*(true|false)/\1/'
+}
+
+# Extract a top-level integer field (e.g. "requiredThreshold") from a
+# /api/cluster/membership body. Prints the number on stdout, empty when
+# absent/unparseable.
+# Usage: membership_int_field "$membership_json" strictCoreMemberCount
+membership_int_field() {
+    local membership_json="$1" field="$2"
+    printf '%s' "$membership_json" \
+        | grep -oE "\"${field}\"[[:space:]]*:[[:space:]]*[0-9]+" \
+        | head -1 \
+        | sed -E 's/.*:[[:space:]]*([0-9]+)/\1/'
+}
+
+# Print the set of node-ids currently counted in the STRICT core quorum
+# numerator (MembershipFsm#strictCoreMembers: state exactly MEMBER, core
+# role — ClusterTopologyRoutes wires this straight into each member's
+# "strictCore" boolean, so no separate state check is needed here) from a
+# /api/cluster/membership body, one per line. Used to detect a NEWCOMER — a
+# node counted toward quorum that was not part of a previously captured
+# roster — e.g. an auto-heal replacement that joined and is already
+# strict-core before a kill-detection race was decided.
+# Usage: membership_live_member_ids "$membership_json"
+membership_live_member_ids() {
+    local membership_json="$1"
+    printf '%s' "$membership_json" \
+        | grep -oE '\{[^{}]*\}' \
+        | grep -F '"strictCore":true' \
+        | grep -oE '"nodeId"[[:space:]]*:[[:space:]]*"[^"]*"' \
+        | sed 's/"nodeId"[[:space:]]*:[[:space:]]*"\([^"]*\)"/\1/'
+}
+
 # Wait until the given node is observed DEPARTED since the supplied baseline.
 # Returns 0 on success, 1 on timeout. Signature + timeout/scale behaviour are
 # unchanged from the old /api/events oracle so callers need no edit.
