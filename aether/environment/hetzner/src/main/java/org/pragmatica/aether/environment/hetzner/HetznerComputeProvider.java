@@ -93,11 +93,26 @@ public record HetznerComputeProvider(HetznerClient client, HetznerEnvironmentCon
                                                    Map<String, String> labels,
                                                    String userData) {
         return resolveSshKeyIds().map(sshKeyIds -> buildCreateRequest(location, serverType, sshKeyIds, labels, userData))
+                               .onSuccess(HetznerComputeProvider::logCreateRequest)
                                .flatMap(client::createServer)
                                .map(HetznerComputeProvider::toInstanceInfo)
                                .flatMap(info -> confirmRunning(info,
                                                                ReadinessPolicy.cloudDefault()))
                                .onFailure(HetznerComputeProvider::logProvisionFailureRollbackGap);
+    }
+
+    /// #442 v2b — operator-visible record of the EXACT labels sent to Hetzner at create time. The
+    /// server is created with whatever this map holds, so this line is the ground truth for
+    /// "did the VM get aether-cluster/aether-role?" — it distinguishes a provider that stamped them
+    /// (any absence is then Hetzner-side) from a caller that supplied an unlabeled context (a wiring
+    /// gap). Fires once per provisioned VM (bootstrap seed, CTM replacement, scale) — all
+    /// infrequent, so INFO is not hot-path noise.
+    private static void logCreateRequest(CreateServerRequest request) {
+        log.info("Hetzner provision: creating server '{}' (serverType={}) with {} ssh key(s) and labels {}",
+                 request.name(),
+                 request.serverType(),
+                 request.sshKeys().size(),
+                 request.labels());
     }
 
     /// Rollback acknowledgment for Hetzner provisions. `createServer` is atomic from
