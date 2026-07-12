@@ -16,6 +16,7 @@ import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.parse.Number;
 
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -103,8 +104,25 @@ public final class HetznerDiscoveryProvider implements DiscoveryProvider {
         return LABEL_CLUSTER + "=" + clusterName;
     }
 
+    /// #442 v2b — Hetzner's label update REPLACES the whole map. Emitting only the discovery labels
+    /// here would wipe the `aether-source` / `aether-node-id` labels the create stamped (and the
+    /// subsequent `applyNodeIdTag` would then wipe the rest down to `aether-node-id` alone). Read-
+    /// modify-write: fetch the server's current labels and overlay the discovery labels (cluster,
+    /// port, role), so registration ADDS `aether-port` and refreshes cluster/role without dropping
+    /// the create-stamped base set. Runs once at join, serialized on the node, so the lost-update
+    /// window is negligible.
     private Promise<Unit> applyRegistrationLabels(long serverId, PeerInfo self) {
-        return client.updateServerLabels(serverId, buildSelfLabels(self));
+        return client.getServer(serverId)
+                     .map(server -> mergedSelfLabels(server, self))
+                     .flatMap(merged -> client.updateServerLabels(serverId, merged));
+    }
+
+    private Map<String, String> mergedSelfLabels(Server server, PeerInfo self) {
+        var merged = new HashMap<String, String>(option(server.labels()).or(Map.of()));
+
+        merged.putAll(buildSelfLabels(self));
+
+        return Map.copyOf(merged);
     }
 
     private Promise<Unit> clearLabels(long serverId) {

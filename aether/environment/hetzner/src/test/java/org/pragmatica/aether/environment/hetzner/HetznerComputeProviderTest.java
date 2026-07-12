@@ -449,6 +449,32 @@ class HetznerComputeProviderTest {
             assertThat(testClient.lastUpdateLabelsServerId).isEqualTo(42L);
             assertThat(testClient.lastUpdateLabels).isEqualTo(tags);
         }
+
+        @Test
+        void applyTags_mergesWithExistingLabels_preservingClusterRoleSource() {
+            // #442 v2b — the node self-stamps ONLY aether-node-id at join
+            // (AetherNode.tagMatchingInstance). Hetzner replaces the whole label map, so applyTags
+            // MUST merge (read-modify-write) or it wipes the create-stamped cluster/role/source down
+            // to just node-id — the exact field symptom. Config-independent: the base set is read
+            // from the VM's existing labels, so this also proves the replacement-of-replacement chain.
+            testClient.getServerResponse = Promise.success(serverWithLabels(42, "n",
+                Map.of("aether-cluster", "cloud-test-b",
+                       "aether-role", "core",
+                       "aether-source", "hetzner-eu",
+                       "aether-node-id", "old-id")));
+            testClient.updateLabelsResponse = Promise.success(Unit.unit());
+
+            provider.applyTags(new InstanceId("42"), Map.of("aether-node-id", "new-id"))
+                    .await()
+                    .onFailure(cause -> assertThat(cause).isNull());
+
+            assertThat(testClient.lastUpdateLabels)
+                    .as("applyTags MERGES: all four labels survive; node-id is updated, not sole")
+                    .containsEntry("aether-cluster", "cloud-test-b")
+                    .containsEntry("aether-role", "core")
+                    .containsEntry("aether-source", "hetzner-eu")
+                    .containsEntry("aether-node-id", "new-id");
+        }
     }
 
     @Nested

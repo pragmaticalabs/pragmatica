@@ -155,7 +155,7 @@ public record HetznerComputeProvider(HetznerClient client, HetznerEnvironmentCon
     @Override
     public Promise<Unit> applyTags(InstanceId id, Map<String, String> tags) {
         return parseServerId(id).async()
-                            .flatMap(serverId -> updateLabels(serverId, tags));
+                            .flatMap(serverId -> mergeLabels(serverId, tags));
     }
 
     @Override
@@ -183,8 +183,27 @@ public record HetznerComputeProvider(HetznerClient client, HetznerEnvironmentCon
         return client.rebootServer(serverId);
     }
 
-    private Promise<Unit> updateLabels(long serverId, Map<String, String> tags) {
-        return client.updateServerLabels(serverId, tags);
+    /// #442 v2b — Hetzner's label update REPLACES the server's whole label map, so a partial
+    /// `applyTags` (the node self-stamps only `aether-node-id` at join, `AetherNode.tagMatchingInstance`)
+    /// would wipe the `aether-cluster` / `aether-role` / `aether-source` labels the create stamped —
+    /// leaving a VM the harness's label-scoped enumeration can no longer find. Read-modify-write: fetch
+    /// the server's current labels, overlay the new tags (new keys win), and write the union back. The
+    /// VM's existing labels are the source of truth for the base set, so this is config-independent and
+    /// correct across replacement-of-replacement chains (each generation's create already stamped the
+    /// right base labels). The self-tag / self-register calls run once at join and are serialized on the
+    /// node, so the read-modify-write lost-update window is negligible here.
+    private Promise<Unit> mergeLabels(long serverId, Map<String, String> tags) {
+        return client.getServer(serverId)
+                     .map(server -> mergedLabels(server, tags))
+                     .flatMap(merged -> client.updateServerLabels(serverId, merged));
+    }
+
+    private static Map<String, String> mergedLabels(Server server, Map<String, String> tags) {
+        var merged = new HashMap<>(safeLabels(server));
+
+        merged.putAll(tags);
+
+        return Map.copyOf(merged);
     }
 
     private Promise<Server> serverById(long serverId) {
