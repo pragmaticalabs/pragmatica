@@ -32,6 +32,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
@@ -349,13 +350,35 @@ public record HetznerComputeProvider(HetznerClient client, HetznerEnvironmentCon
     private static Map<String, String> buildLabels(String clusterLabel, String role, String sourceName) {
         var labels = new HashMap<String, String>();
 
-        labels.put("aether-cluster", clusterLabel);
-        labels.put("aether-role", role);
+        labels.put("aether-cluster", sanitizeLabelValue(clusterLabel));
+        labels.put("aether-role", sanitizeLabelValue(role));
         if (!sourceName.isEmpty()) {
-            labels.put("aether-source", sourceName);
+            labels.put("aether-source", sanitizeLabelValue(sourceName));
         }
 
         return labels;
+    }
+
+    private static final Pattern LABEL_VALUE_DISALLOWED = Pattern.compile("[^a-zA-Z0-9._-]");
+    private static final Pattern LABEL_VALUE_EDGE_TRIM = Pattern.compile("^[._-]+|[._-]+$");
+    private static final int HETZNER_LABEL_VALUE_MAX = 63;
+
+    /// #442 v2b — coerce a metadata label VALUE into Hetzner's constraint (max 63 chars,
+    /// `[a-zA-Z0-9._-]`, start AND end alphanumeric when non-empty). Disallowed characters collapse
+    /// to `-`, the value is truncated to 63 keeping the PREFIX (the harness matches `aether-cluster`
+    /// by prefix), then leading/trailing separators are trimmed to satisfy the start/end rule.
+    /// Applied to the cluster/role/source labels — which previously bypassed the [#appendCompatible]
+    /// check that only guards caller extras — so a cluster name with a stray character can never make
+    /// Hetzner reject the whole create (a keyless-looking VM) or drop the label. NOT applied to
+    /// `aether-node-id`: that value is the node identity terminate-by-tag matches on and must stay
+    /// byte-exact. An empty value passes through unchanged (Hetzner accepts and drops an empty label).
+    private static String sanitizeLabelValue(String raw) {
+        var mapped = LABEL_VALUE_DISALLOWED.matcher(raw).replaceAll("-");
+        var capped = mapped.length() > HETZNER_LABEL_VALUE_MAX
+                     ? mapped.substring(0, HETZNER_LABEL_VALUE_MAX)
+                     : mapped;
+
+        return LABEL_VALUE_EDGE_TRIM.matcher(capped).replaceAll("");
     }
 
     private static final java.util.regex.Pattern HETZNER_LABEL_KEY_RX = java.util.regex.Pattern.compile("^[a-zA-Z]([a-zA-Z0-9_.-]*[a-zA-Z0-9])?(/[a-zA-Z0-9_.-]+)?$");

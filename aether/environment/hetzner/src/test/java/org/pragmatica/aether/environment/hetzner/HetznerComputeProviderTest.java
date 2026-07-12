@@ -8,10 +8,12 @@ package org.pragmatica.aether.environment.hetzner;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.pragmatica.aether.environment.CloudProviderSupport;
 import org.pragmatica.aether.environment.EnvironmentError;
 import org.pragmatica.aether.environment.InstanceId;
 import org.pragmatica.aether.environment.InstanceStatus;
 import org.pragmatica.aether.environment.InstanceType;
+import org.pragmatica.aether.environment.NodeGroupConfig;
 import org.pragmatica.aether.environment.PlacementHint;
 import org.pragmatica.aether.environment.ProvisionContext;
 import org.pragmatica.aether.environment.ProvisionSpec;
@@ -255,6 +257,88 @@ class HetznerComputeProviderTest {
                                           .withNodeId("aether-core-node-test123");
 
             return ProvisionSpec.provisionSpec(InstanceType.ON_DEMAND, instanceSize, "core", context).unwrap();
+        }
+    }
+
+    @Nested
+    class LabelWiringTests {
+
+        @Test
+        void bootstrapContext_stampsRealClusterAndRole() {
+            testClient.createServerResponse = Promise.success(runningServer(42, "aether-test"));
+            var context = ProvisionContext.forBootstrap("prod-cluster", "core", "eu-1", "eu-1-core-0");
+            var spec = ProvisionSpec.provisionSpec(InstanceType.ON_DEMAND, "cx22", "core", context).unwrap();
+
+            provider.provision(spec).await().onFailure(cause -> assertThat(cause).isNull());
+
+            assertThat(testClient.lastCreateServerRequest.labels())
+                    .containsEntry("aether-cluster", "prod-cluster")
+                    .containsEntry("aether-role", "core")
+                    .containsEntry(HetznerComputeProvider.NODE_ID_LABEL, "eu-1-core-0");
+        }
+
+        @Test
+        void replacementContext_stampsRealClusterAndRole() {
+            testClient.createServerResponse = Promise.success(runningServer(42, "aether-test"));
+            var context = ProvisionContext.forReplacement("prod-cluster", "core", "node-abc", "peers", 5);
+            var spec = ProvisionSpec.provisionSpec(InstanceType.ON_DEMAND, "cx22", "core", context).unwrap();
+
+            provider.provision(spec).await().onFailure(cause -> assertThat(cause).isNull());
+
+            assertThat(testClient.lastCreateServerRequest.labels())
+                    .containsEntry("aether-cluster", "prod-cluster")
+                    .containsEntry("aether-role", "core")
+                    .containsEntry(HetznerComputeProvider.NODE_ID_LABEL, "node-abc");
+        }
+
+        @Test
+        void waveNodeGroupWithClusterTag_stampsRealCluster() {
+            // #442 v2b — WaveExecutor now threads the real cluster name into the group tags; this
+            // proves that input reaches the VM label via CloudProviderSupport.toContext → provider.
+            testClient.createServerResponse = Promise.success(runningServer(42, "aether-test"));
+            var group = NodeGroupConfig.nodeGroupConfig("eu-1", "core", 1, "cx22", "fsn1",
+                                                        Map.of("aether-cluster", "prod-cluster",
+                                                               "aether-source", "eu-1",
+                                                               "aether-role", "core"));
+
+            CloudProviderSupport.provisionVia(provider, group).await().onFailure(cause -> assertThat(cause).isNull());
+
+            assertThat(testClient.lastCreateServerRequest.labels())
+                    .containsEntry("aether-cluster", "prod-cluster")
+                    .containsEntry("aether-role", "core");
+        }
+
+        @Test
+        void emptyClusterContext_fallsBackToConfigDiscoveryName() {
+            // On a RUNNING node the provider config carries the cluster name (from [cloud.discovery]
+            // cluster_name), so even an empty-tag context resolves a real name rather than "unknown".
+            // This is why the wave gap is latent in production and surfaces only when the config name
+            // is also absent (e.g. an older jar) — the label is never left blank.
+            var configWithName = CONFIG.withDiscovery("prod-cluster");
+            var providerWithName = HetznerComputeProvider.hetznerComputeProvider(testClient, configWithName).unwrap();
+            testClient.createServerResponse = Promise.success(runningServer(42, "aether-test"));
+            var group = NodeGroupConfig.nodeGroupConfig("eu-1", "core", 1, "cx22", "fsn1", Map.of());
+
+            CloudProviderSupport.provisionVia(providerWithName, group).await().onFailure(cause -> assertThat(cause).isNull());
+
+            assertThat(testClient.lastCreateServerRequest.labels().get("aether-cluster"))
+                    .as("empty context resolves the config discovery name, never left as 'unknown'")
+                    .isNotEqualTo("unknown");
+        }
+
+        @Test
+        void invalidClusterName_sanitizedToHetznerConstraints() {
+            // A cluster name with characters outside Hetzner's label-value alphabet must be coerced
+            // deterministically (prefix-preserved) rather than sent raw — a raw invalid value makes
+            // Hetzner reject the whole create.
+            testClient.createServerResponse = Promise.success(runningServer(42, "aether-test"));
+            var context = ProvisionContext.forBootstrap("my cluster!", "core", "eu-1", "eu-1-core-0");
+            var spec = ProvisionSpec.provisionSpec(InstanceType.ON_DEMAND, "cx22", "core", context).unwrap();
+
+            provider.provision(spec).await().onFailure(cause -> assertThat(cause).isNull());
+
+            assertThat(testClient.lastCreateServerRequest.labels())
+                    .containsEntry("aether-cluster", "my-cluster");
         }
     }
 

@@ -85,7 +85,7 @@ public final class WaveExecutor {
                                                  int count,
                                                  ClusterBootstrapConfig desired) {
         return lookupSource(sourceName,
-                            desired.sources()).flatMap(source -> dispatchProvision(sourceName, source, role, count))
+                            desired.sources()).flatMap(source -> dispatchProvision(sourceName, source, role, count, desired.cluster().name()))
                            .map(nodes -> logAndCount("+",
                                                      sourceName
                                                     + "." + role.value()
@@ -105,7 +105,8 @@ public final class WaveExecutor {
                             desired.sources()).flatMap(source -> rejectSshScaleUp(source, sourceName)).flatMap(source -> dispatchProvision(sourceName,
                                                                                                                                            source,
                                                                                                                                            role,
-                                                                                                                                           delta))
+                                                                                                                                           delta,
+                                                                                                                                           desired.cluster().name()))
                            .map(nodes -> logAndCount("~",
                                                      sourceName
                                                     + "." + role.value()
@@ -123,10 +124,11 @@ public final class WaveExecutor {
     private static Result<List<ProvisionedNode>> dispatchProvision(String sourceName,
                                                                    SourceProfile source,
                                                                    NodeRole role,
-                                                                   int count) {
+                                                                   int count,
+                                                                   String clusterName) {
         return switch (source.type()) {
-            case CLOUD -> resolveCloudAndProvision(sourceName, source, role, count);
-            case DOCKER -> resolveDockerAndProvision(sourceName, role, count, source);
+            case CLOUD -> resolveCloudAndProvision(sourceName, source, role, count, clusterName);
+            case DOCKER -> resolveDockerAndProvision(sourceName, role, count, source, clusterName);
             case FORGE -> forgeProvisionPlaceholder(sourceName, role, count);
             case SSH -> sshProvisionPlaceholder(sourceName, role, source);
         };
@@ -135,23 +137,27 @@ public final class WaveExecutor {
     private static Result<List<ProvisionedNode>> resolveCloudAndProvision(String sourceName,
                                                                           SourceProfile source,
                                                                           NodeRole role,
-                                                                          int count) {
+                                                                          int count,
+                                                                          String clusterName) {
         return ProviderResolver.resolveCloudCompute(source).flatMap(compute -> provisionViaCompute(compute,
                                                                                                    sourceName,
                                                                                                    role,
                                                                                                    count,
-                                                                                                   source));
+                                                                                                   source,
+                                                                                                   clusterName));
     }
 
     private static Result<List<ProvisionedNode>> resolveDockerAndProvision(String sourceName,
                                                                            NodeRole role,
                                                                            int count,
-                                                                           SourceProfile source) {
+                                                                           SourceProfile source,
+                                                                           String clusterName) {
         return ProviderResolver.resolveDockerCompute().flatMap(compute -> provisionViaCompute(compute,
                                                                                               sourceName,
                                                                                               role,
                                                                                               count,
-                                                                                              source));
+                                                                                              source,
+                                                                                              clusterName));
     }
 
     @SuppressWarnings("JBCT-EX-01")
@@ -159,12 +165,26 @@ public final class WaveExecutor {
                                                                      String sourceName,
                                                                      NodeRole role,
                                                                      int count,
-                                                                     SourceProfile source) {
+                                                                     SourceProfile source,
+                                                                     String clusterName) {
         var instanceType = option(source.roles().get(role)).flatMap(rt -> rt.instanceType()).or("default");
         var zone = source.zone().or("default");
-        var group = NodeGroupConfig.nodeGroupConfig(sourceName, role.value(), count, instanceType, zone, Map.of());
+        // #442 v2b — carry the real cluster name in the group tags so `CloudProviderSupport.toContext`
+        // seeds `ProvisionContext.clusterName()`, and the provider stamps `aether-cluster=<real>` on
+        // the VM. Mirrors `BootstrapPhaseProvision.provisionRoleGroup`. Without this the tags were
+        // empty and the label fell back to the provider config / env / "unknown", breaking the
+        // harness's label-scoped cloud enumeration on scale/reprovision-provisioned nodes.
+        var group = NodeGroupConfig.nodeGroupConfig(sourceName, role.value(), count, instanceType, zone, provisionTags(clusterName, sourceName, role));
 
         return CloudProviderSupport.provisionVia(compute, group).await();
+    }
+
+    /// #442 v2b — the native metadata tags a provisioned VM must carry so the harness's label-scoped
+    /// cloud enumeration can find and reap it. `aether-cluster` is the load-bearing one: it seeds
+    /// `ProvisionContext.clusterName()` via `CloudProviderSupport.toContext`, which the provider
+    /// stamps onto the VM. Package-private so the wiring test asserts it directly.
+    static Map<String, String> provisionTags(String clusterName, String sourceName, NodeRole role) {
+        return Map.of("aether-cluster", clusterName, "aether-source", sourceName, "aether-role", role.value());
     }
 
     private static Result<List<ProvisionedNode>> forgeProvisionPlaceholder(String sourceName,
@@ -369,7 +389,7 @@ public final class WaveExecutor {
                                                                  NodeRole role,
                                                                  ClusterBootstrapConfig desired) {
         return lookupSource(sourceName,
-                            desired.sources()).flatMap(source -> dispatchProvision(sourceName, source, role, 1))
+                            desired.sources()).flatMap(source -> dispatchProvision(sourceName, source, role, 1, desired.cluster().name()))
                            .flatMap(nodes -> waitForNewNodes(nodes,
                                                              desired.operations().ports().management()));
     }
@@ -434,7 +454,7 @@ public final class WaveExecutor {
                                                            int managementPort) {
         logAction("~", "  provisioning " + count + " new " + role.value() + " node(s)...");
 
-        return dispatchProvision(sourceName, newSource, role, count).flatMap(nodes -> waitForNewNodes(nodes,
+        return dispatchProvision(sourceName, newSource, role, count, desired.cluster().name()).flatMap(nodes -> waitForNewNodes(nodes,
                                                                                                       managementPort))
                                 .flatMap(_ -> drainOldNodes(sourceName, role, count, desired))
                                 .map(count2 -> logAndCount("~",
