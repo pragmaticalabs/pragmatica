@@ -83,6 +83,16 @@ public class SliceProcessor extends AbstractProcessor {
         processingEnv.getMessager()
                      .printMessage(Diagnostic.Kind.NOTE,
                                    "slice-processor " + BuildInfo.VERSION + " (built " + BuildInfo.BUILD_TIMESTAMP + ")");
+        warnIfProcessorStale();
+    }
+
+    /// Escalate a detected stale install from a diagnosable NOTE to a loud WARNING that names the
+    /// remedy. No-op for consumers built outside this monorepo (no `jbct/` source tree to compare
+    /// against) or when the build stamp is unresolved - see [StalenessGuard] (#403).
+    private void warnIfProcessorStale() {
+        StalenessGuard.staleWarning(System.getProperty("user.dir", ""), BuildInfo.VERSION, BuildInfo.BUILD_TIMESTAMP)
+                      .onPresent(message -> processingEnv.getMessager()
+                                                         .printMessage(Diagnostic.Kind.WARNING, message));
     }
 
     @Override
