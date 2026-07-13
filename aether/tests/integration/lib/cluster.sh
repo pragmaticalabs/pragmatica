@@ -2504,7 +2504,7 @@ restart_all_nodes() {
                     # rules out "our own egress is broken", then each running
                     # VM's mgmt port tells us whether a node process is
                     # actually listening there.
-                    local running_ips running_ips_rc vm_count=0 live_ip="" ip
+                    local running_ips running_ips_rc vm_count=0 ip
                     running_ips=$(_cloud_running_vm_ips "${BOOTSTRAP_CLUSTER_NAME:-}")
                     running_ips_rc=$?
                     if [ "$running_ips_rc" -ne 0 ]; then
@@ -2529,22 +2529,71 @@ restart_all_nodes() {
                         log_fail "restart_all_nodes: mgmt API unreachable AND hcloud enumeration for '${BOOTSTRAP_CLUSTER_NAME}' returned ZERO VMs — this is UNKNOWN, not a confirmed drain (an empty enumeration is indistinguishable from a matching failure); refusing to reap. Operator: verify with 'hcloud server list -l aether-node-id' whether the cluster's VMs still exist before taking any destructive action."
                         return 1
                     else
+                        # #441 run 9 Defect 2: HTTP 200 from /health/live is NOT proof
+                        # of a recoverable cluster — ManagementServer returns 200
+                        # whenever status=="UP", REGARDLESS of `ready` (see
+                        # LivenessResponse). A CTM replacement provisioned in-flight
+                        # at quorum death boots into an empty world, is cold-boot-
+                        # suppressed from ever self-draining, and answers this probe
+                        # with {"status":"UP","state":"JOINING","ready":false}
+                        # FOREVER — a straggler, not a live cluster. Parse the
+                        # payload's `ready`/`state` fields (not just the status code)
+                        # to tell the two apart.
+                        local ready_ip="" ready_state="" straggler_count=0 straggler_evidence="" body ready_val state_val
                         for ip in $running_ips; do
                             vm_count=$((vm_count + 1))
-                            if curl -sfk -m 2 -H "X-API-Key: ${API_KEY}" "${MGMT_SCHEME:-http}://${ip}:${CLOUD_MGMT_PORT:-8080}/health/live" >/dev/null 2>&1; then
-                                live_ip="$ip"
+                            body=$(curl -sk -m 2 -H "X-API-Key: ${API_KEY}" "${MGMT_SCHEME:-http}://${ip}:${CLOUD_MGMT_PORT:-8080}/health/live" 2>/dev/null)
+                            [ -z "$body" ] && continue
+                            ready_val=$(json_value "$body" "ready")
+                            state_val=$(json_value "$body" "state")
+                            if [ "$ready_val" = "true" ]; then
+                                ready_ip="$ip"
+                                ready_state="$state_val"
                                 break
                             fi
+                            straggler_count=$((straggler_count + 1))
+                            straggler_evidence="${straggler_evidence}${straggler_evidence:+, }${ip}(state=${state_val:-?},ready=${ready_val:-?})"
                         done
-                        if [ -n "$live_ip" ]; then
-                            log_warn "restart_all_nodes: mgmt API unreachable at the pinned endpoint, BUT VM ${live_ip} answers its mgmt port directly — cluster is LIVE behind a stale pinned endpoint, NOT a full drain; re-pinning and continuing on the remaining budget instead of reaping"
+                        if [ -n "$ready_ip" ]; then
+                            log_warn "restart_all_nodes: mgmt API unreachable at the pinned endpoint, BUT VM ${ready_ip} answers /health/live with ready=true (state=${ready_state:-?}) — cluster is LIVE behind a stale pinned endpoint, NOT a full drain; re-pinning and continuing on a bounded progress window instead of reaping"
                             if ! _refresh_mgmt_entry_point; then
-                                log_fail "restart_all_nodes: found a live VM (${live_ip}) but could not re-pin the mgmt entry point — aborting without reaping"
+                                log_fail "restart_all_nodes: found a ready VM (${ready_ip}) but could not re-pin the mgmt entry point — aborting without reaping"
                                 return 1
                             fi
-                            if ! wait_for "${floor}+ healthy cores present (cloud baseline, remaining budget)" \
-                                "[ \$(cluster_active_core_count) -ge ${floor} ]" $((full_budget - short_wait)); then
-                                log_fail "restart_all_nodes: cloud cluster did not reach ${floor}+ healthy cores within ${full_budget}s total (current=$(cluster_active_core_count))"
+                            # #441 run 9 Defect 2(c): a single ready core surrounded by
+                            # stragglers can sit at a fixed active-core count forever —
+                            # don't burn the whole remaining budget on that possibility.
+                            # Bound the wait; if the bounded window shows ZERO progress
+                            # in active-core count, this was a straggler-skewed "LIVE"
+                            # read after all — fall through to full-drain confirmation
+                            # instead of waiting out the full budget.
+                            local progress_window=300
+                            local before_count after_count
+                            before_count=$(cluster_active_core_count)
+                            if wait_for "${floor}+ healthy cores present (cloud baseline, ${progress_window}s progress window)" \
+                                "[ \$(cluster_active_core_count) -ge ${floor} ]" "$progress_window"; then
+                                log_info "restart_all_nodes: reached ${floor}+ healthy cores within the bounded progress window"
+                            else
+                                after_count=$(cluster_active_core_count)
+                                if [ "${after_count:-0}" -gt "${before_count:-0}" ]; then
+                                    log_info "restart_all_nodes: bounded progress window exhausted but active-core count progressed (${before_count:-0} -> ${after_count:-0}) — continuing on the remaining budget"
+                                    if ! wait_for "${floor}+ healthy cores present (cloud baseline, remaining budget)" \
+                                        "[ \$(cluster_active_core_count) -ge ${floor} ]" $((full_budget - short_wait - progress_window)); then
+                                        log_fail "restart_all_nodes: cloud cluster did not reach ${floor}+ healthy cores within ${full_budget}s total (current=$(cluster_active_core_count))"
+                                        return 1
+                                    fi
+                                else
+                                    log_warn "restart_all_nodes: bounded progress window (${progress_window}s) showed ZERO progress in active-core count (stuck at ${after_count:-0}) after re-pinning to '${ready_ip}' — straggler-skewed LIVE read, not a recoverable cluster; falling through to full-drain confirmation"
+                                    if ! _cloud_full_drain_recover; then
+                                        log_fail "restart_all_nodes: cloud full-drain recovery (cluster-scoped reap + rebootstrap) failed"
+                                        return 1
+                                    fi
+                                fi
+                            fi
+                        elif [ "$straggler_count" -gt 0 ]; then
+                            log_warn "restart_all_nodes: mgmt API unreachable, hcloud shows ${vm_count} running VM(s) for '${BOOTSTRAP_CLUSTER_NAME}'; ${straggler_count} answer /health/live but NONE report ready=true (${straggler_evidence}) — straggler evidence (e.g. a CTM replacement provisioned in-flight at quorum death, cold-boot-suppressed from self-draining, forever JOINING), not a recoverable cluster; proceeding to reap+rebootstrap (reap is cluster-scoped and includes straggler VMs)"
+                            if ! _cloud_full_drain_recover; then
+                                log_fail "restart_all_nodes: cloud full-drain recovery (cluster-scoped reap + rebootstrap) failed"
                                 return 1
                             fi
                         else

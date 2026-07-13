@@ -103,6 +103,13 @@ RECOVERY_BUDGET_S=60
 # function in its own shell context, so env vars don't survive.
 VICTIMS_FILE="/tmp/s19-victims.$$"
 SURVIVORS_FILE="/tmp/s19-survivors.$$"
+# #441 run 9 (Defect 1): survivor public IPs resolved ONCE, pre-kill, while the
+# cluster is still healthy and /api/nodes/endpoint is reliable — every later
+# corroboration call site reads this cache instead of re-resolving via
+# cloud_public_ip mid-quorum-loss, when a CTM-replacement survivor's endpoint
+# lookup depends on the very cluster that's down. Format: "<node_id> <ip>"
+# lines, one per survivor.
+SURVIVOR_IPS_FILE="/tmp/s19-survivor-ips.$$"
 KILL_TS_FILE="/tmp/s19-kill-ts.$$"
 # Event-baseline timestamp captured immediately BEFORE the kill so the
 # subsequent /api/events poll for SELF_DRAIN_INITIATED only sees events
@@ -360,6 +367,33 @@ test_pick_victims_and_kill_three_simultaneously() {
     assert_eq "$victim_count" "3" "Victims identified (3 containers): $(printf '%s' "$victims" | tr '\n' ' ')"
     assert_eq "$survivor_count" "2" "Survivors identified (2 containers): $(printf '%s' "$survivors" | tr '\n' ' ')"
 
+    # #441 run 9 (Defect 1): resolve BOTH survivors' public IPs NOW, while the
+    # cluster is still healthy — every later S19 corroboration tier reads this
+    # cache (_s19_resolve_survivor_ip) instead of re-resolving via
+    # cloud_public_ip mid-quorum-loss, when a CTM-replacement survivor's
+    # /api/nodes/endpoint lookup depends on the very cluster that just lost
+    # quorum. Run-9 false negative: both substantive drain assertions
+    # passed, but a corroboration-tier IP lookup failed during the
+    # quorum-loss window and its diagnostic text leaked into the log
+    # looking like a test failure. Best-effort: a cache-write failure here
+    # for one survivor just means _s19_resolve_survivor_ip falls back to a
+    # live lookup for that survivor later, same as today's behavior.
+    if [ "${CLOUD_MODE:-false}" = "true" ]; then
+        : > "$SURVIVOR_IPS_FILE"
+        local surv surv_ip surv_ip_rc
+        for surv in $survivors; do
+            [ -z "$surv" ] && continue
+            surv_ip=$(cloud_public_ip "$surv" 2>/dev/null)
+            surv_ip_rc=$?
+            if [ "$surv_ip_rc" -eq 0 ] && [ -n "$surv_ip" ]; then
+                printf '%s %s\n' "$surv" "$surv_ip" >> "$SURVIVOR_IPS_FILE"
+                log_info "Pre-kill: cached survivor ${surv} public IP (${surv_ip}) for later S19 corroboration"
+            else
+                log_warn "Pre-kill: could not resolve survivor ${surv} public IP ahead of the kill (rc=${surv_ip_rc}) — later corroboration tiers will fall back to a live lookup"
+            fi
+        done
+    fi
+
     # Assemble the kill list as space-separated real container names.
     local victim_list
     victim_list=$(printf '%s\n' "$victims" | tr '\n' ' ' | sed 's/ *$//')
@@ -417,6 +451,51 @@ test_pick_victims_and_kill_three_simultaneously() {
     fi
 
     printf '%s\n' "$survivors" > "$SURVIVORS_FILE"
+}
+
+# #441 run 9 (Defect 1): pre-kill IP cache lookup. Returns 0 + prints the
+# cached IP on stdout if this survivor's IP was captured at pre-kill time
+# (see the SURVIVOR_IPS_FILE write in test_pick_victims_and_kill_three_simultaneously
+# above); rc=1 (nothing printed) on a cache miss.
+_s19_cached_survivor_ip() {
+    local survivor="$1"
+    [ -f "$SURVIVOR_IPS_FILE" ] || return 1
+    local line ip
+    line=$(grep "^${survivor} " "$SURVIVOR_IPS_FILE" 2>/dev/null | head -1)
+    [ -z "$line" ] && return 1
+    ip="${line#* }"
+    [ -z "$ip" ] && return 1
+    printf '%s' "$ip"
+    return 0
+}
+
+# #441 run 9 (Defect 1): survivor IP resolution for every S19 corroboration
+# call site below. Cache-first (_s19_cached_survivor_ip) — the pre-kill
+# resolution is reliable because it runs while the cluster is still healthy.
+# On a cache miss, falls back to a live cloud_public_ip lookup, but NEVER
+# lets that helper's own log_fail-tagged diagnostic text surface as a
+# latching failure here: cloud_public_ip legitimately hard-fails for OTHER
+# callers elsewhere in the harness (its log_fail semantics are intentionally
+# left untouched globally), but a corroboration TIER failing to resolve an
+# IP mid-quorum-loss is expected, recoverable degradation — callers must
+# fall through to their next corroboration tier, not report a hard failure.
+# Prints the IP on stdout; rc=1 (nothing printed, only a log_warn emitted)
+# if no IP could be resolved by either path.
+_s19_resolve_survivor_ip() {
+    local survivor="$1" ip ip_rc
+    ip=$(_s19_cached_survivor_ip "$survivor")
+    if [ -n "$ip" ]; then
+        printf '%s' "$ip"
+        return 0
+    fi
+    ip=$(cloud_public_ip "$survivor" 2>/dev/null)
+    ip_rc=$?
+    if [ "$ip_rc" -ne 0 ] || [ -z "$ip" ]; then
+        log_warn "Survivor ${survivor} IP unavailable (no pre-kill cache entry AND live cloud_public_ip lookup failed, rc=${ip_rc}) — degrading to next corroboration tier"
+        return 1
+    fi
+    printf '%s' "$ip"
+    return 0
 }
 
 # Confirm a survivor's self-drain DEPARTURE on cloud, tolerant of the
@@ -542,18 +621,18 @@ _confirm_survivor_departure() {
     # keyless-lockout gap, or the run-7 non-TTY PAM exec gate; neither fixed
     # here. Check the survivor's own mgmt endpoint directly for a
     # transport-dead signal.
-    local ip mgmt_port status ip_rc
-    ip=$(cloud_public_ip "$survivor")
-    ip_rc=$?
-    if [ "$ip_rc" -ne 0 ]; then
-        # cloud_public_ip reports its own failure reason via log_fail, but
-        # log_fail writes to STDOUT (lib/common.sh) — and command substitution
-        # just captured that same stdout into $ip, silently swallowing the
-        # diagnostic instead of ever surfacing it. Re-emit the captured text on
-        # stderr ourselves so the actual reason is visible.
-        printf '%s\n' "$ip" >&2
-        log_info "Survivor ${survivor} public IP could not be resolved (rc=${ip_rc}) — tier 3 unavailable, falling through to VM-existence tier"
-        ip=""
+    #
+    # #441 run 9 (Defect 1): resolve via the pre-kill IP cache first
+    # (_s19_resolve_survivor_ip), not a live cloud_public_ip call — a
+    # CTM-replacement survivor's live /api/nodes/endpoint lookup depends on
+    # the very cluster that just lost quorum, which is exactly when this
+    # tier runs. The wrapper already degrades to a clean log_warn (never a
+    # latching log_fail, never leaks cloud_public_ip's own [FAIL]-tagged
+    # diagnostic text into this suite's log) on any resolution failure.
+    local ip mgmt_port status
+    ip=$(_s19_resolve_survivor_ip "$survivor")
+    if [ -z "$ip" ]; then
+        log_info "Survivor ${survivor} public IP could not be resolved (cache miss + live lookup failed) — tier 3 unavailable, falling through to VM-existence tier"
     fi
     if [ -n "$ip" ]; then
         mgmt_port="${CLOUD_MGMT_PORT:-8080}"
@@ -580,11 +659,13 @@ _confirm_survivor_departure() {
 # and answer for the wrong survivor). Mirrors the existing tier-3 pattern in
 # _confirm_survivor_departure. Prints the raw JSON body on stdout; empty +
 # rc=1 on any resolution/transport failure.
+# #441 run 9 (Defect 1): IP resolution goes through the pre-kill cache
+# (_s19_resolve_survivor_ip) — same rationale as tier 3 above.
 # Usage: _s19_survivor_membership_direct "$survivor"
 _s19_survivor_membership_direct() {
     local survivor="$1"
     local ip
-    ip=$(cloud_public_ip "$survivor" 2>/dev/null) || return 1
+    ip=$(_s19_resolve_survivor_ip "$survivor") || return 1
     [ -z "$ip" ] && return 1
     curl -sfk -m 3 -H "X-API-Key: ${API_KEY}" "${MGMT_SCHEME:-http}://${ip}:${CLOUD_MGMT_PORT:-8080}/api/cluster/membership" 2>/dev/null
 }
@@ -640,12 +721,13 @@ test_confirm_quorum_loss_race() {
 
     while [ $SECONDS -lt $deadline ]; do
         # No outer stderr redirect needed: _s19_survivor_membership_direct
-        # already routes both of its internal commands' stderr (cloud_public_ip
-        # and curl) to /dev/null at the source (lines 587/589 above) — an outer
-        # `2>/dev/null` here would only ever suppress the function-call
-        # boundary itself, which produces none. `|| true` alone keeps this
-        # bare assignment from aborting the whole script under `set -e` when
-        # the function returns 1 (no live read yet).
+        # already keeps its internals quiet — IP resolution goes through
+        # _s19_resolve_survivor_ip (cache-first, log_warn-only on failure,
+        # never a leaking log_fail) and its own curl is routed to /dev/null.
+        # An outer `2>/dev/null` here would only ever suppress the
+        # function-call boundary itself, which produces none. `|| true`
+        # alone keeps this bare assignment from aborting the whole script
+        # under `set -e` when the function returns 1 (no live read yet).
         membership=$(_s19_survivor_membership_direct "$s1" || true)
         [ -z "$membership" ] && membership=$(_s19_survivor_membership_direct "$s2" || true)
         if [ -n "$membership" ]; then
@@ -925,7 +1007,7 @@ test_cluster_recovers_to_five_on_duty() {
 }
 
 cleanup() {
-    rm -f "$VICTIMS_FILE" "$SURVIVORS_FILE" "$KILL_TS_FILE" "$EVENT_BASELINE_FILE" \
+    rm -f "$VICTIMS_FILE" "$SURVIVORS_FILE" "$SURVIVOR_IPS_FILE" "$KILL_TS_FILE" "$EVENT_BASELINE_FILE" \
         "$PRE_KILL_ROSTER_FILE" "$VERDICT_FILE" "$SSH_STDERR_FILE"
 
     # Semantic baseline restore. After S19+S20 the cluster should already
