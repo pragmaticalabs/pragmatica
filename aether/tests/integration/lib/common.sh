@@ -211,6 +211,51 @@ _discover_endpoint_by_label() {
     return 1
 }
 
+# Run a command with a hard wall-clock bound (#441 item 1). macOS ships no
+# `timeout` by default (only via `brew install coreutils`, as `gtimeout`);
+# Linux/remote hosts have GNU `timeout`. Falls back to a background-process +
+# polled-wait + kill construct when neither exists, so callers always get a
+# bounded wait regardless of platform. lib/suite.sh:106 calls bare `timeout`
+# with no such fallback — safe there only because it's wrapped in
+# `if timeout ...; then` (a missing binary just evaluates false); this helper
+# is for callers like _cloud_running_vm_ips that must also cap wall-clock time
+# on macOS dev boxes and turn "took too long" into an honest non-zero rc.
+_run_with_timeout() {
+    local secs="$1"
+    shift
+    if command -v timeout >/dev/null 2>&1; then
+        timeout "$secs" "$@"
+        return $?
+    fi
+    if command -v gtimeout >/dev/null 2>&1; then
+        gtimeout "$secs" "$@"
+        return $?
+    fi
+    local outfile errfile rc pid waited=0
+    outfile=$(mktemp)
+    errfile=$(mktemp)
+    "$@" >"$outfile" 2>"$errfile" &
+    pid=$!
+    while kill -0 "$pid" 2>/dev/null; do
+        if [ "$waited" -ge "$secs" ]; then
+            kill -9 "$pid" 2>/dev/null || true
+            wait "$pid" 2>/dev/null || true
+            cat "$outfile"
+            cat "$errfile" >&2
+            rm -f "$outfile" "$errfile"
+            return 124
+        fi
+        sleep 1
+        waited=$((waited + 1))
+    done
+    wait "$pid"
+    rc=$?
+    cat "$outfile"
+    cat "$errfile" >&2
+    rm -f "$outfile" "$errfile"
+    return "$rc"
+}
+
 # Resolve an endpoint that actually responds to /health/live. Preserves the pinned
 # CLUSTER_ENDPOINT when it's up; rotates once to any live core node when the pinned
 # endpoint is dead (e.g., during chaos-suite recovery where the pinned node was killed).
@@ -248,6 +293,30 @@ _resolve_live_endpoint() {
         # "cluster appears down" after a chaos kill. run-tests.sh now exports
         # CLOUD_MGMT_PORT=8080 in the cloud env case; this `:-8080` is the safety net.
         local mgmt_port="${CLOUD_MGMT_PORT:-8080}"
+        # Sticky re-pin (#441 item 2): this whole function runs inside `$(...)`
+        # at every call site (api_get et al.), so any `export CLUSTER_ENDPOINT=`
+        # made here is scoped to that subshell and discarded the instant this
+        # function returns — the NEXT call starts back at the (dead) pinned
+        # CLUSTER_ENDPOINT and re-pays the full seed-scan + anchor-free hcloud
+        # scan below. Worse, `run-tests.sh` runs each suites/**/test-*.sh as its
+        # OWN `bash test_file` subprocess (run_suite's `for test_file in ...; do
+        # bash "$test_file"; done`), so even a plain (non-subshelled) export
+        # wouldn't survive from one test file to the next. Only a FILE-based
+        # cache — the same idiom test-self-drain-quorum-loss.sh uses for its
+        # SURVIVOR_IPS_FILE — persists across both boundaries. Scoped by
+        # CLUSTER_ID so concurrent cluster-A/B runs never share an endpoint.
+        # Re-probed with the same cheap `-m 2` curl before trust (mirrors the
+        # _LABEL_DISCOVERED_ENDPOINT TTL+reprobe idiom below), so a stale/dead
+        # cached IP degrades to the normal scan rather than being trusted blindly.
+        local sticky_file="${TMPDIR:-/tmp}/aether-live-endpoint-${CLUSTER_ID:-default}"
+        if [ -f "$sticky_file" ]; then
+            local sticky_ep
+            sticky_ep=$(cat "$sticky_file" 2>/dev/null || true)
+            if [ -n "$sticky_ep" ] && curl -sfk -m 2 -H "X-API-Key: ${API_KEY}" "${sticky_ep}/health/live" >/dev/null 2>&1; then
+                echo "${sticky_ep}"
+                return 0
+            fi
+        fi
         local n node_id node_ip endpoint
         for n in $(seq 0 $((NODE_COUNT - 1))); do
             node_id=$(to_node_id "node-$((n + 1))" 2>/dev/null || true)
@@ -256,6 +325,7 @@ _resolve_live_endpoint() {
             [ -z "$node_ip" ] && continue
             endpoint="${MGMT_SCHEME:-http}://${node_ip}:${mgmt_port}"
             if curl -sfk -m 2 -H "X-API-Key: ${API_KEY}" "${endpoint}/health/live" >/dev/null 2>&1; then
+                printf '%s' "${endpoint}" > "$sticky_file" 2>/dev/null || true
                 echo "${endpoint}"
                 return 0
             fi
@@ -300,6 +370,7 @@ _resolve_live_endpoint() {
                 [ -z "$cur_ip" ] && continue
                 endpoint="${MGMT_SCHEME:-http}://${cur_ip}:${mgmt_port}"
                 if curl -sfk -m 2 -H "X-API-Key: ${API_KEY}" "${endpoint}/health/live" >/dev/null 2>&1; then
+                    printf '%s' "${endpoint}" > "$sticky_file" 2>/dev/null || true
                     echo "${endpoint}"
                     return 0
                 fi

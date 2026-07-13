@@ -111,7 +111,12 @@ test_cluster_survives() {
 
 test_auto_heal() {
     log_info "Waiting for CTM auto-heal to quiesce at the post-replacement generation..."
-    wait_for_node_count 5 180 || {
+    # Sustained pattern (#441 item 4), mirroring test-kill-node.sh's
+    # test_auto_heal: the bare exact-eq wait_for_node_count let a transient
+    # flap-to-5 during convergence read as "done" (false pass), and — combined
+    # with the item-3 honest-read fix — a transport hiccup mid-poll now pauses
+    # rather than resetting or hard-failing the wait.
+    wait_for_sustained_node_count 5 "$(autoheal_default_timeout)" "$(autoheal_default_sustain)" || {
         log_fail "Cluster did not quiesce after auto-heal"
         return 1
     }

@@ -10,7 +10,31 @@ source "${LIB_DIR}/generation.sh"
 # ---------------------------------------------------------------------------
 # cluster_member_count — generation snapshot member count (includes JOINING).
 # See aether/docs/specs/test-readiness-contract.md §2.1.
+# cluster_member_count — generation snapshot member count (includes JOINING).
+# See aether/docs/specs/test-readiness-contract.md §2.1.
+#
+# Thin wrapper over _cluster_member_count_checked() preserving the legacy
+# "always succeeds, defaults to 0" contract for this function's ~40 existing
+# bare-assignment callers (`count=$(cluster_member_count)` under `set -e`
+# would abort the caller's script if this ever returned non-zero). Callers
+# that need to tell "genuinely 0" from "read failed" should call
+# _cluster_member_count_checked directly (see wait_for_node_count,
+# wait_for_sustained_node_count — #441 item 3).
 cluster_member_count() {
+    _cluster_member_count_checked || echo 0
+}
+
+# Honest-read companion (#441 item 3): distinguishes "the cluster genuinely
+# has 0 members" from "the transport/API read failed" — run-10/run-11's
+# forensic root cause was cluster_member_count()'s legacy contract collapsing
+# both to "0", which downstream polls read as "count is low" even when the
+# read itself is what failed (a healthy 5-node cluster measured as 0 during
+# hcloud/API contention). Prints nothing and returns 1 ONLY when BOTH the
+# generation snapshot AND the topology fallback reads fail outright;
+# otherwise this is byte-identical to the original cluster_member_count body
+# (same member-count / desiredSize / coreCount precedence), including the
+# case where a snapshot legitimately reports 0 members.
+_cluster_member_count_checked() {
     # Query core node count via the generation snapshot rather than the topology
     # endpoint. `/api/cluster/topology` `coreCount` is filtered to ON_DUTY+HEALTHY
     # members only, so during a CTM scale-up the freshly-provisioned overlay-only
@@ -30,10 +54,12 @@ cluster_member_count() {
     # considers its membership). `desiredSize` is consulted ONLY when the
     # snapshot carries no members at all (cold boot, pre-publication). Falls
     # back to topology.coreCount only if the generation endpoint is unreachable / empty.
-    local gen
-    gen=$(direct_api_get "/api/cluster/generation" 2>/dev/null)
+    local gen gen_ok="false"
+    if gen=$(direct_api_get "/api/cluster/generation" 2>/dev/null); then
+        gen_ok="true"
+    fi
     local desired members observed=0
-    if [ -n "$gen" ]; then
+    if [ "$gen_ok" = "true" ] && [ -n "$gen" ]; then
         # Count occurrences of `"nodeId"` inside the response — each
         # ClusterGenerationMember carries exactly one such field; communities[]
         # uses governorNodeId, partitions[] uses ownerNodeId, so a bare
@@ -63,17 +89,25 @@ cluster_member_count() {
     fi
     # Fallback: topology endpoint (legacy behaviour, used when generation
     # snapshot is unavailable — cold cluster pre-projection).
-    #
+    local response response_ok="false" fallback
+    if response=$(direct_api_get "/api/cluster/topology" 2>/dev/null); then
+        response_ok="true"
+    fi
+    if [ "$gen_ok" != "true" ] && [ "$response_ok" != "true" ]; then
+        # Both reads genuinely failed (transport/API) — the count is UNKNOWN,
+        # not zero. Empty stdout + rc 1 lets callers skip this iteration
+        # instead of treating it as an observed low count.
+        return 1
+    fi
     # `json_value` can emit MULTIPLE lines when the degraded response repeats
     # the `coreCount` key (its sed `p` prints once per match), and emits empty
     # on a malformed/partial body. Either leaks into the caller's
     # `[ $(cluster_member_count) -eq N ]` predicate as multiple tokens / empty,
     # tripping `[: too many arguments` (rc=2). Coerce to a single integer here:
     # first line only, digits only, default 0 — so the value is always one int.
-    local response fallback
-    response=$(direct_api_get "/api/cluster/topology" 2>/dev/null)
     fallback=$(json_value "$response" "coreCount" 2>/dev/null | head -1 | tr -cd '0-9')
     printf '%s\n' "${fallback:-0}"
+    return 0
 }
 
 cluster_leader() {
@@ -715,11 +749,14 @@ connected_peers_direct() {
 
 wait_for_node_count() {
     local expected="$1" timeout="${2:-120}"
-    # cluster_member_count() now always emits exactly one integer, so the quoted
-    # substitution yields `[ "<int>" -eq N ]` — never multi-token. The quotes are
-    # belt-and-suspenders against any future count path that regresses to empty
-    # or multi-line output (which previously tripped `[: too many arguments`).
-    wait_for "${expected} nodes" "[ \"\$(cluster_member_count)\" -eq ${expected} ]" "$timeout"
+    # _cluster_member_count_checked() (not cluster_member_count()) — #441 item
+    # 3a: a failed read prints nothing, so the quoted substitution yields
+    # `[ "" -eq N ]` (rc 2, "integer expression expected"), which wait_for's
+    # own case statement already treats as "predicate emitted a shell error"
+    # (log_warn + keep polling) rather than a real false — i.e. a failed read
+    # SKIPS this iteration instead of being read as "count is 0, not yet
+    # satisfied". A successful read behaves exactly as before.
+    wait_for "${expected} nodes" "[ \"\$(_cluster_member_count_checked)\" -eq ${expected} ]" "$timeout"
 }
 
 # Cloud-aware default catch-window for CTM auto-heal, in seconds (pre-TIMEOUT_SCALE).
@@ -801,7 +838,19 @@ wait_for_sustained_node_count() {
     local count now elapsed_sustained
     log_info "Waiting for: ${expected} nodes sustained ${sustain}s (timeout: ${timeout}s)"
     while [ "$(date +%s)" -lt "$deadline" ]; do
-        count=$(cluster_member_count)
+        # #441 item 3b: a failed read (transport/API — both generation and
+        # topology unreachable) must PAUSE the sustain window, not reset it —
+        # run-11's forensic root cause was a single bad read resetting
+        # held_since, so 900s of polling with occasional transport flaps never
+        # accumulated 90 clean seconds even though the cluster was healthy the
+        # whole time. Skip straight to the next poll without touching
+        # held_since or comparing against `expected`; only a genuinely
+        # observed count below target (the `elif` below) resets the window.
+        if ! count=$(_cluster_member_count_checked); then
+            log_info "Read failed (transport); pausing sustain window (not resetting)"
+            sleep "$interval"
+            continue
+        fi
         if [ "$count" -ge "$expected" ] 2>/dev/null; then
             now=$(date +%s)
             if [ "$held_since" -lt 0 ]; then
@@ -2258,7 +2307,14 @@ _cloud_running_vm_ips() {
     local seed_ips
     seed_ips=$(_cloud_seed_ips "$cluster_name")
     local listing hcloud_rc
-    listing=$(hcloud server list -l aether-node-id -o columns=name,status,ipv4,labels -o noheader 2>/dev/null)
+    # #441 item 1: under hcloud API contention this call was observed to hang
+    # well past any reasonable per-iteration budget (run 10: wait_for_node_count
+    # spun 1019s against a 540s deadline chasing an unbounded enumeration here).
+    # Bound it hard so a slow/contended API call degrades to "corroboration
+    # UNAVAILABLE" (rc 1, handled below exactly like a missing hcloud CLI)
+    # instead of stalling the whole poll loop. _run_with_timeout (lib/common.sh)
+    # returns 124 on a forced kill; treated the same as any other non-zero rc.
+    listing=$(_run_with_timeout 10 hcloud server list -l aether-node-id -o columns=name,status,ipv4,labels -o noheader 2>/dev/null)
     hcloud_rc=$?
     if [ "$hcloud_rc" -ne 0 ]; then
         return 1
