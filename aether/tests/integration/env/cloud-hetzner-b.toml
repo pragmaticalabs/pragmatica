@@ -1,6 +1,6 @@
 # Cluster B -- Hetzner Cloud (destructive test suites)
 #
-# 5-node cluster on Hetzner cx33 instances (4 vCPU, 8 GB RAM).
+# 5-node cluster on Hetzner cpx32 instances (4 vCPU, 8 GB RAM).
 # Type notes (2026-07-12): dedicated ccx is NOT viable for chaos suites — the
 # account's dedicated-core limit cannot hold 5 nodes + in-flight churn
 # replacements (Hetzner 403 resource_limit_exceeded; see #442). Shared lines
@@ -36,7 +36,7 @@ databases.forge = "${env:PG_URL}"
 
 [source.hetzner-eu.core]
 count = 5
-instance_type = "cx33"
+instance_type = "cpx32"
 image = "ubuntu-22.04"
 
 [infrastructure.networking]

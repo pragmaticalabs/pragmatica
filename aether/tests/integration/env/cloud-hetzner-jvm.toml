@@ -32,7 +32,7 @@ databases.forge = "${env:PG_URL}"
 
 [source.hetzner-eu.core]
 count = 5
-instance_type = "cx33"
+instance_type = "cpx32"
 image = "ubuntu-22.04"
 
 [infrastructure.networking]

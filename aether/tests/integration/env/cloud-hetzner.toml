@@ -1,6 +1,6 @@
 # Cluster A -- Hetzner Cloud (non-destructive test suites)
 #
-# 5-node cluster on Hetzner cx33 instances (4 vCPU, 8 GB RAM).
+# 5-node cluster on Hetzner cpx32 instances (4 vCPU, 8 GB RAM).
 # Requires HCLOUD_TOKEN and PG_URL environment variables.
 
 config_version = "1.0.0"
@@ -31,7 +31,7 @@ databases.forge = "${env:PG_URL}"
 
 [source.hetzner-eu.core]
 count = 5
-instance_type = "cx33"
+instance_type = "cpx32"
 image = "ubuntu-22.04"
 
 [infrastructure.networking]
