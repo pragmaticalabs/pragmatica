@@ -1376,6 +1376,116 @@ class PartitionBackfillTest {
         private record SentMessage(NodeId target, ReplicationMessage message) {}
     }
 
+    /// #445: the backfill orchestrator ranks its owner/member view over the SAME reconciled snapshot the
+    /// materialization gate ({@link ReplicaSetController#roleFor}) and the registry reconcile use — NOT an
+    /// independent LIVE topology read. Wires a real controller + backfill over ONE shared registry, then
+    /// constructs the pre-fix divergence: reconcile against a view where self is a NON-owner replica, then
+    /// mutate the LIVE membership so a fresh read would rank self as its own HRW owner. A live-sourced
+    /// backfill would then owner-self-promote a FALSE `CAUGHT_UP` at self's empty local watermark (serving
+    /// nothing while the real owner holds the data — the ACKED-THEN-LOST wedge). Single-sourced from the
+    /// controller's reconciled snapshot, self stays a non-owner and pulls the real history from the
+    /// reconciled HRW owner, reaching `CAUGHT_UP` at the owner's true tail.
+    @Nested
+    class SingleSourcedPlacementView {
+        private static final NodeId NODE_AA = NodeId.nodeId("node-aa").unwrap();
+        private static final NodeId NODE_BB = NodeId.nodeId("node-bb").unwrap();
+        private static final NodeId NODE_CC = NodeId.nodeId("node-cc").unwrap();
+        private static final TimeSpan BOUND = TimeSpan.timeSpan(10).seconds();
+        private static final List<NodeId> MEMBERS = List.of(NODE_AA, NODE_BB, NODE_CC);
+        private static final NodeId OWNER = ReplicaPlacement.rank(STREAM, PARTITION, MEMBERS).getFirst();
+        private static final NodeId SELF_REPLICA = ReplicaPlacement.rank(STREAM, PARTITION, MEMBERS).getLast();
+
+        private record FakeCatalog(List<StreamCatalog.StreamSpec> specs) implements StreamCatalog {
+            @Override public List<StreamSpec> streams() {
+                return specs;
+            }
+        }
+
+        @Test
+        void backfillOwnerView_tracksReconciledSnapshot_notDivergentLiveRead() {
+            // replicas=3 over 3 members -> RF=3, so SELF_REPLICA is a non-owner REPLICA under the reconciled
+            // view while OWNER is a DIFFERENT node holding 0..7.
+            var liveMembers = new AtomicReference<>(MEMBERS);
+            var catalog = new FakeCatalog(List.of(new StreamCatalog.StreamSpec(STREAM, 1, 3, 0)));
+            var controller = ReplicaSetController.replicaSetController(registry,
+                                                                      SELF_REPLICA,
+                                                                      liveMembers::get,
+                                                                      () -> liveMembers.get().size(),
+                                                                      catalog,
+                                                                      (_, _) -> {},
+                                                                      Runnable::run);
+            // Reconcile pins the snapshot to the full 3-node view: SELF_REPLICA is registered a non-owner
+            // replica and the reconciled placement owner is OWNER.
+            controller.reconcile();
+            assertThat(controller.roleFor(STREAM, PARTITION)).isEqualTo(ReplicaSetController.Role.REPLICA);
+
+            // Diverge the LIVE membership to {SELF_REPLICA} alone WITHOUT reconciling: a fresh live read would
+            // now rank SELF_REPLICA as its own HRW owner. A live-sourced backfill would owner-self-promote a
+            // false CAUGHT_UP@-1 on its empty ring; the reconciled snapshot must keep it a non-owner.
+            liveMembers.set(List.of(SELF_REPLICA));
+
+            var backfill = partitionBackfill(registry,
+                                             recovery,
+                                             ownerSource(OWNER, 0L, eventsFrom(0, 8)),
+                                             failIfProbed(),
+                                             localHeadWatermark(),
+                                             SELF_REPLICA,
+                                             BOUND,
+                                             new AtomicLong(0L)::get,
+                                             controller::reconciledMembers);
+
+            var applied = backfill.backfill(STREAM, PARTITION).await();
+
+            // Pulled the real history from the reconciled HRW OWNER (8 events, 0..7) and reached CAUGHT_UP@7 —
+            // NOT a false CAUGHT_UP@-1 from owner-self-promote off the divergent live view (which would have
+            // tripped failIfProbed / left the ring empty).
+            assertThat(applied.isSuccess()).isTrue();
+            assertThat(applied.or(-1L)).isEqualTo(8L);
+            var self = descriptorFor(SELF_REPLICA);
+            assertThat(self.state()).isEqualTo(ReplicationState.CAUGHT_UP);
+            assertThat(self.confirmedOffset()).isEqualTo(7L);
+            var local = manager.readLocal(STREAM, PARTITION, 0, 100).or(List.of());
+            assertThat(local).hasSize(8);
+            for (var i = 0; i < 8; i++) {
+                assertThat(local.get(i).offset()).isEqualTo((long) i);
+            }
+        }
+
+        private SelfWatermark localHeadWatermark() {
+            return (stream, partition) -> manager.partitionInfo(stream, partition)
+                                                 .map(StreamPartitionManager.PartitionInfo::headOffset)
+                                                 .or(-1L);
+        }
+
+        private ReplicaWatermarkProbe failIfProbed() {
+            return (_, _, _) -> {
+                throw new AssertionError("reconciled non-owner backfill must pull from the HRW owner, not probe peers");
+            };
+        }
+
+        private CatchupTransport ownerSource(NodeId expectedOwner, long expectedFrom, List<EventData> events) {
+            return (target, request) -> {
+                assertThat(target).as("backfill must target the reconciled HRW owner").isEqualTo(expectedOwner);
+                assertThat(request.fromOffset()).as("fromOffset must be local head + 1 (contiguous)")
+                                                .isEqualTo(expectedFrom);
+                var payloads = new ArrayList<byte[]>();
+                var timestamps = new ArrayList<Long>();
+                events.forEach(event -> {
+                    payloads.add(event.data());
+                    timestamps.add(event.timestamp());
+                });
+                var toOffset = events.isEmpty() ? request.fromOffset() - 1 : events.getLast().offset();
+                return Promise.success(catchupResponse(target,
+                                                       request.streamName(),
+                                                       request.partition(),
+                                                       request.fromOffset(),
+                                                       toOffset,
+                                                       payloads,
+                                                       timestamps));
+            };
+        }
+    }
+
     private ReplicaDescriptor descriptorFor(NodeId nodeId) {
         return registry.replicasFor(STREAM, PARTITION).stream()
                        .filter(d -> d.nodeId().equals(nodeId))

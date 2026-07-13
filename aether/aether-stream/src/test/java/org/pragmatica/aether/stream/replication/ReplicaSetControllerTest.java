@@ -408,6 +408,34 @@ class ReplicaSetControllerTest {
     }
 
     @Test
+    void reconciledMembers_returnsPinnedSnapshot_notFreshLiveRead() {
+        // #445: reconciledMembers() is the SINGLE placement view PartitionBackfill ranks its owner/member
+        // view over — it MUST return the same last-reconciled snapshot roleFor/ownerFor use, not an
+        // independent live read. Otherwise the backfill orchestrator and the materialization gate (roleFor)
+        // rank over differently-aged views and a node the owner registers as a replica self-classifies NONE.
+        var members = new AtomicReference<>(nodes("n0", "n1", "n2", "n3", "n4"));
+        var ctrl = controller(ReplicaRegistry.replicaRegistry(), node("n0"), members, appCatalog(3), (_, _) -> {});
+
+        // Before the first reconcile: falls back to the fresh live supplier (bootstrap window) — the SAME
+        // fallback roleFor uses, so cold-start owner-immediate self-promotion is unaffected.
+        assertThat(ctrl.reconciledMembers()).containsExactlyInAnyOrderElementsOf(members.get());
+
+        ctrl.reconcile();
+        assertThat(ctrl.reconciledMembers()).containsExactlyInAnyOrderElementsOf(nodes("n0", "n1", "n2", "n3", "n4"));
+
+        // Mutate the LIVE membership WITHOUT reconciling: the pinned snapshot must NOT follow the live read
+        // (the exact split that let PartitionBackfill's live view drift from roleFor's reconciled view).
+        members.set(nodes("foreign-only"));
+        assertThat(ctrl.reconciledMembers())
+            .as("reconciledMembers stays pinned to the last reconcile, matching roleFor's snapshot")
+            .containsExactlyInAnyOrderElementsOf(nodes("n0", "n1", "n2", "n3", "n4"));
+
+        // After reconciling, it follows the new snapshot — the SAME generation roleFor now sees.
+        ctrl.reconcile();
+        assertThat(ctrl.reconciledMembers()).containsExactly(node("foreign-only"));
+    }
+
+    @Test
     void reconcilePass_reconcilesThreePartitions_firesPassCompleteOnceWithAllThree() {
         // #265: the owner-reconciled seam is BATCHED. A whole reconcile pass fires onReconcilePassComplete
         // EXACTLY ONCE with the full list of (stream, partition) reconciled that pass — NOT once per

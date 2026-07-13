@@ -810,6 +810,22 @@ public interface AetherNode extends ManageableNode {
         backfill.backfill(streamName, partition);
     }
 
+    /// #445 single-sourced placement view: the backfill orchestrator ranks its owner/member view over the
+    /// SAME reconciled snapshot [ReplicaSetController#roleFor] / [ReplicaSetController#ownerFor] and the
+    /// registry reconcile use ([ReplicaSetController#reconciledMembers]) — NOT an independent LIVE
+    /// `observer().coreNodes()` read. This removes the live-vs-reconciled split that let a node the owner
+    /// registers as a replica self-classify NONE — never materializing its ring, bouncing every apply
+    /// `PARTITION_NOT_LOCAL`, leaving RF≥2 structurally unreachable. Before the controller is bound / its
+    /// first reconcile it falls back to the live topology observer, the SAME pre-reconcile fallback
+    /// `roleFor` uses, so cold-start owner-immediate self-promotion is unaffected.
+    private static List<NodeId> streamPlacementMembers(AtomicReference<ReplicaSetController> controllerRef,
+                                                       ClusterTopologyManager topologyManager) {
+        return Option.option(controllerRef.get())
+                     .map(ReplicaSetController::reconciledMembers)
+                     .or(() -> List.copyOf(topologyManager.observer()
+                                                          .coreNodes()));
+    }
+
     /// #265 increment 5: the live replica catch-up view for the release gate + slot completion, read from the
     /// [ReplicaRegistry]. `caughtUpReplicaCount` is the number of OTHER (non-self) replicas of the current
     /// registered replica set that have reached CAUGHT_UP (the release catch-up gate compares it against the
@@ -2962,8 +2978,8 @@ public interface AetherNode extends ManageableNode {
                                                                           streamSelfWatermark,
                                                                           config.self(),
                                                                           streamingConfig.backfillSourceWaitBound(),
-                                                                          () -> List.copyOf(clusterTopologyManager.observer()
-                                                                                                                  .coreNodes()));
+                                                                          () -> streamPlacementMembers(clusterEventsControllerRef,
+                                                                                                       clusterTopologyManager));
         var streamBackfillExecutor = Executors.newSingleThreadExecutor(runnable -> daemonThread(runnable,
                                                                                                 "stream-partition-backfill"));
         // A2: per-node controller that reconciles the (previously never-populated) ReplicaRegistry

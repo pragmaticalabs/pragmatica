@@ -435,6 +435,19 @@ public final class ReplicaSetController implements AutoCloseable {
         return ReplicaPlacement.place(streamName, partition, members, rf).map(Placement::owner);
     }
 
+    /// The membership snapshot this controller last reconciled from — the SINGLE placement view (#445).
+    /// {@link #roleFor} / {@link #ownerFor} and the registry reconcile all compute HRW placement from
+    /// THIS snapshot, so exposing it lets the backfill orchestrator ({@link PartitionBackfill}) rank its
+    /// owner/member view from the SAME snapshot instead of an independent LIVE topology read. That closes
+    /// the divergence by construction: a node the owner registers as a replica classifies itself REPLICA
+    /// (and materializes its ring) rather than self-classifying NONE off a differently-aged live view and
+    /// bouncing every apply `PARTITION_NOT_LOCAL`. Before the first reconcile the snapshot is absent and
+    /// this falls back to a fresh member-supplier read (bootstrap window) — the SAME fallback
+    /// {@link #roleFor} uses, so cold-start owner-immediate self-promotion is unaffected.
+    public List<NodeId> reconciledMembers() {
+        return currentMembers();
+    }
+
     private int rfFor(String streamName, StreamClass streamClass) {
         var clusterSize = currentClusterSize();
         var requested = catalog.streams().stream().filter(spec -> spec.name()
