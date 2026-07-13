@@ -822,8 +822,7 @@ public interface AetherNode extends ManageableNode {
                                                        ClusterTopologyManager topologyManager) {
         return Option.option(controllerRef.get())
                      .map(ReplicaSetController::reconciledMembers)
-                     .or(() -> List.copyOf(topologyManager.observer()
-                                                          .coreNodes()));
+                     .or(() -> List.copyOf(topologyManager.observer().coreNodes()));
     }
 
     /// #265 increment 5: the live replica catch-up view for the release gate + slot completion, read from the
