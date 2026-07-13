@@ -44,7 +44,13 @@ public sealed interface ReplacementNodeConfigComposer {
                                         SourceProfile source,
                                         Option<String> clusterSecret,
                                         List<Long> sshKeyIds) {
-        var overlay = BootstrapOverlayGenerator.overlay(config, source, 0, Option.empty(), Option.empty(), clusterSecret, sshKeyIds);
+        var overlay = BootstrapOverlayGenerator.overlay(config,
+                                                        source,
+                                                        0,
+                                                        Option.empty(),
+                                                        Option.empty(),
+                                                        clusterSecret,
+                                                        sshKeyIds);
 
         return Result.all(DefaultNodeConfig.globalDefault(),
                           DefaultNodeConfig.sourceTypeDefault(source.type()))

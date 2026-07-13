@@ -85,7 +85,11 @@ public final class WaveExecutor {
                                                  int count,
                                                  ClusterBootstrapConfig desired) {
         return lookupSource(sourceName,
-                            desired.sources()).flatMap(source -> dispatchProvision(sourceName, source, role, count, desired.cluster().name()))
+                            desired.sources()).flatMap(source -> dispatchProvision(sourceName,
+                                                                                   source,
+                                                                                   role,
+                                                                                   count,
+                                                                                   desired.cluster().name()))
                            .map(nodes -> logAndCount("+",
                                                      sourceName
                                                     + "." + role.value()
@@ -106,7 +110,8 @@ public final class WaveExecutor {
                                                                                                                                            source,
                                                                                                                                            role,
                                                                                                                                            delta,
-                                                                                                                                           desired.cluster().name()))
+                                                                                                                                           desired.cluster()
+                                                                                                                                                  .name()))
                            .map(nodes -> logAndCount("~",
                                                      sourceName
                                                     + "." + role.value()
@@ -174,7 +179,12 @@ public final class WaveExecutor {
         // the VM. Mirrors `BootstrapPhaseProvision.provisionRoleGroup`. Without this the tags were
         // empty and the label fell back to the provider config / env / "unknown", breaking the
         // harness's label-scoped cloud enumeration on scale/reprovision-provisioned nodes.
-        var group = NodeGroupConfig.nodeGroupConfig(sourceName, role.value(), count, instanceType, zone, provisionTags(clusterName, sourceName, role));
+        var group = NodeGroupConfig.nodeGroupConfig(sourceName,
+                                                    role.value(),
+                                                    count,
+                                                    instanceType,
+                                                    zone,
+                                                    provisionTags(clusterName, sourceName, role));
 
         return CloudProviderSupport.provisionVia(compute, group).await();
     }
@@ -389,7 +399,11 @@ public final class WaveExecutor {
                                                                  NodeRole role,
                                                                  ClusterBootstrapConfig desired) {
         return lookupSource(sourceName,
-                            desired.sources()).flatMap(source -> dispatchProvision(sourceName, source, role, 1, desired.cluster().name()))
+                            desired.sources()).flatMap(source -> dispatchProvision(sourceName,
+                                                                                   source,
+                                                                                   role,
+                                                                                   1,
+                                                                                   desired.cluster().name()))
                            .flatMap(nodes -> waitForNewNodes(nodes,
                                                              desired.operations().ports().management()));
     }
@@ -454,9 +468,14 @@ public final class WaveExecutor {
                                                            int managementPort) {
         logAction("~", "  provisioning " + count + " new " + role.value() + " node(s)...");
 
-        return dispatchProvision(sourceName, newSource, role, count, desired.cluster().name()).flatMap(nodes -> waitForNewNodes(nodes,
-                                                                                                      managementPort))
-                                .flatMap(_ -> drainOldNodes(sourceName, role, count, desired))
+        return dispatchProvision(sourceName,
+                                 newSource,
+                                 role,
+                                 count,
+                                 desired.cluster().name()).flatMap(nodes -> waitForNewNodes(nodes, managementPort)).flatMap(_ -> drainOldNodes(sourceName,
+                                                                                                                                               role,
+                                                                                                                                               count,
+                                                                                                                                               desired))
                                 .map(count2 -> logAndCount("~",
                                                            "  " + sourceName
                                                           + "." + role.value()

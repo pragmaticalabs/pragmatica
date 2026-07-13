@@ -712,7 +712,8 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                      .map(String::trim)
                      .filter(s -> !s.isEmpty())
                      .map(Number::parseLong)
-                     .flatMap(result -> result.option().stream())
+                     .flatMap(result -> result.option()
+                                              .stream())
                      .toList();
     }
 
