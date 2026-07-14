@@ -35,6 +35,16 @@ Run 12 was 6/7 scripts green; the stream-replica-failover script exposed: fresh 
 - If it failed → the log + live cluster are the forensic surface (SSH-exec works on ALL nodes now — #442). Evidence-first, the run-8→13 pattern.
 - **Detached execution is now the standard**: runs 10 & 11 were EXTERNALLY killed mid-S19 (~60-90 min in; not me, not the user — environment kills long harness-owned background tasks). Always `nohup`+`disown` + Monitor on the log.
 
+## Run-13 FINAL OUTCOME (session closed after this)
+
+**6p/1f (2640s), 39/2 tests — best cloud 02-chaos ever.** All chaos scripts green (S01/leader/kill-2/non-leader/under-load/S19-S20 = 32/0). Stream script 7/2: **#445 placement fix VALIDATED** (RF=2 placed, `servedByOwner` authoritative, CAUGHT_UP replica existed, **all 20 acked events SURVIVED owner deletion** — the durability break is CLOSED). The 2 fails = ONE residual layer, isolated with smoking-gun logs (quoted on #445): the new post-failover owner's **backfill catch-up read is REJECTED by the caught-up replica** (source reads go through the owner-only read path → `PARTITION_NOT_LOCAL`), the backfill **false-completes at 0 events**, and self-promotion claims "no peer source" despite the probe having seen the peer's watermark (19→24). Three defects to fix together (first code item next session, keep #445 open): (a) replicas must serve backfill-source reads; (b) refused source read ≠ backfill completion; (c) self-promotion must never claim CAUGHT_UP at/below a probed peer watermark without fetching (latent truncation hazard). Availability bug now, not data loss.
+
+**Cloud after session: FULLY REAPED** (only test-PG + firewall). Reap lesson: deleting a live cluster's VMs one-by-one RACES its own auto-heal — the leader provisioned 2 replacements mid-reap before its VM died; sweep again after a settle window (or kill the leader's VM first).
+
+## FIRST ACTIONS next session (revised)
+
+1. Re-arm MAILBOX monitor. 2. Fix the #445 residual (three defects above, one jbct-coder track; module gates + targeted stream-script re-run). 3. Then tasks 4–6 (remote 15/15 → cloud JVM 15/15 → close-outs incl. CHANGELOG/feature-catalog) → `/pre-release-check` → `/release` (owner).
+
 ## Remaining rc2 queue (tasks 4–6)
 
 1. **Remote container 15/15 sweep** (`--env remote`) + fold-ins: #421 already resolved via #445; the 1f fence probe (`aether cluster ownership` during owner-kill: deposed `fenced=true`, steady `highWater==epoch`) still pending; #426's residual (isolated kill-node leader-window) was organically answered by runs 8–13 (leader survived every S01 kill, window observable) — note that on #426 and close.
