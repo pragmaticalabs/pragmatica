@@ -918,6 +918,16 @@ wait_for_node_count_fast() {
                 break
             fi
         done
+        # Seed slots all dead (every compose seed replaced by a CTM ULID node on an
+        # ephemeral host port) → fall back to the label-based discovery the general
+        # resolver (_resolve_live_endpoint) already uses. Without this the fast poll
+        # only ever sees the fixed seed ports (e.g. 5161..5165) and returns '?' once the
+        # cluster has fully migrated to CTM replacements — the 03-scaling remote failure.
+        # TTL-cached in _discover_endpoint_by_label, so the per-iteration SSH cost is
+        # paid at most once per DISCOVER_TTL.
+        if [ -z "$endpoint" ]; then
+            endpoint=$(_discover_endpoint_by_label 2>/dev/null) || endpoint=""
+        fi
         if [ -n "$endpoint" ]; then
             local gen
             gen=$(curl -sfk -m 2 -H "X-API-Key: ${API_KEY}" \
