@@ -584,6 +584,15 @@ deploy_docker() {
         remote_exec "cd ~ && docker compose -f docker-compose-a.yml up -d 2>&1 | tail -5"
     fi
 
+    # Stagger: give Cluster A an uninterrupted formation window before Cluster B's
+    # 5 JVMs co-boot. deploy_docker brings up both clusters back-to-back; with all
+    # 10 nodes booting at once against the shared docker socket, Cluster A's formation
+    # was starved and never reached 5-ready (observed on remote: A converges in ~28s
+    # ALONE but timed out at 957s when B co-booted). Non-fatal — if A has not formed
+    # within the window, deploy B anyway and let the Step-3 gate surface it.
+    log_step "Staggering: waiting for Cluster A to form before deploying Cluster B"
+    wait_for_node_count_on "$CLUSTER_A_MGMT" 5 180 || log_warn "Cluster A not fully formed within stagger window — deploying Cluster B anyway"
+
     log_step "Deploying Cluster B (destructive)"
     if [ "$host" = "localhost" ]; then
         docker compose -f "$COMPOSE_B" down -v 2>/dev/null || true
