@@ -3273,7 +3273,11 @@ restore_cluster_baseline() {
     # and waits on CTM auto-heal + mgmt-API readiness (there is no compose project on
     # cloud — the old `docker compose ... aether-b-network` path is a no-op there and
     # failed with `No resource found for project aether`).
-    if ! cluster_leader >/dev/null 2>&1; then
+    # Reliability gate reads through the BOUNDED curl path (cluster_leader_http), never the
+    # CLI: the CLI-path cluster_leader can hang/degrade for reasons unrelated to cluster
+    # health (macOS LNP, JVM connect-phase hangs against a dead fleet — the 2026-07-15
+    # 3.5h silent restore hang), exactly the hazard the _http counterparts were built for.
+    if ! cluster_leader_http >/dev/null 2>&1; then
         log_warn "restore_cluster_baseline: no leader reachable via management API — escalating to full cluster restart (restart_all_nodes)"
         if ! restart_all_nodes; then
             log_warn "restore_cluster_baseline: restart_all_nodes also failed; cluster is unrecoverable for this run"
@@ -3282,7 +3286,7 @@ restore_cluster_baseline() {
         # restart_all_nodes already waits for node count + leader + ON_DUTY internally
         # (see its tail). Re-check the leader gate so we don't fall through into the
         # restore steps with a half-converged cluster.
-        if ! cluster_leader >/dev/null 2>&1; then
+        if ! cluster_leader_http >/dev/null 2>&1; then
             log_warn "restore_cluster_baseline: leader still unreachable after restart"
             return 1
         fi

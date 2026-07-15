@@ -74,7 +74,17 @@ aether_failover() {
     if [ "${MGMT_SCHEME}" = "https" ]; then
         cli_tls_flag="--tls-skip-verify"
     fi
-    aether -c "${MGMT_SCHEME}://${host_port}" --api-key "${API_KEY}" "--request-timeout=${timeout}" ${cli_tls_flag} "$@"
+    # Hard outer bound (#441 read-fragility class): --request-timeout caps the HTTP request
+    # once it is in flight, but the CLI (a JVM) can still hang in connect/DNS/TLS phases
+    # against a dead-but-routable endpoint — the 2026-07-15 cloud-jvm run hung 3.5h inside
+    # a fully-silenced `cluster_leader → aether_failover → aether` chain after the whole
+    # cluster-B fleet died. coreutils `timeout` closes that class for EVERY CLI call site;
+    # when it is not installed the invocation runs unbounded exactly as before.
+    if command -v timeout >/dev/null 2>&1; then
+        timeout "$((timeout + 30))s" aether -c "${MGMT_SCHEME}://${host_port}" --api-key "${API_KEY}" "--request-timeout=${timeout}" ${cli_tls_flag} "$@"
+    else
+        aether -c "${MGMT_SCHEME}://${host_port}" --api-key "${API_KEY}" "--request-timeout=${timeout}" ${cli_tls_flag} "$@"
+    fi
 }
 
 # Query a CLI command and extract a single field (--format value --field)
