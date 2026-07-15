@@ -116,66 +116,14 @@ public final class RecordGenerator {
 
     private void renderRowMapper(StringBuilder sb, String className, List<FieldInfo> fields) {
         sb.append("\n    public static Result<").append(className).append("> mapRow(RowAccessor row) {\n");
-        if (fields.size() <= 11) {
-            renderSimpleRowMapper(sb, className, fields);
-        } else {
-            renderNestedRowMapper(sb, className, fields);
+        var exprs = new ArrayList<String>();
+
+        for (var field : fields) {
+            exprs.add(renderAccessor(field));
         }
 
+        BatchedAllRenderer.appendReturn(sb, "Result", className, exprs, "        ");
         sb.append("    }\n");
-    }
-
-    private void renderSimpleRowMapper(StringBuilder sb, String className, List<FieldInfo> fields) {
-        sb.append("        return Result.all(\n");
-        for (int i = 0; i < fields.size(); i++) {
-            var f = fields.get(i);
-
-            sb.append("            ").append(renderAccessor(f));
-            if (i < fields.size() - 1) sb.append(",");
-
-            sb.append("\n");
-        }
-
-        sb.append("        ).map(").append(className).append("::new);\n");
-    }
-
-    private void renderNestedRowMapper(StringBuilder sb, String className, List<FieldInfo> fields) {
-        var groups = new ArrayList<List<FieldInfo>>();
-
-        for (int i = 0; i < fields.size(); i += 9) {
-            groups.add(fields.subList(i,
-                                      Math.min(i + 9, fields.size())));
-        }
-
-        sb.append("        // ").append(fields.size()).append(" columns — using nested Result.all\n");
-        sb.append("        return Result.all(\n");
-        for (int g = 0; g < groups.size(); g++) {
-            var group = groups.get(g);
-
-            sb.append("            Result.all(\n");
-            for (int i = 0; i < group.size(); i++) {
-                sb.append("                ").append(renderAccessor(group.get(i)));
-                if (i < group.size() - 1) sb.append(",");
-
-                sb.append("\n");
-            }
-
-            sb.append("            )");
-            if (g < groups.size() - 1) sb.append(",");
-
-            sb.append("\n");
-        }
-
-        sb.append("        ).map((");
-        for (int g = 0; g < groups.size(); g++) {
-            if (g > 0) sb.append(", ");
-
-            sb.append("g").append(g);
-        }
-
-        sb.append(") -> new ").append(className).append("(\n");
-        sb.append("            // TODO: extract tuple fields\n");
-        sb.append("        ));\n");
     }
 
     private String renderAccessor(FieldInfo field) {

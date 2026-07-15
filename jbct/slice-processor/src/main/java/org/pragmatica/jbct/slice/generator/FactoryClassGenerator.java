@@ -87,23 +87,10 @@ public class FactoryClassGenerator {
                 generateFactoryClass(writer, model, factoryName, publisherBindings);
             }
             return Result.unitResult();
-        } catch (DependencyLimitExceeded e) {
-            // Surface the actionable, slice-attributed message verbatim (not wrapped as a generation failure).
-            return Causes.cause(e.getMessage())
-                         .result();
         } catch (Exception e) {
             return Causes.cause("Failed to generate factory class: " + e.getClass()
                                                                         .getSimpleName() + ": " + e.getMessage())
                          .result();
-        }
-    }
-
-    /// Signals that a slice's asynchronously provisioned dependency count exceeds the Promise.all()
-    /// arity limit of 15. Carries a fully-formed, slice-attributed diagnostic that [#generate] surfaces
-    /// verbatim so the constraint stays legible instead of crashing with a cryptic internal error.
-    private static final class DependencyLimitExceeded extends RuntimeException {
-        private DependencyLimitExceeded(String message) {
-            super(message);
         }
     }
 
@@ -401,31 +388,57 @@ public class FactoryClassGenerator {
             generateSyncOnlyBody(out, model, sliceName, plainDeps, plainInterfaceParams, importTracker);
             return;
         }
-        if (entries.size() > 15) {
-            throw new DependencyLimitExceeded(
-                "Slice '" + sliceName + "' needs " + entries.size()
-                + " asynchronously provisioned dependencies, but its generated factory assembles them with"
-                + " Promise.all(), which supports at most 15. Reduce the count by splitting '" + sliceName
-                + "' into smaller slices or applying interface segregation to its dependencies (each injected"
-                + " slice method handle and each provisioned resource counts toward the limit of 15).");
-        }
-        // Generate Promise.all(...)
-        out.println("        return Promise.all(");
-        for (int i = 0; i < entries.size(); i++) {
-            var entry = entries.get(i);
-            var comma = (i < entries.size() - 1)
-                        ? ","
-                        : "";
-            out.println("            " + entry.promiseExpression() + comma);
-        }
-        out.println("        )");
-        // Generate .map/.flatMap((v1, v2, ...) -> { ... })
         var varNames = entries.stream()
                               .map(AllEntry::varName)
                               .toList();
         var isNonDirect = model.factoryReturnKind() != SliceModel.FactoryReturnKind.DIRECT;
-        var chainMethod = isNonDirect ? "flatMap" : "map";
-        out.println("        ." + chainMethod + "((" + String.join(", ", varNames) + ") -> {");
+        var chainMethod = isNonDirect
+                          ? "flatMap"
+                          : "map";
+
+        if (entries.size() <= BatchedAll.MAX_FLAT_ARITY) {
+            // Flat Promise.all(...) — unchanged for slices within the core arity-15 ceiling.
+            out.println("        return Promise.all(");
+            for (int i = 0; i < entries.size(); i++) {
+                var entry = entries.get(i);
+                var comma = (i < entries.size() - 1)
+                            ? ","
+                            : "";
+                out.println("            " + entry.promiseExpression() + comma);
+            }
+            out.println("        )");
+            out.println("        ." + chainMethod + "((" + String.join(", ", varNames) + ") -> {");
+            generateCreationBody(out, model, sliceDeps, plainDeps, plainInterfaceParams, proxyMethodsCache,
+                                 interceptorEntries, importTracker);
+            out.println("        });");
+        } else {
+            // More than 15 asynchronously provisioned dependencies: batch them into <=15-wide Tuple
+            // parts (materialized with .id()) that all launch before the outer join, then cascade
+            // Tuple.map to rebind every value for the factory. This lifts the former hard limit while
+            // preserving Promise.all's concurrency and fail-fast semantics.
+            var partExprs = entries.stream()
+                                   .map(AllEntry::promiseExpression)
+                                   .toList();
+            var openParens = BatchedAll.openBatchedPromiseBody(out, partExprs, varNames, chainMethod);
+            generateCreationBody(out, model, sliceDeps, plainDeps, plainInterfaceParams, proxyMethodsCache,
+                                 interceptorEntries, importTracker);
+            BatchedAll.closeBatchedPromiseBody(out, openParens);
+        }
+    }
+
+    /// Emits the creation-chain body — proxy-record instantiation, plain-interface construction and
+    /// the factory call/wrap — that runs inside the innermost `Promise.all(...).<chain>((...) -> {`
+    /// lambda. Shared by the flat and the batched (&gt;15 dependency) assembly shapes.
+    private void generateCreationBody(PrintWriter out,
+                                      SliceModel model,
+                                      List<DependencyModel> sliceDeps,
+                                      List<DependencyModel> plainDeps,
+                                      Map<String, List<PlainInterfaceFactoryParam>> plainInterfaceParams,
+                                      Map<String, List<ProxyMethodInfo>> proxyMethodsCache,
+                                      List<InterceptorEntry> interceptorEntries,
+                                      ImportTracker importTracker) {
+        var sliceName = model.simpleName();
+        var isNonDirect = model.factoryReturnKind() != SliceModel.FactoryReturnKind.DIRECT;
         // Instantiate proxy records from handle vars
         for (var dep : sliceDeps) {
             var methods = proxyMethodsCache.get(dep.interfaceQualifiedName());
@@ -461,7 +474,6 @@ public class FactoryClassGenerator {
         } else {
             out.println("            return " + factoryCall + ";");
         }
-        out.println("        });");
     }
 
     private void generateNonDirectAsyncFactoryCall(PrintWriter out,
@@ -1057,18 +1069,40 @@ public class FactoryClassGenerator {
                                                   Map<String, List<PlainInterfaceFactoryParam>> stepResourceParams,
                                                   ImportTracker importTracker) {
         // Use Promise.all to provision step resources in parallel with create()
-        out.println("        return Promise.all(");
-        out.println("            " + methodName + "(ctx),");
-        for (int i = 0; i < stepResourceEntries.size(); i++) {
-            var entry = stepResourceEntries.get(i);
-            var comma = (i < stepResourceEntries.size() - 1) ? "," : "";
-            out.println("            " + entry.promiseExpression() + comma);
-        }
-        out.println("        )");
+        var leafExprs = new ArrayList<String>();
+        leafExprs.add(methodName + "(ctx)");
+        stepResourceEntries.forEach(e -> leafExprs.add(e.promiseExpression()));
         var varNames = new ArrayList<String>();
         varNames.add("impl");
         stepResourceEntries.forEach(e -> varNames.add(e.varName()));
-        out.println("        .map((" + String.join(", ", varNames) + ") -> {");
+
+        if (leafExprs.size() <= BatchedAll.MAX_FLAT_ARITY) {
+            out.println("        return Promise.all(");
+            for (int i = 0; i < leafExprs.size(); i++) {
+                var comma = (i < leafExprs.size() - 1)
+                            ? ","
+                            : "";
+                out.println("            " + leafExprs.get(i) + comma);
+            }
+            out.println("        )");
+            out.println("        .map((" + String.join(", ", varNames) + ") -> {");
+            generateTransitiveResourceBody(out, model, sliceRecordName, transitiveSteps, stepResourceParams, importTracker);
+            out.println("        });");
+        } else {
+            // More than 15 provisioned values (create() + step resources): batch to stay within the
+            // core Promise.all ceiling while keeping the parallel provisioning semantics.
+            var openParens = BatchedAll.openBatchedPromiseBody(out, leafExprs, varNames, "map");
+            generateTransitiveResourceBody(out, model, sliceRecordName, transitiveSteps, stepResourceParams, importTracker);
+            BatchedAll.closeBatchedPromiseBody(out, openParens);
+        }
+    }
+
+    private void generateTransitiveResourceBody(PrintWriter out,
+                                                SliceModel model,
+                                                String sliceRecordName,
+                                                List<PlainInterfaceModel> transitiveSteps,
+                                                Map<String, List<PlainInterfaceFactoryParam>> stepResourceParams,
+                                                ImportTracker importTracker) {
         for (var step : transitiveSteps) {
             var stepDep = findDependencyByParamName(model, step.parameterName());
             if (stepDep != null) {
@@ -1087,7 +1121,6 @@ public class FactoryClassGenerator {
             ctorArgs += ", " + step.parameterName();
         }
         out.println("            return new " + sliceRecordName + "(" + ctorArgs + ");");
-        out.println("        });");
     }
 
     /// Generate a single SliceMethod entry for the methods() list.
@@ -1323,17 +1356,26 @@ public class FactoryClassGenerator {
             return "Result.success(new " + configTypeName + "()).async()";
         }
         importTracker.use("org.pragmatica.lang.Result");
-        var sb = new StringBuilder();
-        sb.append("Result.all(\n");
+        var factoryMethod = lowercaseFirst(resource.interfaceSimpleName());
+        var accessExprs = new ArrayList<String>();
+        var leafNames = new ArrayList<String>();
         for (int i = 0; i < factoryParams.size(); i++) {
             var param = factoryParams.get(i);
-            var comma = (i < factoryParams.size() - 1) ? "," : "";
             var tomlKey = camelToSnakeCase(param.name());
+            accessExprs.add(param.configAccessExpression("ctx.config()", configSection, tomlKey));
+            leafNames.add("c" + (i + 1));
+        }
+        if (accessExprs.size() > BatchedAll.MAX_FLAT_ARITY) {
+            return BatchedAll.renderConfigExpression("Result", accessExprs, leafNames, configTypeName, factoryMethod, ".async()");
+        }
+        var sb = new StringBuilder();
+        sb.append("Result.all(\n");
+        for (int i = 0; i < accessExprs.size(); i++) {
+            var comma = (i < accessExprs.size() - 1) ? "," : "";
             sb.append("                ")
-              .append(param.configAccessExpression("ctx.config()", configSection, tomlKey))
+              .append(accessExprs.get(i))
               .append(comma).append("\n");
         }
-        var factoryMethod = lowercaseFirst(resource.interfaceSimpleName());
         sb.append("            ).flatMap(").append(configTypeName).append("::").append(factoryMethod).append(").async()");
         return sb.toString();
     }
@@ -1873,17 +1915,26 @@ public class FactoryClassGenerator {
         if (factoryParams.isEmpty()) {
             return "Result.success(new " + configTypeName + "())";
         }
-        var sb = new StringBuilder();
-        sb.append("Result.all(\n");
+        var factoryMethod = lowercaseFirst(dep.interfaceSimpleName());
+        var accessExprs = new ArrayList<String>();
+        var leafNames = new ArrayList<String>();
         for (int i = 0; i < factoryParams.size(); i++) {
             var param = factoryParams.get(i);
-            var comma = (i < factoryParams.size() - 1) ? "," : "";
             var tomlKey = camelToSnakeCase(param.name());
+            accessExprs.add(param.configAccessExpression("config", configSection, tomlKey));
+            leafNames.add("c" + (i + 1));
+        }
+        if (accessExprs.size() > BatchedAll.MAX_FLAT_ARITY) {
+            return BatchedAll.renderConfigExpression("Result", accessExprs, leafNames, configTypeName, factoryMethod, "");
+        }
+        var sb = new StringBuilder();
+        sb.append("Result.all(\n");
+        for (int i = 0; i < accessExprs.size(); i++) {
+            var comma = (i < accessExprs.size() - 1) ? "," : "";
             sb.append("                ")
-              .append(param.configAccessExpression("config", configSection, tomlKey))
+              .append(accessExprs.get(i))
               .append(comma).append("\n");
         }
-        var factoryMethod = lowercaseFirst(dep.interfaceSimpleName());
         sb.append("            ).flatMap(").append(configTypeName).append("::").append(factoryMethod).append(")");
         return sb.toString();
     }

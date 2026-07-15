@@ -3255,10 +3255,10 @@ class SliceProcessorTest {
         assertCompilation(compilation).succeeded();
     }
 
-    // ========== Promise.all() dependency-count cap (issue #395) ==========
+    // ========== Promise.all() dependency-count batching (issues #395 / arity-15 ceiling) ==========
 
     @Test
-    void should_fail_when_dependency_count_exceeds_promise_all_limit() {
+    void should_batch_dependencies_when_count_exceeds_promise_all_limit() {
         var manyOps = JavaFileObjects.forSourceString("external.ManyOps",
                                                       """
             package external;
@@ -3298,9 +3298,17 @@ class SliceProcessorTest {
         sources.add(manyOps);
         sources.add(source);
         Compilation compilation = javac().withProcessors(new SliceProcessor()).compile(sources);
-        assertCompilation(compilation).failed();
-        assertCompilation(compilation).hadErrorContaining("at most 15");
-        assertCompilation(compilation).hadErrorContaining("OverloadedService");
+        // 16 injected method handles exceed the flat Promise.all arity-15 ceiling: the processor now
+        // batches them into Tuple parts and generates compilable code instead of failing (#395).
+        assertCompilation(compilation).succeeded();
+        assertCompilation(compilation)
+                  .generatedSourceFile("test.OverloadedServiceFactory")
+                  .contentsAsUtf8String()
+                  .contains("var part1 = Promise.all(");
+        assertCompilation(compilation)
+                  .generatedSourceFile("test.OverloadedServiceFactory")
+                  .contentsAsUtf8String()
+                  .contains("return Promise.all(part1, part2)");
     }
 
     // ========== Typed Topic (Topic<T> constant) Tests (#396) ==========

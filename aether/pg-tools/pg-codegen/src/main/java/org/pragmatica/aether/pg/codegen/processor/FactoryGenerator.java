@@ -4,6 +4,7 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.pg.codegen.processor;
 
+import org.pragmatica.aether.pg.codegen.BatchedAllRenderer;
 import org.pragmatica.aether.pg.codegen.NamingConvention;
 import org.pragmatica.aether.pg.codegen.TypeMapper;
 import org.pragmatica.aether.pg.schema.model.Table;
@@ -437,18 +438,21 @@ public final class FactoryGenerator {
             return;
         }
 
-        sb.append("        return Result.all(\n");
-        for (int i = 0; i < columns.size(); i++) {
-            sb.append("            ");
-            appendColumnExpr(sb, columns.get(i));
-            if (i < columns.size() - 1) {
-                sb.append(',');
-            }
+        var exprs = new ArrayList<String>();
 
-            sb.append('\n');
+        for (var column : columns) {
+            exprs.add(columnExpr(column));
         }
 
-        sb.append("        ).map(").append(method.innerTypeName).append("::new);\n");
+        BatchedAllRenderer.appendReturn(sb, "Result", method.innerTypeName, exprs, "        ");
+    }
+
+    private static String columnExpr(MapperColumn col) {
+        var tmp = new StringBuilder();
+
+        appendColumnExpr(tmp, col);
+
+        return tmp.toString();
     }
 
     /// Emits a single column read expression. A value-object column (non-empty `liftExpr`) reads
