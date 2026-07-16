@@ -62,6 +62,7 @@ public interface OrderService {
 | [Deployment](deployment.md) | Blueprints, environments, CI/CD |
 | [Infrastructure Services](infra-services.md) | Using infrastructure slices |
 | [Resource Reference](resource-reference.md) | Resource provisioning & configuration |
+| [API Versioning & Media Types](api-versioning-and-media-types.md) | Route `produces`/`consumes`, multi-version slices, deprecation lifecycle |
 | [Forge Guide](forge-guide.md) | Local development with Forge |
 | [Troubleshooting](troubleshooting.md) | Common issues and solutions |
 | [Migration Guide](migration-guide.md) | Moving from monolith to slices |

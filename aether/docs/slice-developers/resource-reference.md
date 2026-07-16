@@ -15,9 +15,9 @@ Aether ships three built-in qualifiers:
 | `@Http` | `HttpClient` | `"http"` |
 | `@Notify` | `NotificationSender` | `"notification"` |
 
-### Aether Store — PostgreSQL Persistence (`@PgSql`)
+### Aether Persistence (AEP) — PostgreSQL Persistence (`@PgSql`)
 
-Type-safe persistence with compile-time SQL validation. Define an interface, annotate with `@PgSql`, and the annotation processor validates queries against your schema. See the [Aether Store Guide](persistence-guide.md) for full documentation.
+Type-safe persistence with compile-time SQL validation. Define an interface, annotate with `@PgSql`, and the annotation processor validates queries against your schema. See the [AEP Guide](persistence-guide.md) for full documentation.
 
 ```java
 @PgSql

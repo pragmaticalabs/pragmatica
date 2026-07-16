@@ -542,7 +542,7 @@ callers only see the `NotificationService` interface.
 | Resource qualifier | Infrastructure access | `@Sql`, `@Http`, or custom `@ResourceQualifier` |
 | Slice dependency | Cross-slice calls | Plain interface parameter (proxy generated) |
 
-## Aether Store — Persistence Adapter Pattern
+## Aether Persistence (AEP) — Persistence Adapter Pattern
 
 Type-safe PostgreSQL persistence with compile-time SQL validation. Define a persistence
 interface annotated with `@PgSql`, and the annotation processor validates every query
@@ -601,6 +601,6 @@ CRUD patterns, and compile-time validation — see the [Persistence Guide](persi
 
 - [Getting Started](getting-started.md) — build your first slice from scratch
 - [Resource Reference](resource-reference.md) — databases, HTTP clients, caching, pub-sub, scheduling
-- [Aether Store](persistence-guide.md) — type-safe PostgreSQL persistence with compile-time validation
+- [Aether Persistence (AEP)](persistence-guide.md) — type-safe PostgreSQL persistence with compile-time validation
 - [Testing Slices](testing-slices.md) — unit and integration testing
 - [Migration Guide](migration-guide.md) — migrating existing applications to Aether

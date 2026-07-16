@@ -20,7 +20,7 @@ Generated: 2026-04-05
 | JBCT | 60K | 53K | 3K |
 | **Total** | **719K** | **327K** | **340K** |
 
-The 320K figure matches code-only lines of the full monorepo (327K currently). This was accurate when written; the Aether Store pg-parser addition bumped it slightly.
+The 320K figure matches code-only lines of the full monorepo (327K currently). This was accurate when written; the AEP pg-parser addition bumped it slightly.
 
 **Fix:** Update to "330,000 lines of Java code" or leave as-is (close enough). If total lines are preferred: "700,000+ lines of Java."
 

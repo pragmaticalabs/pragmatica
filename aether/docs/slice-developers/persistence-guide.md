@@ -1,4 +1,4 @@
-# Aether Store — PostgreSQL Persistence Guide
+# Aether Persistence (AEP) — PostgreSQL Persistence Guide
 
 Type-safe PostgreSQL persistence adapters for Aether slices with compile-time SQL validation.
 
