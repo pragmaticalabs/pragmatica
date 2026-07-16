@@ -111,4 +111,4 @@ async_url = "postgresql://${env:PG_HOST}:5432/${env:PG_DB}"
 
 [runtime.default]
 type = "container"
-image = "ghcr.io/pragmaticalabs/aether-node:1.0.0-rc2-candidate"
+image = "ghcr.io/pragmaticalabs/aether-node:1.0.0-rc3-candidate"

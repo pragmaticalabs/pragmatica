@@ -28,7 +28,7 @@ jbct verify-slice                  # Validate slice configuration
 <plugin>
     <groupId>org.pragmatica-lite</groupId>
     <artifactId>jbct-maven-plugin</artifactId>
-    <version>1.0.0-rc2</version>
+    <version>1.0.0-rc3</version>
 </plugin>
 ```
 

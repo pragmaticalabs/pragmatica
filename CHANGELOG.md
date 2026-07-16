@@ -4,7 +4,9 @@ All notable changes to Pragmatica will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
-## [1.0.0-rc2] - Unreleased
+## [1.0.0-rc3] - Unreleased
+
+## [1.0.0-rc2] - 2026-07-16
 
 ### Fixed
 - **JBCT formatter/linter formatting fixes (#447).** Four cases: (1) import ordering now follows the book — `java → javax → org.pragmatica → third-party (alphabetical) → project`, statics last in the same grouping — enforced identically by lint (`JBCT-STY-06`) and the formatter through one shared `ImportGroups` classifier in jbct-core (the ordering was previously defined twice, divergently, with the book contradicted by both). (2) A fluent chain whose head call wraps its arguments no longer glues the first follow-up call to the closing-paren line and mis-anchors the remaining segments at the argument column — the ≥2-follow-up special case (`FlowPrinter`) and its `postBrokenArgsAnchor` machinery are removed, so the single-follow-up rule applies uniformly: break before the first follow-up, whole chain anchored at the head call's dot column. The `MultilineArguments.chainedWithArgs` golden fixture that canonized the glued layout is updated; new `WrappedArgsChain` fixture covers return and lambda-tail positions. (3) Statement-position chains — previously never broken regardless of length because `shouldBreakChain` was purely structural — now break when their flat rendering would exceed `maxLineLength` (short chains stay flat; new `StatementChains` fixture). (4) The never-read `alignChainedCalls`/`alignArguments`/`alignParameters` config keys are removed from `FormatterConfig`/TOML (alignment is unconditional; stale keys in user configs are silently ignored). First-ever tests for `CstImportOrderingRule` + unit tests for `ImportGroups`; jbct-core 28/0, jbct-format 65/0 (24 golden idempotency fixtures), jbct-lint 185/0. Existing formatted sources are re-flagged by `JBCT-STY-06` under the new order until the post-merge repo-wide reformat sweep (tracked on #447).
