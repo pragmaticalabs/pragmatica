@@ -1,5 +1,11 @@
 package org.pragmatica.aether.example.fulfillment;
 
+import java.math.BigDecimal;
+import java.time.Instant;
+import java.util.Arrays;
+import java.util.List;
+import java.util.Set;
+
 import org.pragmatica.aether.example.shared.Address;
 import org.pragmatica.aether.example.shared.LineItem;
 import org.pragmatica.aether.example.shared.Money;
@@ -13,12 +19,6 @@ import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.utility.IdGenerator;
-
-import java.math.BigDecimal;
-import java.time.Instant;
-import java.util.Arrays;
-import java.util.List;
-import java.util.Set;
 
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
@@ -212,9 +212,10 @@ public interface FulfillmentService {
             public Promise<TrackingInfo> trackShipment(TrackShipmentRequest request) {
                 return db.queryOptional(SELECT_SHIPMENT_BY_TRACKING,
                                         fulfillmentService::mapShipment,
-                                        request.trackingNumber()).flatMap(opt -> opt.toResult(new FulfillmentError.ShipmentNotFound(request.trackingNumber()))
-                                                                                    .async())
-                                       .map(TrackingInfo::trackingInfo);
+                                        request.trackingNumber())
+                         .flatMap(opt -> opt.toResult(new FulfillmentError.ShipmentNotFound(request.trackingNumber()))
+                                            .async())
+                         .map(TrackingInfo::trackingInfo);
             }
 
             private static boolean isSameDayRestricted(CreateShipmentRequest request) {

@@ -1,5 +1,7 @@
 package org.pragmatica.aether.example.pricing.analytics;
 
+import java.util.List;
+
 import org.pragmatica.aether.example.pricing.catalog.CatalogSlice.HighValueOrderEvent;
 import org.pragmatica.aether.resource.db.RowMapper;
 import org.pragmatica.aether.resource.db.Sql;
@@ -8,8 +10,6 @@ import org.pragmatica.aether.slice.annotation.Slice;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
-
-import java.util.List;
 
 
 @Slice

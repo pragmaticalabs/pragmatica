@@ -1,5 +1,10 @@
 package org.pragmatica.aether.example.pricing.catalog;
 
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Objects;
+import java.util.Set;
+
 import org.pragmatica.aether.example.pricing.discount.DiscountSlice;
 import org.pragmatica.aether.example.pricing.discount.DiscountSlice.DiscountRequest;
 import org.pragmatica.aether.example.pricing.tax.TaxSlice;
@@ -10,11 +15,6 @@ import org.pragmatica.aether.slice.Publisher;
 import org.pragmatica.aether.slice.annotation.Slice;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Promise;
-
-import java.util.ArrayList;
-import java.util.List;
-import java.util.Objects;
-import java.util.Set;
 
 
 @Slice

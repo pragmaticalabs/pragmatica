@@ -1,5 +1,10 @@
 package org.pragmatica.aether.example.payment;
 
+import java.math.BigDecimal;
+import java.time.Instant;
+import java.util.Currency;
+import java.util.Random;
+
 import org.pragmatica.aether.example.shared.CustomerId;
 import org.pragmatica.aether.example.shared.Money;
 import org.pragmatica.aether.example.shared.OrderId;
@@ -16,11 +21,6 @@ import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.Verify;
 import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.utility.IdGenerator;
-
-import java.math.BigDecimal;
-import java.time.Instant;
-import java.util.Currency;
-import java.util.Random;
 
 
 @Slice
@@ -240,11 +240,12 @@ public interface PaymentService {
             public Promise<RefundResult> processRefund(RefundRequest request) {
                 return db.queryOptional(SELECT_TRANSACTION,
                                         paymentService::mapTransaction,
-                                        request.transactionId()).flatMap(opt -> opt.toResult(new PaymentError.TransactionNotFound(request.transactionId()))
-                                                                                   .async())
-                                       .flatMap(original -> validateRefundAmount(request, original).async())
-                                       .flatMap(refundAmount -> persistRefund(request.transactionId(),
-                                                                              refundAmount));
+                                        request.transactionId())
+                         .flatMap(opt -> opt.toResult(new PaymentError.TransactionNotFound(request.transactionId()))
+                                            .async())
+                         .flatMap(original -> validateRefundAmount(request, original).async())
+                         .flatMap(refundAmount -> persistRefund(request.transactionId(),
+                                                                refundAmount));
             }
 
             private static Result<PaymentResult> mapTransaction(RowMapper.RowAccessor row) {

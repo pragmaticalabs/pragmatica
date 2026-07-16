@@ -1,8 +1,8 @@
 package org.pragmatica.aether.example.notification.analytics;
 
-import org.pragmatica.serialization.Codec;
-
 import java.util.Map;
+
+import org.pragmatica.serialization.Codec;
 
 
 @Codec

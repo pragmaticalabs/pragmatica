@@ -1,5 +1,8 @@
 package org.pragmatica.aether.example.notification.emailer;
 
+import java.util.List;
+import java.util.concurrent.atomic.AtomicLong;
+
 import org.pragmatica.aether.example.notification.NotificationEvent;
 import org.pragmatica.aether.resource.notification.Notification;
 import org.pragmatica.aether.resource.notification.NotificationBody;
@@ -9,9 +12,6 @@ import org.pragmatica.aether.slice.annotation.Slice;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.serialization.Codec;
-
-import java.util.List;
-import java.util.concurrent.atomic.AtomicLong;
 
 import static org.pragmatica.aether.example.notification.emailer.EmailerStatus.emailerStatus;
 

@@ -1,8 +1,8 @@
 package org.pragmatica.aether.example.shared;
 
-import org.pragmatica.lang.Result;
-
 import java.util.List;
+
+import org.pragmatica.lang.Result;
 
 
 public record LineItem(ProductId productId, Quantity quantity) {
