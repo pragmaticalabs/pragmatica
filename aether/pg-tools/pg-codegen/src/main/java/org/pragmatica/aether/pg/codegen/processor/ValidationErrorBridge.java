@@ -4,13 +4,13 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.pg.codegen.processor;
 
-import org.pragmatica.aether.pg.parser.PostgresParser.SourceSpan;
-import org.pragmatica.aether.pg.schema.validator.ValidationError;
-import org.pragmatica.lang.Contract;
-
 import javax.annotation.processing.Messager;
 import javax.lang.model.element.Element;
 import javax.tools.Diagnostic;
+
+import org.pragmatica.aether.pg.parser.PostgresParser.SourceSpan;
+import org.pragmatica.aether.pg.schema.validator.ValidationError;
+import org.pragmatica.lang.Contract;
 
 
 public sealed interface ValidationErrorBridge {

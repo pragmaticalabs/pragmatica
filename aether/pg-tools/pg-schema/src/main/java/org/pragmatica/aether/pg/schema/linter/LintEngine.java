@@ -4,6 +4,9 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.pg.schema.linter;
 
+import java.util.ArrayList;
+import java.util.List;
+
 import org.pragmatica.aether.pg.schema.builder.SchemaBuilder;
 import org.pragmatica.aether.pg.schema.event.SchemaEvent;
 import org.pragmatica.aether.pg.schema.linter.rules.LockHazardRules;
@@ -11,9 +14,6 @@ import org.pragmatica.aether.pg.schema.linter.rules.MigrationPracticeRules;
 import org.pragmatica.aether.pg.schema.linter.rules.SchemaDesignRules;
 import org.pragmatica.aether.pg.schema.linter.rules.TypeDesignRules;
 import org.pragmatica.aether.pg.schema.model.Schema;
-
-import java.util.ArrayList;
-import java.util.List;
 
 
 public final class LintEngine {

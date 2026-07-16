@@ -4,17 +4,17 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.deployment.config;
 
-import org.pragmatica.aether.artifact.Artifact;
-import org.pragmatica.aether.slice.ConfigFacade;
-import org.pragmatica.lang.Option;
-import org.pragmatica.lang.Result;
-import org.pragmatica.lang.Unit;
-
 import java.lang.reflect.Method;
 import java.util.List;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+
+import org.pragmatica.aether.artifact.Artifact;
+import org.pragmatica.aether.slice.ConfigFacade;
+import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Unit;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;

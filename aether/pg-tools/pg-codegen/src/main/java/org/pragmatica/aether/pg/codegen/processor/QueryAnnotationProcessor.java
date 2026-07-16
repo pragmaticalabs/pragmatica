@@ -11,6 +11,7 @@ import org.pragmatica.aether.pg.codegen.annotation.Query;
 import org.pragmatica.aether.pg.codegen.annotation.Table;
 import org.pragmatica.aether.pg.parser.PostgresParser;
 import org.pragmatica.aether.pg.parser.PostgresParser.CstNode;
+import org.pragmatica.aether.pg.parser.transform.CstNavigator;
 import org.pragmatica.aether.pg.schema.model.BuiltinTypes;
 import org.pragmatica.aether.pg.schema.model.PgType;
 import org.pragmatica.aether.pg.schema.model.Schema;
@@ -219,40 +220,64 @@ public class QueryAnnotationProcessor extends AbstractProcessor {
         // references match the Java method param names; after expansion `:request` is replaced with
         // $N positional placeholders and virtual field names would otherwise be flagged as unused.
         var originalParamNames = originalParams.stream().map(FactoryGenerator.MethodParam::name).toList();
+        if (rejectsDataModifyingCte(execElement, methodName, sql, originalParamNames)) {
+            return null;
+        }
         validateQueryParams(execElement, methodName, sql, originalParamNames);
         var expansion = expandRecordParams(execElement, sql, originalParams);
+        var boundBody = boundBodyParams(execElement, expansion.bodyParams());
         schemaOpt.onPresent(schema -> validateQueryParamTypes(execElement,
                                                               expansion.sql(),
                                                               expansion.allParamNames(),
-                                                              expansion.bodyParams(),
+                                                              boundBody,
                                                               schema));
-        schemaOpt.onPresent(schema -> validateReturnTypeMapping(execElement, resolved, expansion.sql()));
         var rewritten = QueryRewriter.rewriteNamedParams(expansion.sql(), expansion.allParamNames());
+        var parsedCst = sqlParseCache.computeIfAbsent(rewritten.sql(), sqlParser::parseCst);
+        schemaOpt.onPresent(schema -> validateReturnTypeMapping(execElement, resolved, parsedCst));
         validateRewrittenSql(execElement, methodName, rewritten.sql(), schemaOpt);
-        var mapperColumns = resolveMapperColumns(execElement, resolved);
-        var bodyParams = reorderedParams(expansion.bodyParams(), rewritten.parameterOrder());
-        if ( expansion.hasExpansion()) {
+        var mapperColumns = boundMapperColumns(execElement, resolved, resolveMapperColumns(execElement, resolved));
+        var bodyParams = reorderedParams(boundBody, rewritten.parameterOrder());
+        var signatureParams = expansion.hasExpansion()
+                              ? originalParams
+                              : reorderedParams(originalParams, rewritten.parameterOrder());
         return new FactoryGenerator.MethodInfo(methodName,
                                                FactoryGenerator.toSqlConstantName(methodName),
                                                rewritten.sql(),
                                                resolved.kind(),
                                                resolved.innerTypeName(),
                                                resolved.innerTypeName(),
-                                               originalParams,
+                                               signatureParams,
                                                bodyParams,
                                                mapperColumns,
                                                resolved.needsMapper(),
-                                               resolved.scalarAccessor());}
-        return FactoryGenerator.MethodInfo.withSharedParams(methodName,
-                                               FactoryGenerator.toSqlConstantName(methodName),
-                                               rewritten.sql(),
-                                               resolved.kind(),
-                                               resolved.innerTypeName(),
-                                               resolved.innerTypeName(),
-                                               reorderedParams(originalParams, rewritten.parameterOrder()),
-                                               mapperColumns,
-                                               resolved.needsMapper(),
                                                resolved.scalarAccessor());
+    }
+
+    private static final Pattern CTE_HINT_PATTERN = Pattern.compile("(?i)\\bWITH\\b");
+
+    /// Rejects data-modifying CTEs — a `WITH` clause whose body is `INSERT`/`UPDATE`/`DELETE`
+    /// (e.g. `WITH x AS (INSERT ... RETURNING ...) SELECT ...`) — with a clear, located error
+    /// instead of silently mis-validating the outer statement. Cheaply gated on the presence of a
+    /// `WITH` keyword, then confirmed against the parsed CST so occurrences of INSERT/UPDATE/DELETE
+    /// inside string literals or comments never trigger a false positive. Schema-independent; genuine
+    /// parse failures are left to `validateRewrittenSql` to report. Returns true when rejected.
+    private boolean rejectsDataModifyingCte(ExecutableElement execElement,
+                                            String methodName,
+                                            String sql,
+                                            List<String> paramNames) {
+        if (!CTE_HINT_PATTERN.matcher(sql).find()) {
+            return false;
+        }
+        var rewritten = QueryRewriter.rewriteNamedParams(sql, paramNames).sql();
+        var parsed = sqlParseCache.computeIfAbsent(rewritten, sqlParser::parseCst);
+        if (parsed.isFailure()) {
+            return false;
+        }
+        if (QueryValidator.hasDataModifyingCte(parsed.expect("checked with isFailure above"))) {
+            error(ProcessorError.dataModifyingCteNotSupported(methodName), execElement);
+            return true;
+        }
+        return false;
     }
 
     /// Verifies that the return type is usable: either a record, a known scalar, or a scalar ReturnKind
@@ -318,7 +343,11 @@ public class QueryAnnotationProcessor extends AbstractProcessor {
         var table = tableOpt.expect("checked with isEmpty above");
         validateCrudColumns(execElement, parsed, table);
         validateInsertCoverage(execElement, parsed, table, inputFieldNames);
-        validateCrudParamTypes(execElement, parsed, table);
+        var boundBody = boundBodyParams(execElement,
+                                        recordExpansion.hasExpansion()
+                                        ? recordExpansion.bodyParams()
+                                        : params);
+        validateCrudParamTypes(execElement, parsed, table, boundBody);
         var selectColumns = resolveSelectColumns(execElement, resolved, table);
         var sqlOpt = MethodAnalyzer.generateCrudSql(parsed, table, selectColumns, inputFieldNames, resolved.kind());
         if ( sqlOpt.isEmpty()) {
@@ -327,11 +356,12 @@ public class QueryAnnotationProcessor extends AbstractProcessor {
         }
         var crudSql = sqlOpt.expect("checked with isEmpty above");
         validateRewrittenSql(execElement, methodName, crudSql, schemaOpt);
-        var mapperColumns = resolved.needsMapper()
-                            ? FactoryGenerator.resolveMapperColumns(table,
-                                                                    extractReturnFieldNames(execElement, resolved))
-                            : List.<FactoryGenerator.MapperColumn>of();
-        if ( recordExpansion.hasExpansion()) {
+        var mapperColumns = boundMapperColumns(execElement,
+                                               resolved,
+                                               resolved.needsMapper()
+                                               ? FactoryGenerator.resolveMapperColumns(table,
+                                                                                       extractReturnFieldNames(execElement, resolved))
+                                               : List.<FactoryGenerator.MapperColumn>of());
         return new FactoryGenerator.MethodInfo(methodName,
                                                FactoryGenerator.toSqlConstantName(methodName),
                                                crudSql,
@@ -339,17 +369,7 @@ public class QueryAnnotationProcessor extends AbstractProcessor {
                                                resolved.innerTypeName(),
                                                resolved.innerTypeName(),
                                                params,
-                                               recordExpansion.bodyParams(),
-                                               mapperColumns,
-                                               resolved.needsMapper(),
-                                               resolved.scalarAccessor());}
-        return FactoryGenerator.MethodInfo.withSharedParams(methodName,
-                                               FactoryGenerator.toSqlConstantName(methodName),
-                                               crudSql,
-                                               resolved.kind(),
-                                               resolved.innerTypeName(),
-                                               resolved.innerTypeName(),
-                                               params,
+                                               boundBody,
                                                mapperColumns,
                                                resolved.needsMapper(),
                                                resolved.scalarAccessor());
@@ -366,8 +386,11 @@ public class QueryAnnotationProcessor extends AbstractProcessor {
     RecordExpansionResult recordExpansion) {
         var selectColumns = List.<String>of();
         var sql = generateCrudSqlWithoutSchema(parsed, tableName, selectColumns, inputFieldNames, resolved.kind());
-        var mapperColumns = resolveMapperColumns(execElement, resolved);
-        if ( recordExpansion.hasExpansion()) {
+        var mapperColumns = boundMapperColumns(execElement, resolved, resolveMapperColumns(execElement, resolved));
+        var boundBody = boundBodyParams(execElement,
+                                        recordExpansion.hasExpansion()
+                                        ? recordExpansion.bodyParams()
+                                        : params);
         return new FactoryGenerator.MethodInfo(methodName,
                                                FactoryGenerator.toSqlConstantName(methodName),
                                                sql,
@@ -375,17 +398,7 @@ public class QueryAnnotationProcessor extends AbstractProcessor {
                                                resolved.innerTypeName(),
                                                resolved.innerTypeName(),
                                                params,
-                                               recordExpansion.bodyParams(),
-                                               mapperColumns,
-                                               resolved.needsMapper(),
-                                               resolved.scalarAccessor());}
-        return FactoryGenerator.MethodInfo.withSharedParams(methodName,
-                                               FactoryGenerator.toSqlConstantName(methodName),
-                                               sql,
-                                               resolved.kind(),
-                                               resolved.innerTypeName(),
-                                               resolved.innerTypeName(),
-                                               params,
+                                               boundBody,
                                                mapperColumns,
                                                resolved.needsMapper(),
                                                resolved.scalarAccessor());
@@ -503,7 +516,162 @@ public class QueryAnnotationProcessor extends AbstractProcessor {
     private static FactoryGenerator.MapperColumn toMapperColumn(TypeMirrorResolver.FieldInfo field) {
         var columnName = NamingConvention.toSnakeCase(field.name());
         var accessor = JavaTypeAccessor.forField(field.typeName());
-        return new FactoryGenerator.MapperColumn(columnName, accessor.method(), field.name(), accessor.typeArg());
+        return FactoryGenerator.MapperColumn.plain(columnName, accessor.method(), field.name(), accessor.typeArg());
+    }
+
+    // --- ValueMapping value-object column mapping ---
+
+    private boolean hasValueMapping(VariableElement paramElement) {
+        return ValueMappingResolver.resolve(paramElement.asType()).isPresent();
+    }
+
+    private static boolean isScalarType(String typeName) {
+        return JavaTypeAccessor.SCALARS.containsKey(typeName) || typeName.endsWith("[]");
+    }
+
+    /// Validates and lowers value-object bind targets: emits a compile error for any target that
+    /// is neither a supported column type nor a value object with a discoverable ValueMapping, then
+    /// rewrites each value-object target to lower it to its column value (exposing the primitive
+    /// column type for schema validation and `vo.valueMapping().lower().apply(...)` for binding).
+    private List<FactoryGenerator.MethodParam> boundBodyParams(ExecutableElement execElement,
+                                                               List<FactoryGenerator.MethodParam> rawBodyParams) {
+        var reprs = collectBindReprs(execElement);
+
+        validateBindReprs(execElement, rawBodyParams, reprs);
+
+        return applyBindReprs(rawBodyParams, reprs);
+    }
+
+    /// Maps each bind target (a scalar/value-object method param, or a field of an expanded payload
+    /// record) to its ValueMapping binding when the target is a single-column value object.
+    private Map<String, ValueMappingResolver.Binding> collectBindReprs(ExecutableElement execElement) {
+        var reprs = new HashMap<String, ValueMappingResolver.Binding>();
+
+        for (var param : execElement.getParameters()) {
+            var direct = ValueMappingResolver.resolve(param.asType());
+
+            if (direct.isPresent()) {
+                reprs.put(param.getSimpleName().toString(), direct.expect("checked with isPresent above"));
+            } else if (isRecordType(param)) {
+                collectRecordFieldReprs(param, reprs);
+            }
+        }
+
+        return reprs;
+    }
+
+    private void collectRecordFieldReprs(VariableElement recordParam, Map<String, ValueMappingResolver.Binding> reprs) {
+        for (var component : ((TypeElement) ((DeclaredType) recordParam.asType()).asElement()).getEnclosedElements()) {
+            if (component.getKind() == ElementKind.RECORD_COMPONENT) {
+                ValueMappingResolver.resolve(component.asType())
+                              .onPresent(binding -> reprs.put(component.getSimpleName().toString(), binding));
+            }
+        }
+    }
+
+    private void validateBindReprs(ExecutableElement execElement,
+                                   List<FactoryGenerator.MethodParam> bodyParams,
+                                   Map<String, ValueMappingResolver.Binding> reprs) {
+        for (var param : bodyParams) {
+            if (!reprs.containsKey(param.name()) && !isScalarType(param.typeName())) {
+                error(ProcessorError.missingValueMappingForParam(param.name(), param.typeName()), execElement);
+            }
+        }
+    }
+
+    private static List<FactoryGenerator.MethodParam> applyBindReprs(List<FactoryGenerator.MethodParam> bodyParams,
+                                                                     Map<String, ValueMappingResolver.Binding> reprs) {
+        return reprs.isEmpty()
+               ? bodyParams
+               : bodyParams.stream().map(param -> loweredParam(param, reprs)).toList();
+    }
+
+    private static FactoryGenerator.MethodParam loweredParam(FactoryGenerator.MethodParam param,
+                                                             Map<String, ValueMappingResolver.Binding> reprs) {
+        var binding = reprs.get(param.name());
+
+        return binding == null
+               ? param
+               : new FactoryGenerator.MethodParam(param.name(), binding.pTypeName(), binding.lowerExpr(param.accessor()));
+    }
+
+    /// Validates and lifts value-object decode targets: emits a compile error for any return-record
+    /// field that is neither a supported column type nor a value object with a discoverable ValueMapping,
+    /// then rewrites each value-object column to decode through the value object's `lift` (guarded
+    /// by a typed `RowDecode` cause).
+    private List<FactoryGenerator.MapperColumn> boundMapperColumns(ExecutableElement execElement,
+                                                                   TypeMirrorResolver.ResolvedReturn resolved,
+                                                                   List<FactoryGenerator.MapperColumn> rawColumns) {
+        if (!resolved.needsMapper()) {
+            return rawColumns;
+        }
+
+        var reprs = collectDecodeReprs(execElement);
+
+        validateDecodeReprs(execElement, resolved, reprs);
+
+        return applyDecodeReprs(rawColumns, reprs);
+    }
+
+    private Map<String, ValueMappingResolver.Binding> collectDecodeReprs(ExecutableElement execElement) {
+        var reprs = new HashMap<String, ValueMappingResolver.Binding>();
+        var innerElement = TypeMirrorResolver.innerTypeElement(execElement.getReturnType());
+
+        if (innerElement == null) {
+            return reprs;
+        }
+
+        for (var component : innerElement.getEnclosedElements()) {
+            if (component.getKind() == ElementKind.RECORD_COMPONENT) {
+                ValueMappingResolver.resolve(component.asType())
+                              .onPresent(binding -> reprs.put(component.getSimpleName().toString(), binding));
+            }
+        }
+
+        return reprs;
+    }
+
+    private void validateDecodeReprs(ExecutableElement execElement,
+                                     TypeMirrorResolver.ResolvedReturn resolved,
+                                     Map<String, ValueMappingResolver.Binding> reprs) {
+        var innerElement = TypeMirrorResolver.innerTypeElement(execElement.getReturnType());
+
+        if (innerElement == null) {
+            return;
+        }
+
+        for (var component : innerElement.getEnclosedElements()) {
+            if (component.getKind() != ElementKind.RECORD_COMPONENT) {
+                continue;
+            }
+
+            var fieldName = component.getSimpleName().toString();
+
+            if (!reprs.containsKey(fieldName) && !isScalarType(component.asType().toString())) {
+                error(ProcessorError.missingValueMappingForField(fieldName, component.asType().toString(), resolved.innerTypeName()),
+                      execElement);
+            }
+        }
+    }
+
+    private static List<FactoryGenerator.MapperColumn> applyDecodeReprs(List<FactoryGenerator.MapperColumn> columns,
+                                                                        Map<String, ValueMappingResolver.Binding> reprs) {
+        return reprs.isEmpty()
+               ? columns
+               : columns.stream().map(col -> liftedColumn(col, reprs)).toList();
+    }
+
+    private static FactoryGenerator.MapperColumn liftedColumn(FactoryGenerator.MapperColumn col,
+                                                              Map<String, ValueMappingResolver.Binding> reprs) {
+        var binding = reprs.get(col.fieldName());
+
+        if (binding == null) {
+            return col;
+        }
+
+        var accessor = binding.pAccessor();
+
+        return col.withLift(accessor.method(), accessor.typeArg(), binding.liftExpr());
     }
 
 
@@ -561,7 +729,7 @@ public class QueryAnnotationProcessor extends AbstractProcessor {
         if ( !isInsertOrSave(operation) || params.size() != 1) {
         return RecordExpansionResult.noExpansion(params);}
         var paramElement = execElement.getParameters().getFirst();
-        if ( !isRecordType(paramElement)) {
+        if ( !isRecordType(paramElement) || hasValueMapping(paramElement)) {
         return RecordExpansionResult.noExpansion(params);}
         var recordParamName = paramElement.getSimpleName().toString();
         var fields = extractRecordComponentFields(paramElement);
@@ -592,7 +760,7 @@ public class QueryAnnotationProcessor extends AbstractProcessor {
         for ( int paramIdx = 0; paramIdx < originalParams.size(); paramIdx++) {
             var param = originalParams.get(paramIdx);
             var paramElement = execElement.getParameters().get(paramIdx);
-            if ( !isRecordType(paramElement)) {
+            if ( !isRecordType(paramElement) || hasValueMapping(paramElement)) {
                 allParamNames.add(param.name());
                 bodyParams.add(param);
                 continue;
@@ -722,17 +890,27 @@ public class QueryAnnotationProcessor extends AbstractProcessor {
         }
     }
 
-    /// Validates return type field mapping against SELECT output for @Query methods.
-    /// Emits warnings since SELECT parsing is heuristic.
+    /// Validates return type field mapping against SELECT output for @Query methods, reusing the
+    /// already-parsed CST for precise, CST-based output-column resolution (via
+    /// `QueryValidator.selectOutputColumnNames`). Emits warnings — never errors — since the mapping
+    /// is a best-effort aid. When the SELECT output set cannot be determined precisely (parse
+    /// failure, `SELECT *`, unaliased expressions, or multiple/zero SELECT cores) the check is
+    /// skipped rather than warning spuriously.
     private void validateReturnTypeMapping(
     ExecutableElement execElement,
     TypeMirrorResolver.ResolvedReturn resolved,
-    String sql) {
+    Result<CstNode> parsedCst) {
         if ( !resolved.needsMapper()) {
         return;}
-        var selectColumns = extractSelectColumns(sql);
-        if ( selectColumns.isEmpty()) {
+        if ( parsedCst.isFailure()) {
         return;}
+        var navOpt = CstNavigator.wrap(parsedCst.expect("checked with isFailure above"));
+        if ( navOpt.isEmpty()) {
+        return;}
+        var selectColumnsOpt = QueryValidator.selectOutputColumnNames(navOpt.expect("checked with isEmpty above"));
+        if ( selectColumnsOpt.isEmpty()) {
+        return;}
+        var selectColumns = selectColumnsOpt.expect("checked with isEmpty above");
         var returnFields = extractReturnFields(execElement, resolved);
         for ( var field : returnFields) {
             var columnName = NamingConvention.toSnakeCase(field.name());
@@ -774,12 +952,13 @@ public class QueryAnnotationProcessor extends AbstractProcessor {
               execElement);}
     }
 
-    /// Validates parameter types for CRUD method conditions against table column types.
+    /// Validates parameter types for CRUD method conditions against table column types. Receives
+    /// the bound body params so value-object params validate as their lowered column type.
     private void validateCrudParamTypes(
     ExecutableElement execElement,
     MethodNameParser.ParsedMethod parsed,
-    org.pragmatica.aether.pg.schema.model.Table table) {
-        var params = extractMethodParams(execElement);
+    org.pragmatica.aether.pg.schema.model.Table table,
+    List<FactoryGenerator.MethodParam> params) {
         var paramIdx = 0;
         for ( var condition : parsed.conditions()) {
             if ( condition.operator().paramCount() == 0) {
@@ -885,59 +1064,6 @@ public class QueryAnnotationProcessor extends AbstractProcessor {
         return pairs;
     }
 
-    private static final Pattern SELECT_COLUMN_PATTERN =
-    Pattern.compile("^\\s*SELECT\\s+(.+?)\\s+FROM\\s", Pattern.CASE_INSENSITIVE | Pattern.DOTALL);
-
-    /// Extracts column names from a SELECT clause (heuristic).
-    /// Handles aliases (AS name), qualified names (t.col), and expressions.
-    private static Set<String> extractSelectColumns(String sql) {
-        var matcher = SELECT_COLUMN_PATTERN.matcher(sql);
-        if ( !matcher.find()) {
-        return Set.of();}
-        var selectPart = matcher.group(1).trim();
-        if ( selectPart.equals("*")) {
-        return Set.of();}
-        var columns = new LinkedHashSet<String>();
-        var parts = splitSelectColumns(selectPart);
-        for ( var part : parts) {
-            var colName = extractColumnAlias(part.trim());
-            if ( colName != null) {
-            columns.add(colName);}
-        }
-        return columns;
-    }
-
-    /// Splits SELECT column list on commas, respecting parentheses.
-    private static List<String> splitSelectColumns(String selectPart) {
-        var parts = new ArrayList<String>();
-        var depth = 0;
-        var start = 0;
-        for ( int i = 0; i < selectPart.length(); i++) {
-            var ch = selectPart.charAt(i);
-            if ( ch == '(') { depth++;} else
-            if ( ch == ')') { depth--;} else if ( ch == ',' && depth == 0) {
-                parts.add(selectPart.substring(start, i));
-                start = i + 1;
-            }
-        }
-        parts.add(selectPart.substring(start));
-        return parts;
-    }
-
-    /// Extracts the effective column name from a SELECT expression.
-    /// Handles: `col`, `t.col`, `expr AS alias`, `count(x) AS alias`.
-    private static String extractColumnAlias(String expr) {
-        var asPattern = Pattern.compile("(?i)\\bAS\\s+([a-zA-Z_][a-zA-Z0-9_]*)\\s*$");
-        var asMatcher = asPattern.matcher(expr);
-        if ( asMatcher.find()) {
-        return asMatcher.group(1);}
-        var simplePattern = Pattern.compile("^(?:[a-zA-Z_][a-zA-Z0-9_.]*\\.)?([a-zA-Z_][a-zA-Z0-9_]*)$");
-        var simpleMatcher = simplePattern.matcher(expr.trim());
-        if ( simpleMatcher.matches()) {
-        return simpleMatcher.group(1);}
-        return null;
-    }
-
     private static String findParamType(List<FactoryGenerator.MethodParam> params, String paramName) {
         for ( var param : params) {
         if ( param.name().equals(paramName)) {
@@ -964,6 +1090,7 @@ public class QueryAnnotationProcessor extends AbstractProcessor {
             }
             var method = (ExecutableElement) enclosed;
             collectTypeImports(method.getReturnType(), imports);
+            collectReturnFieldImports(method, imports);
             for ( var param : method.getParameters()) {
                 collectTypeImports(param.asType(), imports);
                 if ( isRecordType(param)) {
@@ -993,6 +1120,21 @@ public class QueryAnnotationProcessor extends AbstractProcessor {
         addImportForQualifiedName(element.getQualifiedName().toString(), imports);
         for ( var arg : dt.getTypeArguments()) {
             collectTypeImports(arg, imports);
+        }
+    }
+
+    /// Imports the field types of a return record, so a value-object field's `Vo.valueMapping().lift()`
+    /// reference resolves in the generated factory even when the value object lives in another
+    /// package. Non-importable types (primitives, java.lang, core types) are skipped downstream.
+    private void collectReturnFieldImports(ExecutableElement method, Set<String> imports) {
+        var innerElement = TypeMirrorResolver.innerTypeElement(method.getReturnType());
+        if ( innerElement == null) {
+            return;
+        }
+        for ( var component : innerElement.getEnclosedElements()) {
+            if ( component.getKind() == ElementKind.RECORD_COMPONENT) {
+                addImportForQualifiedName(component.asType().toString(), imports);
+            }
         }
     }
 

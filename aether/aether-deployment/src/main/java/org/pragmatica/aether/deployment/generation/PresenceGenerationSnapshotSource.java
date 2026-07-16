@@ -4,15 +4,15 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.deployment.generation;
 
-import org.pragmatica.consensus.NodeId;
-import org.pragmatica.consensus.topology.GenerationSnapshotSource;
-import org.pragmatica.consensus.topology.MembershipView;
-import org.pragmatica.lang.Option;
-
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.IntSupplier;
 import java.util.function.Supplier;
+
+import org.pragmatica.consensus.NodeId;
+import org.pragmatica.consensus.topology.GenerationSnapshotSource;
+import org.pragmatica.consensus.topology.MembershipView;
+import org.pragmatica.lang.Option;
 
 
 /// Presence-derived `GenerationSnapshotSource` that feeds `TopologyObserver`'s quorum

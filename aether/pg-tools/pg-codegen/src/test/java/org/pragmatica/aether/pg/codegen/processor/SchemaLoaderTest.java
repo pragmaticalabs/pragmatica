@@ -109,4 +109,66 @@ class SchemaLoaderTest {
             assertThat(result.unwrap().tables()).isEmpty();
         }
     }
+
+    @Nested
+    class MigrationOrdering {
+        @Test
+        void orderMigrations_ordersByNumericVersion_notLexicographically() {
+            var result = SchemaLoader.orderMigrations(List.of(
+                "V10__add_total.sql", "V2__create_orders.sql", "V1__init.sql"));
+
+            assertThat(result.isSuccess()).isTrue();
+            assertThat(result.unwrap())
+                .containsExactly("V1__init.sql", "V2__create_orders.sql", "V10__add_total.sql");
+        }
+
+        @Test
+        void orderMigrations_discoversArbitrarilyNamedFile() {
+            var result = SchemaLoader.orderMigrations(List.of("V002__eventmanagement.sql"));
+
+            assertThat(result.isSuccess()).isTrue();
+            assertThat(result.unwrap()).containsExactly("V002__eventmanagement.sql");
+        }
+
+        @Test
+        void orderMigrations_ignoresNonMigrationFiles() {
+            var result = SchemaLoader.orderMigrations(List.of(
+                "migrations.list", "README.md", "schema.sql", "V001__init.sql"));
+
+            assertThat(result.isSuccess()).isTrue();
+            assertThat(result.unwrap()).containsExactly("V001__init.sql");
+        }
+
+        @Test
+        void orderMigrations_dedupesSameFileFromMultipleRoots() {
+            var result = SchemaLoader.orderMigrations(List.of(
+                "V001__init.sql", "V001__init.sql"));
+
+            assertThat(result.isSuccess()).isTrue();
+            assertThat(result.unwrap()).containsExactly("V001__init.sql");
+        }
+
+        @Test
+        void orderMigrations_duplicateVersion_fails() {
+            var result = SchemaLoader.orderMigrations(List.of(
+                "V001__alpha.sql", "V001__beta.sql"));
+
+            assertThat(result.isFailure()).isTrue();
+        }
+
+        @Test
+        void orderMigrations_malformedVersion_fails() {
+            var result = SchemaLoader.orderMigrations(List.of("V0x__broken.sql"));
+
+            assertThat(result.isFailure()).isTrue();
+        }
+
+        @Test
+        void orderMigrations_emptyInput_returnsEmpty() {
+            var result = SchemaLoader.orderMigrations(List.of());
+
+            assertThat(result.isSuccess()).isTrue();
+            assertThat(result.unwrap()).isEmpty();
+        }
+    }
 }

@@ -4,6 +4,13 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.environment.azure;
 
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Consumer;
+import java.util.stream.Collectors;
+
 import org.pragmatica.aether.environment.DiscoveryProvider;
 import org.pragmatica.aether.environment.EnvironmentError;
 import org.pragmatica.aether.environment.PeerInfo;
@@ -14,13 +21,6 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.concurrent.StoppableThread;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
-
-import java.util.List;
-import java.util.Map;
-import java.util.Set;
-import java.util.concurrent.atomic.AtomicReference;
-import java.util.function.Consumer;
-import java.util.stream.Collectors;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -164,9 +164,10 @@ public final class AzureDiscoveryProvider implements DiscoveryProvider {
     }
 
     private void pollOnce(Consumer<List<PeerInfo>> onChange, AtomicReference<Set<String>> previousPeers) {
-        discoverPeers().await().onFailure(cause -> log.warn("Discovery poll failed: {}", cause.message())).onSuccess(peers -> notifyIfChanged(peers,
-                                                                                                                                              onChange,
-                                                                                                                                              previousPeers));
+        discoverPeers().await()
+                     .onFailure(cause -> log.warn("Discovery poll failed: {}",
+                                                  cause.message()))
+                     .onSuccess(peers -> notifyIfChanged(peers, onChange, previousPeers));
     }
 
     private static void notifyIfChanged(List<PeerInfo> peers,

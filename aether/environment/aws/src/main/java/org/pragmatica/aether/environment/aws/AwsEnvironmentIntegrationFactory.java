@@ -4,6 +4,11 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.environment.aws;
 
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.List;
+import java.util.Map;
+
 import org.pragmatica.aether.environment.CloudConfig;
 import org.pragmatica.aether.environment.EnvironmentError;
 import org.pragmatica.aether.environment.EnvironmentIntegration;
@@ -11,11 +16,6 @@ import org.pragmatica.aether.environment.EnvironmentIntegrationFactory;
 import org.pragmatica.cloud.aws.AwsConfig;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
-
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.List;
-import java.util.Map;
 
 import static org.pragmatica.aether.environment.aws.AwsEnvironmentConfig.AwsLbConfig.awsLbConfig;
 import static org.pragmatica.aether.environment.aws.AwsEnvironmentConfig.awsEnvironmentConfig;
@@ -77,8 +77,9 @@ public record AwsEnvironmentIntegrationFactory() implements EnvironmentIntegrati
                                     parseStringList(compute.getOrDefault("security_group_ids", "")),
                                     compute.getOrDefault("subnet_id", ""),
                                     compute.getOrDefault("user_data", "")).map(envConfig -> applyLoadBalancer(envConfig,
-                                                                                                              config.loadBalancer())).map(envConfig -> applyDiscovery(envConfig,
-                                                                                                                                                                      config.discovery()))
+                                                                                                              config.loadBalancer()))
+                                   .map(envConfig -> applyDiscovery(envConfig,
+                                                                    config.discovery()))
                                    .map(envConfig -> applyCertificatePrefix(envConfig,
                                                                             config.security()));
     }

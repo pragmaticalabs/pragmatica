@@ -4,6 +4,11 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.deployment.cluster.fsm;
 
+import java.util.ArrayList;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Set;
+
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentState.Active;
 import org.pragmatica.aether.slice.SliceState;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
@@ -14,11 +19,6 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.NodeArtifactValue;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Contract;
-
-import java.util.ArrayList;
-import java.util.HashSet;
-import java.util.List;
-import java.util.Set;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -45,13 +45,18 @@ record StaleEntryCleaner(Active active) {
         var currentNodes = new HashSet<>(active.activeNodes());
         var commands = new ArrayList<KVCommand<AetherKey>>();
 
-        active.ctx().kvStore().forEach(NodeRoutesKey.class,
-                                       AetherValue.NodeRoutesValue.class,
-                                       (key, _) -> collectStaleNodeRoutesKey(commands, key, currentNodes));
+        active.ctx()
+              .kvStore()
+              .forEach(NodeRoutesKey.class,
+                       AetherValue.NodeRoutesValue.class,
+                       (key, _) -> collectStaleNodeRoutesKey(commands, key, currentNodes));
         if (!commands.isEmpty()) {
             log.debug("Cleaning up {} stale node-routes entries", commands.size());
-            active.ctx().cluster().apply(commands).onFailure(cause -> log.error("Failed to clean up stale node routes: {}",
-                                                                                cause.message()));
+            active.ctx()
+                  .cluster()
+                  .apply(commands)
+                  .onFailure(cause -> log.error("Failed to clean up stale node routes: {}",
+                                                cause.message()));
         }
     }
 
@@ -72,18 +77,27 @@ record StaleEntryCleaner(Active active) {
         }
 
         var currentNodes = new HashSet<>(active.activeNodes());
-        var staleKeys = active.sliceStates().keySet().stream().filter(key -> !currentNodes.contains(key.nodeId())).toList();
+        var staleKeys = active.sliceStates()
+                              .keySet()
+                              .stream()
+                              .filter(key -> !currentNodes.contains(key.nodeId()))
+                              .toList();
 
         if (staleKeys.isEmpty()) {
             return;
         }
 
         staleKeys.forEach(active.sliceStates()::remove);
-        List<KVCommand<AetherKey>> commands = staleKeys.stream().<KVCommand<AetherKey>> map(KVCommand.Remove::new).toList();
+        List<KVCommand<AetherKey>> commands = staleKeys.stream()
+                                                       .<KVCommand<AetherKey>> map(KVCommand.Remove::new)
+                                                       .toList();
 
         log.info("Cleaning up {} stale slice entries", staleKeys.size());
-        active.ctx().cluster().apply(commands).onFailure(cause -> log.error("Failed to clean up stale slice entries: {}",
-                                                                            cause.message()));
+        active.ctx()
+              .cluster()
+              .apply(commands)
+              .onFailure(cause -> log.error("Failed to clean up stale slice entries: {}",
+                                            cause.message()));
     }
 
     // Fire-and-forget cleanup sweep (see cleanupStaleNodeRoutes): callers ignore the outcome; the
@@ -97,18 +111,25 @@ record StaleEntryCleaner(Active active) {
         var currentNodes = new HashSet<>(active.activeNodes());
         var staleKeys = new ArrayList<NodeArtifactKey>();
 
-        active.ctx().kvStore().forEach(NodeArtifactKey.class,
-                                       NodeArtifactValue.class,
-                                       (key, _) -> collectStaleNodeArtifactKey(staleKeys, key, currentNodes));
+        active.ctx()
+              .kvStore()
+              .forEach(NodeArtifactKey.class,
+                       NodeArtifactValue.class,
+                       (key, _) -> collectStaleNodeArtifactKey(staleKeys, key, currentNodes));
         if (staleKeys.isEmpty()) {
             return;
         }
 
-        List<KVCommand<AetherKey>> commands = staleKeys.stream().<KVCommand<AetherKey>> map(KVCommand.Remove::new).toList();
+        List<KVCommand<AetherKey>> commands = staleKeys.stream()
+                                                       .<KVCommand<AetherKey>> map(KVCommand.Remove::new)
+                                                       .toList();
 
         log.info("Cleaning up {} stale node-artifact entries", staleKeys.size());
-        active.ctx().cluster().apply(commands).onFailure(cause -> log.error("Failed to clean up stale node-artifact entries: {}",
-                                                                            cause.message()));
+        active.ctx()
+              .cluster()
+              .apply(commands)
+              .onFailure(cause -> log.error("Failed to clean up stale node-artifact entries: {}",
+                                            cause.message()));
     }
 
     private void collectStaleNodeArtifactKey(List<NodeArtifactKey> result,
@@ -123,9 +144,12 @@ record StaleEntryCleaner(Active active) {
     // issueUnloadCommand / removeNodeArtifactKey each report their own failure internally.
     @Contract
     void cleanupOrphanedSliceEntries() {
-        var orphanedEntries = active.sliceStates().entrySet().stream().filter(entry -> !active.blueprints()
-                                                                                              .containsKey(entry.getKey()
-                                                                                                                .artifact())).toList();
+        var orphanedEntries = active.sliceStates()
+                                    .entrySet()
+                                    .stream()
+                                    .filter(entry -> !active.blueprints()
+                                                            .containsKey(entry.getKey().artifact()))
+                                    .toList();
 
         if (orphanedEntries.isEmpty()) {
             return;

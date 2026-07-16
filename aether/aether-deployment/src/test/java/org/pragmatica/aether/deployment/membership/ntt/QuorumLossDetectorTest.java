@@ -18,6 +18,7 @@ import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.Delayed;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -112,6 +113,129 @@ class QuorumLossDetectorTest {
             assertThat(intent.observedLocalQuorumCount()).isEqualTo(1);
             assertThat(intent.requiredThreshold()).isEqualTo(3);
             assertThat(intent.observedAtNanos()).isEqualTo(TimeSpan.timeSpan(8_000).millis().nanos());
+        }
+    }
+
+    /// A6 cold-boot self-fence gate: while the injected cold-boot supplier is active the quorum-loss
+    /// drain is suppressed (a node still converging on a full-cluster restart must not self-fence on the
+    /// transiently-low SWIM-alive count); once it clears, firing resumes. Mirrors the BelowThresholdFiring
+    /// setup (the only addition is the cold-boot supplier).
+    @Nested
+    class ColdBootSuppression {
+        @Test
+        void belowThreshold_whileColdBoot_doesNotFire() {
+            detector.setColdBootSupplier(() -> true);
+            members(5);
+            coreCount(5);
+            members(1);
+
+            assertThat(detector.isBelowThreshold()).isTrue();
+
+            timeSource.advanceTimeMillis(8_000);
+            scheduler.fireAll();
+
+            assertThat(listener.events()).isEmpty();
+        }
+
+        @Test
+        void belowThreshold_notColdBoot_stillFires() {
+            detector.setColdBootSupplier(() -> false);
+            members(5);
+            coreCount(5);
+            members(1);
+
+            timeSource.advanceTimeMillis(8_000);
+            scheduler.fireAll();
+
+            assertThat(listener.events()).hasSize(1);
+        }
+
+        @Test
+        void nullColdBootSupplier_restoresNeverSuppressDefault_fires() {
+            detector.setColdBootSupplier(() -> true);
+            detector.setColdBootSupplier(null);
+            members(5);
+            coreCount(5);
+            members(1);
+
+            timeSource.advanceTimeMillis(8_000);
+            scheduler.fireAll();
+
+            assertThat(listener.events()).hasSize(1);
+        }
+
+        /// #415 regression: the cold-boot suppression must DEFER, not DROP. The count-path firing
+        /// check lands inside the window (suppressed), then the window clears — the re-armed check
+        /// must fire the deferred self-fence. Before the fix the one-shot intent was dropped and the
+        /// latched below-window never re-scheduled, stranding the node as a permanent zombie.
+        @Test
+        void belowThreshold_coldBootClearsAfterSuppression_firesDeferredDrain() {
+            var coldBoot = new AtomicBoolean(true);
+            detector.setColdBootSupplier(coldBoot::get);
+            members(5);
+            coreCount(5);
+            members(1);
+
+            // First firing check runs inside the cold-boot window: suppressed, not dropped.
+            scheduler.fireAll();
+            assertThat(listener.events()).isEmpty();
+
+            // Window closes; the re-armed check fires the deferred drain.
+            coldBoot.set(false);
+            scheduler.fireAll();
+
+            assertThat(listener.events()).hasSize(1);
+            assertThat(listener.events().getFirst().observedLocalQuorumCount()).isEqualTo(1);
+            assertThat(listener.events().getFirst().requiredThreshold()).isEqualTo(3);
+        }
+
+        /// #415 symmetry: the PASSIVE quorum-presence path emits through the same cold-boot gate, so
+        /// it must defer-and-re-arm too. Members stay quorate (5) so only the presence path opens a
+        /// window; the drain fires once the cold-boot supplier clears.
+        @Test
+        void passiveEdge_coldBootClearsAfterSuppression_firesDeferredDrain() {
+            var coldBoot = new AtomicBoolean(true);
+            detector.setColdBootSupplier(coldBoot::get);
+            members(5);
+            coreCount(5);
+            assertThat(detector.isArmed()).isTrue();
+
+            detector.onQuorumPresence(false);
+
+            scheduler.fireAll();
+            assertThat(listener.events()).isEmpty();
+
+            coldBoot.set(false);
+            scheduler.fireAll();
+
+            assertThat(listener.events()).hasSize(1);
+        }
+
+        /// #415 idempotence: repeated firing checks while cold-boot stays active must never emit and
+        /// never pile up timers — each suppressed check re-arms exactly ONE successor (the scheduler's
+        /// cancel-prior idiom), so at most one live re-check exists at any time. The deferred drain
+        /// still fires once, on the first check after the window clears.
+        @Test
+        void belowThreshold_coldBootStaysActive_reArmsWithoutPileup_thenFiresOnClear() {
+            var coldBoot = new AtomicBoolean(true);
+            detector.setColdBootSupplier(coldBoot::get);
+            members(5);
+            coreCount(5);
+            members(1);
+
+            scheduler.fireAll();
+            scheduler.fireAll();
+            scheduler.fireAll();
+
+            assertThat(listener.events()).isEmpty();
+            assertThat(scheduler.pendingTasks().stream().filter(t -> !t.cancelled() && !t.isDone()).count())
+                    .as("exactly one live re-check in flight — no timer pile-up")
+                    .isEqualTo(1L);
+
+            coldBoot.set(false);
+            scheduler.fireAll();
+
+            assertThat(listener.events()).hasSize(1);
         }
     }
 

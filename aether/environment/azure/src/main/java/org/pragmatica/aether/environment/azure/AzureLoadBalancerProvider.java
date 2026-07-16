@@ -4,6 +4,13 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.environment.azure;
 
+import java.util.List;
+import java.util.Set;
+import java.util.UUID;
+import java.util.function.Predicate;
+import java.util.stream.Collectors;
+import java.util.stream.Stream;
+
 import org.pragmatica.aether.environment.LoadBalancerInfo;
 import org.pragmatica.aether.environment.LoadBalancerProvider;
 import org.pragmatica.aether.environment.LoadBalancerState;
@@ -18,13 +25,6 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
-
-import java.util.List;
-import java.util.Set;
-import java.util.UUID;
-import java.util.function.Predicate;
-import java.util.stream.Collectors;
-import java.util.stream.Stream;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -72,7 +72,9 @@ public record AzureLoadBalancerProvider(AzureClient client,
     }
 
     private LoadBalancerInfo toLoadBalancerInfo(AzureLoadBalancer lb) {
-        var targets = extractLbTargetIps(lb).stream().map(ip -> new LoadBalancerInfo.TargetInfo(ip, "active", 1)).toList();
+        var targets = extractLbTargetIps(lb).stream()
+                                        .map(ip -> new LoadBalancerInfo.TargetInfo(ip, "active", 1))
+                                        .toList();
 
         return new LoadBalancerInfo(lb.id(), lb.name(), "", "active", targets);
     }

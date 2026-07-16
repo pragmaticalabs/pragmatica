@@ -4,11 +4,11 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.environment;
 
+import java.util.ServiceLoader;
+
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.net.tcp.security.CertificateProvider;
-
-import java.util.ServiceLoader;
 
 import static org.pragmatica.lang.Option.empty;
 import static org.pragmatica.lang.Option.some;

@@ -4,6 +4,9 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.environment.gcp;
 
+import java.util.ArrayList;
+import java.util.Map;
+
 import org.pragmatica.aether.environment.CloudConfig;
 import org.pragmatica.aether.environment.EnvironmentError;
 import org.pragmatica.aether.environment.EnvironmentIntegration;
@@ -11,9 +14,6 @@ import org.pragmatica.aether.environment.EnvironmentIntegrationFactory;
 import org.pragmatica.cloud.gcp.GcpConfig;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
-
-import java.util.ArrayList;
-import java.util.Map;
 
 import static org.pragmatica.aether.environment.gcp.GcpEnvironmentConfig.GcpNegConfig.gcpNegConfig;
 import static org.pragmatica.aether.environment.gcp.GcpEnvironmentConfig.gcpEnvironmentConfig;
@@ -78,8 +78,9 @@ public record GcpEnvironmentIntegrationFactory() implements EnvironmentIntegrati
                                     compute.getOrDefault("network", ""),
                                     compute.getOrDefault("subnetwork", ""),
                                     compute.getOrDefault("user_data", "")).map(envConfig -> applyLoadBalancer(envConfig,
-                                                                                                              config.loadBalancer())).map(envConfig -> applyDiscovery(envConfig,
-                                                                                                                                                                      config.discovery()))
+                                                                                                              config.loadBalancer()))
+                                   .map(envConfig -> applyDiscovery(envConfig,
+                                                                    config.discovery()))
                                    .map(envConfig -> applyCertificatePrefix(envConfig,
                                                                             config.security()));
     }

@@ -4,10 +4,10 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.pg.schema.model;
 
-import org.pragmatica.lang.Option;
-
 import java.util.ArrayList;
 import java.util.List;
+
+import org.pragmatica.lang.Option;
 
 
 public record Table(String name,
@@ -71,10 +71,12 @@ public record Table(String name,
     }
 
     public Table withoutConstraint(String constraintName) {
-        var newConstraints = constraints.stream().filter(c -> !c.name()
-                                                                .isPresent() || !c.name()
-                                                                                  .unwrap()
-                                                                                  .equals(constraintName)).toList();
+        var newConstraints = constraints.stream()
+                                        .filter(c -> !c.name()
+                                                       .isPresent() || !c.name()
+                                                                         .unwrap()
+                                                                         .equals(constraintName))
+                                        .toList();
 
         return new Table(name, schema, columns, newConstraints, indexes, partitioning, comment);
     }

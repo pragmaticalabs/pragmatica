@@ -4,6 +4,15 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.pg.codegen.processor;
 
+import javax.annotation.processing.Messager;
+import javax.lang.model.element.Element;
+import javax.tools.Diagnostic;
+import java.util.ArrayList;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+
 import org.pragmatica.aether.pg.parser.PostgresParser;
 import org.pragmatica.aether.pg.parser.PostgresParser.CstNode;
 import org.pragmatica.aether.pg.parser.PostgresParser.SourceSpan;
@@ -13,15 +22,6 @@ import org.pragmatica.aether.pg.schema.linter.LintConfig;
 import org.pragmatica.aether.pg.schema.linter.LintDiagnostic;
 import org.pragmatica.aether.pg.schema.linter.LintEngine;
 import org.pragmatica.lang.Contract;
-
-import javax.annotation.processing.Messager;
-import javax.lang.model.element.Element;
-import javax.tools.Diagnostic;
-import java.util.ArrayList;
-import java.util.HashSet;
-import java.util.List;
-import java.util.Map;
-import java.util.Set;
 
 
 public sealed interface LintRunner {
@@ -85,8 +85,11 @@ public sealed interface LintRunner {
         var events = new ArrayList<SchemaEvent>();
 
         for (var script : migrationScripts) {
-            parser.parseCst(script).flatMap(DdlAnalyzer::analyze).onSuccess(events::addAll).onFailure(cause -> messager.printMessage(Diagnostic.Kind.WARNING,
-                                                                                                                                     "pg-lint: failed to parse migration: " + cause.message()));
+            parser.parseCst(script)
+                  .flatMap(DdlAnalyzer::analyze)
+                  .onSuccess(events::addAll)
+                  .onFailure(cause -> messager.printMessage(Diagnostic.Kind.WARNING,
+                                                            "pg-lint: failed to parse migration: " + cause.message()));
         }
 
         return events;

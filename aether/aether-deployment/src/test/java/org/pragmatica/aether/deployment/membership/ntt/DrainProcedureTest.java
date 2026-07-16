@@ -4,13 +4,16 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.deployment.membership.ntt;
 
-import org.junit.jupiter.api.Nested;
-import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.deployment.cluster.DrainReason;
 import org.pragmatica.aether.deployment.drain.InFlightRequestTracker;
+import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Unit;
 
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+
+import org.junit.jupiter.api.Nested;
+import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
@@ -43,9 +46,7 @@ class DrainProcedureTest {
                                                           timeSpan(5).seconds());
 
             assertThat(procedure.state()).isEqualTo(DrainProcedure.DrainState.INACTIVE);
-
             procedure.initiate(TEST_REASON);
-
             await().atMost(2, TimeUnit.SECONDS).untilAsserted(() -> {
                 assertThat(exits.get()).isEqualTo(1);
                 assertThat(leaves.get()).isEqualTo(1);
@@ -67,7 +68,6 @@ class DrainProcedureTest {
             procedure.initiate(TEST_REASON);
             procedure.initiate(DrainReason.OVERPROVISION_SCALE_DOWN);
             procedure.initiate(DrainReason.OVERPROVISION_PARTITION_HEAL);
-
             await().atMost(2, TimeUnit.SECONDS).untilAsserted(() -> assertThat(exits.get()).isEqualTo(1));
             assertThat(leaves.get()).isEqualTo(1);
             assertThat(procedure.state()).isEqualTo(DrainProcedure.DrainState.EXITED);
@@ -85,7 +85,6 @@ class DrainProcedureTest {
             procedure.initiate(TEST_REASON);
             // Re-triggers must NOT emit again (single-shot CAS gate).
             procedure.initiate(DrainReason.OVERPROVISION_SCALE_DOWN);
-
             assertThat(emitted).containsExactly(TEST_REASON);
         }
 
@@ -95,11 +94,12 @@ class DrainProcedureTest {
             var exits = new AtomicInteger(0);
             var procedure = DrainProcedure.drainProcedure(tracker,
                                                           () -> {},
-                                                          reason -> {throw new RuntimeException("boom");},
+                                                          reason -> {
+                                                              throw new RuntimeException("boom");
+                                                          },
                                                           exits::incrementAndGet);
 
             procedure.initiate(TEST_REASON);
-
             await().atMost(2, TimeUnit.SECONDS).untilAsserted(() -> assertThat(exits.get()).isEqualTo(1));
             assertThat(procedure.state()).isEqualTo(DrainProcedure.DrainState.EXITED);
         }
@@ -110,6 +110,7 @@ class DrainProcedureTest {
         @Test
         void state_transitions_inactive_draining_exited() {
             var tracker = InFlightRequestTracker.inFlightRequestTracker();
+
             tracker.enter();
             var exits = new AtomicInteger(0);
             var procedure = DrainProcedure.drainProcedure(tracker,
@@ -118,14 +119,10 @@ class DrainProcedureTest {
                                                           timeSpan(5).seconds());
 
             assertThat(procedure.state()).isEqualTo(DrainProcedure.DrainState.INACTIVE);
-
             procedure.initiate(TEST_REASON);
-
             assertThat(procedure.state()).isEqualTo(DrainProcedure.DrainState.DRAINING);
             assertThat(exits.get()).isZero();
-
             tracker.exit();
-
             await().atMost(2, TimeUnit.SECONDS).untilAsserted(() -> {
                 assertThat(procedure.state()).isEqualTo(DrainProcedure.DrainState.EXITED);
                 assertThat(exits.get()).isEqualTo(1);
@@ -135,6 +132,7 @@ class DrainProcedureTest {
         @Test
         void graceExpiry_forcesExit_evenWithInflightOutstanding() {
             var tracker = InFlightRequestTracker.inFlightRequestTracker();
+
             tracker.enter();
             var exits = new AtomicInteger(0);
             var procedure = DrainProcedure.drainProcedure(tracker,
@@ -143,7 +141,6 @@ class DrainProcedureTest {
                                                           timeSpan(150).millis());
 
             procedure.initiate(TEST_REASON);
-
             await().atMost(2, TimeUnit.SECONDS).untilAsserted(() -> {
                 assertThat(exits.get()).isEqualTo(1);
                 assertThat(procedure.state()).isEqualTo(DrainProcedure.DrainState.EXITED);
@@ -157,16 +154,112 @@ class DrainProcedureTest {
         void throwingLeaveEmitter_doesNotBlockExit() {
             var tracker = InFlightRequestTracker.inFlightRequestTracker();
             var exits = new AtomicInteger(0);
-            Runnable throwingLeave = () -> {throw new RuntimeException("boom");};
+            Runnable throwingLeave = () -> {
+                throw new RuntimeException("boom");
+            };
             var procedure = DrainProcedure.drainProcedure(tracker,
                                                           throwingLeave,
                                                           exits::incrementAndGet,
                                                           timeSpan(5).seconds());
 
             procedure.initiate(TEST_REASON);
-
             await().atMost(2, TimeUnit.SECONDS).untilAsserted(() -> assertThat(exits.get()).isEqualTo(1));
             assertThat(procedure.state()).isEqualTo(DrainProcedure.DrainState.EXITED);
+        }
+    }
+
+    @Nested
+    class DeparturePushGate {
+        @Test
+        void quiescedExit_waitsForDeparturePush_toSettle() {
+            var tracker = InFlightRequestTracker.inFlightRequestTracker();
+            var exits = new AtomicInteger(0);
+            Promise<Unit> push = Promise.promise();
+            var procedure = DrainProcedure.drainProcedure(tracker,
+                                                          () -> {},
+                                                          reason -> {},
+                                                          () -> push,
+                                                          exits::incrementAndGet);
+
+            procedure.initiate(TEST_REASON);
+            // Tracker has no in-flight work, but the push has not settled — exit is gated.
+            assertThat(procedure.state()).isEqualTo(DrainProcedure.DrainState.DRAINING);
+            assertThat(exits.get()).isZero();
+            push.succeed(Unit.unit());
+            await().atMost(2, TimeUnit.SECONDS).untilAsserted(() -> {
+                assertThat(exits.get()).isEqualTo(1);
+                assertThat(procedure.state()).isEqualTo(DrainProcedure.DrainState.EXITED);
+            });
+        }
+
+        @Test
+        void graceExpiry_forcesExit_evenWithDeparturePushOutstanding() {
+            var tracker = InFlightRequestTracker.inFlightRequestTracker();
+            var exits = new AtomicInteger(0);
+            Promise<Unit> neverSettles = Promise.promise();
+            var procedure = DrainProcedure.drainProcedure(tracker,
+                                                          () -> {},
+                                                          reason -> {},
+                                                          () -> neverSettles,
+                                                          exits::incrementAndGet,
+                                                          timeSpan(150).millis());
+
+            procedure.initiate(TEST_REASON);
+            await().atMost(2, TimeUnit.SECONDS).untilAsserted(() -> {
+                assertThat(exits.get()).isEqualTo(1);
+                assertThat(procedure.state()).isEqualTo(DrainProcedure.DrainState.EXITED);
+            });
+        }
+
+        @Test
+        void throwingDeparturePush_doesNotBlockExit() {
+            var tracker = InFlightRequestTracker.inFlightRequestTracker();
+            var exits = new AtomicInteger(0);
+            var procedure = DrainProcedure.drainProcedure(tracker,
+                                                          () -> {},
+                                                          reason -> {},
+                                                          () -> {
+                                                              throw new RuntimeException("boom");
+                                                          },
+                                                          exits::incrementAndGet);
+
+            procedure.initiate(TEST_REASON);
+            await().atMost(2, TimeUnit.SECONDS).untilAsserted(() -> assertThat(exits.get()).isEqualTo(1));
+            assertThat(procedure.state()).isEqualTo(DrainProcedure.DrainState.EXITED);
+        }
+
+        @Test
+        void departurePush_startsOnlyAfterTrackerQuiesces() {
+            var tracker = InFlightRequestTracker.inFlightRequestTracker();
+
+            tracker.enter();  // one in-flight accepted request outstanding
+            var exits = new AtomicInteger(0);
+            var pushStarts = new AtomicInteger(0);
+            Promise<Unit> push = Promise.promise();
+            var procedure = DrainProcedure.drainProcedure(tracker,
+                                                          () -> {},
+                                                          reason -> {},
+                                                          () -> countAndReturn(pushStarts, push),
+                                                          exits::incrementAndGet);
+
+            procedure.initiate(TEST_REASON);
+            // In-flight work still outstanding — the push (chunk snapshot) must NOT have started yet.
+            assertThat(pushStarts.get()).isZero();
+            assertThat(procedure.state()).isEqualTo(DrainProcedure.DrainState.DRAINING);
+            tracker.exit();  // tracker quiesces → push starts now, post-quiesce
+            await().atMost(2, TimeUnit.SECONDS).untilAsserted(() -> assertThat(pushStarts.get()).isEqualTo(1));
+            assertThat(exits.get()).isZero();  // exit still gated until the push settles
+            push.succeed(Unit.unit());
+            await().atMost(2, TimeUnit.SECONDS).untilAsserted(() -> {
+                assertThat(exits.get()).isEqualTo(1);
+                assertThat(procedure.state()).isEqualTo(DrainProcedure.DrainState.EXITED);
+            });
+        }
+
+        private static Promise<Unit> countAndReturn(AtomicInteger counter, Promise<Unit> push) {
+            counter.incrementAndGet();
+
+            return push;
         }
     }
 }

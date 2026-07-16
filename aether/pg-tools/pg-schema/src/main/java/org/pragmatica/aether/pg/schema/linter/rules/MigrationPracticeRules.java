@@ -4,14 +4,14 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.pg.schema.linter.rules;
 
+import java.util.List;
+
 import org.pragmatica.aether.pg.schema.event.SchemaEvent;
 import org.pragmatica.aether.pg.schema.linter.LintDiagnostic;
 import org.pragmatica.aether.pg.schema.linter.LintRule;
 import org.pragmatica.aether.pg.schema.model.Constraint;
 import org.pragmatica.aether.pg.schema.model.PgType;
 import org.pragmatica.aether.pg.schema.model.Schema;
-
-import java.util.List;
 
 import static org.pragmatica.aether.pg.schema.linter.LintDiagnostic.Severity.WARNING;
 
@@ -74,10 +74,16 @@ public final class MigrationPracticeRules {
                 var table = schema.table(e.table());
 
                 if (table.isPresent()) {
-                    var isReferenced = schema.tables().values().stream().flatMap(t -> t.constraints()
-                                                                                       .stream()).filter(c -> c instanceof Constraint.ForeignKey).map(c -> (Constraint.ForeignKey) c).anyMatch(fk -> fk.refTable()
-                                                                                                                                                                                                       .equals(e.table()) && fk.refColumns()
-                                                                                                                                                                                                                               .contains(e.columnName()));
+                    var isReferenced = schema.tables()
+                                             .values()
+                                             .stream()
+                                             .flatMap(t -> t.constraints()
+                                                            .stream())
+                                             .filter(c -> c instanceof Constraint.ForeignKey)
+                                             .map(c -> (Constraint.ForeignKey) c)
+                                             .anyMatch(fk -> fk.refTable()
+                                                               .equals(e.table()) && fk.refColumns()
+                                                                                       .contains(e.columnName()));
 
                     if (isReferenced) {
                         return List.of(LintDiagnostic.warning(id(),

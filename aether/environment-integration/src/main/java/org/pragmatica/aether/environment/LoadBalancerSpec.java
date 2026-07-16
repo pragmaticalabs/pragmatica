@@ -4,11 +4,11 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.environment;
 
-import org.pragmatica.lang.Option;
-import org.pragmatica.lang.Result;
-
 import java.util.List;
 import java.util.Map;
+
+import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Result;
 
 import static org.pragmatica.lang.Result.success;
 

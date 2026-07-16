@@ -66,6 +66,23 @@ public sealed interface EnvironmentError extends Cause {
         }
     }
 
+    /// Raised when a cloud provider rejects a provision because the target zone has no
+    /// capacity (e.g. Hetzner returns 412 `resource_unavailable` "error during placement").
+    /// Distinct from [ProvisionFailed] because it is RETRYABLE in a different zone — the
+    /// bootstrap rotates to the next configured zone instead of aborting the whole cluster.
+    /// `zone` records the location that was attempted (empty when the provider could not
+    /// surface it).
+    record CapacityUnavailable(String zone, Throwable cause) implements EnvironmentError {
+        public static Result<CapacityUnavailable> capacityUnavailable(String zone, Throwable cause) {
+            return success(new CapacityUnavailable(zone, cause));
+        }
+
+        @Override
+        public String message() {
+            return "Capacity unavailable in zone '" + zone + "': " + cause.getMessage();
+        }
+    }
+
     record ListInstancesFailed(Throwable cause) implements EnvironmentError {
         public static Result<ListInstancesFailed> listInstancesFailed(Throwable cause) {
             return success(new ListInstancesFailed(cause));
@@ -135,6 +152,10 @@ public sealed interface EnvironmentError extends Cause {
 
     static EnvironmentError provisionFailed(Throwable cause) {
         return ProvisionFailed.provisionFailed(cause).unwrap();
+    }
+
+    static EnvironmentError capacityUnavailable(String zone, Throwable cause) {
+        return CapacityUnavailable.capacityUnavailable(zone, cause).unwrap();
     }
 
     static EnvironmentError terminateFailed(InstanceId instanceId, Throwable cause) {

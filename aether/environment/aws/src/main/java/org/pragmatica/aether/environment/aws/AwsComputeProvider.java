@@ -4,6 +4,11 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.environment.aws;
 
+import java.util.List;
+import java.util.Map;
+import java.util.stream.Collectors;
+import java.util.stream.Stream;
+
 import org.pragmatica.aether.environment.ComputeProvider;
 import org.pragmatica.aether.environment.EnvironmentError;
 import org.pragmatica.aether.environment.InstanceId;
@@ -26,11 +31,6 @@ import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.utility.IdGenerator;
 
-import java.util.List;
-import java.util.Map;
-import java.util.stream.Collectors;
-import java.util.stream.Stream;
-
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -51,11 +51,12 @@ public record AwsComputeProvider(AwsClient client, AwsEnvironmentConfig config) 
     @Override
     public Promise<InstanceInfo> provision(InstanceType instanceType) {
         return client.runInstances(buildRunRequest(Option.empty(),
-                                                   config.userData())).flatMap(response -> tagAndMapFirstInstance(response,
-                                                                                                                  defaultTags()))
-                                  .flatMap(info -> confirmRunning(info,
-                                                                  ReadinessPolicy.cloudDefault()))
-                                  .mapError(AwsComputeProvider::toProvisionError);
+                                                   config.userData()))
+                     .flatMap(response -> tagAndMapFirstInstance(response,
+                                                                 defaultTags()))
+                     .flatMap(info -> confirmRunning(info,
+                                                     ReadinessPolicy.cloudDefault()))
+                     .mapError(AwsComputeProvider::toProvisionError);
     }
 
     @Override
@@ -97,8 +98,9 @@ public record AwsComputeProvider(AwsClient client, AwsEnvironmentConfig config) 
     @Override
     public Promise<InstanceInfo> instanceStatus(InstanceId instanceId) {
         return client.describeInstances("instance-id",
-                                        instanceId.value()).map(AwsComputeProvider::firstInstanceOrThrow)
-                                       .mapError(AwsComputeProvider::toProvisionError);
+                                        instanceId.value())
+                     .map(AwsComputeProvider::firstInstanceOrThrow)
+                     .mapError(AwsComputeProvider::toProvisionError);
     }
 
     @Override
@@ -117,8 +119,9 @@ public record AwsComputeProvider(AwsClient client, AwsEnvironmentConfig config) 
         var instanceId = instance.instanceId();
 
         return client.createTags(List.of(instanceId),
-                                 tags).onFailure(cause -> rollbackPartialInstance(instanceId, cause))
-                                .map(unit -> toInstanceInfo(instance));
+                                 tags)
+                     .onFailure(cause -> rollbackPartialInstance(instanceId, cause))
+                     .map(unit -> toInstanceInfo(instance));
     }
 
     /// Rollback hook for partial provisions. `runInstances` succeeded (we have an
@@ -131,10 +134,11 @@ public record AwsComputeProvider(AwsClient client, AwsEnvironmentConfig config) 
         log.warn("Provision failed for AWS instance {} after runInstances succeeded ({}); attempting rollback via terminateInstances",
                  instanceId,
                  cause.message());
-        client.terminateInstances(List.of(instanceId)).onFailure(rollbackCause -> log.warn("Rollback terminateInstances for {} failed: {}",
-                                                                                           instanceId,
-                                                                                           rollbackCause.message())).onSuccess(ignored -> log.info("Rollback terminated partial AWS instance {}",
-                                                                                                                                                   instanceId));
+        client.terminateInstances(List.of(instanceId))
+              .onFailure(rollbackCause -> log.warn("Rollback terminateInstances for {} failed: {}",
+                                                   instanceId,
+                                                   rollbackCause.message()))
+              .onSuccess(ignored -> log.info("Rollback terminated partial AWS instance {}", instanceId));
     }
 
     private static Map<String, String> defaultTags() {

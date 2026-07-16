@@ -4,11 +4,11 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.deployment.membership.phase;
 
-import org.pragmatica.aether.slice.kvstore.AetherValue.ClusterPhase;
-import org.pragmatica.lang.Contract;
-
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.BooleanSupplier;
+
+import org.pragmatica.aether.slice.kvstore.AetherValue.ClusterPhase;
+import org.pragmatica.lang.Contract;
 
 
 /// Derives the KV-facing [`ClusterPhase`] from two live signals: in-quorum and have-leader.

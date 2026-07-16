@@ -4,16 +4,16 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.deployment.membership.view;
 
-import org.pragmatica.consensus.NodeId;
-import org.pragmatica.lang.Option;
-import org.pragmatica.swim.HealthSnapshot;
-import org.pragmatica.swim.SwimHealth;
-
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Set;
 import java.util.function.BooleanSupplier;
 import java.util.function.Supplier;
+
+import org.pragmatica.consensus.NodeId;
+import org.pragmatica.lang.Option;
+import org.pragmatica.swim.HealthSnapshot;
+import org.pragmatica.swim.SwimHealth;
 
 
 /// **H-series structural refactor: SWIM is the single source of truth for "alive".**

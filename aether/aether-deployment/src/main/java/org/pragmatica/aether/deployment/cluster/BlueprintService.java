@@ -4,6 +4,10 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.deployment.cluster;
 
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
+
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.slice.blueprint.Blueprint;
 import org.pragmatica.aether.slice.blueprint.BlueprintArtifact;
@@ -47,10 +51,6 @@ import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.utils.Causes;
-
-import java.util.ArrayList;
-import java.util.List;
-import java.util.Map;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -243,15 +243,16 @@ class BlueprintServiceInstance implements BlueprintService {
                                                               String artifactCoords,
                                                               boolean registerOnly) {
         return BlueprintExpander.expand(blueprintArtifact.blueprint(),
-                                        repository).flatMap(expanded -> applyResourcesConfig(expanded,
-                                                                                             blueprintArtifact.resourcesConfig()))
-                                       .flatMap(this::validatePubSub)
-                                       .flatMap(expanded -> storeAllInSingleBatch(expanded,
-                                                                                  blueprintArtifact.resourcesConfig(),
-                                                                                  blueprintArtifact.roleHints(),
-                                                                                  blueprintArtifact.schemaMigrations(),
-                                                                                  artifactCoords,
-                                                                                  registerOnly));
+                                        repository)
+                                .flatMap(expanded -> applyResourcesConfig(expanded,
+                                                                          blueprintArtifact.resourcesConfig()))
+                                .flatMap(this::validatePubSub)
+                                .flatMap(expanded -> storeAllInSingleBatch(expanded,
+                                                                           blueprintArtifact.resourcesConfig(),
+                                                                           blueprintArtifact.roleHints(),
+                                                                           blueprintArtifact.schemaMigrations(),
+                                                                           artifactCoords,
+                                                                           registerOnly));
     }
 
     private Promise<ExpandedBlueprint> storeAllInSingleBatch(ExpandedBlueprint expanded,
@@ -299,8 +300,10 @@ class BlueprintServiceInstance implements BlueprintService {
                                                                    Map<String, String> roleHints) {
         var bindings = StreamResourceValidator.validate(resourcesConfig,
                                                         expanded.id().artifact(),
-                                                        roleHints).map(validated -> toNamedAddresses(expanded.id(),
-                                                                                                     validated)).or(List.<NamedAddress> of());
+                                                        roleHints)
+                                              .map(validated -> toNamedAddresses(expanded.id(),
+                                                                                 validated))
+                                              .or(List.<NamedAddress> of());
 
         return new Put<>(BlueprintStreamBindingsKey.blueprintStreamBindingsKey(expanded.id()),
                          BlueprintStreamBindingsValue.blueprintStreamBindingsValue(bindings));
@@ -310,7 +313,8 @@ class BlueprintServiceInstance implements BlueprintService {
         var namespace = BlueprintNamespace.deriveNamespace(blueprintId).or("");
         var collected = new ArrayList<NamedAddress>();
 
-        validated.resources().forEach((alias, resource) -> resolveBindingEntry(namespace, alias, resource).onPresent(collected::add));
+        validated.resources()
+                 .forEach((alias, resource) -> resolveBindingEntry(namespace, alias, resource).onPresent(collected::add));
 
         return List.copyOf(collected);
     }
@@ -362,7 +366,12 @@ class BlueprintServiceInstance implements BlueprintService {
                                                        String artifactCoords) {
         var datasource = entry.getKey();
         var migrationList = entry.getValue();
-        var maxVersion = migrationList.stream().map(MigrationEntry::filename).filter(f -> f.startsWith("V")).mapToInt(BlueprintService::extractVersionNumber).max().orElse(0);
+        var maxVersion = migrationList.stream()
+                                      .map(MigrationEntry::filename)
+                                      .filter(f -> f.startsWith("V"))
+                                      .mapToInt(BlueprintService::extractVersionNumber)
+                                      .max()
+                                      .orElse(0);
         var lastFilename = migrationList.isEmpty()
                            ? ""
                            : migrationList.getLast().filename();

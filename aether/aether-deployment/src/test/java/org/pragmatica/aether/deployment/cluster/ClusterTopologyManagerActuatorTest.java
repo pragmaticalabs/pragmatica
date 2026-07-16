@@ -23,6 +23,7 @@ import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.NetworkServiceMessage;
 import org.pragmatica.consensus.net.NodeInfo;
 import org.pragmatica.consensus.topology.GenerationSnapshotSource;
+import org.pragmatica.consensus.topology.MembershipDecision;
 import org.pragmatica.consensus.topology.MembershipView;
 import org.pragmatica.consensus.topology.TopologyConfig;
 import org.pragmatica.consensus.topology.TopologyObserver;
@@ -173,6 +174,229 @@ class ClusterTopologyManagerActuatorTest {
         assertThat(lifecycleManager.terminateCount.get()).isZero();
     }
 
+    /// #148 — runaway-provisioning cap. After MAX consecutive provision failures the circuit
+    /// trips and further `provisionReplacement` calls are suppressed (no new `provisionNode`),
+    /// preventing the crash-loop container storm. The cap is 3 (MAX_CONSECUTIVE_PROVISIONING_FAILURES).
+    @Test
+    void provisionReplacement_consecutiveFailures_tripCircuit_andSuppressFurtherProvisioning() {
+        ctm.activate();
+        lifecycleManager.failProvisions();
+        var members = Set.of(SELF, PEER_A, PEER_B);
+
+        for (var i = 0; i < 3; i++) {
+            ctm.provisionReplacement(NodeId.randomNodeId(), Option.none(), members, NodeRole.CORE).await();
+        }
+        var countAfterTrip = lifecycleManager.provisionCount.get();
+        // Further calls while the circuit is open must NOT reach provisionNode.
+        ctm.provisionReplacement(NodeId.randomNodeId(), Option.none(), members, NodeRole.CORE).await();
+        ctm.provisionReplacement(NodeId.randomNodeId(), Option.none(), members, NodeRole.CORE).await();
+
+        assertThat(countAfterTrip)
+                .as("three failing provisions each reach provisionNode before the cap trips")
+                .isEqualTo(3);
+        assertThat(lifecycleManager.provisionCount.get())
+                .as("once the circuit is open, no further provisionNode calls are made")
+                .isEqualTo(3);
+        assertThat(ctm.circuitBreakerState().tripped())
+                .as("the circuit breaker is reported tripped after the cap")
+                .isTrue();
+    }
+
+    /// #148 — operator reset clears the tripped circuit so provisioning resumes.
+    @Test
+    void resetCircuitBreaker_afterTrip_allowsProvisioningAgain() {
+        ctm.activate();
+        lifecycleManager.failProvisions();
+        var members = Set.of(SELF, PEER_A, PEER_B);
+
+        for (var i = 0; i < 3; i++) {
+            ctm.provisionReplacement(NodeId.randomNodeId(), Option.none(), members, NodeRole.CORE).await();
+        }
+        assertThat(ctm.circuitBreakerState().tripped()).isTrue();
+
+        ctm.resetCircuitBreaker("test-reset");
+
+        assertThat(ctm.circuitBreakerState().tripped())
+                .as("operator reset clears the tripped circuit")
+                .isFalse();
+        ctm.provisionReplacement(NodeId.randomNodeId(), Option.none(), members, NodeRole.CORE).await();
+        assertThat(lifecycleManager.provisionCount.get())
+                .as("provisioning resumes after the reset (4th provisionNode reached)")
+                .isEqualTo(4);
+    }
+
+    /// #148 — a node becoming ready resets the failure run (the crash-loop ended), re-opening
+    /// provisioning.
+    @Test
+    void onNodeReady_afterTrip_resetsCircuit() {
+        ctm.activate();
+        lifecycleManager.failProvisions();
+        var members = Set.of(SELF, PEER_A, PEER_B);
+
+        for (var i = 0; i < 3; i++) {
+            ctm.provisionReplacement(NodeId.randomNodeId(), Option.none(), members, NodeRole.CORE).await();
+        }
+        assertThat(ctm.circuitBreakerState().tripped()).isTrue();
+
+        ctm.onNodeReady(PEER_A);
+
+        assertThat(ctm.circuitBreakerState().tripped())
+                .as("a node becoming ready resets the provisioning circuit")
+                .isFalse();
+    }
+
+    /// #148 / reconciler-under-load — a confirmed `NodeJoined` membership decision on the active
+    /// (leader) CTM routes to `onNodeReady`, resetting the provisioning circuit. A genuine
+    /// replacement reaching live MEMBER is provisioning-success evidence: it clears the
+    /// consecutive-failure run that a rapid multi-node loss tripped, un-stalling auto-heal — the
+    /// previously-dead wire (`onNodeReady` had zero production callers) the symmetric `NodeRemoved`
+    /// reap edge already had.
+    @Test
+    void onMembershipDecision_nodeJoined_whileActive_resetsTrippedCircuit() {
+        ctm.activate();
+        lifecycleManager.failProvisions();
+        var members = Set.of(SELF, PEER_A, PEER_B);
+
+        for (var i = 0; i < 3; i++) {
+            ctm.provisionReplacement(NodeId.randomNodeId(), Option.none(), members, NodeRole.CORE).await();
+        }
+        assertThat(ctm.circuitBreakerState().tripped()).isTrue();
+
+        ctm.onMembershipDecision(MembershipDecision.nodeJoined(PEER_C, List.of(SELF, PEER_A, PEER_B)));
+
+        assertThat(ctm.circuitBreakerState().tripped())
+                .as("a confirmed core join resets the tripped provisioning circuit")
+                .isFalse();
+        lifecycleManager.allowProvisions();
+        ctm.provisionReplacement(NodeId.randomNodeId(), Option.none(), members, NodeRole.CORE).await();
+        assertThat(lifecycleManager.provisionCount.get())
+                .as("provisioning resumes after the confirmed-join reset (4th provisionNode reached)")
+                .isEqualTo(4);
+    }
+
+    /// #148 / reconciler-under-load — the confirmed-join reset is leader-owned (single-writer
+    /// rule), mirroring the `NodeRemoved` reap gate. An inactive (non-leader) CTM ignores
+    /// membership decisions, so a `NodeJoined` never resets its circuit.
+    @Test
+    void onMembershipDecision_nodeJoined_whileInactive_doesNotResetCircuit() {
+        ctm.activate();
+        lifecycleManager.failProvisions();
+        var members = Set.of(SELF, PEER_A, PEER_B);
+
+        for (var i = 0; i < 3; i++) {
+            ctm.provisionReplacement(NodeId.randomNodeId(), Option.none(), members, NodeRole.CORE).await();
+        }
+        assertThat(ctm.circuitBreakerState().tripped()).isTrue();
+
+        ctm.deactivate();
+        ctm.onMembershipDecision(MembershipDecision.nodeJoined(PEER_C, List.of(SELF, PEER_A, PEER_B)));
+
+        assertThat(ctm.circuitBreakerState().tripped())
+                .as("an inactive (non-leader) CTM never resets — the active leader owns the join edge")
+                .isTrue();
+    }
+
+    /// #148 — a successful provision keeps the circuit closed (no false trip).
+    @Test
+    void provisionReplacement_success_keepsCircuitClosed() {
+        ctm.activate();
+        var members = Set.of(SELF, PEER_A, PEER_B);
+
+        ctm.provisionReplacement(NodeId.randomNodeId(), Option.none(), members, NodeRole.CORE).await();
+
+        assertThat(ctm.circuitBreakerState().tripped())
+                .as("a successful provision never trips the circuit")
+                .isFalse();
+        assertThat(ctm.circuitBreakerState().consecutiveFailures())
+                .as("a successful provision records no failures")
+                .isZero();
+    }
+
+    /// Auto-heal-wedge fix — once the circuit is OPEN a suppressed `provisionReplacement` resolves to
+    /// a success-valued `Deferred(CIRCUIT_OPEN)` disposition (NOT a phantom Dispatched, NOT a failure),
+    /// reaches NO `provisionNode`, and records NO new provisioning failure. This is the disposition the
+    /// `LeaderReconciler` keys on to REMOVE its in-flight placeholder so the deficit stays visible — the
+    /// fix that un-wedges auto-heal once a transient failure burst trips the breaker.
+    @Test
+    void provisionReplacement_circuitOpen_resolvesDeferred_withoutBootOrNewFailure() {
+        ctm.activate();
+        lifecycleManager.failProvisions();
+        var members = Set.of(SELF, PEER_A, PEER_B);
+
+        for (var i = 0; i < 3; i++) {
+            ctm.provisionReplacement(NodeId.randomNodeId(), Option.none(), members, NodeRole.CORE).await();
+        }
+        assertThat(ctm.circuitBreakerState().tripped())
+                .as("three failing provisions trip the circuit")
+                .isTrue();
+        var failuresAfterTrip = ctm.circuitBreakerState().consecutiveFailures();
+        var provisionCountAfterTrip = lifecycleManager.provisionCount.get();
+
+        var disposition = ctm.provisionReplacement(NodeId.randomNodeId(), Option.none(), members, NodeRole.CORE).await();
+
+        assertThat(disposition.isSuccess())
+                .as("a circuit-open deferral is a success-valued disposition, not a failure")
+                .isTrue();
+        disposition.onSuccess(value -> assertThat(value)
+                .as("the disposition is a Deferred(CIRCUIT_OPEN), so the reconciler removes its placeholder")
+                .isEqualTo(ProvisionDisposition.deferred(ProvisionDisposition.DeferralReason.CIRCUIT_OPEN)));
+        assertThat(lifecycleManager.provisionCount.get())
+                .as("a circuit-open deferral boots nothing — no new provisionNode call")
+                .isEqualTo(provisionCountAfterTrip);
+        assertThat(ctm.circuitBreakerState().consecutiveFailures())
+                .as("a deferral is NOT a failure — the consecutive-failure count is unchanged")
+                .isEqualTo(failuresAfterTrip);
+    }
+
+    /// Auto-heal-wedge fix — a real boot resolves to a success-valued `Dispatched` disposition (a VM is
+    /// coming), which is what the `LeaderReconciler` keys on to KEEP its in-flight placeholder.
+    @Test
+    void provisionReplacement_realBoot_resolvesDispatched() {
+        ctm.activate();
+        var members = Set.of(SELF, PEER_A, PEER_B);
+
+        var disposition = ctm.provisionReplacement(NodeId.randomNodeId(), Option.none(), members, NodeRole.CORE).await();
+
+        assertThat(disposition.isSuccess()).isTrue();
+        disposition.onSuccess(value -> assertThat(value)
+                .as("a real boot resolves to Dispatched, so the reconciler keeps its placeholder")
+                .isEqualTo(ProvisionDisposition.dispatched()));
+    }
+
+    /// #166 — a confirmed `NodeRemoved` membership decision on the active (leader) CTM reaps the
+    /// departed node's container so a phantom that would otherwise restart-loop back into
+    /// SWIM-HEALTHY cannot resurrect. The reap is idempotent: `terminateNode` is a no-op on an
+    /// already-exited node.
+    @Test
+    void onMembershipDecision_nodeRemoved_whileActive_reapsDepartedContainer() {
+        ctm.activate();
+        ctm.onMembershipDecision(MembershipDecision.nodeRemoved(PEER_C, List.of(SELF, PEER_A, PEER_B)));
+        assertThat(lifecycleManager.terminatedNodeIds())
+                .as("confirmed removal reaps the departed node's container")
+                .containsExactly(PEER_C);
+    }
+
+    /// #166 — a `NodeDecommissioned` decision (permanent departure) reaps the container for the
+    /// same phantom-prevention reason as `NodeRemoved`.
+    @Test
+    void onMembershipDecision_nodeDecommissioned_whileActive_reapsDepartedContainer() {
+        ctm.activate();
+        ctm.onMembershipDecision(MembershipDecision.nodeDecommissioned(PEER_D, List.of(SELF, PEER_A, PEER_B)));
+        assertThat(lifecycleManager.terminatedNodeIds())
+                .as("confirmed decommission reaps the departed node's container")
+                .containsExactly(PEER_D);
+    }
+
+    /// #166 — the reap is leader-owned (single-writer rule). A non-active CTM (deactivated / not
+    /// leader) ignores membership decisions entirely, so no reap is issued.
+    @Test
+    void onMembershipDecision_nodeRemoved_whileInactive_doesNotReap() {
+        ctm.onMembershipDecision(MembershipDecision.nodeRemoved(PEER_C, List.of(SELF, PEER_A, PEER_B)));
+        assertThat(lifecycleManager.terminateCount.get())
+                .as("an inactive (non-leader) CTM never reaps — the active leader owns the prune")
+                .isZero();
+    }
+
     @Test
     void setDesiredSize_writesClusterConfigValueAtom_withIncrementedVersion() {
         ctm.activate();
@@ -274,6 +498,7 @@ class ClusterTopologyManagerActuatorTest {
         final AtomicInteger terminateCount = new AtomicInteger();
         private final CopyOnWriteArrayList<NodeId> terminatedIds = new CopyOnWriteArrayList<>();
         private final AtomicReference<ProvisionSpec> lastSpec = new AtomicReference<>();
+        private final java.util.concurrent.atomic.AtomicBoolean failProvision = new java.util.concurrent.atomic.AtomicBoolean(false);
 
         List<NodeId> terminatedNodeIds() {
             return List.copyOf(terminatedIds);
@@ -281,6 +506,14 @@ class ClusterTopologyManagerActuatorTest {
 
         ProvisionSpec lastSpec() {
             return lastSpec.get();
+        }
+
+        void failProvisions() {
+            failProvision.set(true);
+        }
+
+        void allowProvisions() {
+            failProvision.set(false);
         }
 
         @Override public Promise<ActionResult> executeAction(NodeAction action) {
@@ -293,6 +526,9 @@ class ClusterTopologyManagerActuatorTest {
         @Override public Promise<InstanceInfo> provisionNode(ProvisionSpec spec) {
             var count = provisionCount.incrementAndGet();
             lastSpec.set(spec);
+            if (failProvision.get()) {
+                return org.pragmatica.lang.utils.Causes.cause("stub provision failure").promise();
+            }
             return Promise.success(InstanceInfo.instanceInfo(InstanceId.instanceId("stub-" + count).unwrap(),
                                                              InstanceStatus.RUNNING,
                                                              List.of("127.0.0.1"),

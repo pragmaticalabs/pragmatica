@@ -4,9 +4,9 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.pg.schema.linter.rules;
 
-import org.pragmatica.aether.pg.schema.model.PgType;
-
 import java.util.Set;
+
+import org.pragmatica.aether.pg.schema.model.PgType;
 
 
 public final class SafeTypeChanges {

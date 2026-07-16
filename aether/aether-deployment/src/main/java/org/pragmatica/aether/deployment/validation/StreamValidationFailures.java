@@ -4,9 +4,9 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.deployment.validation;
 
-import org.pragmatica.lang.Cause;
-
 import java.util.List;
+
+import org.pragmatica.lang.Cause;
 
 
 /// Composite [Cause] that aggregates every [StreamValidationFailure] from a single deploy attempt
@@ -28,9 +28,12 @@ public record StreamValidationFailures(List<StreamValidationFailure> failures, L
 
     @Override
     public String message() {
-        var builder = new StringBuilder("Stream resource validation failed (").append(failures.size()).append(" error").append(failures.size() == 1
-                                                                                                                               ? ""
-                                                                                                                               : "s").append("):");
+        var builder = new StringBuilder("Stream resource validation failed (").append(failures.size())
+                                                                              .append(" error")
+                                                                              .append(failures.size() == 1
+                                                                                      ? ""
+                                                                                      : "s")
+                                                                              .append("):");
 
         failures.forEach(failure -> builder.append("\n  [")
                                            .append(failure.rule())

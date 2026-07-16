@@ -4,20 +4,6 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.deployment.membership.ntt;
 
-import org.pragmatica.aether.config.cluster.NodeRole;
-import org.pragmatica.aether.deployment.cluster.ClusterTopologyManager;
-import org.pragmatica.aether.deployment.cluster.DrainReason;
-import org.pragmatica.aether.deployment.membership.MembershipConfig;
-import org.pragmatica.aether.deployment.membership.fsm.MembershipFsm;
-import org.pragmatica.aether.environment.ProvisionContext;
-import org.pragmatica.consensus.NodeId;
-import org.pragmatica.lang.Contract;
-import org.pragmatica.lang.Option;
-import org.pragmatica.lang.io.TimeSpan;
-import org.pragmatica.lang.utils.SharedScheduler;
-import org.pragmatica.lang.utils.TimeSource;
-import org.pragmatica.utility.ULID;
-
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
@@ -33,6 +19,21 @@ import java.util.function.Consumer;
 import java.util.function.IntSupplier;
 import java.util.function.Predicate;
 import java.util.function.Supplier;
+
+import org.pragmatica.aether.config.cluster.NodeRole;
+import org.pragmatica.aether.deployment.cluster.ClusterTopologyManager;
+import org.pragmatica.aether.deployment.cluster.DrainReason;
+import org.pragmatica.aether.deployment.cluster.ProvisionDisposition;
+import org.pragmatica.aether.deployment.membership.MembershipConfig;
+import org.pragmatica.aether.deployment.membership.fsm.MembershipFsm;
+import org.pragmatica.aether.environment.ProvisionContext;
+import org.pragmatica.consensus.NodeId;
+import org.pragmatica.lang.Contract;
+import org.pragmatica.lang.Option;
+import org.pragmatica.lang.io.TimeSpan;
+import org.pragmatica.lang.utils.SharedScheduler;
+import org.pragmatica.lang.utils.TimeSource;
+import org.pragmatica.utility.ULID;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -222,6 +223,12 @@ public final class LeaderReconciler {
     /// transient reconnect dip resets it; a genuine departure lets it age past the debounce
     /// window so auto-heal fires.
     private volatile long deficitSinceNanos = UNSET_NANOS;
+    /// #336 observability — the provisioning-decision snapshot captured at the END of the most
+    /// recent reconcile pass (the same context [`#logProvisioningDecision`] traces). Empty (`null`)
+    /// until the first pass runs; surfaced via [`#lastProvisioningDecision`] so the management API
+    /// can expose WHY a deficit is or is not being filled without log-scraping. Pure observability —
+    /// written once per pass, never read by the decision logic.
+    private volatile ProvisioningDecisionSnapshot lastProvisioningDecision = null;
     private final AtomicReference<ScheduledFuture<?>> activationFutureRef = new AtomicReference<>();
     private final AtomicReference<ScheduledFuture<?>> inFlightSweepFutureRef = new AtomicReference<>();
     /// At most one pending deficit-convergence follow-up (H1 / #257 completion — generalizes
@@ -247,6 +254,25 @@ public final class LeaderReconciler {
     /// membership sits unchanged in surplus), so without this the deferred drain would silently
     /// never re-evaluate. Same dedupe/CAS-arm discipline as [`#deficitFollowUpFutureRef`].
     private final AtomicReference<ScheduledFuture<?>> drainGraceReEvalFutureRef = new AtomicReference<>();
+    /// At most one pending surplus-convergence follow-up (#331 — the symmetric counterpart of
+    /// [`#deficitFollowUpFutureRef`] for OVER-provisioning). ANY reconcile pass that ends with an
+    /// UNRESOLVED surplus (`effectiveCapacity > configuredCoreCount` after the drain dispatch — a
+    /// drain was dispatched but the victims have not yet left membership, OR the per-pass quorum
+    /// floor capped the drainable count below the surplus) arms one follow-up reconcile
+    /// ([`ReconcileTrigger#SURPLUS_FOLLOW_UP`]), debounce-window-spaced. Self-rearming from each
+    /// still-surplus pass until the effective count converges DOWN to the configured target — a
+    /// BOUNDED convergence loop, not a periodic tick: it arms only while a surplus exists, stops
+    /// the moment membership converges, and is cancelled on deactivation. Live-gate motivation: a
+    /// node sitting in surplus is HEALTHY and fires no SWIM edge, and its eventual departure on
+    /// drain does not re-fire the surplus-detecting `MEMBER_APPEARED` ingress — so without this the
+    /// leader drains a single batch and then never re-checks, leaving the cluster over-provisioned
+    /// past the settle window (the 02-chaos 6-where-5-expected convergence gap). Distinct from
+    /// [`#drainGraceReEvalFutureRef`], which fires only when a drain was DEFERRED (young / shielded
+    /// candidates); this one fires whenever the surplus simply has not yet CLOSED, covering the
+    /// dispatched-but-not-yet-departed and floor-capped cases that the deferral path misses. Same
+    /// dedupe/CAS-arm discipline (a non-null ref short-circuits, CAS-arm cancels a lost race) with
+    /// a hard delay floor of [`#DEBOUNCE_DELAY`], so the arm path can never loop hot.
+    private final AtomicReference<ScheduledFuture<?>> surplusFollowUpFutureRef = new AtomicReference<>();
 
     private final AtomicReference<Option<ReconcileTrigger>> pendingTriggerRef = new AtomicReference<>(none());
 
@@ -413,6 +439,7 @@ public final class LeaderReconciler {
         cancelPendingActivation();
         cancelInFlightSweep();
         cancelDeficitFollowUp();
+        cancelSurplusFollowUp();
         cancelDrainGraceReEval();
         inFlightProvisioning.clear();
         deficitSinceNanos = UNSET_NANOS;
@@ -740,6 +767,7 @@ public final class LeaderReconciler {
                                 configuredCoreCount,
                                 quorumSafe,
                                 provisioningPermitted);
+        captureProvisioningDecision(now, trigger, effective, configuredCoreCount, quorumSafe, provisioningPermitted);
         var peersToProvision = provisioningPermitted
                                ? computePeersToProvision(configuredCoreCount, effective)
                                : Set.<NodeId> of();
@@ -768,6 +796,17 @@ public final class LeaderReconciler {
         // window, then healed in 13s once poked). Runs AFTER the anchor reset above so a
         // just-dispatched pass arms on the full-window branch.
         armDeficitFollowUpIfNeeded(now, currentMembers.size(), configuredCoreCount);
+        // Surplus-convergence follow-up (#331 — symmetric with the deficit follow-up above). Armed
+        // off the post-dispatch effective surplus: a pass that dispatched a drain is only
+        // PENDING-resolved (the victims leave membership asynchronously via the DRAIN command +
+        // grace-terminate backstop, and a drained node's departure fires no surplus-detecting SWIM
+        // edge), and a floor-capped pass could only drain part of the surplus. Either way the
+        // surplus is stable-state — nothing else re-pokes the reconciler — so this keeps
+        // re-checking at debounce spacing until the effective count converges DOWN to the
+        // configured target. Bounded: it arms only while a surplus persists and stops the moment it
+        // closes. Runs alongside the deficit follow-up; the two are mutually exclusive per pass
+        // (a cluster is either over- or under-target, never both).
+        armSurplusFollowUpIfNeeded(effective, configuredCoreCount);
         var intent = ReconcileIntent.reconcileIntent(now,
                                                      trigger,
                                                      clusterMembershipCount,
@@ -819,12 +858,12 @@ public final class LeaderReconciler {
     }
 
     /// Operator-facing INFO trace (one line per reconcile pass that has a deficit OR a permitted
-    /// provision OR a `CONFIG_CHANGE` / `DEFICIT_FOLLOW_UP` trigger; healthy at-target no-op
-    /// passes are NOT logged, bounding volume — `CONFIG_CHANGE` passes are operator-rate and
-    /// `DEFICIT_FOLLOW_UP` passes are debounce-window-spaced and deficit-bounded, both always
-    /// logged so a config-driven scale and the deficit-convergence loop leave `trigger=` evidence
-    /// even when the pass resolves as a surplus drain, an in-flight-masked wait, or a no-op
-    /// (H1 / #257). Records the full
+    /// provision OR a `CONFIG_CHANGE` / `DEFICIT_FOLLOW_UP` / `SURPLUS_FOLLOW_UP` trigger; healthy
+    /// at-target no-op passes are NOT logged, bounding volume — `CONFIG_CHANGE` passes are
+    /// operator-rate and the `DEFICIT_FOLLOW_UP` / `SURPLUS_FOLLOW_UP` convergence passes are
+    /// debounce-window-spaced and deficit-/surplus-bounded, all always logged so a config-driven
+    /// scale and the two convergence loops leave `trigger=` evidence even when the pass resolves as
+    /// a surplus drain, an in-flight-masked wait, or a no-op (H1 / #257, #331). Records the full
     /// provisioning-decision context so a Docker run can pin exactly why no replacement is
     /// provisioned after a kill: trigger, membership count + member ids, effective capacity,
     /// configured core count, the arm latch, the reached-full-membership latch, deficit age, quorum
@@ -839,7 +878,7 @@ public final class LeaderReconciler {
                                          boolean quorumSafe,
                                          boolean provisioningPermitted) {
         var hasDeficit = effective < configuredCoreCount;
-        var alwaysLoggedTrigger = trigger == ReconcileTrigger.CONFIG_CHANGE || trigger == ReconcileTrigger.DEFICIT_FOLLOW_UP;
+        var alwaysLoggedTrigger = trigger == ReconcileTrigger.CONFIG_CHANGE || trigger == ReconcileTrigger.DEFICIT_FOLLOW_UP || trigger == ReconcileTrigger.SURPLUS_FOLLOW_UP;
 
         if (!hasDeficit && !provisioningPermitted && !alwaysLoggedTrigger) {
             return;
@@ -896,6 +935,34 @@ public final class LeaderReconciler {
         }
 
         return "WITHIN_DEBOUNCE";
+    }
+
+    /// #336 observability — capture the END-of-pass provisioning-decision context into
+    /// [`#lastProvisioningDecision`] so the management API can answer "why is this deficit not
+    /// being filled?" without log-scraping. Computes the SAME values [`#logProvisioningDecision`]
+    /// traces — `countedCoreMembers` from [`MembershipFsm#coreCountedMembers`], `reason` from
+    /// [`#suppressionReason`], `deficitAgeMs` from [`#deficitAgeMs`], and the two one-way latches —
+    /// reusing the existing helpers (no divergent re-derivation). Pure side-effect setter: written
+    /// once per pass, read by no decision logic, alters no control flow.
+    @Contract
+    private void captureProvisioningDecision(long now,
+                                             ReconcileTrigger trigger,
+                                             int effective,
+                                             int configuredCoreCount,
+                                             boolean quorumSafe,
+                                             boolean provisioningPermitted) {
+        lastProvisioningDecision = new ProvisioningDecisionSnapshot(trigger,
+                                                                    configuredCoreCount,
+                                                                    membershipFsm.coreCountedMembers().size(),
+                                                                    effective,
+                                                                    armedForProvisioning.get(),
+                                                                    reachedFullMembership.get(),
+                                                                    quorumSafe,
+                                                                    deficitAgeMs(now),
+                                                                    suppressionReason(effective,
+                                                                                      configuredCoreCount,
+                                                                                      quorumSafe,
+                                                                                      provisioningPermitted));
     }
 
     /// Effective cluster capacity = the size of the UNION of confirmed members and in-flight
@@ -1017,7 +1084,10 @@ public final class LeaderReconciler {
     /// Within each partition the legacy stable reversed-id iteration order is preserved for
     /// determinism. A configured member with no readable age is treated as mature (legacy behaviour).
     private Set<NodeId> selectDrainVictims(Set<NodeId> currentMembers, int drainCount) {
-        var candidates = currentMembers.stream().filter(this::doesNotOwnActiveSlices).sorted(Comparator.comparing(NodeId::id).reversed()).toList();
+        var candidates = currentMembers.stream()
+                                       .filter(this::doesNotOwnActiveSlices)
+                                       .sorted(Comparator.comparing(NodeId::id).reversed())
+                                       .toList();
         var ordered = new LinkedHashSet<NodeId>();
 
         appendVictims(ordered, ephemeralCandidates(candidates), drainCount);
@@ -1122,8 +1192,9 @@ public final class LeaderReconciler {
     /// below the drain-safety grace.
     @Contract
     private void recordYoungAge(Map<NodeId, Long> ages, NodeId id) {
-        membershipFsm.memberAgeMs(id).filter(ageMs -> ageMs < drainSafetyGraceWindow.millis()).onPresent(ageMs -> ages.put(id,
-                                                                                                                           ageMs));
+        membershipFsm.memberAgeMs(id)
+                     .filter(ageMs -> ageMs < drainSafetyGraceWindow.millis())
+                     .onPresent(ageMs -> ages.put(id, ageMs));
     }
 
     /// Arm a single drain-grace re-evaluation follow-up (deferred-surplus re-trigger). Deduped:
@@ -1197,7 +1268,32 @@ public final class LeaderReconciler {
         // fulfillment signal (cleared in runReconcileBody when the id appears in currentMembers).
         // Auto-heal replaces CORE members only, so the intended role is explicitly CORE
         // (Wave 2 / W4 — never inherited from the provisioning host's env).
-        ctm.provisionReplacement(placeholder, none(), currentMembers, NodeRole.CORE).onFailure(cause -> inFlightProvisioning.remove(placeholder));
+        //
+        // Disposition handling (auto-heal-wedge fix): the placeholder was stamped above BEFORE the
+        // call, so effectiveCapacity already counts it. Keep it ONLY when a VM is genuinely coming.
+        //   - Dispatched (success, real boot) → KEEP the placeholder; a VM is on its way.
+        //   - Deferred (success, NO boot: circuit-open or no-healthy-peers) → REMOVE it; nothing is
+        //     coming, so the raw deficit must stay visible for the next tick to re-poke (a retained
+        //     placeholder would mask the deficit and permanently wedge auto-heal once the breaker
+        //     trips). A deferral is NOT a failure — no provisioning failure is recorded.
+        //   - failure (genuine boot failure) → REMOVE it (the CTM already recorded the failure).
+        ctm.provisionReplacement(placeholder,
+                                 none(),
+                                 currentMembers,
+                                 NodeRole.CORE)
+           .onSuccess(disposition -> reconcileInFlightForDisposition(placeholder, disposition))
+           .onFailure(_ -> inFlightProvisioning.remove(placeholder));
+    }
+
+    /// Keep the in-flight placeholder only for a real [`ProvisionDisposition.Dispatched`] boot; a
+    /// no-boot [`ProvisionDisposition.Deferred`] removes it so the unmasked deficit re-pokes on the
+    /// next reconcile tick (the auto-heal-wedge fix — see [`#dispatchSingleProvision`]).
+    @Contract
+    private void reconcileInFlightForDisposition(NodeId placeholder, ProvisionDisposition disposition) {
+        switch (disposition) {
+            case ProvisionDisposition.Deferred _ -> inFlightProvisioning.remove(placeholder);
+            case ProvisionDisposition.Dispatched _ -> {}
+        }
     }
 
     @Contract
@@ -1335,6 +1431,60 @@ public final class LeaderReconciler {
         }
     }
 
+    /// Arm a single surplus-convergence follow-up (#331) iff a surplus is unresolved
+    /// (`effective > configuredCoreCount`). Deduped: a non-null [`#surplusFollowUpFutureRef`]
+    /// short-circuits (at most one pending), the CAS-arm cancels a lost race — the same discipline
+    /// as [`#armDeficitFollowUpIfNeeded`] / [`#armDrainGraceReEval`]; no new timer machinery, the
+    /// shared scheduler is reused. Spaced at the deficit-debounce window plus the short margin so
+    /// the loop never runs hot.
+    @Contract
+    private void armSurplusFollowUpIfNeeded(int effective, int configuredCoreCount) {
+        var unresolvedSurplus = effective - configuredCoreCount > 0;
+
+        if (!unresolvedSurplus || surplusFollowUpFutureRef.get() != null) {
+            return;
+        }
+
+        var future = scheduler.schedule(this::runSurplusFollowUp, surplusFollowUpDelay());
+
+        if (!surplusFollowUpFutureRef.compareAndSet(null, future)) {
+            future.cancel(false);
+        }
+    }
+
+    /// Delay for the surplus-convergence follow-up: the full deficit-debounce window plus the
+    /// short [`#DEBOUNCE_DELAY`] margin. A surplus has no per-run leading-edge anchor (unlike a
+    /// deficit), so the spacing is a fixed debounce-window cadence — slow enough that a transient
+    /// just-joined-then-leaving blip does not churn drains, fast enough that convergence lands well
+    /// inside the integration settle window.
+    private TimeSpan surplusFollowUpDelay() {
+        return timeSpan(deficitDebounceWindow.nanos() + DEBOUNCE_DELAY.nanos()).nanos();
+    }
+
+    /// Surplus-convergence follow-up tick: clear the pending ref and re-trigger a reconcile
+    /// ([`ReconcileTrigger#SURPLUS_FOLLOW_UP`]) so the unresolved surplus is re-evaluated. The pass
+    /// it triggers re-arms via [`#armSurplusFollowUpIfNeeded`] iff the surplus is STILL unresolved
+    /// — the loop terminates on convergence. Non-leader nodes no-op (a deposed leader's follow-up
+    /// must not act; [`#deactivate`] also cancels the pending future).
+    @Contract
+    private void runSurplusFollowUp() {
+        surplusFollowUpFutureRef.set(null);
+        if (!isLeader.get()) {
+            return;
+        }
+
+        triggerReconcile(ReconcileTrigger.SURPLUS_FOLLOW_UP);
+    }
+
+    @Contract
+    private void cancelSurplusFollowUp() {
+        var prev = surplusFollowUpFutureRef.getAndSet(null);
+
+        if (prev != null) {
+            prev.cancel(false);
+        }
+    }
+
     @Contract
     private void cancelPendingActivation() {
         var prev = activationFutureRef.getAndSet(null);
@@ -1385,4 +1535,62 @@ public final class LeaderReconciler {
     public PresenceSampler presenceSampler() {
         return presenceSampler;
     }
+
+    /// #336 observability — the provisioning-decision context captured at the END of the most
+    /// recent reconcile pass (the same context [`#logProvisioningDecision`] traces), or empty
+    /// when no pass has run yet on this node. Lets the management API surface WHY a deficit is or
+    /// is not being filled without log-scraping.
+    public Option<ProvisioningDecisionSnapshot> lastProvisioningDecision() {
+        return Option.option(lastProvisioningDecision);
+    }
+
+    /// #336 observability — a provisioning-decision snapshot built from CURRENT live values, NOT
+    /// gated on a captured reconcile pass. The leader-activation pass is delayed by
+    /// `nttDepartureTimeout × 1.5`, so [`#lastProvisioningDecision`] is empty during the window
+    /// before the first pass even though this node IS the leader; the management API would then
+    /// emit a non-leader (all-zeros) body for a freshly-settled leader. Every gate input is
+    /// queryable live at any time: `configuredCoreCount` from [`#configuredCoreCountSupplier`],
+    /// the counted core members and the [`#effectiveCapacity`] union from
+    /// [`MembershipFsm#coreCountedMembers`] (the same source the pass reads), the live
+    /// [`#armedForProvisioning`] / [`#reachedFullMembership`] latches, [`#quorumThreshold`]-derived
+    /// quorum safety, and the deficit run age via [`#deficitAgeMs`]. The pass-specific
+    /// `reason`/`trigger` are taken from the most-recent captured decision when present; before the
+    /// first pass they fall back to `reason="NOT_EVALUATED"` and `trigger=LEADER_ACTIVATION` (the
+    /// trigger that WILL drive the first pass — `ReconcileTrigger` has no NONE value). Reuses the
+    /// pass's own helpers (no divergent gate re-derivation), uses the injected [`#timeSource`], and
+    /// mutates nothing — a pure read.
+    public ProvisioningDecisionSnapshot currentProvisioningSnapshot() {
+        var now = timeSource.nanoTime();
+        var currentMembers = membershipFsm.coreCountedMembers();
+        var configuredCoreCount = configuredCoreCountSupplier.getAsInt();
+        var effective = effectiveCapacity(currentMembers);
+        var quorumSafe = currentMembers.size() >= quorumThreshold(configuredCoreCount);
+        var captured = Option.option(lastProvisioningDecision);
+
+        return new ProvisioningDecisionSnapshot(captured.map(ProvisioningDecisionSnapshot::trigger)
+                                                        .or(ReconcileTrigger.LEADER_ACTIVATION),
+                                                configuredCoreCount,
+                                                currentMembers.size(),
+                                                effective,
+                                                armedForProvisioning.get(),
+                                                reachedFullMembership.get(),
+                                                quorumSafe,
+                                                deficitAgeMs(now),
+                                                captured.map(ProvisioningDecisionSnapshot::reason).or("NOT_EVALUATED"));
+    }
+
+    /// #336 observability — immutable snapshot of one reconcile pass's provisioning decision. The
+    /// fields mirror the [`#logProvisioningDecision`] trace: the trigger that drove the pass, the
+    /// configured vs counted-core membership, effective capacity, the arm + reached-full-membership
+    /// latches, quorum safety, the current deficit run age (`-1` when no deficit), and the precise
+    /// suppression `reason`.
+    public record ProvisioningDecisionSnapshot(ReconcileTrigger trigger,
+                                               int configuredCoreCount,
+                                               int countedCoreMembers,
+                                               int effective,
+                                               boolean armedForProvisioning,
+                                               boolean reachedFullMembership,
+                                               boolean quorumSafe,
+                                               long deficitAgeMs,
+                                               String reason) {}
 }

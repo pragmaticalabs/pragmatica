@@ -4,14 +4,14 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.pg.schema.linter.rules;
 
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Set;
+
 import org.pragmatica.aether.pg.schema.event.SchemaEvent;
 import org.pragmatica.aether.pg.schema.linter.LintDiagnostic;
 import org.pragmatica.aether.pg.schema.linter.LintRule;
 import org.pragmatica.aether.pg.schema.model.*;
-
-import java.util.ArrayList;
-import java.util.List;
-import java.util.Set;
 
 import static org.pragmatica.aether.pg.schema.linter.LintDiagnostic.Severity.WARNING;
 
@@ -49,7 +49,9 @@ public final class LockHazardRules {
         }
 
         public List<LintDiagnostic> check(SchemaEvent event, Schema schema) {
-            if (event instanceof SchemaEvent.ColumnAdded e && !e.column().nullable() && e.column().defaultExpr().isEmpty()) {
+            if (event instanceof SchemaEvent.ColumnAdded e && !e.column().nullable() && e.column()
+                                                                                         .defaultExpr()
+                                                                                         .isEmpty()) {
                 return List.of(LintDiagnostic.warning(id(),
                                                       "Adding NOT NULL column '" + e.column()
                                                                                     .name()

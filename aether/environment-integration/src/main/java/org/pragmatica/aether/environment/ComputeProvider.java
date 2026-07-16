@@ -4,14 +4,14 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.environment;
 
+import java.util.List;
+import java.util.Map;
+
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
-
-import java.util.List;
-import java.util.Map;
 
 
 public interface ComputeProvider {

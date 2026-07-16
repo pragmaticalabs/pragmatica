@@ -4,10 +4,10 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.deployment.schema;
 
+import java.util.List;
+
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.messaging.Message;
-
-import java.util.List;
 
 
 public sealed interface SchemaEvent extends Message.Local {

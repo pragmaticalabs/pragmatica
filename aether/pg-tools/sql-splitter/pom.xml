@@ -1,0 +1,172 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>org.pragmatica-lite.aether</groupId>
+        <artifactId>aether-pg-tools</artifactId>
+        <version>1.0.0-rc2</version>
+    </parent>
+
+    <artifactId>sql-splitter</artifactId>
+    <name>SQL Splitter</name>
+    <description>Pure, dialect-aware SQL statement splitter (string to statements, no DB, no I/O)</description>
+
+    <properties>
+        <!-- Matches integrations/db/postgres-async (Testcontainers) and aether/ember (PG JDBC driver).
+             All TEST scope only — the module's MAIN dependency stays core-only. The MySQL driver and
+             Testcontainers MySQL module back the StatementSplitterMysqlDiffTest. The Oracle/SQL Server/
+             DB2 Testcontainers modules + JDBC drivers back the @Tag("heavy-db") differential tests,
+             which are excluded from the default build by the surefire excludedGroups below. -->
+        <testcontainers.version>1.21.4</testcontainers.version>
+        <postgresql-jdbc.version>42.7.5</postgresql-jdbc.version>
+        <mysql-jdbc.version>9.2.0</mysql-jdbc.version>
+        <ojdbc.version>23.7.0.25.01</ojdbc.version>
+        <mssql-jdbc.version>12.8.1.jre11</mssql-jdbc.version>
+        <db2-jcc.version>11.5.9.0</db2-jcc.version>
+        <!-- The @Tag("heavy-db") differential tests (Oracle/SQL Server/DB2) are excluded by default
+             and opted into on dedicated amd64 hardware (or CI) by overriding these two properties:
+             mvn test -DheavyDb.excludedGroups= -DheavyDb.includedGroups=heavy-db -->
+        <heavyDb.excludedGroups>heavy-db</heavyDb.excludedGroups>
+        <heavyDb.includedGroups></heavyDb.includedGroups>
+    </properties>
+
+    <dependencies>
+        <!-- Pragmatica Core (Result/Option/Cause) — the ONLY runtime dependency -->
+        <dependency>
+            <groupId>org.pragmatica-lite</groupId>
+            <artifactId>core</artifactId>
+        </dependency>
+
+        <!-- Testing -->
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter-api</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter-engine</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter-params</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.assertj</groupId>
+            <artifactId>assertj-core</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <!-- Differential test against a real PostgreSQL engine (Testcontainers). TEST scope only:
+             these never leak downstream because test-scope dependencies are not transitive. -->
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>testcontainers</artifactId>
+            <version>${testcontainers.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>postgresql</artifactId>
+            <version>${testcontainers.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <version>${testcontainers.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.postgresql</groupId>
+            <artifactId>postgresql</artifactId>
+            <version>${postgresql-jdbc.version}</version>
+            <scope>test</scope>
+        </dependency>
+
+        <!-- Differential test against a real MySQL engine (Testcontainers). TEST scope only, so
+             neither the Testcontainers MySQL module nor the JDBC driver leaks downstream. The
+             driver's transitive X DevAPI protobuf dependency is unused here and excluded. -->
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>mysql</artifactId>
+            <version>${testcontainers.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>com.mysql</groupId>
+            <artifactId>mysql-connector-j</artifactId>
+            <version>${mysql-jdbc.version}</version>
+            <scope>test</scope>
+            <exclusions>
+                <exclusion>
+                    <groupId>com.google.protobuf</groupId>
+                    <artifactId>protobuf-java</artifactId>
+                </exclusion>
+            </exclusions>
+        </dependency>
+
+        <!-- Differential tests against real Oracle, SQL Server, and DB2 engines (Testcontainers).
+             TEST scope only and gated behind @Tag("heavy-db") (excluded by default surefire below),
+             so neither the Testcontainers modules nor the JDBC drivers leak downstream or run in the
+             default build. They need a real engine and the right CPU arch, so they run on dedicated
+             hardware only. -->
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>oracle-free</artifactId>
+            <version>${testcontainers.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>com.oracle.database.jdbc</groupId>
+            <artifactId>ojdbc11</artifactId>
+            <version>${ojdbc.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>mssqlserver</artifactId>
+            <version>${testcontainers.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>com.microsoft.sqlserver</groupId>
+            <artifactId>mssql-jdbc</artifactId>
+            <version>${mssql-jdbc.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>db2</artifactId>
+            <version>${testcontainers.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>com.ibm.db2</groupId>
+            <artifactId>jcc</artifactId>
+            <version>${db2-jcc.version}</version>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <!-- The Oracle/SQL Server/DB2 differential tests are tagged @Tag("heavy-db"): they need a
+                 real engine and the right CPU arch, so the default `mvn test` excludes them here. The
+                 untagged PostgreSQL and MySQL differential tests still run by default. -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <configuration>
+                    <excludedGroups>${heavyDb.excludedGroups}</excludedGroups>
+                    <groups>${heavyDb.includedGroups}</groups>
+                </configuration>
+            </plugin>
+        </plugins>
+    </build>
+</project>

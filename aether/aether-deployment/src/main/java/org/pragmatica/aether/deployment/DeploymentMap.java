@@ -4,6 +4,11 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.deployment;
 
+import java.util.List;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.stream.Collectors;
+
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.slice.SliceState;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeArtifactKey;
@@ -12,11 +17,6 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.NodeArtifactValue;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValueRemove;
 import org.pragmatica.consensus.NodeId;
-
-import java.util.List;
-import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.stream.Collectors;
 
 
 public sealed interface DeploymentMap {
@@ -110,8 +110,10 @@ final class IndexedDeploymentMap implements DeploymentMap {
 
     private static SliceDeploymentInfo toSliceDeploymentInfo(Map.Entry<String, List<Map.Entry<SliceNodeKey, SliceState>>> group) {
         var instances = group.getValue().stream().map(IndexedDeploymentMap::toInstanceInfo).toList();
-        var aggregateState = group.getValue().stream().map(Map.Entry::getValue).reduce(SliceState.FAILED,
-                                                                                       IndexedDeploymentMap::higherState);
+        var aggregateState = group.getValue()
+                                  .stream()
+                                  .map(Map.Entry::getValue)
+                                  .reduce(SliceState.FAILED, IndexedDeploymentMap::higherState);
 
         return new SliceDeploymentInfo(group.getKey(), aggregateState, instances);
     }

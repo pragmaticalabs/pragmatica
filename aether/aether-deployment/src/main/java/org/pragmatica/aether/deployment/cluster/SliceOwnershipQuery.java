@@ -4,6 +4,9 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.deployment.cluster;
 
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.Predicate;
+
 import org.pragmatica.aether.slice.SliceState;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeArtifactKey;
@@ -11,9 +14,6 @@ import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeArtifactValue;
 import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.consensus.NodeId;
-
-import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.function.Predicate;
 
 
 /// Active-slice-ownership query over the authoritative KV-Store. Produces the narrow

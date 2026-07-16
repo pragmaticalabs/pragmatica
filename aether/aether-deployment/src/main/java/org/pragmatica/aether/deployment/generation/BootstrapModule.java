@@ -4,6 +4,17 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.deployment.generation;
 
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.BooleanSupplier;
+import java.util.function.Supplier;
+import java.util.stream.Collectors;
+
 import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ClusterConfigKey;
@@ -19,17 +30,6 @@ import org.pragmatica.hlc.HlcClock;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
-
-import java.util.ArrayList;
-import java.util.List;
-import java.util.Map;
-import java.util.Set;
-import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.atomic.AtomicInteger;
-import java.util.concurrent.atomic.AtomicReference;
-import java.util.function.BooleanSupplier;
-import java.util.function.Supplier;
-import java.util.stream.Collectors;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -187,12 +187,13 @@ record BootstrapModuleRecord(BooleanSupplier isLeaderSupplier,
 
         var commandCount = batch.size();
 
-        clusterNode.apply(List.copyOf(batch)).onFailure(cause -> log.warn("Leader-change bootstrap batch failed ({} commands, attempt {}/{}): {}",
-                                                                          commandCount,
-                                                                          bootstrapAttempts.get(),
-                                                                          BootstrapModule.BOOTSTRAP_MAX_ATTEMPTS,
-                                                                          cause.message())).onSuccess(_ -> onLeaderChangeBootstrapCommitted(hasCore,
-                                                                                                                                            commandCount));
+        clusterNode.apply(List.copyOf(batch))
+                   .onFailure(cause -> log.warn("Leader-change bootstrap batch failed ({} commands, attempt {}/{}): {}",
+                                                commandCount,
+                                                bootstrapAttempts.get(),
+                                                BootstrapModule.BOOTSTRAP_MAX_ATTEMPTS,
+                                                cause.message()))
+                   .onSuccess(_ -> onLeaderChangeBootstrapCommitted(hasCore, commandCount));
     }
 
     private boolean leaderEpochChanged(Option<Long> captured) {
@@ -326,11 +327,13 @@ record BootstrapModuleRecord(BooleanSupplier isLeaderSupplier,
 
     @Contract
     private void logCoreBootstrap(CoreBootstrapPlan plan) {
-        plan.existing().onPresent(owner -> log.info("Rewriting DhtPartitionOwnershipKey(\"core\"): previous owner {} is not a live core member — {} takes over (ownershipTerm {})",
-                                                    owner.ownerNodeId(),
-                                                    plan.self(),
-                                                    owner.ownershipTerm() + 1L)).onEmpty(() -> log.info("Bootstrapping DhtPartitionOwnershipKey(\"core\") with owner {} (ownershipTerm 1)",
-                                                                                                        plan.self()));
+        plan.existing()
+            .onPresent(owner -> log.info("Rewriting DhtPartitionOwnershipKey(\"core\"): previous owner {} is not a live core member — {} takes over (ownershipTerm {})",
+                                         owner.ownerNodeId(),
+                                         plan.self(),
+                                         owner.ownershipTerm() + 1L))
+            .onEmpty(() -> log.info("Bootstrapping DhtPartitionOwnershipKey(\"core\") with owner {} (ownershipTerm 1)",
+                                    plan.self()));
     }
 
     @Contract
@@ -398,15 +401,32 @@ record BootstrapModuleRecord(BooleanSupplier isLeaderSupplier,
         return Epoch.epoch(rabiaTermSupplier.get(), 0L);
     }
 
-    private KVCommand<AetherKey> buildCorePartitionCommand(NodeId owner, Epoch epoch, long ownershipTerm) {
+    private KVCommand<AetherKey> buildCorePartitionCommand(NodeId owner, Epoch committedEpoch, long ownershipTerm) {
         var value = DhtPartitionOwnershipValue.dhtPartitionOwnershipValue(owner,
                                                                           BootstrapModule.CORE_COMMUNITY_ID,
-                                                                          epoch,
+                                                                          ownerEpoch(committedEpoch, ownershipTerm),
                                                                           ownershipTerm,
                                                                           hlcClock.now());
 
         return new KVCommand.Put<AetherKey, AetherValue>(DhtPartitionOwnershipKey.dhtPartitionOwnershipKey(BootstrapModule.CORE_PARTITION_ID),
                                                          value);
+    }
+
+    /// The committed `ownerEpoch` (#345 DHT parity, mirroring the stream writer's
+    /// `StreamPartitionOwnershipWriter.ownerEpoch`): the committed generation term (the dominant
+    /// component, which advances on a leader re-election / governor handover) paired with the
+    /// per-partition `ownershipTerm` as the local counter (which advances on EVERY owner change,
+    /// including a same-term stale-owner takeover with no re-election). This couples
+    /// `ownerEpoch.localCounter == ownershipTerm`, so a deposed-but-alive core owner — whose
+    /// committed epoch carried the OLD `ownershipTerm` — is strictly dominated by its successor's
+    /// epoch and is fenced, even when no leader change occurred (the same-term gap that minting
+    /// `Epoch.epoch(rabiaTerm, 0)` left open). Still a pure function of committed state (committed
+    /// generation term + the takeover counter derived from the committed record), so two replicas
+    /// presented identical committed state mint the IDENTICAL value. `ownershipTerm` (NOT
+    /// `generationCounter`) is the local counter by design: it is committed state, whereas the
+    /// generation counter is a per-node time-based value that would break determinism.
+    private static Epoch ownerEpoch(Epoch committedEpoch, long ownershipTerm) {
+        return Epoch.epoch(committedEpoch.rabiaTerm(), ownershipTerm);
     }
 
     @Contract
@@ -423,10 +443,12 @@ record BootstrapModuleRecord(BooleanSupplier isLeaderSupplier,
 
         logCoreBootstrap(plan);
         bootstrapAttempts.incrementAndGet();
-        clusterNode.apply(List.of(plan.command())).onFailure(cause -> log.warn("Core DhtPartitionOwnership bootstrap failed (attempt {}/{}): {}",
-                                                                               bootstrapAttempts.get(),
-                                                                               BootstrapModule.BOOTSTRAP_MAX_ATTEMPTS,
-                                                                               cause.message())).onSuccess(_ -> bootstrapComplete.set(true));
+        clusterNode.apply(List.of(plan.command()))
+                   .onFailure(cause -> log.warn("Core DhtPartitionOwnership bootstrap failed (attempt {}/{}): {}",
+                                                bootstrapAttempts.get(),
+                                                BootstrapModule.BOOTSTRAP_MAX_ATTEMPTS,
+                                                cause.message()))
+                   .onSuccess(_ -> bootstrapComplete.set(true));
     }
 
     private static Map<String, DhtPartitionOwnershipValue> collectPartitions(Map<AetherKey, AetherValue> kv) {

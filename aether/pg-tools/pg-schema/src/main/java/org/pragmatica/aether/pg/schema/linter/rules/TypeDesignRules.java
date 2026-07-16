@@ -4,16 +4,16 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.pg.schema.linter.rules;
 
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Set;
+
 import org.pragmatica.aether.pg.schema.event.SchemaEvent;
 import org.pragmatica.aether.pg.schema.linter.LintDiagnostic;
 import org.pragmatica.aether.pg.schema.linter.LintRule;
 import org.pragmatica.aether.pg.schema.model.Constraint;
 import org.pragmatica.aether.pg.schema.model.PgType;
 import org.pragmatica.aether.pg.schema.model.Schema;
-
-import java.util.ArrayList;
-import java.util.List;
-import java.util.Set;
 
 import static org.pragmatica.aether.pg.schema.linter.LintDiagnostic.Severity.WARNING;
 
@@ -181,8 +181,12 @@ public final class TypeDesignRules {
         public List<LintDiagnostic> check(SchemaEvent event, Schema schema) {
             if (event instanceof SchemaEvent.TableCreated e) {
                 var results = new ArrayList<LintDiagnostic>();
-                var pkColumns = e.constraints().stream().filter(c -> c instanceof Constraint.PrimaryKey).flatMap(c -> ((Constraint.PrimaryKey) c).columns()
-                                                                                                                                                 .stream()).toList();
+                var pkColumns = e.constraints()
+                                 .stream()
+                                 .filter(c -> c instanceof Constraint.PrimaryKey)
+                                 .flatMap(c -> ((Constraint.PrimaryKey) c).columns()
+                                                                          .stream())
+                                 .toList();
 
                 for (var col : e.columns()) {
                     if (pkColumns.contains(col.name()) && col.type() instanceof PgType.BuiltinType bt && SMALL_INT_TYPES.contains(bt.name())) {
@@ -291,8 +295,12 @@ public final class TypeDesignRules {
         public List<LintDiagnostic> check(SchemaEvent event, Schema schema) {
             if (event instanceof SchemaEvent.TableCreated e) {
                 var results = new ArrayList<LintDiagnostic>();
-                var pkColumns = e.constraints().stream().filter(c -> c instanceof Constraint.PrimaryKey).flatMap(c -> ((Constraint.PrimaryKey) c).columns()
-                                                                                                                                                 .stream()).toList();
+                var pkColumns = e.constraints()
+                                 .stream()
+                                 .filter(c -> c instanceof Constraint.PrimaryKey)
+                                 .flatMap(c -> ((Constraint.PrimaryKey) c).columns()
+                                                                          .stream())
+                                 .toList();
 
                 for (var col : e.columns()) {
                     if (pkColumns.contains(col.name()) && col.type() instanceof PgType.BuiltinType bt && Set.of("smallint",

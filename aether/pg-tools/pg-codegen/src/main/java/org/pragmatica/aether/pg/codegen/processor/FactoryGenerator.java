@@ -4,15 +4,16 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.pg.codegen.processor;
 
-import org.pragmatica.aether.pg.codegen.NamingConvention;
-import org.pragmatica.aether.pg.codegen.TypeMapper;
-import org.pragmatica.aether.pg.schema.model.Table;
-import org.pragmatica.lang.Option;
-
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
+
+import org.pragmatica.aether.pg.codegen.BatchedAllRenderer;
+import org.pragmatica.aether.pg.codegen.NamingConvention;
+import org.pragmatica.aether.pg.codegen.TypeMapper;
+import org.pragmatica.aether.pg.schema.model.Table;
+import org.pragmatica.lang.Option;
 
 
 public final class FactoryGenerator {
@@ -28,30 +29,7 @@ public final class FactoryGenerator {
                              List<MethodParam> params,
                              List<MapperColumn> mapperColumns,
                              boolean needsMapper,
-                             Option<JavaTypeAccessor.AccessorInfo> scalarAccessor) {
-        public static MethodInfo withSharedParams(String methodName,
-                                                  String sqlConstantName,
-                                                  String sql,
-                                                  MethodAnalyzer.ReturnKind returnKind,
-                                                  String returnTypeName,
-                                                  String innerTypeName,
-                                                  List<MethodParam> params,
-                                                  List<MapperColumn> mapperColumns,
-                                                  boolean needsMapper,
-                                                  Option<JavaTypeAccessor.AccessorInfo> scalarAccessor) {
-            return new MethodInfo(methodName,
-                                  sqlConstantName,
-                                  sql,
-                                  returnKind,
-                                  returnTypeName,
-                                  innerTypeName,
-                                  params,
-                                  params,
-                                  mapperColumns,
-                                  needsMapper,
-                                  scalarAccessor);
-        }
-    }
+                             Option<JavaTypeAccessor.AccessorInfo> scalarAccessor) {}
 
     public record MethodParam(String name, String typeName, String accessor) {
         public static MethodParam simple(String name, String typeName) {
@@ -59,9 +37,30 @@ public final class FactoryGenerator {
         }
     }
 
-    public record MapperColumn(String columnName, String accessorMethod, String fieldName, String typeArg) {
+    /// A column read by a generated row mapper. `liftExpr`, when non-empty, is a value-object
+    /// `lift` function reference (e.g. `SeatState.valueMapping().lift()`): the raw column value is
+    /// decoded through it and the result guarded with a typed `RowDecode` cause.
+    public record MapperColumn(String columnName,
+                               String accessorMethod,
+                               String fieldName,
+                               String typeArg,
+                               String liftExpr) {
+        public static MapperColumn plain(String columnName, String accessorMethod, String fieldName, String typeArg) {
+            return new MapperColumn(columnName, accessorMethod, fieldName, typeArg, "");
+        }
+
         public static MapperColumn withoutTypeArg(String columnName, String accessorMethod, String fieldName) {
-            return new MapperColumn(columnName, accessorMethod, fieldName, "");
+            return new MapperColumn(columnName, accessorMethod, fieldName, "", "");
+        }
+
+        /// Returns a copy that decodes this column through the given value-object `lift`, reading
+        /// the column with the primitive representation's accessor.
+        public MapperColumn withLift(String accessorMethod, String typeArg, String liftExpr) {
+            return new MapperColumn(columnName, accessorMethod, fieldName, typeArg, liftExpr);
+        }
+
+        public boolean hasLift() {
+            return ! liftExpr.isEmpty();
         }
     }
 
@@ -99,7 +98,7 @@ public final class FactoryGenerator {
                                : "getString";
                 var typeArg = typeInfo.flatMap(ti -> ti.rowAccessorTypeArg()).fold(() -> "", t -> t);
 
-                columns.add(new MapperColumn(columnName, accessor, fieldName, typeArg));
+                columns.add(MapperColumn.plain(columnName, accessor, fieldName, typeArg));
             }
         }
 
@@ -133,6 +132,10 @@ public final class FactoryGenerator {
 
             if (method.returnKind == MethodAnalyzer.ReturnKind.UNIT) {
                 imports.add("org.pragmatica.lang.Unit");
+            }
+
+            if (hasValueObjectColumn(method)) {
+                imports.add("org.pragmatica.aether.resource.db.RowDecodeError");
             }
         }
 
@@ -209,7 +212,11 @@ public final class FactoryGenerator {
         var accessor = method.scalarAccessor().expect("checked with isPresent above");
         var columnName = inferScalarColumnName(method.sql, method.returnKind);
 
-        sb.append(",\n                    row -> row.").append(accessor.method()).append("(\"").append(columnName).append('"');
+        sb.append(",\n                    row -> row.")
+          .append(accessor.method())
+          .append("(\"")
+          .append(columnName)
+          .append('"');
         if (!accessor.typeArg().isEmpty()) {
             sb.append(", ").append(simplifyAccessorTypeArg(accessor.typeArg()));
         }
@@ -415,26 +422,71 @@ public final class FactoryGenerator {
 
             sb.append("\n    private static Result<").append(method.innerTypeName);
             sb.append("> map").append(mapperSuffix).append("(RowMapper.RowAccessor row) {\n");
-            sb.append("        return Result.all(\n");
-            for (int i = 0; i < method.mapperColumns.size(); i++) {
-                var col = method.mapperColumns.get(i);
-
-                sb.append("            row.").append(col.accessorMethod()).append("(\"").append(col.columnName()).append("\"");
-                if (!col.typeArg().isEmpty()) {
-                    sb.append(", ").append(col.typeArg());
-                }
-
-                sb.append(')');
-                if (i < method.mapperColumns.size() - 1) {
-                    sb.append(',');
-                }
-
-                sb.append('\n');
-            }
-
-            sb.append("        ).map(").append(method.innerTypeName).append("::new);\n");
+            appendMapperBody(sb, method);
             sb.append("    }\n");
         }
+    }
+
+    /// A single-column record maps its one decoded value directly; wrapping it in `Result.all`
+    /// would bury a value-object decode failure inside an accumulating composite cause, hiding the
+    /// typed `RowDecode`. Multi-column records use `Result.all` so every column's decode failure is
+    /// collected.
+    private static void appendMapperBody(StringBuilder sb, MethodInfo method) {
+        var columns = method.mapperColumns;
+
+        if (columns.size() == 1) {
+            sb.append("        return ");
+            appendColumnExpr(sb, columns.getFirst());
+            sb.append(".map(").append(method.innerTypeName).append("::new);\n");
+
+            return;
+        }
+
+        var exprs = new ArrayList<String>();
+
+        for (var column : columns) {
+            exprs.add(columnExpr(column));
+        }
+
+        BatchedAllRenderer.appendReturn(sb, "Result", method.innerTypeName, exprs, "        ");
+    }
+
+    private static String columnExpr(MapperColumn col) {
+        var tmp = new StringBuilder();
+
+        appendColumnExpr(tmp, col);
+
+        return tmp.toString();
+    }
+
+    /// Emits a single column read expression. A value-object column (non-empty `liftExpr`) reads
+    /// the raw primitive representation, re-parses it through the value object's `lift`, and guards
+    /// the result with a typed `RowDecode` cause naming the column; a plain column reads directly.
+    private static void appendColumnExpr(StringBuilder sb, MapperColumn col) {
+        if (col.hasLift()) {
+            sb.append("RowDecodeError.guard(\"").append(col.columnName()).append("\", row.");
+            appendRowAccess(sb, col);
+            sb.append(".flatMap(").append(col.liftExpr()).append("))");
+
+            return;
+        }
+
+        sb.append("row.");
+        appendRowAccess(sb, col);
+    }
+
+    private static void appendRowAccess(StringBuilder sb, MapperColumn col) {
+        sb.append(col.accessorMethod()).append("(\"").append(col.columnName()).append("\"");
+        if (!col.typeArg().isEmpty()) {
+            sb.append(", ").append(col.typeArg());
+        }
+
+        sb.append(')');
+    }
+
+    private static boolean hasValueObjectColumn(MethodInfo method) {
+        return method.mapperColumns.stream()
+                                   .anyMatch(MapperColumn::hasLift);
     }
 
     private static void appendClassEnd(StringBuilder sb) {
@@ -486,9 +538,20 @@ public final class FactoryGenerator {
         };
     }
 
+    // The SQL is emitted into a `"..."` Java string literal. Besides `\` and `"`, line
+    // terminators and tabs must be escaped: a text-block `@Query` arrives (via the typed
+    // annotation accessor) as the compiler-cooked value with REAL newline characters, which
+    // would otherwise terminate the literal and break compilation of the generated code.
+    // Escaping (not whitespace-collapsing) preserves the SQL byte-for-byte at runtime. The
+    // single-line concatenated form contains none of these characters, so its emission stays
+    // byte-identical. Backslash is doubled FIRST so the escapes introduced below are not
+    // themselves re-escaped.
     private static String escapeSql(String sql) {
         return sql.replace("\\", "\\\\")
-                  .replace("\"", "\\\"");
+                  .replace("\"", "\\\"")
+                  .replace("\n", "\\n")
+                  .replace("\r", "\\r")
+                  .replace("\t", "\\t");
     }
 
     private static String toMapperMethodSuffix(String innerTypeName) {

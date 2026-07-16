@@ -4,6 +4,14 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.deployment.validation;
 
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.slice.blueprint.BlueprintNamespace;
 import org.pragmatica.aether.slice.blueprint.StreamConfigParser;
@@ -15,14 +23,6 @@ import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.utils.Causes.CompositeCause;
-
-import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.LinkedHashMap;
-import java.util.LinkedHashSet;
-import java.util.List;
-import java.util.Map;
-import java.util.Set;
 
 
 /// Deploy-time validator that enforces spec §15.1 runtime gates over a blueprint's stream

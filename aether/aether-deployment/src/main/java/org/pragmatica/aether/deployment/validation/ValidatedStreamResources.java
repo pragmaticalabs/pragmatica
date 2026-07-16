@@ -4,10 +4,10 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.deployment.validation;
 
-import org.pragmatica.aether.slice.stream.StreamResource;
-
 import java.util.List;
 import java.util.Map;
+
+import org.pragmatica.aether.slice.stream.StreamResource;
 
 
 /// Successful validation outcome from [StreamResourceValidator].

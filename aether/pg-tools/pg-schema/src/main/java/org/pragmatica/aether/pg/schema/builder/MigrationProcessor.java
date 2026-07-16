@@ -4,13 +4,13 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.pg.schema.builder;
 
+import java.util.ArrayList;
+import java.util.List;
+
 import org.pragmatica.aether.pg.parser.PostgresParser;
 import org.pragmatica.aether.pg.schema.event.SchemaEvent;
 import org.pragmatica.aether.pg.schema.model.Schema;
 import org.pragmatica.lang.Result;
-
-import java.util.ArrayList;
-import java.util.List;
 
 
 public final class MigrationProcessor {

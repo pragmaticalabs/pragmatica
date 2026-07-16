@@ -4,6 +4,9 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.deployment.cluster;
 
+import java.util.List;
+import java.util.Map;
+
 import org.pragmatica.aether.environment.ComputeProvider;
 import org.pragmatica.aether.environment.EnvironmentError;
 import org.pragmatica.aether.environment.InstanceInfo;
@@ -13,9 +16,6 @@ import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
-
-import java.util.List;
-import java.util.Map;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -94,22 +94,20 @@ record NodeLifecycleManagerRecord(Option<ComputeProvider> computeProvider) imple
 
     private Promise<Unit> lookupAndTerminate(ComputeProvider provider, NodeId nodeId) {
         return provider.listInstances(Map.of(NODE_ID_TAG,
-                                             nodeId.id())).flatMap(instances -> terminateMatchedInstance(provider,
-                                                                                                         nodeId,
-                                                                                                         instances))
-                                     .onFailure(cause -> log.warn("Failed to look up cloud instance for node {}: {}",
-                                                                  nodeId,
-                                                                  cause.message()));
+                                             nodeId.id()))
+                       .flatMap(instances -> terminateMatchedInstance(provider, nodeId, instances))
+                       .onFailure(cause -> log.warn("Failed to look up cloud instance for node {}: {}",
+                                                    nodeId,
+                                                    cause.message()));
     }
 
     private Promise<Unit> lookupAndRestart(ComputeProvider provider, NodeId nodeId) {
         return provider.listInstances(Map.of(NODE_ID_TAG,
-                                             nodeId.id())).flatMap(instances -> restartMatchedInstance(provider,
-                                                                                                       nodeId,
-                                                                                                       instances))
-                                     .onFailure(cause -> log.warn("Failed to look up cloud instance for restart of node {}: {}",
-                                                                  nodeId,
-                                                                  cause.message()));
+                                             nodeId.id()))
+                       .flatMap(instances -> restartMatchedInstance(provider, nodeId, instances))
+                       .onFailure(cause -> log.warn("Failed to look up cloud instance for restart of node {}: {}",
+                                                    nodeId,
+                                                    cause.message()));
     }
 
     private Promise<Unit> terminateMatchedInstance(ComputeProvider provider,

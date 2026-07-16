@@ -4,11 +4,11 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.environment;
 
+import java.util.Map;
+
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
-
-import java.util.Map;
 
 
 public interface LoadBalancerProvider {

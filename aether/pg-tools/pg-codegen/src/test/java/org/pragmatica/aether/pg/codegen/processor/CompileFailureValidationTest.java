@@ -309,6 +309,116 @@ class CompileFailureValidationTest {
         }
     }
 
+    @Nested
+    class DataModifyingCte {
+        @Test
+        void insertReturningCte_failsCompilation() throws Exception {
+            var source = """
+                package test;
+
+                import org.pragmatica.aether.pg.codegen.annotation.Query;
+                import org.pragmatica.aether.resource.db.PgSql;
+                import org.pragmatica.lang.Option;
+                import org.pragmatica.lang.Promise;
+
+                @PgSql
+                public interface WritingCteRepo {
+                    record Row(long id) {}
+
+                    @Query("WITH inserted AS (INSERT INTO users (name, email) VALUES (:name, :email) RETURNING id) SELECT id FROM inserted")
+                    Promise<Option<Row>> createUser(String name, String email);
+                }
+                """;
+
+            var result = compile(source, "test/WritingCteRepo.java");
+
+            assertThat(result.success()).isFalse();
+            assertThat(result.diagnostics())
+                .contains("[PG-VALIDATE]")
+                .contains("Data-modifying CTEs are not supported")
+                .contains("createUser");
+        }
+
+        @Test
+        void updateReturningCte_failsCompilation() throws Exception {
+            var source = """
+                package test;
+
+                import org.pragmatica.aether.pg.codegen.annotation.Query;
+                import org.pragmatica.aether.resource.db.PgSql;
+                import org.pragmatica.lang.Option;
+                import org.pragmatica.lang.Promise;
+
+                @PgSql
+                public interface UpdatingCteRepo {
+                    record Row(long id) {}
+
+                    @Query("WITH updated AS (UPDATE users SET name = :name WHERE id = :id RETURNING id) SELECT id FROM updated")
+                    Promise<Option<Row>> rename(long id, String name);
+                }
+                """;
+
+            var result = compile(source, "test/UpdatingCteRepo.java");
+
+            assertThat(result.success()).isFalse();
+            assertThat(result.diagnostics())
+                .contains("[PG-VALIDATE]")
+                .contains("Data-modifying CTEs are not supported");
+        }
+
+        @Test
+        void deleteReturningCte_failsCompilation() throws Exception {
+            var source = """
+                package test;
+
+                import org.pragmatica.aether.pg.codegen.annotation.Query;
+                import org.pragmatica.aether.resource.db.PgSql;
+                import org.pragmatica.lang.Promise;
+                import java.util.List;
+
+                @PgSql
+                public interface DeletingCteRepo {
+                    record Row(long id) {}
+
+                    @Query("WITH removed AS (DELETE FROM users WHERE id = :id RETURNING id) SELECT id FROM removed")
+                    Promise<List<Row>> purge(long id);
+                }
+                """;
+
+            var result = compile(source, "test/DeletingCteRepo.java");
+
+            assertThat(result.success()).isFalse();
+            assertThat(result.diagnostics())
+                .contains("[PG-VALIDATE]")
+                .contains("Data-modifying CTEs are not supported");
+        }
+
+        @Test
+        void readOnlyCte_compilesSuccessfully() throws Exception {
+            var source = """
+                package test;
+
+                import org.pragmatica.aether.pg.codegen.annotation.Query;
+                import org.pragmatica.aether.resource.db.PgSql;
+                import org.pragmatica.lang.Promise;
+                import java.util.List;
+
+                @PgSql
+                public interface ReadingCteRepo {
+                    record Row(long id, String name) {}
+
+                    @Query("WITH active_users AS (SELECT id, name FROM users WHERE active = true) SELECT id, name FROM active_users")
+                    Promise<List<Row>> activeUsers();
+                }
+                """;
+
+            var result = compile(source, "test/ReadingCteRepo.java");
+
+            assertThat(result.success()).isTrue();
+            assertThat(result.diagnostics()).doesNotContain("Data-modifying CTEs are not supported");
+        }
+    }
+
     private TestCompilationHelper.CompilationResult compile(String sourceCode, String fileName) throws Exception {
         return TestCompilationHelper.compileWithProcessor(sourceCode, fileName, tempDir);
     }

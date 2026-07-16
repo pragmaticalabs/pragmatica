@@ -4,10 +4,10 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.environment;
 
+import java.util.Map;
+
 import org.pragmatica.lang.Option;
 import org.pragmatica.utility.IdGenerator;
-
-import java.util.Map;
 
 
 /// Typed payload for cloud-provider provisioning intent.

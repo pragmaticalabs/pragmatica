@@ -4,6 +4,11 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.environment.hetzner;
 
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.List;
+import java.util.Map;
+
 import org.pragmatica.aether.environment.CloudConfig;
 import org.pragmatica.aether.environment.EnvironmentError;
 import org.pragmatica.aether.environment.EnvironmentIntegration;
@@ -11,11 +16,6 @@ import org.pragmatica.aether.environment.EnvironmentIntegrationFactory;
 import org.pragmatica.cloud.hetzner.HetznerConfig;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
-
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.List;
-import java.util.Map;
 
 import static org.pragmatica.aether.environment.hetzner.HetznerEnvironmentConfig.HetznerLbConfig.hetznerLbConfig;
 import static org.pragmatica.aether.environment.hetzner.HetznerEnvironmentConfig.hetznerEnvironmentConfig;
@@ -33,7 +33,8 @@ public record HetznerEnvironmentIntegrationFactory() implements EnvironmentInteg
                                      .map(EnvironmentIntegration.class::cast);
     }
 
-    private static final String DEFAULT_SERVER_TYPE = "cx33";
+    // #442: no hardcoded instance-type default. An absent server_type stays empty ("unset") and is
+    // resolved from the ProvisionSpec's per-role instance type — or fails loud — at provision time.
     private static final String DEFAULT_IMAGE = "ubuntu-22.04";
 
     private static Result<HetznerEnvironmentConfig> buildEnvironmentConfig(CloudConfig config) {
@@ -64,7 +65,7 @@ public record HetznerEnvironmentIntegrationFactory() implements EnvironmentInteg
 
         return hetznerEnvironmentConfig(hetznerConfig,
                                         nonBlank(compute.get("server_type"),
-                                                 DEFAULT_SERVER_TYPE),
+                                                 ""),
                                         nonBlank(compute.get("image"),
                                                  DEFAULT_IMAGE),
                                         compute.getOrDefault("region", ""),

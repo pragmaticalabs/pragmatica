@@ -51,7 +51,9 @@ public final class EnumGenerator {
         sb.append("        for (var v : values()) {\n");
         sb.append("            if (v.pgValue.equals(value)) return Result.success(v);\n");
         sb.append("        }\n");
-        sb.append("        return Result.failure(() -> \"Unknown ").append(enumType.name()).append(" value: \" + value);\n");
+        sb.append("        return Result.failure(() -> \"Unknown ")
+          .append(enumType.name())
+          .append(" value: \" + value);\n");
         sb.append("    }\n");
         sb.append("}\n");
 

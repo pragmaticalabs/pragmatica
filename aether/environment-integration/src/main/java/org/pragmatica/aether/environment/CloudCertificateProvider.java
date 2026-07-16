@@ -4,6 +4,9 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.environment;
 
+import java.nio.charset.StandardCharsets;
+import java.time.Instant;
+
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
@@ -11,9 +14,6 @@ import org.pragmatica.lang.Result;
 import org.pragmatica.net.tcp.security.CertificateBundle;
 import org.pragmatica.net.tcp.security.CertificateProvider;
 import org.pragmatica.net.tcp.security.GossipKey;
-
-import java.nio.charset.StandardCharsets;
-import java.time.Instant;
 
 import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Result.success;

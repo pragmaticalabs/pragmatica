@@ -4,6 +4,15 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.deployment.cluster.fsm;
 
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Function;
+import java.util.function.LongSupplier;
+import java.util.function.Supplier;
+
+import org.pragmatica.aether.config.CommunitySizing;
 import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager.DeploymentAtomicity;
 import org.pragmatica.aether.deployment.schema.SchemaOrchestratorService;
 import org.pragmatica.aether.slice.generation.HealthSignalSink;
@@ -19,14 +28,8 @@ import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.concurrent.CancellableTask;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.messaging.MessageRouter;
+import org.pragmatica.lang.Option;
 import org.pragmatica.statemachine.Fsm;
-
-import java.util.Set;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.atomic.AtomicInteger;
-import java.util.function.LongSupplier;
-import java.util.function.Supplier;
 
 
 public final class ClusterDeploymentContext {
@@ -46,6 +49,19 @@ public final class ClusterDeploymentContext {
     private final int coreMax;
     private final TimeSpan reconcileInterval;
     private final LongSupplier clock;
+    /// Per-node membership `source` read-seam (worker-membership-spec §4.1 / D2): resolves the
+    /// joining node's source label (from the membership FSM's [`MemberDescriptor#source`]) so the
+    /// leader can mint/reuse a per-source community at role-assignment time. `none()` (or a blank
+    /// source) means "unknown" and the caller falls back to the `"default"` source. Wired in
+    /// `AetherNode` to `membershipFsmRef`; defaults to `node -> none()` in the legacy constructors
+    /// so existing call sites (and tests) keep the community-less behaviour.
+    private final Function<NodeId, Option<String>> memberSourceSupplier;
+    /// Per-community sizing policy (worker-membership-spec §3.3 / §4.1): the `targetSize` stamped on a
+    /// minted FORMING community and the `viabilityFloor` that gates its FORMING/DEGRADED → ACTIVE
+    /// transition. Threaded from the node/deployment config so a small test/dev topology can run
+    /// communities under the default size; legacy constructors default it to
+    /// [CommunitySizing#DEFAULT] (target 100, floor 3) so existing call sites are unchanged.
+    private final CommunitySizing communitySizing;
     private final ClusterDeploymentState dormant;
     private final ClusterDeploymentState stopped;
 
@@ -98,6 +114,80 @@ public final class ClusterDeploymentContext {
                                     int coreMax,
                                     TimeSpan reconcileInterval,
                                     LongSupplier clock) {
+        this(fsm,
+             self,
+             cluster,
+             kvStore,
+             router,
+             topologyManager,
+             schemaOrchestrator,
+             healthSignalSink,
+             coreCountedMembersSupplier,
+             readyNodesSupplier,
+             drainingNodesSupplier,
+             seedNodes,
+             atomicity,
+             coreMax,
+             reconcileInterval,
+             clock,
+             node -> Option.none());
+    }
+
+    public ClusterDeploymentContext(Fsm<ClusterDeploymentState, ClusterFsmEvent> fsm,
+                                    NodeId self,
+                                    ClusterNode<KVCommand<AetherKey>> cluster,
+                                    KVStore<AetherKey, AetherValue> kvStore,
+                                    MessageRouter router,
+                                    TopologyManager topologyManager,
+                                    SchemaOrchestratorService schemaOrchestrator,
+                                    HealthSignalSink healthSignalSink,
+                                    Supplier<Set<NodeId>> coreCountedMembersSupplier,
+                                    Supplier<Set<NodeId>> readyNodesSupplier,
+                                    Supplier<Set<NodeId>> drainingNodesSupplier,
+                                    Set<NodeId> seedNodes,
+                                    DeploymentAtomicity atomicity,
+                                    int coreMax,
+                                    TimeSpan reconcileInterval,
+                                    LongSupplier clock,
+                                    Function<NodeId, Option<String>> memberSourceSupplier) {
+        this(fsm,
+             self,
+             cluster,
+             kvStore,
+             router,
+             topologyManager,
+             schemaOrchestrator,
+             healthSignalSink,
+             coreCountedMembersSupplier,
+             readyNodesSupplier,
+             drainingNodesSupplier,
+             seedNodes,
+             atomicity,
+             coreMax,
+             reconcileInterval,
+             clock,
+             memberSourceSupplier,
+             CommunitySizing.DEFAULT);
+    }
+
+    public ClusterDeploymentContext(Fsm<ClusterDeploymentState, ClusterFsmEvent> fsm,
+                                    NodeId self,
+                                    ClusterNode<KVCommand<AetherKey>> cluster,
+                                    KVStore<AetherKey, AetherValue> kvStore,
+                                    MessageRouter router,
+                                    TopologyManager topologyManager,
+                                    SchemaOrchestratorService schemaOrchestrator,
+                                    HealthSignalSink healthSignalSink,
+                                    Supplier<Set<NodeId>> coreCountedMembersSupplier,
+                                    Supplier<Set<NodeId>> readyNodesSupplier,
+                                    Supplier<Set<NodeId>> drainingNodesSupplier,
+                                    Set<NodeId> seedNodes,
+                                    DeploymentAtomicity atomicity,
+                                    int coreMax,
+                                    TimeSpan reconcileInterval,
+                                    LongSupplier clock,
+                                    Function<NodeId, Option<String>> memberSourceSupplier,
+                                    CommunitySizing communitySizing) {
         this.fsm = fsm;
         this.self = self;
         this.cluster = cluster;
@@ -114,6 +204,8 @@ public final class ClusterDeploymentContext {
         this.coreMax = coreMax;
         this.reconcileInterval = reconcileInterval;
         this.clock = clock;
+        this.memberSourceSupplier = memberSourceSupplier;
+        this.communitySizing = communitySizing;
         this.dormant = new ClusterDeploymentState.Dormant(this);
         this.stopped = new ClusterDeploymentState.Stopped(this);
     }
@@ -199,6 +291,22 @@ public final class ClusterDeploymentContext {
     /// readiness snapshot.
     public Supplier<Set<NodeId>> drainingNodesSupplier() {
         return drainingNodesSupplier;
+    }
+
+    /// The joining node's membership `source` label (worker-membership-spec §4.1 / D2), used by the
+    /// leader to mint/reuse a per-source community at role-assignment time. `none()` when the source
+    /// is unknown (untracked member or no descriptor yet); the caller defaults such a node to the
+    /// `"default"` source. A blank source is surfaced as-is and normalized by the caller.
+    public Option<String> memberSource(NodeId nodeId) {
+        return memberSourceSupplier.apply(nodeId);
+    }
+
+    /// Per-community sizing policy (worker-membership-spec §3.3 / §4.1): the `targetSize` stamped on a
+    /// minted FORMING community and the `viabilityFloor` gating its promotion to ACTIVE. Read by the
+    /// `Active` state in place of the former hardcoded constants; defaults to
+    /// [CommunitySizing#DEFAULT] (target 100, floor 3).
+    public CommunitySizing communitySizing() {
+        return communitySizing;
     }
 
     public Set<NodeId> seedNodes() {

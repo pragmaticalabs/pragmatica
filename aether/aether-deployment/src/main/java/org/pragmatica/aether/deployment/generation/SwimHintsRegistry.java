@@ -4,6 +4,11 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.deployment.generation;
 
+import java.time.Duration;
+import java.util.HashMap;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+
 import org.pragmatica.aether.slice.generation.HealthHint;
 import org.pragmatica.cluster.metrics.HealthHintWire;
 import org.pragmatica.cluster.metrics.PeerHealthObservation;
@@ -11,11 +16,6 @@ import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Functions.Fn0;
 import org.pragmatica.lang.Option;
-
-import java.time.Duration;
-import java.util.HashMap;
-import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
 
 
 public final class SwimHintsRegistry {

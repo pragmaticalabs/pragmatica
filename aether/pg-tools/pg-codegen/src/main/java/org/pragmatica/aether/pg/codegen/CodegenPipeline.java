@@ -4,15 +4,15 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.pg.codegen;
 
-import org.pragmatica.aether.pg.schema.builder.MigrationProcessor;
-import org.pragmatica.aether.pg.schema.model.PgType;
-import org.pragmatica.aether.pg.schema.model.Schema;
-import org.pragmatica.lang.Result;
-
 import java.io.IOException;
 import java.nio.file.Files;
 import java.util.ArrayList;
 import java.util.List;
+
+import org.pragmatica.aether.pg.schema.builder.MigrationProcessor;
+import org.pragmatica.aether.pg.schema.model.PgType;
+import org.pragmatica.aether.pg.schema.model.Schema;
+import org.pragmatica.lang.Result;
 
 
 public final class CodegenPipeline {

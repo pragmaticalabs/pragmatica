@@ -4,12 +4,6 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.pg.codegen.jooq;
 
-import org.pragmatica.aether.pg.schema.model.*;
-import org.pragmatica.aether.pg.schema.model.Constraint.*;
-import org.pragmatica.lang.Option;
-import org.pragmatica.lang.Result;
-import org.pragmatica.lang.Unit;
-
 import javax.xml.stream.XMLOutputFactory;
 import javax.xml.stream.XMLStreamException;
 import javax.xml.stream.XMLStreamWriter;
@@ -20,6 +14,12 @@ import java.nio.file.Path;
 import java.util.*;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Stream;
+
+import org.pragmatica.aether.pg.schema.model.*;
+import org.pragmatica.aether.pg.schema.model.Constraint.*;
+import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Unit;
 
 import static org.pragmatica.lang.Result.success;
 import static org.pragmatica.lang.Unit.unit;
@@ -169,12 +169,16 @@ public final class JooqXmlExporter {
                      tw.table().name());
         writeElement(w, "column_name", col.name());
         writeElement(w, "data_type", typeMapping.dataType());
-        typeMapping.characterMaximumLength().onPresent(v -> writeElementUnchecked(w,
-                                                                                  "character_maximum_length",
-                                                                                  String.valueOf(v)));
+        typeMapping.characterMaximumLength()
+                   .onPresent(v -> writeElementUnchecked(w,
+                                                         "character_maximum_length",
+                                                         String.valueOf(v)));
         typeMapping.numericPrecision().onPresent(v -> writeElementUnchecked(w, "numeric_precision", String.valueOf(v)));
         typeMapping.numericScale().onPresent(v -> writeElementUnchecked(w, "numeric_scale", String.valueOf(v)));
-        typeMapping.datetimePrecision().onPresent(v -> writeElementUnchecked(w, "datetime_precision", String.valueOf(v)));
+        typeMapping.datetimePrecision()
+                   .onPresent(v -> writeElementUnchecked(w,
+                                                         "datetime_precision",
+                                                         String.valueOf(v)));
         writeElement(w, "ordinal_position", String.valueOf(ordinal));
         col.defaultExpr().onPresent(d -> writeElementUnchecked(w, "column_default", d));
         writeElement(w,
@@ -456,7 +460,13 @@ public final class JooqXmlExporter {
     }
 
     private static void emitDomains(XMLStreamWriter w, Schema schema, String defaultSchema, JooqXmlConfig config) throws XMLStreamException {
-        var domains = schema.domainTypes().values().stream().filter(d -> isIncluded(d.schema(), config)).sorted(Comparator.comparing(PgType.DomainType::name)).toList();
+        var domains = schema.domainTypes()
+                            .values()
+                            .stream()
+                            .filter(d -> isIncluded(d.schema(),
+                                                    config))
+                            .sorted(Comparator.comparing(PgType.DomainType::name))
+                            .toList();
 
         if (domains.isEmpty()) return;
 
@@ -472,12 +482,14 @@ public final class JooqXmlExporter {
             writeElement(w, "domain_schema", domainSchema);
             writeElement(w, "domain_name", domain.name());
             writeElement(w, "data_type", baseMapping.dataType());
-            baseMapping.characterMaximumLength().onPresent(v -> writeElementUnchecked(w,
-                                                                                      "character_maximum_length",
-                                                                                      String.valueOf(v)));
-            baseMapping.numericPrecision().onPresent(v -> writeElementUnchecked(w,
-                                                                                "numeric_precision",
-                                                                                String.valueOf(v)));
+            baseMapping.characterMaximumLength()
+                       .onPresent(v -> writeElementUnchecked(w,
+                                                             "character_maximum_length",
+                                                             String.valueOf(v)));
+            baseMapping.numericPrecision()
+                       .onPresent(v -> writeElementUnchecked(w,
+                                                             "numeric_precision",
+                                                             String.valueOf(v)));
             baseMapping.numericScale().onPresent(v -> writeElementUnchecked(w, "numeric_scale", String.valueOf(v)));
             domain.checkExpression().onPresent(expr -> writeElementUnchecked(w, "domain_default", expr));
             w.writeEndElement();
@@ -487,11 +499,15 @@ public final class JooqXmlExporter {
     }
 
     private static List<TableWithSchema> collectTables(Schema schema, JooqXmlConfig config) {
-        var tables = schema.tables().values().stream().filter(t -> isIncluded(t.schema(), config)).map(t -> new TableWithSchema(t,
-                                                                                                                                t.schema()
-                                                                                                                                 .isEmpty()
-                                                                                                                                ? config.defaultSchemaName()
-                                                                                                                                : t.schema()));
+        var tables = schema.tables()
+                           .values()
+                           .stream()
+                           .filter(t -> isIncluded(t.schema(),
+                                                   config))
+                           .map(t -> new TableWithSchema(t,
+                                                         t.schema().isEmpty()
+                                                         ? config.defaultSchemaName()
+                                                         : t.schema()));
 
         if (config.sortElements()) {
             tables = tables.sorted(Comparator.comparing(TableWithSchema::schema).thenComparing(tw -> tw.table()
@@ -506,7 +522,13 @@ public final class JooqXmlExporter {
 
         names.add(config.defaultSchemaName());
         schema.schemas().stream().filter(s -> isIncluded(s, config)).forEach(names::add);
-        schema.tables().values().stream().map(Table::schema).filter(s -> !s.isEmpty()).filter(s -> isIncluded(s, config)).forEach(names::add);
+        schema.tables()
+              .values()
+              .stream()
+              .map(Table::schema)
+              .filter(s -> !s.isEmpty())
+              .filter(s -> isIncluded(s, config))
+              .forEach(names::add);
 
         return List.copyOf(names);
     }

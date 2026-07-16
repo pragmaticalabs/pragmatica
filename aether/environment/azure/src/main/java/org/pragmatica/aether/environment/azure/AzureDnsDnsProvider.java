@@ -4,14 +4,14 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.environment.azure;
 
+import java.util.List;
+
 import org.pragmatica.aether.environment.DnsProvider;
 import org.pragmatica.aether.environment.DnsRecordType;
 import org.pragmatica.cloud.azure.AzureClient;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
-
-import java.util.List;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;

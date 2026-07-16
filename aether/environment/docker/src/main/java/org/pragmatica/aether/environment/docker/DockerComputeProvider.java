@@ -4,6 +4,11 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.environment.docker;
 
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.List;
+import java.util.Map;
+
 import org.pragmatica.aether.environment.ClusterIdentityEnv;
 import org.pragmatica.aether.environment.ComputeProvider;
 import org.pragmatica.aether.environment.EnvironmentError;
@@ -22,11 +27,6 @@ import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.utility.IdGenerator;
-
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.List;
-import java.util.Map;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -140,22 +140,27 @@ public record DockerComputeProvider(DockerCommandRunner runner, DockerConfig con
         log.warn("Provision failed for container {} ({}); attempting rollback via docker rm -f",
                  containerName,
                  cause.message());
-        runner.execute(buildForceRemoveCommand(containerName)).onFailure(rollbackCause -> log.warn("Rollback rm -f {} returned non-zero (likely no partial container existed): {}",
-                                                                                                   containerName,
-                                                                                                   rollbackCause.message())).onSuccess(ignored -> log.info("Rollback removed partial container {}",
-                                                                                                                                                           containerName));
+        runner.execute(buildForceRemoveCommand(containerName))
+              .onFailure(rollbackCause -> log.warn("Rollback rm -f {} returned non-zero (likely no partial container existed): {}",
+                                                   containerName,
+                                                   rollbackCause.message()))
+              .onSuccess(ignored -> log.info("Rollback removed partial container {}", containerName));
     }
 
     @Override
     public void resetProvisionerState(String clusterName) {
         if (!clusterName.isEmpty()) {
-            runner.execute(buildCtmPruneCommand(clusterName)).onFailure(cause -> log.warn("CTM sweep failed for cluster {}: {}",
-                                                                                          clusterName,
-                                                                                          cause.message())).onSuccess(out -> {
-                if (!out.isBlank()) {
-                    log.info("CTM sweep for cluster {}: {}", clusterName, out.strip());
-                }
-            });
+            runner.execute(buildCtmPruneCommand(clusterName))
+                  .onFailure(cause -> log.warn("CTM sweep failed for cluster {}: {}",
+                                               clusterName,
+                                               cause.message()))
+                  .onSuccess(out -> {
+                                 if (!out.isBlank()) {
+                                 log.info("CTM sweep for cluster {}: {}",
+                                          clusterName,
+                                          out.strip());
+                             }
+                             });
         }
     }
 
@@ -375,8 +380,10 @@ public record DockerComputeProvider(DockerCommandRunner runner, DockerConfig con
     }
 
     private static void addSpecLabels(ArrayList<String> command, Map<String, String> tags) {
-        tags.entrySet().stream().filter(DockerComputeProvider::isCustomLabel).forEach(entry -> addLabelArgs(command,
-                                                                                                            entry));
+        tags.entrySet()
+            .stream()
+            .filter(DockerComputeProvider::isCustomLabel)
+            .forEach(entry -> addLabelArgs(command, entry));
     }
 
     private static boolean isCustomLabel(Map.Entry<String, String> entry) {

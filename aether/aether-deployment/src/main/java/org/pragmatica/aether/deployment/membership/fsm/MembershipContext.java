@@ -4,11 +4,11 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.deployment.membership.fsm;
 
+import java.util.concurrent.atomic.AtomicLong;
+
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.statemachine.Fsm;
-
-import java.util.concurrent.atomic.AtomicLong;
 
 
 /// Shared per-member context for the membership FSM ([`MembershipState`]). Mirrors the

@@ -4,13 +4,13 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.pg.codegen;
 
-import org.pragmatica.aether.pg.schema.model.BuiltinTypes;
-import org.pragmatica.aether.pg.schema.model.PgType;
-import org.pragmatica.lang.Option;
-
 import java.util.HashSet;
 import java.util.Map;
 import java.util.Set;
+
+import org.pragmatica.aether.pg.schema.model.BuiltinTypes;
+import org.pragmatica.aether.pg.schema.model.PgType;
+import org.pragmatica.lang.Option;
 
 
 public final class TypeMapper {

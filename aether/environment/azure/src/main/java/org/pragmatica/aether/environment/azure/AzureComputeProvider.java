@@ -4,6 +4,13 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.environment.azure;
 
+import java.nio.charset.StandardCharsets;
+import java.util.Base64;
+import java.util.List;
+import java.util.Map;
+import java.util.UUID;
+import java.util.stream.Collectors;
+
 import org.pragmatica.aether.environment.ComputeProvider;
 import org.pragmatica.aether.environment.EnvironmentError;
 import org.pragmatica.aether.environment.InstanceId;
@@ -38,13 +45,6 @@ import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.utility.IdGenerator;
 
-import java.nio.charset.StandardCharsets;
-import java.util.Base64;
-import java.util.List;
-import java.util.Map;
-import java.util.UUID;
-import java.util.stream.Collectors;
-
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -64,11 +64,12 @@ public record AzureComputeProvider(AzureClient client, AzureEnvironmentConfig co
     public Promise<InstanceInfo> provision(InstanceType instanceType) {
         return client.createVm(buildCreateRequest(List.of(),
                                                   defaultTags(),
-                                                  config.userData())).map(AzureComputeProvider::toInstanceInfo)
-                              .flatMap(info -> confirmRunning(info,
-                                                              ReadinessPolicy.cloudDefault()))
-                              .onFailure(AzureComputeProvider::logProvisionFailureRollbackGap)
-                              .mapError(AzureComputeProvider::toProvisionError);
+                                                  config.userData()))
+                     .map(AzureComputeProvider::toInstanceInfo)
+                     .flatMap(info -> confirmRunning(info,
+                                                     ReadinessPolicy.cloudDefault()))
+                     .onFailure(AzureComputeProvider::logProvisionFailureRollbackGap)
+                     .mapError(AzureComputeProvider::toProvisionError);
     }
 
     @Override
@@ -278,7 +279,10 @@ public record AzureComputeProvider(AzureClient client, AzureEnvironmentConfig co
 
     static String buildTagFilterQuery(Map<String, String> tagFilter) {
         var baseQuery = "Resources | where type == \"microsoft.compute/virtualmachines\"";
-        var tagClauses = tagFilter.entrySet().stream().map(AzureComputeProvider::toTagClause).collect(Collectors.joining(" "));
+        var tagClauses = tagFilter.entrySet()
+                                  .stream()
+                                  .map(AzureComputeProvider::toTagClause)
+                                  .collect(Collectors.joining(" "));
 
         return baseQuery + tagClauses;
     }

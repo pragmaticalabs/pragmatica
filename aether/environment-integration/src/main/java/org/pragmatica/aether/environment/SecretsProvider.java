@@ -4,14 +4,14 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.environment;
 
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
-
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
 
 
 public interface SecretsProvider {
@@ -22,7 +22,9 @@ public interface SecretsProvider {
     }
 
     default Promise<Map<String, String>> resolveSecrets(List<String> secretPaths) {
-        var futures = secretPaths.stream().map(path -> resolveSecret(path).map(value -> Map.entry(path, value))).toList();
+        var futures = secretPaths.stream()
+                                 .map(path -> resolveSecret(path).map(value -> Map.entry(path, value)))
+                                 .toList();
 
         return Promise.allOf(futures).map(SecretsProvider::collectEntries);
     }

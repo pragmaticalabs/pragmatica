@@ -7,7 +7,7 @@
     <parent>
         <groupId>org.pragmatica-lite.aether</groupId>
         <artifactId>aether</artifactId>
-        <version>1.0.0-rc1</version>
+        <version>1.0.0-rc2</version>
     </parent>
 
     <artifactId>aether-pg-tools</artifactId>
@@ -22,6 +22,7 @@
         <module>pg-codegen</module>
         <module>pg-test-corpus</module>
         <module>pg-maven-plugin</module>
+        <module>sql-splitter</module>
     </modules>
 
     <properties>

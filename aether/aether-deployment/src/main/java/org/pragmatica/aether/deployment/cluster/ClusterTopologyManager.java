@@ -4,6 +4,12 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.deployment.cluster;
 
+import java.util.List;
+import java.util.Set;
+import java.util.function.Consumer;
+import java.util.function.Function;
+import java.util.function.Supplier;
+
 import org.pragmatica.aether.config.cluster.NodeRole;
 import org.pragmatica.aether.deployment.DeploymentMap;
 import org.pragmatica.aether.environment.AutoHealConfig;
@@ -11,6 +17,7 @@ import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ClusterConfigValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ClusterPhase;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
+import org.pragmatica.config.toml.TomlDocument;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.topology.GenerationSnapshotSource;
 import org.pragmatica.consensus.topology.MembershipDecision;
@@ -20,12 +27,6 @@ import org.pragmatica.consensus.topology.TransportObservation;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
-
-import java.util.List;
-import java.util.Set;
-import java.util.function.Consumer;
-import java.util.function.Function;
-import java.util.function.Supplier;
 
 
 @SuppressWarnings("JBCT-RET-01")
@@ -46,6 +47,12 @@ public interface ClusterTopologyManager extends TopologyManager {
     record CircuitBreakerState(int consecutiveFailures, int trippedAt, long nextAllowedMs, boolean tripped) {}
 
     CircuitBreakerState circuitBreakerState();
+
+    /// #336 observability — the most recent provisioning failure (`cause` message + the epoch-millis
+    /// instant it was recorded), or empty when no provisioning failure has been recorded yet.
+    record LastProvisionFailure(String cause, long atEpochMs) {}
+
+    Option<LastProvisionFailure> lastProvisionFailure();
     int resetCircuitBreaker(String reason);
     boolean isAutoHealEnabled();
     boolean setAutoHealEnabled(boolean enabled, String reason);
@@ -63,8 +70,16 @@ public interface ClusterTopologyManager extends TopologyManager {
     ///
     /// Idempotent: if a replacement is observable via the current slot/membership state, the
     /// call is a no-op success. The new peer is provisioned with `clusterMembers` seeded as
-    /// PEERS by the provider boundary. Returns a `Promise<Unit>` that resolves on the
-    /// provision-request acceptance, NOT on the new node becoming present.
+    /// PEERS by the provider boundary. Returns a `Promise<ProvisionDisposition>` that resolves on
+    /// the provision-request acceptance, NOT on the new node becoming present.
+    ///
+    /// The disposition distinguishes a real boot ([`ProvisionDisposition.Dispatched`] — a VM is
+    /// coming) from a NO-BOOT deferral ([`ProvisionDisposition.Deferred`] — circuit-open or
+    /// no-healthy-peers, nothing is coming). The `LeaderReconciler` uses this to decide whether to
+    /// keep its in-flight placeholder: keeping a placeholder for a deferral would mask the deficit
+    /// and wedge auto-heal. A genuine boot FAILURE stays in the `Promise` failure channel (so the
+    /// existing breaker `onFailure(recordProvisioningFailure)` and the reconciler's placeholder
+    /// removal keep working).
     ///
     /// At Phase 1 this delegates to the existing slot-reconcile path
     /// (`NodeLifecycleManager.provisionNode(ProvisionSpec)`). The `failedPeer` argument is
@@ -76,10 +91,10 @@ public interface ClusterTopologyManager extends TopologyManager {
     /// `MemberDescriptor.role`), never inherited from the provisioning host's environment or
     /// hardcoded provider-side. Auto-heal replacements pass `NodeRole.CORE`; worker-pool
     /// provisioning (#241) will pass `WORKER` when it lands.
-    Promise<Unit> provisionReplacement(NodeId newNodeId,
-                                       Option<NodeId> failedPeer,
-                                       Set<NodeId> clusterMembers,
-                                       NodeRole intendedRole);
+    Promise<ProvisionDisposition> provisionReplacement(NodeId newNodeId,
+                                                       Option<NodeId> failedPeer,
+                                                       Set<NodeId> clusterMembers,
+                                                       NodeRole intendedRole);
 
     /// Membership v2 / E2 — drain a specific node. Targets either the operator/scale-down
     /// flow or the overprovision-drain path. `reason` is observability-only at this layer.
@@ -144,5 +159,40 @@ public interface ClusterTopologyManager extends TopologyManager {
                                                                          System::currentTimeMillis,
                                                                          drainCommandSink,
                                                                          drainCommandClear);
+    }
+
+    /// #336 production factory — additionally wires the leader's OWN RESOLVED config as
+    /// `resolvedLocalConfig`. The leader runs with its per-node overlay RESOLVED to literals (the CLI
+    /// rendered it from the resolved config at bootstrap); the CTM render path substitutes a
+    /// replacement's leaked `${env:...}` / `${secrets:...}` placeholders (inherited from the
+    /// deliberately-unresolved persisted KV TOML) with the leader's literals at the same TOML path,
+    /// so a CTM-provisioned scale-up / auto-heal node boots with resolved credentials instead of
+    /// crashing on placeholders and never joining. `resolvedLocalConfig` returns [Option#none] for
+    /// non-cloud / forge / tests, in which case the composed overlay passes through unchanged
+    /// (prior behavior). `AetherNode` supplies a memoized supplier that parses the node's own config
+    /// file once via `TomlParser.parseFile`.
+    static ClusterTopologyManager clusterTopologyManager(TopologyObserver observer,
+                                                         NodeLifecycleManager lifecycleManager,
+                                                         AutoHealConfig config,
+                                                         DeploymentMap deploymentMap,
+                                                         GenerationSnapshotSource snapshotSource,
+                                                         Supplier<Option<ClusterConfigValue>> clusterConfigReader,
+                                                         Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> commandApplier,
+                                                         Supplier<ClusterPhase> phaseSupplier,
+                                                         Consumer<NodeId> drainCommandSink,
+                                                         Consumer<NodeId> drainCommandClear,
+                                                         Supplier<Option<TomlDocument>> resolvedLocalConfig) {
+        return ClusterTopologyManagerRecord.clusterTopologyManagerRecord(observer,
+                                                                         lifecycleManager,
+                                                                         config,
+                                                                         deploymentMap,
+                                                                         snapshotSource,
+                                                                         clusterConfigReader,
+                                                                         commandApplier,
+                                                                         phaseSupplier,
+                                                                         System::currentTimeMillis,
+                                                                         drainCommandSink,
+                                                                         drainCommandClear,
+                                                                         resolvedLocalConfig);
     }
 }

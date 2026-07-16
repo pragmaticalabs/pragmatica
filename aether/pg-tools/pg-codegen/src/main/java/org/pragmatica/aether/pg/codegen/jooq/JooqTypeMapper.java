@@ -4,11 +4,11 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.pg.codegen.jooq;
 
+import java.util.List;
+
 import org.pragmatica.aether.pg.schema.model.PgType;
 import org.pragmatica.aether.pg.schema.model.PgType.*;
 import org.pragmatica.lang.Option;
-
-import java.util.List;
 
 
 public final class JooqTypeMapper {

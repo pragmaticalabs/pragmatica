@@ -123,11 +123,11 @@ class ClusterConfigApplierTest {
         }
 
         @Override
-        public Promise<Unit> provisionReplacement(NodeId newNodeId,
-                                                  Option<NodeId> failedPeer,
-                                                  Set<NodeId> clusterMembers,
-                                                  NodeRole intendedRole) {
-            return Promise.success(unit());
+        public Promise<ProvisionDisposition> provisionReplacement(NodeId newNodeId,
+                                                                  Option<NodeId> failedPeer,
+                                                                  Set<NodeId> clusterMembers,
+                                                                  NodeRole intendedRole) {
+            return Promise.success(ProvisionDisposition.dispatched());
         }
 
         @Override
@@ -192,6 +192,11 @@ class ClusterConfigApplierTest {
         @Override
         public CircuitBreakerState circuitBreakerState() {
             return new CircuitBreakerState(0, 0, 0L, false);
+        }
+
+        @Override
+        public Option<LastProvisionFailure> lastProvisionFailure() {
+            return Option.none();
         }
 
         @Override

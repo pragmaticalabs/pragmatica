@@ -19,7 +19,11 @@ public interface SchemaExplanationBuilder {
                                          long nextRetryMs) {
         var sb = new StringBuilder();
 
-        sb.append("Schema migration FAILED for datasource '").append(datasource).append("' (artifact '").append(artifactCoords).append("').\n\n");
+        sb.append("Schema migration FAILED for datasource '")
+          .append(datasource)
+          .append("' (artifact '")
+          .append(artifactCoords)
+          .append("').\n\n");
         appendCauseLine(sb, causeMessage, attemptNumber, maxRetries);
         appendClassificationLine(sb, classification, nextRetryMs);
         appendImpactSection(sb, blockedSlices);
@@ -40,7 +44,13 @@ public interface SchemaExplanationBuilder {
     }
 
     private static void appendCauseLine(StringBuilder sb, String causeMessage, int attemptNumber, int maxRetries) {
-        sb.append("Cause: ").append(causeMessage).append(" (attempt ").append(attemptNumber).append("/").append(maxRetries).append(").\n");
+        sb.append("Cause: ")
+          .append(causeMessage)
+          .append(" (attempt ")
+          .append(attemptNumber)
+          .append("/")
+          .append(maxRetries)
+          .append(").\n");
     }
 
     private static void appendClassificationLine(StringBuilder sb,
@@ -81,10 +91,22 @@ public interface SchemaExplanationBuilder {
         var optionIndex = 1;
 
         if (classification == FailureClassification.TRANSIENT && attemptNumber < maxRetries) {
-            sb.append("  ").append(optionIndex++).append(". Wait for automatic retry (attempt ").append(attemptNumber + 1).append("/").append(maxRetries).append(" in ").append(nextRetryMs / 1000).append("s)\n");
+            sb.append("  ")
+              .append(optionIndex++)
+              .append(". Wait for automatic retry (attempt ")
+              .append(attemptNumber + 1)
+              .append("/")
+              .append(maxRetries)
+              .append(" in ")
+              .append(nextRetryMs / 1000)
+              .append("s)\n");
         }
 
-        sb.append("  ").append(optionIndex++).append(". Fix the underlying issue and retry: POST /api/schema/").append(datasource).append("/retry\n");
+        sb.append("  ")
+          .append(optionIndex++)
+          .append(". Fix the underlying issue and retry: POST /api/schema/")
+          .append(datasource)
+          .append("/retry\n");
         sb.append("  ").append(optionIndex).append(". Skip schema gate: redeploy with schema_required=false\n");
     }
 }

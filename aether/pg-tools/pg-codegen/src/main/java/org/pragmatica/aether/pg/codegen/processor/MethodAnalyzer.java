@@ -4,6 +4,10 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.pg.codegen.processor;
 
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Set;
+
 import org.pragmatica.aether.pg.codegen.NamingConvention;
 import org.pragmatica.aether.pg.schema.model.BuiltinTypes;
 import org.pragmatica.aether.pg.schema.model.Column;
@@ -12,10 +16,6 @@ import org.pragmatica.aether.pg.schema.model.PgType;
 import org.pragmatica.aether.pg.schema.model.Schema;
 import org.pragmatica.aether.pg.schema.model.Table;
 import org.pragmatica.lang.Option;
-
-import java.util.ArrayList;
-import java.util.List;
-import java.util.Set;
 
 
 public final class MethodAnalyzer {

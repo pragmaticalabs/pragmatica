@@ -4,6 +4,9 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.pg.schema.builder;
 
+import java.util.ArrayList;
+import java.util.List;
+
 import org.pragmatica.aether.pg.parser.ast.common.DataTypeName;
 import org.pragmatica.aether.pg.parser.transform.CstExtractor;
 import org.pragmatica.aether.pg.parser.transform.CstNavigator;
@@ -13,9 +16,6 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.aether.pg.parser.PostgresParser.CstNode;
 import org.pragmatica.aether.pg.parser.PostgresParser.SourceSpan;
-
-import java.util.ArrayList;
-import java.util.List;
 
 
 public final class DdlAnalyzer {
@@ -228,9 +228,12 @@ public final class DdlAnalyzer {
         if (refQname.isEmpty()) return;
 
         var refTableName = CstExtractor.extractQualifiedName(refQname.unwrap()).normalized();
-        var refColumns = refClause.child("ColumnList").map(CstExtractor::extractColumnList).map(ids -> ids.stream()
-                                                                                                          .map(id -> id.normalized())
-                                                                                                          .toList()).or(List.of());
+        var refColumns = refClause.child("ColumnList")
+                                  .map(CstExtractor::extractColumnList)
+                                  .map(ids -> ids.stream()
+                                                 .map(id -> id.normalized())
+                                                 .toList())
+                                  .or(List.of());
         var onUpdate = extractFkAction(refClause, "UpdateKW");
         var onDelete = extractFkAction(refClause, "DeleteKW");
 
@@ -243,7 +246,10 @@ public final class DdlAnalyzer {
     }
 
     private static void extractTableConstraint(CstNavigator tblConstraint, List<Constraint> constraints) {
-        var constraintName = tblConstraint.child("ConstraintName").flatMap(cn -> cn.child("ColId")).map(CstExtractor::extractIdentifier).map(id -> id.normalized());
+        var constraintName = tblConstraint.child("ConstraintName")
+                                          .flatMap(cn -> cn.child("ColId"))
+                                          .map(CstExtractor::extractIdentifier)
+                                          .map(id -> id.normalized());
         var e = tblConstraint.child("TableConstraintElem").or(tblConstraint);
 
         if (e.has("PrimaryKW")) {
@@ -266,14 +272,20 @@ public final class DdlAnalyzer {
     private static void extractTableForeignKey(CstNavigator elem, Option<String> name, List<Constraint> constraints) {
         var columnLists = elem.findAll("ColumnList");
         var fkColumns = columnLists.size() > 0
-                        ? CstExtractor.extractColumnList(columnLists.getFirst()).stream().map(id -> id.normalized()).toList()
+                        ? CstExtractor.extractColumnList(columnLists.getFirst())
+                                      .stream()
+                                      .map(id -> id.normalized())
+                                      .toList()
                         : List.<String> of();
         var refQname = elem.child("QualifiedName");
         var refTableName = refQname.isPresent()
                            ? CstExtractor.extractQualifiedName(refQname.unwrap()).normalized()
                            : "";
         var refColumns = columnLists.size() > 1
-                         ? CstExtractor.extractColumnList(columnLists.get(1)).stream().map(id -> id.normalized()).toList()
+                         ? CstExtractor.extractColumnList(columnLists.get(1))
+                                       .stream()
+                                       .map(id -> id.normalized())
+                                       .toList()
                          : List.<String> of();
         var onUpdate = extractFkAction(elem, "UpdateKW");
         var onDelete = extractFkAction(elem, "DeleteKW");
@@ -350,7 +362,11 @@ public final class DdlAnalyzer {
             return;
         }
 
-        if (action.has("AddKW") && (action.has("TableConstraint") || action.has("ConstraintKW") || !action.findAll("UniqueKW").isEmpty() || !action.findAll("PrimaryKW").isEmpty() || !action.findAll("ForeignKW").isEmpty() || !action.findAll("CheckKW").isEmpty())) {
+        if (action.has("AddKW") && (action.has("TableConstraint") || action.has("ConstraintKW") || !action.findAll("UniqueKW")
+                                                                                                          .isEmpty() || !action.findAll("PrimaryKW")
+                                                                                                                               .isEmpty() || !action.findAll("ForeignKW")
+                                                                                                                                                    .isEmpty() || !action.findAll("CheckKW")
+                                                                                                                                                                         .isEmpty())) {
             var tblConstraint = action.child("TableConstraint");
             var constraints = new ArrayList<Constraint>();
 
@@ -360,7 +376,8 @@ public final class DdlAnalyzer {
             return;
         }
 
-        if (action.has("DropKW") && (action.has("ColumnKW") || (!action.has("ConstraintKW") && !action.findAll("DropColumnAction").isEmpty()))) {
+        if (action.has("DropKW") && (action.has("ColumnKW") || (!action.has("ConstraintKW") && !action.findAll("DropColumnAction")
+                                                                                                      .isEmpty()))) {
             var colIds = action.findAll("ColId");
 
             if (!colIds.isEmpty()) {
@@ -487,9 +504,12 @@ public final class DdlAnalyzer {
                                    : Option.empty();
         var includeClause = stmt.child("IncludeClause");
         var includeCols = includeClause.isPresent()
-                          ? includeClause.flatMap(ic -> ic.child("ColumnList")).map(CstExtractor::extractColumnList).map(ids -> ids.stream()
-                                                                                                                                   .map(id -> id.normalized())
-                                                                                                                                   .toList()).or(List.of())
+                          ? includeClause.flatMap(ic -> ic.child("ColumnList"))
+                                         .map(CstExtractor::extractColumnList)
+                                         .map(ids -> ids.stream()
+                                                        .map(id -> id.normalized())
+                                                        .toList())
+                                         .or(List.of())
                           : List.<String> of();
         var index = new Index(indexName, tableName, elements, method, unique, concurrent, whereExpr, includeCols);
 
@@ -536,8 +556,11 @@ public final class DdlAnalyzer {
 
         if (!enumLabels.isEmpty()) {
             var stringLiterals = enumLabels.getFirst().findAll("StringLiteral");
-            var values = stringLiterals.stream().map(sl -> sl.firstTokenText()
-                                                             .or("")).filter(s -> !s.isEmpty()).toList();
+            var values = stringLiterals.stream()
+                                       .map(sl -> sl.firstTokenText()
+                                                    .or(""))
+                                       .filter(s -> !s.isEmpty())
+                                       .toList();
 
             events.add(new SchemaEvent.TypeCreated(stmt.span(), new PgType.EnumType(name, schema, values)));
 
@@ -650,8 +673,10 @@ public final class DdlAnalyzer {
 
     private static PgType.CompositeField toCompositeField(CstNavigator f) {
         var fieldName = f.child("ColId").map(CstExtractor::extractIdentifier).map(id -> id.normalized()).or("?");
-        var fieldType = f.child("DataType").map(CstExtractor::extractDataType).map(DdlAnalyzer::resolveType).or(new PgType.BuiltinType("text",
-                                                                                                                                       PgType.TypeCategory.STRING));
+        var fieldType = f.child("DataType")
+                         .map(CstExtractor::extractDataType)
+                         .map(DdlAnalyzer::resolveType)
+                         .or(new PgType.BuiltinType("text", PgType.TypeCategory.STRING));
 
         return new PgType.CompositeField(fieldName, fieldType);
     }
@@ -707,7 +732,11 @@ public final class DdlAnalyzer {
                            : strategy.unwrap().has("HashKW")
                              ? Table.PartitionStrategy.HASH
                              : Table.PartitionStrategy.RANGE;
-        var keys = partClause.findAll("ColId").stream().map(CstExtractor::extractIdentifier).map(id -> id.normalized()).toList();
+        var keys = partClause.findAll("ColId")
+                             .stream()
+                             .map(CstExtractor::extractIdentifier)
+                             .map(id -> id.normalized())
+                             .toList();
 
         return Option.present(new Table.PartitionBy(strategyType, keys));
     }

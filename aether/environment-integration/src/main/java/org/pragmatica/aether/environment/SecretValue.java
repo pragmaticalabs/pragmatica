@@ -4,10 +4,10 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.environment;
 
+import java.time.Instant;
+
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
-
-import java.time.Instant;
 
 import static org.pragmatica.lang.Result.success;
 

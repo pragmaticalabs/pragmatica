@@ -4,15 +4,6 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.deployment.membership.fsm;
 
-import org.pragmatica.aether.deployment.membership.ntt.NttTimerScheduler;
-import org.pragmatica.consensus.NodeId;
-import org.pragmatica.consensus.topology.ClusterStateNotification;
-import org.pragmatica.consensus.topology.MembershipDecision;
-import org.pragmatica.hlc.HlcTimestamp;
-import org.pragmatica.lang.Contract;
-import org.pragmatica.lang.io.TimeSpan;
-import org.pragmatica.lang.utils.SharedScheduler;
-
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
@@ -24,6 +15,15 @@ import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
 import java.util.function.LongSupplier;
 import java.util.function.Supplier;
+
+import org.pragmatica.aether.deployment.membership.ntt.NttTimerScheduler;
+import org.pragmatica.consensus.NodeId;
+import org.pragmatica.consensus.topology.ClusterStateNotification;
+import org.pragmatica.consensus.topology.MembershipDecision;
+import org.pragmatica.hlc.HlcTimestamp;
+import org.pragmatica.lang.Contract;
+import org.pragmatica.lang.io.TimeSpan;
+import org.pragmatica.lang.utils.SharedScheduler;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;

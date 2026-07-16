@@ -4,6 +4,20 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.deployment.membership.fsm;
 
+import java.util.Collections;
+import java.util.HashSet;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ScheduledFuture;
+import java.util.function.Consumer;
+import java.util.function.Function;
+import java.util.function.LongSupplier;
+import java.util.stream.Collectors;
+
 import org.pragmatica.aether.deployment.membership.fsm.MembershipEvent.DownHysteresisMet;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipEvent.DrainRequested;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipEvent.JoinGraceExpiredNeverHealthy;
@@ -28,20 +42,6 @@ import org.pragmatica.lang.utils.SharedScheduler;
 import org.pragmatica.net.tcp.NodeAddress;
 import org.pragmatica.statemachine.Fsm;
 import org.pragmatica.statemachine.FsmObserver;
-
-import java.util.Collections;
-import java.util.HashSet;
-import java.util.LinkedHashMap;
-import java.util.LinkedHashSet;
-import java.util.List;
-import java.util.Map;
-import java.util.Set;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ScheduledFuture;
-import java.util.function.Consumer;
-import java.util.function.Function;
-import java.util.function.LongSupplier;
-import java.util.stream.Collectors;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;

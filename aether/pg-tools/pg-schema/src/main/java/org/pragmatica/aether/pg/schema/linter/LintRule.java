@@ -4,10 +4,10 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.pg.schema.linter;
 
+import java.util.List;
+
 import org.pragmatica.aether.pg.schema.event.SchemaEvent;
 import org.pragmatica.aether.pg.schema.model.Schema;
-
-import java.util.List;
 
 
 public interface LintRule {

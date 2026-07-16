@@ -4,15 +4,15 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.pg.schema.linter.rules;
 
+import java.util.ArrayList;
+import java.util.List;
+
 import org.pragmatica.aether.pg.schema.event.SchemaEvent;
 import org.pragmatica.aether.pg.schema.linter.LintDiagnostic;
 import org.pragmatica.aether.pg.schema.linter.LintRule;
 import org.pragmatica.aether.pg.schema.model.Constraint;
 import org.pragmatica.aether.pg.schema.model.Index;
 import org.pragmatica.aether.pg.schema.model.Schema;
-
-import java.util.ArrayList;
-import java.util.List;
 
 import static org.pragmatica.aether.pg.schema.linter.LintDiagnostic.Severity.WARNING;
 
@@ -79,8 +79,10 @@ public final class SchemaDesignRules {
 
                 if (table.isPresent()) {
                     var fkCols = fk.columns();
-                    var hasMatchingIndex = table.unwrap().indexes().stream().anyMatch(idx -> indexCoversColumns(idx,
-                                                                                                                fkCols));
+                    var hasMatchingIndex = table.unwrap()
+                                                .indexes()
+                                                .stream()
+                                                .anyMatch(idx -> indexCoversColumns(idx, fkCols));
 
                     if (!hasMatchingIndex) {
                         return List.of(LintDiagnostic.warning(id(),
@@ -159,7 +161,9 @@ public final class SchemaDesignRules {
                     for (var existing : table.unwrap().indexes()) {
                         var existingCols = existing.elements().stream().map(ie -> ie.expression()).toList();
 
-                        if (existingCols.size() >= newCols.size() && existingCols.subList(0, newCols.size()).equals(newCols)) {
+                        if (existingCols.size() >= newCols.size() && existingCols.subList(0,
+                                                                                          newCols.size())
+                                                                                 .equals(newCols)) {
                             return List.of(LintDiagnostic.warning(id(),
                                                                   "Index '" + e.index()
                                                                                .name()
@@ -221,9 +225,11 @@ public final class SchemaDesignRules {
 
         public List<LintDiagnostic> check(SchemaEvent event, Schema schema) {
             if (event instanceof SchemaEvent.TableCreated e) {
-                var hasUpdatedAt = e.columns().stream().anyMatch(c -> c.name()
-                                                                       .contains("updated_at") || c.name()
-                                                                                                   .contains("modified_at"));
+                var hasUpdatedAt = e.columns()
+                                    .stream()
+                                    .anyMatch(c -> c.name()
+                                                    .contains("updated_at") || c.name()
+                                                                                .contains("modified_at"));
 
                 if (!hasUpdatedAt && e.columns().size() > 2) {
                     return List.of(LintDiagnostic.warning(id(),
