@@ -607,6 +607,101 @@ deploy_docker() {
 }
 
 # ---------------------------------------------------------------------------
+# Cloud per-cluster bootstrap (env=cloud only)
+# ---------------------------------------------------------------------------
+# CLOUD_TOML_A / CLOUD_TOML_B must already be resolved (and exported — #441
+# S20) by the Step-2 cloud branch before either function runs.
+bootstrap_cloud_cluster_a() {
+    aether cluster bootstrap "$CLOUD_TOML_A" --cluster "$CLUSTER_A_NAME" --yes --wait --timeout 300
+    # Cloud override: derive endpoints from the freshly-provisioned VM's public IP.
+    # Default CLUSTER_A_MGMT/APP point at docker-compose host-mapped ports (5150/8070),
+    # which don't exist on Hetzner VMs (mgmt=8080, app=8070 per cloud-hetzner.toml).
+    local cluster_a_ip
+    cluster_a_ip=$(BOOTSTRAP_CLUSTER_NAME="$CLUSTER_A_NAME" CLOUD_SOURCE_NAME="hetzner-eu" cloud_public_ip node-1)
+    if [ -n "$cluster_a_ip" ]; then
+        CLUSTER_A_MGMT="http://${cluster_a_ip}:8080"
+        CLUSTER_A_APP_DIRECT="http://${cluster_a_ip}:8070"
+        log_info "Cluster A endpoints: mgmt=${CLUSTER_A_MGMT} app=${CLUSTER_A_APP_DIRECT}"
+    else
+        log_warn "Could not resolve Cluster A public IP; falling back to default ${CLUSTER_A_MGMT}"
+    fi
+    # Test scripts hit both mgmt and app HTTP with the static `aether-integration-test-key`.
+    # Cloud TOML configures it under `[app-http] api_keys` (consulted by both validators).
+    # The cluster's bootstrap-generated key still lives in KV-Store + the registry file
+    # (used by `aether cluster *` CLI commands via ClusterRegistry); the two paths are
+    # decoupled.
+    log_info "Cluster A: tests use static api key; CLI uses ${HOME}/.aether/clusters/${CLUSTER_A_NAME}/api-key"
+}
+
+bootstrap_cloud_cluster_b() {
+    aether cluster bootstrap "$CLOUD_TOML_B" --cluster "$CLUSTER_B_NAME" --yes --wait --timeout 300
+    # Cloud override: derive endpoints from the freshly-provisioned VM's public IP.
+    local cluster_b_ip
+    cluster_b_ip=$(BOOTSTRAP_CLUSTER_NAME="$CLUSTER_B_NAME" CLOUD_SOURCE_NAME="hetzner-eu" cloud_public_ip node-1)
+    if [ -n "$cluster_b_ip" ]; then
+        CLUSTER_B_MGMT="http://${cluster_b_ip}:8080"
+        CLUSTER_B_APP_DIRECT="http://${cluster_b_ip}:8070"
+        log_info "Cluster B endpoints: mgmt=${CLUSTER_B_MGMT} app=${CLUSTER_B_APP_DIRECT}"
+    else
+        log_warn "Could not resolve Cluster B public IP; falling back to default ${CLUSTER_B_MGMT}"
+    fi
+    log_info "Cluster B: tests use static api key; CLI uses ${HOME}/.aether/clusters/${CLUSTER_B_NAME}/api-key"
+}
+
+# ---------------------------------------------------------------------------
+# Cloud-only serialized Cluster B bring-up (Step 9.5)
+# ---------------------------------------------------------------------------
+# Mirrors, in order, exactly what the main flow does for cluster B on
+# docker/remote: Step 2 (bootstrap), Step 3 (wait + quiesce), Step 4 (endpoint
+# discovery), Step 7 (blueprints), Step 7.5 (connectivity preflight). On cloud
+# it runs only AFTER cluster A's suites completed and A's VMs were reaped, so
+# the two clusters never coexist (see the Step-2 serialization rationale).
+# detect_capabilities (Step 5) is deliberately NOT re-run: it probes env type +
+# PG-VM reachability only (lib/suite.sh), not cluster state, so its Step-5
+# result remains valid for cluster B.
+cloud_bringup_cluster_b() {
+    # Step 2 analog
+    if [ "$SKIP_DEPLOY" = false ]; then
+        log_step "Bootstrapping cloud Cluster B (runtime=${CLOUD_RUNTIME})"
+        bootstrap_cloud_cluster_b
+    fi
+
+    # Step 3 analog
+    log_step "Waiting for Cluster B"
+    wait_for_node_count_on "$CLUSTER_B_MGMT" 5 180
+    wait_for_leader_on "$CLUSTER_B_MGMT" 60
+    await_generation_quiesced "$CLUSTER_B_MGMT" "current" 60 || log_warn "Cluster B snapshot not quiesced yet"
+
+    # Step 4 analog
+    log_step "Discovering Cluster B LB endpoints"
+    discover_endpoints "$CLUSTER_B_MGMT"
+    CLUSTER_B_LB_APP="${LB_APP_ENDPOINT}"
+    CLUSTER_B_LB_MGMT="${LB_MGMT_ENDPOINT}"
+    log_info "Cluster B: app=${CLUSTER_B_LB_APP} mgmt=${CLUSTER_B_LB_MGMT}"
+
+    # Step 7 analog
+    if [ "$SKIP_DEPLOY" = false ]; then
+        log_step "Deploying blueprints to Cluster B"
+        B_BLUEPRINTS=($(collect_blueprints "${B_SUITES[@]}"))
+        [ ${#B_BLUEPRINTS[@]} -gt 0 ] && deploy_blueprints "$CLUSTER_B_LB_MGMT" "${B_BLUEPRINTS[@]}"
+        await_generation_quiesced "$CLUSTER_B_LB_MGMT" "current+1" 60 || \
+            log_warn "Cluster B did not quiesce after blueprint deploy"
+    fi
+
+    # Step 7.5 analog — same preserve-don't-teardown handling as the main
+    # Step-7.5 block (see the rationale comments there): the verdict means the
+    # cluster is healthy and only THIS machine's CLI is blocked.
+    log_step "Connectivity preflight for Cluster B (CLI vs curl reachability)"
+    if ! connectivity_preflight "$CLUSTER_B_MGMT" "Cluster B"; then
+        log_error "Connectivity preflight verdict: raw HTTP reaches Cluster B but the 'aether' CLI does not."
+        log_error "Aborting before any Cluster B suite runs — fix CLI/network access on this machine (see preflight message above) and re-run."
+        SKIP_TEARDOWN=true
+        log_error "Cluster B PRESERVED (not torn down): it is healthy and reachable via curl; only this machine's CLI is blocked."
+        exit 2
+    fi
+}
+
+# ---------------------------------------------------------------------------
 # Teardown clusters
 # ---------------------------------------------------------------------------
 teardown() {
@@ -635,7 +730,12 @@ teardown() {
             # `aether cluster destroy` has no --cluster flag (only operates on the active cluster).
             # Use cloud-reaper.sh which filters by `aether-cluster` label — works regardless of
             # bootstrap-state.json existence, idempotent, exits 0 if nothing to destroy.
-            [ ${#A_SUITES[@]} -gt 0 ] && ("${REPO_ROOT}/../tools/cloud-reaper.sh" --cluster "$CLUSTER_A_NAME" --destroy --force 2>&1 | tail -3 || true)
+            # A's guard uses the PRE-GATE snapshot (A_SUITES_SELECTED): the Step-8
+            # gate removes 00 from A_SUITES after running it, so on a `--suites 00`
+            # run the array is empty here even though cluster A was bootstrapped.
+            # On the serialized cloud flow A is normally already reaped in Step 9.5
+            # — this reap then finds nothing and exits 0 (idempotent by design).
+            [ "${A_SUITES_SELECTED:-0}" -gt 0 ] && ("${REPO_ROOT}/../tools/cloud-reaper.sh" --cluster "$CLUSTER_A_NAME" --destroy --force 2>&1 | tail -3 || true)
             [ ${#B_SUITES[@]} -gt 0 ] && ("${REPO_ROOT}/../tools/cloud-reaper.sh" --cluster "$CLUSTER_B_NAME" --destroy --force 2>&1 | tail -3 || true)
             # Catch-all sweep for CTM-provisioned ORPHANS. The scoped `--cluster <name>`
             # reaps above filter on `aether-cluster=<name>` (plus same-cluster orphans),
@@ -650,7 +750,7 @@ teardown() {
             # resource in the account, and both cluster reaps already ran — anything
             # still labeled is an orphan from THIS run. Only fired when a cloud cluster
             # was actually provisioned this run.
-            if [ ${#A_SUITES[@]} -gt 0 ] || [ ${#B_SUITES[@]} -gt 0 ]; then
+            if [ "${A_SUITES_SELECTED:-0}" -gt 0 ] || [ ${#B_SUITES[@]} -gt 0 ]; then
                 ("${REPO_ROOT}/../tools/cloud-reaper.sh" --destroy --force 2>&1 | tail -3 || true)
             fi
             # Re-close PG firewall (5432 → denied) after cluster teardown.
@@ -762,6 +862,12 @@ fi
 # --- Compute selected suites early so cluster bootstrap can be skipped per-cluster ---
 A_SUITES=($(filter_suites "${CLUSTER_A_SUITES[@]}"))
 B_SUITES=($(filter_suites "${CLUSTER_B_SUITES[@]}"))
+# Snapshot A's original selection count NOW: the Step-8 00-smoke gate mutates
+# A_SUITES (removes 00 once run), but the cloud-serialized flow (Step 9.5 reap)
+# and the cloud teardown branch must know whether cluster A was in play at all
+# — on a `--suites 00` cloud run the post-gate A_SUITES is empty even though
+# cluster A was bootstrapped and must still be reaped.
+A_SUITES_SELECTED=${#A_SUITES[@]}
 
 # Install EXIT trap so teardown runs even when later steps fail (set -e exit, errors,
 # unbound variables). Without this, any failure between Step 2 and Step 11 leaks
@@ -822,39 +928,22 @@ if [ "$SKIP_DEPLOY" = false ]; then
             # entire run.
             export CLOUD_TOML_A CLOUD_TOML_B
             if [ ${#A_SUITES[@]} -gt 0 ]; then
-                aether cluster bootstrap "$CLOUD_TOML_A" --cluster "$CLUSTER_A_NAME" --yes --wait --timeout 300
-                # Cloud override: derive endpoints from the freshly-provisioned VM's public IP.
-                # Default CLUSTER_A_MGMT/APP point at docker-compose host-mapped ports (5150/8070),
-                # which don't exist on Hetzner VMs (mgmt=8080, app=8070 per cloud-hetzner.toml).
-                cluster_a_ip=$(BOOTSTRAP_CLUSTER_NAME="$CLUSTER_A_NAME" CLOUD_SOURCE_NAME="hetzner-eu" cloud_public_ip node-1)
-                if [ -n "$cluster_a_ip" ]; then
-                    CLUSTER_A_MGMT="http://${cluster_a_ip}:8080"
-                    CLUSTER_A_APP_DIRECT="http://${cluster_a_ip}:8070"
-                    log_info "Cluster A endpoints: mgmt=${CLUSTER_A_MGMT} app=${CLUSTER_A_APP_DIRECT}"
-                else
-                    log_warn "Could not resolve Cluster A public IP; falling back to default ${CLUSTER_A_MGMT}"
-                fi
-                # Test scripts hit both mgmt and app HTTP with the static `aether-integration-test-key`.
-                # Cloud TOML configures it under `[app-http] api_keys` (consulted by both validators).
-                # The cluster's bootstrap-generated key still lives in KV-Store + the registry file
-                # (used by `aether cluster *` CLI commands via ClusterRegistry); the two paths are
-                # decoupled.
-                log_info "Cluster A: tests use static api key; CLI uses ${HOME}/.aether/clusters/${CLUSTER_A_NAME}/api-key"
+                bootstrap_cloud_cluster_a
             else
                 log_info "Skipping Cluster A bootstrap (no A-suites selected)"
             fi
+            # Cloud clusters are SERIALIZED: cluster B is NOT bootstrapped here.
+            # It comes up in Step 9.5 (cloud_bringup_cluster_b), after cluster
+            # A's suites have run and A's VMs are reaped. Concurrent A+B
+            # (~14-15 VMs incl. auto-heal churn + zombies) pins the Hetzner
+            # account server limit, and every 03-scaling scale-up then fails
+            # with 403 resource_limit_exceeded (deterministic across 3 runs);
+            # serial peaks at ~8-10 VMs. docker/remote keep the concurrent
+            # flow: compose-a owns forge-postgres + both networks cluster B
+            # attaches to, so serializing there is structurally impossible —
+            # and remote is green as-is.
             if [ ${#B_SUITES[@]} -gt 0 ]; then
-                aether cluster bootstrap "$CLOUD_TOML_B" --cluster "$CLUSTER_B_NAME" --yes --wait --timeout 300
-                # Cloud override: derive endpoints from the freshly-provisioned VM's public IP.
-                cluster_b_ip=$(BOOTSTRAP_CLUSTER_NAME="$CLUSTER_B_NAME" CLOUD_SOURCE_NAME="hetzner-eu" cloud_public_ip node-1)
-                if [ -n "$cluster_b_ip" ]; then
-                    CLUSTER_B_MGMT="http://${cluster_b_ip}:8080"
-                    CLUSTER_B_APP_DIRECT="http://${cluster_b_ip}:8070"
-                    log_info "Cluster B endpoints: mgmt=${CLUSTER_B_MGMT} app=${CLUSTER_B_APP_DIRECT}"
-                else
-                    log_warn "Could not resolve Cluster B public IP; falling back to default ${CLUSTER_B_MGMT}"
-                fi
-                log_info "Cluster B: tests use static api key; CLI uses ${HOME}/.aether/clusters/${CLUSTER_B_NAME}/api-key"
+                log_info "Cluster B bootstrap deferred until after Cluster A suites + reap (serialized cloud clusters)"
             else
                 log_info "Skipping Cluster B bootstrap (no B-suites selected)"
             fi
@@ -872,7 +961,9 @@ if [ ${#A_SUITES[@]} -gt 0 ]; then
     wait_for_leader_on "$CLUSTER_A_MGMT" 60
 fi
 
-if [ ${#B_SUITES[@]} -gt 0 ]; then
+# On cloud, cluster B does not exist yet — its wait/discover/blueprints/
+# preflight run in Step 9.5 (cloud_bringup_cluster_b) after A's suites + reap.
+if [ ${#B_SUITES[@]} -gt 0 ] && [ "$ENV_TYPE" != "cloud" ]; then
     log_step "Waiting for Cluster B"
     wait_for_node_count_on "$CLUSTER_B_MGMT" 5 180
     wait_for_leader_on "$CLUSTER_B_MGMT" 60
@@ -881,7 +972,7 @@ fi
 # Gate cluster readiness on ClusterGeneration quiescence — avoids racing the
 # later blueprint-deploy phase against a cluster that still hasn't converged.
 [ ${#A_SUITES[@]} -gt 0 ] && (await_generation_quiesced "$CLUSTER_A_MGMT" "current" 60 || log_warn "Cluster A snapshot not quiesced yet")
-[ ${#B_SUITES[@]} -gt 0 ] && (await_generation_quiesced "$CLUSTER_B_MGMT" "current" 60 || log_warn "Cluster B snapshot not quiesced yet")
+[ ${#B_SUITES[@]} -gt 0 ] && [ "$ENV_TYPE" != "cloud" ] && (await_generation_quiesced "$CLUSTER_B_MGMT" "current" 60 || log_warn "Cluster B snapshot not quiesced yet")
 
 FORMATION_ELAPSED=$(( $(date +%s) - FORMATION_START ))
 printf 'cluster_formation=%s\n' "$FORMATION_ELAPSED" >> "$TIMINGS_FILE"
@@ -895,7 +986,7 @@ if [ ${#A_SUITES[@]} -gt 0 ]; then
     log_info "Cluster A: app=${CLUSTER_A_LB_APP} mgmt=${CLUSTER_A_LB_MGMT}"
 fi
 
-if [ ${#B_SUITES[@]} -gt 0 ]; then
+if [ ${#B_SUITES[@]} -gt 0 ] && [ "$ENV_TYPE" != "cloud" ]; then
     discover_endpoints "$CLUSTER_B_MGMT"
     CLUSTER_B_LB_APP="${LB_APP_ENDPOINT}"
     CLUSTER_B_LB_MGMT="${LB_MGMT_ENDPOINT}"
@@ -932,7 +1023,7 @@ if [ "$SKIP_DEPLOY" = false ]; then
             log_warn "Cluster A did not quiesce after blueprint deploy"
     fi
 
-    if [ ${#B_SUITES[@]} -gt 0 ]; then
+    if [ ${#B_SUITES[@]} -gt 0 ] && [ "$ENV_TYPE" != "cloud" ]; then
         log_step "Deploying blueprints to Cluster B"
         B_BLUEPRINTS=($(collect_blueprints "${B_SUITES[@]}"))
         [ ${#B_BLUEPRINTS[@]} -gt 0 ] && deploy_blueprints "$CLUSTER_B_LB_MGMT" "${B_BLUEPRINTS[@]}"
@@ -956,7 +1047,7 @@ PREFLIGHT_STOP=false
 if [ ${#A_SUITES[@]} -gt 0 ]; then
     connectivity_preflight "$CLUSTER_A_MGMT" "Cluster A" || PREFLIGHT_STOP=true
 fi
-if [ ${#B_SUITES[@]} -gt 0 ]; then
+if [ ${#B_SUITES[@]} -gt 0 ] && [ "$ENV_TYPE" != "cloud" ]; then
     connectivity_preflight "$CLUSTER_B_MGMT" "Cluster B" || PREFLIGHT_STOP=true
 fi
 if [ "$PREFLIGHT_STOP" = true ]; then
@@ -997,6 +1088,21 @@ if [ "$GATE_PASSED" = true ]; then
     if [ ${#A_SUITES[@]} -gt 0 ]; then
         log_step "Running Cluster A suites (parallel, max ${MAX_PARALLEL:-4})"
         run_cluster_a_suites "${A_SUITES[@]}" || true
+    fi
+
+    # --- Step 9.5 (cloud only): serialize clusters — reap A, then bring up B ---
+    # Runs regardless of cluster A's suite pass/fail (a failed A run still holds
+    # its VMs). Reap failure is non-fatal: leftover A VMs only shrink scale-up
+    # headroom, and the final teardown sweeps them again. Skipped entirely when
+    # no B suites are selected — then there is no capacity pressure and the
+    # normal teardown (or --skip-teardown preservation) governs cluster A.
+    if [ "$ENV_TYPE" = "cloud" ] && [ ${#B_SUITES[@]} -gt 0 ]; then
+        if [ "$A_SUITES_SELECTED" -gt 0 ]; then
+            log_step "Reaping Cluster A before Cluster B bring-up (serialized cloud clusters)"
+            reap_cloud_cluster "$CLUSTER_A_NAME" || \
+                log_warn "Cluster A reap did not fully converge — proceeding to Cluster B bring-up (leftover A VMs reduce scale-up headroom; final teardown sweeps them)"
+        fi
+        cloud_bringup_cluster_b
     fi
 
     # --- Step 10: Run Cluster B suites (sequential with self-heal) ---

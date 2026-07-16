@@ -2397,6 +2397,129 @@ _cloud_seed_ips() {
     return 0
 }
 
+# Serialized-cluster reap (cloud): delete every VM belonging to ONE named
+# cluster, with a converge loop — CTM auto-heal can respawn a replacement VM
+# mid-reap (a leader can survive long enough to provision one more), so a
+# single enumerate+delete pass is not authoritative. Loop: enumerate, delete
+# all matches in parallel, re-enumerate; converged only after 3 CONSECUTIVE
+# empty checks (a single empty enumeration is UNKNOWN, not proof of absence —
+# see the #441 Defect B note on _cloud_running_vm_ips), capped at 40 sweeps.
+#
+# Enumeration mirrors _cloud_running_vm_ips (same `-l aether-node-id`
+# key-presence selector + per-row post-filter, NOT a bare
+# `--selector aether-cluster=...` query — see the Defect B rationale there),
+# with one deliberate difference: NO `status == running` filter. Powered-off/
+# starting VMs still count against the Hetzner account server limit, which is
+# exactly what this reap exists to free (concurrent A+B pinned the limit and
+# every 03-scaling scale-up failed with 403 resource_limit_exceeded).
+# Per-row membership tests (any one admits the row):
+#   1. `aether-node-id` label VALUE matches the CTM replacement pattern
+#      `aether-cloud-<cluster>-node-*` (cluster name embedded — unambiguous).
+#   2. exact `aether-cluster=<cluster>` label match (stamped reliably
+#      post-#442 v2b; exact match can never fold in the PG VM — its value is
+#      `test-pg`, never a test cluster's name — nor a sibling cluster).
+#   3. seed-IP membership against THIS cluster's own bootstrap-state.json
+#      `collectedAddresses` (_cloud_seed_ips) — seed label VALUES are shared
+#      across sibling clusters; only their IPs are unique.
+# The shared test-PG VM is excluded unconditionally by name prefix, same as
+# _cloud_running_vm_ips — its labels must not be load-bearing.
+reap_cloud_cluster() {
+    local cluster_name="${1:-}"
+    if [ -z "$cluster_name" ]; then
+        log_fail "reap_cloud_cluster: cluster name required — refusing an unscoped reap (would risk resources outside the target cluster, including the shared test-PG VM)"
+        return 1
+    fi
+    if ! command -v hcloud >/dev/null 2>&1; then
+        log_fail "reap_cloud_cluster: hcloud CLI not found (required for provider 'hetzner')"
+        return 1
+    fi
+    local seed_ips
+    seed_ips=$(_cloud_seed_ips "$cluster_name")
+    local max_sweeps=40 sweep=0 empty_streak=0
+    local listing hcloud_rc line sid name ip labels_blob node_id member ids names count pid out
+    local pids=()
+    while [ "$sweep" -lt "$max_sweeps" ]; do
+        sweep=$((sweep + 1))
+        hcloud_rc=0
+        listing=$(_run_with_timeout 10 hcloud server list -l aether-node-id -o columns=id,name,status,ipv4,labels -o noheader 2>/dev/null) || hcloud_rc=$?
+        if [ "$hcloud_rc" -ne 0 ]; then
+            # Enumeration failure is UNKNOWN, not empty — reset the streak so
+            # convergence is only declared on 3 consecutive SUCCESSFUL empty queries.
+            log_warn "reap_cloud_cluster(${cluster_name}): sweep ${sweep}/${max_sweeps}: enumeration failed (rc=${hcloud_rc}) — retrying"
+            empty_streak=0
+            sleep 3
+            continue
+        fi
+        ids=""
+        names=""
+        while IFS= read -r line; do
+            [ -z "$line" ] && continue
+            sid=$(printf '%s' "$line" | awk '{print $1}')
+            name=$(printf '%s' "$line" | awk '{print $2}')
+            ip=$(printf '%s' "$line" | awk '{print $4}')
+            case "$name" in
+                aether-test-pg*) continue ;;
+            esac
+            labels_blob=$(printf '%s' "$line" | sed -E 's/^[^[:space:]]+[[:space:]]+[^[:space:]]+[[:space:]]+[^[:space:]]+[[:space:]]+[^[:space:]]+[[:space:]]+//')
+            # `|| true`: same rationale as _cloud_running_vm_ips — a non-matching
+            # row must never abort the script under `set -euo pipefail`.
+            node_id=$(printf '%s' "$labels_blob" | grep -oE 'aether-node-id=[^,[:space:]]+' | sed 's/aether-node-id=//' || true)
+            member=false
+            case "$node_id" in
+                "aether-cloud-${cluster_name}-node-"*) member=true ;;
+            esac
+            # Exact-boundary label match; cluster names are [a-z0-9-] so the
+            # interpolation is ERE-safe.
+            if [ "$member" = false ] \
+                && printf '%s' "$labels_blob" | grep -qE "(^|[,[:space:]])aether-cluster=${cluster_name}"'([,[:space:]]|$)'; then
+                member=true
+            fi
+            if [ "$member" = false ] && [ -n "$ip" ] \
+                && printf '%s\n' "$seed_ips" | grep -qxF "$ip"; then
+                member=true
+            fi
+            [ "$member" = true ] || continue
+            ids="${ids}${sid}"$'\n'
+            names="${names}${name} "
+        done <<< "$listing"
+        ids=$(printf '%s' "$ids" | grep -v '^$' || true)
+        if [ -z "$ids" ]; then
+            empty_streak=$((empty_streak + 1))
+            log_info "reap_cloud_cluster(${cluster_name}): sweep ${sweep}/${max_sweeps}: no matching VMs (${empty_streak}/3 consecutive empty checks)"
+            if [ "$empty_streak" -ge 3 ]; then
+                log_info "reap_cloud_cluster(${cluster_name}): converged — cluster fully reaped"
+                return 0
+            fi
+            sleep 2
+            continue
+        fi
+        empty_streak=0
+        count=$(printf '%s\n' "$ids" | grep -c '^' || true)
+        log_info "reap_cloud_cluster(${cluster_name}): sweep ${sweep}/${max_sweeps}: deleting ${count} VM(s): ${names% }"
+        pids=()
+        while IFS= read -r sid; do
+            [ -z "$sid" ] && continue
+            (
+                if out=$(hcloud server delete "$sid" 2>&1); then
+                    log_info "reap_cloud_cluster(${cluster_name}): deleted server ${sid}"
+                else
+                    log_warn "reap_cloud_cluster(${cluster_name}): hcloud server delete ${sid} failed: ${out}"
+                fi
+            ) &
+            pids+=("$!")
+        done <<< "$ids"
+        for pid in "${pids[@]+"${pids[@]}"}"; do
+            wait "$pid" 2>/dev/null || true
+        done
+        # Brief settle before re-enumerating: deletions are async on the API
+        # side, and auto-heal (if a leader briefly survives) can respawn a
+        # replacement that only the NEXT sweep will see.
+        sleep 3
+    done
+    log_fail "reap_cloud_cluster(${cluster_name}): did not converge after ${max_sweeps} sweeps — VMs may remain (sweep manually: tools/cloud-reaper.sh --cluster ${cluster_name} --strict-cluster --destroy --force)"
+    return 1
+}
+
 ## #441 S20: cluster-scoped reap + fresh bootstrap — the cloud analog of the
 ## docker/compose branch's `docker compose down -v && up -d` full reset. This is
 ## the ONLY path capable of recovering a CONFIRMED FULL self-drain: every core
