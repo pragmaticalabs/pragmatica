@@ -1,5 +1,6 @@
 package org.pragmatica.jbct.cli;
 
+import org.pragmatica.jbct.init.AiToolsOutcome;
 import org.pragmatica.jbct.update.AiToolsUpdater;
 
 import java.nio.file.Path;
@@ -50,19 +51,31 @@ public class UpdateCommand implements Callable<Integer> {
         System.out.println("Updating AI tools from GitHub...");
         return updater.update(force)
                       .onFailure(cause -> System.err.println("Error: " + cause.message()))
-                      .onSuccess(updatedFiles -> printUpdateResult(updatedFiles, updater))
+                      .onSuccess(outcome -> printUpdateResult(outcome, updater))
                       .fold(_ -> 1, _ -> 0);
     }
 
-    private void printUpdateResult(java.util.List<java.nio.file.Path> updatedFiles, AiToolsUpdater updater) {
-        if (updatedFiles.isEmpty()) {
+    private void printUpdateResult(AiToolsOutcome outcome, AiToolsUpdater updater) {
+        if (outcome.isEmpty()) {
             System.out.println("AI tools are already up to date.");
-        } else {
+            return;
+        }
+        if (!outcome.installed().isEmpty()) {
             System.out.println();
-            System.out.println("Updated " + updatedFiles.size() + " file(s):");
-            for (var file : updatedFiles) {
+            System.out.println("Updated " + outcome.installed().size() + " file(s):");
+            for (var file : outcome.installed()) {
                 System.out.println("  " + file.getFileName());
             }
+        }
+        if (!outcome.skippedGlobal().isEmpty()) {
+            System.out.println();
+            System.out.println("Skipped " + outcome.skippedGlobal().size()
+                               + " file(s) already present globally in ~/.claude/:");
+            for (var file : outcome.skippedGlobal()) {
+                System.out.println("  " + file);
+            }
+        }
+        if (!outcome.installed().isEmpty()) {
             System.out.println();
             System.out.println("AI tools updated successfully.");
             System.out.println("  Skills: " + updater.claudeDir()

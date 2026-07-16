@@ -244,4 +244,563 @@ class RouteConfigLoaderTest {
             });
         }
     }
+
+    @Nested
+    class InlineTableMediaTypes {
+
+        @Test
+        void load_defaultsToJson_whenConsumesAndProducesAbsent() throws IOException {
+            var config = writeConfig("routes.toml", """
+                [routes]
+                create = "POST /"
+                getById = ["GET /{id:Long}", "public"]
+                """);
+
+            var result = RouteConfigLoader.load(config);
+
+            assertThat(result.isSuccess()).isTrue();
+            result.onSuccess(rc -> {
+                var create = rc.routes().get("create");
+                assertThat(create.consumes()).isEqualTo(MediaType.JSON);
+                assertThat(create.produces()).isEqualTo(MediaType.JSON);
+                var getById = rc.routes().get("getById");
+                assertThat(getById.consumes()).isEqualTo(MediaType.JSON);
+                assertThat(getById.produces()).isEqualTo(MediaType.JSON);
+                assertThat(rc.effectiveSecurity("getById")).isEqualTo(RouteSecurityLevel.PUBLIC);
+            });
+        }
+
+        @Test
+        void load_parsesInlineTable_withProducesAndConsumes() throws IOException {
+            var config = writeConfig("routes.toml", """
+                [routes]
+                export = { route = "POST /export", consumes = "application/json", produces = "text/csv" }
+                """);
+
+            var result = RouteConfigLoader.load(config);
+
+            assertThat(result.isSuccess()).isTrue();
+            result.onSuccess(rc -> {
+                var export = rc.routes().get("export");
+                assertThat(export.method()).isEqualTo("POST");
+                assertThat(export.pathTemplate()).isEqualTo("/export");
+                assertThat(export.consumes().category()).isEqualTo("JSON");
+                assertThat(export.produces().category()).isEqualTo("TEXT");
+                assertThat(export.produces().emitExpression()).isEqualTo("CommonContentType.TEXT_CSV");
+                assertThat(export.produces().isJson()).isFalse();
+            });
+        }
+
+        @Test
+        void load_parsesInlineTable_withBinaryProduces() throws IOException {
+            var config = writeConfig("routes.toml", """
+                [routes]
+                download = { route = "GET /download/{id:Long}", produces = "application/octet-stream" }
+                """);
+
+            var result = RouteConfigLoader.load(config);
+
+            assertThat(result.isSuccess()).isTrue();
+            result.onSuccess(rc -> {
+                var download = rc.routes().get("download");
+                assertThat(download.produces().category()).isEqualTo("BINARY");
+                assertThat(download.produces().emitExpression()).isEqualTo("CommonContentType.APPLICATION_OCTET_STREAM");
+                assertThat(download.consumes()).isEqualTo(MediaType.JSON);
+            });
+        }
+
+        @Test
+        void load_parsesInlineTable_withTextConsumes() throws IOException {
+            var config = writeConfig("routes.toml", """
+                [routes]
+                upload = { route = "POST /upload", consumes = "text/plain" }
+                """);
+
+            var result = RouteConfigLoader.load(config);
+
+            assertThat(result.isSuccess()).isTrue();
+            result.onSuccess(rc -> {
+                var upload = rc.routes().get("upload");
+                assertThat(upload.consumes().category()).isEqualTo("TEXT");
+                assertThat(upload.produces()).isEqualTo(MediaType.JSON);
+            });
+        }
+
+        @Test
+        void load_parsesInlineTable_withMultipartConsumes() throws IOException {
+            var config = writeConfig("routes.toml", """
+                [routes]
+                form = { route = "POST /form", consumes = "multipart/form-data" }
+                """);
+
+            var result = RouteConfigLoader.load(config);
+
+            assertThat(result.isSuccess()).isTrue();
+            result.onSuccess(rc -> {
+                var form = rc.routes().get("form");
+                assertThat(form.consumes().category()).isEqualTo("MULTIPART");
+            });
+        }
+
+        @Test
+        void load_appliesInlineSecurityOverride() throws IOException {
+            var config = writeConfig("routes.toml", """
+                [security]
+                default = "authenticated"
+
+                [routes]
+                export = { route = "POST /export", produces = "text/csv", security = "public" }
+                """);
+
+            var result = RouteConfigLoader.load(config);
+
+            assertThat(result.isSuccess()).isTrue();
+            result.onSuccess(rc -> {
+                assertThat(rc.routeSecurity()).containsKey("export");
+                assertThat(rc.effectiveSecurity("export")).isEqualTo(RouteSecurityLevel.PUBLIC);
+            });
+        }
+
+        @Test
+        void load_inlineSecurityDefaults_whenSecurityFieldAbsent() throws IOException {
+            var config = writeConfig("routes.toml", """
+                [security]
+                default = "authenticated"
+
+                [routes]
+                export = { route = "POST /export", produces = "text/csv" }
+                """);
+
+            var result = RouteConfigLoader.load(config);
+
+            assertThat(result.isSuccess()).isTrue();
+            result.onSuccess(rc -> {
+                assertThat(rc.routeSecurity()).doesNotContainKey("export");
+                assertThat(rc.effectiveSecurity("export")).isEqualTo(RouteSecurityLevel.AUTHENTICATED);
+            });
+        }
+
+        @Test
+        void load_fails_whenInlineTableMissingRouteField() throws IOException {
+            var config = writeConfig("routes.toml", """
+                [routes]
+                broken = { produces = "text/csv" }
+                """);
+
+            var result = RouteConfigLoader.load(config);
+
+            assertThat(result.isFailure()).isTrue();
+            result.onFailure(cause -> assertThat(cause.message()).contains("must have a 'route' field"));
+        }
+
+        @Test
+        void load_mixesBareStringArrayAndInlineTableForms() throws IOException {
+            var config = writeConfig("routes.toml", """
+                [security]
+                default = "authenticated"
+
+                [routes]
+                bare = "POST /bare"
+                arr = ["GET /arr/{id:Long}", "public"]
+                inline = { route = "POST /inline", produces = "text/csv", security = "public" }
+                """);
+
+            var result = RouteConfigLoader.load(config);
+
+            assertThat(result.isSuccess()).isTrue();
+            result.onSuccess(rc -> {
+                assertThat(rc.routes()).hasSize(3);
+                assertThat(rc.routes().get("bare").produces()).isEqualTo(MediaType.JSON);
+                assertThat(rc.effectiveSecurity("bare")).isEqualTo(RouteSecurityLevel.AUTHENTICATED);
+                assertThat(rc.effectiveSecurity("arr")).isEqualTo(RouteSecurityLevel.PUBLIC);
+                assertThat(rc.routes().get("inline").produces().category()).isEqualTo("TEXT");
+                assertThat(rc.effectiveSecurity("inline")).isEqualTo(RouteSecurityLevel.PUBLIC);
+            });
+        }
+    }
+
+    @Nested
+    class Versioning {
+
+        @Test
+        void load_parsesApiSectionAndVersionedRoutes() throws IOException {
+            var config = writeConfig("routes.toml", """
+                [api]
+                prefix = "/api/orders"
+                requireVersionHeader = false
+
+                [v1.routes]
+                get = "GET /{id:Long}"
+                create = "POST /"
+
+                [v1]
+                deprecated = true
+                sunset = "2026-12-31"
+
+                [v2.routes]
+                get = "GET /{id:Long}"
+
+                [v2]
+                defaultIfMissing = true
+                """);
+
+            var result = RouteConfigLoader.load(config);
+
+            assertThat(result.isSuccess()).isTrue();
+            result.onSuccess(rc -> {
+                assertThat(rc.isVersioned()).isTrue();
+                assertThat(rc.apiPrefix()).isEqualTo("/api/orders");
+                // #198 §6.4: prefix is empty for versioned slices; apiPrefix carries the base and the
+                // /v{N}/ segment is composed at registration time, not baked into prefix or path.
+                assertThat(rc.prefix()).isEqualTo("");
+                assertThat(rc.requireVersionHeader()).isFalse();
+                assertThat(rc.versions().keySet()).containsExactly(1, 2);
+            });
+        }
+
+        @Test
+        void load_bindsBindKeyToVersionedMethodAndUnversionedPath() throws IOException {
+            var config = writeConfig("routes.toml", """
+                [api]
+                prefix = "/api/orders"
+
+                [v1.routes]
+                get = "GET /{id:Long}"
+                create = "POST /"
+
+                [v2.routes]
+                get = "GET /{id:Long}"
+                upsert = "PUT /{id:Long}"
+                """);
+
+            var result = RouteConfigLoader.load(config);
+
+            assertThat(result.isSuccess()).isTrue();
+            result.onSuccess(rc -> {
+                // D8: bind key `get` under [v1.routes] resolves to method getV1. The path stays
+                // un-versioned (#198 §6.4); the version is carried in routeVersions and mounted later.
+                assertThat(rc.routes()).containsKeys("getV1", "createV1", "getV2", "upsertV2");
+                assertThat(rc.routes().get("getV1").pathTemplate()).isEqualTo("/{id:Long}");
+                assertThat(rc.routes().get("createV1").pathTemplate()).isEqualTo("/");
+                assertThat(rc.routes().get("getV2").pathTemplate()).isEqualTo("/{id:Long}");
+                assertThat(rc.routes().get("upsertV2").pathTemplate()).isEqualTo("/{id:Long}");
+                assertThat(rc.routeVersion("getV1")).isEqualTo(1);
+                assertThat(rc.routeVersion("createV1")).isEqualTo(1);
+                assertThat(rc.routeVersion("getV2")).isEqualTo(2);
+                assertThat(rc.routeVersion("upsertV2")).isEqualTo(2);
+                assertThat(rc.versions().get(1).bindKeyToMethod()).containsEntry("get", "getV1");
+                assertThat(rc.versions().get(2).bindKeyToMethod()).containsEntry("upsert", "upsertV2");
+            });
+        }
+
+        @Test
+        void load_appliesExplicitMethodOverride() throws IOException {
+            var config = writeConfig("routes.toml", """
+                [api]
+                prefix = "/api/orders"
+
+                [v1.routes]
+                get = { route = "GET /{id:Long}", method = "fetchById" }
+                """);
+
+            var result = RouteConfigLoader.load(config);
+
+            assertThat(result.isSuccess()).isTrue();
+            result.onSuccess(rc -> {
+                assertThat(rc.routes()).containsKey("fetchById");
+                assertThat(rc.routes()).doesNotContainKey("getV1");
+                assertThat(rc.routes().get("fetchById").pathTemplate()).isEqualTo("/{id:Long}");
+                assertThat(rc.routeVersion("fetchById")).isEqualTo(1);
+                assertThat(rc.versions().get(1).bindKeyToMethod()).containsEntry("get", "fetchById");
+            });
+        }
+
+        @Test
+        void load_appliesVersionMetadataDefaults() throws IOException {
+            var config = writeConfig("routes.toml", """
+                [api]
+                prefix = "/api/orders"
+
+                [v1.routes]
+                get = "GET /{id:Long}"
+                """);
+
+            var result = RouteConfigLoader.load(config);
+
+            assertThat(result.isSuccess()).isTrue();
+            result.onSuccess(rc -> {
+                var v1 = rc.versions().get(1);
+                assertThat(v1.deprecated()).isFalse();
+                assertThat(v1.defaultIfMissing()).isFalse();
+                assertThat(v1.sunset().isEmpty()).isTrue();
+            });
+        }
+
+        @Test
+        void load_storesVersionMetadata() throws IOException {
+            var config = writeConfig("routes.toml", """
+                [api]
+                prefix = "/api/orders"
+
+                [v1.routes]
+                get = "GET /{id:Long}"
+
+                [v1]
+                deprecated = true
+                sunset = "2026-12-31"
+
+                [v2.routes]
+                get = "GET /{id:Long}"
+
+                [v2]
+                defaultIfMissing = true
+                """);
+
+            var result = RouteConfigLoader.load(config);
+
+            assertThat(result.isSuccess()).isTrue();
+            result.onSuccess(rc -> {
+                var v1 = rc.versions().get(1);
+                assertThat(v1.deprecated()).isTrue();
+                assertThat(v1.sunset().or("")).isEqualTo("2026-12-31");
+                assertThat(v1.defaultIfMissing()).isFalse();
+                var v2 = rc.versions().get(2);
+                assertThat(v2.defaultIfMissing()).isTrue();
+                assertThat(v2.deprecated()).isFalse();
+            });
+        }
+
+        @Test
+        void load_keepsFlatRoutesUnversioned_backCompat() throws IOException {
+            var config = writeConfig("routes.toml", """
+                prefix = "/api/v1/test"
+
+                [routes]
+                getById = "GET /{id:Long}"
+                create = "POST /"
+                """);
+
+            var result = RouteConfigLoader.load(config);
+
+            assertThat(result.isSuccess()).isTrue();
+            result.onSuccess(rc -> {
+                assertThat(rc.isVersioned()).isFalse();
+                assertThat(rc.versions()).isEmpty();
+                assertThat(rc.prefix()).isEqualTo("/api/v1/test");
+                assertThat(rc.routes()).containsKeys("getById", "create");
+                assertThat(rc.routes().get("getById").pathTemplate()).isEqualTo("/{id:Long}");
+            });
+        }
+
+        @Test
+        void load_fails_whenMixingFlatAndVersionedSchema() throws IOException {
+            var config = writeConfig("routes.toml", """
+                prefix = "/api"
+
+                [routes]
+                getById = "GET /{id:Long}"
+
+                [v1.routes]
+                get = "GET /{id:Long}"
+                """);
+
+            var result = RouteConfigLoader.load(config);
+
+            assertThat(result.isFailure()).isTrue();
+            result.onFailure(cause -> assertThat(cause.message()).contains("mixes a flat [routes] block"));
+        }
+
+        @Test
+        void load_fails_whenMultipleVersionsAreDefault() throws IOException {
+            var config = writeConfig("routes.toml", """
+                [api]
+                prefix = "/api/orders"
+
+                [v1.routes]
+                get = "GET /{id:Long}"
+
+                [v1]
+                defaultIfMissing = true
+
+                [v2.routes]
+                get = "GET /{id:Long}"
+
+                [v2]
+                defaultIfMissing = true
+                """);
+
+            var result = RouteConfigLoader.load(config);
+
+            assertThat(result.isFailure()).isTrue();
+            result.onFailure(cause -> assertThat(cause.message()).contains("Multiple versions declare defaultIfMissing"));
+        }
+
+        @Test
+        void load_fails_whenSunsetIsNotIsoDate() throws IOException {
+            var config = writeConfig("routes.toml", """
+                [api]
+                prefix = "/api/orders"
+
+                [v1.routes]
+                get = "GET /{id:Long}"
+
+                [v1]
+                sunset = "not-a-date"
+                """);
+
+            var result = RouteConfigLoader.load(config);
+
+            assertThat(result.isFailure()).isTrue();
+            result.onFailure(cause -> assertThat(cause.message()).contains("invalid 'sunset' value"));
+        }
+
+        @Test
+        void load_carriesApiPrefixAndVersionForRegistrationTimeMount() throws IOException {
+            var config = writeConfig("routes.toml", """
+                [api]
+                prefix = "/api/orders"
+
+                [v1.routes]
+                get = "GET /{id:Long}"
+                """);
+
+            var result = RouteConfigLoader.load(config);
+
+            assertThat(result.isSuccess()).isTrue();
+            // #198 §6.4: the /v{N}/ segment is composed at registration time from apiPrefix + version,
+            // not baked into the path. The loader carries the un-versioned path, the version-agnostic
+            // apiPrefix, and the per-handler version so codegen can mount {apiPrefix}/v{N}/{path}.
+            result.onSuccess(rc -> {
+                assertThat(rc.apiPrefix()).isEqualTo("/api/orders");
+                assertThat(rc.routes().get("getV1").pathTemplate()).isEqualTo("/{id:Long}");
+                assertThat(rc.routeVersion("getV1")).isEqualTo(1);
+                assertThat(rc.apiPrefix() + "/v" + rc.routeVersion("getV1") + rc.routes().get("getV1").pathTemplate())
+                    .isEqualTo("/api/orders/v1/{id:Long}");
+            });
+        }
+
+        @Test
+        void load_carriesEveryVersionRegistryInput_forGeneratedRegistry() throws IOException {
+            // #198 §6.4: the generated {Slice}Routes.versionRegistry() is built from exactly these
+            // loader outputs — apiPrefix, requireVersionHeader, the defaultIfMissing version, and
+            // per-version deprecated/sunset. This pins that the loader supplies all of them.
+            var config = writeConfig("routes.toml", """
+                [api]
+                prefix = "/api/orders"
+                requireVersionHeader = true
+
+                [v1.routes]
+                get = "GET /{id:Long}"
+
+                [v1]
+                deprecated = true
+                sunset = "2026-12-31"
+
+                [v2.routes]
+                get = "GET /{id:Long}"
+
+                [v2]
+                defaultIfMissing = true
+                """);
+
+            var result = RouteConfigLoader.load(config);
+
+            assertThat(result.isSuccess()).isTrue();
+            result.onSuccess(rc -> {
+                assertThat(rc.apiPrefix()).isEqualTo("/api/orders");
+                assertThat(rc.requireVersionHeader()).isTrue();
+                assertThat(rc.versions().keySet()).containsExactly(1, 2);
+                var v1 = rc.versions().get(1);
+                assertThat(v1.deprecated()).isTrue();
+                assertThat(v1.sunset().or("")).isEqualTo("2026-12-31");
+                assertThat(v1.defaultIfMissing()).isFalse();
+                var v2 = rc.versions().get(2);
+                assertThat(v2.deprecated()).isFalse();
+                assertThat(v2.sunset().isEmpty()).isTrue();
+                assertThat(v2.defaultIfMissing()).isTrue();
+            });
+        }
+    }
+
+    @Nested
+    class ErrorMappingParsing {
+
+        @Test
+        void parseErrors_parsesBareNumericStatusKeys() throws IOException {
+            var config = writeConfig("routes.toml", """
+                [routes]
+                getSeat = "GET /{id}"
+
+                [errors]
+                default = 500
+                404 = ["SeatError.SeatNotFound"]
+                400 = ["SeatError.InvalidSeat", "*Blank*"]
+                """);
+
+            var result = RouteConfigLoader.load(config);
+
+            assertThat(result.isSuccess()).isTrue();
+            result.onSuccess(rc -> {
+                var errors = rc.errors();
+                assertThat(errors.defaultStatus()).isEqualTo(500);
+                assertThat(errors.statusPatterns().get(404)).containsExactly("SeatError.SeatNotFound");
+                assertThat(errors.statusPatterns().get(400)).containsExactly("SeatError.InvalidSeat", "*Blank*");
+            });
+        }
+
+        @Test
+        void parseErrors_keepsLegacyHttpPrefixedKeys() throws IOException {
+            var config = writeConfig("routes.toml", """
+                [routes]
+                getSeat = "GET /{id}"
+
+                [errors]
+                default = 500
+                HTTP_404 = ["*NotFound*", "*Missing*"]
+                HTTP_400 = ["*Invalid*"]
+                """);
+
+            var result = RouteConfigLoader.load(config);
+
+            assertThat(result.isSuccess()).isTrue();
+            result.onSuccess(rc -> {
+                var errors = rc.errors();
+                assertThat(errors.statusPatterns().get(404)).containsExactly("*NotFound*", "*Missing*");
+                assertThat(errors.statusPatterns().get(400)).containsExactly("*Invalid*");
+            });
+        }
+
+        @Test
+        void parseErrors_parsesStrictFlag() throws IOException {
+            var config = writeConfig("routes.toml", """
+                [routes]
+                getSeat = "GET /{id}"
+
+                [errors]
+                strict = true
+                404 = ["SeatError.SeatNotFound"]
+                """);
+
+            var result = RouteConfigLoader.load(config);
+
+            assertThat(result.isSuccess()).isTrue();
+            result.onSuccess(rc -> assertThat(rc.errors().strict()).isTrue());
+        }
+
+        @Test
+        void parseErrors_defaultsStrictToFalse() throws IOException {
+            var config = writeConfig("routes.toml", """
+                [routes]
+                getSeat = "GET /{id}"
+
+                [errors]
+                404 = ["SeatError.SeatNotFound"]
+                """);
+
+            var result = RouteConfigLoader.load(config);
+
+            assertThat(result.isSuccess()).isTrue();
+            result.onSuccess(rc -> assertThat(rc.errors().strict()).isFalse());
+        }
+    }
 }

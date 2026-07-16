@@ -671,12 +671,14 @@ public class PackageSlicesMojo extends AbstractMojo {
         sb.append("        <dependency>\n");
         sb.append("            <groupId>org.pragmatica-lite</groupId>\n");
         sb.append("            <artifactId>core</artifactId>\n");
+        // version-literal: vestigial generated-pom dep coordinates; runtime resolves core/slice-api from the platform classpath — derive-or-drop tracked for rc3
         sb.append("            <version>0.11.2</version>\n");
         sb.append("        </dependency>\n");
         // And slice-api for runtime
         sb.append("        <dependency>\n");
         sb.append("            <groupId>org.pragmatica.aether</groupId>\n");
         sb.append("            <artifactId>slice-api</artifactId>\n");
+        // version-literal: vestigial generated-pom dep coordinates; runtime resolves core/slice-api from the platform classpath — derive-or-drop tracked for rc3
         sb.append("            <version>0.1.0</version>\n");
         sb.append("        </dependency>\n");
         sb.append("    </dependencies>\n");

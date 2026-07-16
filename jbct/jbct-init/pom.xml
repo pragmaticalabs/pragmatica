@@ -7,7 +7,7 @@
     <parent>
         <groupId>org.pragmatica-lite</groupId>
         <artifactId>jbct-parent</artifactId>
-        <version>1.0.0-rc1</version>
+        <version>1.0.0-rc2</version>
     </parent>
 
     <artifactId>jbct-init</artifactId>
@@ -45,4 +45,26 @@
             <artifactId>test-logging</artifactId>
         </dependency>
     </dependencies>
+
+    <build>
+        <!-- Filter jbct-init-build.properties so the resolver can self-derive its own build
+             version at runtime (mirrors slice-processor #403 staleness guard). Other resources
+             are copied verbatim to avoid corrupting non-text content. -->
+        <resources>
+            <resource>
+                <directory>src/main/resources</directory>
+                <filtering>true</filtering>
+                <includes>
+                    <include>jbct-init-build.properties</include>
+                </includes>
+            </resource>
+            <resource>
+                <directory>src/main/resources</directory>
+                <filtering>false</filtering>
+                <excludes>
+                    <exclude>jbct-init-build.properties</exclude>
+                </excludes>
+            </resource>
+        </resources>
+    </build>
 </project>

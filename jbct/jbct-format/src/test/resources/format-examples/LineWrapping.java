@@ -1,10 +1,10 @@
 package format.examples;
 
-import org.pragmatica.lang.Option;
-import org.pragmatica.lang.Result;
-
 import java.util.List;
 import java.util.Map;
+
+import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Result;
 
 
 public class LineWrapping {

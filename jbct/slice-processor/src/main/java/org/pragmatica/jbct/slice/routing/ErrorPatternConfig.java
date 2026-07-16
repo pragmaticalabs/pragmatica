@@ -15,16 +15,23 @@ import java.util.Map;
 ///
 /// Provides two mechanisms for mapping error types to HTTP status codes:
 ///
-///   - `statusPatterns` - Glob patterns matched against type names (e.g., "*NotFound*" -> 404)
-///   - `explicitMappings` - Direct type name to status code mappings
+///   - `statusPatterns` - Glob patterns or exact type references matched against Cause types
+///     (e.g., "*NotFound*" -> 404, or "SeatError.SeatNotFound" -> 404)
+///   - `explicitMappings` - Direct simple-name to status code mappings (`[errors.explicit]`)
 ///
+///
+/// `strict` (from `[errors] strict = true`) escalates the compile-time totality check: when set,
+/// a Cause record with no HTTP status mapping fails the build instead of warning (#385). It can
+/// also be enabled per-compilation via the `-Ajbct.routes.errors.strict=true` processor option.
 ///
 /// @param defaultStatus    default HTTP status for unmatched errors
-/// @param statusPatterns   map of HTTP status code to list of glob patterns
-/// @param explicitMappings map of exact type name to HTTP status code
+/// @param statusPatterns   map of HTTP status code to list of glob patterns / exact type references
+/// @param explicitMappings map of exact simple name to HTTP status code
+/// @param strict           whether an unmapped Cause record fails the build (vs. warns)
 public record ErrorPatternConfig(int defaultStatus,
                                  Map<Integer, List<String>> statusPatterns,
-                                 Map<String, Integer> explicitMappings) {
+                                 Map<String, Integer> explicitMappings,
+                                 boolean strict) {
     public ErrorPatternConfig {
         statusPatterns = Map.copyOf(statusPatterns);
         explicitMappings = Map.copyOf(explicitMappings);
@@ -35,14 +42,22 @@ public record ErrorPatternConfig(int defaultStatus,
 
     /// Factory method for empty configuration.
     public static ErrorPatternConfig errorPatternConfig() {
-        return new ErrorPatternConfig(500, Map.of(), Map.of());
+        return new ErrorPatternConfig(500, Map.of(), Map.of(), false);
+    }
+
+    /// Factory method without the strict flag (defaults to non-strict / warn-only).
+    public static ErrorPatternConfig errorPatternConfig(int defaultStatus,
+                                                        Map<Integer, List<String>> statusPatterns,
+                                                        Map<String, Integer> explicitMappings) {
+        return new ErrorPatternConfig(defaultStatus, statusPatterns, explicitMappings, false);
     }
 
     /// Factory method with all parameters.
     public static ErrorPatternConfig errorPatternConfig(int defaultStatus,
                                                         Map<Integer, List<String>> statusPatterns,
-                                                        Map<String, Integer> explicitMappings) {
-        return new ErrorPatternConfig(defaultStatus, statusPatterns, explicitMappings);
+                                                        Map<String, Integer> explicitMappings,
+                                                        boolean strict) {
+        return new ErrorPatternConfig(defaultStatus, statusPatterns, explicitMappings, strict);
     }
 
     /// Merge this configuration with another, with other taking precedence.
@@ -52,6 +67,7 @@ public record ErrorPatternConfig(int defaultStatus,
     ///   - defaultStatus: other's value if different from 500
     ///   - statusPatterns: combined, with other's patterns added to this's
     ///   - explicitMappings: combined, with other's mappings overriding this's
+    ///   - strict: enabled if either configuration enables it
     ///
     ///
     /// @param other the configuration to merge with (takes precedence)
@@ -67,7 +83,7 @@ public record ErrorPatternConfig(int defaultStatus,
                             : this.defaultStatus;
         var mergedPatterns = mergePatterns(this.statusPatterns, other.statusPatterns);
         var mergedExplicit = mergeMappings(this.explicitMappings, other.explicitMappings);
-        return errorPatternConfig(mergedDefault, mergedPatterns, mergedExplicit);
+        return errorPatternConfig(mergedDefault, mergedPatterns, mergedExplicit, this.strict || other.strict);
     }
 
     private static Map<Integer, List<String>> mergePatterns(Map<Integer, List<String>> base,

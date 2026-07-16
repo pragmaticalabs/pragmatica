@@ -44,8 +44,9 @@ public class MultilineArguments {
     Result<String> chainedWithArgs() {
         return Result.all(first(),
                           second(),
-                          third()).flatMap(this::process)
-                         .map(String::trim);
+                          third())
+                     .flatMap(this::process)
+                     .map(String::trim);
     }
 
     Result<String> lambdaArg() {

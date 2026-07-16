@@ -4,10 +4,12 @@ import org.pragmatica.jbct.format.AlignmentContext;
 import org.pragmatica.jbct.format.FormatterConfig;
 import org.pragmatica.jbct.parser.Cursor;
 import org.pragmatica.jbct.parser.RuleKind;
+import org.pragmatica.jbct.shared.ImportGroups;
 import org.pragmatica.lang.Option;
 import org.pragmatica.peg.v6.token.TokenArray;
 
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.IdentityHashMap;
@@ -460,7 +462,7 @@ final class FlowPrinter {
         if (hasImports) {
             newline();
             newline();
-            printOrganizedImports(imports);
+            printOrganizedImports(imports, ImportGroups.projectPackage(packageName(ou)));
         }
 
         var types = childrenByRule(ou, RuleKind.TYPE_DECL);
@@ -480,11 +482,12 @@ final class FlowPrinter {
         }
     }
 
-    private void printOrganizedImports(List<Cursor> imports) {
-        var pragmatica = filterImports(imports, "org.pragmatica", false);
-        var javaImports = filterJavaImports(imports);
-        var otherImports = filterOtherImports(imports);
-        var staticImports = filterImports(imports, "static", true);
+    private void printOrganizedImports(List<Cursor> imports, String projectPackage) {
+        var jdk = importsInGroup(imports, projectPackage, ImportGroups.Group.JDK);
+        var pragmatica = importsInGroup(imports, projectPackage, ImportGroups.Group.PRAGMATICA);
+        var thirdParty = sortedByText(importsInGroup(imports, projectPackage, ImportGroups.Group.THIRD_PARTY));
+        var project = importsInGroup(imports, projectPackage, ImportGroups.Group.PROJECT);
+        var staticImports = staticImportsInOrder(imports, projectPackage);
 
         // De-duplicate against the rendered statement text, not the CST span. Some import
         // nodes absorb the following type's doc-comment as trailing trivia (e.g. a `java.*`
@@ -492,43 +495,42 @@ final class FlowPrinter {
         // emitted in two groups and re-formatting never reaches a fixpoint.
         var emitted = new HashSet<String>();
         boolean needsBlank = false;
+        needsBlank = printImportGroup(jdk, needsBlank, emitted);
         needsBlank = printImportGroup(pragmatica, needsBlank, emitted);
-        needsBlank = printImportGroup(javaImports, needsBlank, emitted);
-        needsBlank = printImportGroup(otherImports, needsBlank, emitted);
+        needsBlank = printImportGroup(thirdParty, needsBlank, emitted);
+        needsBlank = printImportGroup(project, needsBlank, emitted);
         printImportGroup(staticImports, needsBlank, emitted);
     }
 
-    private List<Cursor> filterImports(List<Cursor> imports, String contains, boolean isStatic) {
+    /// Non-static imports classified into `group` by the shared {@link ImportGroups}
+    /// scheme, preserving source order within the group.
+    private List<Cursor> importsInGroup(List<Cursor> imports, String projectPackage, ImportGroups.Group group) {
         return imports.stream()
-            .filter(i -> matchesImportFilter(i, contains, isStatic))
+            .filter(i -> !isStaticImport(i) && groupOf(i, projectPackage) == group)
             .toList();
     }
 
-    private boolean matchesImportFilter(Cursor i, String contains, boolean isStatic) {
-        var t = importStatementText(i);
-        return t.contains(contains) && (isStatic || !t.contains("static"));
-    }
-
-    private List<Cursor> filterJavaImports(List<Cursor> imports) {
+    /// Static imports last, ordered by the same book grouping (JDK → pragmatica →
+    /// third-party → project); the stable sort preserves source order within each group.
+    private List<Cursor> staticImportsInOrder(List<Cursor> imports, String projectPackage) {
         return imports.stream()
-            .filter(this::isJavaImport)
+            .filter(this::isStaticImport)
+            .sorted(Comparator.comparingInt(i -> groupOf(i, projectPackage).ordinal()))
             .toList();
     }
 
-    private boolean isJavaImport(Cursor i) {
-        var t = importStatementText(i);
-        return (t.contains("java.") || t.contains("javax.")) && !t.contains("static");
-    }
-
-    private List<Cursor> filterOtherImports(List<Cursor> imports) {
-        return imports.stream()
-            .filter(this::isOtherImport)
+    private List<Cursor> sortedByText(List<Cursor> group) {
+        return group.stream()
+            .sorted(Comparator.comparing(this::importStatementText))
             .toList();
     }
 
-    private boolean isOtherImport(Cursor i) {
-        var t = importStatementText(i);
-        return !t.contains("org.pragmatica") && !t.contains("java.") && !t.contains("javax.") && !t.contains("static");
+    private boolean isStaticImport(Cursor imp) {
+        return ImportGroups.isStatic(importStatementText(imp));
+    }
+
+    private ImportGroups.Group groupOf(Cursor imp, String projectPackage) {
+        return ImportGroups.classify(ImportGroups.stripToPath(importStatementText(imp)), projectPackage);
     }
 
     private boolean printImportGroup(List<Cursor> group, boolean needsBlank, Set<String> emitted) {
@@ -1312,24 +1314,26 @@ final class FlowPrinter {
         }
     }
 
-    /// Sequencer-as-steps: chain (2+ method calls) breaks vertically only in TAIL contexts
-    /// (return/throw expression, lambda body). Exception: when the receiver is a static
-    /// factory call (e.g. `Class.method(...)`) and there are exactly 2 chain links AND
-    /// the first invocation's args don't themselves have complex multi-call content,
-    /// the chain stays inline — matches the idiom `Result.all(args).map(Tuple3::new)`.
-    /// In non-tail contexts (assignment RHS, argument, ternary branch), chains stay inline.
+    /// Sequencer-as-steps: chain (2+ method calls) breaks vertically in TAIL contexts
+    /// (return/throw expression, lambda body), and — width-aware fallback — in statement
+    /// position when its flat rendering would exceed `maxLineLength`. Exception: when the
+    /// receiver is a static factory call (e.g. `Class.method(...)`) and there are exactly 2
+    /// chain links AND the first invocation's args don't themselves have complex multi-call
+    /// content, the chain stays inline — matches the idiom `Result.all(args).map(Tuple3::new)`.
+    /// Statement-position chains that FIT on the line stay inline.
     private boolean shouldBreakChain(Cursor primary, int chainLinkCount, List<Cursor> postOps) {
         if (chainLinkCount < 2 || alignment.isInInlineExpression()) {
-            return false;
-        }
-        if (!alignment.isInTailContext()) {
             return false;
         }
         if (chainLinkCount == 2 && primary != null && isStaticFactoryReceiver(primary)
             && !firstPostOpHasComplexArgs(postOps)) {
             return false;
         }
-        return true;
+        if (alignment.isInTailContext()) {
+            return true;
+        }
+        // Statement-position chain: break only when the flat rendering overflows the line.
+        return !fitsOnLineUnary(primary, postOps);
     }
 
     /// True if the first PostOp in the list carries an Args subtree where at least one
@@ -1360,19 +1364,10 @@ final class FlowPrinter {
         return !t.isEmpty() && Character.isUpperCase(t.charAt(0));
     }
 
-    /// Count remaining method-call PostOps in `postOps` starting from `fromIdx` (inclusive).
-    private static int countMethodCallsFromIndex(List<Cursor> postOps,
-                                                  java.util.Set<Cursor> methodCallSet,
-                                                  int fromIdx) {
-        int n = 0;
-        for (int i = fromIdx; i < postOps.size(); i++) {
-            if (methodCallSet.contains(postOps.get(i))) n++;
-        }
-        return n;
-    }
-
     private boolean fitsOnLineUnary(Cursor primary, List<Cursor> postOps) {
-        int width = measureWidth(primary);
+        int width = primary != null
+                    ? measureWidth(primary)
+                    : 0;
         for (var postOp : postOps) {
             width += measureWidth(postOp);
         }
@@ -1452,11 +1447,9 @@ final class FlowPrinter {
 
         try (var scope = alignment.enterChain(alignColumn)) {
             // Rule: primary + first chain call stay inline; remaining dot-method postOps
-            // each go on their own line aligned to the chain column. Special case: after
-            // a multi-line bare-args invocation, when MULTIPLE dot-method follow-ups remain,
-            // the first follow-up stays inline (on the same line as the closing `)`) and
-            // subsequent ones break — this balances the chain layout. When only ONE
-            // follow-up remains, it breaks onto its own line aligned to the chain column.
+            // each go on their own line aligned to the chain column. This holds uniformly
+            // after a wrapped-args head call too — the first follow-up always breaks onto
+            // its own line at the chain column rather than gluing to the closing `)`.
             boolean firstMethodCallPending = !primaryHasInvocation;
             for (int pi = 0; pi < postOps.size(); pi++) {
                 var postOp = postOps.get(pi);
@@ -1478,30 +1471,21 @@ final class FlowPrinter {
                     emitLeadingComments(postOp);
                     forcedIndentCol = savedForcedIndentCol;
                 } else if (isMethodCall && !firstMethodCallPending) {
-                    if (scope.lastPostOpWasBrokenArgs()
-                        && countMethodCallsFromIndex(postOps, methodCallSet, pi) >= 2) {
-                        // 2+ follow-ups remain after a broken-args invocation: the first
-                        // follow-up stays inline on the same line as the closing `)`.
-                        // Subsequent ones align to the args-open-paren column.
-                        scope.consumeBrokenArgsInlineSlot();
-                    } else if (scope.lastPostOpWasBrokenArgs()) {
-                        // Single follow-up after broken-args: break to the chain column
-                        // (not the args-paren column). Clear postBrokenArgsAnchor so the
-                        // chain column is used instead.
+                    if (scope.lastPostOpWasBrokenArgs()) {
+                        // Break the first follow-up after a wrapped-args head call onto its
+                        // own line, aligned to the chain (head call's dot) column.
                         newline();
                         printAlignedTo(alignColumn);
                         scope.clearBrokenArgsAnchor();
                     } else {
-                        // Subsequent method calls (after the inline-consumed first) align
-                        // to the args-open-paren column when one was recorded; otherwise
-                        // align to the chain column.
+                        // Subsequent method calls align to the chain column, or to body
+                        // indent when the previous post-op wrapped its own args.
                         newline();
                         int anchor = scope.nextDotMethodAnchor(alignColumn);
                         printAlignedTo(anchor);
                     }
                 }
                 int lineBefore = currentLine;
-                int colBefore = currentColumn;
                 boolean isBareInvoc = isBareInvocationPostOp(postOp);
                 printNodeContent(postOp);
                 // Emit trailing line comments from the next postOp's leading trivia
@@ -1512,9 +1496,8 @@ final class FlowPrinter {
                 boolean spanned = currentLine != lineBefore;
                 scope.notePostOpEmitted(spanned, containsLambda(postOp));
                 if (isBareInvoc && spanned && !containsLambda(postOp)) {
-                    // Broken bare-args: capture the col where `(` landed. colBefore is the
-                    // column right before the `(` was emitted; the `(` itself sits at colBefore.
-                    scope.noteBrokenArgsPostOp(colBefore);
+                    // Broken bare-args: the next dot-method breaks to the chain column.
+                    scope.noteBrokenArgsPostOp();
                 }
                 if (isMethodCall) {
                     firstMethodCallPending = false;

@@ -171,10 +171,10 @@ class FlowFormatterTest {
                     int pragPos = content.indexOf("org.pragmatica");
                     int javaPos = content.indexOf("java.util");
                     int staticPos = content.indexOf("static ");
-                    // pragmatica before java
-                    assertThat(pragPos).isLessThan(javaPos);
+                    // java before pragmatica
+                    assertThat(javaPos).isLessThan(pragPos);
                     // static last
-                    assertThat(staticPos).isGreaterThan(javaPos);
+                    assertThat(staticPos).isGreaterThan(pragPos);
                 });
         }
     }

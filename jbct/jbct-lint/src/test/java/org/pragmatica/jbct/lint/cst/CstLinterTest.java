@@ -411,6 +411,98 @@ class CstLinterTest {
                 """);
             assertNoRule(diagnostics, "JBCT-VO-01");
         }
+
+        @Test
+        void allowsTransportRecordNestedInSliceInterface() {
+            // @Slice transport DTOs (not just Request/Response — also versioned items and
+            // list wrappers) are factory-less by design.
+            var diagnostics = lint("""
+                package com.example.slice.test;
+                import org.pragmatica.aether.slice.annotation.Slice;
+                import java.util.List;
+                @Slice
+                public interface Catalog {
+                    record GetRequest(Long id) {}
+                    record ItemV2(long id, String name, long priceCents, String currency) {}
+                    record ItemListV2(List<ItemV2> items) {}
+                    record ImportResponse(int imported) {}
+                }
+                """);
+            assertNoRule(diagnostics, "JBCT-VO-01");
+        }
+
+        @Test
+        void allowsNestedFactRecordInSliceInterface() {
+            // Event/fact records nested in a @Slice interface (published via Publisher) have no factory.
+            var diagnostics = lint("""
+                package com.example.slice.test;
+                import org.pragmatica.aether.slice.annotation.Slice;
+                @Slice
+                public interface UrlShortener {
+                    record ClickEvent(String shortCode) {}
+                }
+                """);
+            assertNoRule(diagnostics, "JBCT-VO-01");
+        }
+
+        @Test
+        void allowsSliceNestedRecordWithFullyQualifiedAnnotation() {
+            // Matching is by simple name, robust to FQN-form annotations.
+            var diagnostics = lint("""
+                package com.example.slice.test;
+                @org.pragmatica.aether.slice.annotation.Slice
+                public interface Orders {
+                    record PlaceRequest(String sku, int qty) {}
+                }
+                """);
+            assertNoRule(diagnostics, "JBCT-VO-01");
+        }
+
+        @Test
+        void allowsRowRecordNestedInPgSqlInterface() {
+            // @PgSql row records (projection of a DB row) are factory-less by design.
+            var diagnostics = lint("""
+                package com.example.persistence.test;
+                import org.pragmatica.aether.resource.db.PgSql;
+                import org.pragmatica.lang.Option;
+                import org.pragmatica.lang.Promise;
+                @PgSql
+                public interface UserPersistence {
+                    record UserRow(long id, String name, String email) {}
+                    Promise<Option<UserRow>> findById(Long id);
+                }
+                """);
+            assertNoRule(diagnostics, "JBCT-VO-01");
+        }
+
+        @Test
+        void stillFlagsGenuineValueObjectAlongsideSliceInterface() {
+            // A real top-level value object is NOT exempted just because the file also holds a
+            // @Slice interface — the exemption is scoped to nesting, not file presence.
+            var diagnostics = lint("""
+                package com.example.domain.test;
+                import org.pragmatica.aether.slice.annotation.Slice;
+                @Slice
+                interface Catalog {
+                    record GetRequest(Long id) {}
+                }
+                record Money(long cents) {}
+                """);
+            assertHasRule(diagnostics, "JBCT-VO-01");
+        }
+
+        @Test
+        void stillFlagsRecordNestedInPlainInterface() {
+            // A record nested in a non-framework (un-annotated) interface, not implementing it,
+            // is still a candidate value object and must be flagged.
+            var diagnostics = lint("""
+                package com.example.domain.test;
+                public interface Holder {
+                    record Money(long cents) {}
+                }
+                """);
+            assertHasRule(diagnostics, "JBCT-VO-01");
+        }
     }
 
     @Nested
@@ -1958,13 +2050,13 @@ class CstLinterTest {
     @DisplayName("JBCT-STY-06: Import ordering")
     class ImportOrderingTests {
         @Test
-        void detectsJavaImportBeforePragmatica() {
-            // Rule order: org.pragmatica (0) → java/javax (1) → third-party (2) → project (3)
-            // java before pragmatica is wrong
+        void detectsPragmaticaImportBeforeJava() {
+            // Book order: java/javax (0) → org.pragmatica (1) → third-party (2) → project (3)
+            // pragmatica before java is wrong
             var diagnostics = lint("""
                 package com.example.usecase.test;
-                import java.util.List;
                 import org.pragmatica.lang.Result;
+                import java.util.List;
                 public class Test {
                     public Result<String> process(List<String> input) {
                         return Result.success(input.toString());
@@ -1976,7 +2068,7 @@ class CstLinterTest {
 
         @Test
         void detectsThirdPartyBeforeJava() {
-            // Third-party (2) before java (1) is wrong
+            // Third-party (2) before java (0) is wrong
             var diagnostics = lint("""
                 package com.example.usecase.test;
                 import org.slf4j.Logger;
@@ -1992,6 +2084,7 @@ class CstLinterTest {
 
         @Test
         void detectsThirdPartyAfterProject() {
+            // Project (3) before third-party (2) is wrong
             var diagnostics = lint("""
                 package com.example.usecase.test;
                 import com.example.domain.User;
@@ -2007,13 +2100,13 @@ class CstLinterTest {
 
         @Test
         void allowsCorrectImportOrder() {
-            // Correct order: org.pragmatica (0) → java/javax (1) → third-party (2) → project (3)
+            // Correct order: java/javax (0) → org.pragmatica (1) → third-party (2) → project (3)
             var diagnostics = lint("""
                 package com.example.usecase.test;
-                import org.pragmatica.lang.Result;
                 import java.util.List;
                 import java.util.Map;
                 import javax.annotation.Nonnull;
+                import org.pragmatica.lang.Result;
                 import org.slf4j.Logger;
                 import com.example.domain.User;
                 public class Test {
@@ -2027,13 +2120,13 @@ class CstLinterTest {
 
         @Test
         void allowsCorrectImportOrderWithStaticImports() {
-            // Correct order: org.pragmatica → java → then static: org.pragmatica → java
+            // Correct order: java → org.pragmatica → then static: java → org.pragmatica
             var diagnostics = lint("""
                 package com.example.usecase.test;
-                import org.pragmatica.lang.Result;
                 import java.util.List;
-                import static org.pragmatica.lang.Result.success;
+                import org.pragmatica.lang.Result;
                 import static java.util.Objects.requireNonNull;
+                import static org.pragmatica.lang.Result.success;
                 public class Test {
                     public Result<String> process(List<String> input) {
                         requireNonNull(input);
@@ -2046,13 +2139,13 @@ class CstLinterTest {
 
         @Test
         void detectsOutOfOrderStaticImports() {
-            // Static section: java (1) before org.pragmatica (0) is wrong
+            // Static section: org.pragmatica (5) before java (4) is wrong
             var diagnostics = lint("""
                 package com.example.usecase.test;
-                import org.pragmatica.lang.Result;
                 import java.util.List;
-                import static java.util.Objects.requireNonNull;
+                import org.pragmatica.lang.Result;
                 import static org.pragmatica.lang.Result.success;
+                import static java.util.Objects.requireNonNull;
                 public class Test {
                     public Result<String> process(List<String> input) {
                         requireNonNull(input);

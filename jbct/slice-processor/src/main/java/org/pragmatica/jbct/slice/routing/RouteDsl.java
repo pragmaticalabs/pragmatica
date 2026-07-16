@@ -28,10 +28,14 @@ import java.util.regex.Pattern;
 /// @param pathTemplate path template with placeholders (e.g., "/users/{id}")
 /// @param pathParams   extracted path parameters
 /// @param queryParams  extracted query parameters
+/// @param consumes     request body media type ([MediaType#JSON] by default)
+/// @param produces     response body media type ([MediaType#JSON] by default)
 public record RouteDsl(String method,
                        String pathTemplate,
                        List<PathParam> pathParams,
-                       List<QueryParam> queryParams) {
+                       List<QueryParam> queryParams,
+                       MediaType consumes,
+                       MediaType produces) {
     public RouteDsl {
         pathParams = List.copyOf(pathParams);
         queryParams = List.copyOf(queryParams);
@@ -49,6 +53,13 @@ public record RouteDsl(String method,
     private static final Cause INVALID_FORMAT = Causes.cause("Invalid route DSL format. Expected: METHOD /path/{param}?query");
 
     public static Result<RouteDsl> parse(String dsl) {
+        return parse(dsl, MediaType.JSON, MediaType.JSON);
+    }
+
+    /// Parse a route DSL string, attaching the resolved `consumes`/`produces` media types.
+    /// The bare-string and array route forms call [#parse(String)], which defaults both to
+    /// [MediaType#JSON] (JSON in, JSON out) — preserving backward compatibility.
+    public static Result<RouteDsl> parse(String dsl, MediaType consumes, MediaType produces) {
         if (dsl == null || dsl.isBlank()) {
             return EMPTY_DSL.result();
         }
@@ -64,7 +75,9 @@ public record RouteDsl(String method,
                              .map(pathParams -> new RouteDsl(method,
                                                              pathPart,
                                                              pathParams,
-                                                             parseQueryParams(queryPart)));
+                                                             parseQueryParams(queryPart),
+                                                             consumes,
+                                                             produces));
     }
 
     private static Result<String> validateMethod(String method) {
@@ -155,6 +168,56 @@ public record RouteDsl(String method,
     public String basePath() {
         var idx = pathTemplate.indexOf('{');
         return idx >= 0 ? pathTemplate.substring(0, idx) : pathTemplate;
+    }
+
+    /// A single ordered element of the path that follows the static [#basePath()] prefix: either a
+    /// real path parameter or a static (literal) segment. The generator emits parameters as typed
+    /// [org.pragmatica.http.routing.PathParameter] factory calls and statics as
+    /// `PathParameter.spacer("...")`, preserving the original path order so nothing after the first
+    /// parameter is dropped.
+    public sealed interface PathSegment {
+        /// A real path parameter (carries a value bound to the handler lambda).
+        record Param(PathParam param) implements PathSegment {}
+
+        /// A static literal path segment (consumed positionally as a spacer; carries no value).
+        record Static(String text) implements PathSegment {}
+    }
+
+    /// Returns the ordered path segments that follow the static [#basePath()] prefix, interleaving
+    /// real path parameters ([PathSegment.Param]) with static literal segments
+    /// ([PathSegment.Static]) in their original path order.
+    ///
+    /// `PathParam.position` is a dense parameter index (0, 1, ...) and therefore cannot reconstruct
+    /// the interleaving of static segments — the ordering is derived directly from the template
+    /// string instead. Examples (prefix shown for clarity):
+    ///   - `/orders/{orderId:Long}/items/{itemId:Long}` (prefix `/orders/`) →
+    ///     `[Param(orderId), Static("items"), Param(itemId)]`
+    ///   - `/items/{id:Long}/image` (prefix `/items/`) → `[Param(id), Static("image")]`
+    ///   - `/{userId:Long}/orders` (prefix `/`) → `[Param(userId), Static("orders")]`
+    ///   - `/export/{id:Long}` (prefix `/export/`) → `[Param(id)]` (no trailing static)
+    public List<PathSegment> pathSegments() {
+        var prefix = basePath();
+        var remainder = pathTemplate.substring(prefix.length());
+        var segments = new ArrayList<PathSegment>();
+        var matcher = PATH_PARAM_PATTERN.matcher(remainder);
+        var paramIndex = 0;
+        var cursor = 0;
+        while (matcher.find()) {
+            addStaticSegments(segments, remainder.substring(cursor, matcher.start()));
+            segments.add(new PathSegment.Param(pathParams.get(paramIndex)));
+            paramIndex++;
+            cursor = matcher.end();
+        }
+        addStaticSegments(segments, remainder.substring(cursor));
+        return List.copyOf(segments);
+    }
+
+    private static void addStaticSegments(List<PathSegment> segments, String chunk) {
+        for (var part : chunk.split("/")) {
+            if (!part.isBlank()) {
+                segments.add(new PathSegment.Static(part));
+            }
+        }
     }
 
     /// Returns the path template with type annotations stripped from path parameters.

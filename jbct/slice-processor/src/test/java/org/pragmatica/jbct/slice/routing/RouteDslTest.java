@@ -146,6 +146,83 @@ class RouteDslTest {
     }
 
     @Nested
+    class PathSegments {
+
+        @Test
+        void pathSegments_returnsSingleParam_whenNoStaticAfterParam() {
+            var result = RouteDsl.parse("GET /export/{id:Long}");
+
+            assertThat(result.isSuccess()).isTrue();
+            result.onSuccess(route -> {
+                var segments = route.pathSegments();
+                assertThat(segments).hasSize(1);
+                assertThat(segments.getFirst()).isInstanceOf(RouteDsl.PathSegment.Param.class);
+                assertThat(((RouteDsl.PathSegment.Param) segments.getFirst()).param().name()).isEqualTo("id");
+            });
+        }
+
+        @Test
+        void pathSegments_interleavesStaticSegment_betweenTwoParams() {
+            var result = RouteDsl.parse("GET /orders/{orderId:Long}/items/{itemId:Long}");
+
+            assertThat(result.isSuccess()).isTrue();
+            result.onSuccess(route -> {
+                var segments = route.pathSegments();
+                assertThat(segments).hasSize(3);
+                assertThat(((RouteDsl.PathSegment.Param) segments.get(0)).param().name()).isEqualTo("orderId");
+                assertThat(((RouteDsl.PathSegment.Static) segments.get(1)).text()).isEqualTo("items");
+                assertThat(((RouteDsl.PathSegment.Param) segments.get(2)).param().name()).isEqualTo("itemId");
+            });
+        }
+
+        @Test
+        void pathSegments_appendsTrailingStatic_afterParam() {
+            var result = RouteDsl.parse("GET /items/{id:Long}/image");
+
+            assertThat(result.isSuccess()).isTrue();
+            result.onSuccess(route -> {
+                var segments = route.pathSegments();
+                assertThat(segments).hasSize(2);
+                assertThat(((RouteDsl.PathSegment.Param) segments.get(0)).param().name()).isEqualTo("id");
+                assertThat(((RouteDsl.PathSegment.Static) segments.get(1)).text()).isEqualTo("image");
+            });
+        }
+
+        @Test
+        void pathSegments_appendsTrailingStatic_forPathQueryRoute() {
+            var result = RouteDsl.parse("GET /{userId:Long}/orders?status&limit:Integer");
+
+            assertThat(result.isSuccess()).isTrue();
+            result.onSuccess(route -> {
+                var segments = route.pathSegments();
+                assertThat(segments).hasSize(2);
+                assertThat(((RouteDsl.PathSegment.Param) segments.get(0)).param().name()).isEqualTo("userId");
+                assertThat(((RouteDsl.PathSegment.Static) segments.get(1)).text()).isEqualTo("orders");
+            });
+        }
+
+        @Test
+        void pathSegments_returnsConsecutiveParams_withNoStaticBetween() {
+            var result = RouteDsl.parse("GET /transform/{operation:String}/{value:String}");
+
+            assertThat(result.isSuccess()).isTrue();
+            result.onSuccess(route -> {
+                var segments = route.pathSegments();
+                assertThat(segments).hasSize(2);
+                assertThat(segments).allMatch(s -> s instanceof RouteDsl.PathSegment.Param);
+            });
+        }
+
+        @Test
+        void pathSegments_isEmpty_forStaticOnlyPath() {
+            var result = RouteDsl.parse("GET /health");
+
+            assertThat(result.isSuccess()).isTrue();
+            result.onSuccess(route -> assertThat(route.pathSegments()).isEmpty());
+        }
+    }
+
+    @Nested
     class QueryParameters {
 
         @Test
@@ -260,6 +337,48 @@ class RouteDslTest {
 
             assertThat(result.isSuccess()).isTrue();
             result.onSuccess(route -> assertThat(route.hasParams()).isFalse());
+        }
+    }
+
+    @Nested
+    class MediaTypes {
+
+        @Test
+        void parse_defaultsToJson_whenNoMediaTypesGiven() {
+            var result = RouteDsl.parse("POST /upload");
+
+            assertThat(result.isSuccess()).isTrue();
+            result.onSuccess(route -> {
+                assertThat(route.consumes()).isEqualTo(MediaType.JSON);
+                assertThat(route.produces()).isEqualTo(MediaType.JSON);
+            });
+        }
+
+        @Test
+        void parse_attachesProvidedMediaTypes() {
+            var consumes = MediaType.mediaType("text/plain").or(MediaType.JSON);
+            var produces = MediaType.mediaType("text/csv").or(MediaType.JSON);
+
+            var result = RouteDsl.parse("POST /export", consumes, produces);
+
+            assertThat(result.isSuccess()).isTrue();
+            result.onSuccess(route -> {
+                assertThat(route.consumes().category()).isEqualTo("TEXT");
+                assertThat(route.produces().emitExpression()).isEqualTo("CommonContentType.TEXT_CSV");
+            });
+        }
+
+        @Test
+        void parse_preservesPathParams_withMediaTypes() {
+            var produces = MediaType.mediaType("application/octet-stream").or(MediaType.JSON);
+
+            var result = RouteDsl.parse("GET /download/{id:Long}", MediaType.JSON, produces);
+
+            assertThat(result.isSuccess()).isTrue();
+            result.onSuccess(route -> {
+                assertThat(route.pathParams()).hasSize(1);
+                assertThat(route.produces().category()).isEqualTo("BINARY");
+            });
         }
     }
 

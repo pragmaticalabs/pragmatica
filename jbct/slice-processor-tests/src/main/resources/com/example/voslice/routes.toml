@@ -1,0 +1,9 @@
+prefix = "/api/seats"
+
+[routes]
+getSeat = "GET /{seatId}"
+findSeat = "GET /find?seat"
+
+[errors]
+default = 500
+HTTP_400 = ["*Invalid*"]

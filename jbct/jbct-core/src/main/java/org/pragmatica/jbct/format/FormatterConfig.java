@@ -3,28 +3,16 @@ package org.pragmatica.jbct.format;
 public record FormatterConfig(int maxLineLength,
                               int indentSize,
                               boolean useTabs,
-                              boolean alignChainedCalls,
-                              boolean alignArguments,
-                              boolean alignParameters,
                               boolean organizeImports) {
     /// Default JBCT formatting configuration.
-    public static final FormatterConfig DEFAULT = formatterConfig(120, 4, false, true, true, true, true);
+    public static final FormatterConfig DEFAULT = formatterConfig(120, 4, false, true);
 
     /// Factory method for creating FormatterConfig.
     public static FormatterConfig formatterConfig(int maxLineLength,
                                                   int indentSize,
                                                   boolean useTabs,
-                                                  boolean alignChainedCalls,
-                                                  boolean alignArguments,
-                                                  boolean alignParameters,
                                                   boolean organizeImports) {
-        return new FormatterConfig(maxLineLength,
-                                   indentSize,
-                                   useTabs,
-                                   alignChainedCalls,
-                                   alignArguments,
-                                   alignParameters,
-                                   organizeImports);
+        return new FormatterConfig(maxLineLength, indentSize, useTabs, organizeImports);
     }
 
     /// Factory method for default config.
@@ -34,73 +22,19 @@ public record FormatterConfig(int maxLineLength,
 
     /// Builder-style methods for customization.
     public FormatterConfig withMaxLineLength(int maxLineLength) {
-        return formatterConfig(maxLineLength,
-                               indentSize,
-                               useTabs,
-                               alignChainedCalls,
-                               alignArguments,
-                               alignParameters,
-                               organizeImports);
+        return formatterConfig(maxLineLength, indentSize, useTabs, organizeImports);
     }
 
     public FormatterConfig withIndentSize(int indentSize) {
-        return formatterConfig(maxLineLength,
-                               indentSize,
-                               useTabs,
-                               alignChainedCalls,
-                               alignArguments,
-                               alignParameters,
-                               organizeImports);
+        return formatterConfig(maxLineLength, indentSize, useTabs, organizeImports);
     }
 
     public FormatterConfig withUseTabs(boolean useTabs) {
-        return formatterConfig(maxLineLength,
-                               indentSize,
-                               useTabs,
-                               alignChainedCalls,
-                               alignArguments,
-                               alignParameters,
-                               organizeImports);
-    }
-
-    public FormatterConfig withAlignChainedCalls(boolean alignChainedCalls) {
-        return formatterConfig(maxLineLength,
-                               indentSize,
-                               useTabs,
-                               alignChainedCalls,
-                               alignArguments,
-                               alignParameters,
-                               organizeImports);
-    }
-
-    public FormatterConfig withAlignArguments(boolean alignArguments) {
-        return formatterConfig(maxLineLength,
-                               indentSize,
-                               useTabs,
-                               alignChainedCalls,
-                               alignArguments,
-                               alignParameters,
-                               organizeImports);
-    }
-
-    public FormatterConfig withAlignParameters(boolean alignParameters) {
-        return formatterConfig(maxLineLength,
-                               indentSize,
-                               useTabs,
-                               alignChainedCalls,
-                               alignArguments,
-                               alignParameters,
-                               organizeImports);
+        return formatterConfig(maxLineLength, indentSize, useTabs, organizeImports);
     }
 
     public FormatterConfig withOrganizeImports(boolean organizeImports) {
-        return formatterConfig(maxLineLength,
-                               indentSize,
-                               useTabs,
-                               alignChainedCalls,
-                               alignArguments,
-                               alignParameters,
-                               organizeImports);
+        return formatterConfig(maxLineLength, indentSize, useTabs, organizeImports);
     }
 
     /// Get the indent string (spaces or tab).

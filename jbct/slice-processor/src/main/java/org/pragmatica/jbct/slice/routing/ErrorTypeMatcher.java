@@ -14,6 +14,12 @@ package org.pragmatica.jbct.slice.routing;
 ///   - `ExactMatch` - matches types with exact name
 ///
 ///
+/// A pattern that contains no `*` wildcard is an EXACT TYPE REFERENCE (#385, wishlist item 6):
+/// [#matchesType] resolves it against the fully-qualified name by exact equality or dotted-suffix,
+/// so `SeatNotFound`, `SeatError.SeatNotFound`, and `com.acme.seat.SeatError.SeatNotFound` all
+/// resolve to the same nested Cause record. This is rename-proof and type-checked at compile time.
+/// The glob forms keep matching the simple name unchanged (backward compatible).
+///
 /// Pattern matching is case-sensitive.
 public final class ErrorTypeMatcher {
     private ErrorTypeMatcher() {}
@@ -64,6 +70,40 @@ public final class ErrorTypeMatcher {
 
     private static boolean matchExact(String typeName, String pattern) {
         return typeName.equals(pattern);
+    }
+
+    /// Whether the pattern is an exact type reference (no `*` wildcard) rather than a glob.
+    /// Exact references are type-checked at compile time and resolved by [#matchesType].
+    ///
+    /// @param pattern the mapping entry to classify
+    /// @return true when the pattern contains no wildcard
+    public static boolean isExactReference(String pattern) {
+        return pattern != null && pattern.indexOf('*') < 0;
+    }
+
+    /// Check whether a Cause type matches the given mapping entry.
+    ///
+    /// A glob entry (contains `*`) is matched against the SIMPLE name, exactly as [#matches] —
+    /// the backward-compatible behaviour. An exact type reference (no `*`) is resolved against the
+    /// FULLY-QUALIFIED name by exact equality or dotted-suffix, so `SeatNotFound`,
+    /// `SeatError.SeatNotFound`, and `com.acme.seat.SeatError.SeatNotFound` all resolve to the same
+    /// nested Cause record.
+    ///
+    /// @param simpleName    the simple name of the Cause type
+    /// @param qualifiedName the fully-qualified (dotted) name of the Cause type
+    /// @param pattern       the glob or exact-reference mapping entry
+    /// @return true if the type matches the entry
+    public static boolean matchesType(String simpleName, String qualifiedName, String pattern) {
+        if (pattern == null) {
+            return false;
+        }
+        if (!isExactReference(pattern)) {
+            return matches(simpleName, pattern);
+        }
+        if (qualifiedName == null || pattern.isEmpty()) {
+            return false;
+        }
+        return qualifiedName.equals(pattern) || qualifiedName.endsWith("." + pattern);
     }
 
     /// Extract the literal portion of a pattern (without wildcards).

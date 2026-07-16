@@ -8,11 +8,15 @@ package org.pragmatica.jbct.slice;
 import org.pragmatica.jbct.slice.generator.DependencyVersionResolver;
 import org.pragmatica.jbct.slice.generator.FactoryClassGenerator;
 import org.pragmatica.jbct.slice.generator.ManifestGenerator;
+import org.pragmatica.jbct.slice.model.MethodModel;
+import org.pragmatica.jbct.slice.model.ResolvedTopicConstant;
 import org.pragmatica.jbct.slice.model.SliceModel;
+import org.pragmatica.jbct.slice.routing.ErrorMappingValidator;
 import org.pragmatica.jbct.slice.routing.ErrorPatternConfig;
 import org.pragmatica.jbct.slice.routing.ErrorTypeDiscovery;
 import org.pragmatica.jbct.slice.routing.RouteConfig;
 import org.pragmatica.jbct.slice.routing.RouteConfigLoader;
+import org.pragmatica.jbct.slice.routing.RouteCoverageValidator;
 import org.pragmatica.jbct.slice.routing.RouteSourceGenerator;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
@@ -33,20 +37,30 @@ import javax.tools.StandardLocation;
 import java.io.IOException;
 import java.nio.file.FileSystemNotFoundException;
 import java.nio.file.Path;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 import com.google.auto.service.AutoService;
 
 @AutoService(Processor.class)
 @SupportedAnnotationTypes("org.pragmatica.aether.slice.annotation.Slice")
-@SupportedOptions({"slice.groupId", "slice.artifactId"})
+@SupportedOptions({"slice.groupId", "slice.artifactId", "jbct.routes.errors.strict", "jbct.routes.coverage.strict"})
 @SupportedSourceVersion(SourceVersion.RELEASE_25)
 public class SliceProcessor extends AbstractProcessor {
+    /// Processor option escalating an unmapped Cause record from a warning to a build error (#385).
+    private static final String ERRORS_STRICT_OPTION = "jbct.routes.errors.strict";
+    /// Processor option escalating an unrouted slice method from a warning to a build error (#389).
+    private static final String COVERAGE_STRICT_OPTION = "jbct.routes.coverage.strict";
+
     private FactoryClassGenerator factoryGenerator;
     private ManifestGenerator manifestGenerator;
     private DependencyVersionResolver versionResolver;
     private RouteSourceGenerator routeGenerator;
     private ErrorTypeDiscovery errorDiscovery;
+    private boolean errorsStrict;
+    private boolean coverageStrict;
     private final java.util.Map<String, TypeElement> packageToSlice = new java.util.concurrent.ConcurrentHashMap<>();
     private final java.util.Set<String> routeServiceEntries = java.util.Collections.synchronizedSet(new java.util.LinkedHashSet<>());
 
@@ -62,6 +76,23 @@ public class SliceProcessor extends AbstractProcessor {
         this.manifestGenerator = new ManifestGenerator(filer, versionResolver, options);
         this.errorDiscovery = new ErrorTypeDiscovery(processingEnv);
         this.routeGenerator = new RouteSourceGenerator(filer, processingEnv.getMessager(), elements);
+        this.errorsStrict = Boolean.parseBoolean(options.getOrDefault(ERRORS_STRICT_OPTION, "false"));
+        this.coverageStrict = Boolean.parseBoolean(options.getOrDefault(COVERAGE_STRICT_OPTION, "false"));
+        // Stamp the running processor version into the build log so a stale locally-installed jar
+        // is diagnosable rather than silently reintroducing an already-fixed codegen bug (#403).
+        processingEnv.getMessager()
+                     .printMessage(Diagnostic.Kind.NOTE,
+                                   "slice-processor " + BuildInfo.VERSION + " (built " + BuildInfo.BUILD_TIMESTAMP + ")");
+        warnIfProcessorStale();
+    }
+
+    /// Escalate a detected stale install from a diagnosable NOTE to a loud WARNING that names the
+    /// remedy. No-op for consumers built outside this monorepo (no `jbct/` source tree to compare
+    /// against) or when the build stamp is unresolved - see [StalenessGuard] (#403).
+    private void warnIfProcessorStale() {
+        StalenessGuard.staleWarning(System.getProperty("user.dir", ""), BuildInfo.VERSION, BuildInfo.BUILD_TIMESTAMP)
+                      .onPresent(message -> processingEnv.getMessager()
+                                                         .printMessage(Diagnostic.Kind.WARNING, message));
     }
 
     @Override
@@ -77,7 +108,7 @@ public class SliceProcessor extends AbstractProcessor {
                 if (!validateOneSlicePerPackage(interfaceElement)) {
                     return false;
                 }
-                processSliceInterface(interfaceElement);
+                processSliceInterface(interfaceElement, roundEnv.getRootElements());
             }
         }
         // Write service file once at the end if we have route entries
@@ -117,29 +148,43 @@ public class SliceProcessor extends AbstractProcessor {
         return true;
     }
 
-    private void processSliceInterface(TypeElement interfaceElement) {
+    private void processSliceInterface(TypeElement interfaceElement, Set<? extends Element> roundRoots) {
         SliceModel.sliceModel(interfaceElement, processingEnv)
                   .onFailure(cause -> error(interfaceElement,
                                             cause.message()))
-                  .onSuccess(sliceModel -> generateArtifacts(interfaceElement, sliceModel));
+                  .onSuccess(sliceModel -> generateArtifacts(interfaceElement, sliceModel, roundRoots));
     }
 
-    private void generateArtifacts(TypeElement interfaceElement, SliceModel sliceModel) {
-        generateFactory(interfaceElement, sliceModel)
-            .flatMap(_ -> generateRoutesAndManifest(interfaceElement, sliceModel))
+    /// Resolve the slice's typed-topic bindings (#396), emit any unknown-constant / payload-type
+    /// mismatch diagnostics, and skip generation when a binding is in error. On success the resolved
+    /// publisher bindings drive the `TypedPublisher` wrapping in the generated factory.
+    private void generateArtifacts(TypeElement interfaceElement,
+                                   SliceModel sliceModel,
+                                   Set<? extends Element> roundRoots) {
+        var topicBindings = ResolvedTopicConstant.resolveBindings(sliceModel, roundRoots, processingEnv);
+        if (!topicBindings.errors().isEmpty()) {
+            topicBindings.errors().forEach(message -> error(interfaceElement, message));
+            return;
+        }
+        generateFactory(interfaceElement, sliceModel, topicBindings.bindings())
+            .flatMap(_ -> generateRoutesAndManifest(interfaceElement, sliceModel, topicBindings.bindings()))
             .onFailure(cause -> error(interfaceElement, cause.message()));
     }
 
-    private Result<Unit> generateFactory(TypeElement interfaceElement, SliceModel sliceModel) {
-        return factoryGenerator.generate(sliceModel)
+    private Result<Unit> generateFactory(TypeElement interfaceElement,
+                                         SliceModel sliceModel,
+                                         Map<String, ResolvedTopicConstant> publisherBindings) {
+        return factoryGenerator.generate(sliceModel, publisherBindings)
                                .onSuccess(_ -> note(interfaceElement,
                                                     "Generated factory: " + sliceModel.simpleName() + "Factory"));
     }
 
-    private Result<Unit> generateRoutesAndManifest(TypeElement interfaceElement, SliceModel sliceModel) {
+    private Result<Unit> generateRoutesAndManifest(TypeElement interfaceElement,
+                                                   SliceModel sliceModel,
+                                                   Map<String, ResolvedTopicConstant> topicBindings) {
         return loadRouteConfig(sliceModel.packageName())
             .flatMap(configOpt -> generateRoutesClass(interfaceElement, sliceModel, configOpt)
-                .flatMap(routesClassOpt -> generateSliceManifest(interfaceElement, sliceModel, routesClassOpt, configOpt)));
+                .flatMap(routesClassOpt -> generateSliceManifest(interfaceElement, sliceModel, routesClassOpt, configOpt, topicBindings)));
     }
 
     private Result<Option<String>> generateRoutesClass(TypeElement interfaceElement,
@@ -153,8 +198,9 @@ public class SliceProcessor extends AbstractProcessor {
     private Result<Unit> generateSliceManifest(TypeElement interfaceElement,
                                                SliceModel sliceModel,
                                                Option<String> routesClass,
-                                               Option<RouteConfig> routeConfig) {
-        return manifestGenerator.generateSliceManifest(sliceModel, routesClass, routeConfig)
+                                               Option<RouteConfig> routeConfig,
+                                               Map<String, ResolvedTopicConstant> topicBindings) {
+        return manifestGenerator.generateSliceManifest(sliceModel, routesClass, routeConfig, topicBindings)
                                 .onSuccess(_ -> note(interfaceElement,
                                                      "Generated slice manifest: META-INF/slice/" + sliceModel.simpleName()
                                                      + ".manifest"));
@@ -184,14 +230,99 @@ public class SliceProcessor extends AbstractProcessor {
                                                             SliceModel sliceModel,
                                                             RouteConfig config) {
         var packageName = sliceModel.packageName();
-        return errorDiscovery.discover(packageName,
-                                       config.errors())
-                             .flatMap(errorMappings -> routeGenerator.generate(interfaceElement, sliceModel, config, errorMappings))
+        var routesTomlPath = packageName.replace('.', '/') + "/routes.toml";
+        reportRouteCoverageIssues(interfaceElement, sliceModel, config, routesTomlPath);
+        return errorDiscovery.discover(packageName, config.errors(), routesTomlPath)
+                             .onSuccess(discovery -> reportErrorMappingIssues(interfaceElement,
+                                                                              discovery.issues(),
+                                                                              strictErrorMapping(config)))
+                             .flatMap(discovery -> routeGenerator.generate(interfaceElement, sliceModel, config, discovery.mappings()))
                              .onSuccess(qualifiedNameOpt -> {
                                             qualifiedNameOpt.onPresent(routeServiceEntries::add);
                                             note(interfaceElement,
                                                  "Generated routes: " + sliceModel.simpleName() + "Routes");
                                         });
+    }
+
+    /// Strict when either the `[errors] strict` config flag or the `-Ajbct.routes.errors.strict`
+    /// processor option is set: an unmapped Cause record then fails the build instead of warning.
+    private boolean strictErrorMapping(RouteConfig config) {
+        return errorsStrict || config.errors()
+                                     .strict();
+    }
+
+    private void reportErrorMappingIssues(TypeElement interfaceElement,
+                                          List<ErrorMappingValidator.Issue> issues,
+                                          boolean strict) {
+        for (var issue : issues) {
+            emitErrorMappingIssue(interfaceElement, issue, strict);
+        }
+    }
+
+    /// Report one totality / dead-mapping issue. An unmapped Cause is an ERROR (build failure) only
+    /// under strict mode; dead patterns/references and the non-strict unmapped case are WARNINGs, so
+    /// existing slices with unmapped causes keep building (#385, non-breaking default).
+    private void emitErrorMappingIssue(TypeElement interfaceElement,
+                                       ErrorMappingValidator.Issue issue,
+                                       boolean strict) {
+        var kind = strict && issue.kind() == ErrorMappingValidator.IssueKind.UNMAPPED_CAUSE
+                   ? Diagnostic.Kind.ERROR
+                   : Diagnostic.Kind.WARNING;
+        processingEnv.getMessager()
+                     .printMessage(kind, issue.message(), interfaceElement);
+    }
+
+    /// Report the forward routes<->methods coverage check (#389): every public, HTTP-eligible slice
+    /// method should have a `[routes]` entry. Delegates the pure check to [RouteCoverageValidator];
+    /// reactive handlers (subscription/scheduled/stream/pg-notification/config-update) are exempt, and
+    /// versioned slices fold their per-version method bindings into the routed set.
+    private void reportRouteCoverageIssues(TypeElement interfaceElement,
+                                           SliceModel sliceModel,
+                                           RouteConfig config,
+                                           String routesTomlPath) {
+        var descriptors = sliceModel.methods()
+                                    .stream()
+                                    .map(SliceProcessor::routeCoverageDescriptor)
+                                    .toList();
+        var issues = RouteCoverageValidator.validate(descriptors, routedHandlerNames(config), routesTomlPath);
+        for (var issue : issues) {
+            emitRouteCoverageIssue(interfaceElement, issue);
+        }
+    }
+
+    /// An unrouted slice method is a WARNING by default so slices with deliberately-internal methods
+    /// keep building; the `-Ajbct.routes.coverage.strict` processor option escalates it to an ERROR (#389).
+    private void emitRouteCoverageIssue(TypeElement interfaceElement, RouteCoverageValidator.Issue issue) {
+        var kind = coverageStrict
+                   ? Diagnostic.Kind.ERROR
+                   : Diagnostic.Kind.WARNING;
+        processingEnv.getMessager()
+                     .printMessage(kind, issue.message(), interfaceElement);
+    }
+
+    private static RouteCoverageValidator.MethodDescriptor routeCoverageDescriptor(MethodModel method) {
+        return new RouteCoverageValidator.MethodDescriptor(method.name(), isHttpExempt(method));
+    }
+
+    /// A method is exempt from route coverage when it is a reactive handler invoked by its own
+    /// transport rather than over HTTP. Rate guards are interceptors on an HTTP route, not a transport,
+    /// so a rate-guarded method is NOT exempt.
+    private static boolean isHttpExempt(MethodModel method) {
+        return method.hasSubscriptions()
+               || method.hasScheduled()
+               || method.hasStreamSubscriptions()
+               || method.hasPgNotificationSubscriptions()
+               || method.hasConfigUpdateSubscriptions();
+    }
+
+    /// The set of method names covered by routes: the `[routes]` handler keys plus, for versioned
+    /// slices, every method a `[vN]` version binding resolves to.
+    private static Set<String> routedHandlerNames(RouteConfig config) {
+        var names = new HashSet<>(config.routes().keySet());
+        for (var version : config.versions().values()) {
+            names.addAll(version.bindKeyToMethod().values());
+        }
+        return names;
     }
 
     private void error(Element element, String message) {

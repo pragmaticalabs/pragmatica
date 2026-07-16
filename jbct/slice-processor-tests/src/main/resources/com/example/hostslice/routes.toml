@@ -1,0 +1,7 @@
+prefix = "/api/booking"
+
+[routes]
+book = "POST /book"
+
+[errors]
+default = 500

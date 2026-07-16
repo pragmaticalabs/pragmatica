@@ -1,6 +1,7 @@
 package org.pragmatica.jbct.cli;
 
 import org.pragmatica.jbct.init.AiToolsInstaller;
+import org.pragmatica.jbct.init.AiToolsOutcome;
 import org.pragmatica.jbct.init.GitHubVersionResolver;
 import org.pragmatica.jbct.init.PersistenceAdder;
 import org.pragmatica.jbct.init.ProjectInitializer;
@@ -152,7 +153,7 @@ public class InitCommand implements Callable<Integer> {
                 aiToolsInstalled = installer.install()
                                             .onFailure(cause -> System.err.println("Warning: Failed to install AI tools: " + cause.message()))
                                             .onSuccess(this::printAiToolsResult)
-                                            .map(files -> !files.isEmpty())
+                                            .map(outcome -> !outcome.isEmpty())
                                             .or(false);
             }
         }
@@ -277,10 +278,15 @@ public class InitCommand implements Callable<Integer> {
         System.out.println("Slice: " + sliceName);
     }
 
-    private void printAiToolsResult(java.util.List<Path> installedFiles) {
-        if (!installedFiles.isEmpty()) {
+    private void printAiToolsResult(AiToolsOutcome outcome) {
+        if (!outcome.installed().isEmpty()) {
             System.out.println("Installed AI tools to: .claude/");
-        } else {
+        }
+        if (!outcome.skippedGlobal().isEmpty()) {
+            System.out.println("Skipped " + outcome.skippedGlobal().size()
+                               + " file(s) already present globally in ~/.claude/");
+        }
+        if (outcome.isEmpty()) {
             System.out.println("No AI tools files to install.");
         }
     }
