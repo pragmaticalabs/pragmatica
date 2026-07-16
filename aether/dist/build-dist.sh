@@ -187,7 +187,15 @@ create_launcher() {
 # Aether ${jar_name} launcher
 # This script uses the bundled JRE — no JDK installation required.
 
-SCRIPT_DIR="\$(cd "\$(dirname "\$0")/.." && pwd)"
+# Resolve this script through any symlinks so the bundled JRE is found even when
+# the launcher is invoked via a symlink on PATH (portable; BSD readlink lacks -f).
+SOURCE="\$0"
+while [ -h "\$SOURCE" ]; do
+    DIR="\$(cd -P "\$(dirname "\$SOURCE")" && pwd)"
+    SOURCE="\$(readlink "\$SOURCE")"
+    [ "\${SOURCE#/}" = "\$SOURCE" ] && SOURCE="\$DIR/\$SOURCE"
+done
+SCRIPT_DIR="\$(cd -P "\$(dirname "\$SOURCE")/.." && pwd)"
 JAVA="\$SCRIPT_DIR/jre/bin/java"
 
 if [ ! -x "\$JAVA" ]; then

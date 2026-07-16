@@ -216,13 +216,18 @@ resolve_version() {
         exit 1
     fi
     # First <version> element under <project> (skips <parent>/<version>).
+    # POSIX awk only: gawk's 3-arg match(s, r, arr) is NOT available in BSD awk
+    # (macOS default) — it broke this autodetect with "illegal statement" on
+    # 2026-07-15; extract via sub() instead.
     awk '
         /<project/         { in_project = 1 }
         in_project && /<parent>/   { in_parent = 1 }
         in_parent && /<\/parent>/  { in_parent = 0; next }
         in_project && !in_parent && /<version>/ {
-            match($0, /<version>([^<]+)<\/version>/, m)
-            if (m[1] != "") { print m[1]; exit }
+            line = $0
+            sub(/.*<version>/, "", line)
+            sub(/<\/version>.*/, "", line)
+            if (line != "") { print line; exit }
         }
     ' "$pom"
 }
