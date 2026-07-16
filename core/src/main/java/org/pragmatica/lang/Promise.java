@@ -3394,6 +3394,14 @@ final class PromiseImpl<T> implements Promise<T> {
             prevStack = stack;
             completion.next = prevStack;
         } while (!STACK.compareAndSet(this, prevStack, completion));
+
+        // Lost-wakeup guard: the CAS can succeed AFTER a concurrent resolve already drained and
+        // exited (empty-stack case), orphaning this completion. If now resolved, drain it ourselves.
+        // processActions() CAS-claims the whole stack (STACK.compareAndSet(this, head, null)), so each
+        // completion runs EXACTLY once whether the resolver or this push wins the claim.
+        if (result != null) {
+            processActions();
+        }
     }
 
     sealed interface CompletionMarker permits CompletionOnResult, CompletionFold, CompletionMap, CompletionResolve, CompletionJoin {}
