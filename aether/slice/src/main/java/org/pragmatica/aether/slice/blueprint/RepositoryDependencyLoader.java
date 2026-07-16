@@ -4,6 +4,11 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.slice.blueprint;
 
+import java.net.URL;
+import java.util.List;
+import java.util.Set;
+import java.util.stream.Stream;
+
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.slice.SliceClassLoader;
 import org.pragmatica.aether.slice.SliceManifest;
@@ -14,11 +19,6 @@ import org.pragmatica.aether.slice.repository.Location;
 import org.pragmatica.aether.slice.repository.Repository;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
-
-import java.net.URL;
-import java.util.List;
-import java.util.Set;
-import java.util.stream.Stream;
 
 import static org.pragmatica.lang.Result.success;
 

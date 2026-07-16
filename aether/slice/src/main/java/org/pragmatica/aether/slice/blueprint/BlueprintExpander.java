@@ -4,6 +4,9 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.slice.blueprint;
 
+import java.util.*;
+import java.util.stream.Collectors;
+
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.slice.dependency.ArtifactMapper;
 import org.pragmatica.aether.slice.dependency.DependencyCycleDetector;
@@ -12,9 +15,6 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
-
-import java.util.*;
-import java.util.stream.Collectors;
 
 import static org.pragmatica.lang.Option.option;
 
@@ -78,7 +78,10 @@ public interface BlueprintExpander {
                                               DependencyLoader loader,
                                               Set<Artifact> processed,
                                               Map<Artifact, Set<Artifact>> dependencies) {
-        var toProcess = artifacts.stream().filter(artifact -> !processed.contains(artifact)).peek(processed::add).toList();
+        var toProcess = artifacts.stream()
+                                 .filter(artifact -> !processed.contains(artifact))
+                                 .peek(processed::add)
+                                 .toList();
 
         if (toProcess.isEmpty()) {
             return Promise.success(Unit.unit());
@@ -159,10 +162,9 @@ public interface BlueprintExpander {
         var visited = new HashSet<Artifact>();
         var result = new ArrayList<Artifact>();
 
-        artifacts.stream().filter(artifact -> !visited.contains(artifact)).forEach(artifact -> topologicalSortDfs(artifact,
-                                                                                                                  dependencies,
-                                                                                                                  visited,
-                                                                                                                  result));
+        artifacts.stream()
+                 .filter(artifact -> !visited.contains(artifact))
+                 .forEach(artifact -> topologicalSortDfs(artifact, dependencies, visited, result));
 
         return result;
     }
@@ -172,10 +174,11 @@ public interface BlueprintExpander {
                                            Set<Artifact> visited,
                                            List<Artifact> result) {
         visited.add(artifact);
-        dependencies.getOrDefault(artifact, Set.of()).stream().filter(dep -> !visited.contains(dep)).forEach(dep -> topologicalSortDfs(dep,
-                                                                                                                                       dependencies,
-                                                                                                                                       visited,
-                                                                                                                                       result));
+        dependencies.getOrDefault(artifact,
+                                  Set.of())
+                    .stream()
+                    .filter(dep -> !visited.contains(dep))
+                    .forEach(dep -> topologicalSortDfs(dep, dependencies, visited, result));
         result.add(artifact);
     }
 
@@ -189,6 +192,9 @@ public interface BlueprintExpander {
                                                                                              spec.instances(),
                                                                                              spec.minAvailable(),
                                                                                              false,
-                                                                                             deps));
+                                                                                             deps,
+                                                                                             spec.maxInstances(),
+                                                                                             spec.scaleUpThreshold(),
+                                                                                             spec.scaleDownThreshold()));
     }
 }

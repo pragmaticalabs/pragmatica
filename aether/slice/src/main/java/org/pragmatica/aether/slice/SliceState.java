@@ -4,6 +4,10 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.slice;
 
+import java.util.HashMap;
+import java.util.Map;
+import java.util.Set;
+
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Option;
@@ -11,10 +15,6 @@ import org.pragmatica.lang.Result;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.serialization.Codec;
-
-import java.util.HashMap;
-import java.util.Map;
-import java.util.Set;
 
 import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Result.success;

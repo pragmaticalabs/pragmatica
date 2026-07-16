@@ -4,6 +4,10 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.slice;
 
+import java.util.List;
+import java.util.Map;
+import java.util.stream.Collectors;
+
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Functions.Fn1;
@@ -15,10 +19,6 @@ import org.pragmatica.lang.type.TypeToken;
 import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.serialization.SliceCodec;
 
-import java.util.List;
-import java.util.Map;
-import java.util.stream.Collectors;
-
 import static org.pragmatica.lang.Option.option;
 
 
@@ -27,16 +27,38 @@ public record DefaultSliceBridge(Artifact artifact,
                                  Slice slice,
                                  Map<String, InternalMethod> methodMap,
                                  SliceCodec codec) implements SliceBridge {
-    public record InternalMethod(SliceMethod<?, ?> method, TypeToken<?> parameterType, TypeToken<?> returnType) {}
+    public record InternalMethod(SliceMethod<?, ?> method,
+                                 TypeToken<?> parameterType,
+                                 TypeToken<?> returnType,
+                                 ObservabilityStrategyCell cell) {}
 
     public static DefaultSliceBridge defaultSliceBridge(Artifact artifact, Slice slice, SliceCodec codec) {
-        var methodMap = slice.methods().stream().collect(Collectors.toMap(m -> m.name()
-                                                                                .name(),
-                                                                          m -> new InternalMethod(m,
-                                                                                                  m.parameterType(),
-                                                                                                  m.returnType())));
+        var artifactBase = artifact.base().asString();
+        var methodMap = slice.methods()
+                             .stream()
+                             .collect(Collectors.toMap(m -> m.name()
+                                                             .name(),
+                                                       m -> new InternalMethod(m,
+                                                                               m.parameterType(),
+                                                                               m.returnType(),
+                                                                               ObservabilityStrategyCell.observabilityStrategyCell(artifactBase,
+                                                                                                                                   m.name()
+                                                                                                                                    .name()))));
 
         return new DefaultSliceBridge(artifact, slice, Map.copyOf(methodMap), codec);
+    }
+
+    @Override
+    public Option<ObservabilityStrategyCell> observabilityCell(String methodName) {
+        return option(methodMap.get(methodName)).map(InternalMethod::cell);
+    }
+
+    @Override
+    public List<ObservabilityStrategyCell> observabilityCells() {
+        return methodMap.values()
+                        .stream()
+                        .map(InternalMethod::cell)
+                        .toList();
     }
 
     @Override

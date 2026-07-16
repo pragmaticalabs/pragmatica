@@ -4,6 +4,8 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.slice.repository.maven;
 
+import java.nio.file.Path;
+
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.slice.repository.Location;
 import org.pragmatica.aether.slice.repository.Repository;
@@ -13,8 +15,6 @@ import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.lang.io.TimeSpan;
-
-import java.nio.file.Path;
 
 import static org.pragmatica.lang.io.FileOps.exists;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;

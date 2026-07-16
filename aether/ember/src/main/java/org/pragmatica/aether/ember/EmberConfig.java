@@ -4,13 +4,13 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.ember;
 
+import java.nio.file.Path;
+
 import org.pragmatica.aether.invoke.ObservabilityConfig;
 import org.pragmatica.config.toml.TomlParser;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
-
-import java.nio.file.Path;
 
 
 public record EmberConfig(int nodes,
@@ -205,8 +205,10 @@ public record EmberConfig(int nodes,
     }
 
     private static ObservabilityConfig parseObservabilityConfig(org.pragmatica.config.toml.TomlDocument doc) {
-        int depthThreshold = doc.getInt("observability", "depth_threshold").or(ObservabilityConfig.DEFAULT.depthThreshold());
-        int targetTracesPerSec = doc.getInt("observability", "target_traces_per_sec").or(ObservabilityConfig.DEFAULT.targetTracesPerSec());
+        int depthThreshold = doc.getInt("observability", "depth_threshold")
+                                .or(ObservabilityConfig.DEFAULT.depthThreshold());
+        int targetTracesPerSec = doc.getInt("observability", "target_traces_per_sec")
+                                    .or(ObservabilityConfig.DEFAULT.targetTracesPerSec());
 
         return ObservabilityConfig.observabilityConfig(depthThreshold, targetTracesPerSec);
     }
@@ -221,8 +223,8 @@ public record EmberConfig(int nodes,
         int port = doc.getInt("database", "port").or(EmberH2Config.DEFAULT_PORT);
         String name = doc.getString("database", "name").or(EmberH2Config.DEFAULT_NAME);
         boolean persistent = doc.getBoolean("database", "persistent").or(EmberH2Config.DEFAULT_PERSISTENT);
-        Option<String> initScript = doc.getString("database", "init_script").map(script -> resolveRelativePath(script,
-                                                                                                               baseDir));
+        Option<String> initScript = doc.getString("database", "init_script")
+                                       .map(script -> resolveRelativePath(script, baseDir));
 
         return EmberH2Config.emberH2Config(enabled, port, name, persistent, initScript);
     }

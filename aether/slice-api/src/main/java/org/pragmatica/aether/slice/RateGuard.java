@@ -4,9 +4,9 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.slice;
 
-import org.pragmatica.lang.Promise;
-
 import java.util.function.Supplier;
+
+import org.pragmatica.lang.Promise;
 
 
 public interface RateGuard {

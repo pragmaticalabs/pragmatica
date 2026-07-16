@@ -4,16 +4,16 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.forge.api;
 
+import java.net.URI;
+import java.net.http.HttpRequest;
+import java.time.Duration;
+
 import org.pragmatica.aether.ember.EmberCluster;
 import org.pragmatica.http.JdkHttpOperations;
 import org.pragmatica.http.routing.Route;
 import org.pragmatica.http.routing.RouteSource;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Promise;
-
-import java.net.URI;
-import java.net.http.HttpRequest;
-import java.time.Duration;
 
 import static org.pragmatica.http.routing.PathParameter.aString;
 import static org.pragmatica.http.routing.Route.in;
@@ -120,7 +120,11 @@ public sealed interface AlertProxyRoutes {
     }
 
     private static Promise<String> sendGet(JdkHttpOperations http, int port, String path) {
-        var request = HttpRequest.newBuilder().uri(URI.create("http://localhost:" + port + path)).GET().timeout(HTTP_TIMEOUT).build();
+        var request = HttpRequest.newBuilder()
+                                 .uri(URI.create("http://localhost:" + port + path))
+                                 .GET()
+                                 .timeout(HTTP_TIMEOUT)
+                                 .build();
 
         return http.sendString(request)
                    .flatMap(result -> result.toResult()
@@ -128,8 +132,12 @@ public sealed interface AlertProxyRoutes {
     }
 
     private static Promise<String> sendPost(JdkHttpOperations http, int port, String path) {
-        var request = HttpRequest.newBuilder().uri(URI.create("http://localhost:" + port + path)).header("Content-Type",
-                                                                                                         "application/json").POST(HttpRequest.BodyPublishers.noBody()).timeout(HTTP_TIMEOUT).build();
+        var request = HttpRequest.newBuilder()
+                                 .uri(URI.create("http://localhost:" + port + path))
+                                 .header("Content-Type", "application/json")
+                                 .POST(HttpRequest.BodyPublishers.noBody())
+                                 .timeout(HTTP_TIMEOUT)
+                                 .build();
 
         return http.sendString(request)
                    .flatMap(result -> result.toResult()
@@ -137,10 +145,14 @@ public sealed interface AlertProxyRoutes {
     }
 
     private static Promise<String> sendPostWithBody(JdkHttpOperations http, int port, String path, String body) {
-        var request = HttpRequest.newBuilder().uri(URI.create("http://localhost:" + port + path)).header("Content-Type",
-                                                                                                         "application/json").POST(HttpRequest.BodyPublishers.ofString(body != null
-                                                                                                                                                                      ? body
-                                                                                                                                                                      : "")).timeout(HTTP_TIMEOUT).build();
+        var request = HttpRequest.newBuilder()
+                                 .uri(URI.create("http://localhost:" + port + path))
+                                 .header("Content-Type", "application/json")
+                                 .POST(HttpRequest.BodyPublishers.ofString(body != null
+                                                                           ? body
+                                                                           : ""))
+                                 .timeout(HTTP_TIMEOUT)
+                                 .build();
 
         return http.sendString(request)
                    .flatMap(result -> result.toResult()
@@ -148,7 +160,11 @@ public sealed interface AlertProxyRoutes {
     }
 
     private static Promise<String> sendDelete(JdkHttpOperations http, int port, String path) {
-        var request = HttpRequest.newBuilder().uri(URI.create("http://localhost:" + port + path)).DELETE().timeout(HTTP_TIMEOUT).build();
+        var request = HttpRequest.newBuilder()
+                                 .uri(URI.create("http://localhost:" + port + path))
+                                 .DELETE()
+                                 .timeout(HTTP_TIMEOUT)
+                                 .build();
 
         return http.sendString(request)
                    .flatMap(result -> result.toResult()

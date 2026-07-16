@@ -4,6 +4,10 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.slice.dependency;
 
+import java.net.URL;
+import java.util.ArrayList;
+import java.util.List;
+
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.artifact.Version;
 import org.pragmatica.aether.slice.SharedLibraryClassLoader;
@@ -12,10 +16,6 @@ import org.pragmatica.aether.slice.repository.Repository;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
-
-import java.net.URL;
-import java.util.ArrayList;
-import java.util.List;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;

@@ -8,6 +8,7 @@ package org.pragmatica.aether.slice.blueprint;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.pragmatica.lang.Option;
 
 import java.io.IOException;
 import java.nio.file.Files;
@@ -80,6 +81,52 @@ class BlueprintParserTest {
                            .onSuccess(blueprint -> {
                                assertThat(blueprint.id().asString()).isEqualTo("org.example:minimal:1.0.0");
                                assertThat(blueprint.slices()).hasSize(1);
+                           });
+        }
+
+        @Test
+        void parse_parsesPerSliceOverrides_whenPresent() {
+            var dsl = """
+                    id = "org.example:scaled-app:1.0.0"
+
+                    [[slices]]
+                    artifact = "org.example:service:1.0.0"
+                    instances = 2
+                    minAvailable = 1
+                    maxInstances = 6
+                    scaleUpThreshold = 1.8
+                    scaleDownThreshold = 0.3
+                    """;
+
+            BlueprintParser.parse(dsl)
+                           .onFailureRun(Assertions::fail)
+                           .onSuccess(blueprint -> {
+                               var spec = blueprint.slices().getFirst();
+
+                               assertThat(spec.maxInstances()).isEqualTo(Option.some(6));
+                               assertThat(spec.scaleUpThreshold()).isEqualTo(Option.some(1.8));
+                               assertThat(spec.scaleDownThreshold()).isEqualTo(Option.some(0.3));
+                           });
+        }
+
+        @Test
+        void parse_defaultsOverridesToNone_whenAbsent() {
+            var dsl = """
+                    id = "org.example:plain-app:1.0.0"
+
+                    [[slices]]
+                    artifact = "org.example:service:1.0.0"
+                    instances = 2
+                    """;
+
+            BlueprintParser.parse(dsl)
+                           .onFailureRun(Assertions::fail)
+                           .onSuccess(blueprint -> {
+                               var spec = blueprint.slices().getFirst();
+
+                               assertThat(spec.maxInstances()).isEqualTo(Option.none());
+                               assertThat(spec.scaleUpThreshold()).isEqualTo(Option.none());
+                               assertThat(spec.scaleDownThreshold()).isEqualTo(Option.none());
                            });
         }
 
@@ -220,6 +267,22 @@ class BlueprintParserTest {
                            .onFailure(cause ->
                                               assertThat(cause.message()).contains("Missing blueprint id")
                                      );
+        }
+
+        @Test
+        void parse_fails_whenMaxInstancesBelowInstances() {
+            var dsl = """
+                    id = "org.example:bad-max:1.0.0"
+
+                    [[slices]]
+                    artifact = "org.example:service:1.0.0"
+                    instances = 4
+                    maxInstances = 2
+                    """;
+
+            BlueprintParser.parse(dsl)
+                           .onSuccessRun(Assertions::fail)
+                           .onFailure(cause -> assertThat(cause.message()).contains("maxInstances"));
         }
 
         @Test

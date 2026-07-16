@@ -4,6 +4,8 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.slice;
 
+import java.util.List;
+
 import org.pragmatica.aether.slice.stream.FrameworkStreamConsumer;
 import org.pragmatica.aether.slice.resource.ResourceAddress;
 import org.pragmatica.lang.Cause;
@@ -11,8 +13,6 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
-
-import java.util.List;
 
 
 /// Application-facing combined stream access SPI (read + write).

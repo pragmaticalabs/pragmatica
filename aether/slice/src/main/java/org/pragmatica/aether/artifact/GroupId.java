@@ -4,10 +4,10 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.artifact;
 
+import java.util.regex.Pattern;
+
 import org.pragmatica.lang.Result;
 import org.pragmatica.serialization.Codec;
-
-import java.util.regex.Pattern;
 
 import static org.pragmatica.lang.Verify.Is;
 import static org.pragmatica.lang.Verify.ensure;

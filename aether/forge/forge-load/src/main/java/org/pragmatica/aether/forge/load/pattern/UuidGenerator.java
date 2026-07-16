@@ -4,9 +4,9 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.forge.load.pattern;
 
-import org.pragmatica.lang.Result;
-
 import java.util.UUID;
+
+import org.pragmatica.lang.Result;
 
 import static org.pragmatica.lang.Result.success;
 

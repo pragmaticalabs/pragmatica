@@ -4,12 +4,12 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.forge;
 
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.LongAdder;
+
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.Verify;
-
-import java.util.concurrent.atomic.AtomicLong;
-import java.util.concurrent.atomic.LongAdder;
 
 import static org.pragmatica.lang.Result.success;
 import static org.pragmatica.lang.Result.unitResult;

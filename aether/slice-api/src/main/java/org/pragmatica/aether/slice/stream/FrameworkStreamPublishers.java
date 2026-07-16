@@ -4,12 +4,12 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.slice.stream;
 
+import java.util.function.Consumer;
+
 import org.pragmatica.aether.slice.resource.ResourceAddress;
 import org.pragmatica.aether.slice.StreamPublisher;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Result;
-
-import java.util.function.Consumer;
 
 
 /// Sealed factory for {@link FrameworkStreamPublisher} instances (spec §6.1).

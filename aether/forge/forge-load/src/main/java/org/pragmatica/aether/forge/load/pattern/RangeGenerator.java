@@ -4,14 +4,14 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.forge.load.pattern;
 
+import java.util.concurrent.ThreadLocalRandom;
+import java.util.regex.Pattern;
+
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.parse.Number;
 import org.pragmatica.lang.utils.Causes;
-
-import java.util.concurrent.ThreadLocalRandom;
-import java.util.regex.Pattern;
 
 import static org.pragmatica.lang.Result.all;
 import static org.pragmatica.lang.Result.success;

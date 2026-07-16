@@ -4,13 +4,13 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.forge.load.pattern;
 
-import org.pragmatica.lang.Result;
-import org.pragmatica.lang.Unit;
-
 import java.util.ArrayList;
 import java.util.List;
 import java.util.regex.Pattern;
 import java.util.stream.IntStream;
+
+import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Unit;
 
 import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Result.success;
@@ -73,7 +73,12 @@ public final class TemplateProcessor {
     }
 
     private static Result<List<Segment>> buildSegments(String template) {
-        var matches = PATTERN_REGEX.matcher(template).results().map(m -> new MatchInfo(m.start(), m.end(), m.group(1))).toList();
+        var matches = PATTERN_REGEX.matcher(template)
+                                   .results()
+                                   .map(m -> new MatchInfo(m.start(),
+                                                           m.end(),
+                                                           m.group(1)))
+                                   .toList();
 
         return toSegments(template, matches);
     }
@@ -108,11 +113,13 @@ public final class TemplateProcessor {
         var segments = new ArrayList<Segment>();
         var lastEnd = new int[]{0};
 
-        IntStream.range(0, matches.size()).forEach(i -> addSegment(segments,
-                                                                   template,
-                                                                   matches.get(i),
-                                                                   generators.get(i),
-                                                                   lastEnd));
+        IntStream.range(0,
+                        matches.size())
+                 .forEach(i -> addSegment(segments,
+                                          template,
+                                          matches.get(i),
+                                          generators.get(i),
+                                          lastEnd));
         addTrailingLiteral(segments, template, lastEnd[0]);
 
         return List.copyOf(segments);
@@ -166,7 +173,9 @@ public final class TemplateProcessor {
     }
 
     public Result<Unit> resetSequences() {
-        var sequenceGenerators = segments.stream().filter(TemplateProcessor::isSequenceSegment).map(TemplateProcessor::toSequenceGenerator);
+        var sequenceGenerators = segments.stream()
+                                         .filter(TemplateProcessor::isSequenceSegment)
+                                         .map(TemplateProcessor::toSequenceGenerator);
 
         sequenceGenerators.forEach(SequenceGenerator::reset);
 

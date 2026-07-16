@@ -4,13 +4,13 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.slice.stream;
 
+import java.util.List;
+
 import org.pragmatica.aether.slice.resource.ResourceAddress;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
-
-import java.util.List;
 
 
 /// Stream registry — canonical catalog of registered stream addresses in a cluster.

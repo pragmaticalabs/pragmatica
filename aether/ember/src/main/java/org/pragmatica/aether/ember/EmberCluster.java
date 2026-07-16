@@ -4,6 +4,23 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.ember;
 
+import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Queue;
+import java.util.Random;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Consumer;
+
 import org.pragmatica.config.ConfigurationProvider;
 import org.pragmatica.aether.controller.ControllerConfig;
 import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager;
@@ -26,9 +43,11 @@ import org.pragmatica.consensus.topology.TopologyConfig;
 import org.pragmatica.consensus.topology.TopologyManagementMessage;
 import org.pragmatica.aether.config.AppHttpConfig;
 import org.pragmatica.aether.config.RollbackConfig;
+import org.pragmatica.aether.config.StorageConfig;
 import org.pragmatica.dht.DHTConfig;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
+import org.pragmatica.lang.Functions;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
@@ -36,22 +55,6 @@ import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.concurrent.CancellableTask;
 import org.pragmatica.aether.slice.SliceActionConfig;
-
-import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
-import java.util.Queue;
-import java.util.Random;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ConcurrentLinkedQueue;
-import java.util.concurrent.Executors;
-import java.util.concurrent.ScheduledExecutorService;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.atomic.AtomicInteger;
-import java.util.concurrent.atomic.AtomicReference;
-import java.util.function.Consumer;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -98,7 +101,30 @@ public final class EmberCluster {
     private final Option<ConfigurationProvider> configProvider;
     private final ObservabilityConfig observability;
     private final int coreMax;
-    private final EnvironmentIntegration emberEnvironment;
+
+    /// TEST SEAM (#336 probe) — decorator applied to the base [EmberComputeProvider] before the
+    /// shared [EnvironmentIntegration] is built. Defaults to identity (production behaviour
+    /// unchanged). A test installs a fault-injecting wrapper via [#withComputeProviderDecorator]
+    /// BEFORE [#start] so the leader's CTM `provisionReplacement` path exercises the wrapper. The
+    /// integration is built lazily (first node creation) so the decorator set after construction
+    /// but before start is honoured.
+    private final AtomicReference<Functions.Fn1<ComputeProvider, ComputeProvider>> computeProviderDecorator = new AtomicReference<>(provider -> provider);
+
+    private final AtomicReference<EnvironmentIntegration> emberEnvironmentRef = new AtomicReference<>();
+
+    /// TEST SEAM (#198 §7) — cluster-level API-version detection mode applied to every node's
+    /// [AppHttpConfig]. Defaults to PATH (production behaviour). A test sets HEADER via
+    /// [#withApiVersioningDetection] BEFORE [#start] to deploy a slice in header mode.
+    private final AtomicReference<org.pragmatica.aether.config.ApiVersioningDetection> apiVersioningDetection = new AtomicReference<>(org.pragmatica.aether.config.ApiVersioningDetection.PATH);
+
+    private final AtomicReference<String> apiVersionHeaderName = new AtomicReference<>(AppHttpConfig.DEFAULT_API_VERSION_HEADER);
+
+    /// TEST SEAM (streaming A-WAL) — opt-in writable, restart-stable per-node data dir. Defaults to
+    /// [Option#none] (production + existing tests: nodes fall back to the default read-only `/data`
+    /// stream path → WAL off, streaming non-crash-durable). A test sets a writable base dir (e.g. a
+    /// JUnit `@TempDir`) via [#withDataBaseDir] BEFORE [#start] to turn the disk tier and the
+    /// per-partition stream WAL on; see [#perNodeStorageConfig].
+    private final AtomicReference<Option<Path>> dataBaseDir = new AtomicReference<>(Option.none());
 
     private final class EmberComputeProvider implements ComputeProvider {
         @Override
@@ -126,8 +152,9 @@ public final class EmberCluster {
         }
 
         private InstanceInfo toInstanceInfo(String nodeIdStr) {
-            var addresses = Option.option(nodeInfos.get(nodeIdStr)).map(info -> List.of("localhost:" + info.address()
-                                                                                                           .port())).or(List.of());
+            var addresses = Option.option(nodeInfos.get(nodeIdStr))
+                                  .map(info -> List.of("localhost:" + info.address().port()))
+                                  .or(List.of());
 
             return new InstanceInfo(new InstanceId(nodeIdStr),
                                     InstanceStatus.RUNNING,
@@ -156,7 +183,50 @@ public final class EmberCluster {
         this.configProvider = configProvider;
         this.observability = observability;
         this.coreMax = coreMax;
-        this.emberEnvironment = EnvironmentIntegration.withCompute(new EmberComputeProvider());
+    }
+
+    /// TEST SEAM (#336 probe) — install a decorator that wraps the base [EmberComputeProvider]
+    /// used by EVERY node in this cluster. MUST be called before [#start] (the shared
+    /// [EnvironmentIntegration] is built lazily on first node creation and then frozen). Used by
+    /// the provisioning-recovery probe to inject a transient burst of `provision` failures that
+    /// trips the CTM #148 circuit breaker, then delegate to the real provider so recovery can be
+    /// observed. Production paths never call this (decorator stays identity).
+    public void withComputeProviderDecorator(Functions.Fn1<ComputeProvider, ComputeProvider> decorator) {
+        computeProviderDecorator.set(decorator);
+    }
+
+    /// TEST SEAM (#198 §7) — select the cluster-level API-version detection mode for every node.
+    /// MUST be called before [#start]. Deploys the same compiled slice in header mode (versions
+    /// share a bare path, selected from the `headerName` request header) instead of path mode.
+    ///
+    /// @param detection  the API-version detection mode
+    /// @param headerName the version header name (header mode)
+    @Contract
+    public void withApiVersioningDetection(org.pragmatica.aether.config.ApiVersioningDetection detection,
+                                           String headerName) {
+        apiVersioningDetection.set(detection);
+        apiVersionHeaderName.set(headerName);
+    }
+
+    /// TEST SEAM (streaming A-WAL) — set the writable, restart-stable base data dir for EVERY node in
+    /// this cluster (opt-in). MUST be called before [#start]. Each node then gets a `storageConfig`
+    /// `artifacts` [StorageConfig] keyed by its STABLE node id, so a `stop()`→`start()` restart reuses
+    /// the same dir and the stream WAL/segments survive. Production paths never call this (the default
+    /// empty `storageConfig` keeps the read-only `/data` fallback → WAL off). See [#perNodeStorageConfig].
+    ///
+    /// @param baseDir writable base dir (e.g. a JUnit `@TempDir`) under which each node gets `<baseDir>/<nodeId>`
+    @Contract
+    public void withDataBaseDir(Path baseDir) {
+        dataBaseDir.set(Option.option(baseDir));
+    }
+
+    private EnvironmentIntegration emberEnvironment() {
+        return emberEnvironmentRef.updateAndGet(this::resolveEnvironment);
+    }
+
+    private EnvironmentIntegration resolveEnvironment(EnvironmentIntegration existing) {
+        return Option.option(existing).or(() -> EnvironmentIntegration.withCompute(computeProviderDecorator.get()
+                                                                                                           .apply(new EmberComputeProvider())));
     }
 
     public static EmberCluster emberCluster() {
@@ -300,13 +370,15 @@ public final class EmberCluster {
             var node = createNode(nodeInfo.id(), port, mgmtPort, appHttpPort, initialNodes, false);
 
             nodes.put(nodeIdStr, node);
-            startPromises.add(node.start().map(_ -> NodeStartResult.nodeStartResult(nodeIdStr,
+            startPromises.add(node.start()
+                                  .map(_ -> NodeStartResult.nodeStartResult(nodeIdStr,
+                                                                            port,
+                                                                            mgmtPort,
+                                                                            Option.none()))
+                                  .recover(cause -> NodeStartResult.nodeStartResult(nodeIdStr,
                                                                                     port,
                                                                                     mgmtPort,
-                                                                                    Option.none())).recover(cause -> NodeStartResult.nodeStartResult(nodeIdStr,
-                                                                                                                                                     port,
-                                                                                                                                                     mgmtPort,
-                                                                                                                                                     Option.some(cause))));
+                                                                                    Option.some(cause))));
         }
 
         return Promise.allOf(startPromises).flatMap(this::handleStartResults);
@@ -336,19 +408,22 @@ public final class EmberCluster {
         }
 
         for (var f : failed) {
-            f.failure().onPresent(cause -> log.error("Node {} failed to start on port {} (mgmt: {}): {}",
-                                                     f.nodeId(),
-                                                     f.port(),
-                                                     f.mgmtPort(),
-                                                     cause.message()));
+            f.failure()
+             .onPresent(cause -> log.error("Node {} failed to start on port {} (mgmt: {}): {}",
+                                           f.nodeId(),
+                                           f.port(),
+                                           f.mgmtPort(),
+                                           cause.message()));
         }
 
         log.error("Cluster startup failed: {} of {} nodes failed to start", failed.size(), initialClusterSize);
-        var stopPromises = succeeded.stream().map(r -> Option.option(nodes.get(r.nodeId()))
-                                                             .map(node -> node.stop()
-                                                                              .timeout(NODE_TIMEOUT)
-                                                                              .recover(_ -> Unit.unit()))
-                                                             .or(Promise.success(Unit.unit()))).toList();
+        var stopPromises = succeeded.stream()
+                                    .map(r -> Option.option(nodes.get(r.nodeId()))
+                                                    .map(node -> node.stop()
+                                                                     .timeout(NODE_TIMEOUT)
+                                                                     .recover(_ -> Unit.unit()))
+                                                    .or(Promise.success(Unit.unit())))
+                                    .toList();
 
         return Promise.allOf(stopPromises)
                       .mapToUnit()
@@ -550,7 +625,8 @@ public final class EmberCluster {
 
     private static org.pragmatica.net.tcp.TlsConfig buildForgeQuicTls(NodeId nodeId) {
         var secret = "aether-forge-cluster-secret".getBytes(java.nio.charset.StandardCharsets.UTF_8);
-        var provider = org.pragmatica.net.tcp.security.SelfSignedCertificateProvider.selfSignedCertificateProvider(secret).unwrap();
+        var provider = org.pragmatica.net.tcp.security.SelfSignedCertificateProvider.selfSignedCertificateProvider(secret)
+                                                                                    .unwrap();
 
         return org.pragmatica.net.tcp.TlsConfig.fromProvider(provider,
                                                              nodeId.id(),
@@ -586,10 +662,12 @@ public final class EmberCluster {
                                           quicTls,
                                           org.pragmatica.aether.config.TtmConfig.ttmConfig(),
                                           RollbackConfig.rollbackConfig(),
-                                          AppHttpConfig.appHttpConfig(appHttpPort),
+                                          AppHttpConfig.appHttpConfig(appHttpPort,
+                                                                      apiVersioningDetection.get(),
+                                                                      apiVersionHeaderName.get()),
                                           ControllerConfig.forgeDefaults(),
                                           configProvider,
-                                          Option.some(emberEnvironment),
+                                          Option.some(emberEnvironment()),
                                           AutoHealConfig.DEFAULT,
                                           observability,
                                           ClusterDeploymentManager.DeploymentAtomicity.ALL_OR_NOTHING,
@@ -599,7 +677,7 @@ public final class EmberCluster {
                                           Option.empty(),
                                           AetherNodeConfig.DeploymentDefaults.DEFAULT,
                                           org.pragmatica.aether.config.HttpProtocol.H1,
-                                          java.util.Map.of(),
+                                          perNodeStorageConfig(nodeId),
                                           Option.empty(),
                                           Option.empty(),
 
@@ -612,6 +690,33 @@ public final class EmberCluster {
         Runnable jvmExit = () -> handleSelfDrain(nodeId.id());
 
         return AetherNode.aetherNode(config, jvmExit).unwrap();
+    }
+
+    /// Per-node `storageConfig` map for [#createNode]. When a writable base dir was set via
+    /// [#withDataBaseDir] (opt-in), each node gets an `artifacts` [StorageConfig] whose `diskPath` is
+    /// `<baseDir>/<nodeId>/storage` — turning the artifact disk tier AND the per-partition stream WAL
+    /// (`<...>/stream-segments/<nodeId>/wal`) writable so streaming runs crash-durable. The id-keyed
+    /// dir is restart-stable: [#start] after [#stop] regenerates the same `<nodeIdPrefix>-<i>` ids, so
+    /// each node reuses its dir and the WAL/segments survive the restart. Empty map ⇒ default
+    /// behaviour (read-only `/data` fallback → WAL off), so non-opted-in callers are unaffected.
+    private Map<String, StorageConfig> perNodeStorageConfig(NodeId nodeId) {
+        return dataBaseDir.get()
+                          .map(base -> artifactsStorageConfig(base, nodeId))
+                          .or(Map.of());
+    }
+
+    private static Map<String, StorageConfig> artifactsStorageConfig(Path base, NodeId nodeId) {
+        var nodeDir = base.resolve(nodeId.id());
+        var defaults = StorageConfig.storageConfig();
+        var config = StorageConfig.storageConfig(defaults.memoryMaxBytes(),
+                                                 defaults.diskMaxBytes(),
+                                                 nodeDir.resolve("storage").toString(),
+                                                 nodeDir.resolve("metadata-snapshots").toString(),
+                                                 defaults.snapshotMutationThreshold(),
+                                                 defaults.snapshotMaxInterval(),
+                                                 defaults.snapshotRetentionCount());
+
+        return Map.of("artifacts", config);
     }
 
     private void handleSelfDrain(String nodeIdStr) {
@@ -879,9 +984,11 @@ public final class EmberCluster {
         log.info("Rolling restart: killing node {}", targetNodeId);
         eventLogger.accept(new EventLogEntry("ROLLING_RESTART", "Killing node " + targetNodeId));
         killNode(targetNodeId).onSuccess(_ -> {
-            eventLogger.accept(new EventLogEntry("ROLLING_RESTART", "CDM auto-heal will replace node"));
-            scheduleNextCycleWithDelay(eventLogger, ROLLING_RESTART_DELAY_MS * 2);
-        }).onFailure(cause -> handleRollingRestartFailure(eventLogger, "kill node", cause));
+                                             eventLogger.accept(new EventLogEntry("ROLLING_RESTART",
+                                                                                  "CDM auto-heal will replace node"));
+                                             scheduleNextCycleWithDelay(eventLogger, ROLLING_RESTART_DELAY_MS * 2);
+                                         })
+                .onFailure(cause -> handleRollingRestartFailure(eventLogger, "kill node", cause));
     }
 
     private void scheduleNextCycleWithDelay(Consumer<EventLogEntry> eventLogger, long delayMs) {

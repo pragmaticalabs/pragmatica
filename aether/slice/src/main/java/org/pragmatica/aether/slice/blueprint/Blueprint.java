@@ -4,12 +4,12 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.slice.blueprint;
 
+import java.util.List;
+
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.utils.Causes;
-
-import java.util.List;
 
 import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Result.success;

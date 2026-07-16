@@ -4,6 +4,10 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.forge.api;
 
+import java.net.URI;
+import java.net.http.HttpRequest;
+import java.time.Duration;
+
 import org.pragmatica.aether.ember.EmberCluster;
 import org.pragmatica.http.JdkHttpOperations;
 import org.pragmatica.http.routing.Route;
@@ -11,10 +15,6 @@ import org.pragmatica.http.routing.RouteSource;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
-
-import java.net.URI;
-import java.net.http.HttpRequest;
-import java.time.Duration;
 
 import static org.pragmatica.http.routing.QueryParameter.aString;
 import static org.pragmatica.http.routing.Route.in;
@@ -50,7 +50,11 @@ public sealed interface MetricsProxyRoutes {
     }
 
     private static Promise<String> sendGet(JdkHttpOperations http, int port, String path) {
-        var request = HttpRequest.newBuilder().uri(URI.create("http://localhost:" + port + path)).GET().timeout(HTTP_TIMEOUT).build();
+        var request = HttpRequest.newBuilder()
+                                 .uri(URI.create("http://localhost:" + port + path))
+                                 .GET()
+                                 .timeout(HTTP_TIMEOUT)
+                                 .build();
 
         return http.sendString(request)
                    .flatMap(result -> result.toResult()

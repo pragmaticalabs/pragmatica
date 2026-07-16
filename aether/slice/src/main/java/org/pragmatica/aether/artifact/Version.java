@@ -4,6 +4,8 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.artifact;
 
+import java.util.regex.Pattern;
+
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Option;
@@ -12,8 +14,6 @@ import org.pragmatica.lang.Verify.Is;
 import org.pragmatica.lang.parse.Number;
 import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.serialization.Codec;
-
-import java.util.regex.Pattern;
 
 import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.option;

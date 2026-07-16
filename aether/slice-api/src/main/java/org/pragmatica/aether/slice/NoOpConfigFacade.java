@@ -4,12 +4,12 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.slice;
 
+import java.util.List;
+
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.utils.Causes;
-
-import java.util.List;
 
 
 enum NoOpConfigFacade implements ConfigFacade {

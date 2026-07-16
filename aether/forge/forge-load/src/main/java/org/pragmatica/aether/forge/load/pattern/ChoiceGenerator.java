@@ -4,14 +4,14 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.forge.load.pattern;
 
+import java.util.Arrays;
+import java.util.List;
+import java.util.concurrent.ThreadLocalRandom;
+
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.utils.Causes;
-
-import java.util.Arrays;
-import java.util.List;
-import java.util.concurrent.ThreadLocalRandom;
 
 import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Result.success;

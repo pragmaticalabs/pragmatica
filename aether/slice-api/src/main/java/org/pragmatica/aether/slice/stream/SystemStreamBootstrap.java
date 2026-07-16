@@ -4,13 +4,13 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.slice.stream;
 
-import org.pragmatica.aether.slice.resource.ResourceAddress;
-import org.pragmatica.aether.slice.RetentionPolicy;
-import org.pragmatica.lang.Result;
-
 import java.time.Clock;
 import java.util.ArrayList;
 import java.util.List;
+
+import org.pragmatica.aether.slice.resource.ResourceAddress;
+import org.pragmatica.aether.slice.RetentionPolicy;
+import org.pragmatica.lang.Result;
 
 import static org.pragmatica.lang.Result.success;
 

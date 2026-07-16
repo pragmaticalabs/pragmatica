@@ -4,11 +4,11 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.slice;
 
+import java.util.List;
+
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.serialization.SliceCodec;
-
-import java.util.List;
 
 
 public interface Slice {

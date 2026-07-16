@@ -4,14 +4,14 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.slice.resource;
 
+import java.util.Set;
+import java.util.regex.Pattern;
+
 import org.pragmatica.aether.slice.resource.ResourceAddress.ResourceAddressError.General;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Verify;
 import org.pragmatica.lang.Verify.Is;
 import org.pragmatica.serialization.Codec;
-
-import java.util.Set;
-import java.util.regex.Pattern;
 
 
 /// Namespace value object — the validated naming authority component of a [ResourceAddress].

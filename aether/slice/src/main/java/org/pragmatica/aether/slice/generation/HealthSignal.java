@@ -4,9 +4,9 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.slice.generation;
 
-import org.pragmatica.consensus.NodeId;
-
 import java.util.List;
+
+import org.pragmatica.consensus.NodeId;
 
 
 public sealed interface HealthSignal {

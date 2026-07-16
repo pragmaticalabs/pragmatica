@@ -4,11 +4,11 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.slice.stream;
 
+import java.util.function.Consumer;
+
 import org.pragmatica.aether.slice.resource.ResourceAddress;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
-
-import java.util.function.Consumer;
 
 
 /// Test-only permitted impl of {@link FrameworkStreamPublisher} (Wave 5B-ii).

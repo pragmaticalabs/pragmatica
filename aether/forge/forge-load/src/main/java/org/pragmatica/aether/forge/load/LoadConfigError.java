@@ -4,10 +4,10 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.forge.load;
 
+import java.util.List;
+
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Result;
-
-import java.util.List;
 
 import static org.pragmatica.lang.Result.success;
 

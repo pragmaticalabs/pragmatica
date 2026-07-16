@@ -4,11 +4,6 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.forge.simulator;
 
-import org.pragmatica.lang.Cause;
-import org.pragmatica.lang.Promise;
-import org.pragmatica.lang.Result;
-import org.pragmatica.lang.Unit;
-
 import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
@@ -21,6 +16,11 @@ import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Consumer;
+
+import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Unit;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;

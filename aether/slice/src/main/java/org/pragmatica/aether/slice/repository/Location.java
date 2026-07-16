@@ -4,12 +4,12 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.slice.repository;
 
+import java.net.URL;
+
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.utils.Causes;
-
-import java.net.URL;
 
 import static org.pragmatica.lang.Verify.Is;
 import static org.pragmatica.lang.Verify.ensure;

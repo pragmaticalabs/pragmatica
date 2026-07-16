@@ -4,13 +4,13 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.slice.blueprint;
 
-import org.pragmatica.aether.slice.PgNotificationConfig;
-import org.pragmatica.config.toml.TomlParser;
-import org.pragmatica.lang.Result;
-
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+
+import org.pragmatica.aether.slice.PgNotificationConfig;
+import org.pragmatica.config.toml.TomlParser;
+import org.pragmatica.lang.Result;
 
 import static org.pragmatica.lang.Result.success;
 import static org.pragmatica.lang.utils.Causes.cause;

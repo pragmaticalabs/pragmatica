@@ -36,8 +36,10 @@ public final class EmberInstance {
         var instance = new EmberInstance(config);
 
         instance.startH2();
-        instance.cluster.start().await(TimeSpan.timeSpan(60).seconds()).onFailure(cause -> log.error("Failed to start cluster: {}",
-                                                                                                     cause.message()));
+        instance.cluster.start()
+                        .await(TimeSpan.timeSpan(60).seconds())
+                        .onFailure(cause -> log.error("Failed to start cluster: {}",
+                                                      cause.message()));
 
         return instance;
     }
@@ -49,10 +51,15 @@ public final class EmberInstance {
 
         var server = EmberH2Server.emberH2Server(config.h2Config());
 
-        server.start().await(TimeSpan.timeSpan(10).seconds()).onSuccess(_ -> {
-            h2Server = Option.some(server);
-            log.info("H2 database available at: {}", server.jdbcUrl());
-        }).onFailure(cause -> log.error("Failed to start H2 server: {}", cause.message()));
+        server.start()
+              .await(TimeSpan.timeSpan(10).seconds())
+              .onSuccess(_ -> {
+                             h2Server = Option.some(server);
+                             log.info("H2 database available at: {}",
+                                      server.jdbcUrl());
+                         })
+              .onFailure(cause -> log.error("Failed to start H2 server: {}",
+                                            cause.message()));
     }
 
     public EmberCluster cluster() {

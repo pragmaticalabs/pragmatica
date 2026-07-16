@@ -4,6 +4,11 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.slice.blueprint;
 
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+
 import org.pragmatica.aether.slice.ConsistencyMode;
 import org.pragmatica.aether.slice.ConsumerConfig;
 import org.pragmatica.aether.slice.ConsumerConfig.ErrorStrategy;
@@ -23,11 +28,6 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.utils.Causes;
 
-import java.util.ArrayList;
-import java.util.LinkedHashMap;
-import java.util.List;
-import java.util.Map;
-
 import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Result.success;
 import static org.pragmatica.lang.utils.Causes.cause;
@@ -37,6 +37,12 @@ import static org.pragmatica.lang.utils.Causes.cause;
 public interface StreamConfigParser {
     String STREAMS_PREFIX = "streams.";
     int DEFAULT_PARTITIONS = 4;
+    /// Per spec §7/§10: the absolute per-stream partition ceiling, enforced at BUILD time (a blueprint
+    /// declaring more partitions than this fails to build) and re-checked pre-commit at runtime
+    /// (`StreamPartitionManager.createFreshStream`). A fixed absolute guard — NOT the RAM-derived cap. Spec
+    /// §10 presents it as the tunable `[streams.limits] max_partitions_per_stream_ceiling` node-config key
+    /// (future wiring); this is its default. Mirrors Pulsar's `maxNumPartitionsPerPartitionedTopic`.
+    int MAX_PARTITIONS_PER_STREAM_CEILING = 1024;
     /// Per spec §11.1.1: when `version` is omitted on a producer-role declaration (or omitted with no
     /// explicit role — current parser-only assumption pending Wave 3 slice-binding role inference),
     /// default to `"1.0.0"`. The producer assumption is the safer default for the common case where
@@ -233,9 +239,54 @@ public interface StreamConfigParser {
                                                              Option<String> roleOpt) {
         return StreamVersionSpec.streamVersionSpec(version)
                                 .flatMap(spec -> rejectProducerLatest(streamName, spec, roleOpt))
-                                .map(spec -> StreamResource.owned(streamName,
-                                                                  spec,
-                                                                  parseStreamSection(doc, section, streamName)));
+                                .flatMap(spec -> buildOwnedResource(doc, section, streamName, spec));
+    }
+
+    private static Result<StreamResource> buildOwnedResource(TomlDocument doc,
+                                                             String section,
+                                                             String streamName,
+                                                             StreamVersionSpec spec) {
+        return validatePartitionCeiling(streamName,
+                                        parseStreamSection(doc, section, streamName)).flatMap(config -> validateReplication(streamName,
+                                                                                                                            config))
+                                       .map(config -> StreamResource.owned(streamName, spec, config));
+    }
+
+    /// Spec §7/§10: a blueprint declaring more than [#MAX_PARTITIONS_PER_STREAM_CEILING] partitions for one
+    /// stream is a build-time error (the create-time admission gate's parser half). Enforced through the same
+    /// [Result] failure path as the replication-knob rejections; the runtime pre-commit check re-applies the
+    /// ceiling on the committing node, and the cluster-wide aggregate guard (unknowable at build time) is
+    /// applied there too.
+    private static Result<StreamConfig> validatePartitionCeiling(String streamName, StreamConfig config) {
+        if (config.partitions() > MAX_PARTITIONS_PER_STREAM_CEILING) {
+            return Causes.<Cause> cause("Stream resource '" + streamName
+                                       + "' declares " + config.partitions()
+                                       + " partitions, over the per-stream ceiling of " + MAX_PARTITIONS_PER_STREAM_CEILING).result();
+        }
+
+        return success(config);
+    }
+
+    /// Spec §11.x: the two decoupled replication knobs must satisfy `replicas >= 1` and
+    /// `0 <= min-sync-replicas <= replicas`. `replicas` is the replication factor (total copies incl.
+    /// owner); `min-sync-replicas` is the in-sync ack requirement (incl. owner). A `min-sync-replicas`
+    /// exceeding `replicas` can never be met, so it is a build-time error via the same [Result] failure
+    /// path used for the rest of the parser's config rejections.
+    private static Result<StreamConfig> validateReplication(String streamName, StreamConfig config) {
+        if (config.replicas() < 1) {
+            return Causes.<Cause> cause("Stream resource '" + streamName
+                                       + "' has replicas=" + config.replicas()
+                                       + "; replicas must be >= 1").result();
+        }
+
+        if (config.minSyncReplicas() > config.replicas()) {
+            return Causes.<Cause> cause("Stream resource '" + streamName
+                                       + "' has min-sync-replicas=" + config.minSyncReplicas()
+                                       + " > replicas=" + config.replicas()
+                                       + "; min-sync-replicas must not exceed replicas").result();
+        }
+
+        return success(config);
     }
 
     /// Spec §11.1.3: producer with `version = "latest"` (explicit, after defaulting) is a build-time
@@ -244,7 +295,10 @@ public interface StreamConfigParser {
     private static Result<StreamVersionSpec> rejectProducerLatest(String streamName,
                                                                   StreamVersionSpec spec,
                                                                   Option<String> roleOpt) {
-        var producesEvents = roleOpt.map(String::trim).map(String::toLowerCase).filter(role -> ROLE_PRODUCER.equals(role) || ROLE_BOTH.equals(role)).isPresent();
+        var producesEvents = roleOpt.map(String::trim)
+                                    .map(String::toLowerCase)
+                                    .filter(role -> ROLE_PRODUCER.equals(role) || ROLE_BOTH.equals(role))
+                                    .isPresent();
 
         if (producesEvents && spec.isLatest()) {
             return Causes.<Cause> cause("Stream resource '" + streamName
@@ -286,10 +340,17 @@ public interface StreamConfigParser {
         var partitions = doc.getInt(section, "partitions").or(DEFAULT_PARTITIONS);
         var retention = parseRetention(doc, section);
         var autoOffsetReset = doc.getString(section, "auto-offset-reset").or("latest");
-        var maxEventSizeBytes = doc.getString(section, "max-event-size").map(StreamConfigParser::parseSizeBytes).or(1_048_576L);
-        var consistencyMode = doc.getString(section, "consistency").map(StreamConfigParser::parseConsistencyMode).or(ConsistencyMode.EVENTUAL);
+        var maxEventSizeBytes = doc.getString(section, "max-event-size")
+                                   .map(StreamConfigParser::parseSizeBytes)
+                                   .or(1_048_576L);
+        var consistencyMode = doc.getString(section, "consistency")
+                                 .map(StreamConfigParser::parseConsistencyMode)
+                                 .or(ConsistencyMode.EVENTUAL);
+        var replicas = doc.getInt(section, "replicas").or(1);
         var minSyncReplicas = doc.getInt(section, "min-sync-replicas").or(0);
-        var compression = doc.getString(section, "compression").map(StreamConfigParser::parseCompression).or(StreamCompression.NONE);
+        var compression = doc.getString(section, "compression")
+                             .map(StreamConfigParser::parseCompression)
+                             .or(StreamCompression.NONE);
         var encryptionKeyId = doc.getString(section, "encryption-key-id");
 
         return StreamConfig.streamConfig(streamName,
@@ -298,6 +359,7 @@ public interface StreamConfigParser {
                                          autoOffsetReset,
                                          maxEventSizeBytes,
                                          consistencyMode,
+                                         replicas,
                                          minSyncReplicas,
                                          compression,
                                          encryptionKeyId);
@@ -306,7 +368,9 @@ public interface StreamConfigParser {
     private static RetentionPolicy parseRetention(TomlDocument doc, String section) {
         var retentionType = doc.getString(section, "retention").or("count");
         var retentionValue = doc.getString(section, "retention-value").or("");
-        var mode = doc.getString(section, "retention-mode").map(StreamConfigParser::parseRetentionMode).or(RetentionMode.ANY);
+        var mode = doc.getString(section, "retention-mode")
+                      .map(StreamConfigParser::parseRetentionMode)
+                      .or(RetentionMode.ANY);
 
         return switch (retentionType.toLowerCase()) {
             case "compound" -> parseCompoundRetention(doc, section, mode);
@@ -345,12 +409,20 @@ public interface StreamConfigParser {
 
     private static ConsumerConfig parseConsumerSection(TomlDocument doc, String section, String groupName) {
         var batchSize = doc.getInt(section, "batch-size").or(1);
-        var processing = doc.getString(section, "processing").map(StreamConfigParser::parseProcessingMode).or(ProcessingMode.ORDERED);
-        var onFailure = doc.getString(section, "on-failure").map(StreamConfigParser::parseErrorStrategy).or(ErrorStrategy.RETRY);
-        var checkpointIntervalMs = doc.getString(section, "checkpoint-interval").map(StreamConfigParser::parseTimeMs).or(1000L);
+        var processing = doc.getString(section, "processing")
+                            .map(StreamConfigParser::parseProcessingMode)
+                            .or(ProcessingMode.ORDERED);
+        var onFailure = doc.getString(section, "on-failure")
+                           .map(StreamConfigParser::parseErrorStrategy)
+                           .or(ErrorStrategy.RETRY);
+        var checkpointIntervalMs = doc.getString(section, "checkpoint-interval")
+                                      .map(StreamConfigParser::parseTimeMs)
+                                      .or(1000L);
         var maxRetries = doc.getInt(section, "max-retries").or(3);
         var deadLetterStream = doc.getString(section, "dead-letter").or("");
-        var readPreference = doc.getString(section, "read-preference").map(StreamConfigParser::parseReadPreference).or(ReadPreference.GOVERNOR);
+        var readPreference = doc.getString(section, "read-preference")
+                                .map(StreamConfigParser::parseReadPreference)
+                                .or(ReadPreference.GOVERNOR);
 
         return ConsumerConfig.consumerConfig(groupName,
                                              batchSize,
@@ -403,6 +475,7 @@ public interface StreamConfigParser {
         return switch (value.toLowerCase()) {
             case "nearest" -> ReadPreference.NEAREST;
             case "any-replica", "any_replica", "any", "replica", "follower-only", "follower_only", "follower" -> ReadPreference.ANY_REPLICA;
+            case "linearizable", "linearizable-read", "strong-read" -> ReadPreference.LINEARIZABLE;
             default -> ReadPreference.GOVERNOR;
         };
     }

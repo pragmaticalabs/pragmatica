@@ -4,14 +4,14 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.slice.stream;
 
+import java.util.Comparator;
+import java.util.List;
+import java.util.concurrent.ConcurrentHashMap;
+
 import org.pragmatica.aether.slice.resource.ResourceAddress;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
-
-import java.util.Comparator;
-import java.util.List;
-import java.util.concurrent.ConcurrentHashMap;
 
 import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Result.success;

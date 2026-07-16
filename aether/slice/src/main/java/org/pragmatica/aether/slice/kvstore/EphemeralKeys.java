@@ -4,9 +4,9 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.slice.kvstore;
 
-import org.pragmatica.aether.slice.kvstore.AetherKey.*;
-
 import java.util.Set;
+
+import org.pragmatica.aether.slice.kvstore.AetherKey.*;
 
 
 @SuppressWarnings("JBCT-UTIL-02")
@@ -24,6 +24,7 @@ public sealed interface EphemeralKeys {
                                                                  StorageStatusKey.class,
                                                                  ConsumerGroupKey.class,
                                                                  DhtPartitionOwnershipKey.class,
+                                                                 StreamPartitionOwnershipKey.class,
                                                                  SpokesmanKey.class,
                                                                  ProvisioningSlotKey.class,
                                                                  ClusterPhaseKey.class);
@@ -41,6 +42,7 @@ public sealed interface EphemeralKeys {
                                             "storage-status",
                                             "consumer-group",
                                             "dht-partition-ownership",
+                                            "stream-partition-ownership",
                                             "spokesman",
                                             "provisioning-slot",
                                             "cluster-phase");

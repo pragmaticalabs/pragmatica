@@ -90,16 +90,19 @@ public sealed interface LoadRoutes {
     private static LoadRunnerStatusResponse getStatus(ConfigurableLoadRunner runner) {
         var state = runner.state();
         var targetMetrics = runner.allTargetMetrics();
-        var targetInfos = targetMetrics.values().stream().map(m -> new LoadRunnerTargetInfo(m.name(),
-                                                                                            m.targetRate(),
-                                                                                            m.actualRate(),
-                                                                                            m.totalRequests(),
-                                                                                            m.successCount(),
-                                                                                            m.failureCount(),
-                                                                                            m.avgLatencyMs(),
-                                                                                            m.successRate(),
-                                                                                            m.remainingDuration()
-                                                                                             .map(ForgeApiResponses::formatDuration))).toList();
+        var targetInfos = targetMetrics.values()
+                                       .stream()
+                                       .map(m -> new LoadRunnerTargetInfo(m.name(),
+                                                                          m.targetRate(),
+                                                                          m.actualRate(),
+                                                                          m.totalRequests(),
+                                                                          m.successCount(),
+                                                                          m.failureCount(),
+                                                                          m.avgLatencyMs(),
+                                                                          m.successRate(),
+                                                                          m.remainingDuration()
+                                                                           .map(ForgeApiResponses::formatDuration)))
+                                       .toList();
 
         return new LoadRunnerStatusResponse(state.name(), targetInfos.size(), targetInfos);
     }

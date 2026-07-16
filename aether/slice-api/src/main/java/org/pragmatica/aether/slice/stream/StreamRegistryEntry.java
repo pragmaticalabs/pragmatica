@@ -4,11 +4,11 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.slice.stream;
 
+import java.time.Instant;
+
 import org.pragmatica.aether.slice.resource.ResourceAddress;
 import org.pragmatica.aether.slice.RetentionPolicy;
 import org.pragmatica.serialization.Codec;
-
-import java.time.Instant;
 
 
 /// Registry entry for a stream.

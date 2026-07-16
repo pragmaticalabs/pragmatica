@@ -11,9 +11,12 @@ import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.artifact.ArtifactBase;
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.artifact.Version;
+import org.pragmatica.aether.slice.ConsistencyMode;
 import org.pragmatica.aether.slice.MethodName;
 import org.pragmatica.aether.slice.RetentionMode;
 import org.pragmatica.aether.slice.RetentionPolicy;
+import org.pragmatica.aether.slice.StreamCompression;
+import org.pragmatica.aether.slice.StreamConfig;
 import org.pragmatica.aether.slice.blueprint.BlueprintId;
 import org.pragmatica.aether.slice.kvstore.AetherKey.*;
 import org.pragmatica.aether.slice.kvstore.AetherValue.*;
@@ -63,7 +66,7 @@ class KVStoreSerializerTest {
                              .onFailureRun(Assertions::fail)
                              .onSuccess(toml -> {
                                  assertThat(toml).contains("[slice-target]");
-                                 assertThat(toml).contains("\"com.example:my-app\" = \"1.0.0|3|2||1710072000000|CORE_ONLY\"");
+                                 assertThat(toml).contains("\"com.example:my-app\" = \"1.0.0|3|2||1710072000000|CORE_ONLY|||\"");
                              });
         }
 
@@ -136,8 +139,8 @@ class KVStoreSerializerTest {
             KVStoreSerializer.toToml(entries, TEST_PHASE, TEST_TIMESTAMP)
                              .onFailureRun(Assertions::fail)
                              .onSuccess(toml -> {
-                                 assertThat(toml).contains("\"com.example:app-a\" = \"1.0.0|2|1||1000|CORE_ONLY\"");
-                                 assertThat(toml).contains("\"com.example:app-b\" = \"1.0.0|4|3||2000|CORE_ONLY\"");
+                                 assertThat(toml).contains("\"com.example:app-a\" = \"1.0.0|2|1||1000|CORE_ONLY|||\"");
+                                 assertThat(toml).contains("\"com.example:app-b\" = \"1.0.0|4|3||2000|CORE_ONLY|||\"");
                                  // Only one section header
                                  assertThat(countOccurrences(toml, "[slice-target]")).isEqualTo(1);
                              });
@@ -330,6 +333,155 @@ class KVStoreSerializerTest {
         }
 
         @Test
+        void roundTrip_sliceTargetWithOverrides_preservesMaxInstancesAndThresholds() {
+            var entries = new LinkedHashMap<AetherKey, AetherValue>();
+            var ab = ArtifactBase.artifactBase("com.example:autoscaled").unwrap();
+            var ver = Version.version("2.0.0").unwrap();
+            var key = SliceTargetKey.sliceTargetKey(ab);
+            var value = new SliceTargetValue(ver,
+                                             5,
+                                             3,
+                                             Option.none(),
+                                             "CORE_ONLY",
+                                             1000L,
+                                             Option.some(7),
+                                             Option.some(1.5),
+                                             Option.some(0.5));
+            entries.put(key, value);
+
+            KVStoreSerializer.toToml(entries, TEST_PHASE, TEST_TIMESTAMP)
+                             .flatMap(KVStoreSerializer::fromToml)
+                             .onFailureRun(Assertions::fail)
+                             .onSuccess(restored -> assertThat(restored.get(key)).isEqualTo(value));
+        }
+
+        @Test
+        void roundTrip_sliceTargetWithoutOverrides_restoresNoneForAllOverrides() {
+            var entries = new LinkedHashMap<AetherKey, AetherValue>();
+            var ab = ArtifactBase.artifactBase("com.example:plain").unwrap();
+            var ver = Version.version("2.0.0").unwrap();
+            var key = SliceTargetKey.sliceTargetKey(ab);
+            var value = new SliceTargetValue(ver, 3, 2, Option.none(), "CORE_ONLY", 1000L);
+            entries.put(key, value);
+
+            KVStoreSerializer.toToml(entries, TEST_PHASE, TEST_TIMESTAMP)
+                             .flatMap(KVStoreSerializer::fromToml)
+                             .onFailureRun(Assertions::fail)
+                             .onSuccess(restored -> {
+                                 var st = (SliceTargetValue) restored.get(key);
+
+                                 assertThat(st.maxInstances()).isEqualTo(Option.none());
+                                 assertThat(st.scaleUpThreshold()).isEqualTo(Option.none());
+                                 assertThat(st.scaleDownThreshold()).isEqualTo(Option.none());
+                                 assertThat(st).isEqualTo(value);
+                             });
+        }
+
+        @Test
+        void fromToml_legacyFiveFieldSliceTarget_parsesWithNoneOverrides() {
+            var toml = """
+                       [meta]
+                       phase = 1
+                       timestamp = "2026-01-01T00:00:00Z"
+
+                       [slice-target]
+                       "com.example:legacy5" = "1.0.0|2|1||1000"
+                       """;
+
+            KVStoreSerializer.fromToml(toml)
+                             .onFailureRun(Assertions::fail)
+                             .onSuccess(map -> {
+                                 var ab = ArtifactBase.artifactBase("com.example:legacy5").unwrap();
+                                 var st = (SliceTargetValue) map.get(SliceTargetKey.sliceTargetKey(ab));
+
+                                 assertThat(st.targetInstances()).isEqualTo(2);
+                                 assertThat(st.effectivePlacement()).isEqualTo("CORE_ONLY");
+                                 assertThat(st.maxInstances()).isEqualTo(Option.none());
+                                 assertThat(st.scaleUpThreshold()).isEqualTo(Option.none());
+                                 assertThat(st.scaleDownThreshold()).isEqualTo(Option.none());
+                             });
+        }
+
+        @Test
+        void fromToml_legacySixFieldSliceTarget_parsesWithNoneOverrides() {
+            var toml = """
+                       [meta]
+                       phase = 1
+                       timestamp = "2026-01-01T00:00:00Z"
+
+                       [slice-target]
+                       "com.example:legacy6" = "1.0.0|4|2||2000|CORE_ONLY"
+                       """;
+
+            KVStoreSerializer.fromToml(toml)
+                             .onFailureRun(Assertions::fail)
+                             .onSuccess(map -> {
+                                 var ab = ArtifactBase.artifactBase("com.example:legacy6").unwrap();
+                                 var st = (SliceTargetValue) map.get(SliceTargetKey.sliceTargetKey(ab));
+
+                                 assertThat(st.targetInstances()).isEqualTo(4);
+                                 assertThat(st.minInstances()).isEqualTo(2);
+                                 assertThat(st.effectivePlacement()).isEqualTo("CORE_ONLY");
+                                 assertThat(st.maxInstances()).isEqualTo(Option.none());
+                                 assertThat(st.scaleUpThreshold()).isEqualTo(Option.none());
+                                 assertThat(st.scaleDownThreshold()).isEqualTo(Option.none());
+                             });
+        }
+
+        @Test
+        void roundTrip_observabilityConfig_preservesAllFacets() {
+            var entries = new LinkedHashMap<AetherKey, AetherValue>();
+            var key = ObservabilityConfigKey.observabilityConfigKey("com.example:my-slice", "handle");
+
+            entries.put(key, new ObservabilityConfigValue("com.example:my-slice", "handle", true, false, true, false, 7, 9000L));
+            KVStoreSerializer.toToml(entries, TEST_PHASE, TEST_TIMESTAMP)
+                             .flatMap(KVStoreSerializer::fromToml)
+                             .onFailureRun(Assertions::fail)
+                             .onSuccess(restored -> {
+                                 assertThat(restored).containsKey(key);
+                                 var oc = (ObservabilityConfigValue) restored.get(key);
+
+                                 assertThat(oc.artifactBase()).isEqualTo("com.example:my-slice");
+                                 assertThat(oc.methodName()).isEqualTo("handle");
+                                 assertThat(oc.logging()).isTrue();
+                                 assertThat(oc.metrics()).isFalse();
+                                 assertThat(oc.spans()).isTrue();
+                                 assertThat(oc.tracing()).isFalse();
+                                 assertThat(oc.depth()).isEqualTo(7);
+                                 assertThat(oc.updatedAt()).isEqualTo(9000L);
+                             });
+        }
+
+        @Test
+        void roundTrip_observabilityConfig_wildcardScopes_preservesGlobalAndArtifactKeys() {
+            var entries = new LinkedHashMap<AetherKey, AetherValue>();
+            var globalKey = ObservabilityConfigKey.observabilityConfigKey("*", "*");
+            var artifactKey = ObservabilityConfigKey.observabilityConfigKey("com.example:my-slice", "*");
+
+            entries.put(globalKey, new ObservabilityConfigValue("*", "*", true, true, false, false, 0, 1000L));
+            entries.put(artifactKey, new ObservabilityConfigValue("com.example:my-slice", "*", false, true, false, false, 3, 2000L));
+            KVStoreSerializer.toToml(entries, TEST_PHASE, TEST_TIMESTAMP)
+                             .flatMap(KVStoreSerializer::fromToml)
+                             .onFailureRun(Assertions::fail)
+                             .onSuccess(restored -> {
+                                 assertThat(restored).containsKey(globalKey);
+                                 assertThat(restored).containsKey(artifactKey);
+
+                                 var g = (ObservabilityConfigValue) restored.get(globalKey);
+                                 assertThat(g.artifactBase()).isEqualTo("*");
+                                 assertThat(g.methodName()).isEqualTo("*");
+                                 assertThat(g.logging()).isTrue();
+                                 assertThat(g.metrics()).isTrue();
+
+                                 var a = (ObservabilityConfigValue) restored.get(artifactKey);
+                                 assertThat(a.artifactBase()).isEqualTo("com.example:my-slice");
+                                 assertThat(a.methodName()).isEqualTo("*");
+                                 assertThat(a.metrics()).isTrue();
+                                 assertThat(a.depth()).isEqualTo(3);
+                             });
+        }
+
+        @Test
         void roundTrip_apiKeyValue_preservesAuthorizationRole() {
             var entries = new LinkedHashMap<AetherKey, AetherValue>();
             entries.put(ApiKeyKey.apiKeyKey("ak_admin01"),
@@ -433,6 +585,104 @@ class KVStoreSerializerTest {
                                  var wdv = (WorkerSliceDirectiveValue) restored.get(restoredKey);
                                  assertThat(wdv.targetInstances()).isEqualTo(3);
                                  assertThat(wdv.targetCommunity().isPresent()).isFalse();
+                             });
+        }
+
+        @Test
+        void roundTrip_communityValue_preservesAllFields() {
+            var entries = new LinkedHashMap<AetherKey, AetherValue>();
+            var key = CommunityKey.communityKey("orders:worker");
+            var value = CommunityValue.communityValue("orders",
+                                                      "WORKER",
+                                                      5,
+                                                      CommunityState.ACTIVE,
+                                                      1710072000000L,
+                                                      Option.none());
+            entries.put(key, value);
+
+            KVStoreSerializer.toToml(entries, TEST_PHASE, TEST_TIMESTAMP)
+                             .flatMap(KVStoreSerializer::fromToml)
+                             .onFailureRun(Assertions::fail)
+                             .onSuccess(restored -> {
+                                 assertThat(restored).hasSize(1);
+                                 assertThat(restored).containsKey(key);
+                                 var cv = (CommunityValue) restored.get(key);
+                                 assertThat(cv.sourceName()).isEqualTo("orders");
+                                 assertThat(cv.role()).isEqualTo("WORKER");
+                                 assertThat(cv.targetSize()).isEqualTo(5);
+                                 assertThat(cv.state()).isEqualTo(CommunityState.ACTIVE);
+                                 assertThat(cv.createdAt()).isEqualTo(1710072000000L);
+                                 assertThat(cv.dissolvedAt().isPresent()).isFalse();
+                             });
+        }
+
+        @Test
+        void roundTrip_communityValueDissolved_preservesDissolvedAt() {
+            var entries = new LinkedHashMap<AetherKey, AetherValue>();
+            var key = CommunityKey.communityKey("orders:worker");
+            var value = CommunityValue.communityValue("orders",
+                                                      "WORKER",
+                                                      5,
+                                                      CommunityState.DISSOLVED,
+                                                      1710072000000L,
+                                                      Option.some(1710072500000L));
+            entries.put(key, value);
+
+            KVStoreSerializer.toToml(entries, TEST_PHASE, TEST_TIMESTAMP)
+                             .flatMap(KVStoreSerializer::fromToml)
+                             .onFailureRun(Assertions::fail)
+                             .onSuccess(restored -> {
+                                 var cv = (CommunityValue) restored.get(key);
+                                 assertThat(cv.state()).isEqualTo(CommunityState.DISSOLVED);
+                                 assertThat(cv.dissolvedAt()).isEqualTo(Option.some(1710072500000L));
+                                 assertThat(cv).isEqualTo(value);
+                             });
+        }
+
+        @Test
+        void roundTrip_activationDirectiveWithCommunity_preservesRoleCommunityAndHint() {
+            var original = AetherValue.ActivationDirectiveValue.worker("orders:worker", "10.0.0.1:7201");
+
+            var serialized = KVStoreSerializer.serializeActivationDirective(original);
+
+            KVStoreSerializer.parseActivationEntry("node-1", serialized)
+                             .onFailureRun(Assertions::fail)
+                             .onSuccess(entry -> {
+                                 var value = (AetherValue.ActivationDirectiveValue) entry.getValue();
+                                 assertThat(value.role()).isEqualTo("WORKER");
+                                 assertThat(value.communityId()).isEqualTo("orders:worker");
+                                 assertThat(value.governorHint()).isEqualTo("10.0.0.1:7201");
+                                 assertThat(value).isEqualTo(original);
+                             });
+        }
+
+        @Test
+        void roundTrip_activationDirectiveNoCommunity_preservesEmptyFields() {
+            var original = AetherValue.ActivationDirectiveValue.core();
+
+            var serialized = KVStoreSerializer.serializeActivationDirective(original);
+
+            KVStoreSerializer.parseActivationEntry("node-1", serialized)
+                             .onFailureRun(Assertions::fail)
+                             .onSuccess(entry -> {
+                                 var value = (AetherValue.ActivationDirectiveValue) entry.getValue();
+                                 assertThat(value.role()).isEqualTo("CORE");
+                                 assertThat(value.communityId()).isEmpty();
+                                 assertThat(value.governorHint()).isEmpty();
+                                 assertThat(value).isEqualTo(original);
+                             });
+        }
+
+        @Test
+        void parseActivationEntry_legacyBareRole_defaultsEmptyCommunityFields() {
+            KVStoreSerializer.parseActivationEntry("node-1", "WORKER")
+                             .onFailureRun(Assertions::fail)
+                             .onSuccess(entry -> {
+                                 var value = (AetherValue.ActivationDirectiveValue) entry.getValue();
+                                 assertThat(value.role()).isEqualTo("WORKER");
+                                 assertThat(value.communityId()).isEmpty();
+                                 assertThat(value.governorHint()).isEmpty();
+                                 assertThat(value).isEqualTo(AetherValue.ActivationDirectiveValue.worker());
                              });
         }
     }
@@ -721,6 +971,41 @@ class KVStoreSerializerTest {
                                  var rv = (StreamRegistryValue) restored.get(key);
                                  assertThat(rv.entry().refCount()).isEqualTo(1);
                                  assertThat(rv.entry().registeredBy()).isEqualTo(StreamRegistryEntry.RegisteredByKind.FRAMEWORK);
+                             });
+        }
+    }
+
+    @Nested
+    class StreamConfigRoundTrip {
+        @Test
+        void roundTrip_streamConfig_preservesReplicasAndMinSyncReplicas() {
+            var entries = new LinkedHashMap<AetherKey, AetherValue>();
+            var retention = new RetentionPolicy(1_000L, 2_000L, 3_000L, RetentionMode.ANY, Option.none());
+            var config = StreamConfig.streamConfig("orders",
+                                                   4,
+                                                   retention,
+                                                   "latest",
+                                                   1_048_576L,
+                                                   ConsistencyMode.EVENTUAL,
+                                                   3,
+                                                   2,
+                                                   StreamCompression.NONE,
+                                                   Option.none());
+            var key = StreamConfigKey.streamConfigKey("orders");
+            entries.put(key, StreamConfigValue.streamConfigValue(config, 1710072000000L));
+
+            KVStoreSerializer.toToml(entries, TEST_PHASE, TEST_TIMESTAMP)
+                             .flatMap(KVStoreSerializer::fromToml)
+                             .onFailureRun(Assertions::fail)
+                             .onSuccess(restored -> {
+                                 assertThat(restored).hasSize(1);
+                                 var rv = (StreamConfigValue) restored.get(key);
+                                 assertThat(rv.config().replicas()).isEqualTo(3);
+                                 assertThat(rv.config().minSyncReplicas()).isEqualTo(2);
+                                 assertThat(rv.config().partitions()).isEqualTo(4);
+                                 assertThat(rv.config().consistencyMode()).isEqualTo(ConsistencyMode.EVENTUAL);
+                                 assertThat(rv.config().retention()).isEqualTo(retention);
+                                 assertThat(rv.createdAt()).isEqualTo(1710072000000L);
                              });
         }
     }

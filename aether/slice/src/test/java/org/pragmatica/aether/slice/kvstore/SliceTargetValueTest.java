@@ -105,6 +105,64 @@ class SliceTargetValueTest {
     }
 
     @Test
+    void sliceTargetValue_withVersion_preserves_autoscaler_overrides() {
+        var version1 = Version.version("1.0.0").unwrap();
+        var version2 = Version.version("2.0.0").unwrap();
+        var value = SliceTargetValue.sliceTargetValue(version1,
+                                                      5,
+                                                      2,
+                                                      Option.none(),
+                                                      Option.some(5),
+                                                      Option.some(0.8),
+                                                      Option.some(0.2));
+
+        var updated = value.withVersion(version2);
+
+        assertThat(updated.currentVersion()).isEqualTo(version2);
+        assertThat(updated.maxInstances()).isEqualTo(Option.some(5));
+        assertThat(updated.scaleUpThreshold()).isEqualTo(Option.some(0.8));
+        assertThat(updated.scaleDownThreshold()).isEqualTo(Option.some(0.2));
+    }
+
+    @Test
+    void sliceTargetValue_withInstances_preserves_autoscaler_overrides() {
+        var version = Version.version("1.0.0").unwrap();
+        var value = SliceTargetValue.sliceTargetValue(version,
+                                                      5,
+                                                      2,
+                                                      Option.none(),
+                                                      Option.some(5),
+                                                      Option.some(0.8),
+                                                      Option.some(0.2));
+
+        var updated = value.withInstances(3);
+
+        assertThat(updated.targetInstances()).isEqualTo(3);
+        assertThat(updated.maxInstances()).isEqualTo(Option.some(5));
+        assertThat(updated.scaleUpThreshold()).isEqualTo(Option.some(0.8));
+        assertThat(updated.scaleDownThreshold()).isEqualTo(Option.some(0.2));
+    }
+
+    @Test
+    void sliceTargetValue_withPlacement_preserves_autoscaler_overrides() {
+        var version = Version.version("1.0.0").unwrap();
+        var value = SliceTargetValue.sliceTargetValue(version,
+                                                      5,
+                                                      2,
+                                                      Option.none(),
+                                                      Option.some(5),
+                                                      Option.some(0.8),
+                                                      Option.some(0.2));
+
+        var updated = value.withPlacement("CORE_AND_WORKERS");
+
+        assertThat(updated.effectivePlacement()).isEqualTo("CORE_AND_WORKERS");
+        assertThat(updated.maxInstances()).isEqualTo(Option.some(5));
+        assertThat(updated.scaleUpThreshold()).isEqualTo(Option.some(0.8));
+        assertThat(updated.scaleDownThreshold()).isEqualTo(Option.some(0.2));
+    }
+
+    @Test
     void sliceTargetValue_equality_works() {
         var version = Version.version("1.0.0").unwrap();
         // Create two values at the same time to have matching updatedAt

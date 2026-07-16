@@ -4,10 +4,10 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.slice.blueprint;
 
+import java.util.List;
+
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.lang.Cause;
-
-import java.util.List;
 
 
 public sealed interface ExpanderError extends Cause {

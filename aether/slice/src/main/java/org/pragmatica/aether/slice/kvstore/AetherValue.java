@@ -4,6 +4,10 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.slice.kvstore;
 
+import java.util.HashSet;
+import java.util.List;
+import java.util.Set;
+
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.artifact.ArtifactBase;
 import org.pragmatica.aether.artifact.Version;
@@ -17,15 +21,12 @@ import org.pragmatica.aether.slice.stream.StreamRegistryEntry;
 import org.pragmatica.aether.slice.blueprint.ExpandedBlueprint;
 import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.cluster.state.kvstore.EpochBearing;
 import org.pragmatica.hlc.HlcTimestamp;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.serialization.Codec;
 import org.pragmatica.serialization.CodecFor;
-
-import java.util.HashSet;
-import java.util.List;
-import java.util.Set;
 
 import static org.pragmatica.lang.Option.none;
 
@@ -39,13 +40,49 @@ public sealed interface AetherValue {
                             int minInstances,
                             Option<BlueprintId> owningBlueprint,
                             String placement,
-                            long updatedAt) implements AetherValue {
+                            long updatedAt,
+                            Option<Integer> maxInstances,
+                            Option<Double> scaleUpThreshold,
+                            Option<Double> scaleDownThreshold) implements AetherValue {
         private static final String DEFAULT_PLACEMENT = "CORE_ONLY";
 
         public SliceTargetValue {
             if (placement == null || placement.isEmpty()) {
                 placement = DEFAULT_PLACEMENT;
             }
+
+            if (maxInstances == null) {
+                maxInstances = none();
+            }
+
+            if (scaleUpThreshold == null) {
+                scaleUpThreshold = none();
+            }
+
+            if (scaleDownThreshold == null) {
+                scaleDownThreshold = none();
+            }
+        }
+
+        /// Backward-compatible constructor — pre-existing call sites pass the six historical fields;
+        /// the per-slice autoscaler overrides (#424) default to `none()`. Mirrors the trailing-field
+        /// backward-compat idiom used across `AetherValue` (cf. `AppBlueprintValue`,
+        /// `ProvisioningSlotValue`).
+        public SliceTargetValue(Version currentVersion,
+                                int targetInstances,
+                                int minInstances,
+                                Option<BlueprintId> owningBlueprint,
+                                String placement,
+                                long updatedAt) {
+            this(currentVersion,
+                 targetInstances,
+                 minInstances,
+                 owningBlueprint,
+                 placement,
+                 updatedAt,
+                 none(),
+                 none(),
+                 none());
         }
 
         public static SliceTargetValue sliceTargetValue(Version version, int instances, Option<BlueprintId> owner) {
@@ -54,7 +91,10 @@ public sealed interface AetherValue {
                                         instances,
                                         owner,
                                         DEFAULT_PLACEMENT,
-                                        System.currentTimeMillis());
+                                        System.currentTimeMillis(),
+                                        none(),
+                                        none(),
+                                        none());
         }
 
         public static SliceTargetValue sliceTargetValue(Version version, int instances) {
@@ -63,7 +103,10 @@ public sealed interface AetherValue {
                                         instances,
                                         none(),
                                         DEFAULT_PLACEMENT,
-                                        System.currentTimeMillis());
+                                        System.currentTimeMillis(),
+                                        none(),
+                                        none(),
+                                        none());
         }
 
         public static SliceTargetValue sliceTargetValue(Version version, int instances, int minInstances) {
@@ -72,7 +115,10 @@ public sealed interface AetherValue {
                                         minInstances,
                                         none(),
                                         DEFAULT_PLACEMENT,
-                                        System.currentTimeMillis());
+                                        System.currentTimeMillis(),
+                                        none(),
+                                        none(),
+                                        none());
         }
 
         public static SliceTargetValue sliceTargetValue(Version version,
@@ -84,14 +130,45 @@ public sealed interface AetherValue {
                                         minInstances,
                                         owner,
                                         DEFAULT_PLACEMENT,
-                                        System.currentTimeMillis());
+                                        System.currentTimeMillis(),
+                                        none(),
+                                        none(),
+                                        none());
         }
 
         public static SliceTargetValue sliceTargetValue(Version version,
                                                         int instances,
                                                         int minInstances,
                                                         String placement) {
-            return new SliceTargetValue(version, instances, minInstances, none(), placement, System.currentTimeMillis());
+            return new SliceTargetValue(version,
+                                        instances,
+                                        minInstances,
+                                        none(),
+                                        placement,
+                                        System.currentTimeMillis(),
+                                        none(),
+                                        none(),
+                                        none());
+        }
+
+        /// Deploy-time factory (#424) carrying the per-slice autoscaler overrides —
+        /// `maxInstances` bounds scale-up; the threshold overrides win over the cluster tier.
+        public static SliceTargetValue sliceTargetValue(Version version,
+                                                        int instances,
+                                                        int minInstances,
+                                                        Option<BlueprintId> owner,
+                                                        Option<Integer> maxInstances,
+                                                        Option<Double> scaleUpThreshold,
+                                                        Option<Double> scaleDownThreshold) {
+            return new SliceTargetValue(version,
+                                        instances,
+                                        minInstances,
+                                        owner,
+                                        DEFAULT_PLACEMENT,
+                                        System.currentTimeMillis(),
+                                        maxInstances,
+                                        scaleUpThreshold,
+                                        scaleDownThreshold);
         }
 
         public int effectiveMinInstances() {
@@ -108,7 +185,10 @@ public sealed interface AetherValue {
                                         minInstances,
                                         owningBlueprint,
                                         placement,
-                                        System.currentTimeMillis());
+                                        System.currentTimeMillis(),
+                                        maxInstances,
+                                        scaleUpThreshold,
+                                        scaleDownThreshold);
         }
 
         public SliceTargetValue withPlacement(String newPlacement) {
@@ -117,7 +197,10 @@ public sealed interface AetherValue {
                                         minInstances,
                                         owningBlueprint,
                                         newPlacement,
-                                        System.currentTimeMillis());
+                                        System.currentTimeMillis(),
+                                        maxInstances,
+                                        scaleUpThreshold,
+                                        scaleDownThreshold);
         }
 
         public SliceTargetValue withVersion(Version newVersion) {
@@ -126,7 +209,10 @@ public sealed interface AetherValue {
                                         minInstances,
                                         owningBlueprint,
                                         placement,
-                                        System.currentTimeMillis());
+                                        System.currentTimeMillis(),
+                                        maxInstances,
+                                        scaleUpThreshold,
+                                        scaleDownThreshold);
         }
     }
 
@@ -364,11 +450,29 @@ public sealed interface AetherValue {
         }
     }
 
-    record ObservabilityDepthValue(String artifactBase, String methodName, int depthThreshold, long updatedAt) implements AetherValue {
-        public static ObservabilityDepthValue observabilityDepthValue(String artifactBase,
-                                                                      String methodName,
-                                                                      int depthThreshold) {
-            return new ObservabilityDepthValue(artifactBase, methodName, depthThreshold, System.currentTimeMillis());
+    record ObservabilityConfigValue(String artifactBase,
+                                    String methodName,
+                                    boolean logging,
+                                    boolean metrics,
+                                    boolean spans,
+                                    boolean tracing,
+                                    int depth,
+                                    long updatedAt) implements AetherValue {
+        public static ObservabilityConfigValue observabilityConfigValue(String artifactBase,
+                                                                        String methodName,
+                                                                        boolean logging,
+                                                                        boolean metrics,
+                                                                        boolean spans,
+                                                                        boolean tracing,
+                                                                        int depth) {
+            return new ObservabilityConfigValue(artifactBase,
+                                                methodName,
+                                                logging,
+                                                metrics,
+                                                spans,
+                                                tracing,
+                                                depth,
+                                                System.currentTimeMillis());
         }
     }
 
@@ -413,16 +517,47 @@ public sealed interface AetherValue {
         }
     }
 
-    record ActivationDirectiveValue(String role) implements AetherValue {
+    /// Worker/core activation directive (worker-membership-spec §4 line 79): the leader-authored,
+    /// node-keyed role assignment. Extended additively with `communityId` + `governorHint` so a
+    /// WORKER directive carries its community assignment and a governor address hint through the
+    /// already-canonical directive path — community assignment happens at the same moment as role
+    /// assignment. Both are empty for a CORE directive (and for a community-less WORKER).
+    ///
+    /// Optional-field idiom mirrors [DhtPartitionOwnershipValue.ownerCommunityId]: empty-string is
+    /// the canonical "absent" form, normalized in the compact constructor so a `null` from a
+    /// wire/codec edge collapses to `""` (preserving `equals` with the role-only constructors).
+    record ActivationDirectiveValue(String role, String communityId, String governorHint) implements AetherValue {
         public static final String CORE = "CORE";
         public static final String WORKER = "WORKER";
 
+        public ActivationDirectiveValue {
+            if (communityId == null) {
+                communityId = "";
+            }
+
+            if (governorHint == null) {
+                governorHint = "";
+            }
+        }
+
+        /// Backward-compatible role-only constructor — pre-existing call sites pass a bare role;
+        /// `communityId`/`governorHint` default empty (CORE or community-less WORKER semantics).
+        public ActivationDirectiveValue(String role) {
+            this(role, "", "");
+        }
+
         public static ActivationDirectiveValue core() {
-            return new ActivationDirectiveValue(CORE);
+            return new ActivationDirectiveValue(CORE, "", "");
         }
 
         public static ActivationDirectiveValue worker() {
-            return new ActivationDirectiveValue(WORKER);
+            return new ActivationDirectiveValue(WORKER, "", "");
+        }
+
+        /// Community-assigned WORKER directive — carries the committed `communityId` and a governor
+        /// address hint alongside the WORKER role (§4 line 79).
+        public static ActivationDirectiveValue worker(String communityId, String governorHint) {
+            return new ActivationDirectiveValue(WORKER, communityId, governorHint);
         }
     }
 
@@ -460,7 +595,15 @@ public sealed interface AetherValue {
                                      Epoch communityEpoch,
                                      Epoch observedCoreEpoch,
                                      HlcTimestamp transitionedAt,
-                                     boolean dissolved) implements AetherValue {
+                                     boolean dissolved) implements AetherValue, EpochBearing<Epoch> {
+        /// Ownership fence (#345 piece 1a): the governor's `communityEpoch` is the fencing token, so
+        /// the Rabia applier rejects a deposed governor's strictly-older-epoch announcement. Same-epoch
+        /// re-writes (reannounce / dissolve) are accepted — only `withGovernorChange` bumps the epoch.
+        @Override
+        public Epoch fenceEpoch() {
+            return communityEpoch;
+        }
+
         public GovernorAnnouncementValue {
             members = members == null
                       ? List.of()
@@ -1273,7 +1416,18 @@ public sealed interface AetherValue {
                                       String ownerCommunityId,
                                       Epoch ownerEpoch,
                                       long ownershipTerm,
-                                      HlcTimestamp transferredAt) implements AetherValue {
+                                      HlcTimestamp transferredAt) implements AetherValue, EpochBearing<Epoch> {
+        /// Ownership fence (#345 piece 1a): the owner's `ownerEpoch` is the fencing token, so the
+        /// Rabia applier rejects a deposed owner's strictly-older-epoch ownership write. The writer
+        /// (`BootstrapModule.buildCorePartitionCommand`) couples `ownerEpoch.localCounter ==
+        /// ownershipTerm` (#345 DHT parity), so a stale-owner takeover advances the `ownerEpoch` (via
+        /// the bumped `ownershipTerm` local counter) and STRICTLY dominates the deposed owner's epoch —
+        /// even within the same generation term, closing the same-term-takeover fence gap.
+        @Override
+        public Epoch fenceEpoch() {
+            return ownerEpoch;
+        }
+
         public DhtPartitionOwnershipValue {
             if (ownerCommunityId == null) {
                 ownerCommunityId = "";
@@ -1301,11 +1455,111 @@ public sealed interface AetherValue {
         }
     }
 
+    /// Per-`(stream, partition)` ownership record (#345 item 1d-i) — the stream-side mirror of
+    /// [DhtPartitionOwnershipValue], and the first persisted slice of #265's reshuffle ring.
+    /// Stream-partition ownership was previously pure HRW recomputed on the fly with no persisted
+    /// record and no fencing token; this record gives the partition's owner an `ownerEpoch` that the
+    /// leader advances on every owner change, so the append fence (1d-ii) can reject a deposed owner.
+    ///
+    /// There is no `ownerCommunityId` — streams have no community arc (that field is DHT-specific). The
+    /// `ownerEpoch` is sourced from the committed generation epoch (`Epoch.epoch(rabiaTerm, 0)`); the
+    /// `ownershipTerm` is a monotonic per-partition takeover counter, bumped on each owner change.
+    record StreamPartitionOwnershipValue(NodeId owner,
+                                         Epoch ownerEpoch,
+                                         long ownershipTerm,
+                                         HlcTimestamp transferredAt) implements AetherValue, EpochBearing<Epoch> {
+        /// Ownership fence (#345 piece 1a): the owner's `ownerEpoch` is the fencing token, so the Rabia
+        /// applier rejects a deposed owner's strictly-older-epoch ownership write for free (it fences
+        /// ANY `EpochBearing` value). A stale-owner takeover at the same epoch (bumping only
+        /// `ownershipTerm`) is accepted, mirroring `DhtPartitionOwnershipValue`.
+        @Override
+        public Epoch fenceEpoch() {
+            return ownerEpoch;
+        }
+
+        public StreamPartitionOwnershipValue {
+            if (ownerEpoch == null) {
+                ownerEpoch = Epoch.ZERO;
+            }
+
+            if (transferredAt == null) {
+                transferredAt = HlcTimestamp.ZERO;
+            }
+        }
+
+        public static StreamPartitionOwnershipValue streamPartitionOwnershipValue(NodeId owner,
+                                                                                  Epoch ownerEpoch,
+                                                                                  long ownershipTerm,
+                                                                                  HlcTimestamp transferredAt) {
+            return new StreamPartitionOwnershipValue(owner, ownerEpoch, ownershipTerm, transferredAt);
+        }
+    }
+
     @Codec
     enum SpokesmanStatus {
         ASSIGNED,
         ACTIVE,
         FAILED
+    }
+
+    /// Desired-state community record (worker-membership-spec §2 line 78): the leader-authored
+    /// target for a committed [AetherKey.CommunityKey]. `state` is the per-community FSM state
+    /// (leader-evaluated, §3.3). `dissolvedAt` is present only once the community reaches the
+    /// `DISSOLVED` terminal fact; absent (`none()`) for every live state.
+    ///
+    /// Mirrors [DhtPartitionOwnershipValue] for optional-field canonicalization: empty Option /
+    /// empty string are the canonical "absent" forms, normalized in the compact constructor so a
+    /// `null` from a wire/codec edge collapses to the same value (and the same `equals`).
+    record CommunityValue(String sourceName,
+                          String role,
+                          int targetSize,
+                          CommunityState state,
+                          long createdAt,
+                          Option<Long> dissolvedAt) implements AetherValue {
+        public CommunityValue {
+            if (sourceName == null) {
+                sourceName = "";
+            }
+
+            if (role == null) {
+                role = "";
+            }
+
+            if (state == null) {
+                state = CommunityState.FORMING;
+            }
+
+            if (dissolvedAt == null) {
+                dissolvedAt = Option.none();
+            }
+        }
+
+        public static CommunityValue communityValue(String sourceName,
+                                                    String role,
+                                                    int targetSize,
+                                                    CommunityState state,
+                                                    long createdAt,
+                                                    Option<Long> dissolvedAt) {
+            return new CommunityValue(sourceName, role, targetSize, state, createdAt, dissolvedAt);
+        }
+
+        /// FORMING mint — the leader creating a fresh community (growth policy demands a new slot,
+        /// §3.3): stamps `createdAt = now`, `state = FORMING`, `dissolvedAt = none()`.
+        public static CommunityValue communityValue(String sourceName, String role, int targetSize) {
+            return new CommunityValue(sourceName,
+                                      role,
+                                      targetSize,
+                                      CommunityState.FORMING,
+                                      System.currentTimeMillis(),
+                                      none());
+        }
+
+        /// Per-community FSM transition (worker-membership-spec §3.3): the leader re-stamps only the
+        /// `state` on an edge, preserving every other committed field. Mirrors
+        /// [NodeArtifactValue#withState] — a copy via the canonical constructor.
+        public CommunityValue withState(CommunityState newState) {
+            return new CommunityValue(sourceName, role, targetSize, newState, createdAt, dissolvedAt);
+        }
     }
 
     /// Canonical field order: `(spawnedAtMs, assignedNodeId, occupantEpoch, supersededNodeId)`.

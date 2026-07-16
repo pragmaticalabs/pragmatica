@@ -4,6 +4,11 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.forge.api;
 
+import java.time.Duration;
+import java.util.Deque;
+import java.util.List;
+import java.util.function.Consumer;
+
 import org.pragmatica.aether.ember.EmberCluster;
 import org.pragmatica.aether.forge.api.ForgeApiResponses.ChaosEnabledResponse;
 import org.pragmatica.aether.forge.api.ForgeApiResponses.ChaosInjectResponse;
@@ -30,11 +35,6 @@ import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.utils.Causes;
-
-import java.time.Duration;
-import java.util.Deque;
-import java.util.List;
-import java.util.function.Consumer;
 
 import static org.pragmatica.http.routing.PathParameter.aString;
 import static org.pragmatica.http.routing.Route.get;
@@ -167,7 +167,10 @@ public final class ChaosRoutes {
 
     private static ChaosStatusResponse chaosStatus(ChaosController controller) {
         ChaosStatus status = controller.status();
-        List<ActiveChaosEventInfo> activeEventInfos = status.activeEvents().stream().map(ChaosRoutes::toEventInfo).toList();
+        List<ActiveChaosEventInfo> activeEventInfos = status.activeEvents()
+                                                            .stream()
+                                                            .map(ChaosRoutes::toEventInfo)
+                                                            .toList();
 
         return new ChaosStatusResponse(status.enabled(), status.activeEventCount(), activeEventInfos);
     }

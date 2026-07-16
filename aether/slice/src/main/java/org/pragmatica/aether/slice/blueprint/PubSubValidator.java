@@ -4,17 +4,17 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.slice.blueprint;
 
-import org.pragmatica.aether.slice.resource.ResourceAddress;
-import org.pragmatica.aether.slice.resource.ResourceVersion;
-import org.pragmatica.aether.slice.topology.SliceTopology;
-import org.pragmatica.lang.Result;
-
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
+
+import org.pragmatica.aether.slice.resource.ResourceAddress;
+import org.pragmatica.aether.slice.resource.ResourceVersion;
+import org.pragmatica.aether.slice.topology.SliceTopology;
+import org.pragmatica.lang.Result;
 
 import static org.pragmatica.lang.Result.success;
 

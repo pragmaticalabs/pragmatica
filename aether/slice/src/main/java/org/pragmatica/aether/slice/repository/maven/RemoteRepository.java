@@ -4,6 +4,13 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.slice.repository.maven;
 
+import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.nio.file.Path;
+import java.security.MessageDigest;
+import java.time.Duration;
+
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.slice.repository.Location;
 import org.pragmatica.aether.slice.repository.Repository;
@@ -15,13 +22,6 @@ import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.utils.Causes;
-
-import java.net.URI;
-import java.net.http.HttpClient;
-import java.net.http.HttpRequest;
-import java.nio.file.Path;
-import java.security.MessageDigest;
-import java.time.Duration;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;

@@ -4,10 +4,10 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.forge.api;
 
-import org.pragmatica.lang.Option;
-
 import java.time.Duration;
 import java.util.List;
+
+import org.pragmatica.lang.Option;
 
 
 public final class ForgeApiResponses {

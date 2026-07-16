@@ -4,17 +4,17 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.forge.simulator;
 
-import org.pragmatica.lang.Cause;
-import org.pragmatica.lang.Result;
-import org.pragmatica.lang.Unit;
-import org.pragmatica.lang.Verify;
-import org.pragmatica.lang.utils.Causes;
-
 import java.util.List;
 import java.util.Queue;
 import java.util.Random;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.ThreadLocalRandom;
+
+import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.Verify;
+import org.pragmatica.lang.utils.Causes;
 
 import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Result.success;

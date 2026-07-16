@@ -118,9 +118,9 @@ class ConsumerConfigTest {
         }
 
         @Test
-        void readPreference_hasThreeValues() {
+        void readPreference_hasFourValues() {
             assertThat(ReadPreference.values()).containsExactly(
-                ReadPreference.GOVERNOR, ReadPreference.ANY_REPLICA, ReadPreference.NEAREST);
+                ReadPreference.GOVERNOR, ReadPreference.ANY_REPLICA, ReadPreference.NEAREST, ReadPreference.LINEARIZABLE);
         }
     }
 }
