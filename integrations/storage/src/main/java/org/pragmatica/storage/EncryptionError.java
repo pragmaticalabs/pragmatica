@@ -3,9 +3,9 @@ package org.pragmatica.storage;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.utils.Causes;
 
+
 /// Encryption error hierarchy.
 public sealed interface EncryptionError extends Cause {
-
     record EncryptionFailed(Throwable cause) implements EncryptionError {
         @Override
         public String message() {

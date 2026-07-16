@@ -1,14 +1,15 @@
 package org.pragmatica.jbct.lint.cst;
 
+import java.util.*;
+import java.util.regex.Pattern;
+
 import org.pragmatica.jbct.parser.Cursor;
 import org.pragmatica.jbct.parser.LineIndex;
 import org.pragmatica.jbct.parser.RuleKind;
 import org.pragmatica.lang.Option;
 
-import java.util.*;
-import java.util.regex.Pattern;
-
 import static org.pragmatica.jbct.parser.CstNodes.*;
+
 
 /// Extracts @SuppressWarnings, @Contract, @TerminalOperation, and @NullReturn annotations
 /// and determines which rules are suppressed at which locations.
@@ -48,16 +49,14 @@ public final class SuppressionExtractor {
         }
     }
 
-    private static final Set<String> CONTRACT_NAMES = Set.of("Contract",
-                                                              "org.pragmatica.lang.Contract");
+    private static final Set<String> CONTRACT_NAMES = Set.of("Contract", "org.pragmatica.lang.Contract");
     private static final Set<String> CONTRACT_SUPPRESSED_RULES = Set.of("all");
 
     private static final Set<String> TERMINAL_OP_NAMES = Set.of("TerminalOperation",
-                                                                  "org.pragmatica.lang.TerminalOperation");
-    private static final Set<String> TERMINAL_OP_SUPPRESSED = Set.of("JBCT-PAT-03");
+                                                                "org.pragmatica.lang.TerminalOperation");
 
-    private static final Set<String> NULL_RETURN_NAMES = Set.of("NullReturn",
-                                                                  "org.pragmatica.lang.NullReturn");
+    private static final Set<String> TERMINAL_OP_SUPPRESSED = Set.of("JBCT-PAT-03");
+    private static final Set<String> NULL_RETURN_NAMES = Set.of("NullReturn", "org.pragmatica.lang.NullReturn");
     private static final Set<String> NULL_RETURN_SUPPRESSED = Set.of("JBCT-RET-03");
 
     /// Extract all suppressions from a CST.
@@ -66,40 +65,52 @@ public final class SuppressionExtractor {
         var lines = new LineIndex(source);
         var src = source;
         var annotations = findAll(root, RuleKind.ANNOTATION);
+
         for (var annotation : annotations) {
-            var name = findFirst(annotation, RuleKind.QUALIFIED_NAME)
-                .map(qn -> text(qn).trim())
-                .or("");
+            var name = findFirst(annotation, RuleKind.QUALIFIED_NAME).map(qn -> text(qn).trim()).or("");
+
             if (CONTRACT_NAMES.contains(name)) {
                 addScope(root, annotation, lines, src, CONTRACT_SUPPRESSED_RULES, suppressions);
                 continue;
             }
+
             if (TERMINAL_OP_NAMES.contains(name)) {
                 addScope(root, annotation, lines, src, TERMINAL_OP_SUPPRESSED, suppressions);
                 continue;
             }
+
             if (NULL_RETURN_NAMES.contains(name)) {
                 addScope(root, annotation, lines, src, NULL_RETURN_SUPPRESSED, suppressions);
                 continue;
             }
+
             if (!"SuppressWarnings".equals(name) && !"java.lang.SuppressWarnings".equals(name)) {
                 continue;
             }
+
             var ruleIds = extractRuleIds(annotation);
+
             if (ruleIds.isEmpty()) {
                 continue;
             }
+
             addScope(root, annotation, lines, src, ruleIds, suppressions);
         }
+
         return suppressions;
     }
 
-    private static void addScope(Cursor root, Cursor annotation, LineIndex lines, String source,
-                                 Set<String> ruleIds, ArrayList<Suppression> out) {
-        findAnnotatedDeclaration(root, annotation).onPresent(scope ->
-            out.add(Suppression.suppression(ruleIds,
-                                            lines.lineAt(scope.spanStart()),
-                                            lines.lineAt(lastContentOffset(source, scope.spanStart(), scope.spanEnd())))));
+    private static void addScope(Cursor root,
+                                 Cursor annotation,
+                                 LineIndex lines,
+                                 String source,
+                                 Set<String> ruleIds,
+                                 ArrayList<Suppression> out) {
+        findAnnotatedDeclaration(root, annotation).onPresent(scope -> out.add(Suppression.suppression(ruleIds,
+                                                                                                      lines.lineAt(scope.spanStart()),
+                                                                                                      lines.lineAt(lastContentOffset(source,
+                                                                                                                                     scope.spanStart(),
+                                                                                                                                     scope.spanEnd())))));
     }
 
     /// Position of the last non-whitespace character within [start, end). Used to
@@ -107,9 +118,11 @@ public final class SuppressionExtractor {
     /// would otherwise spill into the next sibling's line.
     private static int lastContentOffset(String source, int start, int end) {
         int i = Math.min(end, source.length()) - 1;
+
         while (i > start && Character.isWhitespace(source.charAt(i))) {
             i--;
         }
+
         return Math.max(i, start);
     }
 
@@ -120,20 +133,26 @@ public final class SuppressionExtractor {
                 return true;
             }
         }
+
         return false;
     }
 
     private static Set<String> extractRuleIds(Cursor annotation) {
         var ruleIds = new HashSet<String>();
         var annotationText = text(annotation);
+
         if (annotationText.contains("\"all\"")) {
             ruleIds.add("all");
+
             return ruleIds;
         }
+
         var matcher = JBCT_RULE_PATTERN.matcher(annotationText);
+
         while (matcher.find()) {
             ruleIds.add(matcher.group());
         }
+
         return ruleIds;
     }
 
@@ -144,29 +163,36 @@ public final class SuppressionExtractor {
     private static Option<Cursor> findDeclarationInPath(List<Cursor> path) {
         for (int i = path.size() - 1; i >= 0; i--) {
             var node = path.get(i);
+
             if (node.kindIs(RuleKind.TYPE_DECL) || node.kindIs(RuleKind.TYPE_KIND)) {
                 return Option.some(node);
             }
+
             if (node.kindIs(RuleKind.CLASS_MEMBER) || node.kindIs(RuleKind.MEMBER)) {
                 return Option.some(outermostClassMember(path, i));
             }
+
             if (node.kindIs(RuleKind.LOCAL_VAR) || node.kindIs(RuleKind.PARAM)) {
                 return Option.some(node);
             }
         }
+
         return Option.none();
     }
 
     private static Cursor outermostClassMember(List<Cursor> path, int startIndex) {
         var result = path.get(startIndex);
+
         for (int i = startIndex - 1; i >= 0; i--) {
             var parent = path.get(i);
+
             if (parent.kindIs(RuleKind.CLASS_MEMBER) || parent.kindIs(RuleKind.MEMBER)) {
                 result = parent;
             } else {
                 break;
             }
         }
+
         return result;
     }
 }

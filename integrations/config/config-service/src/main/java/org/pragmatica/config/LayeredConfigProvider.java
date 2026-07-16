@@ -1,8 +1,5 @@
 package org.pragmatica.config;
 
-import org.pragmatica.lang.Option;
-import org.pragmatica.lang.Result;
-
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.LinkedHashMap;
@@ -12,8 +9,12 @@ import java.util.Map;
 import java.util.Set;
 import java.util.stream.Collectors;
 
+import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Result;
+
 import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Result.success;
+
 
 /// Hierarchical configuration provider that composes layers with strict left-wins precedence.
 ///
@@ -61,8 +62,12 @@ public final class LayeredConfigProvider implements ConfigurationProvider {
     public Option<String> getString(String key) {
         for (var layer : layers) {
             var value = layer.getString(key);
-            if (value.isPresent()) {return value;}
+
+            if (value.isPresent()) {
+                return value;
+            }
         }
+
         return none();
     }
 
@@ -78,15 +83,21 @@ public final class LayeredConfigProvider implements ConfigurationProvider {
     public Option<SourceAttribution> sourceOf(String key) {
         for (var layer : layers) {
             var hit = attributeIn(layer, key);
-            if (hit.isPresent()) {return hit;}
+
+            if (hit.isPresent()) {
+                return hit;
+            }
         }
+
         return none();
     }
 
     private static Option<SourceAttribution> attributeIn(ConfigurationProvider layer, String key) {
         return layer instanceof LayeredConfigProvider nested
                ? nested.sourceOf(key)
-               : layer.getString(key).map(value -> new SourceAttribution(layer.displayName(), value));
+               : layer.getString(key)
+                      .map(value -> new SourceAttribution(layer.displayName(),
+                                                          value));
     }
 
     /// Attribution record describing which layer of a layered provider matched a key.
@@ -99,9 +110,11 @@ public final class LayeredConfigProvider implements ConfigurationProvider {
     @Override
     public Set<String> keys() {
         var unionKeys = new LinkedHashSet<String>();
+
         for (var layer : layers) {
             unionKeys.addAll(layer.keys());
         }
+
         return Collections.unmodifiableSet(unionKeys);
     }
 
@@ -112,13 +125,15 @@ public final class LayeredConfigProvider implements ConfigurationProvider {
         for (var i = layers.size() - 1; i >= 0; i--) {
             merged.putAll(layers.get(i).asMap());
         }
+
         return Collections.unmodifiableMap(merged);
     }
 
     @Override
     public List<ConfigSource> sources() {
         return layers.stream()
-                     .flatMap(layer -> layer.sources().stream())
+                     .flatMap(layer -> layer.sources()
+                                            .stream())
                      .toList();
     }
 
@@ -132,11 +147,17 @@ public final class LayeredConfigProvider implements ConfigurationProvider {
     @Override
     public Result<ConfigSource> reload() {
         var reloadedLayers = new ArrayList<ConfigurationProvider>();
+
         for (var layer : layers) {
             var reloaded = layer.reload();
-            if (reloaded.isFailure()) {return reloaded;}
+
+            if (reloaded.isFailure()) {
+                return reloaded;
+            }
+
             reloadedLayers.add((ConfigurationProvider) reloaded.unwrap());
         }
+
         return success(new LayeredConfigProvider(reloadedLayers));
     }
 }

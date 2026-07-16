@@ -1,9 +1,5 @@
 package org.pragmatica.http.routing;
 
-import org.pragmatica.http.HttpMethod;
-import org.pragmatica.lang.Contract;
-import org.pragmatica.lang.Option;
-
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
@@ -12,10 +8,15 @@ import java.util.Map;
 import java.util.TreeMap;
 import java.util.stream.Stream;
 
+import org.pragmatica.http.HttpMethod;
+import org.pragmatica.lang.Contract;
+import org.pragmatica.lang.Option;
+
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import static org.pragmatica.lang.Option.option;
+
 
 public final class RequestRouter {
     private static final Logger log = LoggerFactory.getLogger(RequestRouter.class);
@@ -33,18 +34,20 @@ public final class RequestRouter {
 
     public static RequestRouter with(Stream<RouteSource> routeStream) {
         var routes = new HashMap<HttpMethod, TreeMap<String, List<Route<?>>>>();
+
         routeStream.flatMap(RouteSource::routes)
                    .forEach(route -> routes.compute(route.method(),
                                                     (_, pathMap) -> collectRoutes(route, pathMap)));
+
         return new RequestRouter(routes);
     }
 
     private static TreeMap<String, List<Route<?>>> collectRoutes(Route<?> route,
                                                                  TreeMap<String, List<Route<?>>> pathMap) {
         var map = option(pathMap).or(TreeMap::new);
-        map.computeIfAbsent(route.path(),
-                            _ -> new ArrayList<>())
-           .add(route);
+
+        map.computeIfAbsent(route.path(), _ -> new ArrayList<>()).add(route);
+
         return map;
     }
 
@@ -53,6 +56,7 @@ public final class RequestRouter {
         if (!log.isInfoEnabled()) {
             return;
         }
+
         routes.forEach((_, endpoints) -> endpoints.forEach((_, routeList) -> routeList.forEach(route -> log.info("{}",
                                                                                                                  route))));
     }
@@ -60,6 +64,7 @@ public final class RequestRouter {
     public Option<Route<?>> findRoute(HttpMethod method, String inputPath) {
         var path = inputPath + "/";
         var methodRoutes = routes.get(method);
+
         if (methodRoutes == null) {
             return Option.empty();
         }
@@ -73,6 +78,7 @@ public final class RequestRouter {
                 return selectBestRoute(entry.getValue(), inputPath);
             }
         }
+
         return Option.empty();
     }
 
@@ -89,7 +95,9 @@ public final class RequestRouter {
         if (candidates.size() == 1) {
             return Option.some(candidates.getFirst());
         }
+
         var spacerMatch = findMatchingSpacerRoute(candidates, inputPath);
+
         return spacerMatch.isPresent()
                ? spacerMatch
                : findArityMatchingRoute(candidates, inputPath);
@@ -107,21 +115,20 @@ public final class RequestRouter {
     /// segment count. Falls back to a no-arity (collection) route, then to the first candidate, so
     /// a match is always returned for a path that reached this point.
     private Option<Route<?>> findArityMatchingRoute(List<Route<?>> candidates, String inputPath) {
-        var trailingSegments = trailingSegmentCount(candidates.getFirst()
-                                                              .path(), inputPath);
+        var trailingSegments = trailingSegmentCount(candidates.getFirst().path(),
+                                                    inputPath);
+
         return Option.from(candidates.stream()
                                      .filter(route -> route.spacers()
-                                                          .isEmpty())
+                                                           .isEmpty())
                                      .filter(route -> route.pathParamCount() == trailingSegments)
-                                     .findFirst())
-                     .orElse(() -> findFallbackRoute(candidates));
+                                     .findFirst()).orElse(() -> findFallbackRoute(candidates));
     }
 
     private Option<Route<?>> findFallbackRoute(List<Route<?>> candidates) {
-        var noSpacerRoute = candidates.stream()
-                                      .filter(route -> route.spacers()
-                                                            .isEmpty())
-                                      .findFirst();
+        var noSpacerRoute = candidates.stream().filter(route -> route.spacers()
+                                                                     .isEmpty()).findFirst();
+
         return Option.some(noSpacerRoute.orElse(candidates.getFirst()));
     }
 
@@ -132,9 +139,11 @@ public final class RequestRouter {
         var normalizedInput = inputPath.endsWith("/")
                               ? inputPath
                               : inputPath + "/";
+
         if (normalizedInput.length() <= basePath.length()) {
             return 0;
         }
+
         var remainder = normalizedInput.substring(basePath.length());
         var trimmed = remainder.startsWith("/")
                       ? remainder.substring(1)
@@ -142,6 +151,7 @@ public final class RequestRouter {
         var stripped = trimmed.endsWith("/")
                        ? trimmed.substring(0, trimmed.length() - 1)
                        : trimmed;
+
         return stripped.isEmpty()
                ? 0
                : (int) stripped.chars()
@@ -152,16 +162,20 @@ public final class RequestRouter {
     /// Check if a route matches the input path by verifying all spacers are present.
     private boolean routeMatchesPath(Route<?> route, String inputPath) {
         var basePath = route.path();
+
         if (inputPath.length() <= basePath.length()) {
             return route.spacers()
                         .isEmpty();
         }
+
         var pathElements = extractPathElements(inputPath, basePath);
+
         return allSpacersPresent(route.spacers(), pathElements);
     }
 
     private static String[] extractPathElements(String inputPath, String basePath) {
         var remainder = inputPath.substring(basePath.length());
+
         return remainder.startsWith("/")
                ? remainder.substring(1)
                           .split("/")
@@ -170,8 +184,7 @@ public final class RequestRouter {
 
     private static boolean allSpacersPresent(List<String> spacers, String[] pathElements) {
         return spacers.stream()
-                      .allMatch(spacer -> Arrays.stream(pathElements)
-                                                .anyMatch(spacer::equals));
+                      .allMatch(spacer -> Arrays.stream(pathElements).anyMatch(spacer::equals));
     }
 
     private boolean isSameOrStartOfPath(String inputPath, String routePath) {
@@ -183,6 +196,8 @@ public final class RequestRouter {
     }
 
     private static boolean isPrefixMatch(String inputPath, String routePath) {
-        return inputPath.length() > routePath.length() && inputPath.startsWith(routePath) && inputPath.charAt(routePath.length() - 1) == '/';
+        return inputPath.length() > routePath.length()
+               && inputPath.startsWith(routePath)
+               && inputPath.charAt(routePath.length() - 1) == '/';
     }
 }

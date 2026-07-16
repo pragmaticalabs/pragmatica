@@ -14,8 +14,9 @@
  *  limitations under the License.
  *
  */
-
 package org.pragmatica.cloud.aws.s3;
+
+import java.util.List;
 
 import org.pragmatica.http.HttpOperations;
 import org.pragmatica.http.JdkHttpOperations;
@@ -23,25 +24,19 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 
-import java.util.List;
 
 /// S3-compatible object storage client.
 /// Supports AWS S3 (virtual-hosted URLs) and MinIO (path-style URLs).
 /// Uses SigV4 signing and Promise-based async operations.
 public interface S3Client {
-
     /// Stores an object in the bucket.
     Promise<Unit> putObject(String key, byte[] content, String contentType);
-
     /// Retrieves an object from the bucket. Returns None if not found.
     Promise<Option<byte[]>> getObject(String key);
-
     /// Checks whether an object exists in the bucket.
     Promise<Boolean> headObject(String key);
-
     /// Deletes an object from the bucket.
     Promise<Unit> deleteObject(String key);
-
     /// Lists object keys matching a prefix.
     Promise<List<String>> listObjects(String prefix, int maxKeys);
 

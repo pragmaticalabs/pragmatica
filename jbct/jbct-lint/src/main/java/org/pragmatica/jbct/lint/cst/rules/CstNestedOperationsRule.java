@@ -1,15 +1,16 @@
 package org.pragmatica.jbct.lint.cst.rules;
 
+import java.util.Set;
+import java.util.regex.Pattern;
+import java.util.stream.Stream;
+
 import org.pragmatica.jbct.lint.Diagnostic;
 import org.pragmatica.jbct.lint.LintContext;
 import org.pragmatica.jbct.lint.cst.CstLintRule;
 import org.pragmatica.jbct.parser.Cursor;
 
-import java.util.Set;
-import java.util.regex.Pattern;
-import java.util.stream.Stream;
-
 import static org.pragmatica.jbct.parser.CstNodes.*;
+
 
 /// JBCT-NEST-01: No nested monadic operations in lambdas.
 ///
@@ -46,8 +47,8 @@ public class CstNestedOperationsRule implements CstLintRule {
         }
         // Find lambdas with nested operations
         return findAllLambdas(root).stream()
-                      .filter(this::hasNestedOperations)
-                      .map(lambda -> createDiagnostic(lambda, ctx));
+                             .filter(this::hasNestedOperations)
+                             .map(lambda -> createDiagnostic(lambda, ctx));
     }
 
     private boolean hasNestedOperations(Cursor lambda) {
@@ -58,20 +59,25 @@ public class CstNestedOperationsRule implements CstLintRule {
         }
         // Get the body part after ->
         var arrowIndex = lambdaText.indexOf("->");
+
         if (arrowIndex < 0) {
             return false;
         }
+
         var body = lambdaText.substring(arrowIndex + 2);
         // Check for nested monadic operations in the body
         var matcher = NESTED_CHAIN_PATTERN.matcher(body);
+
         if (matcher.find()) {
             return true;
         }
         // Count monadic operations - more than 1 indicates nesting
         var opCount = 0;
+
         for (var op : MONADIC_OPS) {
             var opPattern = Pattern.compile("\\." + op + "\\s*\\(");
             var opMatcher = opPattern.matcher(body);
+
             while (opMatcher.find()) {
                 opCount++;
                 if (opCount > 1) {
@@ -79,6 +85,7 @@ public class CstNestedOperationsRule implements CstLintRule {
                 }
             }
         }
+
         return false;
     }
 
@@ -90,6 +97,6 @@ public class CstNestedOperationsRule implements CstLintRule {
                                      startColumn(lambda),
                                      "Nested monadic operations in lambda - extract to named method",
                                      "Lambda bodies should be simple. Extract complex chains to a named method "
-                                     + "for better readability and testability.");
+                                    + "for better readability and testability.");
     }
 }

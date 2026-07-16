@@ -13,8 +13,15 @@
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  */
-
 package org.pragmatica.consensus.rabia;
+
+import java.nio.file.Path;
+import java.util.Arrays;
+import java.util.Collection;
+import java.util.List;
+import java.util.Objects;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Function;
 
 import org.pragmatica.consensus.Command;
 import org.pragmatica.consensus.StateMachine;
@@ -25,13 +32,6 @@ import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.serialization.Codec;
 
-import java.nio.file.Path;
-import java.util.Arrays;
-import java.util.Collection;
-import java.util.List;
-import java.util.Objects;
-import java.util.concurrent.atomic.AtomicReference;
-import java.util.function.Function;
 
 /// Persistence interface for Rabia consensus state.
 public interface RabiaPersistence<C extends Command> {
@@ -43,24 +43,24 @@ public interface RabiaPersistence<C extends Command> {
 
     /// Create a git-backed persistence implementation with default timeout.
     static <C extends Command> RabiaPersistence<C> gitBacked(Path backupDir,
-                                                              Option<String> remote,
-                                                              Function<byte[], Result<String>> snapshotToToml,
-                                                              Function<String, Result<byte[]>> tomlToSnapshot) {
+                                                             Option<String> remote,
+                                                             Function<byte[], Result<String>> snapshotToToml,
+                                                             Function<String, Result<byte[]>> tomlToSnapshot) {
         return new GitBackedPersistence<>(backupDir, remote, snapshotToToml, tomlToSnapshot);
     }
 
     /// Create a git-backed persistence implementation with configurable timeout.
     static <C extends Command> RabiaPersistence<C> gitBacked(Path backupDir,
-                                                              Option<String> remote,
-                                                              Function<byte[], Result<String>> snapshotToToml,
-                                                              Function<String, Result<byte[]>> tomlToSnapshot,
-                                                              TimeSpan gitTimeout) {
+                                                             Option<String> remote,
+                                                             Function<byte[], Result<String>> snapshotToToml,
+                                                             Function<String, Result<byte[]>> tomlToSnapshot,
+                                                             TimeSpan gitTimeout) {
         return new GitBackedPersistence<>(backupDir, remote, snapshotToToml, tomlToSnapshot, gitTimeout);
     }
 
     /// Create an in-memory persistence implementation (for testing or single-session use).
     static <C extends Command> RabiaPersistence<C> inMemory() {
-        record inMemory<C extends Command>(AtomicReference<Option<SavedState<C>>> state) implements RabiaPersistence<C> {
+        record inMemory <C extends Command>(AtomicReference<Option<SavedState<C>>> state) implements RabiaPersistence<C> {
             @Override
             public Result<Unit> save(StateMachine<C> stateMachine,
                                      Phase lastCommittedPhase,
@@ -79,14 +79,13 @@ public interface RabiaPersistence<C extends Command> {
                 return state().get();
             }
         }
-        return new inMemory<>(new AtomicReference<>(Option.none()));
+
+        return new inMemory <>(new AtomicReference<>(Option.none()));
     }
 
     /// Saved consensus state.
     @Codec
-    record SavedState<C extends Command>(byte[] snapshot,
-                                         Phase lastCommittedPhase,
-                                         List<Batch<C>> pendingBatches) {
+    record SavedState<C extends Command>(byte[] snapshot, Phase lastCommittedPhase, List<Batch<C>> pendingBatches) {
         public SavedState(byte[] snapshot, Phase lastCommittedPhase, Collection<Batch<C>> pendingBatches) {
             this(snapshot, lastCommittedPhase, List.copyOf(pendingBatches));
         }
@@ -106,9 +105,10 @@ public interface RabiaPersistence<C extends Command> {
             if (! (o instanceof SavedState<?>(byte[] snapshot1, Phase committedPhase, List<?> batches))) {
                 return false;
             }
-            return Objects.deepEquals(snapshot(), snapshot1) &&
-            Objects.equals(lastCommittedPhase(), committedPhase) &&
-            Objects.equals(pendingBatches(), batches);
+
+            return Objects.deepEquals(snapshot(), snapshot1)
+                   && Objects.equals(lastCommittedPhase(), committedPhase)
+                   && Objects.equals(pendingBatches(), batches);
         }
 
         @Override

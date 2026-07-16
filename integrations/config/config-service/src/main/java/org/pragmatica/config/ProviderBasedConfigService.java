@@ -1,13 +1,5 @@
 package org.pragmatica.config;
 
-import org.pragmatica.lang.Functions.Fn1;
-import org.pragmatica.lang.Option;
-import org.pragmatica.lang.Result;
-import org.pragmatica.lang.Verify;
-import org.pragmatica.lang.parse.Number;
-import org.pragmatica.lang.parse.Text;
-import org.pragmatica.lang.parse.TimeSpan;
-
 import java.lang.reflect.Constructor;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
@@ -21,10 +13,19 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.stream.IntStream;
 
+import org.pragmatica.lang.Functions.Fn1;
+import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Verify;
+import org.pragmatica.lang.parse.Number;
+import org.pragmatica.lang.parse.Text;
+import org.pragmatica.lang.parse.TimeSpan;
+
 import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Option.some;
 import static org.pragmatica.lang.Result.success;
+
 
 /// ConfigService implementation that delegates to a ConfigurationProvider.
 ///
@@ -49,15 +50,16 @@ public final class ProviderBasedConfigService implements ConfigService {
     @Override
     public <T> Result<T> config(String section, Class<T> configClass) {
         if (!hasSection(section)) {
-            return ConfigError.sectionNotFound(section)
-                              .result();
+            return ConfigError.sectionNotFound(section).result();
         }
+
         return bindToClass(section, configClass);
     }
 
     @Override
     public boolean hasSection(String section) {
         var prefix = section + ".";
+
         return provider.keys()
                        .stream()
                        .anyMatch(key -> hasSectionPrefix(key, prefix, section));
@@ -77,6 +79,7 @@ public final class ProviderBasedConfigService implements ConfigService {
     @Override
     public Option<Boolean> getBoolean(String key) {
         var raw = provider.getString(key);
+
         return raw.map(ProviderBasedConfigService::toBooleanValue);
     }
 
@@ -89,8 +92,7 @@ public final class ProviderBasedConfigService implements ConfigService {
     }
 
     private static Option<Integer> safeParseInteger(String value) {
-        return Number.parseInt(value)
-                     .option();
+        return Number.parseInt(value).option();
     }
 
     // --- Record binding ---
@@ -101,20 +103,24 @@ public final class ProviderBasedConfigService implements ConfigService {
                                             configClass.getSimpleName())
                               .result();
         }
-        try{
+
+        try {
             var components = configClass.getRecordComponents();
             var types = extractComponentTypes(components);
             Constructor<T> constructor = configClass.getDeclaredConstructor(types);
-            return collectComponentArgs(section, components, configClass).flatMap(args -> invokeFactoryOrConstructor(configClass, constructor, types, args));
+
+            return collectComponentArgs(section, components, configClass).flatMap(args -> invokeFactoryOrConstructor(configClass,
+                                                                                                                     constructor,
+                                                                                                                     types,
+                                                                                                                     args));
         } catch (ReflectiveOperationException e) {
-            return ConfigError.parseFailed(section, e)
-                              .result();
+            return ConfigError.parseFailed(section, e).result();
         }
     }
 
     private static Class<?>[] extractComponentTypes(RecordComponent[] components) {
-        var types = Arrays.stream(components)
-                          .map(ProviderBasedConfigService::componentType);
+        var types = Arrays.stream(components).map(ProviderBasedConfigService::componentType);
+
         return types.toArray(Class[]::new);
     }
 
@@ -122,44 +128,50 @@ public final class ProviderBasedConfigService implements ConfigService {
         return component.getType();
     }
 
-    private <T> Result<T> invokeFactoryOrConstructor(Class<T> configClass, Constructor<T> constructor, Class<?>[] types, Object[] args) {
-        return findFactoryMethod(configClass, types)
-            .map(method -> invokeFactory(method, args, configClass))
-            .or(() -> invokeConstructor(constructor, args));
+    private <T> Result<T> invokeFactoryOrConstructor(Class<T> configClass,
+                                                     Constructor<T> constructor,
+                                                     Class<?>[] types,
+                                                     Object[] args) {
+        return findFactoryMethod(configClass, types).map(method -> invokeFactory(method, args, configClass))
+                                .or(() -> invokeConstructor(constructor, args));
     }
 
     @SuppressWarnings("unchecked")
     private static <T> Result<T> invokeFactory(Method method, Object[] args, Class<T> configClass) {
-        try{
+        try {
             return (Result<T>) method.invoke(null, args);
         } catch (ReflectiveOperationException e) {
-            return ConfigError.parseFailed(configClass.getSimpleName(), e)
+            return ConfigError.parseFailed(configClass.getSimpleName(),
+                                           e)
                               .result();
         }
     }
 
     private static Option<Method> findFactoryMethod(Class<?> configClass, Class<?>[] types) {
         var name = factoryMethodName(configClass);
-        try{
+
+        try {
             var method = configClass.getDeclaredMethod(name, types);
+
             if (Modifier.isStatic(method.getModifiers()) && method.getReturnType() == Result.class) {
                 return some(method);
             }
         } catch (NoSuchMethodException e) {}
+
         return none();
     }
 
     private static String factoryMethodName(Class<?> configClass) {
         var simpleName = configClass.getSimpleName();
+
         return Character.toLowerCase(simpleName.charAt(0)) + simpleName.substring(1);
     }
 
     private <T> Result<T> invokeConstructor(Constructor<T> constructor, Object[] args) {
-        try{
+        try {
             return success(constructor.newInstance(args));
         } catch (ReflectiveOperationException e) {
-            return ConfigError.parseFailed(constructor.getDeclaringClass()
-                                                      .getSimpleName(),
+            return ConfigError.parseFailed(constructor.getDeclaringClass().getSimpleName(),
                                            e)
                               .result();
         }
@@ -173,17 +185,23 @@ public final class ProviderBasedConfigService implements ConfigService {
                                 ProviderBasedConfigService::mergeArgs);
     }
 
-    private Result<IndexedValue> collectComponentAt(String section, RecordComponent component, int index, Class<?> configClass) {
+    private Result<IndexedValue> collectComponentAt(String section,
+                                                    RecordComponent component,
+                                                    int index,
+                                                    Class<?> configClass) {
         var extracted = extractValue(section, component);
+
         if (extracted.isSuccess()) {
             return extracted.flatMap(v -> IndexedValue.indexedValue(index, v));
         }
         // Convention: derive `name` (String) from the section suffix when it's absent from TOML.
         // Supports blueprint patterns like [streams.test-events] where the trailing segment IS the name.
         var derived = deriveNameFromSectionSuffix(section, component);
+
         if (derived.isPresent()) {
             return IndexedValue.indexedValue(index, derived.unwrap());
         }
+
         return getDefaultComponentValue(configClass, component, index);
     }
 
@@ -191,10 +209,13 @@ public final class ProviderBasedConfigService implements ConfigService {
         if (!"name".equals(component.getName()) || component.getType() != String.class) {
             return none();
         }
+
         var lastDot = section.lastIndexOf('.');
+
         if (lastDot < 0 || lastDot == section.length() - 1) {
             return none();
         }
+
         return some(section.substring(lastDot + 1));
     }
 
@@ -204,6 +225,7 @@ public final class ProviderBasedConfigService implements ConfigService {
 
     private static Object[] setArrayElement(Object[] args, IndexedValue iv) {
         args[iv.index()] = iv.value();
+
         return args;
     }
 
@@ -222,6 +244,7 @@ public final class ProviderBasedConfigService implements ConfigService {
         var key = component.getName();
         var type = component.getType();
         var fullKey = section + "." + toSnakeCase(key);
+
         return lookupByType(section, key, type, fullKey, component.getGenericType());
     }
 
@@ -230,6 +253,7 @@ public final class ProviderBasedConfigService implements ConfigService {
                                           .orElse(() -> lookupNestedRecord(section, key, type));
         var extendedResult = simpleResult.orElse(() -> lookupMap(fullKey, type))
                                          .orElse(() -> lookupOption(section, key, type, genericType));
+
         return extendedResult.or(typeMismatchError(fullKey, type));
     }
 
@@ -245,27 +269,35 @@ public final class ProviderBasedConfigService implements ConfigService {
         if (type == String.class) {
             return some(Option::some);
         }
+
         if (type == int.class || type == Integer.class) {
             return some(ProviderBasedConfigService::parseIntAsObject);
         }
+
         if (type == long.class || type == Long.class) {
             return some(ProviderBasedConfigService::parseLongAsObject);
         }
+
         if (type == boolean.class || type == Boolean.class) {
             return some(ProviderBasedConfigService::parseBooleanAsObject);
         }
+
         if (type == double.class || type == Double.class) {
             return some(ProviderBasedConfigService::parseDoubleAsObject);
         }
+
         if (type == org.pragmatica.lang.io.TimeSpan.class) {
             return some(ProviderBasedConfigService::parseIoTimeSpanAsObject);
         }
+
         if (type == TimeSpan.class) {
             return some(ProviderBasedConfigService::parseTimeSpanAsObject);
         }
+
         if (type == Duration.class) {
             return some(ProviderBasedConfigService::parseDurationAsObject);
         }
+
         return none();
     }
 
@@ -286,15 +318,21 @@ public final class ProviderBasedConfigService implements ConfigService {
     }
 
     private static Option<Object> parseTimeSpanAsObject(String v) {
-        return TimeSpan.timeSpan(v).option().map(Object.class::cast);
+        return TimeSpan.timeSpan(v)
+                       .option()
+                       .map(Object.class::cast);
     }
 
     private static Option<Object> parseDurationAsObject(String v) {
-        return TimeSpan.timeSpan(v).option().map(ts -> (Object) ts.duration());
+        return TimeSpan.timeSpan(v)
+                       .option()
+                       .map(ts -> (Object) ts.duration());
     }
 
     private static Option<Object> parseIoTimeSpanAsObject(String v) {
-        return TimeSpan.timeSpan(v).option().map(ts -> (Object) org.pragmatica.lang.io.TimeSpan.fromDuration(ts.duration()));
+        return TimeSpan.timeSpan(v)
+                       .option()
+                       .map(ts -> (Object) org.pragmatica.lang.io.TimeSpan.fromDuration(ts.duration()));
     }
 
     // --- Type-specific resolvers ---
@@ -312,6 +350,7 @@ public final class ProviderBasedConfigService implements ConfigService {
         if (!type.isEnum()) {
             return none();
         }
+
         return some(fetchAndParseEnum(fullKey, type));
     }
 
@@ -326,23 +365,26 @@ public final class ProviderBasedConfigService implements ConfigService {
         if (!type.isRecord()) {
             return none();
         }
+
         var nestedSection = section + "." + toSnakeCase(key);
+
         if (!hasSection(nestedSection)) {
             return some(findDefaultOrError(type, nestedSection));
         }
+
         return some((Result<Object>) bindToClass(nestedSection, type));
     }
 
     private static Result<Object> findDefaultOrError(Class<?> type, String nestedSection) {
         return lookupDefaultField(type).map(Result::success)
-                                 .or(ConfigError.sectionNotFound(nestedSection)
-                                                .result());
+                                 .or(ConfigError.sectionNotFound(nestedSection).result());
     }
 
     private Option<Result<Object>> lookupMap(String fullKey, Class<?> type) {
         if (type != Map.class) {
             return none();
         }
+
         return some(collectMapValue(fullKey));
     }
 
@@ -350,64 +392,69 @@ public final class ProviderBasedConfigService implements ConfigService {
         if (type != Option.class) {
             return none();
         }
+
         return some(extractOptionValue(section, toSnakeCase(key), genericType));
     }
 
     // --- Primitive parsers ---
     private static Option<Integer> safeParseInt(String value) {
-        return Number.parseInt(value)
-                     .option();
+        return Number.parseInt(value).option();
     }
 
     private static Option<Long> safeParseLong(String value) {
-        return Number.parseLong(value)
-                     .option();
+        return Number.parseLong(value).option();
     }
 
     private static Option<Double> safeParseDouble(String value) {
-        return Number.parseDouble(value)
-                     .option();
+        return Number.parseDouble(value).option();
     }
 
     // --- Map value collection ---
     private Result<Object> collectMapValue(String fullKey) {
         var prefix = fullKey + ".";
         Map<String, String> map = new LinkedHashMap<>();
+
         provider.keys()
                 .stream()
                 .filter(mapKey -> mapKey.startsWith(prefix))
                 .forEach(mapKey -> insertMapEntry(mapKey, prefix, map));
+
         return success(map);
     }
 
     private void insertMapEntry(String mapKey, String prefix, Map<String, String> map) {
         var subKey = mapKey.substring(prefix.length());
-        provider.getString(mapKey)
-                .onPresent(v -> map.put(subKey, v));
+
+        provider.getString(mapKey).onPresent(v -> map.put(subKey, v));
     }
 
     // --- DEFAULT field lookup ---
     private static Option<Object> lookupDefaultField(Class<?> type) {
-        try{
+        try {
             Field defaultField = type.getField("DEFAULT");
+
             if (isStaticFinalFieldOfType(defaultField, type)) {
                 return option(defaultField.get(type));
             }
         } catch (NoSuchFieldException | IllegalAccessException e) {}
+
         return none();
     }
 
     private static boolean isStaticFinalFieldOfType(Field field, Class<?> type) {
         var modifiers = field.getModifiers();
         var isStaticFinal = Modifier.isStatic(modifiers) && Modifier.isFinal(modifiers);
+
         return isStaticFinal && type.isAssignableFrom(field.getType());
     }
 
-    private static Result<IndexedValue> getDefaultComponentValue(Class<?> configClass, RecordComponent component, int index) {
-        return lookupDefaultField(configClass)
-            .flatMap(defaultInstance -> invokeAccessor(defaultInstance, component))
-            .map(value -> new IndexedValue(index, value))
-            .toResult(ConfigError.sectionNotFound(configClass.getSimpleName() + "." + component.getName()));
+    private static Result<IndexedValue> getDefaultComponentValue(Class<?> configClass,
+                                                                 RecordComponent component,
+                                                                 int index) {
+        return lookupDefaultField(configClass).flatMap(defaultInstance -> invokeAccessor(defaultInstance, component))
+                                 .map(value -> new IndexedValue(index, value))
+                                 .toResult(ConfigError.sectionNotFound(configClass.getSimpleName()
+                                                                      + "." + component.getName()));
     }
 
     private static Option<Object> invokeAccessor(Object instance, RecordComponent component) {
@@ -422,13 +469,17 @@ public final class ProviderBasedConfigService implements ConfigService {
     @SuppressWarnings("unchecked")
     private Result<Object> extractOptionValue(String section, String tomlKey, Type genericType) {
         var fullKey = section + "." + tomlKey;
+
         if (! (genericType instanceof ParameterizedType paramType)) {
             return success(provider.getString(fullKey));
         }
+
         var typeArgs = paramType.getActualTypeArguments();
+
         if (typeArgs.length != 1 || !(typeArgs[0] instanceof Class<?> innerClass)) {
             return success(provider.getString(fullKey));
         }
+
         return extractOptionalPrimitive(fullKey, innerClass);
     }
 
@@ -438,24 +489,27 @@ public final class ProviderBasedConfigService implements ConfigService {
     }
 
     private Result<Object> wrapOptionalParse(String fullKey, Fn1<Option<Object>, String> parser) {
-        return success(provider.getString(fullKey)
-                               .flatMap(parser));
+        return success(provider.getString(fullKey).flatMap(parser));
     }
 
     private Result<Object> handleOptionalEnum(String fullKey, Class<?> innerClass) {
         if (!innerClass.isEnum()) {
             return success(none());
         }
+
         var stringOpt = provider.getString(fullKey);
+
         if (Verify.Is.none(stringOpt)) {
             return success(none());
         }
+
         return safeParseEnum(stringOpt.unwrap(), innerClass, fullKey).map(Option::option);
     }
 
     @SuppressWarnings({"unchecked", "rawtypes"})
     private static Result<Object> safeParseEnum(String value, Class<?> type, String fullKey) {
         var upperValue = value.toUpperCase();
+
         return Text.parseEnum((Class<Enum>) type,
                               upperValue)
                    .map(Object.class::cast)
@@ -468,11 +522,9 @@ public final class ProviderBasedConfigService implements ConfigService {
 
     static String toSnakeCase(String camelCase) {
         var result = new StringBuilder();
-        IntStream.range(0,
-                        camelCase.length())
-                 .forEach(i -> appendSnakeCaseChar(result,
-                                                   camelCase.charAt(i),
-                                                   i));
+
+        IntStream.range(0, camelCase.length()).forEach(i -> appendSnakeCaseChar(result, camelCase.charAt(i), i));
+
         return result.toString();
     }
 
@@ -480,6 +532,7 @@ public final class ProviderBasedConfigService implements ConfigService {
         if (isUpperCaseWithPrefix(c, index)) {
             result.append('_');
         }
+
         result.append(Character.isUpperCase(c)
                       ? Character.toLowerCase(c)
                       : c);

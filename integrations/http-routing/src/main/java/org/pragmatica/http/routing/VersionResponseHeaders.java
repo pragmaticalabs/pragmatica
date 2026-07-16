@@ -1,9 +1,5 @@
 package org.pragmatica.http.routing;
 
-import org.pragmatica.lang.Option;
-import org.pragmatica.lang.Result;
-import org.pragmatica.lang.utils.Causes;
-
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.OffsetDateTime;
@@ -13,7 +9,12 @@ import java.util.LinkedHashMap;
 import java.util.Locale;
 import java.util.Map;
 
+import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Result;
+import org.pragmatica.lang.utils.Causes;
+
 import static org.pragmatica.lang.Option.option;
+
 
 /// Pure deprecation/sunset/successor response-header policy (#198 §8.2).
 ///
@@ -34,6 +35,7 @@ import static org.pragmatica.lang.Option.option;
 public final class VersionResponseHeaders {
     private static final DateTimeFormatter RFC_1123 = DateTimeFormatter.ofPattern("EEE, dd MMM yyyy HH:mm:ss 'GMT'",
                                                                                   Locale.ENGLISH);
+
     private static final int BARE_ISO_DATE_LENGTH = 10;
 
     private VersionResponseHeaders() {}
@@ -47,14 +49,11 @@ public final class VersionResponseHeaders {
     ///         deprecation/sunset/successor signal
     public static Map<String, String> headers(SliceVersionRegistry registry, int servedVersion, String requestPath) {
         return findVersion(registry, servedVersion).map(info -> buildHeaders(registry, info, requestPath))
-                                                   .or(Map::of);
+                          .or(Map::of);
     }
 
     private static Option<SliceVersionRegistry.VersionInfo> findVersion(SliceVersionRegistry registry, int version) {
-        return Option.from(registry.versions()
-                                   .stream()
-                                   .filter(info -> info.version() == version)
-                                   .findFirst());
+        return Option.from(registry.versions().stream().filter(info -> info.version() == version).findFirst());
     }
 
     private static Map<String, String> buildHeaders(SliceVersionRegistry registry,
@@ -76,9 +75,7 @@ public final class VersionResponseHeaders {
     }
 
     private static void addSunset(Map<String, String> headers, SliceVersionRegistry.VersionInfo info) {
-        info.sunset()
-            .flatMap(VersionResponseHeaders::toRfc1123)
-            .onPresent(value -> headers.put("Sunset", value));
+        info.sunset().flatMap(VersionResponseHeaders::toRfc1123).onPresent(value -> headers.put("Sunset", value));
     }
 
     private static void addSuccessorLink(Map<String, String> headers,
@@ -101,8 +98,9 @@ public final class VersionResponseHeaders {
     }
 
     private static String linkValue(SliceVersionRegistry registry, int successor, String requestPath) {
-        return "<" + registry.apiPrefix() + "/v" + successor + agnosticPath(registry.apiPrefix(), requestPath)
-               + ">; rel=\"successor-version\"";
+        return "<" + registry.apiPrefix()
+             + "/v" + successor + agnosticPath(registry.apiPrefix(), requestPath)
+             + ">; rel=\"successor-version\"";
     }
 
     /// Strip the `{apiPrefix}` and any leading `/v{N}/` version segment from the request path,
@@ -115,7 +113,7 @@ public final class VersionResponseHeaders {
     }
 
     private static String stripPrefix(String path, String apiPrefix) {
-        return !apiPrefix.isEmpty() && path.startsWith(apiPrefix)
+        return ! apiPrefix.isEmpty() && path.startsWith(apiPrefix)
                ? path.substring(apiPrefix.length())
                : path;
     }
@@ -132,13 +130,17 @@ public final class VersionResponseHeaders {
     }
 
     private static boolean isVersionSegment(String segment) {
-        return segment.length() > 2 && segment.charAt(0) == '/' && segment.charAt(1) == 'v'
-               && segment.substring(2).chars().allMatch(Character::isDigit);
+        return segment.length() > 2
+               && segment.charAt(0) == '/'
+               && segment.charAt(1) == 'v'
+               && segment.substring(2)
+                         .chars()
+                         .allMatch(Character::isDigit);
     }
 
     private static Option<String> toRfc1123(String isoDate) {
         return parseInstant(isoDate).map(instant -> RFC_1123.format(instant.atZone(ZoneOffset.UTC)))
-                                    .option();
+                           .option();
     }
 
     /// Exception-safe ISO-date parsing seam: accepts a bare `yyyy-MM-dd` (interpreted as start-of-day
@@ -149,7 +151,9 @@ public final class VersionResponseHeaders {
 
     private static Instant parse(String isoDate) {
         return isoDate.length() == BARE_ISO_DATE_LENGTH
-               ? LocalDate.parse(isoDate).atStartOfDay(ZoneOffset.UTC).toInstant()
+               ? LocalDate.parse(isoDate)
+                          .atStartOfDay(ZoneOffset.UTC)
+                          .toInstant()
                : OffsetDateTime.parse(isoDate).toInstant();
     }
 }

@@ -1,5 +1,10 @@
 package org.pragmatica.jbct.cli;
 
+import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.concurrent.Callable;
+
 import org.pragmatica.jbct.config.ConfigLoader;
 import org.pragmatica.jbct.config.JbctConfig;
 import org.pragmatica.jbct.lint.Diagnostic;
@@ -12,40 +17,23 @@ import org.pragmatica.jbct.shared.FileCollector;
 import org.pragmatica.jbct.shared.SourceFile;
 import org.pragmatica.lang.Option;
 
-import java.nio.file.Path;
-import java.util.ArrayList;
-import java.util.List;
-import java.util.concurrent.Callable;
-
 import picocli.CommandLine.Command;
 import picocli.CommandLine.Parameters;
 
+
 /// Score command for JBCT compliance scoring.
-@Command(
- name = "score",
- description = "Calculate JBCT compliance score",
- mixinStandardHelpOptions = true)
+@Command(name = "score", description = "Calculate JBCT compliance score", mixinStandardHelpOptions = true)
 public class ScoreCommand implements Callable<Integer> {
-    @Parameters(
-    paramLabel = "<path>",
-    description = "Files or directories to score",
-    arity = "1..*")
+    @Parameters(paramLabel = "<path>", description = "Files or directories to score", arity = "1..*")
     List<Path> paths;
 
-    @picocli.CommandLine.Option(
-    names = {"--format", "-f"},
-    description = "Output format: terminal, json, badge",
-    defaultValue = "terminal")
+    @picocli.CommandLine.Option(names = {"--format", "-f"}, description = "Output format: terminal, json, badge", defaultValue = "terminal")
     String format;
 
-    @picocli.CommandLine.Option(
-    names = {"--baseline", "-b"},
-    description = "Minimum acceptable score (fails if below)")
+    @picocli.CommandLine.Option(names = {"--baseline", "-b"}, description = "Minimum acceptable score (fails if below)")
     Integer baseline;
 
-    @picocli.CommandLine.Option(
-    names = {"--config"},
-    description = "Path to configuration file")
+    @picocli.CommandLine.Option(names = {"--config"}, description = "Path to configuration file")
     Path configPath;
 
     @Override
@@ -54,17 +42,23 @@ public class ScoreCommand implements Callable<Integer> {
         var context = createContext(config);
         var linter = JbctLinter.jbctLinter(context);
         var filesToProcess = FileCollector.collectJavaFiles(paths, config.files(), System.err::println);
+
         if (filesToProcess.isEmpty()) {
             System.err.println("No Java files found");
+
             return 1;
         }
+
         var diagnostics = lintFiles(filesToProcess, linter);
         var score = ScoreCalculator.calculate(diagnostics, filesToProcess.size());
+
         outputScore(score);
         if (baseline != null && score.overall() < baseline) {
             System.err.println("\nScore " + score.overall() + " below baseline " + baseline);
+
             return 1;
         }
+
         return 0;
     }
 
@@ -76,12 +70,14 @@ public class ScoreCommand implements Callable<Integer> {
 
     private List<Diagnostic> lintFiles(List<Path> files, JbctLinter linter) {
         var diagnostics = new ArrayList<Diagnostic>();
+
         for (var file : files) {
             SourceFile.sourceFile(file)
                       .flatMap(linter::lint)
                       .onSuccess(diagnostics::addAll)
                       .onFailure(cause -> System.err.println("  ✗ " + file + ": " + cause.message()));
         }
+
         return diagnostics;
     }
 
@@ -98,16 +94,16 @@ public class ScoreCommand implements Callable<Integer> {
         System.out.printf("║     JBCT COMPLIANCE SCORE: %d/100            ║%n", score.overall());
         System.out.println("╠═══════════════════════════════════════════════════╣");
         for (var category : ScoreCategory.values()) {
-            var categoryScore = score.breakdown()
-                                     .get(category);
+            var categoryScore = score.breakdown().get(category);
             var percent = categoryScore.score();
             var bar = createProgressBar(percent);
+
             System.out.printf("║  %-18s %s %3d%%    ║%n",
-                              category.name()
-                                      .replace('_', ' '),
+                              category.name().replace('_', ' '),
                               bar,
                               percent);
         }
+
         System.out.println("╚═══════════════════════════════════════════════════╝");
     }
 
@@ -115,6 +111,7 @@ public class ScoreCommand implements Callable<Integer> {
         var filled = percent / 5;
         // 20 chars = 100%
         var empty = 20 - filled;
+
         return "█".repeat(filled) + "░".repeat(empty);
     }
 
@@ -123,18 +120,19 @@ public class ScoreCommand implements Callable<Integer> {
         System.out.printf("  \"score\": %d,%n", score.overall());
         System.out.println("  \"breakdown\": {");
         var categories = ScoreCategory.values();
+
         for (int i = 0; i < categories.length; i++) {
             var category = categories[i];
-            var categoryScore = score.breakdown()
-                                     .get(category);
+            var categoryScore = score.breakdown().get(category);
+
             System.out.printf("    \"%s\": %d%s%n",
-                              category.name()
-                                      .toLowerCase(),
+                              category.name().toLowerCase(),
                               categoryScore.score(),
                               i < categories.length - 1
                               ? ","
                               : "");
         }
+
         System.out.println("  },");
         System.out.printf("  \"filesAnalyzed\": %d%n", score.filesAnalyzed());
         System.out.println("}");
@@ -172,6 +170,7 @@ public class ScoreCommand implements Callable<Integer> {
               </g>
             </svg>
             """.formatted(color, score.overall(), score.overall());
+
         System.out.println(svg);
     }
 }

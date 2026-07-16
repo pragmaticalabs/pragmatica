@@ -1,15 +1,16 @@
 package org.pragmatica.jbct.lint.cst.rules;
 
+import java.util.Set;
+import java.util.stream.Stream;
+
 import org.pragmatica.jbct.lint.Diagnostic;
 import org.pragmatica.jbct.lint.LintContext;
 import org.pragmatica.jbct.lint.cst.CstLintRule;
 import org.pragmatica.jbct.parser.Cursor;
 import org.pragmatica.jbct.parser.RuleKind;
 
-import java.util.Set;
-import java.util.stream.Stream;
-
 import static org.pragmatica.jbct.parser.CstNodes.*;
+
 
 /// JBCT-PAT-02: No pattern mixing in chains.
 ///
@@ -34,9 +35,9 @@ public class CstPatternMixingRule implements CstLintRule {
     public Stream<Diagnostic> analyze(Cursor root, String source, LintContext ctx) {
         // Find all Lambda expressions (not method references - those are just transformations)
         return findAllLambdas(root).stream()
-                      .filter(lambda -> isInsideFlatMap(lambda, root))
-                      .filter(this::containsForkJoinWithLogic)
-                      .map(lambda -> createDiagnostic(lambda, ctx));
+                             .filter(lambda -> isInsideFlatMap(lambda, root))
+                             .filter(this::containsForkJoinWithLogic)
+                             .map(lambda -> createDiagnostic(lambda, ctx));
     }
 
     private boolean isInsideFlatMap(Cursor lambda, Cursor root) {
@@ -47,10 +48,13 @@ public class CstPatternMixingRule implements CstLintRule {
         return findAncestor(root, lambda, RuleKind.EXPR).map(expr -> text(expr))
                            .filter(exprText -> {
                                        var lambdaStart = exprText.indexOf(lambdaText);
+
                                        if (lambdaStart > 0) {
-                                           var before = exprText.substring(0, lambdaStart);
-                                           return before.contains(".flatMap(") || before.contains(".andThen(");
-                                       }
+                                       var before = exprText.substring(0, lambdaStart);
+
+                                       return before.contains(".flatMap(") || before.contains(".andThen(");
+                                   }
+
                                        return false;
                                    })
                            .isPresent();
@@ -63,26 +67,27 @@ public class CstPatternMixingRule implements CstLintRule {
         if (isSingleForkJoinCall(lambdaText)) {
             return false;
         }
-        return FORK_JOIN_CALLS.stream()
-                              .anyMatch(lambdaText::contains);
+
+        return FORK_JOIN_CALLS.stream().anyMatch(lambdaText::contains);
     }
 
     private boolean isSingleForkJoinCall(String lambdaText) {
         // Check if lambda is just "param -> Result.allOf(param)" or similar
         var arrowIdx = lambdaText.indexOf("->");
+
         if (arrowIdx < 0) {
             return false;
         }
-        var body = lambdaText.substring(arrowIdx + 2)
-                             .trim();
+
+        var body = lambdaText.substring(arrowIdx + 2).trim();
         // Single fork-join call with just the parameter
-        return FORK_JOIN_CALLS.stream()
-                              .anyMatch(call -> {
-                                            var callName = call.substring(0,
-                                                                          call.length() - 1);
-                                            // Remove trailing (
-        return body.startsWith(callName) && body.endsWith(")") && !body.contains(";");
-                                        });
+        return FORK_JOIN_CALLS.stream().anyMatch(call -> {
+            var callName = call.substring(0, call.length() - 1);
+            // Remove trailing (
+            return body.startsWith(callName)
+                   && body.endsWith(")")
+                   && !body.contains(";");
+        });
     }
 
     private Diagnostic createDiagnostic(Cursor node, LintContext ctx) {
@@ -93,7 +98,7 @@ public class CstPatternMixingRule implements CstLintRule {
                                      startColumn(node),
                                      "Fork-Join pattern nested inside Sequencer chain",
                                      "Mixing Result.all() (Fork-Join) inside flatMap() (Sequencer) creates confusing control flow. "
-                                     + "Restructure to use Fork-Join at the same level, or extract to a separate method.")
+                                    + "Restructure to use Fork-Join at the same level, or extract to a separate method.")
                          .withExample("""
             // Before (mixed patterns)
             return validateEmail(request)

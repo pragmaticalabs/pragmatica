@@ -11,10 +11,10 @@ import org.pragmatica.lang.parse.Number;
 import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.some;
 
+
 /// Manifest linking chunks of large content.
 /// Serialized as pipe-delimited text with a magic header for detection.
 public record ContentManifest(String name, long totalSize, int chunkCount, List<String> chunkBlockIds) {
-
     static final String MAGIC_HEADER = "AHSE-MANIFEST:";
 
     public ContentManifest {
@@ -28,6 +28,7 @@ public record ContentManifest(String name, long totalSize, int chunkCount, List<
     /// Serialize manifest to bytes for storage.
     public byte[] toBytes() {
         var body = MAGIC_HEADER + name + "|" + totalSize + "|" + chunkCount + "|" + String.join("|", chunkBlockIds);
+
         return body.getBytes(StandardCharsets.UTF_8);
     }
 
@@ -54,7 +55,6 @@ public record ContentManifest(String name, long totalSize, int chunkCount, List<
     private static Option<ContentManifest> parseManifestBody(String text) {
         var body = text.substring(MAGIC_HEADER.length());
         var parts = body.split("\\|");
-
         // Minimum: name + totalSize + chunkCount + at least 1 chunkId
         if (parts.length < 4) {
             return none();
@@ -63,14 +63,17 @@ public record ContentManifest(String name, long totalSize, int chunkCount, List<
         var name = parts[0];
         var chunkIds = Arrays.asList(parts).subList(3, parts.length);
 
-        return Result.all(Number.parseLong(parts[1]), Number.parseInt(parts[2]))
+        return Result.all(Number.parseLong(parts[1]),
+                          Number.parseInt(parts[2]))
                      .map((totalSize, chunkCount) -> validateAndBuild(name, totalSize, chunkCount, chunkIds))
                      .option()
                      .flatMap(opt -> opt);
     }
 
-    private static Option<ContentManifest> validateAndBuild(String name, long totalSize, int chunkCount,
-                                                             List<String> chunkIds) {
+    private static Option<ContentManifest> validateAndBuild(String name,
+                                                            long totalSize,
+                                                            int chunkCount,
+                                                            List<String> chunkIds) {
         if (chunkIds.size() != chunkCount) {
             return none();
         }

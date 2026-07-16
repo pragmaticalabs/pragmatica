@@ -4,7 +4,6 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.jbct.config;
 
-
 /// Blueprint build-time validation configuration.
 ///
 /// Controls whether `GenerateBlueprintMojo` validates the presence of schema migration
@@ -21,9 +20,9 @@ public record BlueprintConfig(SchemaMode schema) {
         REQUIRED,
         EXTERNAL,
         OPTIONAL;
-
         public static SchemaMode fromString(String value) {
-            return switch (value.toLowerCase().trim()) {
+            return switch (value.toLowerCase()
+                                .trim()) {
                 case "required" -> REQUIRED;
                 case "external" -> EXTERNAL;
                 case "optional" -> OPTIONAL;

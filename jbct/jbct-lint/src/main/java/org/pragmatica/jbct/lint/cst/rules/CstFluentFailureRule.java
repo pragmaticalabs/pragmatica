@@ -1,14 +1,15 @@
 package org.pragmatica.jbct.lint.cst.rules;
 
+import java.util.stream.Stream;
+
 import org.pragmatica.jbct.lint.Diagnostic;
 import org.pragmatica.jbct.lint.LintContext;
 import org.pragmatica.jbct.lint.cst.CstLintRule;
 import org.pragmatica.jbct.parser.Cursor;
 import org.pragmatica.jbct.parser.RuleKind;
 
-import java.util.stream.Stream;
-
 import static org.pragmatica.jbct.parser.CstNodes.*;
+
 
 /// JBCT-STY-01: Prefer fluent failure style (cause.result()).
 public class CstFluentFailureRule implements CstLintRule {

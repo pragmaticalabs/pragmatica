@@ -1,11 +1,12 @@
 package org.pragmatica.jbct.score;
 
-import org.pragmatica.jbct.lint.Diagnostic;
-import org.pragmatica.jbct.lint.DiagnosticSeverity;
-
 import java.util.EnumMap;
 import java.util.List;
 import java.util.Map;
+
+import org.pragmatica.jbct.lint.Diagnostic;
+import org.pragmatica.jbct.lint.DiagnosticSeverity;
+
 
 /// Calculates JBCT compliance scores using density + severity weighting.
 ///
@@ -29,19 +30,23 @@ public sealed interface ScoreCalculator permits ScoreCalculator.unused {
         var categoryViolations = groupByCategory(diagnostics);
         var categoryCheckpoints = countCheckpoints(diagnostics);
         var breakdown = new EnumMap<ScoreCategory, ScoreResult.CategoryScore>(ScoreCategory.class);
+
         for (var category : ScoreCategory.values()) {
             var violations = categoryViolations.getOrDefault(category, List.of());
             var checkpoints = categoryCheckpoints.getOrDefault(category, 1);
             // Avoid division by zero
             var weightedViolations = calculateWeightedViolations(violations);
             var score = calculateCategoryScore(weightedViolations, checkpoints);
+
             breakdown.put(category,
                           ScoreResult.CategoryScore.categoryScore(score,
                                                                   checkpoints,
                                                                   violations.size(),
                                                                   weightedViolations));
         }
+
         var overall = calculateOverallScore(breakdown);
+
         return ScoreResult.scoreResult(overall, breakdown, filesAnalyzed);
     }
 
@@ -54,6 +59,7 @@ public sealed interface ScoreCalculator permits ScoreCalculator.unused {
         // For now, use violation count as proxy for checkpoints
         // TODO: Get actual checkpoint counts from linter
         var checkpointMap = new EnumMap<ScoreCategory, Integer>(ScoreCategory.class);
+
         for (var category : ScoreCategory.values()) {
             var violations = diagnostics.stream()
                                         .filter(d -> RuleCategoryMapping.categoryFor(d.ruleId()) == category)
@@ -61,6 +67,7 @@ public sealed interface ScoreCalculator permits ScoreCalculator.unused {
             // Estimate: at least violations + 10% (so perfect score is possible)
             checkpointMap.put(category, (int)(violations * 1.1 + 10));
         }
+
         return checkpointMap;
     }
 
@@ -78,17 +85,22 @@ public sealed interface ScoreCalculator permits ScoreCalculator.unused {
         if (checkpoints == 0) {
             return 100;
         }
+
         var score = 100.0 * (1.0 - weightedViolations / checkpoints);
+
         return Math.max(0,
                         Math.min(100, (int) Math.round(score)));
     }
 
     private static int calculateOverallScore(Map<ScoreCategory, ScoreResult.CategoryScore> breakdown) {
         var weightedSum = 0.0;
+
         for (var category : ScoreCategory.values()) {
             var categoryScore = breakdown.get(category);
+
             weightedSum += categoryScore.score() * category.weightFraction();
         }
+
         return (int) Math.round(weightedSum);
     }
 }

@@ -1,9 +1,5 @@
 package org.pragmatica.postgres.message.frontend;
 
-import org.pragmatica.postgres.message.FrontendMessage;
-import org.pragmatica.postgres.message.backend.Authentication;
-import org.pragmatica.postgres.sasl.SaslPrep;
-
 import javax.crypto.Mac;
 import javax.crypto.spec.SecretKeySpec;
 import java.nio.charset.StandardCharsets;
@@ -12,8 +8,12 @@ import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.Base64;
 
-public final class SASLResponse implements FrontendMessage {
+import org.pragmatica.postgres.message.FrontendMessage;
+import org.pragmatica.postgres.message.backend.Authentication;
+import org.pragmatica.postgres.sasl.SaslPrep;
 
+
+public final class SASLResponse implements FrontendMessage {
     // These three fields contain the data, which have been already sent to a server, so we should recalculate them.
     private final String gs2Header;
     private final String clientFirstMessageBare;
@@ -77,6 +77,7 @@ public final class SASLResponse implements FrontendMessage {
         // cbind-data is the server certificate digest.
         var gs2Bytes = gs2Header.getBytes(StandardCharsets.US_ASCII);
         byte[] cbindInput;
+
         if (channelBindingData != null && channelBindingData.length > 0) {
             cbindInput = new byte[gs2Bytes.length + channelBindingData.length];
             System.arraycopy(gs2Bytes, 0, cbindInput, 0, gs2Bytes.length);
@@ -84,6 +85,7 @@ public final class SASLResponse implements FrontendMessage {
         } else {
             cbindInput = gs2Bytes;
         }
+
         var encoded = new String(Base64.getEncoder().withoutPadding().encode(cbindInput),
                                  StandardCharsets.UTF_8);
         var clientFinalMessageWithoutProof = "c=" + encoded + ",r=" + serverNonce;
@@ -95,11 +97,14 @@ public final class SASLResponse implements FrontendMessage {
                                           clientFinalMessageWithoutProof,
                                           hMacName,
                                           digestName);
+
         return clientFinalMessageWithoutProof + ",p=" + clientProof;
     }
 
     private static final byte[] INT_1 = {0, 0, 0, 1};
+
     public static final String SHA256_DIGEST_NAME = "SHA-256";
+
     public static final String HMAC256_NAME = "HmacSHA256";
 
     /**
@@ -118,19 +123,24 @@ public final class SASLResponse implements FrontendMessage {
                                                 byte[] salt,
                                                 int iterationsCount,
                                                 String hmacName) throws InvalidKeyException, NoSuchAlgorithmException {
-        Mac mac = createHmac(SaslPrep.asQueryString(password).getBytes(StandardCharsets.US_ASCII), hmacName);
+        Mac mac = createHmac(SaslPrep.asQueryString(password).getBytes(StandardCharsets.US_ASCII),
+                             hmacName);
+
         mac.update(salt);
         mac.update(INT_1);
         byte[] result = mac.doFinal();
-
         byte[] previous = null;
+
         for (int i = 1; i < iterationsCount; i++) {
-            mac.update(previous != null ? previous : result);
+            mac.update(previous != null
+                       ? previous
+                       : result);
             previous = mac.doFinal();
             for (int x = 0; x < result.length; x++) {
                 result[x] ^= previous[x];
             }
         }
+
         return result;
     }
 
@@ -144,11 +154,12 @@ public final class SASLResponse implements FrontendMessage {
      * @throws InvalidKeyException      if internal error occur while working with SecretKeySpec
      * @throws NoSuchAlgorithmException if hmacName is not supported by the java
      */
-    public static Mac createHmac(final byte[] keyBytes, String hmacName) throws NoSuchAlgorithmException,
-        InvalidKeyException {
+    public static Mac createHmac(final byte[] keyBytes, String hmacName) throws NoSuchAlgorithmException, InvalidKeyException {
         SecretKeySpec key = new SecretKeySpec(keyBytes, hmacName);
         Mac mac = Mac.getInstance(hmacName);
+
         mac.init(key);
+
         return mac;
     }
 
@@ -163,11 +174,11 @@ public final class SASLResponse implements FrontendMessage {
      * @throws InvalidKeyException      if internal error occur while working with SecretKeySpec
      * @throws NoSuchAlgorithmException if hmacName is not supported by the java
      */
-    public static byte[] computeHmac(final byte[] key, String hmacName, final String string)
-        throws InvalidKeyException, NoSuchAlgorithmException {
-
+    public static byte[] computeHmac(final byte[] key, String hmacName, final String string) throws InvalidKeyException, NoSuchAlgorithmException {
         Mac mac = createHmac(key, hmacName);
+
         mac.update(string.getBytes(StandardCharsets.US_ASCII));
+
         return mac.doFinal();
     }
 
@@ -184,30 +195,32 @@ public final class SASLResponse implements FrontendMessage {
                                                         Base64.getDecoder().decode(salt.getBytes(StandardCharsets.UTF_8)),
                                                         i,
                                                         hMacName);
-
             var authMessage = clientFirstMessageBare + "," + serverFirstMessage + "," + clientFinalMessageWithoutProof;
             var clientKey = computeHmac(saltedPassword, hMacName, "Client Key");
             var storedKey = MessageDigest.getInstance(digestName).digest(clientKey);
             var clientSignature = computeHmac(storedKey, hMacName, authMessage);
-
             // clientProof here is computed in place of clientKey
             for (int j = 0; j < clientKey.length; j++) {
                 clientKey[j] ^= clientSignature[j];
             }
-            return new String(Base64.getEncoder().encode(clientKey), StandardCharsets.UTF_8);
+
+            return new String(Base64.getEncoder().encode(clientKey),
+                              StandardCharsets.UTF_8);
         } catch (java.security.InvalidKeyException | java.security.NoSuchAlgorithmException ex) {
             throw new IllegalStateException(ex);
         }
     }
 
-    public static SASLResponse of(String password, String serverFirstMessage, String clientNonce, String gs2Header,
-                                   String clientFirstMessageBare, byte[] channelBindingData) {
+    public static SASLResponse of(String password,
+                                  String serverFirstMessage,
+                                  String clientNonce,
+                                  String gs2Header,
+                                  String clientFirstMessageBare,
+                                  byte[] channelBindingData) {
         var continueData = Authentication.SaslContinueServerFirstMessage.parse(serverFirstMessage);
         var serverNonce = continueData.augmentedNonce();
 
-        if (serverNonce != null &&
-            serverNonce.length() > clientNonce.length() &&
-            serverNonce.startsWith(clientNonce)) {
+        if (serverNonce != null && serverNonce.length() > clientNonce.length() && serverNonce.startsWith(clientNonce)) {
             return new SASLResponse(password,
                                     continueData.salt(),
                                     continueData.iterations(),

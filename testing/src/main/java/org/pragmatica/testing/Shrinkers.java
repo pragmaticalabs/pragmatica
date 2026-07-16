@@ -13,13 +13,13 @@
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  */
-
 package org.pragmatica.testing;
 
 import java.util.ArrayList;
 import java.util.List;
 import java.util.stream.IntStream;
 import java.util.stream.Stream;
+
 
 /// Shrinking strategies for common types.
 public sealed interface Shrinkers {
@@ -29,6 +29,7 @@ public sealed interface Shrinkers {
         if (value == 0) {
             return Stream.empty();
         }
+
         return Stream.concat(Stream.of(Shrinkable.shrinkable(0, () -> Stream.empty())),
                              binarySearchShrink(value));
     }
@@ -37,13 +38,17 @@ public sealed interface Shrinkers {
         var results = new ArrayList<Integer>();
         int target = 0;
         int current = value;
+
         while (Math.abs(current - target) > 1) {
             int mid = target + (current - target) / 2;
+
             if (mid != 0) {
                 results.add(mid);
             }
+
             target = mid;
         }
+
         return results.stream()
                       .map(v -> Shrinkable.shrinkable(v,
                                                       () -> shrinkInteger(v)));
@@ -54,6 +59,7 @@ public sealed interface Shrinkers {
         if (value == 0L) {
             return Stream.empty();
         }
+
         return Stream.concat(Stream.of(Shrinkable.shrinkable(0L, () -> Stream.empty())),
                              binarySearchShrinkLong(value));
     }
@@ -62,13 +68,17 @@ public sealed interface Shrinkers {
         var results = new ArrayList<Long>();
         long target = 0L;
         long current = value;
+
         while (Math.abs(current - target) > 1L) {
             long mid = target + (current - target) / 2L;
+
             if (mid != 0L) {
                 results.add(mid);
             }
+
             target = mid;
         }
+
         return results.stream()
                       .map(v -> Shrinkable.shrinkable(v,
                                                       () -> shrinkLong(v)));
@@ -80,6 +90,7 @@ public sealed interface Shrinkers {
         if (value.isEmpty()) {
             return Stream.empty();
         }
+
         return Stream.concat(Stream.of(Shrinkable.shrinkable("", () -> Stream.empty())),
                              removeEachChar(value));
     }
@@ -89,6 +100,7 @@ public sealed interface Shrinkers {
                                value.length())
                         .mapToObj(i -> {
                                       String shrunk = value.substring(0, i) + value.substring(i + 1);
+
                                       return Shrinkable.shrinkable(shrunk,
                                                                    () -> shrinkString(shrunk));
                                   });
@@ -100,6 +112,7 @@ public sealed interface Shrinkers {
         if (elements.isEmpty()) {
             return Stream.empty();
         }
+
         return Stream.concat(Stream.of(Shrinkable.shrinkable(List.of(), () -> Stream.empty())),
                              Stream.concat(removeEachElement(elements), shrinkEachElement(elements)));
     }
@@ -109,10 +122,12 @@ public sealed interface Shrinkers {
                                elements.size())
                         .mapToObj(i -> {
                                       List<Shrinkable<T>> shrunk = new ArrayList<>(elements);
+
                                       shrunk.remove(i);
                                       List<T> values = shrunk.stream()
                                                              .map(Shrinkable::value)
                                                              .toList();
+
                                       return Shrinkable.shrinkable(values,
                                                                    () -> shrinkList(shrunk));
                                   });
@@ -126,10 +141,12 @@ public sealed interface Shrinkers {
                                               .shrink()
                                               .map(shrunkElement -> {
                                                        List<Shrinkable<T>> newElements = new ArrayList<>(elements);
+
                                                        newElements.set(i, shrunkElement);
                                                        List<T> values = newElements.stream()
                                                                                    .map(Shrinkable::value)
                                                                                    .toList();
+
                                                        return Shrinkable.shrinkable(values,
                                                                                     () -> shrinkList(newElements));
                                                    }));

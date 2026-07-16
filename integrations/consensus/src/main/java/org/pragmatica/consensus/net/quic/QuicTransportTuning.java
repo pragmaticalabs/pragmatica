@@ -13,12 +13,12 @@
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  */
-
 package org.pragmatica.consensus.net.quic;
 
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.Retry;
 import org.pragmatica.lang.utils.Retry.BackoffStrategy;
+
 
 /// Tunables for QUIC consensus-stream resilience under burst load.
 ///
@@ -48,14 +48,12 @@ public record QuicTransportTuning(int consensusRetryAttempts,
                                   TimeSpan consensusRetryInterval,
                                   int consensusWatermarkLowBytes,
                                   int consensusWatermarkHighBytes) {
-
     /// Default consensus-send retry budget: a SHORT fixed interval polled MANY times rather
     /// than a longer interval. 25ms catches the stream drain promptly; 200 attempts cover a
     /// ≈5s worst-case sustained-burst window while staying well under the 30s `cluster.apply`
     /// deadline. The interval drives responsiveness; the attempt count drives window coverage.
     public static final int DEFAULT_RETRY_ATTEMPTS = 200;
     public static final TimeSpan DEFAULT_RETRY_INTERVAL = TimeSpan.timeSpan(25L).millis();
-
     /// CONSENSUS stream write-buffer watermarks. 256KB low / 1MB high — 16x Netty's default
     /// 64KB high. Sized so a deploy-time consensus command burst fits entirely in the write
     /// buffer before `isWritable()` flips false, eliminating backpressure refusals on the

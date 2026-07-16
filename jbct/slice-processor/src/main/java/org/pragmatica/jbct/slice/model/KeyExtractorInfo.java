@@ -2,13 +2,13 @@
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
 // Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
 // See LICENSE in the repository root for full terms.
-
 package org.pragmatica.jbct.slice.model;
+
+import java.util.regex.Pattern;
 
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.utils.Causes;
 
-import java.util.regex.Pattern;
 
 /// Information about cache key extraction from request type.
 ///
@@ -25,18 +25,17 @@ public record KeyExtractorInfo(String keyType, String extractorExpression) {
     /// @return Result containing key extractor using method reference, or failure if validation fails
     public static Result<KeyExtractorInfo> single(String keyType, String fieldName, String paramTypeName) {
         if (keyType == null || keyType.isEmpty()) {
-            return Causes.cause("Key type cannot be null or empty")
-                         .result();
+            return Causes.cause("Key type cannot be null or empty").result();
         }
-        if (fieldName == null || !JAVA_IDENTIFIER.matcher(fieldName)
-                                                 .matches()) {
-            return Causes.cause("Invalid field name for @Key: " + fieldName)
-                         .result();
+
+        if (fieldName == null || !JAVA_IDENTIFIER.matcher(fieldName).matches()) {
+            return Causes.cause("Invalid field name for @Key: " + fieldName).result();
         }
+
         if (paramTypeName == null || paramTypeName.isEmpty()) {
-            return Causes.cause("Parameter type name cannot be null or empty")
-                         .result();
+            return Causes.cause("Parameter type name cannot be null or empty").result();
         }
+
         return Result.success(new KeyExtractorInfo(keyType, paramTypeName + "::" + fieldName));
     }
 
@@ -46,9 +45,9 @@ public record KeyExtractorInfo(String keyType, String extractorExpression) {
     /// @return Result containing key extractor using identity lambda, or failure if validation fails
     public static Result<KeyExtractorInfo> identity(String requestType) {
         if (requestType == null || requestType.isEmpty()) {
-            return Causes.cause("Request type cannot be null or empty")
-                         .result();
+            return Causes.cause("Request type cannot be null or empty").result();
         }
+
         return Result.success(new KeyExtractorInfo(requestType, "request -> request"));
     }
 }

@@ -14,37 +14,42 @@
  *  limitations under the License.
  *
  */
-
 package org.pragmatica.cloud.azure;
 
 /// Configuration for the Azure Cloud API client.
 public record AzureConfig(String tenantId,
-                           String clientId,
-                           String clientSecret,
-                           String subscriptionId,
-                           String resourceGroup,
-                           String location,
-                           String baseUrl) {
+                          String clientId,
+                          String clientSecret,
+                          String subscriptionId,
+                          String resourceGroup,
+                          String location,
+                          String baseUrl) {
     private static final String DEFAULT_BASE_URL = "https://management.azure.com";
 
     /// Creates configuration with default Azure management base URL.
     public static AzureConfig azureConfig(String tenantId,
-                                           String clientId,
-                                           String clientSecret,
-                                           String subscriptionId,
-                                           String resourceGroup,
-                                           String location) {
-        return new AzureConfig(tenantId, clientId, clientSecret, subscriptionId, resourceGroup, location, DEFAULT_BASE_URL);
+                                          String clientId,
+                                          String clientSecret,
+                                          String subscriptionId,
+                                          String resourceGroup,
+                                          String location) {
+        return new AzureConfig(tenantId,
+                               clientId,
+                               clientSecret,
+                               subscriptionId,
+                               resourceGroup,
+                               location,
+                               DEFAULT_BASE_URL);
     }
 
     /// Creates configuration with custom base URL.
     public static AzureConfig azureConfig(String tenantId,
-                                           String clientId,
-                                           String clientSecret,
-                                           String subscriptionId,
-                                           String resourceGroup,
-                                           String location,
-                                           String baseUrl) {
+                                          String clientId,
+                                          String clientSecret,
+                                          String subscriptionId,
+                                          String resourceGroup,
+                                          String location,
+                                          String baseUrl) {
         return new AzureConfig(tenantId, clientId, clientSecret, subscriptionId, resourceGroup, location, baseUrl);
     }
 
@@ -56,11 +61,12 @@ public record AzureConfig(String tenantId,
     @Override
     public String toString() {
         return "AzureConfig[tenantId=" + tenantId
-               + ", clientId=" + clientId
-               + ", clientSecret=REDACTED"
-               + ", subscriptionId=" + subscriptionId
-               + ", resourceGroup=" + resourceGroup
-               + ", location=" + location
-               + ", baseUrl=" + baseUrl + "]";
+             + ", clientId=" + clientId
+             + ", clientSecret=REDACTED"
+             + ", subscriptionId=" + subscriptionId
+             + ", resourceGroup=" + resourceGroup
+             + ", location=" + location
+             + ", baseUrl=" + baseUrl
+             + "]";
     }
 }

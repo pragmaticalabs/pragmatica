@@ -13,7 +13,6 @@
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  */
-
 package org.pragmatica.consensus.net.quic;
 
 import java.util.ArrayDeque;
@@ -30,6 +29,7 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.messaging.Message;
 
 import static org.pragmatica.lang.Option.option;
+
 
 /// Per-peer connection lifecycle state machine for [QuicClusterNetwork].
 ///
@@ -94,7 +94,6 @@ import static org.pragmatica.lang.Option.option;
 /// Drained by [drainOfflineBuffer] right after `attach` completes. Cleared by `authoritativeRemove`.
 public final class PeerState {
     public static final int OFFLINE_BUFFER_MAX = 10_000;
-
     /// Transition-record cause constants. Stable machine-readable identifiers consumed by the
     /// Wave-1 journal AND matched by `QuicClusterNetwork.emitPeerTransition` to map each
     /// transition onto exactly one typed transport emission.
@@ -107,7 +106,6 @@ public final class PeerState {
     static final String CAUSE_EVICT_STALE_CONNECTING = "evict-stale-connecting";
     static final String CAUSE_AUTHORITATIVE_REMOVE = "authoritative-remove";
     static final String CAUSE_READMIT = "readmit";
-
     /// Minimum age of a still-`isActive()` CONNECTED incumbent before a fresh inbound handshake
     /// is allowed to supersede it (adopt-newer). 3s comfortably separates a sub-millisecond
     /// dual-dial race during formation (kept as DUPLICATE) from a post-partition reconnect
@@ -127,9 +125,11 @@ public final class PeerState {
     public sealed interface OfferOutcome {
         /// Peer is CONNECTED — caller should serialize and write the message to `connection()`.
         record SendNow(QuicPeerConnection connection) implements OfferOutcome {}
+
         /// Message was queued into the offline buffer. `oldestEvicted=true` means the buffer
         /// was at capacity and the oldest entry was dropped to make room.
         record Queued(boolean oldestEvicted) implements OfferOutcome {}
+
         /// Peer is REMOVED — message dropped.
         record Dropped() implements OfferOutcome {}
     }
@@ -178,7 +178,6 @@ public final class PeerState {
     /// told about it via ADD/RECONNECT); reset by [#readmit] (upstream saw the REMOVE). Guarded by `this`.
     private boolean announcedUpstream;
     private final Deque<Message.Wired> offlineBuffer = new ArrayDeque<>();
-
     /// Wall-clock-free (`System.nanoTime`) instant of the most recent inbound frame observed on
     /// this peer's link, across ALL lanes (transport keepalives, ClusterSync pongs, consensus).
     /// RECEIPT EVIDENCE ONLY (Wave 5): refreshed EXCLUSIVELY by [#markInbound] — the single
@@ -191,7 +190,6 @@ public final class PeerState {
     /// Blackholed inbound is intentionally NOT counted (the chaos substrate keeps the link
     /// CONNECTED yet silent), so the sweep still trips.
     private long lastInboundAtNanos;
-
     /// Wall-clock instant (ms) at which the missing-peer reconciler is next allowed to
     /// attempt a re-dial of this peer. Zero means no reconciler attempt has been made yet
     /// (any reconciler tick may dispatch immediately). Used by `QuicClusterNetwork`'s
@@ -199,7 +197,6 @@ public final class PeerState {
     /// dial attempts. Distinct from `ReconnectBackoff` (eviction-driven) which paces
     /// rapid heartbeat-loop reconnects on a freshly evicted CONNECTED link.
     private long reconcileNextAttemptMs;
-
     /// Current reconcile-backoff window in ms; doubled on every reconciler dispatch
     /// for this peer up to a configured cap, reset by `resetReconcileBackoff` on a
     /// successful attach.
@@ -212,7 +209,9 @@ public final class PeerState {
     }
 
     public static PeerState peerState(NodeId peerId, long nowNanos) {
-        return new PeerState(peerId, nowNanos, ignored -> {});
+        return new PeerState(peerId,
+                             nowNanos,
+                             ignored -> {});
     }
 
     /// Factory with the transition-chokepoint listener (Wave 1 journal + Wave 5 emission).
@@ -241,7 +240,9 @@ public final class PeerState {
 
     /// Returns the live connection if the peer is CONNECTED. Empty otherwise.
     public synchronized Option<QuicPeerConnection> activeConnection() {
-        return phase == Phase.CONNECTED ? option(connection) : Option.empty();
+        return phase == Phase.CONNECTED
+               ? option(connection)
+               : Option.empty();
     }
 
     /// Returns nanoseconds since the most recent phase transition.
@@ -274,7 +275,9 @@ public final class PeerState {
     /// Returns true when the caller should initiate the actual dial.
     public boolean beginConnecting(long nowNanos) {
         var initiate = beginConnectingInternal(nowNanos);
+
         flushTransitions();
+
         return initiate;
     }
 
@@ -297,7 +300,9 @@ public final class PeerState {
     /// REMOVED. Never refreshes the receipt-evidence liveness clock (see [#markInbound]).
     public AttachOutcome attach(QuicPeerConnection newConnection, long nowNanos) {
         var outcome = attachInternal(newConnection, nowNanos);
+
         flushTransitions();
+
         return outcome;
     }
 
@@ -316,10 +321,19 @@ public final class PeerState {
     /// ACCEPTED so upstream receives its (first) ADD.
     private AttachOutcome attachFresh(QuicPeerConnection newConnection, long nowNanos) {
         var reconnect = announcedUpstream;
+
         this.connection = newConnection;
         this.announcedUpstream = true;
-        changePhase(Phase.CONNECTED, nowNanos, reconnect ? CAUSE_ATTACH_RECONNECTED : CAUSE_ATTACH_ACCEPTED);
-        return new AttachOutcome(reconnect ? AttachResult.RECONNECTED : AttachResult.ACCEPTED, Option.empty());
+        changePhase(Phase.CONNECTED,
+                    nowNanos,
+                    reconnect
+                    ? CAUSE_ATTACH_RECONNECTED
+                    : CAUSE_ATTACH_ACCEPTED);
+
+        return new AttachOutcome(reconnect
+                                 ? AttachResult.RECONNECTED
+                                 : AttachResult.ACCEPTED,
+                                 Option.empty());
     }
 
     /// CONNECTED-branch of [attach]. An incumbent that is null or reports `!isActive()` is a
@@ -339,16 +353,20 @@ public final class PeerState {
             if (phaseAgeNanos(nowNanos) <= SUPERSEDE_MIN_AGE_NANOS) {
                 return new AttachOutcome(AttachResult.DUPLICATE, Option.empty());
             }
+
             var superseded = connection;
+
             this.connection = newConnection;
             this.phaseChangedAtNanos = nowNanos;
             notifyTransition(Phase.CONNECTED, Phase.CONNECTED, CAUSE_ATTACH_SUPERSEDE);
+
             return new AttachOutcome(AttachResult.RECONNECTED, option(superseded));
         }
         // Stale CONNECTED link replaced — peer is already known upstream.
         this.connection = newConnection;
         this.phaseChangedAtNanos = nowNanos;
         notifyTransition(Phase.CONNECTED, Phase.CONNECTED, CAUSE_ATTACH_STALE_REPLACE);
+
         return new AttachOutcome(AttachResult.RECONNECTED, Option.empty());
     }
 
@@ -356,7 +374,9 @@ public final class PeerState {
     /// Returns the evicted connection for the caller to close. Empty if no-op.
     public Option<QuicPeerConnection> evict(long nowNanos) {
         var evicted = evictInternal(nowNanos);
+
         flushTransitions();
+
         return evicted;
     }
 
@@ -364,9 +384,12 @@ public final class PeerState {
         if (phase != Phase.CONNECTED) {
             return Option.empty();
         }
+
         var evicted = connection;
+
         this.connection = null;
         changePhase(Phase.EVICTED, nowNanos, CAUSE_EVICT);
+
         return option(evicted);
     }
 
@@ -382,7 +405,9 @@ public final class PeerState {
     /// EVICTED) — provenance decides ACCEPTED vs RECONNECTED.
     public boolean evictStaleConnecting(long nowNanos) {
         var evicted = evictStaleConnectingInternal(nowNanos);
+
         flushTransitions();
+
         return evicted;
     }
 
@@ -390,8 +415,10 @@ public final class PeerState {
         if (phase != Phase.CONNECTING) {
             return false;
         }
+
         this.connection = null;
         changePhase(Phase.EVICTED, nowNanos, CAUSE_EVICT_STALE_CONNECTING);
+
         return true;
     }
 
@@ -403,7 +430,9 @@ public final class PeerState {
     /// duplicate in the journal, no duplicate REMOVE emission).
     public Option<QuicPeerConnection> authoritativeRemove(long nowNanos) {
         var dropped = authoritativeRemoveInternal(nowNanos);
+
         flushTransitions();
+
         return dropped;
     }
 
@@ -411,10 +440,13 @@ public final class PeerState {
         if (phase == Phase.REMOVED) {
             return Option.empty();
         }
+
         var dropped = connection;
+
         this.connection = null;
         offlineBuffer.clear();
         changePhase(Phase.REMOVED, nowNanos, CAUSE_AUTHORITATIVE_REMOVE);
+
         return option(dropped);
     }
 
@@ -429,7 +461,9 @@ public final class PeerState {
     /// fresh ACCEPTED/ADD, not a RECONNECT.
     public boolean readmit(long nowNanos) {
         var readmitted = readmitInternal(nowNanos);
+
         flushTransitions();
+
         return readmitted;
     }
 
@@ -437,8 +471,10 @@ public final class PeerState {
         if (phase != Phase.REMOVED) {
             return false;
         }
+
         this.announcedUpstream = false;
         changePhase(Phase.INIT, nowNanos, CAUSE_READMIT);
+
         return true;
     }
 
@@ -452,9 +488,11 @@ public final class PeerState {
             case REMOVED -> new OfferOutcome.Dropped();
             case INIT, CONNECTING, EVICTED -> {
                 var wasFull = offlineBuffer.size() >= OFFLINE_BUFFER_MAX;
+
                 if (wasFull) {
                     offlineBuffer.pollFirst();
                 }
+
                 offlineBuffer.offerLast(message);
                 yield new OfferOutcome.Queued(wasFull);
             }
@@ -468,9 +506,12 @@ public final class PeerState {
         if (offlineBuffer.isEmpty()) {
             return List.of();
         }
+
         var drained = new ArrayList<Message.Wired>(offlineBuffer.size());
+
         drained.addAll(offlineBuffer);
         offlineBuffer.clear();
+
         return drained;
     }
 
@@ -496,11 +537,14 @@ public final class PeerState {
         if (nowMs < reconcileNextAttemptMs) {
             return false;
         }
+
         var nextDelay = reconcileCurrentDelayMs == 0L
-                       ? initialMs
-                       : Math.min(reconcileCurrentDelayMs * 2L, capMs);
+                        ? initialMs
+                        : Math.min(reconcileCurrentDelayMs * 2L, capMs);
+
         reconcileCurrentDelayMs = nextDelay;
         reconcileNextAttemptMs = nowMs + Math.max(1L, jitterFn.applyAsLong(nextDelay));
+
         return true;
     }
 
@@ -519,6 +563,7 @@ public final class PeerState {
 
     private void changePhase(Phase next, long nowNanos, String cause) {
         var from = this.phase;
+
         this.phase = next;
         this.phaseChangedAtNanos = nowNanos;
         notifyTransition(from, next, cause);
@@ -536,13 +581,16 @@ public final class PeerState {
     /// thread enqueued; each record is delivered exactly once.
     private void flushTransitions() {
         List<PeerTransitionRecord> toEmit;
+
         synchronized (this) {
             if (pendingTransitions.isEmpty()) {
                 return;
             }
+
             toEmit = List.copyOf(pendingTransitions);
             pendingTransitions.clear();
         }
+
         toEmit.forEach(transitionListener::accept);
     }
 }

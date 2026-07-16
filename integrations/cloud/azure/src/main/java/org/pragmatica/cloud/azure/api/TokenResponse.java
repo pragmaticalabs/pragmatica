@@ -14,14 +14,14 @@
  *  limitations under the License.
  *
  */
-
 package org.pragmatica.cloud.azure.api;
 
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.annotation.JsonProperty;
 
+
 /// OAuth2 token response from Azure AD.
 @JsonIgnoreProperties(ignoreUnknown = true)
 public record TokenResponse(@JsonProperty("access_token") String accessToken,
-                             @JsonProperty("expires_in") int expiresIn,
-                             @JsonProperty("token_type") String tokenType) {}
+                            @JsonProperty("expires_in") int expiresIn,
+                            @JsonProperty("token_type") String tokenType) {}

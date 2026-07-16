@@ -1,15 +1,16 @@
 package org.pragmatica.jbct.lint.cst.rules;
 
+import java.util.regex.Pattern;
+import java.util.stream.Stream;
+
 import org.pragmatica.jbct.lint.Diagnostic;
 import org.pragmatica.jbct.lint.LintContext;
 import org.pragmatica.jbct.lint.cst.CstLintRule;
 import org.pragmatica.jbct.parser.Cursor;
 import org.pragmatica.jbct.parser.RuleKind;
 
-import java.util.regex.Pattern;
-import java.util.stream.Stream;
-
 import static org.pragmatica.jbct.parser.CstNodes.*;
+
 
 /// JBCT-UC-01: Use case factories should return lambdas, not nested records.
 public class CstNestedRecordFactoryRule implements CstLintRule {
@@ -36,38 +37,39 @@ public class CstNestedRecordFactoryRule implements CstLintRule {
     }
 
     private boolean isMultiMethodInterface(Cursor root, Cursor member) {
-        return findAncestor(root, member, RuleKind.TYPE_DECL)
-                          .flatMap(td -> findFirstInterface(td))
-                          .map(iface -> countAbstractMethods(iface) > 1)
-                          .or(false);
+        return findAncestor(root, member, RuleKind.TYPE_DECL).flatMap(td -> findFirstInterface(td))
+                           .map(iface -> countAbstractMethods(iface) > 1)
+                           .or(false);
     }
 
     private int countAbstractMethods(Cursor iface) {
         // Use ClassBody → direct ClassMember children to avoid counting methods inside nested types
-        return childByRule(iface, RuleKind.CLASS_BODY)
-                          .map(body -> (int) childrenByRule(body, RuleKind.CLASS_MEMBER).stream()
-                                                    .filter(member -> !contains(member, RuleKind.TYPE_KIND))
-                                                    .filter(member -> containsMethod(member))
-                                                    .filter(this::isAbstractMethod)
-                                                    .count())
+        return childByRule(iface, RuleKind.CLASS_BODY).map(body -> (int) childrenByRule(body, RuleKind.CLASS_MEMBER).stream()
+                                                                                       .filter(member -> !contains(member,
+                                                                                                                   RuleKind.TYPE_KIND))
+                                                                                       .filter(member -> containsMethod(member))
+                                                                                       .filter(this::isAbstractMethod)
+                                                                                       .count())
                           .or(0);
     }
 
     private boolean isAbstractMethod(Cursor member) {
         var memberText = text(member);
-        return !memberText.contains("static ") && !memberText.contains("default ");
+
+        return ! memberText.contains("static ") && !memberText.contains("default ");
     }
 
     private boolean isStaticMember(Cursor member) {
         var memberText = text(member);
+
         return memberText.contains("static ");
     }
 
     private boolean containsSimpleLocalRecord(Cursor method) {
         // Find local records implementing an interface
         return findAllRecords(method).stream()
-                      .filter(this::hasImplementsClause)
-                      .anyMatch(this::isSimpleImplementation);
+                             .filter(this::hasImplementsClause)
+                             .anyMatch(this::isSimpleImplementation);
     }
 
     private boolean hasImplementsClause(Cursor record) {
@@ -82,6 +84,7 @@ public class CstNestedRecordFactoryRule implements CstLintRule {
 
     private Diagnostic createDiagnostic(Cursor method, LintContext ctx) {
         var methodName = extractMethodName(text(method));
+
         return Diagnostic.diagnostic(RULE_ID,
                                      ctx.severityFor(RULE_ID),
                                      ctx.fileName(),
@@ -105,6 +108,9 @@ public class CstNestedRecordFactoryRule implements CstLintRule {
 
     private static String extractMethodName(String memberText) {
         var matcher = METHOD_NAME_PATTERN.matcher(memberText);
-        return matcher.find() ? matcher.group(1) : "(unknown)";
+
+        return matcher.find()
+               ? matcher.group(1)
+               : "(unknown)";
     }
 }

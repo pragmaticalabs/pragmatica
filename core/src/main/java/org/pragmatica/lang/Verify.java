@@ -1,12 +1,13 @@
 package org.pragmatica.lang;
 
+import java.util.function.Predicate;
+import java.util.regex.Pattern;
+
 import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Functions.Fn2;
 import org.pragmatica.lang.Functions.Fn3;
 import org.pragmatica.lang.utils.Causes;
 
-import java.util.function.Predicate;
-import java.util.regex.Pattern;
 
 /// Validation entry point for Result-returning factories: ensures values meet criteria, returning
 /// `Result` success with the original value or a failure with a `Cause`.
@@ -122,6 +123,7 @@ public sealed interface Verify {
         if (predicate.test(value)) {
             return Result.success(value);
         }
+
         return causeProvider.apply(value)
                             .result();
     }
@@ -258,11 +260,14 @@ public sealed interface Verify {
         return value -> {
             for (var check : checks) {
                 var result = check.apply(value);
+
                 if (result.isSuccess()) {
                     continue;
                 }
+
                 return result;
             }
+
             return Result.success(value);
         };
     }
@@ -600,9 +605,8 @@ public sealed interface Verify {
         /// @param value the char sequence to check
         /// @return true if the char sequence is blank, false otherwise
         static <T extends CharSequence> boolean blank(T value) {
-            return value == null || value.isEmpty() ||
-                   value.chars()
-                        .allMatch(Character::isWhitespace);
+            return value == null || value.isEmpty() || value.chars()
+                                                            .allMatch(Character::isWhitespace);
         }
 
         /// Checks if a char sequence is not blank (contains at least one non-whitespace character).
@@ -611,7 +615,7 @@ public sealed interface Verify {
         /// @param value the char sequence to check
         /// @return true if the char sequence is not blank, false otherwise
         static <T extends CharSequence> boolean notBlank(T value) {
-            return !blank(value);
+            return ! blank(value);
         }
 
         /// Checks if a char sequence is present, i.e. is not null, not empty and not blank.

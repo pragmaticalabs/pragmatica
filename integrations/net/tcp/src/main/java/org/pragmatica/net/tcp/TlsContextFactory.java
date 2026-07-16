@@ -13,14 +13,13 @@
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  */
-
 package org.pragmatica.net.tcp;
-
-import org.pragmatica.lang.Option;
-import org.pragmatica.lang.Result;
 
 import java.io.ByteArrayInputStream;
 import java.io.File;
+
+import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Result;
 
 import io.netty.handler.ssl.ClientAuth;
 import io.netty.handler.ssl.SslContext;
@@ -29,6 +28,7 @@ import io.netty.handler.ssl.util.InsecureTrustManagerFactory;
 import io.netty.handler.ssl.util.SelfSignedCertificate;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
 
 /// Factory for creating Netty SSL contexts from TLS configuration.
 ///
@@ -47,13 +47,9 @@ public final class TlsContextFactory {
     /// @return SSL context or error
     public static Result<SslContext> createServer(TlsConfig config) {
         return switch (config) {
-            case TlsConfig.Server(var identity, var clientAuth) ->
-            buildServerContext(identity, clientAuth);
-            case TlsConfig.Mutual(var identity, var trust) ->
-            buildServerContextWithClientAuth(identity, trust);
-            case TlsConfig.Client _ ->
-            TlsError.wrongMode("Cannot create server context from Client config")
-                    .result();
+            case TlsConfig.Server(var identity, var clientAuth) -> buildServerContext(identity, clientAuth);
+            case TlsConfig.Mutual(var identity, var trust) -> buildServerContextWithClientAuth(identity, trust);
+            case TlsConfig.Client _ -> TlsError.wrongMode("Cannot create server context from Client config").result();
         };
     }
 
@@ -63,13 +59,9 @@ public final class TlsContextFactory {
     /// @return SSL context or error
     public static Result<SslContext> createClient(TlsConfig config) {
         return switch (config) {
-            case TlsConfig.Client(var trust, var identity) ->
-            buildClientContext(trust, identity);
-            case TlsConfig.Mutual(var identity, var trust) ->
-            buildClientContextWithIdentity(identity, trust);
-            case TlsConfig.Server _ ->
-            TlsError.wrongMode("Cannot create client context from Server config")
-                    .result();
+            case TlsConfig.Client(var trust, var identity) -> buildClientContext(trust, identity);
+            case TlsConfig.Mutual(var identity, var trust) -> buildClientContextWithIdentity(identity, trust);
+            case TlsConfig.Server _ -> TlsError.wrongMode("Cannot create client context from Server config").result();
         };
     }
 
@@ -91,83 +83,90 @@ public final class TlsContextFactory {
     public static Result<SslContext> createServerFromBundle(org.pragmatica.net.tcp.security.CertificateBundle bundle) {
         var identity = new TlsConfig.Identity.FromProvider(bundle.certificatePem(), bundle.privateKeyPem());
         var trust = new TlsConfig.Trust.FromCaBytes(bundle.caCertificatePem());
+
         return buildServerContext(identity, Option.some(trust));
     }
 
     // ===== Server Context Building =====
     private static Result<SslContext> buildServerContext(TlsConfig.Identity identity,
                                                          Option<TlsConfig.Trust> clientAuth) {
-        return loadIdentity(identity)
-        .flatMap(keyMaterial -> {
-                     try{
-                         var builder = configureServerIdentity(keyMaterial);
-                         // Configure client authentication if required
-        clientAuth.onPresent(trust -> {
-                             configureTrust(builder, trust);
-                             builder.clientAuth(ClientAuth.REQUIRE);
-                         });
-                         return Result.success(builder.build());
-                     } catch (Exception e) {
-                         return new TlsError.ContextBuildFailed(e).result();
-                     }
-                 });
-    }
+        return loadIdentity(identity).flatMap(keyMaterial -> {
+            try {
+                var builder = configureServerIdentity(keyMaterial);
+                // Configure client authentication if required
+                clientAuth.onPresent(trust -> {
+                    configureTrust(builder, trust);
+                    builder.clientAuth(ClientAuth.REQUIRE);
+                });
 
-    private static Result<SslContext> buildServerContextWithClientAuth(TlsConfig.Identity identity,
-                                                                       TlsConfig.Trust trust) {
-        return loadIdentity(identity)
-        .flatMap(keyMaterial -> {
-                     try{
-                         var builder = configureServerIdentity(keyMaterial);
-                         configureTrust(builder, trust);
-                         builder.clientAuth(ClientAuth.REQUIRE);
-                         return Result.success(builder.build());
-                     } catch (Exception e) {
-                         return new TlsError.ContextBuildFailed(e).result();
-                     }
-                 });
-    }
-
-    // ===== Client Context Building =====
-    private static Result<SslContext> buildClientContext(TlsConfig.Trust trust,
-                                                         Option<TlsConfig.Identity> identity) {
-        return identity.fold(// No identity - just build client context with trust
-        () -> {
-            try{
-                var builder = SslContextBuilder.forClient();
-                configureTrust(builder, trust);
                 return Result.success(builder.build());
             } catch (Exception e) {
                 return new TlsError.ContextBuildFailed(e).result();
             }
-        },
+        });
+    }
+
+    private static Result<SslContext> buildServerContextWithClientAuth(TlsConfig.Identity identity,
+                                                                       TlsConfig.Trust trust) {
+        return loadIdentity(identity).flatMap(keyMaterial -> {
+            try {
+                var builder = configureServerIdentity(keyMaterial);
+
+                configureTrust(builder, trust);
+                builder.clientAuth(ClientAuth.REQUIRE);
+
+                return Result.success(builder.build());
+            } catch (Exception e) {
+                return new TlsError.ContextBuildFailed(e).result();
+            }
+        });
+    }
+
+    // ===== Client Context Building =====
+    private static Result<SslContext> buildClientContext(TlsConfig.Trust trust, Option<TlsConfig.Identity> identity) {
+        return identity.fold(
+        // No identity - just build client context with trust
+        () -> {
+                                 try {
+                                 var builder = SslContextBuilder.forClient();
+
+                                 configureTrust(builder, trust);
+
+                                 return Result.success(builder.build());
+                             } catch (Exception e) {
+                                 return new TlsError.ContextBuildFailed(e).result();
+                             }
+                             },
+
         // Has identity - load it and configure
-        id -> loadIdentity(id)
-        .flatMap(keyMaterial -> {
-                     try{
-                         var builder = SslContextBuilder.forClient();
-                         configureTrust(builder, trust);
-                         configureClientIdentity(builder, keyMaterial);
-                         return Result.success(builder.build());
-                     } catch (Exception e) {
-                         return new TlsError.ContextBuildFailed(e).result();
-                     }
-                 }));
+        id -> loadIdentity(id).flatMap(keyMaterial -> {
+                                 try {
+                                 var builder = SslContextBuilder.forClient();
+
+                                 configureTrust(builder, trust);
+                                 configureClientIdentity(builder, keyMaterial);
+
+                                 return Result.success(builder.build());
+                             } catch (Exception e) {
+                                 return new TlsError.ContextBuildFailed(e).result();
+                             }
+                             }));
     }
 
     private static Result<SslContext> buildClientContextWithIdentity(TlsConfig.Identity identity,
                                                                      TlsConfig.Trust trust) {
-        return loadIdentity(identity)
-        .flatMap(keyMaterial -> {
-                     try{
-                         var builder = SslContextBuilder.forClient();
-                         configureTrust(builder, trust);
-                         configureClientIdentity(builder, keyMaterial);
-                         return Result.success(builder.build());
-                     } catch (Exception e) {
-                         return new TlsError.ContextBuildFailed(e).result();
-                     }
-                 });
+        return loadIdentity(identity).flatMap(keyMaterial -> {
+            try {
+                var builder = SslContextBuilder.forClient();
+
+                configureTrust(builder, trust);
+                configureClientIdentity(builder, keyMaterial);
+
+                return Result.success(builder.build());
+            } catch (Exception e) {
+                return new TlsError.ContextBuildFailed(e).result();
+            }
+        });
     }
 
     // ===== Trust Configuration =====
@@ -186,41 +185,48 @@ public final class TlsContextFactory {
     // ===== Identity Loading =====
     private sealed interface KeyMaterial {
         record FromFile(File certFile, File keyFile, String password) implements KeyMaterial {}
+
         record FromBytes(byte[] certPem, byte[] keyPem) implements KeyMaterial {}
     }
 
     private static Result<KeyMaterial> loadIdentity(TlsConfig.Identity identity) {
         return switch (identity) {
             case TlsConfig.Identity.SelfSigned() -> generateSelfSigned();
-            case TlsConfig.Identity.FromFiles(var certPath, var keyPath, var password) ->
-            loadFromFiles(certPath, keyPath, password);
-            case TlsConfig.Identity.FromProvider(var certPem, var keyPem) ->
-            Result.success(new KeyMaterial.FromBytes(certPem, keyPem));
+            case TlsConfig.Identity.FromFiles(var certPath, var keyPath, var password) -> loadFromFiles(certPath,
+                                                                                                        keyPath,
+                                                                                                        password);
+            case TlsConfig.Identity.FromProvider(var certPem, var keyPem) -> Result.success(new KeyMaterial.FromBytes(certPem,
+                                                                                                                      keyPem));
         };
     }
 
     private static SslContextBuilder configureServerIdentity(KeyMaterial keyMaterial) {
         return switch (keyMaterial) {
-            case KeyMaterial.FromFile(var certFile, var keyFile, var password) ->
-            SslContextBuilder.forServer(certFile, keyFile, password);
-            case KeyMaterial.FromBytes(var certPem, var keyPem) ->
-            SslContextBuilder.forServer(new ByteArrayInputStream(certPem), new ByteArrayInputStream(keyPem), null);
+            case KeyMaterial.FromFile(var certFile, var keyFile, var password) -> SslContextBuilder.forServer(certFile,
+                                                                                                              keyFile,
+                                                                                                              password);
+            case KeyMaterial.FromBytes(var certPem, var keyPem) -> SslContextBuilder.forServer(new ByteArrayInputStream(certPem),
+                                                                                               new ByteArrayInputStream(keyPem),
+                                                                                               null);
         };
     }
 
     private static void configureClientIdentity(SslContextBuilder builder, KeyMaterial keyMaterial) {
         switch (keyMaterial) {
-            case KeyMaterial.FromFile(var certFile, var keyFile, var password) ->
-            builder.keyManager(certFile, keyFile, password);
-            case KeyMaterial.FromBytes(var certPem, var keyPem) ->
-            builder.keyManager(new ByteArrayInputStream(certPem), new ByteArrayInputStream(keyPem), null);
+            case KeyMaterial.FromFile(var certFile, var keyFile, var password) -> builder.keyManager(certFile,
+                                                                                                     keyFile,
+                                                                                                     password);
+            case KeyMaterial.FromBytes(var certPem, var keyPem) -> builder.keyManager(new ByteArrayInputStream(certPem),
+                                                                                      new ByteArrayInputStream(keyPem),
+                                                                                      null);
         }
     }
 
-    @SuppressWarnings("deprecation") // SelfSignedCertificate is for dev/testing only
+    @SuppressWarnings("deprecation")  // SelfSignedCertificate is for dev/testing only
     private static Result<KeyMaterial> generateSelfSigned() {
-        try{
+        try {
             var ssc = new SelfSignedCertificate("localhost", "RSA", 2048);
+
             return Result.success(new KeyMaterial.FromFile(ssc.certificate(), ssc.privateKey(), null));
         } catch (Exception e) {
             return new TlsError.SelfSignedGenerationFailed(e).result();
@@ -232,14 +238,17 @@ public final class TlsContextFactory {
                                                      Option<String> password) {
         var certFile = certPath.toFile();
         var keyFile = keyPath.toFile();
+
         if (!certFile.exists() || !certFile.canRead()) {
             return new TlsError.CertificateLoadFailed(certPath,
                                                       new java.io.FileNotFoundException("Certificate file not found or not readable: " + certPath)).result();
         }
+
         if (!keyFile.exists() || !keyFile.canRead()) {
             return new TlsError.PrivateKeyLoadFailed(keyPath,
                                                      new java.io.FileNotFoundException("Private key file not found or not readable: " + keyPath)).result();
         }
+
         return Result.success(new KeyMaterial.FromFile(certFile, keyFile, password.or((String) null)));
     }
 }

@@ -2,6 +2,7 @@ package org.pragmatica.email.http.vendor;
 
 import java.util.List;
 
+
 /// Minimal JSON string builder for vendor request bodies.
 /// Avoids Jackson dependency by hand-building JSON strings.
 final class JsonBuilder {
@@ -19,12 +20,14 @@ final class JsonBuilder {
     JsonBuilder field(String key, String value) {
         separator();
         sb.append('"').append(escape(key)).append("\":\"").append(escape(value)).append('"');
+
         return this;
     }
 
     JsonBuilder rawField(String key, String rawValue) {
         separator();
         sb.append('"').append(escape(key)).append("\":").append(rawValue);
+
         return this;
     }
 
@@ -35,9 +38,12 @@ final class JsonBuilder {
             if (i > 0) {
                 sb.append(',');
             }
+
             sb.append('"').append(escape(values.get(i))).append('"');
         }
+
         sb.append(']');
+
         return this;
     }
 
@@ -48,14 +54,18 @@ final class JsonBuilder {
             if (i > 0) {
                 sb.append(',');
             }
+
             sb.append("{\"").append(escape(innerKey)).append("\":\"").append(escape(values.get(i))).append("\"}");
         }
+
         sb.append(']');
+
         return this;
     }
 
     String build() {
         sb.append('}');
+
         return sb.toString();
     }
 

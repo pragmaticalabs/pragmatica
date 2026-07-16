@@ -1,14 +1,15 @@
 package org.pragmatica.email.http.vendor;
 
+import java.util.Map;
+
 import org.pragmatica.email.http.EmailBody;
 import org.pragmatica.email.http.EmailMessage;
 import org.pragmatica.email.http.HttpEmailConfig;
 import org.pragmatica.email.http.VendorMapping;
 import org.pragmatica.email.http.VendorRequest;
 
-import java.util.Map;
-
 import static org.pragmatica.email.http.vendor.JsonBuilder.jsonBuilder;
+
 
 /// Postmark email API vendor mapping.
 public final class PostmarkMapping implements VendorMapping {
@@ -33,19 +34,23 @@ public final class PostmarkMapping implements VendorMapping {
     }
 
     private static String buildBody(EmailMessage message) {
-        var builder = jsonBuilder()
-            .field("From", message.from())
-            .field("To", String.join(",", message.to()))
-            .field("Subject", message.subject());
+        var builder = jsonBuilder().field("From",
+                                          message.from())
+                                 .field("To",
+                                        String.join(",",
+                                                    message.to()))
+                                 .field("Subject",
+                                        message.subject());
 
         addBodyFields(builder, message.body());
-
         if (!message.cc().isEmpty()) {
-            builder.field("Cc", String.join(",", message.cc()));
+            builder.field("Cc",
+                          String.join(",", message.cc()));
         }
 
         if (!message.bcc().isEmpty()) {
-            builder.field("Bcc", String.join(",", message.bcc()));
+            builder.field("Bcc",
+                          String.join(",", message.bcc()));
         }
 
         message.replyTo().onPresent(rt -> builder.field("ReplyTo", rt));

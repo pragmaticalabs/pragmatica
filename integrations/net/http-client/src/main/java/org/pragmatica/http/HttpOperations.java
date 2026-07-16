@@ -14,14 +14,14 @@
  *  limitations under the License.
  *
  */
-
 package org.pragmatica.http;
+
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse.BodyHandler;
 
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 
-import java.net.http.HttpRequest;
-import java.net.http.HttpResponse.BodyHandler;
 
 /// Implementation-agnostic interface for HTTP operations.
 /// Abstracts over HTTP client implementations to allow future extensibility.
@@ -60,7 +60,8 @@ public interface HttpOperations {
     ///
     /// @return Promise of HttpResult with Unit body
     default Promise<HttpResult<Unit>> sendDiscarding(HttpRequest request) {
-        return send(request, java.net.http.HttpResponse.BodyHandlers.discarding())
-        .map(result -> new HttpResult<>(result.statusCode(), result.headers(), Unit.unit()));
+        return send(request, java.net.http.HttpResponse.BodyHandlers.discarding()).map(result -> new HttpResult<>(result.statusCode(),
+                                                                                                                  result.headers(),
+                                                                                                                  Unit.unit()));
     }
 }

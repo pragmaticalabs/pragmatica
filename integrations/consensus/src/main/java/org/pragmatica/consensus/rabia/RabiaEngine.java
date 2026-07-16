@@ -13,8 +13,25 @@
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  */
-
 package org.pragmatica.consensus.rabia;
+
+import java.util.Comparator;
+import java.util.List;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentNavigableMap;
+import java.util.concurrent.ConcurrentSkipListMap;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.BiConsumer;
+import java.util.function.Consumer;
 
 import org.pragmatica.consensus.Command;
 import org.pragmatica.consensus.ConsensusError;
@@ -43,29 +60,12 @@ import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.SharedScheduler;
 import org.pragmatica.messaging.MessageReceiver;
 
-import java.util.Comparator;
-import java.util.List;
-import java.util.concurrent.CopyOnWriteArrayList;
-import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ConcurrentNavigableMap;
-import java.util.concurrent.ConcurrentSkipListMap;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.LinkedBlockingQueue;
-import java.util.concurrent.ScheduledFuture;
-import java.util.concurrent.ThreadPoolExecutor;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.atomic.AtomicLong;
-import java.util.concurrent.atomic.AtomicReference;
-import java.util.function.BiConsumer;
-import java.util.function.Consumer;
-
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import static org.pragmatica.consensus.rabia.RabiaPersistence.SavedState.savedState;
 import static org.pragmatica.consensus.rabia.RabiaProtocolMessage.Asynchronous.SyncRequest;
+
 
 /// Implementation of the Rabia consensus protocol.
 ///
@@ -105,6 +105,7 @@ public class RabiaEngine<C extends Command> {
     /// `ConsensusBridge.consensusBridge(router)` so the consensus engine becomes the
     /// authoritative source for `ClusterStateNotification` (E2 Phase 2c.0, 2026-05-28).
     private final Consumer<ConsensusEvent> consensusEventListener;
+
     /// Single-fire-per-transition gate for `ConsensusActive` / `ConsensusPassive`. Tracks the
     /// last published "active" sense; the consumer fires only on true edges
     /// (false → true emits `ConsensusActive`, true → false emits `ConsensusPassive`).
@@ -118,9 +119,11 @@ public class RabiaEngine<C extends Command> {
                                                                     TimeUnit.MILLISECONDS,
                                                                     new LinkedBlockingQueue<>(),
                                                                     new ThreadPoolExecutor.DiscardPolicy());
+
     private final ConcurrentNavigableMap<Id, Batch<C>> pendingBatches = new ConcurrentSkipListMap<>();
     private final Map<NodeId, SavedState<C>> syncResponses = new ConcurrentHashMap<>();
     private final RabiaPersistence<C> persistence;
+
     @SuppressWarnings("rawtypes")
     private final Map<CorrelationId, Promise> correlationMap = new ConcurrentHashMap<>();
 
@@ -134,7 +137,9 @@ public class RabiaEngine<C extends Command> {
     /// post-restore `currentPhase` (older Decisions are safely discarded — they're already
     /// captured in the restored snapshot).
     private static final int MAX_BUFFERED_DECISIONS = 256;
+
     private final java.util.concurrent.ConcurrentLinkedDeque<Decision<C>> bufferedDecisions = new java.util.concurrent.ConcurrentLinkedDeque<>();
+
     private final java.util.concurrent.atomic.AtomicInteger bufferedDecisionCount = new java.util.concurrent.atomic.AtomicInteger();
 
     //--------------------------------- Node State Start
@@ -150,7 +155,6 @@ public class RabiaEngine<C extends Command> {
     private final AtomicReference<Phase> highestObservedClusterPhase = new AtomicReference<>(Phase.ZERO);
     private final AtomicReference<EngineState> engineState = new AtomicReference<>(new EngineState.Stopped());
     private final AtomicReference<Promise<Unit>> startPromise = new AtomicReference<>(Promise.promise());
-
     // Per Rabia spec: after a decision, the next phase inherits this value for round 1 vote
     private final AtomicReference<Option<StateValue>> lockedValue = new AtomicReference<>(Option.none());
     private final Option<ScheduledFuture<?>> cleanupTask;
@@ -166,12 +170,14 @@ public class RabiaEngine<C extends Command> {
     /// one-shot gate so the persisted-vs-cluster phase comparison runs exactly once per process,
     /// at the FIRST sync restore (the moment the node first learns the cluster's reported state).
     private final AtomicBoolean bootFutureHistoryChecked = new AtomicBoolean(false);
+
     /// Listener invoked (persistedPhaseValue, clusterReportedPhaseValue) when the §6.4
     /// future-history hazard is detected — this node's persisted Rabia phase EXCEEDS what the
     /// joined cluster reports (mixed-wipe / `down -v` hazard). Detect-only: the engine logs WARN
     /// and notifies; recovery design is explicitly deferred (RC2). Default no-op; AetherNode
     /// wires the per-node transition journal.
     private volatile BiConsumer<Long, Long> onBootFutureHistory = (persisted, cluster) -> {};
+
     /// Listeners invoked after EVERY successful sync restore, once the restored state has been
     /// applied and the state machine content is queryable (and the engine re-activated).
     /// Late-joiner seam: state distributed via live notifications (e.g. KV `ValuePut`-derived
@@ -192,7 +198,14 @@ public class RabiaEngine<C extends Command> {
                        ClusterNetwork network,
                        StateMachine<C> stateMachine,
                        ProtocolConfig config) {
-        this(topologyManager, network, stateMachine, config, ConsensusMetrics.noop(), false, RabiaPersistence.inMemory(), DEFAULT_PHASE_STALL_CHECK);
+        this(topologyManager,
+             network,
+             stateMachine,
+             config,
+             ConsensusMetrics.noop(),
+             false,
+             RabiaPersistence.inMemory(),
+             DEFAULT_PHASE_STALL_CHECK);
     }
 
     /// Creates a new Rabia consensus engine with metrics but without activation gating.
@@ -207,7 +220,14 @@ public class RabiaEngine<C extends Command> {
                        StateMachine<C> stateMachine,
                        ProtocolConfig config,
                        ConsensusMetrics metrics) {
-        this(topologyManager, network, stateMachine, config, metrics, false, RabiaPersistence.inMemory(), DEFAULT_PHASE_STALL_CHECK);
+        this(topologyManager,
+             network,
+             stateMachine,
+             config,
+             metrics,
+             false,
+             RabiaPersistence.inMemory(),
+             DEFAULT_PHASE_STALL_CHECK);
     }
 
     /// Creates a new Rabia consensus engine with metrics and activation gating but in-memory persistence.
@@ -228,7 +248,14 @@ public class RabiaEngine<C extends Command> {
                        ProtocolConfig config,
                        ConsensusMetrics metrics,
                        boolean activationGated) {
-        this(topologyManager, network, stateMachine, config, metrics, activationGated, RabiaPersistence.inMemory(), DEFAULT_PHASE_STALL_CHECK);
+        this(topologyManager,
+             network,
+             stateMachine,
+             config,
+             metrics,
+             activationGated,
+             RabiaPersistence.inMemory(),
+             DEFAULT_PHASE_STALL_CHECK);
     }
 
     /// Creates a new Rabia consensus engine with all parameters except phaseStallCheck.
@@ -248,7 +275,14 @@ public class RabiaEngine<C extends Command> {
                        ConsensusMetrics metrics,
                        boolean activationGated,
                        RabiaPersistence<C> persistence) {
-        this(topologyManager, network, stateMachine, config, metrics, activationGated, persistence, DEFAULT_PHASE_STALL_CHECK);
+        this(topologyManager,
+             network,
+             stateMachine,
+             config,
+             metrics,
+             activationGated,
+             persistence,
+             DEFAULT_PHASE_STALL_CHECK);
     }
 
     /// Creates a new Rabia consensus engine with all parameters including persistence and phase stall check.
@@ -261,15 +295,22 @@ public class RabiaEngine<C extends Command> {
                        boolean activationGated,
                        RabiaPersistence<C> persistence,
                        TimeSpan phaseStallCheck) {
-        this(topologyManager, network, stateMachine, config, metrics, activationGated, persistence, phaseStallCheck, RabiaEngine::ignoreConsensusEvent);
+        this(topologyManager,
+             network,
+             stateMachine,
+             config,
+             metrics,
+             activationGated,
+             persistence,
+             phaseStallCheck,
+             RabiaEngine::ignoreConsensusEvent);
     }
 
     /// Default no-op consumer used by legacy constructors that do not wire a
     /// `consensusEventListener`. Marked `@Contract` because the void return is intentional
     /// (sink semantics).
     @Contract
-    private static void ignoreConsensusEvent(ConsensusEvent event) {
-    }
+    private static void ignoreConsensusEvent(ConsensusEvent event) {}
 
     /// Creates a new Rabia consensus engine with all parameters including persistence,
     /// phase stall check, and a `consensusEventListener` for engine-level state transitions.
@@ -294,20 +335,17 @@ public class RabiaEngine<C extends Command> {
                        RabiaPersistence<C> persistence,
                        TimeSpan phaseStallCheck,
                        Consumer<ConsensusEvent> consensusEventListener) {
-        this.self = topologyManager.self()
-                                   .id();
+        this.self = topologyManager.self().id();
         this.topologyManager = topologyManager;
         this.network = network;
         this.stateMachine = stateMachine;
         this.config = config;
-        this.metrics = Option.option(metrics)
-                             .or(ConsensusMetrics.noop());
+        this.metrics = Option.option(metrics).or(ConsensusMetrics.noop());
         this.activationGated = activationGated;
         this.activationAuthorized = !activationGated;
         this.persistence = persistence;
         this.phaseStallCheck = phaseStallCheck;
-        this.consensusEventListener = Option.option(consensusEventListener)
-                                            .or(RabiaEngine::ignoreConsensusEvent);
+        this.consensusEventListener = Option.option(consensusEventListener).or(RabiaEngine::ignoreConsensusEvent);
         this.cleanupTask = Option.some(SharedScheduler.scheduleAtFixedRate(this::cleanupOldPhases,
                                                                            config.cleanupInterval()));
     }
@@ -317,8 +355,10 @@ public class RabiaEngine<C extends Command> {
     public void clusterState(ClusterStateNotification clusterStateNotification) {
         if (!clusterStateNotification.advanceSequence(quorumSequence)) {
             log.debug("Ignoring stale ClusterStateNotification: {}", clusterStateNotification);
+
             return;
         }
+
         log.trace("Node {} received cluster state {}", self, clusterStateNotification);
         switch (clusterStateNotification.state()) {
             case ACTIVE -> handleClusterActive(clusterStateNotification);
@@ -330,6 +370,7 @@ public class RabiaEngine<C extends Command> {
         if (activationGated && !activationAuthorized) {
             log.info("Node {}: cluster active but activation gated, storing notification", self);
             pendingQuorum.set(notification);
+
             return;
         }
         // Membership-architecture-spec §4.5 / §7.3: distinguish quorum-resume (Paused → Idle,
@@ -338,6 +379,7 @@ public class RabiaEngine<C extends Command> {
         // any Decisions delivered during the pause have already been applied, so we just
         // re-arm phase processing.
         var current = engineState.get();
+
         if (current.isPaused()) {
             resumeFromPause();
         } else if (current.isActive() || current instanceof EngineState.Syncing) {
@@ -364,8 +406,10 @@ public class RabiaEngine<C extends Command> {
             log.info("Node {}: promoting from observer to full consensus", self);
             observerMode = false;
         }
+
         activationAuthorized = true;
         var pending = pendingQuorum.getAndClear();
+
         if (pending.isPresent()) {
             log.info("Node {}: replaying stored cluster-state notification", self);
             clusterConnected();
@@ -376,6 +420,7 @@ public class RabiaEngine<C extends Command> {
 
     private void promoteObserverToActive() {
         var oldState = engineState.getAndSet(new EngineState.Idle());
+
         exitState(oldState);
         notifyConsensusStateTransition();
         log.info("Node {} promoted from observer to active in phase {}", self, currentPhase.get());
@@ -390,13 +435,13 @@ public class RabiaEngine<C extends Command> {
         log.info("Node {}: consensus observation authorized (observer mode)", self);
         activationAuthorized = true;
         observerMode = true;
-        pendingQuorum.getAndClear()
-                     .onPresent(this::replayQuorumForObserver);
+        pendingQuorum.getAndClear().onPresent(this::replayQuorumForObserver);
     }
 
     /// Returns true if the engine is currently in observer mode.
     public boolean isObserving() {
-        return engineState.get().isObserving();
+        return engineState.get()
+                          .isObserving();
     }
 
     // Side-effect callback for `Option.onPresent` — void inherent. Triggered by
@@ -428,9 +473,9 @@ public class RabiaEngine<C extends Command> {
         // doSynchronize processes accumulated responses (>= quorum) or re-broadcasts.
         network.broadcast(new SyncRequest(self));
         var task = SharedScheduler.schedule(this::synchronize,
-                                            config.syncRetryInterval()
-                                                  .randomize(SCALE));
+                                            config.syncRetryInterval().randomize(SCALE));
         var oldState = engineState.getAndSet(new EngineState.Syncing(task));
+
         exitState(oldState);
         notifyConsensusStateTransition();
     }
@@ -453,21 +498,27 @@ public class RabiaEngine<C extends Command> {
 
     private void doPauseForQuorumLoss() {
         var current = engineState.get();
+
         if (!current.isActive() && !current.isObserving() && !current.isPaused() && !(current instanceof EngineState.Syncing)) {
             // Stopped engines stay Stopped — nothing to pause.
             return;
         }
+
         if (current.isPaused()) {
             return;
         }
+
         var oldState = engineState.getAndSet(new EngineState.Paused());
+
         exitState(oldState);
         notifyConsensusStateTransition();
         persistence.save(stateMachine,
                          currentPhase.get(),
                          pendingBatches.values())
                    .onSuccessRun(() -> log.info("Node {} paused (quorum lost). State retained, snapshot persisted. currentPhase={}, pendingBatches={}",
-                                                self, currentPhase.get(), pendingBatches.size()))
+                                                self,
+                                                currentPhase.get(),
+                                                pendingBatches.size()))
                    .onFailure(cause -> log.error("Node {} failed to persist state on pause: {}", self, cause));
     }
 
@@ -482,13 +533,17 @@ public class RabiaEngine<C extends Command> {
 
     private void doResumeFromPause() {
         var current = engineState.get();
+
         if (!current.isPaused()) {
             return;
         }
+
         engineState.set(new EngineState.Idle());
         notifyConsensusStateTransition();
         log.info("Node {} resumed from pause (quorum returned). currentPhase={}, pendingBatches={}",
-                 self, currentPhase.get(), pendingBatches.size());
+                 self,
+                 currentPhase.get(),
+                 pendingBatches.size());
         // Drain any far-future Decisions that were buffered while Paused. Decisions with
         // phase < currentPhase are safely discarded; same/higher-phase ones are committed
         // idempotently (PhaseData.tryMarkDecided makes re-application a no-op).
@@ -509,25 +564,35 @@ public class RabiaEngine<C extends Command> {
     /// Replaying the same membership is a no-op — no state is wiped if `newConfig` already
     /// matches the engine's current view. Returns success on no-op too.
     public Promise<Unit> reconfigure(ClusterConfig newConfig) {
-        var promise = Promise.<Unit>promise();
+        var promise = Promise.<Unit> promise();
+
         safeExecute(() -> doReconfigure(newConfig, promise));
+
         return promise;
     }
 
     private void doReconfigure(ClusterConfig newConfig, Promise<Unit> promise) {
         var existing = currentConfig.get();
+
         if (existing.map(c -> c.sameMembership(newConfig)).or(false)) {
             log.info("Node {}: reconfigure called with identical membership, no-op", self);
             currentConfig.set(Option.some(newConfig));
             promise.succeed(Unit.unit());
+
             return;
         }
+
         log.info("Node {}: reconfigure to new membership {} (was {})",
-                 self, newConfig.members(), existing.map(ClusterConfig::members).or(List.of()));
+                 self,
+                 newConfig.members(),
+                 existing.map(ClusterConfig::members).or(List.of()));
         var oldState = engineState.getAndSet(new EngineState.Stopped());
+
         exitState(oldState);
         notifyConsensusStateTransition();
-        persistence.save(stateMachine, Phase.ZERO, List.of())
+        persistence.save(stateMachine,
+                         Phase.ZERO,
+                         List.of())
                    .onFailure(cause -> log.error("Node {} failed to persist empty state on reconfigure: {}", self, cause));
         phases.clear();
         currentPhase.set(Phase.ZERO);
@@ -550,9 +615,11 @@ public class RabiaEngine<C extends Command> {
     /// goes through [#pauseForQuorumLoss] and only `stop()` (and [#reconfigure]) reset state.
     private void shutdownAndReset() {
         var current = engineState.get();
+
         if (current instanceof EngineState.Stopped) {
-            // Already stopped via performStop's pre-set; just clear state.
+        // Already stopped via performStop's pre-set; just clear state.
         }
+
         persistence.save(stateMachine,
                          currentPhase.get(),
                          pendingBatches.values())
@@ -572,14 +639,16 @@ public class RabiaEngine<C extends Command> {
     }
 
     public boolean isActive() {
-        return engineState.get().isActive();
+        return engineState.get()
+                          .isActive();
     }
 
     /// Returns true when the engine is in the `Paused` state — quorum is currently
     /// unavailable, in-memory protocol state is retained, and new `apply()` submissions
     /// are rejected with [ConsensusError.QuorumPaused]. Mutually exclusive with `isActive`.
     public boolean isPaused() {
-        return engineState.get().isPaused();
+        return engineState.get()
+                          .isPaused();
     }
 
     /// Returns true when this node's locally-applied frontier trails the cluster's observed
@@ -599,9 +668,11 @@ public class RabiaEngine<C extends Command> {
     /// 503; the resolver bounds the suppression in time so this can never wedge ownership.
     public boolean isPendingCatchUp() {
         var state = engineState.get();
+
         if (state instanceof EngineState.Syncing) {
             return true;
         }
+
         return highestObservedClusterPhase.get()
                                           .compareTo(currentPhase.get()) > 0;
     }
@@ -610,7 +681,9 @@ public class RabiaEngine<C extends Command> {
     /// phase any inbound peer message has referenced so [#isPendingCatchUp] can compare it to
     /// the locally-applied `currentPhase`. Never regresses.
     private void observeClusterPhase(Phase phase) {
-        highestObservedClusterPhase.updateAndGet(existing -> existing.compareTo(phase) >= 0 ? existing : phase);
+        highestObservedClusterPhase.updateAndGet(existing -> existing.compareTo(phase) >= 0
+                                                             ? existing
+                                                             : phase);
     }
 
     /// Package-private test hook: highest observed cluster phase (the committed frontier).
@@ -636,10 +709,10 @@ public class RabiaEngine<C extends Command> {
     }
 
     public <R> Promise<List<R>> apply(List<C> commands) {
-        var pendingAnswer = Promise.<List<R>>promise();
+        var pendingAnswer = Promise.<List<R>> promise();
+
         return submitCommands(commands,
-                              batch -> correlationMap.put(batch.correlationIds()
-                                                               .getFirst(),
+                              batch -> correlationMap.put(batch.correlationIds().getFirst(),
                                                           pendingAnswer)).async()
                              .flatMap(_ -> pendingAnswer.timeout(config.applyTimeout())
                                                         .mapError(this::toApplyTimeout));
@@ -662,13 +735,14 @@ public class RabiaEngine<C extends Command> {
 
     private Result<Batch<C>> submitCommands(List<C> commands, Consumer<Batch<C>> onBatchPrepared) {
         if (log.isDebugEnabled()) {
-            var caller = Thread.currentThread()
-                               .getStackTrace();
+            var caller = Thread.currentThread().getStackTrace();
             var callerInfo = caller.length > 3
                              ? caller[3].toString()
                              : "unknown";
+
             log.debug("Node {} submitting {} command(s): {} [caller: {}]", self, commands.size(), commands, callerInfo);
         }
+
         return validateSubmission(commands).map(_ -> prepareBatch(commands))
                                  .onSuccess(batch -> safeExecute(() -> registerBatch(batch, onBatchPrepared)))
                                  .onSuccess(batch -> safeExecute(() -> broadcastBatch(batch)));
@@ -678,23 +752,31 @@ public class RabiaEngine<C extends Command> {
         if (commands.isEmpty()) {
             return new ConsensusError.CommandBatchIsEmpty().result();
         }
+
         var state = engineState.get();
+
         if (state.isPaused()) {
             return new ConsensusError.QuorumPaused(self).result();
         }
+
         if (!state.isActive()) {
             return new ConsensusError.NodeInactive(self).result();
         }
+
         var pending = pendingBatches.size();
+
         if (pending >= config.maxPendingBatches()) {
             return new ConsensusError.BackpressureExceeded(pending, config.maxPendingBatches()).result();
         }
+
         return Result.success(commands);
     }
 
     private Batch<C> prepareBatch(List<C> commands) {
         var batch = stateMachine.createBatch(commands);
+
         log.trace("Node {}: client submitted {} command(s). Prepared batch: {}", self, commands.size(), batch);
+
         return batch;
     }
 
@@ -726,6 +808,7 @@ public class RabiaEngine<C extends Command> {
     private void performStop(Promise<Unit> promise) {
         cleanupTask.onPresent(task -> task.cancel(false));
         var oldState = engineState.getAndSet(new EngineState.Stopped());
+
         exitState(oldState);
         notifyConsensusStateTransition();
         // Synchronously fail in-flight promises BEFORE executor.shutdown(); otherwise
@@ -749,9 +832,11 @@ public class RabiaEngine<C extends Command> {
     private void safeExecute(Runnable task) {
         executor.execute(() -> {
             var start = System.nanoTime();
+
             try {
                 task.run();
                 var elapsed = System.nanoTime() - start;
+
                 if (elapsed >= SLOW_APPLY_THRESHOLD_NANOS) {
                     log.warn("SLOW-APPLY ms={} queueDepth={}", elapsed / 1_000_000, applyQueueDepth());
                 }
@@ -768,7 +853,8 @@ public class RabiaEngine<C extends Command> {
     /// never throws.
     private int applyQueueDepth() {
         return executor instanceof ThreadPoolExecutor pool
-               ? pool.getQueue().size()
+               ? pool.getQueue()
+                     .size()
                : -1;
     }
 
@@ -816,9 +902,9 @@ public class RabiaEngine<C extends Command> {
         // Same id ⟹ same commands (content-derived id), so we merge correlationIds
         // directly via the state machine.
         pendingBatches.compute(incoming.id(),
-                               (_, existing) -> Option.option(existing)
-                                                      .fold(() -> incoming,
-                                                            current -> stateMachine.merge(current, incoming)));
+                               (_, existing) -> Option.option(existing).fold(() -> incoming,
+                                                                             current -> stateMachine.merge(current,
+                                                                                                           incoming)));
         if (engineState.get().isInPhase()) {
             // Already in phase - broadcast our proposal for this batch if not already proposed
             broadcastOwnProposalIfNeeded();
@@ -831,11 +917,14 @@ public class RabiaEngine<C extends Command> {
     private void broadcastOwnProposalIfNeeded() {
         var phase = currentPhase.get();
         var phaseData = getOrCreatePhaseData(phase);
+
         if (phaseData.hasProposal(self)) {
             return;
         }
-        Option.option(pendingBatches.firstEntry())
-              .onPresent(batchEntry -> broadcastOwnProposal(phase, phaseData, batchEntry.getValue()));
+
+        Option.option(pendingBatches.firstEntry()).onPresent(batchEntry -> broadcastOwnProposal(phase,
+                                                                                                phaseData,
+                                                                                                batchEntry.getValue()));
     }
 
     /// Starts a new phase with pending commands.
@@ -844,15 +933,19 @@ public class RabiaEngine<C extends Command> {
     /// Propose messages but ignore incoming votes, creating an unrecoverable phase deadlock.
     private void startPhase() {
         var current = engineState.get();
+
         if (!current.isActive()) {
             return;
         }
-        if (!(current instanceof EngineState.Idle)) {
+
+        if (! (current instanceof EngineState.Idle)) {
             return;
         }
+
         Option.option(pendingBatches.firstEntry())
               .onEmpty(this::reExecuteStartPhaseIfBatchPending)
-              .onPresent(batchEntry -> startPhaseWithBatch(current, batchEntry.getValue()));
+              .onPresent(batchEntry -> startPhaseWithBatch(current,
+                                                           batchEntry.getValue()));
     }
 
     private void reExecuteStartPhaseIfBatchPending() {
@@ -864,26 +957,31 @@ public class RabiaEngine<C extends Command> {
 
     private void startPhaseWithBatch(EngineState current, Batch<C> batch) {
         var phase = currentPhase.get();
+
         log.trace("Node {} starting phase {} with batch {}", self, phase, batch.id());
         var stallDetector = createStallDetector();
+
         if (!engineState.compareAndSet(current, new EngineState.InPhase(stallDetector))) {
             stallDetector.cancel(false);
+
             return;
         }
+
         notifyConsensusStateTransition();
         var phaseData = getOrCreatePhaseData(phase);
+
         phaseData.registerProposal(self, batch);
         network.broadcast(new Propose<>(self, phase, batch));
         broadcastLockedValueIfPresent(phase, phaseData);
     }
 
     private void broadcastLockedValueIfPresent(Phase phase, PhaseData<C> phaseData) {
-        lockedValue.getAndSet(Option.none())
-                   .onPresent(locked -> broadcastLockedVote(phase, phaseData, locked));
+        lockedValue.getAndSet(Option.none()).onPresent(locked -> broadcastLockedVote(phase, phaseData, locked));
     }
 
     private void broadcastLockedVote(Phase phase, PhaseData<C> phaseData, StateValue locked) {
         var vote = new VoteRound1(self, phase, locked);
+
         log.trace("Node {} immediately voting locked value {} for phase {}", self, locked, phase);
         network.broadcast(vote);
         phaseData.registerRound1Vote(self, locked);
@@ -902,17 +1000,19 @@ public class RabiaEngine<C extends Command> {
         if (syncResponses.size() >= syncQuorumSize()) {
             // Process immediately instead of clearing
             processAccumulatedSyncResponses();
+
             return;
         }
         // Only clear and restart if we don't have enough responses
         syncResponses.clear();
         var request = new SyncRequest(self);
+
         log.trace("Node {}: requesting phase synchronization {}", self, request);
         network.broadcast(request);
         var task = SharedScheduler.schedule(this::synchronize,
-                                            config.syncRetryInterval()
-                                                  .randomize(SCALE));
+                                            config.syncRetryInterval().randomize(SCALE));
         var oldState = engineState.getAndSet(new EngineState.Syncing(task));
+
         exitState(oldState);
         notifyConsensusStateTransition();
     }
@@ -922,11 +1022,15 @@ public class RabiaEngine<C extends Command> {
                                      .stream()
                                      .sorted(Comparator.comparing(SavedState::lastCommittedPhase))
                                      .toList();
+
         if (responses.isEmpty()) {
             log.warn("Node {} has no sync responses to process", self);
+
             return;
         }
+
         var candidate = responses.getLast();
+
         log.trace("Node {} uses {} as synchronization candidate out of {}", self, candidate, syncResponses.size());
         restoreState(candidate);
     }
@@ -935,8 +1039,10 @@ public class RabiaEngine<C extends Command> {
     private void handleSyncResponse(SyncResponse<C> response) {
         if (engineState.get().isActive()) {
             log.trace("Node {} ignoring synchronization response {}. Node is active", self, response);
+
             return;
         }
+
         syncResponses.put(response.sender(), response.state());
         if (syncResponses.size() < syncQuorumSize()) {
             log.trace("Node {} received {} responses {}, not enough to proceed (quorum size = {})",
@@ -944,8 +1050,10 @@ public class RabiaEngine<C extends Command> {
                       syncResponses.size(),
                       syncResponses.keySet(),
                       syncQuorumSize());
+
             return;
         }
+
         log.trace("Node {} received {} responses, collected: {}", self, syncResponses.size(), syncResponses);
         // Use the latest known state among received responses
         var candidate = syncResponses.values()
@@ -953,6 +1061,7 @@ public class RabiaEngine<C extends Command> {
                                      .sorted(Comparator.comparing(SavedState::lastCommittedPhase))
                                      .toList()
                                      .getLast();
+
         log.trace("Node {} uses {} as synchronization candidate out of {}", self, candidate, syncResponses.size());
         restoreState(candidate);
     }
@@ -970,6 +1079,7 @@ public class RabiaEngine<C extends Command> {
             activate();
             replayStateNotifications();
             notifyStateRestored();
+
             return;
         }
         // sync → activate → replay (cluster-topology-overhaul §5.8, AMENDED 2026-06-11):
@@ -1009,18 +1119,22 @@ public class RabiaEngine<C extends Command> {
         if (!bootFutureHistoryChecked.compareAndSet(false, true)) {
             return;
         }
+
         persistence.load()
                    .map(SavedState::lastCommittedPhase)
                    .filter(persisted -> persisted.compareTo(candidate.lastCommittedPhase()) > 0)
-                   .onPresent(persisted -> warnBootFutureHistory(persisted, candidate.lastCommittedPhase()));
+                   .onPresent(persisted -> warnBootFutureHistory(persisted,
+                                                                 candidate.lastCommittedPhase()));
     }
 
     @Contract
     private void warnBootFutureHistory(Phase persisted, Phase clusterReported) {
         log.warn("Node {} BOOT FUTURE-HISTORY detected (§6.4, detect-only): persisted Rabia phase {} exceeds "
-                 + "cluster-reported sync phase {} — this node carries history the joined cluster never saw "
-                 + "(mixed-wipe / down -v hazard). Recovery is NOT attempted (RC2).",
-                 self, persisted, clusterReported);
+                + "cluster-reported sync phase {} — this node carries history the joined cluster never saw "
+                + "(mixed-wipe / down -v hazard). Recovery is NOT attempted (RC2).",
+                 self,
+                 persisted,
+                 clusterReported);
         onBootFutureHistory.accept(persisted.value(), clusterReported.value());
     }
 
@@ -1051,8 +1165,10 @@ public class RabiaEngine<C extends Command> {
     public void onStateRestored(Runnable listener) {
         if (listener == null) {
             onStateRestored.clear();
+
             return;
         }
+
         onStateRestored.add(listener);
     }
 
@@ -1069,11 +1185,9 @@ public class RabiaEngine<C extends Command> {
         // unconditional `set` would drop the rejoiner back behind the cluster and cause
         // `commitDecision` to ignore subsequent same-phase Decisions as duplicates.
         currentPhase.updateAndGet(existing -> existing.compareTo(state.lastCommittedPhase()) >= 0
-                                                ? existing
-                                                : state.lastCommittedPhase());
-        state.pendingBatches()
-             .forEach(batch -> pendingBatches.put(batch.id(),
-                                                  batch));
+                                              ? existing
+                                              : state.lastCommittedPhase());
+        state.pendingBatches().forEach(batch -> pendingBatches.put(batch.id(), batch));
         persistence.save(stateMachine, currentPhase.get(), pendingBatches.values());
         log.info("Node {} restored state from persistence. Current phase {}", self, currentPhase.get());
     }
@@ -1083,13 +1197,15 @@ public class RabiaEngine<C extends Command> {
     private void activate() {
         if (observerMode) {
             activateAsObserver();
+
             return;
         }
+
         var oldState = engineState.getAndSet(new EngineState.Idle());
+
         exitState(oldState);
         notifyConsensusStateTransition();
-        startPromise.get()
-                    .succeed(Unit.unit());
+        startPromise.get().succeed(Unit.unit());
         syncResponses.clear();
         metrics.recordSyncAttempt(self, true);
         log.info("Node {} activated in phase {}", self, currentPhase.get());
@@ -1102,10 +1218,10 @@ public class RabiaEngine<C extends Command> {
 
     private void activateAsObserver() {
         var oldState = engineState.getAndSet(new EngineState.Observing());
+
         exitState(oldState);
         notifyConsensusStateTransition();
-        startPromise.get()
-                    .succeed(Unit.unit());
+        startPromise.get().succeed(Unit.unit());
         syncResponses.clear();
         metrics.recordSyncAttempt(self, true);
         log.info("Node {} activated in observer mode at phase {}", self, currentPhase.get());
@@ -1132,12 +1248,15 @@ public class RabiaEngine<C extends Command> {
     private void notifyConsensusStateTransition() {
         var nowActive = engineState.get().isActive();
         var prev = lastPublishedActive.get();
+
         if (nowActive == prev) {
             return;
         }
+
         if (!lastPublishedActive.compareAndSet(prev, nowActive)) {
             return;
         }
+
         if (nowActive) {
             // Single authority for downstream ClusterStateNotification: TopologyObserver feeds the
             // quorum edge to this engine privately, and this emission (via ConsensusBridge) is now
@@ -1155,9 +1274,7 @@ public class RabiaEngine<C extends Command> {
     /// Creates a periodic stall detector that re-broadcasts the held proposal set and this
     /// node's own votes when a phase hasn't advanced within the configured interval.
     private ScheduledFuture<?> createStallDetector() {
-        return SharedScheduler.scheduleAtFixedRate(
-            () -> safeExecute(this::checkPhaseStall),
-            phaseStallCheck);
+        return SharedScheduler.scheduleAtFixedRate(() -> safeExecute(this::checkPhaseStall), phaseStallCheck);
     }
 
     /// Checks if the current phase is stalled and re-broadcasts protocol messages so peers that
@@ -1181,27 +1298,33 @@ public class RabiaEngine<C extends Command> {
     /// (under the original sender's id; `registerProposal` is idempotent and keyed on sender), so
     /// a fresh voter synced to the stalled phase can reach quorum proposals and make progress.
     private void checkPhaseStall() {
-        if (!(engineState.get() instanceof EngineState.InPhase)) {
+        if (! (engineState.get() instanceof EngineState.InPhase)) {
             return;
         }
+
         var phase = currentPhase.get();
+
         Option.option(phases.get(phase)).onPresent(phaseData -> checkPhaseStallFor(phase, phaseData));
     }
 
     private void checkPhaseStallFor(Phase phase, PhaseData<C> phaseData) {
         var quorumSize = topologyManager.quorumSize();
+
         if (!phaseData.hasQuorumProposals(quorumSize) && phaseData.proposalCount() > 0) {
             log.debug("Node {} stall detected in phase {}: {}/{} proposals, re-broadcasting full proposal set",
-                      self, phase, phaseData.proposalCount(), quorumSize);
+                      self,
+                      phase,
+                      phaseData.proposalCount(),
+                      quorumSize);
             rebroadcastProposalSet(phase, phaseData);
         }
+
         if (phaseData.hasVotedRound1(self) && !phaseData.hasRound1MajorityVotes(quorumSize)) {
-            Option.option(phaseData.getRound1Vote(self))
-                  .onPresent(value -> rebroadcastRound1Stall(phase, value));
+            Option.option(phaseData.getRound1Vote(self)).onPresent(value -> rebroadcastRound1Stall(phase, value));
         }
+
         if (phaseData.hasVotedRound2(self) && !phaseData.hasRound2MajorityVotes(quorumSize)) {
-            Option.option(phaseData.getRound2Vote(self))
-                  .onPresent(value -> rebroadcastRound2Stall(phase, value));
+            Option.option(phaseData.getRound2Vote(self)).onPresent(value -> rebroadcastRound2Stall(phase, value));
         }
     }
 
@@ -1209,17 +1332,20 @@ public class RabiaEngine<C extends Command> {
     /// original contributing node's id. Idempotent at the receiver; bounded by the periodic
     /// stall-check cadence and by the `!hasQuorumProposals` guard at the call site.
     private void rebroadcastProposalSet(Phase phase, PhaseData<C> phaseData) {
-        phaseData.proposals()
-                 .forEach((proposer, batch) -> network.broadcast(new Propose<>(proposer, phase, batch)));
+        phaseData.proposals().forEach((proposer, batch) -> network.broadcast(new Propose<>(proposer, phase, batch)));
     }
 
     private void rebroadcastRound1Stall(Phase phase, StateValue value) {
-        log.debug("Node {} stall detected in phase {}: round1 votes short of quorum, re-broadcasting own R1 vote", self, phase);
+        log.debug("Node {} stall detected in phase {}: round1 votes short of quorum, re-broadcasting own R1 vote",
+                  self,
+                  phase);
         network.broadcast(new VoteRound1(self, phase, value));
     }
 
     private void rebroadcastRound2Stall(Phase phase, StateValue value) {
-        log.debug("Node {} stall detected in phase {}: round2 votes short of quorum, re-broadcasting own R2 vote", self, phase);
+        log.debug("Node {} stall detected in phase {}: round2 votes short of quorum, re-broadcasting own R2 vote",
+                  self,
+                  phase);
         network.broadcast(new VoteRound2(self, phase, value));
     }
 
@@ -1249,8 +1375,8 @@ public class RabiaEngine<C extends Command> {
         } else {
             log.trace("Node {} is inactive, trying to share saved (or empty) state for request: {}", self, request);
             var response = new SyncResponse<>(self,
-                                              persistence.load()
-                                                         .or(SavedState.empty()));
+                                              persistence.load().or(SavedState.empty()));
+
             network.send(request.sender(), response);
         }
     }
@@ -1262,6 +1388,7 @@ public class RabiaEngine<C extends Command> {
         var connectedCount = network.connectedNodeCount();
         var clusterSize = topologyManager.clusterSize();
         var effectiveSize = Math.min(connectedCount, clusterSize);
+
         return effectiveSize / 2 + 1;
     }
 
@@ -1272,12 +1399,14 @@ public class RabiaEngine<C extends Command> {
 
     private void doCleanupOldPhases() {
         var state = engineState.get();
+
         if (!state.isActive() && !state.isObserving()) {
             return;
         }
+
         var current = currentPhase.get();
-        phases.keySet()
-              .removeIf(phase -> isExpiredPhase(phase, current));
+
+        phases.keySet().removeIf(phase -> isExpiredPhase(phase, current));
     }
 
     private boolean isExpiredPhase(Phase phase, Phase current) {
@@ -1291,21 +1420,26 @@ public class RabiaEngine<C extends Command> {
         log.trace("Node {} received proposal from {} for phase {}", self, propose.sender(), propose.phase());
         observeClusterPhase(propose.phase());
         var currentPhaseValue = currentPhase.get();
+
         if (isPastPhase(propose.phase(), currentPhaseValue)) {
             log.trace("Node {} ignoring proposal for past phase {}", self, propose.phase());
+
             return;
         }
+
         if (isFarFuturePhase(propose.phase(), currentPhaseValue)) {
             log.warn("Node {} behind by {} phases (current: {}, received: {}). Triggering resync.",
                      self,
-                     propose.phase()
-                            .value() - currentPhaseValue.value(),
+                     propose.phase().value() - currentPhaseValue.value(),
                      currentPhaseValue,
                      propose.phase());
             triggerResync();
+
             return;
         }
+
         var phaseData = getOrCreatePhaseData(propose.phase());
+
         enterPhaseIfNeeded(propose.phase(), currentPhaseValue, phaseData);
         registerProposal(propose, phaseData);
         tryBroadcastRound1Vote(propose.phase(), phaseData);
@@ -1323,6 +1457,7 @@ public class RabiaEngine<C extends Command> {
         if (engineState.get() instanceof EngineState.Syncing) {
             return;
         }
+
         doClusterConnected();
     }
 
@@ -1334,16 +1469,22 @@ public class RabiaEngine<C extends Command> {
         if (!proposalPhase.equals(currentPhaseValue) || engineState.get().isInPhase()) {
             return;
         }
+
         log.trace("Node {} entering phase {} triggered by external proposal", self, proposalPhase);
         var stallDetector = createStallDetector();
         var current = engineState.get();
-        if (!(current instanceof EngineState.Idle) || !engineState.compareAndSet(current, new EngineState.InPhase(stallDetector))) {
+
+        if (! (current instanceof EngineState.Idle) || !engineState.compareAndSet(current,
+                                                                                  new EngineState.InPhase(stallDetector))) {
             stallDetector.cancel(false);
+
             return;
         }
+
         notifyConsensusStateTransition();
-        Option.option(pendingBatches.firstEntry())
-              .onPresent(batchEntry -> broadcastOwnProposal(proposalPhase, phaseData, batchEntry.getValue()));
+        Option.option(pendingBatches.firstEntry()).onPresent(batchEntry -> broadcastOwnProposal(proposalPhase,
+                                                                                                phaseData,
+                                                                                                batchEntry.getValue()));
         // Broadcast locked value if present (same as startPhase does)
         broadcastLockedValueIfPresent(proposalPhase, phaseData);
     }
@@ -1360,6 +1501,7 @@ public class RabiaEngine<C extends Command> {
 
     private void tryBroadcastRound1Vote(Phase phase, PhaseData<C> phaseData) {
         var quorumSize = topologyManager.quorumSize();
+
         if (canVoteRound1(phase, phaseData, quorumSize)) {
             broadcastRound1Vote(phase, phaseData, quorumSize);
         } else {
@@ -1368,12 +1510,17 @@ public class RabiaEngine<C extends Command> {
     }
 
     private boolean canVoteRound1(Phase phase, PhaseData<C> phaseData, int quorumSize) {
-        return engineState.get().isInPhase() && currentPhase.get()
-                                              .equals(phase) && !phaseData.hasVotedRound1(self) && phaseData.hasQuorumProposals(quorumSize);
+        return engineState.get()
+                          .isInPhase()
+               && currentPhase.get()
+                              .equals(phase)
+               && !phaseData.hasVotedRound1(self)
+               && phaseData.hasQuorumProposals(quorumSize);
     }
 
     private void broadcastRound1Vote(Phase phase, PhaseData<C> phaseData, int quorumSize) {
         var vote = phaseData.evaluateInitialVote(self, quorumSize);
+
         log.trace("Node {} broadcasting R1 vote {} for phase {} after collecting quorum proposals", self, vote, phase);
         network.broadcast(vote);
         phaseData.registerRound1Vote(self, vote.stateValue());
@@ -1399,6 +1546,7 @@ public class RabiaEngine<C extends Command> {
                   vote.stateValue());
         observeClusterPhase(vote.phase());
         var phaseData = getOrCreatePhaseData(vote.phase());
+
         registerRound1Vote(vote, phaseData);
         tryBroadcastRound2Vote(vote.phase(), phaseData);
     }
@@ -1413,8 +1561,10 @@ public class RabiaEngine<C extends Command> {
         var superMajoritySize = topologyManager.superMajoritySize();
         // Check for fast path: if n-f nodes agree in Round 1, skip Round 2
         var superMajorityValue = phaseData.getSuperMajorityRound1Value(superMajoritySize);
+
         if (canUseFastPath(phase, phaseData, superMajorityValue)) {
             useFastPath(phase, phaseData, superMajorityValue, quorumSize);
+
             return;
         }
         // Normal path: proceed with Round 2 voting
@@ -1424,8 +1574,13 @@ public class RabiaEngine<C extends Command> {
     }
 
     private boolean canUseFastPath(Phase phase, PhaseData<C> phaseData, Option<StateValue> superMajorityValue) {
-        return engineState.get().isInPhase() && currentPhase.get()
-                                              .equals(phase) && !phaseData.isDecided() && !phaseData.hasVotedRound2(self) && superMajorityValue.isPresent();
+        return engineState.get()
+                          .isInPhase()
+               && currentPhase.get()
+                              .equals(phase)
+               && !phaseData.isDecided()
+               && !phaseData.hasVotedRound2(self)
+               && superMajorityValue.isPresent();
     }
 
     private void useFastPath(Phase phase,
@@ -1433,31 +1588,38 @@ public class RabiaEngine<C extends Command> {
                              Option<StateValue> superMajorityValue,
                              int quorumSize) {
         superMajorityValue.onPresent(agreedValue -> {
-                                         log.debug("Node {} using fast path for phase {} with value {} (super-majority agreement)",
-                                                   self,
-                                                   phase,
-                                                   agreedValue);
-                                         metrics.recordFastPath(self, phase, agreedValue);
-                                         var decision = buildDecision(phaseData, agreedValue, quorumSize);
-                                         network.broadcast(decision);
-                                         processDecision(decision);
-                                     });
+            log.debug("Node {} using fast path for phase {} with value {} (super-majority agreement)",
+                      self,
+                      phase,
+                      agreedValue);
+            metrics.recordFastPath(self, phase, agreedValue);
+            var decision = buildDecision(phaseData, agreedValue, quorumSize);
+
+            network.broadcast(decision);
+            processDecision(decision);
+        });
     }
 
     private Decision<C> buildDecision(PhaseData<C> phaseData, StateValue agreedValue, int quorumSize) {
         var batch = agreedValue == StateValue.V1
                     ? phaseData.findAgreedProposal(quorumSize)
-                    : StateMachine.Batch.<C>emptyBatch();
+                    : StateMachine.Batch.<C> emptyBatch();
+
         return new Decision<>(self, phaseData.phase(), agreedValue, batch);
     }
 
     private boolean canVoteRound2(Phase phase, PhaseData<C> phaseData, int quorumSize) {
-        return engineState.get().isInPhase() && currentPhase.get()
-                                              .equals(phase) && !phaseData.hasVotedRound2(self) && phaseData.hasRound1MajorityVotes(quorumSize);
+        return engineState.get()
+                          .isInPhase()
+               && currentPhase.get()
+                              .equals(phase)
+               && !phaseData.hasVotedRound2(self)
+               && phaseData.hasRound1MajorityVotes(quorumSize);
     }
 
     private void broadcastRound2Vote(Phase phase, PhaseData<C> phaseData, int quorumSize) {
         var round2Vote = phaseData.evaluateRound2Vote(quorumSize);
+
         log.trace("Node {} votes in round 2 {}", self, round2Vote);
         network.broadcast(new VoteRound2(self, phase, round2Vote));
         phaseData.registerRound2Vote(self, round2Vote);
@@ -1472,6 +1634,7 @@ public class RabiaEngine<C extends Command> {
                   vote.stateValue());
         observeClusterPhase(vote.phase());
         var phaseData = getOrCreatePhaseData(vote.phase());
+
         registerRound2Vote(vote, phaseData);
         tryMakeDecision(vote.phase(), phaseData);
     }
@@ -1483,18 +1646,24 @@ public class RabiaEngine<C extends Command> {
 
     private void tryMakeDecision(Phase phase, PhaseData<C> phaseData) {
         var quorumSize = topologyManager.quorumSize();
+
         if (canMakeDecision(phase, phaseData, quorumSize)) {
             makeAndBroadcastDecision(phaseData, quorumSize);
         }
     }
 
     private boolean canMakeDecision(Phase phase, PhaseData<C> phaseData, int quorumSize) {
-        return engineState.get().isInPhase() && currentPhase.get()
-                                              .equals(phase) && !phaseData.isDecided() && phaseData.hasRound2MajorityVotes(quorumSize);
+        return engineState.get()
+                          .isInPhase()
+               && currentPhase.get()
+                              .equals(phase)
+               && !phaseData.isDecided()
+               && phaseData.hasRound2MajorityVotes(quorumSize);
     }
 
     private void makeAndBroadcastDecision(PhaseData<C> phaseData, int quorumSize) {
         var outcome = phaseData.processRound2Completion(self, topologyManager.fPlusOne(), quorumSize);
+
         switch (outcome) {
             case Round2Outcome.Decided<C> decided -> {
                 network.broadcast(decided.decision());
@@ -1512,11 +1681,10 @@ public class RabiaEngine<C extends Command> {
         if (phaseData.tryMarkDecided()) {
             metrics.recordDecision(self, phaseData.phase(), decision.stateValue(), 0L);
             // Apply commands to state machine ONLY if it was a V1 decision with a non-empty batch
-            if (decision.stateValue() == StateValue.V1 && !decision.value()
-                                                                   .commands()
-                                                                   .isEmpty()) {
+            if (decision.stateValue() == StateValue.V1 && !decision.value().commands().isEmpty()) {
                 commitChanges(phaseData, decision);
             }
+
             advancePhase(phaseData.phase(), decision.stateValue(), false);
         }
     }
@@ -1528,14 +1696,15 @@ public class RabiaEngine<C extends Command> {
         // Get the batch from pendingBatches BEFORE removing - this has all merged correlationIds.
         // The decision.value() may have partial IDs if the proposer hadn't received all batches yet.
         var localBatch = Option.option(pendingBatches.remove(decision.value().id()));
+
         metrics.updatePendingBatches(self, pendingBatches.size());
         // Use correlationIds from our local pendingBatches (fully merged) rather than
         // from decision.value() (which may have partial IDs from early proposals)
-        var correlationIds = localBatch.map(Batch::correlationIds)
-                                       .or(() -> decision.value().correlationIds());
+        var correlationIds = localBatch.map(Batch::correlationIds).or(() -> decision.value()
+                                                                                    .correlationIds());
+
         for (var correlationId : correlationIds) {
-            Option.option(correlationMap.remove(correlationId))
-                  .onPresent(promise -> promise.succeed(results));
+            Option.option(correlationMap.remove(correlationId)).onPresent(promise -> promise.succeed(results));
         }
     }
 
@@ -1558,15 +1727,23 @@ public class RabiaEngine<C extends Command> {
         log.trace("Node {} received decision {}", self, decision);
         observeClusterPhase(decision.phase());
         var state = engineState.get();
+
         if (state instanceof EngineState.Stopped || state instanceof EngineState.Syncing) {
             bufferDecisionForReplay(decision);
+
             return;
         }
+
         if (isFarFuturePhase(decision.phase(), currentPhase.get())) {
             log.warn("Node {} received Decision {} but currentPhase={}; gap={} > {} — buffering{}",
-                     self, decision.phase(), currentPhase.get(),
-                     decision.phase().value() - currentPhase.get().value(), MAX_PHASE_AHEAD,
-                     state.isPaused() ? " (paused; deferring resync to ESTABLISHED)" : " and resyncing");
+                     self,
+                     decision.phase(),
+                     currentPhase.get(),
+                     decision.phase().value() - currentPhase.get().value(),
+                     MAX_PHASE_AHEAD,
+                     state.isPaused()
+                     ? " (paused; deferring resync to ESTABLISHED)"
+                     : " and resyncing");
             bufferDecisionForReplay(decision);
             // While Paused, do not flip to Syncing on far-future decisions — quorum is by
             // definition unavailable, so a sync round cannot succeed. The next ESTABLISHED
@@ -1574,8 +1751,10 @@ public class RabiaEngine<C extends Command> {
             if (!state.isPaused()) {
                 triggerResync();
             }
+
             return;
         }
+
         commitDecision(getOrCreatePhaseData(decision.phase()), decision);
     }
 
@@ -1597,24 +1776,30 @@ public class RabiaEngine<C extends Command> {
         if (bufferedDecisions.isEmpty()) {
             return;
         }
-        var sorted = bufferedDecisions.stream()
-                                       .sorted(java.util.Comparator.comparing(Decision::phase))
-                                       .toList();
+
+        var sorted = bufferedDecisions.stream().sorted(java.util.Comparator.comparing(Decision::phase)).toList();
+
         bufferedDecisions.clear();
         bufferedDecisionCount.set(0);
         var minPhase = currentPhase.get();
         var applied = 0;
         var skipped = 0;
+
         for (var decision : sorted) {
             if (decision.phase().compareTo(minPhase) < 0) {
                 skipped++;
                 continue;
             }
+
             commitDecision(getOrCreatePhaseData(decision.phase()), decision);
             applied++;
         }
+
         log.info("Node {} drained buffered decisions: applied={}, skipped={}, post-currentPhase={}",
-                 self, applied, skipped, currentPhase.get());
+                 self,
+                 applied,
+                 skipped,
+                 currentPhase.get());
     }
 
     /// Advances to the next phase after decision or carry-forward.
@@ -1625,14 +1810,19 @@ public class RabiaEngine<C extends Command> {
     /// @param forceLock if true, always lock the value (for carry-forward per spec)
     private void advancePhase(Phase fromPhase, StateValue value, boolean forceLock) {
         var nextPhase = fromPhase.successor();
-        this.currentPhase.updateAndGet(p -> p.compareTo(nextPhase) >= 0 ? p : nextPhase);
+
+        this.currentPhase.updateAndGet(p -> p.compareTo(nextPhase) >= 0
+                                            ? p
+                                            : nextPhase);
         if (observerMode) {
             advancePhaseAsObserver(nextPhase);
+
             return;
         }
         // Only transition InPhase → Idle. Preserve Syncing/Stopped states so that
         // live Decisions received during synchronization don't cancel the sync task.
         var oldState = engineState.get();
+
         if (oldState instanceof EngineState.InPhase) {
             engineState.set(new EngineState.Idle());
             exitState(oldState);
@@ -1645,6 +1835,7 @@ public class RabiaEngine<C extends Command> {
         } else {
             lockedValue.set(Option.none());
         }
+
         log.trace("Node {} advancing to phase {} with value {} (forceLock={})", self, nextPhase, value, forceLock);
         if (!pendingBatches.isEmpty()) {
             safeExecute(this::startPhase);
@@ -1653,6 +1844,7 @@ public class RabiaEngine<C extends Command> {
 
     private void advancePhaseAsObserver(Phase nextPhase) {
         var oldState = engineState.getAndSet(new EngineState.Observing());
+
         exitState(oldState);
         notifyConsensusStateTransition();
         log.trace("Node {} (observer) advancing to phase {}", self, nextPhase);

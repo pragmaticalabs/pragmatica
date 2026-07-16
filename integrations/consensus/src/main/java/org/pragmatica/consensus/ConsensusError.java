@@ -13,10 +13,10 @@
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  */
-
 package org.pragmatica.consensus;
 
 import org.pragmatica.lang.Cause;
+
 
 /// Error types for consensus operations.
 public sealed interface ConsensusError extends Cause {

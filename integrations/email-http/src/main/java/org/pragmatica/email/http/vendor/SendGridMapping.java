@@ -1,15 +1,16 @@
 package org.pragmatica.email.http.vendor;
 
+import java.util.Map;
+
 import org.pragmatica.email.http.EmailBody;
 import org.pragmatica.email.http.EmailMessage;
 import org.pragmatica.email.http.HttpEmailConfig;
 import org.pragmatica.email.http.VendorMapping;
 import org.pragmatica.email.http.VendorRequest;
 
-import java.util.Map;
-
 import static org.pragmatica.email.http.vendor.JsonBuilder.escape;
 import static org.pragmatica.email.http.vendor.JsonBuilder.jsonBuilder;
+
 
 /// SendGrid email API vendor mapping.
 public final class SendGridMapping implements VendorMapping {
@@ -37,17 +38,17 @@ public final class SendGridMapping implements VendorMapping {
         var personalization = buildPersonalization(message);
         var content = buildContent(message.body());
 
-        return jsonBuilder()
-            .rawField("personalizations", "[" + personalization + "]")
-            .rawField("from", "{\"email\":\"" + escape(message.from()) + "\"}")
-            .field("subject", message.subject())
-            .rawField("content", "[" + content + "]")
-            .build();
+        return jsonBuilder().rawField("personalizations", "[" + personalization + "]")
+                          .rawField("from",
+                                    "{\"email\":\"" + escape(message.from()) + "\"}")
+                          .field("subject",
+                                 message.subject())
+                          .rawField("content", "[" + content + "]")
+                          .build();
     }
 
     private static String buildPersonalization(EmailMessage message) {
-        var builder = jsonBuilder()
-            .objectArrayField("to", message.to(), "email");
+        var builder = jsonBuilder().objectArrayField("to", message.to(), "email");
 
         if (!message.cc().isEmpty()) {
             builder.objectArrayField("cc", message.cc(), "email");
@@ -62,14 +63,8 @@ public final class SendGridMapping implements VendorMapping {
 
     private static String buildContent(EmailBody body) {
         return switch (body) {
-            case EmailBody.Text text -> jsonBuilder()
-                .field("type", "text/plain")
-                .field("value", text.content())
-                .build();
-            case EmailBody.Html html -> jsonBuilder()
-                .field("type", "text/html")
-                .field("value", html.content())
-                .build();
+            case EmailBody.Text text -> jsonBuilder().field("type", "text/plain").field("value", text.content()).build();
+            case EmailBody.Html html -> jsonBuilder().field("type", "text/html").field("value", html.content()).build();
         };
     }
 }

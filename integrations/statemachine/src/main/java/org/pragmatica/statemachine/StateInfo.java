@@ -2,6 +2,7 @@ package org.pragmatica.statemachine;
 
 import java.time.Instant;
 
+
 /// Information about the current state of a state machine instance.
 ///
 /// @param <S> State type
@@ -9,10 +10,7 @@ import java.time.Instant;
 /// @param currentState  Current state
 /// @param enteredAt     When the current state was entered
 /// @param transitionCount Number of transitions since start
-public record StateInfo<S>(String machineId,
-                           S currentState,
-                           Instant enteredAt,
-                           long transitionCount) {
+public record StateInfo<S>(String machineId, S currentState, Instant enteredAt, long transitionCount) {
     /// Creates state info.
     public static <S> StateInfo<S> stateInfo(String machineId, S currentState) {
         return new StateInfo<>(machineId, currentState, Instant.now(), 0);

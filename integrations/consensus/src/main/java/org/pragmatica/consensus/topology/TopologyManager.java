@@ -13,8 +13,11 @@
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  */
-
 package org.pragmatica.consensus.topology;
+
+import java.net.SocketAddress;
+import java.util.List;
+import java.util.Set;
 
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.NodeInfo;
@@ -24,19 +27,14 @@ import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.net.tcp.TlsConfig;
 
-import java.net.SocketAddress;
-import java.util.List;
-import java.util.Set;
 
 /// Representation of our knowledge about the cluster structure: known nodes and cluster/quorum size.
 /// Note that this is not a representation of the actual cluster topology.
 public interface TopologyManager {
     /// This node information.
     NodeInfo self();
-
     /// Retrieve information about the node.
     Option<NodeInfo> get(NodeId id);
-
     /// Returns the configured fixed cluster size used for quorum calculations.
     /// This value is set at startup and can be dynamically updated via SetClusterSize message.
     /// Using a fixed cluster size prevents split-brain resurrection scenarios.
@@ -65,13 +63,9 @@ public interface TopologyManager {
 
     /// Mapping from IP address (host and port) to node ID.
     Option<NodeId> reverseLookup(SocketAddress socketAddress);
-
     Promise<Unit> start();
-
     Promise<Unit> stop();
-
     TimeSpan pingInterval();
-
     /// Timeout for Hello handshake on new connections.
     TimeSpan helloTimeout();
 
@@ -82,7 +76,6 @@ public interface TopologyManager {
 
     /// Retrieve the state of a node by ID.
     Option<NodeState> getState(NodeId id);
-
     /// Returns the list of all node IDs in the topology.
     List<NodeId> topology();
 
@@ -100,8 +93,8 @@ public interface TopologyManager {
     /// Passive nodes (load balancers, observers) are excluded from the count.
     default int activeNodeCount() {
         return (int) topology().stream()
-                               .filter(id -> !isPassive(id))
-                               .count();
+                             .filter(id -> !isPassive(id))
+                             .count();
     }
 
     /// Returns the count of currently-healthy active (non-passive) nodes.
@@ -110,9 +103,10 @@ public interface TopologyManager {
     /// not count a killed-but-not-yet-evicted peer as live.
     default int healthyActiveNodeCount() {
         return (int) topology().stream()
-                               .filter(id -> !isPassive(id))
-                               .filter(id -> getState(id).map(state -> state.health() == NodeHealth.HEALTHY).or(false))
-                               .count();
+                             .filter(id -> !isPassive(id))
+                             .filter(id -> getState(id).map(state -> state.health() == NodeHealth.HEALTHY)
+                                                   .or(false))
+                             .count();
     }
 
     /// Returns the set of core (non-passive) node IDs in the topology.

@@ -1,11 +1,5 @@
 package org.pragmatica.jbct.lint.cst.rules;
 
-import org.pragmatica.jbct.lint.Diagnostic;
-import org.pragmatica.jbct.lint.LintContext;
-import org.pragmatica.jbct.lint.cst.CstLintRule;
-import org.pragmatica.jbct.parser.Cursor;
-import org.pragmatica.lang.Option;
-
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
@@ -13,7 +7,14 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Stream;
 
+import org.pragmatica.jbct.lint.Diagnostic;
+import org.pragmatica.jbct.lint.LintContext;
+import org.pragmatica.jbct.lint.cst.CstLintRule;
+import org.pragmatica.jbct.parser.Cursor;
+import org.pragmatica.lang.Option;
+
 import static org.pragmatica.jbct.parser.CstNodes.*;
+
 
 /// JBCT-ZONE-03: No zone mixing in sequencer chains.
 ///
@@ -71,12 +72,13 @@ public class CstZoneMixingRule implements CstLintRule {
         }
         // Find methods with monadic chains
         return findAllMethods(root).stream()
-                      .filter(this::hasMonadicChain)
-                      .flatMap(method -> checkChainForZoneMixing(method, ctx));
+                             .filter(this::hasMonadicChain)
+                             .flatMap(method -> checkChainForZoneMixing(method, ctx));
     }
 
     private boolean hasMonadicChain(Cursor method) {
         var methodText = text(method);
+
         return methodText.contains(".flatMap(") || methodText.contains(".map(");
     }
 
@@ -94,11 +96,9 @@ public class CstZoneMixingRule implements CstLintRule {
         return Stream.of(createDiagnostic(method, violations, ctx));
     }
 
-    private void findZone3VerbsInPattern(String text,
-                                         Pattern pattern,
-                                         int verbGroup,
-                                         List<String> violations) {
+    private void findZone3VerbsInPattern(String text, Pattern pattern, int verbGroup, List<String> violations) {
         Matcher matcher = pattern.matcher(text);
+
         while (matcher.find()) {
             extractVerb(matcher.group(verbGroup)).filter(verb -> ZONE_3_VERBS.contains(verb.toLowerCase()))
                        .filter(verb -> !violations.contains(verb))
@@ -115,12 +115,15 @@ public class CstZoneMixingRule implements CstLintRule {
     private Option<String> extractFirstWord(String name) {
         // Extract first word from camelCase
         var sb = new StringBuilder();
+
         for (var c : name.toCharArray()) {
             if (Character.isUpperCase(c) && !sb.isEmpty()) {
                 break;
             }
+
             sb.append(c);
         }
+
         return sb.isEmpty()
                ? Option.none()
                : Option.some(sb.toString());
@@ -128,14 +131,17 @@ public class CstZoneMixingRule implements CstLintRule {
 
     private Diagnostic createDiagnostic(Cursor node, List<String> violations, LintContext ctx) {
         var verbList = String.join(", ", violations);
+
         return Diagnostic.diagnostic(RULE_ID,
                                      ctx.severityFor(RULE_ID),
                                      ctx.fileName(),
                                      startLine(node),
                                      startColumn(node),
                                      "Zone mixing in chain - Zone 3 verbs found: " + verbList,
-                                     "Sequencer chains should use Zone 2 methods. " + "Wrap Zone 3 operations ('" + verbList
-                                     + "') in step interfaces. " + "Example: Instead of .flatMap(x -> x.parseData()), "
-                                     + "use .flatMap(processData::apply) where ProcessData is a step interface.");
+                                     "Sequencer chains should use Zone 2 methods. "
+                                    + "Wrap Zone 3 operations ('" + verbList
+                                    + "') in step interfaces. "
+                                    + "Example: Instead of .flatMap(x -> x.parseData()), "
+                                    + "use .flatMap(processData::apply) where ProcessData is a step interface.");
     }
 }

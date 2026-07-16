@@ -1,8 +1,5 @@
 package org.pragmatica.lang.io;
 
-import org.pragmatica.lang.Result;
-import org.pragmatica.lang.Unit;
-
 import java.nio.file.CopyOption;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -11,6 +8,9 @@ import java.nio.file.StandardOpenOption;
 import java.nio.file.attribute.PosixFilePermissions;
 import java.util.List;
 import java.util.function.Predicate;
+
+import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Unit;
 
 import static org.pragmatica.lang.Result.success;
 import static org.pragmatica.lang.Unit.unit;
@@ -30,9 +30,7 @@ import static org.pragmatica.lang.Unit.unit;
 /// walk(schemaDir, p -> p.toString().endsWith(".sql")) // Result<List<Path>>
 /// ```
 public sealed interface FileOps {
-
     // === Read ===
-
     /// Read entire file as a string (UTF-8).
     static Result<String> readString(Path path) {
         return Result.lift(e -> new FileError.ReadFailed(path, e.getMessage()),
@@ -50,9 +48,9 @@ public sealed interface FileOps {
         return Result.lift(e -> new FileError.WalkFailed(start, e.getMessage()),
                            () -> {
                                try (var stream = Files.walk(start)) {
-                                   return stream.filter(predicate)
-                                                .toList();
-                               }
+                               return stream.filter(predicate)
+                                            .toList();
+                           }
                            });
     }
 
@@ -66,20 +64,21 @@ public sealed interface FileOps {
         return Result.lift(e -> new FileError.WalkFailed(dir, e.getMessage()),
                            () -> {
                                try (var stream = Files.list(dir)) {
-                                   return stream.toList();
-                               }
+                               return stream.toList();
+                           }
                            });
     }
 
     // === Write ===
-
     /// Write a string to a file (UTF-8). Creates the file if it doesn't exist, truncates if it does.
     static Result<Unit> writeString(Path path, String content) {
         return Result.lift(e -> new FileError.WriteFailed(path, e.getMessage()),
                            () -> {
-                               Files.writeString(path, content,
+                               Files.writeString(path,
+                                                 content,
                                                  StandardOpenOption.CREATE,
                                                  StandardOpenOption.TRUNCATE_EXISTING);
+
                                return unit();
                            });
     }
@@ -88,9 +87,8 @@ public sealed interface FileOps {
     static Result<Unit> appendString(Path path, String content) {
         return Result.lift(e -> new FileError.WriteFailed(path, e.getMessage()),
                            () -> {
-                               Files.writeString(path, content,
-                                                 StandardOpenOption.CREATE,
-                                                 StandardOpenOption.APPEND);
+                               Files.writeString(path, content, StandardOpenOption.CREATE, StandardOpenOption.APPEND);
+
                                return unit();
                            });
     }
@@ -99,15 +97,16 @@ public sealed interface FileOps {
     static Result<Unit> writeBytes(Path path, byte[] content) {
         return Result.lift(e -> new FileError.WriteFailed(path, e.getMessage()),
                            () -> {
-                               Files.write(path, content,
+                               Files.write(path,
+                                           content,
                                            StandardOpenOption.CREATE,
                                            StandardOpenOption.TRUNCATE_EXISTING);
+
                                return unit();
                            });
     }
 
     // === Directory ===
-
     /// Create a directory and all parent directories.
     static Result<Path> createDirectories(Path path) {
         return Result.lift(e -> new FileError.DirectoryCreationFailed(path, e.getMessage()),
@@ -115,7 +114,6 @@ public sealed interface FileOps {
     }
 
     // === Copy / Move / Delete ===
-
     /// Copy a file. Fails if target exists.
     static Result<Path> copy(Path source, Path target) {
         return Result.lift(e -> new FileError.CopyFailed(source, target, e.getMessage()),
@@ -151,12 +149,12 @@ public sealed interface FileOps {
         return Result.lift(e -> new FileError.DeleteFailed(path, e.getMessage()),
                            () -> {
                                Files.delete(path);
+
                                return unit();
                            });
     }
 
     // === Metadata ===
-
     /// Get file size in bytes.
     static Result<Long> size(Path path) {
         return Result.lift(e -> new FileError.SizeFailed(path, e.getMessage()),
@@ -168,12 +166,12 @@ public sealed interface FileOps {
         return Result.lift(e -> new FileError.PermissionFailed(path, e.getMessage()),
                            () -> {
                                Files.setPosixFilePermissions(path, PosixFilePermissions.fromString(permissions));
+
                                return unit();
                            });
     }
 
     // === Temp ===
-
     /// Create a temporary file with prefix and suffix.
     static Result<Path> createTempFile(String prefix, String suffix) {
         return Result.lift(e -> new FileError.TempCreationFailed(e.getMessage()),
@@ -192,7 +190,6 @@ public sealed interface FileOps {
     }
 
     // === Non-throwing queries ===
-
     /// Check if a path exists.
     static boolean exists(Path path) {
         return Files.exists(path);

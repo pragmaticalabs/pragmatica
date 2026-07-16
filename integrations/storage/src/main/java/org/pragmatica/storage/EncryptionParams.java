@@ -2,13 +2,13 @@ package org.pragmatica.storage;
 
 import java.util.Arrays;
 
+
 /// Encryption parameters stored with each block for decryption.
 ///
 /// @param algorithm cipher algorithm (e.g. "AES/GCM/NoPadding")
 /// @param iv initialization vector used during encryption
 /// @param keyId identifier of the encryption key used
 public record EncryptionParams(String algorithm, byte[] iv, String keyId) {
-
     /// Sentinel for unencrypted blocks.
     public static final EncryptionParams NONE = new EncryptionParams("NONE", new byte[0], "");
 

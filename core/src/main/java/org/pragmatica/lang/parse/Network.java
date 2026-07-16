@@ -13,15 +13,15 @@
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  */
-
 package org.pragmatica.lang.parse;
-
-import org.pragmatica.lang.Result;
 
 import java.net.InetAddress;
 import java.net.URI;
 import java.net.URL;
 import java.util.UUID;
+
+import org.pragmatica.lang.Result;
+
 
 /// Functional wrappers for JDK network and identifier parsing APIs that return Result<T> instead of throwing exceptions
 public sealed interface Network {

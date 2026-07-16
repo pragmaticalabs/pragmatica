@@ -1,10 +1,11 @@
 package org.pragmatica.jbct.config;
 
+import java.nio.file.Path;
+
 import org.pragmatica.config.toml.TomlParser;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.io.FileOps;
 
-import java.nio.file.Path;
 
 /// Loads JBCT configuration with priority:
 /// 1. Explicit config (e.g., from CLI args) - highest
@@ -16,6 +17,7 @@ public sealed interface ConfigLoader permits ConfigLoader.unused {
 
     String PROJECT_CONFIG_NAME = "jbct.toml";
     String USER_CONFIG_DIR = ".jbct";
+
     String USER_CONFIG_NAME = "config.toml";
 
     /// Load configuration with optional explicit config file and working directory.
@@ -29,6 +31,7 @@ public sealed interface ConfigLoader permits ConfigLoader.unused {
         config = config.merge(loadUserConfig());
         // Layer 2: Project config (jbct.toml — searches up directory tree)
         var projectDir = workingDirectory.or(() -> Path.of(System.getProperty("user.dir")));
+
         config = config.merge(findProjectConfig(projectDir).flatMap(ConfigLoader::loadFromFile));
         // Layer 3: Explicit config file (highest priority)
         return config.merge(explicitConfigPath.flatMap(ConfigLoader::loadFromFile));
@@ -44,6 +47,7 @@ public sealed interface ConfigLoader permits ConfigLoader.unused {
     /// Load project-level config from jbct.toml in given directory.
     static Option<JbctConfig> loadProjectConfig(Path directory) {
         var configPath = directory.resolve(PROJECT_CONFIG_NAME);
+
         return loadFromFile(configPath);
     }
 
@@ -52,6 +56,7 @@ public sealed interface ConfigLoader permits ConfigLoader.unused {
         if (!FileOps.exists(path) || !FileOps.isRegularFile(path)) {
             return Option.none();
         }
+
         return TomlParser.parseFile(path)
                          .map(JbctConfig::fromToml)
                          .option();
@@ -59,22 +64,23 @@ public sealed interface ConfigLoader permits ConfigLoader.unused {
 
     /// Find the project config file, searching up the directory tree.
     static Option<Path> findProjectConfig(Path startDir) {
-        return findProjectConfigRecursive(Option.some(startDir.toAbsolutePath()
-                                                              .normalize()));
+        return findProjectConfigRecursive(Option.some(startDir.toAbsolutePath().normalize()));
     }
 
     private static Option<Path> findProjectConfigRecursive(Option<Path> dirOpt) {
         return dirOpt.flatMap(dir -> {
-                                  var configPath = dir.resolve(PROJECT_CONFIG_NAME);
-                                  return FileOps.exists(configPath) && FileOps.isRegularFile(configPath)
-                                         ? Option.some(configPath)
-                                         : findProjectConfigRecursive(Option.option(dir.getParent()));
-                              });
+            var configPath = dir.resolve(PROJECT_CONFIG_NAME);
+
+            return FileOps.exists(configPath) && FileOps.isRegularFile(configPath)
+                   ? Option.some(configPath)
+                   : findProjectConfigRecursive(Option.option(dir.getParent()));
+        });
     }
 
     /// Get the default user config directory path.
     static Path getUserConfigDir() {
         var userHome = System.getProperty("user.home");
+
         return Path.of(userHome, USER_CONFIG_DIR);
     }
 

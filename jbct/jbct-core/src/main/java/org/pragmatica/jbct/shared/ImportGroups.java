@@ -16,7 +16,10 @@ public final class ImportGroups {
 
     /// Non-static import groups, in canonical book order (declaration order == sort order).
     public enum Group {
-        JDK, PRAGMATICA, THIRD_PARTY, PROJECT
+        JDK,
+        PRAGMATICA,
+        THIRD_PARTY,
+        PROJECT
     }
 
     /// Classify an import path (already stripped of `import`/`static`/`;`) into its
@@ -26,18 +29,19 @@ public final class ImportGroups {
         if (importPath.startsWith("java.") || importPath.equals("java") || importPath.startsWith("javax.")) {
             return Group.JDK;
         }
+
         if (importPath.startsWith("org.pragmatica.")) {
             return Group.PRAGMATICA;
         }
+
         if (!projectPackage.isEmpty() && importPath.startsWith(projectPackage)) {
             return Group.PROJECT;
         }
-        if (importPath.startsWith("org.")
-            || importPath.startsWith("com.")
-            || importPath.startsWith("io.")
-            || importPath.startsWith("net.")) {
+
+        if (importPath.startsWith("org.") || importPath.startsWith("com.") || importPath.startsWith("io.") || importPath.startsWith("net.")) {
             return Group.THIRD_PARTY;
         }
+
         return Group.PROJECT;
     }
 
@@ -46,6 +50,7 @@ public final class ImportGroups {
     /// `N` is the group count. Book-ordered source therefore has non-decreasing ordinals.
     public static int ordinal(String importPath, boolean isStatic, String projectPackage) {
         int base = classify(importPath, projectPackage).ordinal();
+
         return isStatic
                ? base + Group.values().length
                : base;
@@ -55,9 +60,11 @@ public final class ImportGroups {
     /// distinguish project-local imports from third-party ones.
     public static String projectPackage(String packageName) {
         var parts = packageName.split("\\.");
+
         if (parts.length >= 2) {
             return parts[0] + "." + parts[1];
         }
+
         return parts.length > 0
                ? parts[0]
                : "";
@@ -73,17 +80,21 @@ public final class ImportGroups {
     /// `import` / `import static` / `module` keywords and the trailing `;`.
     public static String stripToPath(String importText) {
         var path = importText.trim();
+
         if (path.startsWith("import static ")) {
             path = path.substring("import static ".length());
         } else if (path.startsWith("import ")) {
             path = path.substring("import ".length());
         }
+
         if (path.startsWith("module ")) {
             path = path.substring("module ".length());
         }
+
         if (path.endsWith(";")) {
             path = path.substring(0, path.length() - 1);
         }
+
         return path.trim();
     }
 }

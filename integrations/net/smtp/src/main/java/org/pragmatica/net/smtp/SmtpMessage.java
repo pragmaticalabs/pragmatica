@@ -13,7 +13,6 @@
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  */
-
 package org.pragmatica.net.smtp;
 
 import java.time.ZonedDateTime;
@@ -21,6 +20,7 @@ import java.time.format.DateTimeFormatter;
 import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
+
 
 /// An email message to be sent via SMTP.
 public record SmtpMessage(String from,
@@ -30,7 +30,6 @@ public record SmtpMessage(String from,
                           String subject,
                           String body,
                           Map<String, String> headers) {
-
     /// Create a simple message with required fields only.
     public static SmtpMessage smtpMessage(String from, List<String> to, String subject, String body) {
         return new SmtpMessage(from, List.copyOf(to), List.of(), List.of(), subject, body, Map.of());
@@ -62,6 +61,7 @@ public record SmtpMessage(String from,
     /// Format the message as an RFC 5322 string for the DATA command.
     public String toRfc5322() {
         var sb = new StringBuilder();
+
         sb.append("Date: ").append(DateTimeFormatter.RFC_1123_DATE_TIME.format(ZonedDateTime.now())).append("\r\n");
         sb.append("From: ").append(from).append("\r\n");
         sb.append("To: ").append(String.join(", ", to)).append("\r\n");
@@ -72,6 +72,7 @@ public record SmtpMessage(String from,
         sb.append("Content-Type: text/plain; charset=UTF-8\r\n");
         sb.append("\r\n");
         sb.append(body);
+
         return sb.toString();
     }
 
@@ -82,6 +83,9 @@ public record SmtpMessage(String from,
     }
 
     private void appendCustomHeaders(StringBuilder sb) {
-        headers.forEach((key, value) -> sb.append(key).append(": ").append(value).append("\r\n"));
+        headers.forEach((key, value) -> sb.append(key)
+                                          .append(": ")
+                                          .append(value)
+                                          .append("\r\n"));
     }
 }

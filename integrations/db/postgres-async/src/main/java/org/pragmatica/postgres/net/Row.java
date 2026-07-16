@@ -11,7 +11,6 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package org.pragmatica.postgres.net;
 
 import java.math.BigDecimal;
@@ -21,79 +20,46 @@ import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
 
+
 /**
  * Row in a query result set. A row consist of 0-n columns of a single type.
  * Column values can be accessed with a 0-based index or column label.
- * 
+ *
  * @author Antti Laisi
  */
 public interface Row {
-
     String getString(int index);
-
     String getString(String column);
-
     Byte getByte(int index);
-
     Byte getByte(String column);
-
     Character getChar(int index);
-
     Character getChar(String column);
-
     Short getShort(int index);
-
     Short getShort(String column);
-
     Integer getInt(int index);
-
     Integer getInt(String column);
-
     Long getLong(int index);
-
     Long getLong(String column);
-
     BigInteger getBigInteger(int index);
-
     BigInteger getBigInteger(String column);
-
     BigDecimal getBigDecimal(int index);
-
     BigDecimal getBigDecimal(String column);
-
     Double getDouble(int index);
-
     Double getDouble(String column);
-
     LocalDate getLocalDate(int index);
-
     LocalDate getLocalDate(String column);
-
     LocalTime getLocalTime(int index);
-
     LocalTime getLocalTime(String column);
-
     LocalDateTime getLocalDateTime(int index);
-
     LocalDateTime getLocalDateTime(String column);
-
     Instant getInstant(int index);
-
     Instant getInstant(String column);
-
     byte[] getBytes(int index);
-
     byte[] getBytes(String column);
-
     Boolean getBoolean(int index);
-
     Boolean getBoolean(String column);
-
     <T> T get(int index, Class<T> type);
-
     <T> T get(String column, Class<T> type);
-
     <TArray> TArray getArray(String column, Class<TArray> arrayType);
-
     <TArray> TArray getArray(int index, Class<TArray> arrayType);
 }

@@ -7,10 +7,10 @@
  *
  *      http://www.apache.org/licenses/LICENSE-2.0
  */
-
 package org.pragmatica.consensus.net;
 
 import org.pragmatica.consensus.NodeId;
+
 
 /// Synchronous outcome of a per-peer message dispatch from [ClusterNetwork.sendOutcome].
 ///
@@ -43,7 +43,9 @@ public sealed interface WriteOutcome {
     NodeId peerId();
 
     /// Helper — true for `Sent`, false for any refusal variant.
-    default boolean isSent() {return this instanceof Sent;}
+    default boolean isSent() {
+        return this instanceof Sent;
+    }
 
     record Sent(NodeId peerId) implements WriteOutcome {}
 

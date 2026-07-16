@@ -14,16 +14,16 @@
  *  limitations under the License.
  *
  */
-
 package org.pragmatica.jdbc;
+
+import javax.sql.DataSource;
+import java.sql.ResultSet;
+import java.util.List;
 
 import org.pragmatica.lang.Functions.ThrowingFn1;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 
-import javax.sql.DataSource;
-import java.sql.ResultSet;
-import java.util.List;
 
 /// Promise-based JDBC operations interface.
 /// Provides a functional wrapper for common JDBC operations with typed error handling.
@@ -92,12 +92,15 @@ public interface JdbcOperations {
                                                    params,
                                                    rs -> {
                                                        if (rs.next()) {
-                                                           var result = mapper.apply(rs);
-                                                           if (rs.next()) {
-                                                               throw new java.sql.SQLException("Multiple results found");
-                                                           }
-                                                           return result;
-                                                       }
+                                                       var result = mapper.apply(rs);
+
+                                                       if (rs.next()) {
+                                                       throw new java.sql.SQLException("Multiple results found");
+                                                   }
+
+                                                       return result;
+                                                   }
+
                                                        throw new java.sql.SQLException("No result found");
                                                    }));
         }
@@ -109,8 +112,9 @@ public interface JdbcOperations {
                                                    params,
                                                    rs -> {
                                                        if (rs.next()) {
-                                                           return Option.option(mapper.apply(rs));
-                                                       }
+                                                       return Option.option(mapper.apply(rs));
+                                                   }
+
                                                        return Option.none();
                                                    }));
         }
@@ -122,9 +126,11 @@ public interface JdbcOperations {
                                                    params,
                                                    rs -> {
                                                        var results = new java.util.ArrayList<T>();
+
                                                        while (rs.next()) {
-                                                           results.add(rowMapper.apply(rs));
-                                                       }
+                                                       results.add(rowMapper.apply(rs));
+                                                   }
+
                                                        return results;
                                                    }));
         }
@@ -135,8 +141,8 @@ public interface JdbcOperations {
                                 () -> {
                                     try (var conn = dataSource.getConnection();
                                          var stmt = prepareStatement(conn, sql, params)) {
-                                        return stmt.executeUpdate();
-                                    }
+                                    return stmt.executeUpdate();
+                                }
                                 });
         }
 
@@ -144,14 +150,14 @@ public interface JdbcOperations {
         public Promise<int[]> batch(String sql, List<Object[]> paramsList) {
             return Promise.lift(e -> JdbcError.fromException(e, sql),
                                 () -> {
-                                    try (var conn = dataSource.getConnection();
-                                         var stmt = conn.prepareStatement(sql)) {
-                                        for (var params : paramsList) {
-                                            setParameters(stmt, params);
-                                            stmt.addBatch();
-                                        }
-                                        return stmt.executeBatch();
-                                    }
+                                    try (var conn = dataSource.getConnection(); var stmt = conn.prepareStatement(sql)) {
+                                    for (var params : paramsList) {
+                                    setParameters(stmt, params);
+                                    stmt.addBatch();
+                                }
+
+                                    return stmt.executeBatch();
+                                }
                                 });
         }
 
@@ -165,7 +171,9 @@ public interface JdbcOperations {
 
         private java.sql.PreparedStatement prepareStatement(java.sql.Connection conn, String sql, Object[] params) throws java.sql.SQLException {
             var stmt = conn.prepareStatement(sql);
+
             setParameters(stmt, params);
+
             return stmt;
         }
 

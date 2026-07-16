@@ -13,11 +13,11 @@
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  */
-
 package org.pragmatica.http;
 
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
+
 
 /// RFC 9457 Problem Details for HTTP APIs.
 ///
@@ -49,10 +49,8 @@ public record ProblemDetail(String type,
     /// @return ProblemDetail instance
     public static ProblemDetail fromHttpError(HttpError error, String instance, String requestId) {
         return new ProblemDetail(DEFAULT_TYPE,
-                                 error.status()
-                                      .message(),
-                                 error.status()
-                                      .code(),
+                                 error.status().message(),
+                                 error.status().code(),
                                  Option.option(extractDetail(error)),
                                  Option.option(instance),
                                  requestId);
@@ -101,10 +99,7 @@ public record ProblemDetail(String type,
     /// @param instance  Request path/URI
     /// @param requestId Request identifier
     /// @return ProblemDetail instance
-    public static ProblemDetail problemDetail(HttpStatus status,
-                                              String detail,
-                                              String instance,
-                                              String requestId) {
+    public static ProblemDetail problemDetail(HttpStatus status, String detail, String instance, String requestId) {
         return new ProblemDetail(DEFAULT_TYPE,
                                  status.message(),
                                  status.code(),
@@ -117,7 +112,6 @@ public record ProblemDetail(String type,
         // Get the origin cause message, not the full chain
         return error.source()
                     .map(Cause::message)
-                    .or(error.status()
-                             .message());
+                    .or(error.status().message());
     }
 }

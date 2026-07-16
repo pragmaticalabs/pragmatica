@@ -11,13 +11,13 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package org.pragmatica.postgres.io;
-
-import org.pragmatica.postgres.message.Message;
 
 import java.nio.ByteBuffer;
 import java.nio.charset.Charset;
+
+import org.pragmatica.postgres.message.Message;
+
 
 /**
  * Decoder reads messages from byte buffer.
@@ -25,7 +25,6 @@ import java.nio.charset.Charset;
  * @author Antti Laisi
  */
 public interface Decoder<T extends Message> {
-
     /**
      * @return Protocol message id
      */
@@ -35,5 +34,4 @@ public interface Decoder<T extends Message> {
      * @return Decoded message
      */
     T read(ByteBuffer buffer, int contentLength, Charset encoding);
-
 }

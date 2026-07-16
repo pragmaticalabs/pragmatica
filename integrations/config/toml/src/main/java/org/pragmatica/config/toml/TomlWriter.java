@@ -13,12 +13,12 @@
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  */
-
 package org.pragmatica.config.toml;
 
 import java.util.List;
 import java.util.Map;
 import java.util.regex.Pattern;
+
 
 /// Serializes a [TomlDocument] to TOML text format.
 ///
@@ -44,15 +44,20 @@ public final class TomlWriter {
     /// Serialize a TomlDocument to TOML text with comment header lines.
     public static String toToml(TomlDocument document, List<String> headerComments) {
         var sb = new StringBuilder();
+
         appendHeaderComments(sb, headerComments);
         appendRootSection(sb, document);
         appendNamedSections(sb, document);
         appendTableArrays(sb, document);
-        return sb.toString().stripTrailing() + "\n";
+
+        return sb.toString()
+                 .stripTrailing() + "\n";
     }
 
     private static void appendHeaderComments(StringBuilder sb, List<String> comments) {
-        comments.forEach(comment -> sb.append("# ").append(comment).append('\n'));
+        comments.forEach(comment -> sb.append("# ")
+                                      .append(comment)
+                                      .append('\n'));
         if (!comments.isEmpty()) {
             sb.append('\n');
         }
@@ -60,39 +65,48 @@ public final class TomlWriter {
 
     private static void appendRootSection(StringBuilder sb, TomlDocument document) {
         var rootKeys = document.sections().getOrDefault("", Map.of());
+
         rootKeys.forEach((key, value) -> appendKeyValue(sb, key, value));
     }
 
     private static void appendNamedSections(StringBuilder sb, TomlDocument document) {
-        document.sections().entrySet().stream()
-            .filter(e -> !e.getKey().isEmpty())
-            .forEach(e -> appendSectionBlock(sb, e.getKey(), e.getValue()));
+        document.sections()
+                .entrySet()
+                .stream()
+                .filter(e -> !e.getKey()
+                               .isEmpty())
+                .forEach(e -> appendSectionBlock(sb,
+                                                 e.getKey(),
+                                                 e.getValue()));
     }
 
     private static void appendSectionBlock(StringBuilder sb, String name, Map<String, Object> entries) {
         if (sb.length() > 0 && sb.charAt(sb.length() - 1) != '\n') {
             sb.append('\n');
         }
+
         if (sb.length() > 0) {
             sb.append('\n');
         }
+
         sb.append('[').append(name).append("]\n");
         entries.forEach((key, value) -> appendKeyValue(sb, key, value));
     }
 
     private static void appendTableArrays(StringBuilder sb, TomlDocument document) {
-        document.tableArrays().forEach((name, tables) ->
-            tables.forEach(table -> appendTableArrayEntry(sb, name, table))
-        );
+        document.tableArrays()
+                .forEach((name, tables) -> tables.forEach(table -> appendTableArrayEntry(sb, name, table)));
     }
 
     private static void appendTableArrayEntry(StringBuilder sb, String name, Map<String, Object> table) {
         if (sb.length() > 0 && sb.charAt(sb.length() - 1) != '\n') {
             sb.append('\n');
         }
+
         if (sb.length() > 0) {
             sb.append('\n');
         }
+
         sb.append("[[").append(name).append("]]\n");
         table.forEach((key, value) -> appendKeyValue(sb, key, value));
     }
@@ -102,31 +116,40 @@ public final class TomlWriter {
     }
 
     private static String formatKey(String key) {
-        return BARE_KEY_PATTERN.matcher(key).matches() ? key : "\"" + escapeString(key) + "\"";
+        return BARE_KEY_PATTERN.matcher(key).matches()
+               ? key
+               : "\"" + escapeString(key) + "\"";
     }
 
     private static String formatValue(Object value) {
         if (value instanceof String s) {
             return formatStringValue(s);
         }
+
         if (value instanceof Boolean b) {
             return b.toString();
         }
+
         if (value instanceof Long l) {
             return l.toString();
         }
+
         if (value instanceof Integer i) {
             return i.toString();
         }
+
         if (value instanceof Double d) {
             return formatDoubleValue(d);
         }
+
         if (value instanceof List<?> list) {
             return formatListValue(list);
         }
+
         if (value instanceof Map<?, ?> map) {
             return formatInlineTable(map);
         }
+
         return "\"" + escapeString(value.toString()) + "\"";
     }
 
@@ -136,23 +159,31 @@ public final class TomlWriter {
 
     private static String formatDoubleValue(Double d) {
         if (d.isInfinite()) {
-            return d > 0 ? "inf" : "-inf";
+            return d > 0
+                   ? "inf"
+                   : "-inf";
         }
+
         if (d.isNaN()) {
             return "nan";
         }
+
         return d.toString();
     }
 
     private static String formatListValue(List<?> list) {
         var sb = new StringBuilder("[");
+
         for (int i = 0; i < list.size(); i++) {
             if (i > 0) {
                 sb.append(", ");
             }
+
             sb.append(formatValue(list.get(i)));
         }
+
         sb.append(']');
+
         return sb.toString();
     }
 
@@ -160,23 +191,27 @@ public final class TomlWriter {
     private static String formatInlineTable(Map<?, ?> map) {
         var sb = new StringBuilder("{");
         boolean first = true;
+
         for (var entry : map.entrySet()) {
             if (!first) {
                 sb.append(", ");
             }
+
             first = false;
-            sb.append(formatKey(entry.getKey().toString()))
-              .append(" = ")
-              .append(formatValue(entry.getValue()));
+            sb.append(formatKey(entry.getKey().toString())).append(" = ").append(formatValue(entry.getValue()));
         }
+
         sb.append('}');
+
         return sb.toString();
     }
 
     private static String escapeString(String s) {
         var sb = new StringBuilder(s.length());
+
         for (int i = 0; i < s.length(); i++) {
             char c = s.charAt(i);
+
             switch (c) {
                 case '\\' -> sb.append("\\\\");
                 case '"' -> sb.append("\\\"");
@@ -188,6 +223,7 @@ public final class TomlWriter {
                 default -> sb.append(c);
             }
         }
+
         return sb.toString();
     }
 }

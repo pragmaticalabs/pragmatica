@@ -18,7 +18,6 @@ package org.pragmatica.http.routing;
 public record RouteMountMode(Mode mode, String headerName) {
     /// The default API-version header name when header mode is selected without an explicit name.
     public static final String DEFAULT_HEADER_NAME = "API-Version";
-
     private static final RouteMountMode PATH = new RouteMountMode(Mode.PATH, DEFAULT_HEADER_NAME);
 
     /// The two deploy-time detection modes (#198 §7).

@@ -6,11 +6,7 @@ package org.pragmatica.storage;
 /// @param highWatermark start demotion when tier utilization exceeds this ratio (e.g. 0.9 = 90%)
 /// @param lowWatermark stop demotion when tier utilization drops below this ratio (e.g. 0.7 = 70%)
 /// @param batchSize maximum number of blocks to demote per cycle
-public record DemotionConfig(DemotionStrategy strategy,
-                             double highWatermark,
-                             double lowWatermark,
-                             int batchSize) {
-
+public record DemotionConfig(DemotionStrategy strategy, double highWatermark, double lowWatermark, int batchSize) {
     /// Clamp configuration parameters to valid ranges on construction.
     public DemotionConfig {
         highWatermark = Math.clamp(highWatermark, 0.01, 1.0);

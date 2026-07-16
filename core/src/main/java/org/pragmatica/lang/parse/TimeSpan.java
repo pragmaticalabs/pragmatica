@@ -13,17 +13,17 @@
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  */
-
 package org.pragmatica.lang.parse;
+
+import java.time.Duration;
+import java.util.regex.Pattern;
 
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 
-import java.time.Duration;
-import java.util.regex.Pattern;
-
 import static org.pragmatica.lang.Result.success;
+
 
 /// Human-friendly duration representation with parsing support.
 ///
@@ -122,47 +122,60 @@ public sealed interface TimeSpan {
     private static Result<TimeSpan> parseComponents(String input) {
         // Remove all whitespace for parsing
         var compacted = input.replaceAll("\\s+", "");
+
         if (compacted.isEmpty()) {
             return TimeSpanError.EMPTY_INPUT.result();
         }
+
         if (compacted.matches("\\d+")) {
             return parsePlainSeconds(compacted);
         }
+
         var matcher = COMPONENT_PATTERN.matcher(compacted);
         var duration = Duration.ZERO;
         var lastEnd = 0;
         var foundAny = false;
+
         while (matcher.find()) {
             // Check for invalid characters between components
             if (matcher.start() != lastEnd) {
                 var invalid = compacted.substring(lastEnd, matcher.start());
+
                 return new TimeSpanError.InvalidComponent(invalid).result();
             }
+
             var valueStr = matcher.group(1);
             var unit = matcher.group(2);
-            try{
+
+            try {
                 var value = Long.parseLong(valueStr);
+
                 duration = addDuration(duration, value, unit);
                 foundAny = true;
             } catch (NumberFormatException e) {
                 return new TimeSpanError.InvalidValue(valueStr, unit).result();
             }
+
             lastEnd = matcher.end();
         }
         // Check for trailing invalid characters
         if (lastEnd != compacted.length()) {
             var invalid = compacted.substring(lastEnd);
+
             return new TimeSpanError.InvalidComponent(invalid).result();
         }
+
         if (!foundAny) {
             return TimeSpanError.NO_VALID_COMPONENTS.result();
         }
+
         return success(new TimeSpanValue(duration));
     }
 
     private static Result<TimeSpan> parsePlainSeconds(String compacted) {
-        try{
+        try {
             var value = Long.parseLong(compacted);
+
             return success(new TimeSpanValue(Duration.ofSeconds(value)));
         } catch (NumberFormatException e) {
             return new TimeSpanError.InvalidValue(compacted, "s").result();
@@ -192,34 +205,41 @@ public sealed interface TimeSpan {
             if (duration.isZero()) {
                 return "0s";
             }
+
             var builder = new StringBuilder();
             var nanos = duration.toNanos();
             var days = nanos / (24L * 60 * 60 * 1_000_000_000L);
+
             nanos %= (24L * 60 * 60 * 1_000_000_000L);
             var hours = nanos / (60L * 60 * 1_000_000_000L);
+
             nanos %= (60L * 60 * 1_000_000_000L);
             var minutes = nanos / (60L * 1_000_000_000L);
+
             nanos %= (60L * 1_000_000_000L);
             var seconds = nanos / 1_000_000_000L;
+
             nanos %= 1_000_000_000L;
             var millis = nanos / 1_000_000L;
+
             nanos %= 1_000_000L;
             var micros = nanos / 1_000L;
+
             nanos %= 1_000L;
-            if (days > 0) builder.append(days)
-                                 .append("d");
-            if (hours > 0) builder.append(hours)
-                                  .append("h");
-            if (minutes > 0) builder.append(minutes)
-                                    .append("m");
-            if (seconds > 0) builder.append(seconds)
-                                    .append("s");
-            if (millis > 0) builder.append(millis)
-                                   .append("ms");
-            if (micros > 0) builder.append(micros)
-                                   .append("us");
-            if (nanos > 0) builder.append(nanos)
-                                  .append("ns");
+            if (days > 0) builder.append(days).append("d");
+
+            if (hours > 0) builder.append(hours).append("h");
+
+            if (minutes > 0) builder.append(minutes).append("m");
+
+            if (seconds > 0) builder.append(seconds).append("s");
+
+            if (millis > 0) builder.append(millis).append("ms");
+
+            if (micros > 0) builder.append(micros).append("us");
+
+            if (nanos > 0) builder.append(nanos).append("ns");
+
             return builder.isEmpty()
                    ? "0s"
                    : builder.toString();

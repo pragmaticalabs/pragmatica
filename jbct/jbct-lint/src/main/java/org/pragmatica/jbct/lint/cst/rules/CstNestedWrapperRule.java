@@ -1,5 +1,9 @@
 package org.pragmatica.jbct.lint.cst.rules;
 
+import java.util.Set;
+import java.util.regex.Pattern;
+import java.util.stream.Stream;
+
 import org.pragmatica.jbct.lint.Diagnostic;
 import org.pragmatica.jbct.lint.LintContext;
 import org.pragmatica.jbct.lint.cst.CstLintRule;
@@ -7,23 +11,22 @@ import org.pragmatica.jbct.parser.Cursor;
 import org.pragmatica.jbct.parser.RuleKind;
 import org.pragmatica.lang.Option;
 
-import java.util.Set;
-import java.util.regex.Pattern;
-import java.util.stream.Stream;
-
 import static org.pragmatica.jbct.parser.CstNodes.*;
+
 
 /// JBCT-RET-02: No nested wrappers.
 ///
 /// Forbids Promise<Result<T>>, Option<Option<T>>, etc.
 public class CstNestedWrapperRule implements CstLintRule {
     private static final String RULE_ID = "JBCT-RET-02";
+
     private static final String DOC_LINK = "https://github.com/siy/coding-technology/blob/main/series/part-2-four-return-types.md";
 
     private static final Set<String> WRAPPER_TYPES = Set.of("Option", "Result", "Promise");
 
     // Pattern to detect nested wrappers like Promise<Result<...>>
     private static final Pattern NESTED_PATTERN = Pattern.compile("(Promise|Result|Option)<\\s*(Promise|Result|Option)<");
+
     private static final Pattern METHOD_NAME_PATTERN = Pattern.compile("\\b([a-zA-Z_$][a-zA-Z0-9_$]*)\\s*\\(");
 
     @Override
@@ -36,46 +39,56 @@ public class CstNestedWrapperRule implements CstLintRule {
         if (!ctx.shouldLint(packageName(root))) {
             return Stream.empty();
         }
+
         return findAllMethods(root).stream()
-                      .flatMap(method -> checkMethod(method, ctx));
+                             .flatMap(method -> checkMethod(method, ctx));
     }
 
     private Stream<Diagnostic> checkMethod(Cursor method, LintContext ctx) {
         return methodReturnType(method).flatMap(type -> checkTypeForNesting(method, type, ctx))
-                          .stream();
+                               .stream();
     }
 
     private Option<Diagnostic> checkTypeForNesting(Cursor method, Cursor type, LintContext ctx) {
         var typeText = text(type).trim();
-        return detectNestedWrapper(typeText)
-        .map(nestedPattern -> {
-                 var methodName = extractMethodName(text(method));
-                 return createDiagnostic(method, methodName, nestedPattern, ctx);
-             });
+
+        return detectNestedWrapper(typeText).map(nestedPattern -> {
+            var methodName = extractMethodName(text(method));
+
+            return createDiagnostic(method, methodName, nestedPattern, ctx);
+        });
     }
 
     private static String extractMethodName(String memberText) {
         var matcher = METHOD_NAME_PATTERN.matcher(memberText);
-        return matcher.find() ? matcher.group(1) : "(unknown)";
+
+        return matcher.find()
+               ? matcher.group(1)
+               : "(unknown)";
     }
 
     private Option<String> detectNestedWrapper(String typeText) {
         var matcher = NESTED_PATTERN.matcher(typeText);
+
         if (!matcher.find()) {
             return Option.none();
         }
+
         var outer = matcher.group(1);
         var inner = matcher.group(2);
         // Forbidden patterns
         if ("Promise".equals(outer) && "Result".equals(inner)) {
             return Option.some("Promise<Result<T>>");
         }
+
         if ("Option".equals(outer) && "Option".equals(inner)) {
             return Option.some("Option<Option<T>>");
         }
+
         if ("Result".equals(outer) && "Result".equals(inner)) {
             return Option.some("Result<Result<T>>");
         }
+
         if ("Promise".equals(outer) && "Promise".equals(inner)) {
             return Option.some("Promise<Promise<T>>");
         }
@@ -86,6 +99,7 @@ public class CstNestedWrapperRule implements CstLintRule {
 
     private Diagnostic createDiagnostic(Cursor method, String methodName, String pattern, LintContext ctx) {
         var suggestion = getSuggestion(pattern);
+
         return Diagnostic.diagnostic(RULE_ID,
                                      ctx.severityFor(RULE_ID),
                                      ctx.fileName(),

@@ -14,14 +14,7 @@
  *  limitations under the License.
  *
  */
-
 package org.pragmatica.cloud.azure;
-
-import org.pragmatica.cloud.azure.api.TokenResponse;
-import org.pragmatica.http.HttpOperations;
-import org.pragmatica.json.JsonMapper;
-import org.pragmatica.lang.Option;
-import org.pragmatica.lang.Promise;
 
 import java.net.URI;
 import java.net.URLEncoder;
@@ -30,6 +23,13 @@ import java.net.http.HttpRequest.BodyPublishers;
 import java.nio.charset.StandardCharsets;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
+
+import org.pragmatica.cloud.azure.api.TokenResponse;
+import org.pragmatica.http.HttpOperations;
+import org.pragmatica.json.JsonMapper;
+import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Promise;
+
 
 /// Manages OAuth2 tokens for Azure management and Key Vault scopes.
 public class AzureTokenManager {
@@ -78,29 +78,34 @@ public class AzureTokenManager {
                    .flatMap(result -> parseTokenResponse(result, scope, mapper));
     }
 
-    private Promise<String> parseTokenResponse(org.pragmatica.http.HttpResult<String> result, String scope, JsonMapper mapper) {
+    private Promise<String> parseTokenResponse(org.pragmatica.http.HttpResult<String> result,
+                                               String scope,
+                                               JsonMapper mapper) {
         if (result.isSuccess()) {
-            return mapper.readString(result.body(), TokenResponse.class)
+            return mapper.readString(result.body(),
+                                     TokenResponse.class)
                          .map(token -> cacheToken(scope, token))
                          .async();
         }
-        return new AzureError.AuthError("Token request failed with status " + result.statusCode(),
-                                        Option.none())
-            .promise();
+
+        return new AzureError.AuthError("Token request failed with status " + result.statusCode(), Option.none()).promise();
     }
 
     private String cacheToken(String scope, TokenResponse token) {
         var expiresAt = System.currentTimeMillis() + (long) token.expiresIn() * 1000L;
+
         tokens.put(scope, new TokenState(token.accessToken(), expiresAt));
+
         return token.accessToken();
     }
 
     private HttpRequest buildTokenRequest(String scope) {
         var tokenUrl = "https://login.microsoftonline.com/" + config.tenantId() + "/oauth2/v2.0/token";
         var body = "grant_type=client_credentials"
-                   + "&client_id=" + encode(config.clientId())
-                   + "&client_secret=" + encode(config.clientSecret())
-                   + "&scope=" + encode(scope);
+                 + "&client_id=" + encode(config.clientId())
+                 + "&client_secret=" + encode(config.clientSecret())
+                 + "&scope=" + encode(scope);
+
         return HttpRequest.newBuilder()
                           .uri(URI.create(tokenUrl))
                           .POST(BodyPublishers.ofString(body))

@@ -1,5 +1,10 @@
 package org.pragmatica.http.routing;
 
+import java.util.ArrayList;
+import java.util.List;
+import java.util.function.Supplier;
+import java.util.stream.Stream;
+
 import org.pragmatica.http.CommonContentType;
 import org.pragmatica.http.ContentType;
 import org.pragmatica.http.HttpMethod;
@@ -10,12 +15,8 @@ import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.type.TypeToken;
 
-import java.util.ArrayList;
-import java.util.List;
-import java.util.function.Supplier;
-import java.util.stream.Stream;
-
 import static org.pragmatica.http.HttpMethod.*;
+
 
 /// Type-safe HTTP route definition with support for path parameters, query parameters, and request body.
 ///
@@ -56,11 +57,8 @@ import static org.pragmatica.http.HttpMethod.*;
 @SuppressWarnings("unused")
 public interface Route<T> extends RouteSource {
     HttpMethod method();
-
     String path();
-
     Handler<T> handler();
-
     ContentType contentType();
 
     /// Returns the spacer patterns for this route.
@@ -169,15 +167,15 @@ public interface Route<T> extends RouteSource {
                               RouteSecurityPolicy security,
                               int version,
                               int pathArity) {
-        record route<T>(HttpMethod method,
-                        String path,
-                        Handler<T> handler,
-                        ContentType contentType,
-                        List<String> spacers,
-                        String name,
-                        RouteSecurityPolicy security,
-                        int version,
-                        int pathArity) implements Route<T> {
+        record route <T>(HttpMethod method,
+                         String path,
+                         Handler<T> handler,
+                         ContentType contentType,
+                         List<String> spacers,
+                         String name,
+                         RouteSecurityPolicy security,
+                         int version,
+                         int pathArity) implements Route<T> {
             @Override
             public int pathParamCount() {
                 return pathArity;
@@ -207,10 +205,20 @@ public interface Route<T> extends RouteSource {
                 var versionStr = version == 0
                                  ? ""
                                  : " [version: v" + version + "]";
+
                 return "Route: " + method + " " + path + spacerStr + nameStr + versionStr + ", " + contentType;
             }
         }
-        return new route<>(method, PathUtils.normalize(path), handler, contentType, spacers, name, security, version, pathArity);
+
+        return new route <>(method,
+                            PathUtils.normalize(path),
+                            handler,
+                            contentType,
+                            spacers,
+                            name,
+                            security,
+                            version,
+                            pathArity);
     }
 
     /// Mount a route in path mode (#198 §6.4, the default detection mode). For a versioned route
@@ -346,7 +354,6 @@ public interface Route<T> extends RouteSource {
 
         // Path parameters (1-5)
         <P1> PathBuilder1<R, P1> withPath(PathParameter<P1> p1);
-
         <P1, P2> PathBuilder2<R, P1, P2> withPath(PathParameter<P1> p1, PathParameter<P2> p2);
 
         <P1, P2, P3> PathBuilder3<R, P1, P2, P3> withPath(PathParameter<P1> p1,
@@ -374,18 +381,14 @@ public interface Route<T> extends RouteSource {
         /// Bind the raw request body as a `String` (for routes that `consume` a text media type).
         /// Used by slice-processor codegen when `consumes` is TEXT/HTML/XML.
         BodyBuilder<R, String> withStringBody();
-
         /// Bind the raw request body as a `byte[]` (for routes that `consume` a binary media type).
         /// Used by slice-processor codegen when `consumes` is BINARY.
         BodyBuilder<R, byte[]> withByteBody();
-
         /// Bind the request body as a parsed [MultipartRequest] (for `multipart/form-data` routes).
         /// Used by slice-processor codegen when `consumes` is MULTIPART.
         BodyBuilder<R, MultipartRequest> withMultipartBody();
-
         // Query parameters only (1-5)
         <Q1> QueryBuilder1<R, Q1> withQuery(QueryParameter<Q1> q1);
-
         <Q1, Q2> QueryBuilder2<R, Q1, Q2> withQuery(QueryParameter<Q1> q1, QueryParameter<Q2> q2);
 
         <Q1, Q2, Q3> QueryBuilder3<R, Q1, Q2, Q3> withQuery(QueryParameter<Q1> q1,
@@ -1026,7 +1029,11 @@ public interface Route<T> extends RouteSource {
         }
     }
 
-    record ParameterBuilderImpl<R>(HttpMethod method, String path, List<String> spacers, String defaultName, int pathArity) implements ParameterBuilder<R> {
+    record ParameterBuilderImpl<R>(HttpMethod method,
+                                   String path,
+                                   List<String> spacers,
+                                   String defaultName,
+                                   int pathArity) implements ParameterBuilder<R> {
         ParameterBuilderImpl(HttpMethod method, String path) {
             this(method, path, List.of(), "", 0);
         }
@@ -1041,19 +1048,27 @@ public interface Route<T> extends RouteSource {
 
         @Override
         public ContentTypeBuilder<R> to(Handler<R> handler) {
-            return new ContentTypeBuilderImpl<>(method, path, handler, spacers, defaultName, new RouteSecurityPolicy() {}, pathArity);
+            return new ContentTypeBuilderImpl<>(method,
+                                                path,
+                                                handler,
+                                                spacers,
+                                                defaultName,
+                                                new RouteSecurityPolicy() {},
+                                                pathArity);
         }
 
         // Path parameters - collect spacers from path parameter definitions
         @Override
         public <P1> PathBuilder1<R, P1> withPath(PathParameter<P1> p1) {
             var collected = collectSpacers(p1);
+
             return new PathBuilder1Impl<>(new ParameterBuilderImpl<>(method, path, collected, defaultName, 1), p1);
         }
 
         @Override
         public <P1, P2> PathBuilder2<R, P1, P2> withPath(PathParameter<P1> p1, PathParameter<P2> p2) {
             var collected = collectSpacers(p1, p2);
+
             return new PathBuilder2Impl<>(new ParameterBuilderImpl<>(method, path, collected, defaultName, 2), p1, p2);
         }
 
@@ -1062,7 +1077,11 @@ public interface Route<T> extends RouteSource {
                                                                  PathParameter<P2> p2,
                                                                  PathParameter<P3> p3) {
             var collected = collectSpacers(p1, p2, p3);
-            return new PathBuilder3Impl<>(new ParameterBuilderImpl<>(method, path, collected, defaultName, 3), p1, p2, p3);
+
+            return new PathBuilder3Impl<>(new ParameterBuilderImpl<>(method, path, collected, defaultName, 3),
+                                          p1,
+                                          p2,
+                                          p3);
         }
 
         @Override
@@ -1071,7 +1090,12 @@ public interface Route<T> extends RouteSource {
                                                                          PathParameter<P3> p3,
                                                                          PathParameter<P4> p4) {
             var collected = collectSpacers(p1, p2, p3, p4);
-            return new PathBuilder4Impl<>(new ParameterBuilderImpl<>(method, path, collected, defaultName, 4), p1, p2, p3, p4);
+
+            return new PathBuilder4Impl<>(new ParameterBuilderImpl<>(method, path, collected, defaultName, 4),
+                                          p1,
+                                          p2,
+                                          p3,
+                                          p4);
         }
 
         @Override
@@ -1081,18 +1105,26 @@ public interface Route<T> extends RouteSource {
                                                                                  PathParameter<P4> p4,
                                                                                  PathParameter<P5> p5) {
             var collected = collectSpacers(p1, p2, p3, p4, p5);
-            return new PathBuilder5Impl<>(new ParameterBuilderImpl<>(method, path, collected, defaultName, 5), p1, p2, p3, p4, p5);
+
+            return new PathBuilder5Impl<>(new ParameterBuilderImpl<>(method, path, collected, defaultName, 5),
+                                          p1,
+                                          p2,
+                                          p3,
+                                          p4,
+                                          p5);
         }
 
         // Helper to collect spacer text from path parameters
         @SafeVarargs
         private static List<String> collectSpacers(PathParameter<?>... params) {
             var spacers = new ArrayList<String>();
+
             for (var param : params) {
                 if (param instanceof PathParameter.Spacer s) {
                     spacers.add(s.text());
                 }
             }
+
             return List.copyOf(spacers);
         }
 
@@ -1202,8 +1234,7 @@ public interface Route<T> extends RouteSource {
         }
     }
 
-    record PathBuilder2Impl<R, P1, P2>(ParameterBuilder<R> parent, PathParameter<P1> p1, PathParameter<P2> p2)
-    implements PathBuilder2<R, P1, P2> {
+    record PathBuilder2Impl<R, P1, P2>(ParameterBuilder<R> parent, PathParameter<P1> p1, PathParameter<P2> p2) implements PathBuilder2<R, P1, P2> {
         @Override
         public ContentTypeBuilder<R> to(Fn2<Promise<R>, P1, P2> fn) {
             return parent.to(ctx -> ctx.matchPath(p1, p2)
@@ -1276,8 +1307,7 @@ public interface Route<T> extends RouteSource {
                                                PathParameter<P1> p1,
                                                PathParameter<P2> p2,
                                                PathParameter<P3> p3,
-                                               PathParameter<P4> p4)
-    implements PathBuilder4<R, P1, P2, P3, P4> {
+                                               PathParameter<P4> p4) implements PathBuilder4<R, P1, P2, P3, P4> {
         @Override
         public ContentTypeBuilder<R> to(Fn4<Promise<R>, P1, P2, P3, P4> fn) {
             return parent.to(ctx -> ctx.matchPath(p1, p2, p3, p4)
@@ -1306,8 +1336,7 @@ public interface Route<T> extends RouteSource {
                                                    PathParameter<P2> p2,
                                                    PathParameter<P3> p3,
                                                    PathParameter<P4> p4,
-                                                   PathParameter<P5> p5)
-    implements PathBuilder5<R, P1, P2, P3, P4, P5> {
+                                                   PathParameter<P5> p5) implements PathBuilder5<R, P1, P2, P3, P4, P5> {
         @Override
         public ContentTypeBuilder<R> to(Fn5<Promise<R>, P1, P2, P3, P4, P5> fn) {
             return parent.to(ctx -> ctx.matchPath(p1, p2, p3, p4, p5)
@@ -1337,8 +1366,7 @@ public interface Route<T> extends RouteSource {
         }
     }
 
-    record QueryBuilder2Impl<R, Q1, Q2>(ParameterBuilder<R> parent, QueryParameter<Q1> q1, QueryParameter<Q2> q2)
-    implements QueryBuilder2<R, Q1, Q2> {
+    record QueryBuilder2Impl<R, Q1, Q2>(ParameterBuilder<R> parent, QueryParameter<Q1> q1, QueryParameter<Q2> q2) implements QueryBuilder2<R, Q1, Q2> {
         @Override
         public ContentTypeBuilder<R> to(Fn2<Promise<R>, Option<Q1>, Option<Q2>> fn) {
             return parent.to(ctx -> ctx.matchQuery(q1, q2)
@@ -1383,8 +1411,7 @@ public interface Route<T> extends RouteSource {
                                                 QueryParameter<Q1> q1,
                                                 QueryParameter<Q2> q2,
                                                 QueryParameter<Q3> q3,
-                                                QueryParameter<Q4> q4)
-    implements QueryBuilder4<R, Q1, Q2, Q3, Q4> {
+                                                QueryParameter<Q4> q4) implements QueryBuilder4<R, Q1, Q2, Q3, Q4> {
         @Override
         public ContentTypeBuilder<R> to(Fn4<Promise<R>, Option<Q1>, Option<Q2>, Option<Q3>, Option<Q4>> fn) {
             return parent.to(ctx -> ctx.matchQuery(q1, q2, q3, q4)
@@ -1408,8 +1435,7 @@ public interface Route<T> extends RouteSource {
                                                     QueryParameter<Q2> q2,
                                                     QueryParameter<Q3> q3,
                                                     QueryParameter<Q4> q4,
-                                                    QueryParameter<Q5> q5)
-    implements QueryBuilder5<R, Q1, Q2, Q3, Q4, Q5> {
+                                                    QueryParameter<Q5> q5) implements QueryBuilder5<R, Q1, Q2, Q3, Q4, Q5> {
         @Override
         public ContentTypeBuilder<R> to(Fn5<Promise<R>, Option<Q1>, Option<Q2>, Option<Q3>, Option<Q4>, Option<Q5>> fn) {
             return parent.to(ctx -> ctx.matchQuery(q1, q2, q3, q4, q5)
@@ -1420,8 +1446,7 @@ public interface Route<T> extends RouteSource {
     }
 
     // Path + Query Builder Implementations
-    record PathQueryBuilder1_1Impl<R, P1, Q1>(ParameterBuilder<R> parent, PathParameter<P1> p1, QueryParameter<Q1> q1)
-    implements PathQueryBuilder1_1<R, P1, Q1> {
+    record PathQueryBuilder1_1Impl<R, P1, Q1>(ParameterBuilder<R> parent, PathParameter<P1> p1, QueryParameter<Q1> q1) implements PathQueryBuilder1_1<R, P1, Q1> {
         @Override
         public ContentTypeBuilder<R> to(Fn2<Promise<R>, P1, Option<Q1>> fn) {
             return parent.to(ctx -> ctx.matchPath(p1)
@@ -1445,8 +1470,7 @@ public interface Route<T> extends RouteSource {
     record PathQueryBuilder1_2Impl<R, P1, Q1, Q2>(ParameterBuilder<R> parent,
                                                   PathParameter<P1> p1,
                                                   QueryParameter<Q1> q1,
-                                                  QueryParameter<Q2> q2)
-    implements PathQueryBuilder1_2<R, P1, Q1, Q2> {
+                                                  QueryParameter<Q2> q2) implements PathQueryBuilder1_2<R, P1, Q1, Q2> {
         @Override
         public ContentTypeBuilder<R> to(Fn3<Promise<R>, P1, Option<Q1>, Option<Q2>> fn) {
             return parent.to(ctx -> ctx.matchPath(p1)
@@ -1474,8 +1498,7 @@ public interface Route<T> extends RouteSource {
                                                       PathParameter<P1> p1,
                                                       QueryParameter<Q1> q1,
                                                       QueryParameter<Q2> q2,
-                                                      QueryParameter<Q3> q3)
-    implements PathQueryBuilder1_3<R, P1, Q1, Q2, Q3> {
+                                                      QueryParameter<Q3> q3) implements PathQueryBuilder1_3<R, P1, Q1, Q2, Q3> {
         @Override
         public ContentTypeBuilder<R> to(Fn4<Promise<R>, P1, Option<Q1>, Option<Q2>, Option<Q3>> fn) {
             return parent.to(ctx -> ctx.matchPath(p1)
@@ -1491,8 +1514,7 @@ public interface Route<T> extends RouteSource {
                                                           QueryParameter<Q1> q1,
                                                           QueryParameter<Q2> q2,
                                                           QueryParameter<Q3> q3,
-                                                          QueryParameter<Q4> q4)
-    implements PathQueryBuilder1_4<R, P1, Q1, Q2, Q3, Q4> {
+                                                          QueryParameter<Q4> q4) implements PathQueryBuilder1_4<R, P1, Q1, Q2, Q3, Q4> {
         @Override
         public ContentTypeBuilder<R> to(Fn5<Promise<R>, P1, Option<Q1>, Option<Q2>, Option<Q3>, Option<Q4>> fn) {
             return parent.to(ctx -> ctx.matchPath(p1)
@@ -1534,8 +1556,7 @@ public interface Route<T> extends RouteSource {
                                                       PathParameter<P1> p1,
                                                       PathParameter<P2> p2,
                                                       QueryParameter<Q1> q1,
-                                                      QueryParameter<Q2> q2)
-    implements PathQueryBuilder2_2<R, P1, P2, Q1, Q2> {
+                                                      QueryParameter<Q2> q2) implements PathQueryBuilder2_2<R, P1, P2, Q1, Q2> {
         @Override
         public ContentTypeBuilder<R> to(Fn4<Promise<R>, P1, P2, Option<Q1>, Option<Q2>> fn) {
             return parent.to(ctx -> ctx.matchPath(p1, p2)
@@ -1551,8 +1572,7 @@ public interface Route<T> extends RouteSource {
                                                           PathParameter<P2> p2,
                                                           QueryParameter<Q1> q1,
                                                           QueryParameter<Q2> q2,
-                                                          QueryParameter<Q3> q3)
-    implements PathQueryBuilder2_3<R, P1, P2, Q1, Q2, Q3> {
+                                                          QueryParameter<Q3> q3) implements PathQueryBuilder2_3<R, P1, P2, Q1, Q2, Q3> {
         @Override
         public ContentTypeBuilder<R> to(Fn5<Promise<R>, P1, P2, Option<Q1>, Option<Q2>, Option<Q3>> fn) {
             return parent.to(ctx -> ctx.matchPath(p1, p2)
@@ -1571,8 +1591,7 @@ public interface Route<T> extends RouteSource {
                                                       PathParameter<P1> p1,
                                                       PathParameter<P2> p2,
                                                       PathParameter<P3> p3,
-                                                      QueryParameter<Q1> q1)
-    implements PathQueryBuilder3_1<R, P1, P2, P3, Q1> {
+                                                      QueryParameter<Q1> q1) implements PathQueryBuilder3_1<R, P1, P2, P3, Q1> {
         @Override
         public ContentTypeBuilder<R> to(Fn4<Promise<R>, P1, P2, P3, Option<Q1>> fn) {
             return parent.to(ctx -> ctx.matchPath(p1, p2, p3)
@@ -1588,8 +1607,7 @@ public interface Route<T> extends RouteSource {
                                                           PathParameter<P2> p2,
                                                           PathParameter<P3> p3,
                                                           QueryParameter<Q1> q1,
-                                                          QueryParameter<Q2> q2)
-    implements PathQueryBuilder3_2<R, P1, P2, P3, Q1, Q2> {
+                                                          QueryParameter<Q2> q2) implements PathQueryBuilder3_2<R, P1, P2, P3, Q1, Q2> {
         @Override
         public ContentTypeBuilder<R> to(Fn5<Promise<R>, P1, P2, P3, Option<Q1>, Option<Q2>> fn) {
             return parent.to(ctx -> ctx.matchPath(p1, p2, p3)
@@ -1609,8 +1627,7 @@ public interface Route<T> extends RouteSource {
                                                           PathParameter<P2> p2,
                                                           PathParameter<P3> p3,
                                                           PathParameter<P4> p4,
-                                                          QueryParameter<Q1> q1)
-    implements PathQueryBuilder4_1<R, P1, P2, P3, P4, Q1> {
+                                                          QueryParameter<Q1> q1) implements PathQueryBuilder4_1<R, P1, P2, P3, P4, Q1> {
         @Override
         public ContentTypeBuilder<R> to(Fn5<Promise<R>, P1, P2, P3, P4, Option<Q1>> fn) {
             return parent.to(ctx -> ctx.matchPath(p1, p2, p3, p4)

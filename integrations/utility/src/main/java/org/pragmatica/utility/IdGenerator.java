@@ -13,8 +13,8 @@
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  */
-
 package org.pragmatica.utility;
+
 /// ID generator using ULID for unique, time-sortable identifiers.
 public sealed interface IdGenerator {
     /// Generate a unique ID with the given prefix.
@@ -29,8 +29,7 @@ public sealed interface IdGenerator {
     ///
     /// @return a unique ID as the 26-character ULID string
     static String generate() {
-        return ULID.ulid()
-                   .encoded();
+        return ULID.ulid().encoded();
     }
 
     @SuppressWarnings("unused")

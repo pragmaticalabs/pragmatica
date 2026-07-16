@@ -13,8 +13,8 @@
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  */
-
 package org.pragmatica.consensus.topology;
+
 /// Health status of a node in the topology.
 public enum NodeHealth {
     /// Node is healthy and participating in the cluster.

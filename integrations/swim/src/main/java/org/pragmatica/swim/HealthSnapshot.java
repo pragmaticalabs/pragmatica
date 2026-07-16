@@ -13,7 +13,6 @@
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  */
-
 package org.pragmatica.swim;
 
 import java.util.Map;
@@ -22,6 +21,7 @@ import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Option;
 
 import static org.pragmatica.lang.Option.option;
+
 
 /// Pull-channel view of SWIM health at a point in time.
 ///
@@ -33,7 +33,9 @@ import static org.pragmatica.lang.Option.option;
 /// are not reflected in this view.
 public record HealthSnapshot(Map<NodeId, SwimHealth> peerHealth) {
     public HealthSnapshot {
-        peerHealth = peerHealth == null ? Map.of() : Map.copyOf(peerHealth);
+        peerHealth = peerHealth == null
+                     ? Map.of()
+                     : Map.copyOf(peerHealth);
     }
 
     public static HealthSnapshot healthSnapshot(Map<NodeId, SwimHealth> peerHealth) {

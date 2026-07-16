@@ -14,7 +14,6 @@
  *  limitations under the License.
  *
  */
-
 package org.pragmatica.r2dbc;
 
 import org.pragmatica.lang.Cause;
@@ -26,6 +25,7 @@ import io.r2dbc.spi.R2dbcTimeoutException;
 import io.r2dbc.spi.R2dbcTransientException;
 
 import static org.pragmatica.r2dbc.R2dbcError.DatabaseFailure.databaseFailure;
+
 
 /// Typed error causes for R2DBC operations.
 /// Maps common R2DBC exceptions to domain-friendly error types.
@@ -91,9 +91,8 @@ public sealed interface R2dbcError extends Cause {
 
         @Override
         public String message() {
-            return "Database operation failed: " + Option.option(cause.getMessage())
-                                                         .or(() -> cause.getClass()
-                                                                        .getName());
+            return "Database operation failed: " + Option.option(cause.getMessage()).or(() -> cause.getClass()
+                                                                                                   .getName());
         }
     }
 
@@ -107,10 +106,7 @@ public sealed interface R2dbcError extends Cause {
             case R2dbcTimeoutException e -> new Timeout(e.getMessage());
             case R2dbcDataIntegrityViolationException e -> new ConstraintViolation(e.getMessage());
             case R2dbcTransientException e -> new ConnectionFailed(e.getMessage());
-            case R2dbcException e -> Option.option(e.getSqlState())
-                                           .filter(state -> state.startsWith("08"))
-                                           .map(_ -> (R2dbcError) new ConnectionFailed(e.getMessage()))
-                                           .or(() -> databaseFailure(e));
+            case R2dbcException e -> Option.option(e.getSqlState()).filter(state -> state.startsWith("08")).map(_ -> (R2dbcError) new ConnectionFailed(e.getMessage())).or(() -> databaseFailure(e));
             default -> databaseFailure(throwable);
         };
     }
@@ -127,10 +123,7 @@ public sealed interface R2dbcError extends Cause {
             case R2dbcTimeoutException e -> new Timeout(e.getMessage());
             case R2dbcDataIntegrityViolationException e -> new ConstraintViolation(e.getMessage());
             case R2dbcTransientException e -> new ConnectionFailed(e.getMessage());
-            case R2dbcException e -> Option.option(e.getSqlState())
-                                           .filter(state -> state.startsWith("08"))
-                                           .map(_ -> (R2dbcError) new ConnectionFailed(e.getMessage()))
-                                           .or(() -> new QueryFailed(e.getMessage()));
+            case R2dbcException e -> Option.option(e.getSqlState()).filter(state -> state.startsWith("08")).map(_ -> (R2dbcError) new ConnectionFailed(e.getMessage())).or(() -> new QueryFailed(e.getMessage()));
             default -> databaseFailure(throwable);
         };
     }

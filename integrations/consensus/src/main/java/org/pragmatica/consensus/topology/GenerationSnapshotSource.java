@@ -13,10 +13,10 @@
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  */
-
 package org.pragmatica.consensus.topology;
 
 import org.pragmatica.lang.Option;
+
 
 /// Pull-style adapter that exposes the latest cluster-generation membership view to
 /// consensus-layer consumers that otherwise cannot depend on `aether/slice` snapshot
@@ -36,7 +36,6 @@ import org.pragmatica.lang.Option;
 public interface GenerationSnapshotSource {
     /// Latest membership view projected from the cached snapshot, if one is available.
     Option<MembershipView> currentMembershipView();
-
     /// Rabia term observed by the source's most recent ping acceptance. Returns `0`
     /// when no ping has ever been processed.
     long observedRabiaTerm();
@@ -64,11 +63,13 @@ final class NoopGenerationSnapshotSource implements GenerationSnapshotSource {
 
     private NoopGenerationSnapshotSource() {}
 
-    @Override public Option<MembershipView> currentMembershipView() {
+    @Override
+    public Option<MembershipView> currentMembershipView() {
         return Option.none();
     }
 
-    @Override public long observedRabiaTerm() {
+    @Override
+    public long observedRabiaTerm() {
         return 0L;
     }
 }

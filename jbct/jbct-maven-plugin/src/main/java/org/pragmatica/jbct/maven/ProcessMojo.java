@@ -1,21 +1,22 @@
 package org.pragmatica.jbct.maven;
 
+import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.concurrent.atomic.AtomicInteger;
+
 import org.pragmatica.jbct.format.JbctFormatter;
 import org.pragmatica.jbct.lint.Diagnostic;
 import org.pragmatica.jbct.lint.JbctLinter;
 import org.pragmatica.jbct.parser.Java25Parser;
 import org.pragmatica.jbct.shared.SourceFile;
 
-import java.nio.file.Path;
-import java.util.ArrayList;
-import java.util.List;
-import java.util.concurrent.atomic.AtomicInteger;
-
 import org.apache.maven.plugin.MojoExecutionException;
 import org.apache.maven.plugin.MojoFailureException;
 import org.apache.maven.plugins.annotations.LifecyclePhase;
 import org.apache.maven.plugins.annotations.Mojo;
 import org.apache.maven.plugins.annotations.Parameter;
+
 
 /// Maven goal that performs JBCT lint and format in a single pass per file.
 ///
@@ -51,19 +52,21 @@ public class ProcessMojo extends AbstractJbctMojo {
         if (shouldSkip("process")) {
             return;
         }
+
         var jbctConfig = loadConfig();
         var formatter = JbctFormatter.jbctFormatter(jbctConfig.formatter());
         var lintContext = createLintContext(jbctConfig);
         var linter = JbctLinter.jbctLinter(lintContext);
         var parser = new Java25Parser();
-
         var filesToProcess = collectJavaFiles(jbctConfig.files());
+
         if (filesToProcess.isEmpty()) {
             getLog().info("No Java files found.");
+
             return;
         }
-        getLog().info("Processing " + filesToProcess.size() + " Java file(s)");
 
+        getLog().info("Processing " + filesToProcess.size() + " Java file(s)");
         var formatted = new AtomicInteger(0);
         var unchanged = new AtomicInteger(0);
         var formatErrors = new AtomicInteger(0);
@@ -95,20 +98,26 @@ public class ProcessMojo extends AbstractJbctMojo {
                 case INFO -> getLog().info(formatDiagnostic(d));
             }
         }
-        getLog().info("Format: " + formatted.get() + " formatted, " + unchanged.get() + " unchanged, "
-                      + formatErrors.get() + " errors");
-        getLog().info("Lint: " + lintErrors.get() + " error(s), " + lintWarnings.get() + " warning(s), "
-                      + lintInfos.get() + " info(s)");
 
+        getLog().info("Format: " + formatted.get()
+                     + " formatted, " + unchanged.get()
+                     + " unchanged, " + formatErrors.get()
+                     + " errors");
+        getLog().info("Lint: " + lintErrors.get()
+                     + " error(s), " + lintWarnings.get()
+                     + " warning(s), " + lintInfos.get()
+                     + " info(s)");
         if (formatErrors.get() > 0) {
             throw new MojoFailureException("Formatting failed for " + formatErrors.get() + " file(s)");
         }
+
         if (parseErrors.get() > 0 || lintErrors.get() > 0) {
             throw new MojoFailureException("JBCT lint found " + lintErrors.get() + " error(s)");
         }
+
         if (jbctConfig.lint().failOnWarning() && lintWarnings.get() > 0) {
             throw new MojoFailureException("JBCT lint found " + lintWarnings.get()
-                                           + " warning(s) (failOnWarning is enabled)");
+                                          + " warning(s) (failOnWarning is enabled)");
         }
     }
 
@@ -126,22 +135,22 @@ public class ProcessMojo extends AbstractJbctMojo {
                              AtomicInteger lintInfos) {
         SourceFile.sourceFile(file)
                   .onSuccess(source -> handleParsedFile(file,
-                                                       source,
-                                                       parser,
-                                                       formatter,
-                                                       linter,
-                                                       formatted,
-                                                       unchanged,
-                                                       formatErrors,
-                                                       parseErrors,
-                                                       allDiagnostics,
-                                                       lintErrors,
-                                                       lintWarnings,
-                                                       lintInfos))
+                                                        source,
+                                                        parser,
+                                                        formatter,
+                                                        linter,
+                                                        formatted,
+                                                        unchanged,
+                                                        formatErrors,
+                                                        parseErrors,
+                                                        allDiagnostics,
+                                                        lintErrors,
+                                                        lintWarnings,
+                                                        lintInfos))
                   .onFailure(cause -> {
-                      formatErrors.incrementAndGet();
-                      getLog().error("Error reading " + file + ": " + cause.message());
-                  });
+                                 formatErrors.incrementAndGet();
+                                 getLog().error("Error reading " + file + ": " + cause.message());
+                             });
     }
 
     private void handleParsedFile(Path file,
@@ -158,14 +167,15 @@ public class ProcessMojo extends AbstractJbctMojo {
                                   AtomicInteger lintWarnings,
                                   AtomicInteger lintInfos) {
         var parseResult = parser.parse(source.content());
+
         if (!parseResult.isSuccess()) {
             parseErrors.incrementAndGet();
-            parseResult.onFailure(cause ->
-                getLog().error("Parse error in " + file + ": " + cause.message()));
+            parseResult.onFailure(cause -> getLog().error("Parse error in " + file + ": " + cause.message()));
+
             return;
         }
-        var tree = parseResult.unwrap();
 
+        var tree = parseResult.unwrap();
         // Lint first so diagnostics reference the as-authored source.
         var diagnostics = linter.lintParsed(tree, source);
         var lintHasErrors = diagnostics.stream()
@@ -174,11 +184,12 @@ public class ProcessMojo extends AbstractJbctMojo {
         if (failBeforeFormat && lintHasErrors) {
             allDiagnostics.addAll(diagnostics);
             tallyDiagnostics(diagnostics, lintErrors, lintWarnings, lintInfos);
+
             return;
         }
-
         // Format using the same CST.
         var formattedSource = formatter.formatParsed(tree, source);
+
         if (formattedSource.content().equals(source.content())) {
             unchanged.incrementAndGet();
         } else {
@@ -188,9 +199,9 @@ public class ProcessMojo extends AbstractJbctMojo {
                                getLog().warn("Formatted: " + file);
                            })
                            .onFailure(cause -> {
-                               formatErrors.incrementAndGet();
-                               getLog().error("Error writing " + file + ": " + cause.message());
-                           });
+                                          formatErrors.incrementAndGet();
+                                          getLog().error("Error writing " + file + ": " + cause.message());
+                                      });
         }
 
         allDiagnostics.addAll(diagnostics);

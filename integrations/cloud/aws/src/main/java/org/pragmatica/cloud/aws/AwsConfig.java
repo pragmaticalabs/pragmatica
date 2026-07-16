@@ -14,7 +14,6 @@
  *  limitations under the License.
  *
  */
-
 package org.pragmatica.cloud.aws;
 
 /// Configuration for the AWS Cloud API client.

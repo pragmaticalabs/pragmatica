@@ -1,11 +1,12 @@
 package org.pragmatica.postgres.io.backend;
 
+import java.nio.ByteBuffer;
+import java.nio.charset.Charset;
+
 import org.pragmatica.postgres.io.Decoder;
 import org.pragmatica.postgres.io.IO;
 import org.pragmatica.postgres.message.backend.NotificationResponse;
 
-import java.nio.ByteBuffer;
-import java.nio.charset.Charset;
 
 /**
  * See <a href="https://www.postgresql.org/docs/11/protocol-message-formats.html">Postgres message formats</a>
@@ -34,6 +35,8 @@ public class NotificationResponseDecoder implements Decoder<NotificationResponse
 
     @Override
     public NotificationResponse read(ByteBuffer buffer, int contentLength, Charset encoding) {
-        return new NotificationResponse(buffer.getInt(), IO.getCString(buffer, encoding), IO.getCString(buffer, encoding));
+        return new NotificationResponse(buffer.getInt(),
+                                        IO.getCString(buffer, encoding),
+                                        IO.getCString(buffer, encoding));
     }
 }

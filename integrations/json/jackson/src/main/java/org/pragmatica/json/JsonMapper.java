@@ -14,18 +14,18 @@
  *  limitations under the License.
  *
  */
-
 package org.pragmatica.json;
+
+import java.util.function.Consumer;
 
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.type.TypeToken;
-
-import java.util.function.Consumer;
 
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.json.JsonMapper.Builder;
 
 import static org.pragmatica.json.JsonError.PathNotFound.pathNotFound;
+
 
 /// Functional wrapper around Jackson's JsonMapper providing Result-based API.
 /// All operations return Result<T> instead of throwing exceptions, enabling
@@ -119,20 +119,21 @@ public interface JsonMapper {
     ///
     /// @return Result containing the value as a string or error
     default Result<String> extractField(String json, String dotPath) {
-        return readTree(json)
-            .flatMap(tree -> navigatePath(tree, dotPath));
+        return readTree(json).flatMap(tree -> navigatePath(tree, dotPath));
     }
 
     /// Navigate a JsonNode tree using a dot-separated path.
     /// Numeric segments are interpreted as array indices when the current node is an array.
     private static Result<String> navigatePath(JsonNode root, String dotPath) {
         var node = root;
+
         for (var segment : dotPath.split("\\.")) {
             node = navigateSegment(node, segment);
             if (node.isMissingNode()) {
                 return pathNotFound(dotPath).result();
             }
         }
+
         return Result.success(nodeToString(node));
     }
 
@@ -140,12 +141,15 @@ public interface JsonMapper {
         if (node.isArray() && segment.matches("\\d+")) {
             return node.path(Integer.parseInt(segment));
         }
+
         return node.path(segment);
     }
 
     /// Convert a JsonNode to its string representation.
     private static String nodeToString(JsonNode node) {
-        return node.isValueNode() ? node.asText() : node.toString();
+        return node.isValueNode()
+               ? node.asText()
+               : node.toString();
     }
 
     /// Creates a new JsonMapper builder.
@@ -212,8 +216,9 @@ public interface JsonMapper {
 
         @Override
         public Result<String> prettyPrint(String json) {
-            return readTree(json)
-                .flatMap(tree -> Result.lift(JsonError::fromException, () -> mapper.writerWithDefaultPrettyPrinter().writeValueAsString(tree)));
+            return readTree(json).flatMap(tree -> Result.lift(JsonError::fromException,
+                                                              () -> mapper.writerWithDefaultPrettyPrinter()
+                                                                          .writeValueAsString(tree)));
         }
 
         @Override
@@ -247,13 +252,16 @@ public interface JsonMapper {
             @Override
             public JsonMapperBuilder configure(Consumer<Builder> configurator) {
                 configurators.add(configurator);
+
                 return this;
             }
 
             @Override
             public JsonMapper build() {
                 var builder = tools.jackson.databind.json.JsonMapper.builder();
+
                 configurators.forEach(c -> c.accept(builder));
+
                 return new JsonMapperImpl(builder.build());
             }
         }

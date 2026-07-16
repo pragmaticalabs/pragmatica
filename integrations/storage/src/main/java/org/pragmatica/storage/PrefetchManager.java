@@ -8,6 +8,7 @@ import org.pragmatica.lang.Unit;
 
 import static org.pragmatica.lang.Unit.unit;
 
+
 /// Manages cross-node block prefetching via SWIM piggyback hints.
 ///
 /// Nodes record local block access frequencies. When gossip rounds occur,
@@ -18,7 +19,6 @@ import static org.pragmatica.lang.Unit.unit;
 /// Supports dormant/active lifecycle: prefetching is a background optimization
 /// that should only run when the node is ready.
 public interface PrefetchManager {
-
     /// Record a local block access (called on every get hit).
     @Contract
     void recordAccess(BlockId blockId);
@@ -32,10 +32,8 @@ public interface PrefetchManager {
 
     /// Activate the prefetch manager, allowing hint collection and prefetch.
     Result<Unit> activate();
-
     /// Deactivate the prefetch manager. All operations become no-ops.
     Result<Unit> deactivate();
-
     /// Whether the prefetch manager is currently active.
     boolean isActive();
 
@@ -49,11 +47,10 @@ public interface PrefetchManager {
 }
 
 final class NoOpPrefetchManager implements PrefetchManager {
-
     @Override
     @Contract
     public void recordAccess(BlockId blockId) {
-        // no-op
+    // no-op
     }
 
     @Override
@@ -64,7 +61,7 @@ final class NoOpPrefetchManager implements PrefetchManager {
     @Override
     @Contract
     public void processHints(List<PrefetchHint> hints) {
-        // no-op
+    // no-op
     }
 
     @Override
@@ -82,4 +79,3 @@ final class NoOpPrefetchManager implements PrefetchManager {
         return false;
     }
 }
-

@@ -1,18 +1,19 @@
 package org.pragmatica.jbct.lint.cst.rules;
 
-import org.pragmatica.jbct.lint.Diagnostic;
-import org.pragmatica.jbct.lint.LintContext;
-import org.pragmatica.jbct.lint.cst.CstLintRule;
-import org.pragmatica.jbct.parser.Cursor;
-import org.pragmatica.jbct.parser.RuleKind;
-
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 import java.util.regex.Pattern;
 import java.util.stream.Stream;
 
+import org.pragmatica.jbct.lint.Diagnostic;
+import org.pragmatica.jbct.lint.LintContext;
+import org.pragmatica.jbct.lint.cst.CstLintRule;
+import org.pragmatica.jbct.parser.Cursor;
+import org.pragmatica.jbct.parser.RuleKind;
+
 import static org.pragmatica.jbct.parser.CstNodes.*;
+
 
 /// JBCT-STATIC-01: Prefer static imports for Pragmatica factory methods.
 ///
@@ -51,36 +52,37 @@ public class CstStaticImportRule implements CstLintRule {
         var staticImports = collectStaticImports(root);
         // Find qualified factory calls
         return findAllMethods(root).stream()
-                      .flatMap(method -> findQualifiedCalls(method, staticImports, ctx));
+                             .flatMap(method -> findQualifiedCalls(method, staticImports, ctx));
     }
 
     private Set<String> collectStaticImports(Cursor root) {
         var imports = new HashSet<String>();
-        findAll(root, RuleKind.IMPORT_DECL)
-        .forEach(imp -> {
-                     var importText = text(imp);
-                     if (importText.contains("static")) {
-                         // Extract the imported members
-        for (var pattern : FACTORY_PATTERNS) {
-                             for (var method : pattern.methods()) {
-                                 // Check for specific method import or wildcard
-        if (importText.contains("." + method + ";") ||
-        importText.contains("." + pattern.typeName() + ".*;") ||
-        importText.contains("." + pattern.typeName() + "." + method)) {
-                                     imports.add(pattern.typeName() + "." + method);
-                                 }
-                             }
-                         }
-                     }
-                 });
+
+        findAll(root, RuleKind.IMPORT_DECL).forEach(imp -> {
+            var importText = text(imp);
+
+            if (importText.contains("static")) {
+                // Extract the imported members
+                for (var pattern : FACTORY_PATTERNS) {
+                    for (var method : pattern.methods()) {
+                        // Check for specific method import or wildcard
+                        if (importText.contains("." + method + ";") || importText.contains("." + pattern.typeName()
+                                                                                          + ".*;") || importText.contains("." + pattern.typeName()
+                                                                                                                         + "." + method)) {
+                            imports.add(pattern.typeName() + "." + method);
+                        }
+                    }
+                }
+            }
+        });
+
         return imports;
     }
 
-    private Stream<Diagnostic> findQualifiedCalls(Cursor method,
-                                                  Set<String> staticImports,
-                                                  LintContext ctx) {
+    private Stream<Diagnostic> findQualifiedCalls(Cursor method, Set<String> staticImports, LintContext ctx) {
         var methodText = text(method);
         var matcher = QUALIFIED_CALL.matcher(methodText);
+
         return Stream.iterate(matcher.find(),
                               found -> found,
                               found -> matcher.find())
@@ -92,25 +94,23 @@ public class CstStaticImportRule implements CstLintRule {
     }
 
     private boolean isFactoryMethod(String typeName, String methodName) {
-        return FACTORY_PATTERNS.stream()
-                               .anyMatch(p -> p.typeName()
-                                               .equals(typeName) &&
-        p.methods()
-         .contains(methodName));
+        return FACTORY_PATTERNS.stream().anyMatch(p -> p.typeName()
+                                                        .equals(typeName) && p.methods()
+                                                                              .contains(methodName));
     }
 
-    private Diagnostic createDiagnostic(Cursor node,
-                                        String typeName,
-                                        String methodName,
-                                        LintContext ctx) {
+    private Diagnostic createDiagnostic(Cursor node, String typeName, String methodName, LintContext ctx) {
         return Diagnostic.diagnostic(RULE_ID,
                                      ctx.severityFor(RULE_ID),
                                      ctx.fileName(),
                                      startLine(node),
                                      startColumn(node),
                                      "Use static import for " + typeName + "." + methodName + "()",
-                                     "Add 'import static org.pragmatica.lang." + typeName + "." + methodName + ";' "
-                                     + "and use '" + methodName + "(...)' directly for cleaner code.");
+                                     "Add 'import static org.pragmatica.lang." + typeName
+                                    + "." + methodName
+                                    + ";' "
+                                    + "and use '" + methodName
+                                    + "(...)' directly for cleaner code.");
     }
 
     private record FactoryPattern(String typeName, Set<String> methods) {}

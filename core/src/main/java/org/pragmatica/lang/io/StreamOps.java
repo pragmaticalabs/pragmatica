@@ -1,8 +1,8 @@
 package org.pragmatica.lang.io;
 
-import org.pragmatica.lang.Result;
-
 import java.io.InputStream;
+
+import org.pragmatica.lang.Result;
 
 
 /// Safe I/O operations for streams and classpath resources, returning `Result<T>` instead of
@@ -23,7 +23,6 @@ import java.io.InputStream;
 /// var bytes = readBytes(inputStream);
 /// ```
 public sealed interface StreamOps {
-
     /// Read entire InputStream as a string (UTF-8).
     static Result<String> readString(InputStream input) {
         return readBytes(input).map(bytes -> new String(bytes, java.nio.charset.StandardCharsets.UTF_8));
@@ -61,6 +60,7 @@ public sealed interface StreamOps {
     /// Returns `ResourceNotFound` if the resource does not exist.
     static Result<InputStream> openResource(ClassLoader loader, String path) {
         var stream = loader.getResourceAsStream(path);
+
         return stream != null
                ? Result.success(stream)
                : new StreamError.ResourceNotFound(path).result();
@@ -69,6 +69,7 @@ public sealed interface StreamOps {
     /// Open a classpath resource relative to a class as an InputStream.
     static Result<InputStream> openResource(Class<?> anchor, String path) {
         var stream = anchor.getResourceAsStream(path);
+
         return stream != null
                ? Result.success(stream)
                : new StreamError.ResourceNotFound(path).result();

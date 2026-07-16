@@ -13,11 +13,7 @@
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  */
-
 package org.pragmatica.serialization;
-
-import io.netty.buffer.ByteBuf;
-import io.netty.buffer.ByteBufUtil;
 
 import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
@@ -28,10 +24,12 @@ import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.stream.Collectors;
 
+import io.netty.buffer.ByteBuf;
+import io.netty.buffer.ByteBufUtil;
+
+
 public interface SliceCodec extends Serializer, Deserializer {
-
     // --- Wire format tag constants ---
-
     int TAG_UNIT = 0;
     int TAG_NONE = 1;
     int TAG_SOME = 2;
@@ -53,13 +51,9 @@ public interface SliceCodec extends Serializer, Deserializer {
     int TAG_ARRAY = 18;
     int TAG_TUPLE = 19;
     int TAG_MAP = 20;
-
     // --- Tag space ---
-
     int TAG_SPACE_SIZE = 16384;
-
     // --- Stream header ---
-
     int MAGIC = 0xAE01;
     int FORMAT_VERSION = 1;
 
@@ -83,7 +77,6 @@ public interface SliceCodec extends Serializer, Deserializer {
     }
 
     // --- Nested types ---
-
     @FunctionalInterface
     interface TypeWriter<T> {
         void writeBody(SliceCodec codec, ByteBuf buf, T value);
@@ -101,9 +94,7 @@ public interface SliceCodec extends Serializer, Deserializer {
         int tagFor(T value);
     }
 
-    record TypeCodec<T>(Class<T> type, int tag, TagMapper<T> tagMapper,
-                        TypeWriter<T> writer, TypeReader<T> reader) {
-
+    record TypeCodec<T>(Class<T> type, int tag, TagMapper<T> tagMapper, TypeWriter<T> writer, TypeReader<T> reader) {
         /// Convenience constructor for types with a constant tag.
         public TypeCodec(Class<T> type, int tag, TypeWriter<T> writer, TypeReader<T> reader) {
             this(type, tag, _ -> tag, writer, reader);
@@ -111,7 +102,6 @@ public interface SliceCodec extends Serializer, Deserializer {
     }
 
     // --- VLQ encoding ---
-
     static void writeCompact(ByteBuf buf, int value) {
         while ((value & ~0x7F) != 0) {
             buf.writeByte((value & 0x7F) | 0x80);
@@ -136,15 +126,14 @@ public interface SliceCodec extends Serializer, Deserializer {
     }
 
     // --- Tag computation ---
-
     static int deterministicTag(String className) {
         return (className.hashCode() & 0x7FFFFFFF) % 16256 + 128;
     }
 
     // --- String helpers ---
-
     static void writeString(ByteBuf buf, String value) {
         int utf8Bytes = ByteBufUtil.utf8Bytes(value);
+
         writeCompact(buf, utf8Bytes);
         ByteBufUtil.writeUtf8(buf, value);
     }
@@ -152,32 +141,33 @@ public interface SliceCodec extends Serializer, Deserializer {
     static String readString(ByteBuf buf) {
         var len = readCompact(buf);
         var value = buf.toString(buf.readerIndex(), len, StandardCharsets.UTF_8);
+
         buf.skipBytes(len);
+
         return value;
     }
 
     // --- Body helpers for generated code ---
-
     @SuppressWarnings("unchecked")
     default <T> void writeBodyFor(ByteBuf buf, T value, Class<T> type) {
         var codec = (TypeCodec<T>) lookupByClass(type);
+
         codec.writer().writeBody(this, buf, value);
     }
 
     @SuppressWarnings("unchecked")
     default <T> T readBodyFor(ByteBuf buf, int tag) {
         var codec = (TypeCodec<T>) lookupByTag(tag);
-        return codec.reader().readBody(this, buf);
+
+        return codec.reader()
+                    .readBody(this, buf);
     }
 
     // --- Internal lookup (package-private contract) ---
-
     TypeCodec<?> lookupByClass(Class<?> type);
-
     TypeCodec<?> lookupByTag(int tag);
 
     // --- Factory methods ---
-
     static SliceCodec sliceCodec(List<TypeCodec<?>> codecs) {
         return sliceCodec(null, codecs);
     }
@@ -204,28 +194,29 @@ public interface SliceCodec extends Serializer, Deserializer {
     /// and this method verifies at startup that manual codecs were actually provided.
     static SliceCodec sliceCodec(SliceCodec parent, List<TypeCodec<?>> codecs, Set<Class<?>> requiredTypes) {
         var result = sliceCodec(parent, codecs);
+
         validateRequiredTypes(result, requiredTypes);
+
         return result;
     }
 
     /// Verify that all required types from @CodecFor declarations have registered codecs.
     /// Call this at startup after building the full codec registry.
     static void validateRequiredTypes(SliceCodec codec, Set<Class<?>> requiredTypes) {
-        var missing = requiredTypes.stream()
-                                   .filter(type -> !hasCodecFor(codec, type))
-                                   .toList();
+        var missing = requiredTypes.stream().filter(type -> !hasCodecFor(codec, type)).toList();
 
         if (!missing.isEmpty()) {
-            throw new IllegalStateException(
-                "Codecs declared via @CodecFor but not registered: "
-                    + missing.stream().map(Class::getName).collect(Collectors.joining(", "))
-                    + ". Register manual codecs for these types.");
+            throw new IllegalStateException("Codecs declared via @CodecFor but not registered: " + missing.stream()
+                                                                                                          .map(Class::getName)
+                                                                                                          .collect(Collectors.joining(", "))
+                                           + ". Register manual codecs for these types.");
         }
     }
 
     private static boolean hasCodecFor(SliceCodec codec, Class<?> type) {
         try {
             codec.lookupByClass(type);
+
             return true;
         } catch (IllegalArgumentException _) {
             return false;
@@ -240,31 +231,32 @@ public interface SliceCodec extends Serializer, Deserializer {
         int tag = codec.tag();
 
         if (tag < 0 || tag >= TAG_SPACE_SIZE) {
-            throw new IllegalArgumentException("Tag %d for %s is out of range [0, %d)"
-                .formatted(tag, codec.type().getName(), TAG_SPACE_SIZE));
+            throw new IllegalArgumentException("Tag %d for %s is out of range [0, %d)".formatted(tag,
+                                                                                                 codec.type().getName(),
+                                                                                                 TAG_SPACE_SIZE));
         }
 
         var existing = tagArray[tag];
 
         if (existing != null && !existing.type().equals(codec.type())) {
-            throw new IllegalArgumentException("Tag collision: tag %d claimed by both %s and %s"
-                .formatted(tag, existing.type().getName(), codec.type().getName()));
+            throw new IllegalArgumentException("Tag collision: tag %d claimed by both %s and %s".formatted(tag,
+                                                                                                           existing.type()
+                                                                                                                   .getName(),
+                                                                                                           codec.type()
+                                                                                                                .getName()));
         }
 
         tagArray[tag] = codec;
     }
-
 }
 
 final class CodecHolder implements SliceCodec {
-
     private final Map<Class<?>, SliceCodec.TypeCodec<?>> byClass;
     private final SliceCodec.TypeCodec<?>[] tagArray;
     private final ConcurrentHashMap<Class<?>, SliceCodec.TypeCodec<?>> classCache;
     private volatile SliceCodec.TypeCodec<?> lastLookup;
 
-    CodecHolder(Map<Class<?>, SliceCodec.TypeCodec<?>> byClass,
-                SliceCodec.TypeCodec<?>[] tagArray) {
+    CodecHolder(Map<Class<?>, SliceCodec.TypeCodec<?>> byClass, SliceCodec.TypeCodec<?>[] tagArray) {
         this.byClass = byClass;
         this.tagArray = tagArray;
         this.classCache = new ConcurrentHashMap<>(byClass);
@@ -290,12 +282,13 @@ final class CodecHolder implements SliceCodec {
 
         if (codec != null) {
             lastLookup = codec;
+
             return codec;
         }
-
         // Supertype fallback -- handles collection implementations (e.g. ImmutableCollections$ListN -> List)
         codec = findBySupertype(type);
         lastLookup = codec;
+
         return codec;
     }
 
@@ -303,6 +296,7 @@ final class CodecHolder implements SliceCodec {
         for (var entry : byClass.entrySet()) {
             if (entry.getKey().isAssignableFrom(type)) {
                 classCache.put(type, entry.getValue());
+
                 return entry.getValue();
             }
         }
@@ -330,12 +324,15 @@ final class CodecHolder implements SliceCodec {
     public <T> void write(ByteBuf byteBuf, T object) {
         if (object == null) {
             SliceCodec.writeCompact(byteBuf, SliceCodec.TAG_NULL);
+
             return;
         }
 
         var type = (Class<T>) object.getClass();
         var codec = (TypeCodec<T>) lookupByClass(type);
-        SliceCodec.writeCompact(byteBuf, codec.tagMapper().tagFor(object));
+
+        SliceCodec.writeCompact(byteBuf,
+                                codec.tagMapper().tagFor(object));
         codec.writer().writeBody(this, byteBuf, object);
     }
 
@@ -344,7 +341,9 @@ final class CodecHolder implements SliceCodec {
     public <T> T read(ByteBuf byteBuf) {
         var tag = SliceCodec.readCompact(byteBuf);
         var codec = (TypeCodec<T>) lookupByTag(tag);
-        return codec.reader().readBody(this, byteBuf);
+
+        return codec.reader()
+                    .readBody(this, byteBuf);
     }
 
     @Override
@@ -353,7 +352,7 @@ final class CodecHolder implements SliceCodec {
             return true;
         }
 
-        if (!(obj instanceof CodecHolder other)) {
+        if (! (obj instanceof CodecHolder other)) {
             return false;
         }
 

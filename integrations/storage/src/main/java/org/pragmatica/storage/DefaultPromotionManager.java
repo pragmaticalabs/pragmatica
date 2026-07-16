@@ -9,10 +9,12 @@ import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.utils.Causes;
+
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import static org.pragmatica.lang.Unit.unit;
+
 
 /// Default implementation of PromotionManager.
 /// Scans blocks in cold tiers (REMOTE, LOCAL_DISK) and promotes frequently-accessed
@@ -24,13 +26,14 @@ final class DefaultPromotionManager implements PromotionManager {
     private final List<StorageTier> tiers;
     private final MetadataStore metadataStore;
     private final PromotionConfig config;
+
     private static final Cause BLOCK_MISSING = Causes.cause("Block not present in source tier");
+
     private final AtomicReference<PromotionStats> stats = new AtomicReference<>(PromotionStats.promotionStats());
+
     private volatile boolean active = false;
 
-    DefaultPromotionManager(List<StorageTier> tiers,
-                            MetadataStore metadataStore,
-                            PromotionConfig config) {
+    DefaultPromotionManager(List<StorageTier> tiers, MetadataStore metadataStore, PromotionConfig config) {
         this.tiers = List.copyOf(tiers);
         this.metadataStore = metadataStore;
         this.config = config;
@@ -39,12 +42,14 @@ final class DefaultPromotionManager implements PromotionManager {
     @Override
     public Result<Unit> activate() {
         active = true;
+
         return Result.success(unit());
     }
 
     @Override
     public Result<Unit> deactivate() {
         active = false;
+
         return Result.success(unit());
     }
 
@@ -74,15 +79,21 @@ final class DefaultPromotionManager implements PromotionManager {
 
         stats.updateAndGet(s -> s.withPromoted(result.count(), result.bytes(), endMs));
         log.debug("Promotion cycle completed: {} block(s) promoted, {} bytes moved in {}ms",
-                  result.count(), result.bytes(), endMs - startMs);
+                  result.count(),
+                  result.bytes(),
+                  endMs - startMs);
+
         return result.count();
     }
 
     private PromotionResult promoteAllTiers() {
         // Iterate from slowest to fastest (reverse order): promote from tier i to tier i-1.
-        return IntStream.iterate(tiers.size() - 1, i -> i > 0, i -> i - 1)
-                                         .mapToObj(i -> promoteTier(tiers.get(i), tiers.get(i - 1)))
-                                         .reduce(PromotionResult.NONE, PromotionResult::add);
+        return IntStream.iterate(tiers.size() - 1,
+                                 i -> i > 0,
+                                 i -> i - 1)
+                        .mapToObj(i -> promoteTier(tiers.get(i),
+                                                   tiers.get(i - 1)))
+                        .reduce(PromotionResult.NONE, PromotionResult::add);
     }
 
     private PromotionResult promoteTier(StorageTier sourceTier, StorageTier targetTier) {
@@ -99,7 +110,9 @@ final class DefaultPromotionManager implements PromotionManager {
                                               StorageTier sourceTier,
                                               StorageTier targetTier) {
         return candidates.stream()
-                         .map(candidate -> promoteBlock(candidate.blockId(), sourceTier, targetTier))
+                         .map(candidate -> promoteBlock(candidate.blockId(),
+                                                        sourceTier,
+                                                        targetTier))
                          .filter(moved -> moved > 0)
                          .map(moved -> new PromotionResult(1, moved))
                          .reduce(PromotionResult.NONE, PromotionResult::add);
@@ -109,7 +122,8 @@ final class DefaultPromotionManager implements PromotionManager {
         var now = System.currentTimeMillis();
         var windowStart = now - config.windowMs();
 
-        return metadataStore.listBlocksByTier(tierLevel).stream()
+        return metadataStore.listBlocksByTier(tierLevel)
+                            .stream()
                             .filter(lc -> isPromotionCandidate(lc, windowStart))
                             .sorted(MOST_ACCESSED_FIRST)
                             .limit(config.batchSize())
@@ -123,7 +137,8 @@ final class DefaultPromotionManager implements PromotionManager {
     }
 
     private boolean isAlreadyInFasterTier(BlockLifecycle lifecycle) {
-        var lowestTierOrdinal = lifecycle.presentIn().stream()
+        var lowestTierOrdinal = lifecycle.presentIn()
+                                         .stream()
                                          .mapToInt(TierLevel::ordinal)
                                          .min()
                                          .orElse(Integer.MAX_VALUE);
@@ -134,26 +149,30 @@ final class DefaultPromotionManager implements PromotionManager {
     /// Synchronous block promotion. Uses .await() because promotion runs on a dedicated
     /// background thread, not on the hot path. Blocking here is intentional.
     private long promoteBlock(BlockId blockId, StorageTier sourceTier, StorageTier targetTier) {
-        return sourceTier.get(blockId).await()
+        return sourceTier.get(blockId)
+                         .await()
                          .flatMap(opt -> opt.toResult(BLOCK_MISSING))
-                         .fold(_ -> 0L, content -> writeToFasterTier(blockId, content, targetTier));
+                         .fold(_ -> 0L,
+                               content -> writeToFasterTier(blockId, content, targetTier));
     }
 
     /// Synchronous write to faster tier. Uses .await() on a dedicated background thread.
     private long writeToFasterTier(BlockId blockId, byte[] content, StorageTier targetTier) {
-        return targetTier.put(blockId, content).await()
+        return targetTier.put(blockId, content)
+                         .await()
                          .fold(cause -> logWriteFailure(blockId, targetTier, cause),
                                _ -> completeBlockPromotion(blockId, content.length, targetTier));
     }
 
     private long logWriteFailure(BlockId blockId, StorageTier targetTier, Cause cause) {
-        log.debug("Promotion write to {} failed for {}: {}",
-                  targetTier.level(), blockId, cause.message());
+        log.debug("Promotion write to {} failed for {}: {}", targetTier.level(), blockId, cause.message());
+
         return 0L;
     }
 
     private long completeBlockPromotion(BlockId blockId, int contentLength, StorageTier targetTier) {
         updateMetadataAfterPromotion(blockId, targetTier.level());
+
         return contentLength;
     }
 
@@ -161,8 +180,7 @@ final class DefaultPromotionManager implements PromotionManager {
         metadataStore.computeLifecycle(blockId, lc -> lc.withTierAdded(targetLevel));
     }
 
-    private static final Comparator<BlockLifecycle> MOST_ACCESSED_FIRST =
-        Comparator.comparingInt(BlockLifecycle::accessCount).reversed();
+    private static final Comparator<BlockLifecycle> MOST_ACCESSED_FIRST = Comparator.comparingInt(BlockLifecycle::accessCount).reversed();
 
     private record PromotionResult(int count, long bytes) {
         static final PromotionResult NONE = new PromotionResult(0, 0);

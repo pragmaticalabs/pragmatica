@@ -1,11 +1,5 @@
 package org.pragmatica.email.http;
 
-import org.pragmatica.http.HttpOperations;
-import org.pragmatica.lang.Option;
-import org.pragmatica.lang.Promise;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-
 import java.net.URI;
 import java.net.http.HttpRequest;
 import java.net.http.HttpRequest.BodyPublishers;
@@ -13,14 +7,21 @@ import java.util.Map;
 import java.util.ServiceLoader;
 import java.util.concurrent.ConcurrentHashMap;
 
+import org.pragmatica.http.HttpOperations;
+import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Promise;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+
 /// Core implementation of HttpEmailSender using ServiceLoader-discovered vendor mappings.
 final class HttpEmailSenderCore implements HttpEmailSender {
     private static final Logger log = LoggerFactory.getLogger(HttpEmailSenderCore.class);
     private static final Map<String, VendorMapping> MAPPINGS = new ConcurrentHashMap<>();
 
     static {
-        ServiceLoader.load(VendorMapping.class)
-                     .forEach(mapping -> MAPPINGS.put(mapping.vendorId(), mapping));
+        ServiceLoader.load(VendorMapping.class).forEach(mapping -> MAPPINGS.put(mapping.vendorId(), mapping));
     }
 
     private final HttpEmailConfig config;
@@ -54,7 +55,8 @@ final class HttpEmailSenderCore implements HttpEmailSender {
     private static HttpRequest buildHttpRequest(String baseUrl, VendorRequest vendorRequest) {
         var builder = HttpRequest.newBuilder()
                                  .uri(URI.create(baseUrl + vendorRequest.path()))
-                                 .header("Content-Type", vendorRequest.contentType())
+                                 .header("Content-Type",
+                                         vendorRequest.contentType())
                                  .POST(BodyPublishers.ofString(vendorRequest.body()));
 
         vendorRequest.headers().forEach(builder::header);

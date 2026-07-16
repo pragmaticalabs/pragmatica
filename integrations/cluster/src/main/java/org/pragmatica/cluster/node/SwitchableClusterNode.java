@@ -1,13 +1,14 @@
 package org.pragmatica.cluster.node;
 
+import java.util.List;
+import java.util.concurrent.atomic.AtomicReference;
+
 import org.pragmatica.consensus.Command;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.topology.TopologyManager;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 
-import java.util.List;
-import java.util.concurrent.atomic.AtomicReference;
 
 /// A ClusterNode that delegates to a switchable implementation.
 /// Used to switch between direct consensus and forwarding modes at runtime.
@@ -34,26 +35,31 @@ public final class SwitchableClusterNode<C extends Command> implements ClusterNo
 
     @Override
     public NodeId self() {
-        return delegate.get().self();
+        return delegate.get()
+                       .self();
     }
 
     @Override
     public TopologyManager topologyManager() {
-        return delegate.get().topologyManager();
+        return delegate.get()
+                       .topologyManager();
     }
 
     @Override
     public Promise<Unit> start() {
-        return delegate.get().start();
+        return delegate.get()
+                       .start();
     }
 
     @Override
     public Promise<Unit> stop() {
-        return delegate.get().stop();
+        return delegate.get()
+                       .stop();
     }
 
     @Override
     public <R> Promise<List<R>> apply(List<C> commands) {
-        return delegate.get().apply(commands);
+        return delegate.get()
+                       .apply(commands);
     }
 }

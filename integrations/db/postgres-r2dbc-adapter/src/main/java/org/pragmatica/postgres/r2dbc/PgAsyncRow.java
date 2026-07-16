@@ -14,13 +14,7 @@
  *  limitations under the License.
  *
  */
-
 package org.pragmatica.postgres.r2dbc;
-
-import io.r2dbc.spi.Row;
-import io.r2dbc.spi.RowMetadata;
-
-import org.pragmatica.postgres.PgRow;
 
 import java.math.BigDecimal;
 import java.math.BigInteger;
@@ -28,6 +22,12 @@ import java.time.Instant;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
+
+import org.pragmatica.postgres.PgRow;
+
+import io.r2dbc.spi.Row;
+import io.r2dbc.spi.RowMetadata;
+
 
 /// R2DBC [Row] backed by a postgres-async [PgRow].
 ///
@@ -64,48 +64,63 @@ public final class PgAsyncRow implements Row {
         if (type == String.class) {
             return pgRow.getString(index);
         }
+
         if (type == Integer.class) {
             return pgRow.getInt(index);
         }
+
         if (type == Long.class) {
             return pgRow.getLong(index);
         }
+
         if (type == Double.class) {
             return pgRow.getDouble(index);
         }
+
         if (type == Boolean.class) {
             return pgRow.getBoolean(index);
         }
+
         if (type == byte[].class) {
             return pgRow.getBytes(index);
         }
+
         if (type == Short.class) {
             return pgRow.getShort(index);
         }
+
         if (type == Byte.class) {
             return pgRow.getByte(index);
         }
+
         if (type == BigDecimal.class) {
             return pgRow.getBigDecimal(index);
         }
+
         if (type == BigInteger.class) {
             return pgRow.getBigInteger(index);
         }
+
         if (type == LocalDate.class) {
             return pgRow.getLocalDate(index);
         }
+
         if (type == LocalTime.class) {
             return pgRow.getLocalTime(index);
         }
+
         if (type == LocalDateTime.class) {
             return pgRow.getLocalDateTime(index);
         }
+
         if (type == Instant.class) {
             return pgRow.getInstant(index);
         }
+
         if (type == Character.class) {
             return pgRow.getChar(index);
         }
+
         return pgRow.get(index, type);
     }
 
@@ -113,48 +128,63 @@ public final class PgAsyncRow implements Row {
         if (type == String.class) {
             return pgRow.getString(name);
         }
+
         if (type == Integer.class) {
             return pgRow.getInt(name);
         }
+
         if (type == Long.class) {
             return pgRow.getLong(name);
         }
+
         if (type == Double.class) {
             return pgRow.getDouble(name);
         }
+
         if (type == Boolean.class) {
             return pgRow.getBoolean(name);
         }
+
         if (type == byte[].class) {
             return pgRow.getBytes(name);
         }
+
         if (type == Short.class) {
             return pgRow.getShort(name);
         }
+
         if (type == Byte.class) {
             return pgRow.getByte(name);
         }
+
         if (type == BigDecimal.class) {
             return pgRow.getBigDecimal(name);
         }
+
         if (type == BigInteger.class) {
             return pgRow.getBigInteger(name);
         }
+
         if (type == LocalDate.class) {
             return pgRow.getLocalDate(name);
         }
+
         if (type == LocalTime.class) {
             return pgRow.getLocalTime(name);
         }
+
         if (type == LocalDateTime.class) {
             return pgRow.getLocalDateTime(name);
         }
+
         if (type == Instant.class) {
             return pgRow.getInstant(name);
         }
+
         if (type == Character.class) {
             return pgRow.getChar(name);
         }
+
         return pgRow.get(name, type);
     }
 }

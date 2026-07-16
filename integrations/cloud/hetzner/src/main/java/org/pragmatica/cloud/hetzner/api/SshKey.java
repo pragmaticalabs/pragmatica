@@ -14,13 +14,13 @@
  *  limitations under the License.
  *
  */
-
 package org.pragmatica.cloud.hetzner.api;
 
 import java.util.List;
 
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.annotation.JsonProperty;
+
 
 /// Hetzner Cloud SSH key model.
 @JsonIgnoreProperties(ignoreUnknown = true)

@@ -13,12 +13,12 @@
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  */
-
 package org.pragmatica.lang;
 
 import org.pragmatica.lang.Functions.Fn0;
 import org.pragmatica.lang.Functions.ThrowingFn0;
 import org.pragmatica.lang.io.CoreError;
+
 
 /// From <a href="https://en.wikipedia.org/wiki/Unit_type">Unit type</a> :
 /// <blockquote>
@@ -146,7 +146,7 @@ public final class Unit implements Tuple.Tuple0 {
     /// **[Factory]**
     @Override
     public <T> Result<T> lift(ThrowingFn0<T> mapper) {
-        try{
+        try {
             return Result.success(mapper.apply());
         } catch (Throwable throwable) {
             return new CoreError.Exception(throwable).result();

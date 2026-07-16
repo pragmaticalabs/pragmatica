@@ -13,12 +13,12 @@
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  */
-
 package org.pragmatica.http;
 
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.utils.Causes;
+
 
 public sealed interface CodecError extends Cause {
     record SerializationFailed(String message, Option<Cause> source) implements CodecError {}

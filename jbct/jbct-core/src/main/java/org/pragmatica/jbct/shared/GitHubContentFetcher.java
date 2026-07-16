@@ -1,11 +1,5 @@
 package org.pragmatica.jbct.shared;
 
-import org.pragmatica.http.HttpOperations;
-import org.pragmatica.http.HttpResult;
-import org.pragmatica.lang.Result;
-import org.pragmatica.lang.Unit;
-import org.pragmatica.lang.utils.Causes;
-
 import java.io.IOException;
 import java.net.URI;
 import java.net.http.HttpRequest;
@@ -15,13 +9,19 @@ import java.time.Duration;
 import java.util.List;
 import java.util.regex.Pattern;
 
+import org.pragmatica.http.HttpOperations;
+import org.pragmatica.http.HttpResult;
+import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.utils.Causes;
+
+
 /// Utility for fetching content from GitHub repositories.
 /// Provides common operations for GitHub API access.
 public sealed interface GitHubContentFetcher permits GitHubContentFetcher.unused {
     record unused() implements GitHubContentFetcher {}
 
     Duration DEFAULT_TIMEOUT = Duration.ofSeconds(30);
-
     Pattern SHA_PATTERN = Pattern.compile("\"sha\"\\s*:\\s*\"([^\"]+)\"");
 
     /// File information from GitHub tree API.
@@ -50,6 +50,7 @@ public sealed interface GitHubContentFetcher permits GitHubContentFetcher.unused
                                  .timeout(DEFAULT_TIMEOUT)
                                  .GET()
                                  .build();
+
         return http.sendString(request)
                    .await()
                    .flatMap(HttpResult::toResult)
@@ -72,6 +73,7 @@ public sealed interface GitHubContentFetcher permits GitHubContentFetcher.unused
                                  .timeout(DEFAULT_TIMEOUT)
                                  .GET()
                                  .build();
+
         return http.sendString(request)
                    .await()
                    .flatMap(HttpResult::toResult)
@@ -93,6 +95,7 @@ public sealed interface GitHubContentFetcher permits GitHubContentFetcher.unused
                                  .timeout(DEFAULT_TIMEOUT)
                                  .GET()
                                  .build();
+
         return http.sendString(request)
                    .await()
                    .flatMap(HttpResult::toResult);
@@ -116,16 +119,18 @@ public sealed interface GitHubContentFetcher permits GitHubContentFetcher.unused
 
     private static Result<String> extractSha(String body) {
         var matcher = SHA_PATTERN.matcher(body);
+
         if (matcher.find()) {
             return Result.success(matcher.group(1));
         }
-        return Causes.cause("Could not parse commit SHA from response")
-                     .result();
+
+        return Causes.cause("Could not parse commit SHA from response").result();
     }
 
     private static List<String> extractPaths(String body, String pathPrefix) {
         var pattern = Pattern.compile("\\{[^}]*\"path\"\\s*:\\s*\"(" + Pattern.quote(pathPrefix)
-                                      + "[^\"]+)\"[^}]*\"type\"\\s*:\\s*\"blob\"[^}]*\\}");
+                                     + "[^\"]+)\"[^}]*\"type\"\\s*:\\s*\"blob\"[^}]*\\}");
+
         return pattern.matcher(body)
                       .results()
                       .map(match -> match.group(1))
@@ -133,13 +138,13 @@ public sealed interface GitHubContentFetcher permits GitHubContentFetcher.unused
     }
 
     private static Result<Unit> writeFile(Path destination, String content) {
-        try{
+        try {
             Files.createDirectories(destination.getParent());
             Files.writeString(destination, content);
+
             return Result.unitResult();
         } catch (IOException e) {
-            return Causes.cause("Failed to write " + destination + ": " + e.getMessage())
-                         .result();
+            return Causes.cause("Failed to write " + destination + ": " + e.getMessage()).result();
         }
     }
 }

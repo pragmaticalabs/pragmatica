@@ -3,6 +3,7 @@ package org.pragmatica.jbct.lint;
 import java.util.List;
 import java.util.regex.Pattern;
 
+
 /// Context for lint analysis providing configuration.
 public record LintContext(List<Pattern> excludedPackagePatterns,
                           List<Pattern> slicePackagePatterns,
@@ -18,6 +19,7 @@ public record LintContext(List<Pattern> excludedPackagePatterns,
         if (excludedPackagePatterns.isEmpty()) {
             return true;
         }
+
         return excludedPackagePatterns.stream()
                                       .noneMatch(pattern -> pattern.matcher(packageName)
                                                                    .matches());
@@ -44,23 +46,18 @@ public record LintContext(List<Pattern> excludedPackagePatterns,
     /// Check if a rule is enabled.
     public boolean isRuleEnabled(String ruleId) {
         return ! config.disabledRules()
-                      .contains(ruleId);
+                       .contains(ruleId);
     }
 
     /// Factory method with default configuration.
     public static LintContext defaultContext() {
-        return new LintContext(List.of(),
-                               List.of(),
-                               LintConfig.defaultConfig(),
-                               "Unknown.java");
+        return new LintContext(List.of(), List.of(), LintConfig.defaultConfig(), "Unknown.java");
     }
 
     /// Factory method with custom excluded package patterns.
     public static LintContext lintContext(List<String> excludePackages) {
-        var patterns = excludePackages.stream()
-                                      .map(LintContext::globToRegex)
-                                      .map(Pattern::compile)
-                                      .toList();
+        var patterns = excludePackages.stream().map(LintContext::globToRegex).map(Pattern::compile).toList();
+
         return new LintContext(patterns, List.of(), LintConfig.defaultConfig(), "Unknown.java");
     }
 
@@ -83,19 +80,15 @@ public record LintContext(List<Pattern> excludedPackagePatterns,
 
     /// Builder-style method to set excluded package patterns from glob strings.
     public LintContext withExcludePackages(List<String> patterns) {
-        var compiledPatterns = patterns.stream()
-                                       .map(LintContext::globToRegex)
-                                       .map(Pattern::compile)
-                                       .toList();
+        var compiledPatterns = patterns.stream().map(LintContext::globToRegex).map(Pattern::compile).toList();
+
         return new LintContext(compiledPatterns, slicePackagePatterns, config, fileName);
     }
 
     /// Builder-style method to set slice package patterns from glob strings.
     public LintContext withSlicePackages(List<String> patterns) {
-        var compiledPatterns = patterns.stream()
-                                       .map(LintContext::globToRegex)
-                                       .map(Pattern::compile)
-                                       .toList();
+        var compiledPatterns = patterns.stream().map(LintContext::globToRegex).map(Pattern::compile).toList();
+
         return new LintContext(excludedPackagePatterns, compiledPatterns, config, fileName);
     }
 

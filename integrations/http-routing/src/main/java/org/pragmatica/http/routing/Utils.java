@@ -2,6 +2,7 @@ package org.pragmatica.http.routing;
 
 import java.util.function.Supplier;
 
+
 /// Utility methods for HTTP routing.
 public sealed interface Utils {
     /// Lazy initialization pattern for fields.

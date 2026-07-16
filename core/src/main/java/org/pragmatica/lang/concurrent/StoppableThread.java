@@ -1,9 +1,10 @@
 package org.pragmatica.lang.concurrent;
 
-import org.pragmatica.lang.Contract;
-
 import java.lang.invoke.MethodHandles;
 import java.lang.invoke.VarHandle;
+
+import org.pragmatica.lang.Contract;
+
 
 /// Thread-safe stoppable thread holder.
 /// Replaces the nullable AtomicReference + getAndSet(null) + interrupt pattern.
@@ -13,8 +14,7 @@ public final class StoppableThread {
     @Contract
     private static VarHandle lookupThreadHandle() {
         try {
-            return MethodHandles.lookup()
-                                .findVarHandle(StoppableThread.class, "thread", Thread.class);
+            return MethodHandles.lookup().findVarHandle(StoppableThread.class, "thread", Thread.class);
         } catch (ReflectiveOperationException e) {
             throw new ExceptionInInitializerError(e);
         }
@@ -38,6 +38,7 @@ public final class StoppableThread {
     @Contract
     public void stop() {
         var t = (Thread) THREAD.getAndSet(this, null);
+
         if (t != null) {
             t.interrupt();
         }

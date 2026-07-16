@@ -1,13 +1,5 @@
 package org.pragmatica.jbct.format.flow;
 
-import org.pragmatica.jbct.format.AlignmentContext;
-import org.pragmatica.jbct.format.FormatterConfig;
-import org.pragmatica.jbct.parser.Cursor;
-import org.pragmatica.jbct.parser.RuleKind;
-import org.pragmatica.jbct.shared.ImportGroups;
-import org.pragmatica.lang.Option;
-import org.pragmatica.peg.v6.token.TokenArray;
-
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
@@ -19,7 +11,16 @@ import java.util.Set;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
+import org.pragmatica.jbct.format.AlignmentContext;
+import org.pragmatica.jbct.format.FormatterConfig;
+import org.pragmatica.jbct.parser.Cursor;
+import org.pragmatica.jbct.parser.RuleKind;
+import org.pragmatica.jbct.shared.ImportGroups;
+import org.pragmatica.lang.Option;
+import org.pragmatica.peg.v6.token.TokenArray;
+
 import static org.pragmatica.jbct.parser.CstNodes.*;
+
 
 /// Flow-based CST printer that formats purely from code structure and width.
 ///
@@ -35,7 +36,6 @@ import static org.pragmatica.jbct.parser.CstNodes.*;
 /// **Thread Safety:** Not thread-safe. Create a new instance per formatting operation.
 @SuppressWarnings("JBCT-PAT-01")
 final class FlowPrinter {
-
     // ===== Configuration and state =====
     private final FormatterConfig config;
     private final String source;
@@ -50,20 +50,16 @@ final class FlowPrinter {
     /// already separates them into distinct rules, so we key spacing off that rather than guessing
     /// from characters (which cannot tell `static <T>` from `a < b`).
     private int typeContextDepth = 0;
-
     // Measurement mode
     private boolean measuringMode;
     private int measureBuffer;
-
     // Token tracking for trivia insertion
     private int tokenIndex;
     private final Map<Integer, Integer> tokenLineMap = new HashMap<>();
     private int currentLine;
-
     // Track trivia tokens we've already emitted as comments (prevents double-emit when
     // an outer node and its first CST child share leading trivia under v6 attribution).
     private final Set<Integer> emittedTriviaTokens = new HashSet<>();
-
     // Alignment tracking
     private final AlignmentContext alignment = new AlignmentContext();
     // When >= 0, emitLeadingComments uses printAlignedTo(forcedIndentCol) instead of printIndent().
@@ -74,12 +70,52 @@ final class FlowPrinter {
     private static final Pattern METHOD_CALL_PATTERN = Pattern.compile("\\.[a-zA-Z_][a-zA-Z0-9_]*\\s*\\(");
 
     // Spacing rule constants
-    private static final Set<String> SPACE_BEFORE_PAREN_KEYWORDS = Set.of("if", "else", "for", "while", "do",
-        "try", "catch", "finally", "switch", "synchronized", "assert");
+    private static final Set<String> SPACE_BEFORE_PAREN_KEYWORDS = Set.of("if",
+                                                                          "else",
+                                                                          "for",
+                                                                          "while",
+                                                                          "do",
+                                                                          "try",
+                                                                          "catch",
+                                                                          "finally",
+                                                                          "switch",
+                                                                          "synchronized",
+                                                                          "assert");
+
     private static final Set<String> SPACE_AFTER_BRACE_KEYWORDS = Set.of("else", "catch", "finally", "while");
+
     private static final Set<String> SPACE_AFTER_KEYWORDS = Set.of("case", "return", "throw", "new", "yield", "assert");
-    private static final Set<String> BINARY_OPS = Set.of("=", "==", "!=", "<=", ">=", "+", "-", "*", "/", "%",
-        "&", "|", "^", "&&", "||", "->", "?", ":", "+=", "-=", "*=", "/=", "%=", "&=", "|=", "^=", "<<=", ">>=", ">>>=");
+
+    private static final Set<String> BINARY_OPS = Set.of("=",
+                                                         "==",
+                                                         "!=",
+                                                         "<=",
+                                                         ">=",
+                                                         "+",
+                                                         "-",
+                                                         "*",
+                                                         "/",
+                                                         "%",
+                                                         "&",
+                                                         "|",
+                                                         "^",
+                                                         "&&",
+                                                         "||",
+                                                         "->",
+                                                         "?",
+                                                         ":",
+                                                         "+=",
+                                                         "-=",
+                                                         "*=",
+                                                         "/=",
+                                                         "%=",
+                                                         "&=",
+                                                         "|=",
+                                                         "^=",
+                                                         "<<=",
+                                                         ">>=",
+                                                         ">>>=");
+
     private static final Set<Character> BINARY_OP_CHARS = Set.of('=', '+', '-', '*', '/', '%', '&', '|', '^', '?', ':');
 
     FlowPrinter(FormatterConfig config, String source) {
@@ -106,15 +142,16 @@ final class FlowPrinter {
     FlowResult print(Cursor root) {
         printNode(root);
         var result = output.toString()
-            .lines()
-            .map(String::stripTrailing)
-            .collect(Collectors.joining("\n"))
-            .stripTrailing() + "\n";
+                           .lines()
+                           .map(String::stripTrailing)
+                           .collect(Collectors.joining("\n"))
+                           .stripTrailing()
+                   + "\n";
+
         return new FlowResult(result, Map.copyOf(tokenLineMap));
     }
 
     // ===== Measurement =====
-
     private int measureWidth(Cursor node) {
         boolean wasMeasuring = measuringMode;
         int oldBuffer = measureBuffer;
@@ -122,16 +159,19 @@ final class FlowPrinter {
         char oldPrevChar = prevChar;
         String oldLastWord = lastWord;
         int oldTypeContextDepth = typeContextDepth;
+
         measuringMode = true;
         measureBuffer = 0;
         printNode(node);
         int width = measureBuffer;
+
         measuringMode = wasMeasuring;
         measureBuffer = oldBuffer;
         lastChar = oldLastChar;
         prevChar = oldPrevChar;
         lastWord = oldLastWord;
         typeContextDepth = oldTypeContextDepth;
+
         return width;
     }
 
@@ -199,12 +239,12 @@ final class FlowPrinter {
     }
 
     // ===== Node dispatch =====
-
     private void printNode(Cursor node) {
         // Emit leading comments inline (but not during measurement).
         if (!measuringMode) {
             emitLeadingComments(node);
         }
+
         switch (node) {
             case Cursor.Leaf leaf -> emitLeafTokens(leaf);
             case Cursor.Branch br -> printBranch(br);
@@ -227,6 +267,7 @@ final class FlowPrinter {
         } else {
             printIndent();
         }
+
         printNodeContent(node);
     }
 
@@ -236,12 +277,14 @@ final class FlowPrinter {
     private void printOwnLineChildContentAligned(Cursor node, int col) {
         if (!measuringMode && hasUnEmittedLeadingComment(node)) {
             int savedForcedIndentCol = forcedIndentCol;
+
             forcedIndentCol = col;
             emitLeadingComments(node);
             forcedIndentCol = savedForcedIndentCol;
         } else {
             printAlignedTo(col);
         }
+
         printNodeContent(node);
     }
 
@@ -256,18 +299,21 @@ final class FlowPrinter {
         // it. A comment AFTER the `}` is the leading trivia of the FOLLOWING declaration and is
         // emitted by emitLeadingComments; re-emitting it here would re-place it (idempotency break).
         int lastBrace = -1;
+
         for (int t = leaf.firstTokenIdx(); t <= leaf.lastTokenIdx(); t++) {
             if (!tokens.isTrivia(t) && "}".contentEquals(tokens.textAt(t))) {
                 lastBrace = t;
             }
         }
+
         for (int t = leaf.firstTokenIdx(); t <= leaf.lastTokenIdx(); t++) {
             if (!tokens.isTrivia(t)) {
                 emitToken(tokens.textAt(t).toString());
                 continue;
             }
+
             int kind = tokens.kindAt(t);
-            boolean isLine = kind == 1 || kind == 3;   // LINE_COMMENT / DOC_LINE_COMMENT
+            boolean isLine = kind == 1 || kind == 3;  // LINE_COMMENT / DOC_LINE_COMMENT
             boolean isBlock = kind == 2 || kind == 4;  // BLOCK_COMMENT / DOC_BLOCK_COMMENT
             if (measuringMode || (!isLine && !isBlock) || t >= lastBrace || emittedTriviaTokens.contains(t)) {
                 continue;
@@ -277,6 +323,7 @@ final class FlowPrinter {
             // inline (`{ /* note */ }`); line comments and multi-line block comments go own-line.
             var text = tokens.textAt(t).toString().stripTrailing();
             boolean sameLine = precedingContentOnSameLine(tokens.startAt(t)) && currentColumn > 0;
+
             if (isBlock && sameLine && text.indexOf('\n') < 0) {
                 emit(" " + text + " ");
             } else if (isLine && sameLine) {
@@ -285,11 +332,13 @@ final class FlowPrinter {
                 if (currentColumn > 0) {
                     newline();
                 }
+
                 printIndent();
                 emit(text);
                 newline();
                 printIndent();
             }
+
             emittedTriviaTokens.add(t);
         }
     }
@@ -331,7 +380,6 @@ final class FlowPrinter {
     }
 
     // ===== Token-walking core =====
-
     /// Walk the tokens covered by the branch's range. At each step, if a child branch
     /// begins at the current token index, recurse into that child; otherwise emit the
     /// token text (skipping trivia). This is the default rendering for any branch that
@@ -340,20 +388,21 @@ final class FlowPrinter {
     /// via the TokenArray.
     private void walkTokens(Cursor.Branch parent) {
         var kids = parent.children().toList();
+
         walkTokenRange(parent, kids, parent.firstTokenIdx(), parent.lastTokenIdx());
     }
 
     private void walkTokenRange(Cursor parent, List<Cursor> kids, int start, int end) {
         var tokens = parent.cst().tokens();
-        boolean breakAfterAnnotation = parent instanceof Cursor.Branch pb
-            && annotationsBreakOnNewlineInParent(pb.kind());
-        boolean spaceAfterAnnotation = parent instanceof Cursor.Branch pb2
-            && annotationsForceSpaceAfterInParent(pb2.kind());
+        boolean breakAfterAnnotation = parent instanceof Cursor.Branch pb && annotationsBreakOnNewlineInParent(pb.kind());
+        boolean spaceAfterAnnotation = parent instanceof Cursor.Branch pb2 && annotationsForceSpaceAfterInParent(pb2.kind());
         int kidIdx = 0;
         int t = start;
+
         while (t <= end) {
             if (kidIdx < kids.size() && kids.get(kidIdx).firstTokenIdx() == t) {
                 var kid = kids.get(kidIdx);
+
                 printNode(kid);
                 t = kid.lastTokenIdx() + 1;
                 kidIdx++;
@@ -368,11 +417,14 @@ final class FlowPrinter {
                     flushInSpanTrailingComment(kid);
                     while (t <= end && tokens.isTrivia(t)) {
                         int kind = tokens.kindAt(t);
+
                         if (kind >= 1 && kind <= 4 && !emitTrailingOrphanComment(tokens, t)) {
                             break;
                         }
+
                         t++;
                     }
+
                     newline();
                     printIndent();
                 } else if (spaceAfterAnnotation && kid.kindIs(RuleKind.ANNOTATION)) {
@@ -384,6 +436,7 @@ final class FlowPrinter {
                 } else {
                     emitInlineBlockComment(tokens, t);
                 }
+
                 t++;
             }
         }
@@ -404,15 +457,7 @@ final class FlowPrinter {
     /// record members, enum constants, local var/type decls, annotation members).
     private static boolean annotationsBreakOnNewlineInParent(RuleKind kind) {
         return switch (kind) {
-            case TYPE_DECL,
-                 CLASS_MEMBER,
-                 ANNOTATION_MEMBER,
-                 ANNOTATION_ELEM_DECL,
-                 RECORD_MEMBER,
-                 ENUM_CONST,
-                 LOCAL_VAR,
-                 LOCAL_VAR_NO_SEMI,
-                 LOCAL_TYPE_DECL -> true;
+            case TYPE_DECL, CLASS_MEMBER, ANNOTATION_MEMBER, ANNOTATION_ELEM_DECL, RECORD_MEMBER, ENUM_CONST, LOCAL_VAR, LOCAL_VAR_NO_SEMI, LOCAL_TYPE_DECL -> true;
             default -> false;
         };
     }
@@ -425,9 +470,11 @@ final class FlowPrinter {
         int kidIdx = 0;
         int t = parent.firstTokenIdx();
         int end = parent.lastTokenIdx();
+
         while (t <= end) {
             if (kidIdx < kids.size() && kids.get(kidIdx).firstTokenIdx() == t) {
                 var kid = kids.get(kidIdx);
+
                 walker.onChild(kid);
                 t = kid.lastTokenIdx() + 1;
                 kidIdx++;
@@ -435,10 +482,12 @@ final class FlowPrinter {
                 flushInSpanBlockComments(kid);
             } else {
                 if (!tokens.isTrivia(t)) {
-                    walker.onToken(tokens.kindAt(t), tokens.textAt(t).toString());
+                    walker.onToken(tokens.kindAt(t),
+                                   tokens.textAt(t).toString());
                 } else {
                     emitInlineBlockComment(tokens, t);
                 }
+
                 t++;
             }
         }
@@ -447,18 +496,16 @@ final class FlowPrinter {
     @FunctionalInterface
     private interface TokenWalker {
         void onChild(Cursor child);
+
         default void onToken(int kind, String text) {}
     }
 
     // ===== Compilation unit and imports =====
-
     private void printOrdinaryUnit(Cursor.Branch ou) {
-        var hasPackage = childByRule(ou, RuleKind.PACKAGE_DECL)
-            .onPresent(this::printNode)
-            .isPresent();
-
+        var hasPackage = childByRule(ou, RuleKind.PACKAGE_DECL).onPresent(this::printNode).isPresent();
         var imports = childrenByRule(ou, RuleKind.IMPORT_DECL);
         var hasImports = !imports.isEmpty();
+
         if (hasImports) {
             newline();
             newline();
@@ -467,6 +514,7 @@ final class FlowPrinter {
 
         var types = childrenByRule(ou, RuleKind.TYPE_DECL);
         boolean first = true;
+
         for (var type : types) {
             if (first) {
                 if (hasImports || hasPackage) {
@@ -477,6 +525,7 @@ final class FlowPrinter {
                 newline();
                 newline();
             }
+
             printNode(type);
             first = false;
         }
@@ -488,13 +537,13 @@ final class FlowPrinter {
         var thirdParty = sortedByText(importsInGroup(imports, projectPackage, ImportGroups.Group.THIRD_PARTY));
         var project = importsInGroup(imports, projectPackage, ImportGroups.Group.PROJECT);
         var staticImports = staticImportsInOrder(imports, projectPackage);
-
         // De-duplicate against the rendered statement text, not the CST span. Some import
         // nodes absorb the following type's doc-comment as trailing trivia (e.g. a `java.*`
         // import whose doc mentions `org.pragmatica`); without dedup such an import is
         // emitted in two groups and re-formatting never reaches a fixpoint.
         var emitted = new HashSet<String>();
         boolean needsBlank = false;
+
         needsBlank = printImportGroup(jdk, needsBlank, emitted);
         needsBlank = printImportGroup(pragmatica, needsBlank, emitted);
         needsBlank = printImportGroup(thirdParty, needsBlank, emitted);
@@ -506,23 +555,23 @@ final class FlowPrinter {
     /// scheme, preserving source order within the group.
     private List<Cursor> importsInGroup(List<Cursor> imports, String projectPackage, ImportGroups.Group group) {
         return imports.stream()
-            .filter(i -> !isStaticImport(i) && groupOf(i, projectPackage) == group)
-            .toList();
+                      .filter(i -> !isStaticImport(i) && groupOf(i, projectPackage) == group)
+                      .toList();
     }
 
     /// Static imports last, ordered by the same book grouping (JDK → pragmatica →
     /// third-party → project); the stable sort preserves source order within each group.
     private List<Cursor> staticImportsInOrder(List<Cursor> imports, String projectPackage) {
         return imports.stream()
-            .filter(this::isStaticImport)
-            .sorted(Comparator.comparingInt(i -> groupOf(i, projectPackage).ordinal()))
-            .toList();
+                      .filter(this::isStaticImport)
+                      .sorted(Comparator.comparingInt(i -> groupOf(i, projectPackage).ordinal()))
+                      .toList();
     }
 
     private List<Cursor> sortedByText(List<Cursor> group) {
         return group.stream()
-            .sorted(Comparator.comparing(this::importStatementText))
-            .toList();
+                    .sorted(Comparator.comparing(this::importStatementText))
+                    .toList();
     }
 
     private boolean isStaticImport(Cursor imp) {
@@ -534,18 +583,20 @@ final class FlowPrinter {
     }
 
     private boolean printImportGroup(List<Cursor> group, boolean needsBlank, Set<String> emitted) {
-        var fresh = group.stream()
-            .filter(imp -> emitted.add(importStatementText(imp)))
-            .toList();
+        var fresh = group.stream().filter(imp -> emitted.add(importStatementText(imp))).toList();
+
         if (fresh.isEmpty()) {
             return needsBlank;
         }
+
         if (needsBlank) {
             newline();
         }
+
         for (var imp : fresh) {
             printImportDecl(imp);
         }
+
         return true;
     }
 
@@ -561,20 +612,25 @@ final class FlowPrinter {
     private String importStatementText(Cursor imp) {
         var tokens = imp.cst().tokens();
         var sb = new StringBuilder();
+
         for (int t = imp.firstTokenIdx(); t <= imp.lastTokenIdx(); t++) {
             if (!tokens.isTrivia(t)) {
                 if (sb.length() > 0) {
                     sb.append(' ');
                 }
+
                 sb.append(tokens.textAt(t));
             }
         }
         // Drop the space before `.` and `;` and before `*` after `.`.
-        return sb.toString().replaceAll(" ([.;*])", "$1").replaceAll("([.]) ", "$1");
+        return sb.toString()
+                 .replaceAll(" ([.;*])",
+                             "$1")
+                 .replaceAll("([.]) ",
+                             "$1");
     }
 
     // ===== Type bodies =====
-
     private void printClassBody(Cursor.Branch classBody) {
         printBracedBody(classBody, RuleKind.CLASS_MEMBER);
     }
@@ -593,6 +649,7 @@ final class FlowPrinter {
         int firstTok = recordBody.firstTokenIdx();
         int lastTok = recordBody.lastTokenIdx();
         int nonTriviaCount = 0;
+
         for (int t = firstTok; t <= lastTok; t++) {
             if (!tokens.isTrivia(t)) {
                 nonTriviaCount++;
@@ -601,7 +658,9 @@ final class FlowPrinter {
                 }
             }
         }
+
         boolean isEmpty = nonTriviaCount <= 2 && members.isEmpty();
+
         if (nonTriviaCount <= 2) {
             emit("{}");
         } else {
@@ -613,14 +672,15 @@ final class FlowPrinter {
         var members = childrenByRule(parent, memberKind);
 
         emitToken("{");
-
         if (!members.isEmpty()) {
             indentLevel++;
             newline();
             Option<Cursor> prevMember = Option.none();
             boolean first = true;
+
             for (int mi = 0; mi < members.size(); mi++) {
                 var member = members.get(mi);
+
                 if (!first && BlankLineRules.needsBlankLineBetween(member, prevMember)) {
                     newline();
                 }
@@ -629,19 +689,22 @@ final class FlowPrinter {
                 if (!hasUnEmittedLeadingComment(member)) {
                     printIndent();
                 }
+
                 printNode(member);
                 // Emit trailing line comments from the NEXT member's leading trivia before
                 // the newline, so they stay on the same line as the current member.
                 if (mi + 1 < members.size()) {
                     emitTrailingCommentsFrom(members.get(mi + 1));
                 }
+
                 newline();
                 first = false;
                 prevMember = Option.some(member);
             }
             // Own-line comments dangling after the last member, before the body's `}` (mechanism
             // E3). Deduped against comments already emitted as members' leading trivia.
-            emitTrailingBodyComments(parent, members.get(members.size() - 1));
+            emitTrailingBodyComments(parent,
+                                     members.get(members.size() - 1));
             indentLevel--;
             printIndent();
         }
@@ -650,11 +713,12 @@ final class FlowPrinter {
     }
 
     // ===== Members =====
-
     private void printMember(Cursor.Branch member) {
         boolean hasRecordComponents = hasChildOfRule(member, RuleKind.RECORD_COMPONENTS);
+
         if (hasRecordComponents) {
             printRecordDecl(member);
+
             return;
         }
 
@@ -673,14 +737,18 @@ final class FlowPrinter {
         // it doesn't fit, walk up to the `=` inline then break each element aligned to
         // the first element's column. Otherwise just walk everything inline.
         var varInitOpt = findFirst(field, RuleKind.VAR_INIT);
+
         if (!measuringMode && varInitOpt.isPresent()) {
             var varInit = varInitOpt.unwrap();
             var initText = text(varInit);
+
             if (initText.startsWith("{") && !fitsOnLine(field)) {
                 printArrayFieldDecl(field, (Cursor.Branch) varInit);
+
                 return;
             }
         }
+
         walkTokens(field);
     }
 
@@ -689,46 +757,50 @@ final class FlowPrinter {
         // Each element is on its own line aligned to the column right after `{`.
         var tokens = field.cst().tokens();
         int initStart = varInit.firstTokenIdx();
+
         for (int t = field.firstTokenIdx(); t < initStart; t++) {
             if (!tokens.isTrivia(t)) emitToken(tokens.textAt(t).toString());
         }
-        final int[] alignCol = {-1};
-        walkTokensWith(varInit, new TokenWalker() {
+
+        final int[] alignCol = { - 1};
+
+        walkTokensWith(varInit,
+                       new TokenWalker() {
             @Override
-            public void onChild(Cursor c) { printNodeContent(c); }
+            public void onChild(Cursor c) {
+                           printNodeContent(c);
+                       }
+
             @Override
             public void onToken(int kind, String text) {
-                if ("{".equals(text)) {
-                    emitToken("{");
-                    alignCol[0] = currentColumn; // right after `{`
-                } else if ("}".equals(text)) {
-                    emitToken("}");
-                } else if (",".equals(text)) {
-                    emit(",");
-                    newline();
-                    printAlignedTo(alignCol[0]);
-                } else {
-                    emitToken(text);
-                }
-            }
-        });
+                           if ("{".equals(text)) {
+                           emitToken("{");
+                           alignCol[0] = currentColumn;
+                       } else if ("}".equals(text)) {
+                           emitToken("}");
+                       } else if (",".equals(text)) {
+                           emit(",");
+                           newline();
+                           printAlignedTo(alignCol[0]);
+                       } else {
+                           emitToken(text);
+                       }
+                       }
+        }  // right after `{`
+                      );
         for (int t = varInit.lastTokenIdx() + 1; t <= field.lastTokenIdx(); t++) {
             if (!tokens.isTrivia(t)) emitToken(tokens.textAt(t).toString());
         }
     }
 
     // ===== Enum body =====
-
     private void printEnumBody(Cursor.Branch enumBody) {
         var classMembers = childrenByRule(enumBody, RuleKind.CLASS_MEMBER);
 
         emitToken("{");
         indentLevel++;
         newline();
-
-        childByRule(enumBody, RuleKind.ENUM_CONSTS)
-            .onPresent(this::printEnumConstsWithIndent);
-
+        childByRule(enumBody, RuleKind.ENUM_CONSTS).onPresent(this::printEnumConstsWithIndent);
         if (!classMembers.isEmpty()) {
             emit(";");
         }
@@ -752,11 +824,13 @@ final class FlowPrinter {
 
     private void printEnumConsts(Cursor enumConsts) {
         var constNodes = childrenByRule(enumConsts, RuleKind.ENUM_CONST);
+
         for (int i = 0; i < constNodes.size(); i++) {
             if (i > 0) {
                 emit(",");
                 newline();
             }
+
             printOwnLineChildContent(constNodes.get(i));
         }
     }
@@ -767,6 +841,7 @@ final class FlowPrinter {
     /// No brace-shape detection needed (per Stage 0 findings).
     private void printStmt(Cursor.Branch stmt) {
         var kids = stmt.children().toList();
+
         if (kids.size() == 1 && kids.get(0).kindIs(RuleKind.BLOCK) && kids.get(0) instanceof Cursor.Branch block) {
             printBlock(block);
         } else if (isReturnOrThrowStmt(stmt)) {
@@ -779,7 +854,6 @@ final class FlowPrinter {
     }
 
     // ===== Block =====
-
     private void printBlock(Cursor.Branch block) {
         boolean useLambdaAlign = alignment.hasLambdaAlign();
         int lambdaAlignCol = alignment.lambdaColumn();
@@ -787,7 +861,6 @@ final class FlowPrinter {
         int chainAlignCol = alignment.chainColumn();
 
         emitToken("{");
-
         var stmts = childrenByRule(block, RuleKind.BLOCK_STMT);
 
         if (!stmts.isEmpty()) {
@@ -806,12 +879,15 @@ final class FlowPrinter {
                 // single newline() is emitted, so overlapping rules coalesce to one blank.
                 for (int i = 0; i < stmts.size(); i++) {
                     var stmt = stmts.get(i);
+
                     if (i >= 1 && !hasLeadingComment(stmt) && needsBlankBeforeStmt(stmts.get(i - 1), stmt)) {
                         newline();
                     }
+
                     if (!hasUnEmittedLeadingComment(stmt)) {
                         printIndent();
                     }
+
                     printNode(stmt);
                     // Emit trailing line comments from next stmt's leading trivia before newline.
                     if (i + 1 < stmts.size()) {
@@ -820,8 +896,10 @@ final class FlowPrinter {
                         // Last stmt: emit trailing comments from the block's closing `}` token range.
                         emitBlockTrailingComments(block, stmts.get(i));
                     }
+
                     newline();
                 }
+
                 indentLevel--;
                 printIndent();
             }
@@ -839,36 +917,43 @@ final class FlowPrinter {
         if (measuringMode) {
             return;
         }
+
         var tokens = block.cst().tokens();
         int open = block.firstTokenIdx();
         int close = block.lastTokenIdx();
         var comments = new ArrayList<Integer>();
-        boolean needsOwnLines = false; // a line comment or a multi-line block comment forces expansion
+        boolean needsOwnLines = false;  // a line comment or a multi-line block comment forces expansion
         for (int t = open + 1; t < close; t++) {
             if (!tokens.isTrivia(t)) {
                 continue;
             }
+
             int kind = tokens.kindAt(t);
-            boolean isLine = kind == 1 || kind == 3;   // LINE_COMMENT / DOC_LINE_COMMENT
+            boolean isLine = kind == 1 || kind == 3;  // LINE_COMMENT / DOC_LINE_COMMENT
             boolean isBlock = kind == 2 || kind == 4;  // BLOCK_COMMENT / DOC_BLOCK_COMMENT
             if ((!isLine && !isBlock) || emittedTriviaTokens.contains(t)) {
                 continue;
             }
+
             comments.add(t);
             if (isLine || tokens.textAt(t).toString().indexOf('\n') >= 0) {
                 needsOwnLines = true;
             }
         }
+
         if (comments.isEmpty()) {
             return;
         }
+
         if (!needsOwnLines) {
             // Only single-line block comments: keep them inline so `{ /* note */ }` stays one line.
             for (int t : comments) {
                 emit(" " + tokens.textAt(t).toString().stripTrailing());
                 emittedTriviaTokens.add(t);
             }
+
             emit(" ");
+
             return;
         }
         // A line comment (or multi-line block comment) can't share the `}` line — expand the body.
@@ -879,6 +964,7 @@ final class FlowPrinter {
             emit(tokens.textAt(t).toString().stripTrailing());
             emittedTriviaTokens.add(t);
         }
+
         indentLevel--;
         newline();
         printIndent();
@@ -888,24 +974,33 @@ final class FlowPrinter {
     /// (between the last stmt's last non-trivia token and the block's closing `}`).
     private void emitBlockTrailingComments(Cursor.Branch block, Cursor lastStmt) {
         if (measuringMode) return;
+
         var tokens = block.cst().tokens();
         int closingBrace = block.lastTokenIdx();
         // Find the last non-trivia token of the last stmt to start scanning from.
         int lastNonTrivia = lastStmt.lastTokenIdx();
+
         while (lastNonTrivia > lastStmt.firstTokenIdx() && tokens.isTrivia(lastNonTrivia)) {
             lastNonTrivia--;
         }
+
         for (int t = lastNonTrivia + 1; t <= closingBrace; t++) {
             if (!tokens.isTrivia(t)) break;
+
             int kind = tokens.kindAt(t);
-            if (kind != 1 && kind != 3) { // LINE_COMMENT or DOC_LINE_COMMENT only
+
+            if (kind != 1 && kind != 3) {
+                // LINE_COMMENT or DOC_LINE_COMMENT only
                 continue;
             }
+
             if (emittedTriviaTokens.contains(t)) {
                 continue;
             }
+
             int commentStart = tokens.startAt(t);
             var text = tokens.textAt(t).toString().stripTrailing();
+
             if (precedingContentOnSameLine(commentStart) && currentColumn > 0) {
                 // Trailing comment on the same source line as the preceding stmt.
                 emit("  " + text);
@@ -917,6 +1012,7 @@ final class FlowPrinter {
                 printIndent();
                 emit(text);
             }
+
             emittedTriviaTokens.add(t);
         }
     }
@@ -927,14 +1023,21 @@ final class FlowPrinter {
     /// current node, so the trailing comment lands on the right line.
     private void emitTrailingCommentsFrom(Cursor nextNode) {
         if (measuringMode) return;
+
         var tokens = nextNode.cst().tokens();
+
         for (int tokIdx : nextNode.leadingTriviaTokens().toArray()) {
             if (emittedTriviaTokens.contains(tokIdx)) continue;
+
             int kind = tokens.kindAt(tokIdx);
-            if (kind != 1 && kind != 3) continue; // LINE_COMMENT or DOC_LINE_COMMENT only
+
+            if (kind != 1 && kind != 3) continue;  // LINE_COMMENT or DOC_LINE_COMMENT only
             int commentStart = tokens.startAt(tokIdx);
+
             if (!precedingContentOnSameLine(commentStart)) break;
+
             var text = tokens.textAt(tokIdx).toString().stripTrailing();
+
             emit("  " + text);
             emittedTriviaTokens.add(tokIdx);
         }
@@ -945,14 +1048,18 @@ final class FlowPrinter {
     private boolean precedingContentOnSameLine(int sourcePos) {
         for (int pos = sourcePos - 1; pos >= 0; pos--) {
             char ch = source.charAt(pos);
+
             if (ch == '\n') return false;
+
             if (ch != ' ' && ch != '\t' && ch != '\r') return true;
         }
+
         return false;
     }
 
     private boolean hasLeadingComment(Cursor node) {
-        return node.leadingTrivia().anyMatch(t -> t.isLineComment() || t.isBlockComment());
+        return node.leadingTrivia()
+                   .anyMatch(t -> t.isLineComment() || t.isBlockComment());
     }
 
     /// Emit token `t` as a trailing comment when it is an unclaimed comment sitting at the END of a
@@ -966,21 +1073,28 @@ final class FlowPrinter {
         if (measuringMode || emittedTriviaTokens.contains(t)) {
             return false;
         }
+
         int kind = tokens.kindAt(t);
         boolean isLine = kind == 1 || kind == 3;
         boolean isBlock = kind == 2 || kind == 4;
+
         if (!isLine && !isBlock) {
             return false;
         }
+
         if (currentColumn == 0 || !precedingContentOnSameLine(tokens.startAt(t))) {
             return false;
         }
+
         var text = tokens.textAt(t).toString().stripTrailing();
+
         if (isBlock && text.indexOf('\n') >= 0) {
             return false;
         }
+
         emit("  " + text);
         emittedTriviaTokens.add(t);
+
         return true;
     }
 
@@ -995,7 +1109,9 @@ final class FlowPrinter {
         if (measuringMode || emittedTriviaTokens.contains(t) || currentColumn == 0) {
             return;
         }
+
         int kind = tokens.kindAt(t);
+
         if (kind != 2 && kind != 4) {
             return;
         }
@@ -1005,10 +1121,13 @@ final class FlowPrinter {
         if (!precedingContentOnSameLine(tokens.startAt(t))) {
             return;
         }
+
         var text = tokens.textAt(t).toString().stripTrailing();
+
         if (text.indexOf('\n') >= 0) {
             return;
         }
+
         emit(" " + text);
         emittedTriviaTokens.add(t);
     }
@@ -1023,7 +1142,9 @@ final class FlowPrinter {
         if (measuringMode) {
             return;
         }
+
         var tokens = node.cst().tokens();
+
         for (int t = node.firstTokenIdx(); t <= node.lastTokenIdx(); t++) {
             if (tokens.isTrivia(t)) {
                 emitInlineBlockComment(tokens, t);
@@ -1039,16 +1160,20 @@ final class FlowPrinter {
     private boolean flushInSpanTrailingComment(Cursor node) {
         var tokens = node.cst().tokens();
         boolean lineEmitted = false;
+
         for (int t = node.firstTokenIdx(); t <= node.lastTokenIdx(); t++) {
             if (!tokens.isTrivia(t)) {
                 continue;
             }
+
             int kind = tokens.kindAt(t);
             boolean wasLine = kind == 1 || kind == 3;
+
             if (emitTrailingOrphanComment(tokens, t) && wasLine) {
                 lineEmitted = true;
             }
         }
+
         return lineEmitted;
     }
 
@@ -1062,29 +1187,38 @@ final class FlowPrinter {
         if (measuringMode) {
             return;
         }
+
         var tokens = parent.cst().tokens();
         // First token after the last member's last NON-trivia token.
         int afterToken = lastMember.lastTokenIdx();
+
         while (afterToken >= lastMember.firstTokenIdx() && tokens.isTrivia(afterToken)) {
             afterToken--;
         }
+
         afterToken++;
         // The body's own closing `}` (last non-trivia `}` within the parent span).
         int close = parent.lastTokenIdx();
+
         while (close >= afterToken && (tokens.isTrivia(close) || !"}".contentEquals(tokens.textAt(close)))) {
             close--;
         }
+
         for (int t = afterToken; t < close; t++) {
             if (!tokens.isTrivia(t)) {
                 continue;
             }
+
             int kind = tokens.kindAt(t);
+
             if (kind < 1 || kind > 4 || emittedTriviaTokens.contains(t)) {
                 continue;
             }
+
             if (currentColumn > 0) {
                 newline();
             }
+
             printIndent();
             emit(tokens.textAt(t).toString().stripTrailing());
             newline();
@@ -1100,23 +1234,28 @@ final class FlowPrinter {
         if (measuringMode) {
             return false;
         }
+
         var tokens = args.cst().tokens();
         boolean any = false;
+
         for (int t = args.firstTokenIdx(); t <= args.lastTokenIdx(); t++) {
             if (!tokens.isTrivia(t)) {
                 continue;
             }
+
             int kind = tokens.kindAt(t);
-            if (kind < 1 || kind > 4 || emittedTriviaTokens.contains(t)
-                || precedingContentOnSameLine(tokens.startAt(t))) {
+
+            if (kind < 1 || kind > 4 || emittedTriviaTokens.contains(t) || precedingContentOnSameLine(tokens.startAt(t))) {
                 continue;
             }
+
             newline();
             printAlignedTo(alignCol);
             emit(tokens.textAt(t).toString().stripTrailing());
             any = true;
             emittedTriviaTokens.add(t);
         }
+
         return any;
     }
 
@@ -1126,12 +1265,17 @@ final class FlowPrinter {
     /// for a node whose only leading trivia was a trailing comment of the prior statement.
     private boolean hasUnEmittedLeadingComment(Cursor node) {
         if (measuringMode) return hasLeadingComment(node);
+
         var tokens = node.cst().tokens();
+
         for (int tokIdx : node.leadingTriviaTokens().toArray()) {
             if (emittedTriviaTokens.contains(tokIdx)) continue;
+
             int kind = tokens.kindAt(tokIdx);
-            if (kind >= 1 && kind <= 4) return true; // any comment kind (1=LINE, 2=BLOCK, 3=DOC_LINE, 4=DOC_BLOCK)
+
+            if (kind >= 1 && kind <= 4) return true;  // any comment kind (1=LINE, 2=BLOCK, 3=DOC_LINE, 4=DOC_BLOCK)
         }
+
         return false;
     }
 
@@ -1140,48 +1284,56 @@ final class FlowPrinter {
     /// run, before a non-var statement; R3 — blank before a return/throw. Overlapping rules
     /// coalesce because the caller emits a single newline.
     private static boolean needsBlankBeforeStmt(Cursor prev, Cursor cur) {
-        return isBlockShapedStmt(prev)
-               || (isLocalVarDecl(prev) && !isLocalVarDecl(cur))
-               || isReturnOrThrowStmt(cur);
+        return isBlockShapedStmt(prev) || (isLocalVarDecl(prev) && !isLocalVarDecl(cur)) || isReturnOrThrowStmt(cur);
     }
 
     /// True iff the statement is a local-variable declaration. In the v6 CST a var-decl
     /// statement uniquely presents as a BLOCK_STMT whose direct child is a LOCAL_VAR (other
     /// statements wrap an intermediate STMT or a leaf).
     private static boolean isLocalVarDecl(Cursor stmt) {
-        return stmt instanceof Cursor.Branch br
-               && br.children().anyMatch(c -> c.kindIs(RuleKind.LOCAL_VAR) || c.kindIs(RuleKind.LOCAL_VAR_NO_SEMI));
+        return stmt instanceof Cursor.Branch br && br.children()
+                                                     .anyMatch(c -> c.kindIs(RuleKind.LOCAL_VAR) || c.kindIs(RuleKind.LOCAL_VAR_NO_SEMI));
     }
 
     /// True if a stmt is one of the block-shaped control-flow constructs.
     private static boolean isBlockShapedStmt(Cursor stmt) {
-        if (!(stmt instanceof Cursor.Branch br)) {
+        if (! (stmt instanceof Cursor.Branch br)) {
             return false;
         }
+
         var tokens = br.cst().tokens();
+
         for (int t = br.firstTokenIdx(); t <= br.lastTokenIdx(); t++) {
             if (tokens.isTrivia(t)) continue;
+
             var txt = tokens.textAt(t).toString();
+
             return switch (txt) {
                 case "if", "try", "while", "for", "do", "switch", "synchronized", "{" -> true;
                 default -> false;
             };
         }
+
         return false;
     }
 
     /// True if `stmt` is a return or throw statement (used to decide whether to insert a
     /// blank line before the final statement of a non-trivial block).
     private static boolean isReturnOrThrowStmt(Cursor stmt) {
-        if (!(stmt instanceof Cursor.Branch br)) {
+        if (! (stmt instanceof Cursor.Branch br)) {
             return false;
         }
+
         var tokens = br.cst().tokens();
+
         for (int t = br.firstTokenIdx(); t <= br.lastTokenIdx(); t++) {
             if (tokens.isTrivia(t)) continue;
+
             var txt = tokens.textAt(t).toString();
+
             return "return".equals(txt) || "throw".equals(txt);
         }
+
         return false;
     }
 
@@ -1190,6 +1342,7 @@ final class FlowPrinter {
         // Use forcedIndentCol so emitLeadingComments uses printAlignedTo(bodyCol)
         // instead of printIndent() (which uses indentLevel and may round incorrectly).
         int savedForcedIndent = forcedIndentCol;
+
         forcedIndentCol = bodyCol;
         for (int i = 0; i < stmts.size(); i++) {
             var stmt = stmts.get(i);
@@ -1203,16 +1356,17 @@ final class FlowPrinter {
             if (!hasUnEmittedLeadingComment(stmt)) {
                 printAlignedTo(bodyCol);
             }
+
             printNode(stmt);
             newline();
         }
+
         forcedIndentCol = savedForcedIndent;
     }
 
     private void printSwitchBlock(Cursor.Branch switchBlock) {
         emit(" {");
         indentLevel++;
-
         var rules = childrenByRule(switchBlock, RuleKind.SWITCH_RULE);
 
         if (!rules.isEmpty()) {
@@ -1236,13 +1390,11 @@ final class FlowPrinter {
     }
 
     // ===== Chains and postfix =====
-
     private void printUnary(Cursor.Branch unary) {
         var kids = unary.children().toList();
         Cursor primary = null;
         Cursor.Branch postfix = null;
         var directPostOps = new ArrayList<Cursor>();
-
         // Classify children. A Unary may contain a nested Unary (e.g., `!!x` or `!(x)`),
         // in which case we just walk tokens and let recursion handle the inner Unary.
         for (var child : kids) {
@@ -1254,14 +1406,15 @@ final class FlowPrinter {
                 directPostOps.add(child);
             }
         }
-
         // If we found a Primary, walk tokens BEFORE primary to emit prefix operators
         // (!, ~, -, +, ++, --), then dispatch primary+postfix.
         if (primary != null) {
             int prefixEnd = primary.firstTokenIdx() - 1;
+
             if (prefixEnd >= unary.firstTokenIdx()) {
                 walkTokenRange(unary, List.of(), unary.firstTokenIdx(), prefixEnd);
             }
+
             if (postfix != null) {
                 printPostfixWithPrimary(primary, postfix);
             } else if (!directPostOps.isEmpty()) {
@@ -1286,23 +1439,27 @@ final class FlowPrinter {
             for (var postOp : childrenByRule(postfix, RuleKind.POST_OP)) {
                 printNode(postOp);
             }
+
             return;
         }
-        var postOps = childrenByRule(postfix, RuleKind.POST_OP);
 
+        var postOps = childrenByRule(postfix, RuleKind.POST_OP);
         int allDotMethodCount = countDotMethodChainLinks(postfix);
         var dotPlusParenPostOps = postOps.stream().filter(this::isDotMethodPostOp).toList();
         boolean primaryHasMethodAccess = hasMethodAccessInPrimary(primary);
-        boolean hasInvocationOfMethodInPrimary = primaryHasMethodAccess
-            && postOps.stream().anyMatch(this::isBareInvocationPostOp);
+        boolean hasInvocationOfMethodInPrimary = primaryHasMethodAccess && postOps.stream()
+                                                                                  .anyMatch(this::isBareInvocationPostOp);
         int chainLinkCount = Math.max(allDotMethodCount,
-                                      dotPlusParenPostOps.size() + (hasInvocationOfMethodInPrimary ? 1 : 0));
+                                      dotPlusParenPostOps.size() + (hasInvocationOfMethodInPrimary
+                                                                    ? 1
+                                                                    : 0));
         boolean shouldBreakChain = shouldBreakChain(primary, chainLinkCount, postOps);
 
         if (shouldBreakChain && !measuringMode) {
             printMethodChainAligned(primary, postOps, dotPlusParenPostOps, hasInvocationOfMethodInPrimary);
         } else {
             boolean canInline = !measuringMode && fitsOnLineUnary(primary, postOps);
+
             printNode(primary);
             for (var postOp : postOps) {
                 if (canInline) {
@@ -1325,15 +1482,16 @@ final class FlowPrinter {
         if (chainLinkCount < 2 || alignment.isInInlineExpression()) {
             return false;
         }
-        if (chainLinkCount == 2 && primary != null && isStaticFactoryReceiver(primary)
-            && !firstPostOpHasComplexArgs(postOps)) {
+
+        if (chainLinkCount == 2 && primary != null && isStaticFactoryReceiver(primary) && !firstPostOpHasComplexArgs(postOps)) {
             return false;
         }
+
         if (alignment.isInTailContext()) {
             return true;
         }
         // Statement-position chain: break only when the flat rendering overflows the line.
-        return !fitsOnLineUnary(primary, postOps);
+        return ! fitsOnLineUnary(primary, postOps);
     }
 
     /// True if the first PostOp in the list carries an Args subtree where at least one
@@ -1341,18 +1499,25 @@ final class FlowPrinter {
     /// vertically, dragging the surrounding chain into vertical layout too).
     private boolean firstPostOpHasComplexArgs(List<Cursor> postOps) {
         if (postOps.isEmpty()) return false;
+
         var first = postOps.get(0);
-        if (!(first instanceof Cursor.Branch br)) return false;
+
+        if (! (first instanceof Cursor.Branch br)) return false;
+
         return br.descendants()
-            .filter(c -> c.kindIs(RuleKind.ARGS))
-            .findFirst()
-            .map(args -> {
-                if (!(args instanceof Cursor.Branch ab)) return false;
-                var exprs = childrenByRule(ab, RuleKind.EXPR);
-                if (exprs.size() < 2) return false;
-                return exprs.stream().anyMatch(e -> METHOD_CALL_PATTERN.matcher(text(e)).find());
-            })
-            .orElse(false);
+                 .filter(c -> c.kindIs(RuleKind.ARGS))
+                 .findFirst()
+                 .map(args -> {
+                          if (! (args instanceof Cursor.Branch ab)) return false;
+
+                          var exprs = childrenByRule(ab, RuleKind.EXPR);
+
+                          if (exprs.size() < 2) return false;
+
+                          return exprs.stream()
+                                      .anyMatch(e -> METHOD_CALL_PATTERN.matcher(text(e)).find());
+                      })
+                 .orElse(false);
     }
 
     /// True if `primary` is a class-like receiver — its first token is an identifier
@@ -1361,16 +1526,19 @@ final class FlowPrinter {
     /// chain receiver, which inlines a 2-link chain.
     private boolean isStaticFactoryReceiver(Cursor primary) {
         var t = text(primary).trim();
-        return !t.isEmpty() && Character.isUpperCase(t.charAt(0));
+
+        return ! t.isEmpty() && Character.isUpperCase(t.charAt(0));
     }
 
     private boolean fitsOnLineUnary(Cursor primary, List<Cursor> postOps) {
         int width = primary != null
                     ? measureWidth(primary)
                     : 0;
+
         for (var postOp : postOps) {
             width += measureWidth(postOp);
         }
+
         return currentColumn + width <= config.maxLineLength();
     }
 
@@ -1380,11 +1548,14 @@ final class FlowPrinter {
             for (var child : postfix.children().toList()) {
                 printNode(child);
             }
+
             return;
         }
+
         var kids = postfix.children().toList();
         Cursor primary = null;
         var postOps = new ArrayList<Cursor>();
+
         for (var child : kids) {
             if (child.kindIs(RuleKind.PRIMARY)) {
                 primary = child;
@@ -1392,7 +1563,6 @@ final class FlowPrinter {
                 postOps.add(child);
             }
         }
-
         // Under v6, chains can be encoded as nested Postfixes (Postfix's Primary may itself
         // contain a nested Postfix wrapped in a parenthesized PRIMARY). To detect chains,
         // count dot-method post-ops across the WHOLE outer expression by descending into
@@ -1400,19 +1570,23 @@ final class FlowPrinter {
         int allDotMethodCount = countDotMethodChainLinks(postfix);
         var dotPlusParenPostOps = postOps.stream().filter(this::isDotMethodPostOp).toList();
         boolean primaryHasMethodAccess = primary != null && hasMethodAccessInPrimary(primary);
-        boolean hasInvocationOfMethodInPrimary = primaryHasMethodAccess
-            && postOps.stream().anyMatch(this::isBareInvocationPostOp);
+        boolean hasInvocationOfMethodInPrimary = primaryHasMethodAccess && postOps.stream()
+                                                                                  .anyMatch(this::isBareInvocationPostOp);
         int chainLinkCount = Math.max(allDotMethodCount,
-                                      dotPlusParenPostOps.size() + (hasInvocationOfMethodInPrimary ? 1 : 0));
+                                      dotPlusParenPostOps.size() + (hasInvocationOfMethodInPrimary
+                                                                    ? 1
+                                                                    : 0));
         boolean shouldBreakChain = shouldBreakChain(primary, chainLinkCount, postOps);
 
         if (shouldBreakChain && !measuringMode) {
             printMethodChainAligned(primary, postOps, dotPlusParenPostOps, hasInvocationOfMethodInPrimary);
         } else {
             boolean canInline = !measuringMode && fitsOnLine(postfix);
+
             if (primary != null) {
                 printNode(primary);
             }
+
             for (var postOp : postOps) {
                 if (canInline) {
                     printNodeContent(postOp);
@@ -1436,7 +1610,10 @@ final class FlowPrinter {
             // should be that `.`'s column — that's where the FIRST chain call begins.
             // Compute the suffix length AFTER the last `.` (e.g. `trim` = 4) so
             // alignColumn = currentColumn (post-primary) − suffixLen − 1 (the `.` itself).
-            int suffixAfterLastDot = primaryHasInvocation ? suffixAfterLastDotInPrimary(primary) : -1;
+            int suffixAfterLastDot = primaryHasInvocation
+                                     ? suffixAfterLastDotInPrimary(primary)
+                                     : -1;
+
             printNodeContent(primary);
             if (suffixAfterLastDot >= 0) {
                 alignColumn = currentColumn - suffixAfterLastDot - 1;
@@ -1451,6 +1628,7 @@ final class FlowPrinter {
             // after a wrapped-args head call too — the first follow-up always breaks onto
             // its own line at the chain column rather than gluing to the closing `)`.
             boolean firstMethodCallPending = !primaryHasInvocation;
+
             for (int pi = 0; pi < postOps.size(); pi++) {
                 var postOp = postOps.get(pi);
                 boolean isMethodCall = methodCallSet.contains(postOp);
@@ -1459,14 +1637,18 @@ final class FlowPrinter {
                 // emitLeadingComments own the indent) and SKIP the normal pre-align below, which
                 // would otherwise stack a spurious blank line ahead of the comment (bug report S5).
                 boolean hasLead = !measuringMode && hasUnEmittedLeadingComment(postOp);
+
                 if (hasLead) {
                     if (currentColumn > 0) {
                         newline();
                     }
+
                     if (isMethodCall && !firstMethodCallPending && scope.lastPostOpWasBrokenArgs()) {
                         scope.clearBrokenArgsAnchor();
                     }
+
                     int savedForcedIndentCol = forcedIndentCol;
+
                     forcedIndentCol = alignColumn;
                     emitLeadingComments(postOp);
                     forcedIndentCol = savedForcedIndentCol;
@@ -1482,23 +1664,29 @@ final class FlowPrinter {
                         // indent when the previous post-op wrapped its own args.
                         newline();
                         int anchor = scope.nextDotMethodAnchor(alignColumn);
+
                         printAlignedTo(anchor);
                     }
                 }
+
                 int lineBefore = currentLine;
                 boolean isBareInvoc = isBareInvocationPostOp(postOp);
+
                 printNodeContent(postOp);
                 // Emit trailing line comments from the next postOp's leading trivia
                 // before the newline that separates chain calls.
                 if (pi + 1 < postOps.size()) {
                     emitTrailingCommentsFrom(postOps.get(pi + 1));
                 }
+
                 boolean spanned = currentLine != lineBefore;
+
                 scope.notePostOpEmitted(spanned, containsLambda(postOp));
                 if (isBareInvoc && spanned && !containsLambda(postOp)) {
                     // Broken bare-args: the next dot-method breaks to the chain column.
                     scope.noteBrokenArgsPostOp();
                 }
+
                 if (isMethodCall) {
                     firstMethodCallPending = false;
                 }
@@ -1519,8 +1707,10 @@ final class FlowPrinter {
     private int countDotMethodChainLinks(Cursor.Branch postfix) {
         int count = 0;
         Cursor.Branch cur = postfix;
+
         while (cur != null) {
             Cursor primaryChild = null;
+
             for (var child : cur.children().toList()) {
                 if (child.kindIs(RuleKind.PRIMARY)) {
                     primaryChild = child;
@@ -1528,8 +1718,10 @@ final class FlowPrinter {
                     count++;
                 }
             }
+
             cur = innerPostfix(primaryChild);
         }
+
         return count;
     }
 
@@ -1537,15 +1729,16 @@ final class FlowPrinter {
     /// wrap chains via deeper intermediate rules (PRIMARY > EXPR > ... > POSTFIX), so we
     /// walk descendants looking for the first POSTFIX whose span fits inside primary's.
     private Cursor.Branch innerPostfix(Cursor primary) {
-        if (!(primary instanceof Cursor.Branch pb)) {
+        if (! (primary instanceof Cursor.Branch pb)) {
             return null;
         }
+
         return pb.descendants()
-            .filter(c -> c.kindIs(RuleKind.POSTFIX))
-            .findFirst()
-            .filter(c -> c instanceof Cursor.Branch)
-            .map(c -> (Cursor.Branch) c)
-            .orElse(null);
+                 .filter(c -> c.kindIs(RuleKind.POSTFIX))
+                 .findFirst()
+                 .filter(c -> c instanceof Cursor.Branch)
+                 .map(c -> (Cursor.Branch) c)
+                 .orElse(null);
     }
 
     /// A dot-method PostOp's FIRST non-trivia token is `.` and the range contains `(`
@@ -1557,15 +1750,20 @@ final class FlowPrinter {
         boolean firstIsDot = false;
         boolean seenFirst = false;
         boolean hasParen = false;
+
         for (int t = postOp.firstTokenIdx(); t <= postOp.lastTokenIdx(); t++) {
             if (tokens.isTrivia(t)) continue;
+
             var s = tokens.textAt(t).toString();
+
             if (!seenFirst) {
                 firstIsDot = ".".equals(s);
                 seenFirst = true;
             }
+
             if ("(".equals(s)) hasParen = true;
         }
+
         return firstIsDot && hasParen;
     }
 
@@ -1575,10 +1773,13 @@ final class FlowPrinter {
     /// to nested expressions and are not relevant.
     private boolean isBareInvocationPostOp(Cursor postOp) {
         var tokens = postOp.cst().tokens();
+
         for (int t = postOp.firstTokenIdx(); t <= postOp.lastTokenIdx(); t++) {
             if (tokens.isTrivia(t)) continue;
+
             return "(".equals(tokens.textAt(t).toString());
         }
+
         return false;
     }
 
@@ -1586,6 +1787,7 @@ final class FlowPrinter {
         // Primary contains a method-access path if its text contains a dot
         // outside of identifier suffix (we check the structural Primary's source text).
         var t = text(primary);
+
         return t.contains(".");
     }
 
@@ -1597,63 +1799,87 @@ final class FlowPrinter {
         var tokens = primary.cst().tokens();
         int startTok = primary.firstTokenIdx();
         int lastTok = primary.lastTokenIdx();
+
         while (startTok <= lastTok && tokens.isTrivia(startTok)) startTok++;
+
         int lastDotTok = -1;
+
         for (int t = startTok; t <= lastTok; t++) {
             if (tokens.isTrivia(t)) continue;
+
             if (".".equals(tokens.textAt(t).toString())) {
                 lastDotTok = t;
             }
         }
+
         if (lastDotTok < 0) return -1;
+
         int suffix = 0;
+
         for (int t = lastDotTok + 1; t <= lastTok; t++) {
             if (tokens.isTrivia(t)) continue;
+
             suffix += tokens.textAt(t).length();
         }
+
         return suffix;
     }
 
     private void printPostOp(Cursor.Branch postOp) {
         // PostOps look like `.method(args)`, `<TypeArgs>method(args)`, `(args)`, or `[expr]`.
         // We walk tokens and let child branches handle their own rendering.
-        walkTokensWith(postOp, new TokenWalker() {
+        walkTokensWith(postOp,
+                       new TokenWalker() {
             @Override
             public void onChild(Cursor child) {
-                if (child.kindIs(RuleKind.ARGS)) {
-                    printNodeContent(child);
-                } else {
-                    printNode(child);
-                }
-            }
+                           if (child.kindIs(RuleKind.ARGS)) {
+                           printNodeContent(child);
+                       } else {
+                           printNode(child);
+                       }
+                       }
 
             @Override
             public void onToken(int kind, String text) {
-                emitToken(text);
-            }
+                           emitToken(text);
+                       }
         });
     }
 
     // ===== Arguments =====
-
     private void printArgs(Cursor.Branch args) {
-        if (measuringMode) { walkTokens(args); return; }
+        if (measuringMode) {
+            walkTokens(args);
+
+            return;
+        }
 
         boolean hasComplexArgs = hasComplexArguments(args);
+
         if (hasComplexArgs) {
             printBrokenArgs(args);
+
             return;
         }
 
         int argsWidth = measureWidth(args);
+
         if (currentColumn + argsWidth <= config.maxLineLength()) {
             // Inline: walk tokens but use printNodeContent for child expressions. Suppress
             // chain breaking inside inline args — chains that fit horizontally as an
             // argument stay inline (e.g. `Result.all(user.map(a).map(b), ...)`).
             try (var scope = alignment.enterInlineExpression()) {
-                walkTokensWith(args, new TokenWalker() {
-                    @Override public void onChild(Cursor c) { printNodeContent(c); }
-                    @Override public void onToken(int kind, String text) { emitToken(text); }
+                walkTokensWith(args,
+                               new TokenWalker() {
+                    @Override
+                    public void onChild(Cursor c) {
+                                   printNodeContent(c);
+                               }
+
+                    @Override
+                    public void onToken(int kind, String text) {
+                                   emitToken(text);
+                               }
                 });
             }
         } else {
@@ -1665,12 +1891,15 @@ final class FlowPrinter {
     /// Token-based (not text-based), so `//` inside a string literal does not trigger it.
     private boolean hasLineCommentToken(Cursor node) {
         var tokens = node.cst().tokens();
+
         for (int t = node.firstTokenIdx(); t <= node.lastTokenIdx(); t++) {
             int kind = tokens.kindAt(t);
+
             if (kind == 1 || kind == 3) {
                 return true;
             }
         }
+
         return false;
     }
 
@@ -1685,45 +1914,59 @@ final class FlowPrinter {
         // (comments are emitted to output, not measureBuffer). Force broken layout when
         // a block lambda body has leading comments — the `//` check is a reliable proxy.
         var argsText = text(args);
+
         if (argsText.contains("-> {") && argsText.contains("//")) return true;
 
         var exprs = childrenByRule(args, RuleKind.EXPR);
+
         if (exprs.size() >= 2) {
             // 2+ lambda args: always break (each lambda on own line).
             int lambdaCount = 0;
+
             for (var expr : exprs) {
                 if (containsLambdaArrow(expr)) lambdaCount++;
             }
+
             if (lambdaCount >= 2) {
                 // Force complex layout only when any lambda has non-trivial content:
                 // block body, method call in body, or string concatenation.
                 // Short expression lambdas like `s -> s` or `c -> ""` can stay inline.
-                boolean anyComplexLambda = exprs.stream().anyMatch(e -> {
-                    var t = text(e);
-                    return t.contains("-> {") || containsMethodCall(t) || t.contains(" + ");
-                });
+                boolean anyComplexLambda = exprs.stream()
+                                                .anyMatch(e -> {
+                                                              var t = text(e);
+
+                                                              return t.contains("-> {") || containsMethodCall(t) || t.contains(" + ");
+                                                          });
+
                 if (anyComplexLambda) return true;
             }
+
             for (var expr : exprs) {
                 var exprText = text(expr);
+
                 if (containsMethodCall(exprText) || exprText.contains("-> {")) {
                     return true;
                 }
+
                 if (containsTopLevelTernary(expr)) {
                     return true;
                 }
+
                 if (alignment.isInBreakingChain() && exprText.contains("(")) {
                     return true;
                 }
             }
         }
+
         return false;
     }
 
     /// True if `expr` contains a LAMBDA descendant (any `->` form).
     private boolean containsLambdaArrow(Cursor expr) {
-        if (!(expr instanceof Cursor.Branch br)) return false;
-        return br.descendants().anyMatch(c -> c.kindIs(RuleKind.LAMBDA));
+        if (! (expr instanceof Cursor.Branch br)) return false;
+
+        return br.descendants()
+                 .anyMatch(c -> c.kindIs(RuleKind.LAMBDA));
     }
 
     /// True if `expr` contains a TERNARY node at its first-level descent (i.e. the
@@ -1731,22 +1974,23 @@ final class FlowPrinter {
     /// detect when an argument will break vertically due to a `?:` operator, dragging
     /// the surrounding arg list into broken layout.
     private boolean containsTopLevelTernary(Cursor expr) {
-        if (!(expr instanceof Cursor.Branch br)) return false;
+        if (! (expr instanceof Cursor.Branch br)) return false;
+
         return br.descendants()
-            .anyMatch(c -> c.kindIs(RuleKind.TERNARY)
-                && text(c).contains("?")
-                && text(c).contains(":"));
+                 .anyMatch(c -> c.kindIs(RuleKind.TERNARY) && text(c).contains("?") && text(c).contains(":"));
     }
 
     private boolean containsMethodCall(String text) {
         var matcher = METHOD_CALL_PATTERN.matcher(text);
         int count = 0;
+
         while (matcher.find()) {
             count++;
             if (count >= 2) {
                 return true;
             }
         }
+
         return false;
     }
 
@@ -1758,8 +2002,10 @@ final class FlowPrinter {
         // lambda-align there. Multi-argument calls always align.
         if (childrenByRule(args, RuleKind.EXPR).size() < 2 && alignment.chainColumn() < 0) {
             printBrokenArgsBody(args, alignCol);
+
             return;
         }
+
         try (var scope = alignment.pushLambdaAlign(alignCol)) {
             printBrokenArgsBody(args, alignCol);
         }
@@ -1767,52 +2013,57 @@ final class FlowPrinter {
 
     private void printBrokenArgsBody(Cursor.Branch args, int alignCol) {
         boolean[] pendingLineBreak = {false};
-        walkTokensWith(args, new TokenWalker() {
+
+        walkTokensWith(args,
+                       new TokenWalker() {
             @Override
             public void onChild(Cursor child) {
-                if (child.kindIs(RuleKind.EXPR)) {
-                    // If this single arg fits on its own line, render its inner
-                    // chains/expressions inline. The args layout already broke at
-                    // commas; an individual arg-expression should not force further
-                    // vertical breaks unless its own width demands it.
-                    int width = measureWidth(child);
-                    if (currentColumn + width <= config.maxLineLength()) {
-                        try (var inlineScope = alignment.enterInlineExpression()) {
-                            printNodeContent(child);
-                        }
-                    } else {
-                        printNodeContent(child);
-                    }
-                    // Rescue a comment trailing this argument (inside its span) before the next
-                    // delimiter; a line comment forces that delimiter onto a new line.
-                    if (flushInSpanTrailingComment(child)) {
-                        pendingLineBreak[0] = true;
-                    }
-                } else {
-                    printNode(child);
-                }
-            }
+                           if (child.kindIs(RuleKind.EXPR)) {
+                           // If this single arg fits on its own line, render its inner
+                           // chains/expressions inline. The args layout already broke at
+                           // commas; an individual arg-expression should not force further
+                           // vertical breaks unless its own width demands it.
+                           int width = measureWidth(child);
+
+                           if (currentColumn + width <= config.maxLineLength()) {
+                           try (var inlineScope = alignment.enterInlineExpression()) {
+                           printNodeContent(child);
+                       }
+                       } else {
+                           printNodeContent(child);
+                       }
+                           // Rescue a comment trailing this argument (inside its span) before the next
+                           // delimiter; a line comment forces that delimiter onto a new line.
+                           if (flushInSpanTrailingComment(child)) {
+                           pendingLineBreak[0] = true;
+                       }
+                       } else {
+                           printNode(child);
+                       }
+                       }
 
             @Override
             public void onToken(int kind, String text) {
-                if (",".equals(text)) {
-                    if (pendingLineBreak[0]) {
-                        newline();
-                        printAlignedTo(alignCol);
-                        pendingLineBreak[0] = false;
-                    }
-                    emit(",");
-                    newline();
-                    printAlignedTo(alignCol);
-                } else {
-                    emitToken(text);
-                }
-            }
+                           if (",".equals(text)) {
+                           if (pendingLineBreak[0]) {
+                           newline();
+                           printAlignedTo(alignCol);
+                           pendingLineBreak[0] = false;
+                       }
+
+                           emit(",");
+                           newline();
+                           printAlignedTo(alignCol);
+                       } else {
+                           emitToken(text);
+                       }
+                       }
         });
         // Last argument carried a trailing line comment, OR own-line comments dangle before `)`:
         // break so the enclosing `)` (emitted by the post-op after this returns) lands on its own
         // line instead of being swallowed (bug report mechanisms B last-arg / E2).
         boolean danglingOwnLine = emitDanglingOwnLineArgComments(args, alignCol);
+
         if (pendingLineBreak[0] || danglingOwnLine) {
             newline();
             printAlignedTo(Math.max(0, alignCol - 1));
@@ -1820,50 +2071,59 @@ final class FlowPrinter {
     }
 
     // ===== Lambda =====
-
     private void printLambda(Cursor.Branch lambda) {
-        walkTokensWith(lambda, new TokenWalker() {
+        walkTokensWith(lambda,
+                       new TokenWalker() {
             boolean afterArrow = false;
 
             @Override
             public void onChild(Cursor child) {
-                if (afterArrow) {
-                    // Lambda body: enter tail context so chains inside break vertically.
-                    try (var scope = alignment.enterTailContext()) {
-                        printNodeContent(child);
-                    }
-                    afterArrow = false;
-                } else {
-                    printNode(child);
-                }
-            }
+                           if (afterArrow) {
+                           // Lambda body: enter tail context so chains inside break vertically.
+                           try (var scope = alignment.enterTailContext()) {
+                           printNodeContent(child);
+                       }
+
+                           afterArrow = false;
+                       } else {
+                           printNode(child);
+                       }
+                       }
 
             @Override
             public void onToken(int kind, String text) {
-                if ("->".equals(text)) {
-                    emit(" -> ");
-                    afterArrow = true;
-                } else {
-                    emitToken(text);
-                }
-            }
+                           if ("->".equals(text)) {
+                           emit(" -> ");
+                           afterArrow = true;
+                       } else {
+                           emitToken(text);
+                       }
+                       }
         });
     }
 
     // ===== Parameters =====
-
     private void printParams(Cursor.Branch params) {
         if (measuringMode) {
             walkTokens(params);
+
             return;
         }
 
         int paramsWidth = measureWidth(params);
         // Account for closing paren and typical suffix (") {" = 3 chars)
         if (currentColumn + paramsWidth + 3 <= config.maxLineLength()) {
-            walkTokensWith(params, new TokenWalker() {
-                @Override public void onChild(Cursor c) { printNodeContent(c); }
-                @Override public void onToken(int kind, String text) { emitToken(text); }
+            walkTokensWith(params,
+                           new TokenWalker() {
+                @Override
+                public void onChild(Cursor c) {
+                               printNodeContent(c);
+                           }
+
+                @Override
+                public void onToken(int kind, String text) {
+                               emitToken(text);
+                           }
             });
         } else {
             printBrokenParams(params);
@@ -1872,26 +2132,28 @@ final class FlowPrinter {
 
     private void printBrokenParams(Cursor.Branch params) {
         int alignCol = currentColumn;
-        walkTokensWith(params, new TokenWalker() {
+
+        walkTokensWith(params,
+                       new TokenWalker() {
             @Override
             public void onChild(Cursor child) {
-                if (child.kindIs(RuleKind.PARAM)) {
-                    printNodeContent(child);
-                } else {
-                    printNode(child);
-                }
-            }
+                           if (child.kindIs(RuleKind.PARAM)) {
+                           printNodeContent(child);
+                       } else {
+                           printNode(child);
+                       }
+                       }
 
             @Override
             public void onToken(int kind, String text) {
-                if (",".equals(text)) {
-                    emit(",");
-                    newline();
-                    printAlignedTo(alignCol);
-                } else {
-                    emitToken(text);
-                }
-            }
+                           if (",".equals(text)) {
+                           emit(",");
+                           newline();
+                           printAlignedTo(alignCol);
+                       } else {
+                           emitToken(text);
+                       }
+                       }
         });
     }
 
@@ -1904,66 +2166,70 @@ final class FlowPrinter {
     }
 
     // ===== Primary and record =====
-
     private void printPrimary(Cursor.Branch primary) {
         // Primary may be a method call `Foo.bar()`, a parenthesized expression, a new
         // expression, etc. Walk tokens; for ARGS child use printNodeContent so it can
         // break across lines.
-        walkTokensWith(primary, new TokenWalker() {
+        walkTokensWith(primary,
+                       new TokenWalker() {
             @Override
             public void onChild(Cursor child) {
-                if (child.kindIs(RuleKind.ARGS)) {
-                    printNodeContent(child);
-                } else {
-                    printNode(child);
-                }
-            }
+                           if (child.kindIs(RuleKind.ARGS)) {
+                           printNodeContent(child);
+                       } else {
+                           printNode(child);
+                       }
+                       }
 
             @Override
             public void onToken(int kind, String text) {
-                emitToken(text);
-            }
+                           emitToken(text);
+                       }
         });
     }
 
     private void printRecordDecl(Cursor.Branch recordDecl) {
         boolean[] afterComponents = {false};
-        walkTokensWith(recordDecl, new TokenWalker() {
+
+        walkTokensWith(recordDecl,
+                       new TokenWalker() {
             @Override
             public void onChild(Cursor child) {
-                if (child.kindIs(RuleKind.RECORD_COMPONENTS)) {
-                    printNodeContent(child);
-                    afterComponents[0] = true;
-                } else if (child.kindIs(RuleKind.RECORD_BODY)) {
-                    // RECORD_BODY may be a Leaf (empty `{}`) or a Branch (has members).
-                    // Always include a space before `{` (matches Records.java golden where
-                    // empty bodies render as `{}` with a separating space, never `(){}`.
-                    if (child instanceof Cursor.Branch rbBranch) {
-                        printRecordBody(rbBranch);
-                    } else {
-                        emit(" {}");
-                    }
-                    afterComponents[0] = false;
-                } else {
-                    printNode(child);
-                }
-            }
+                           if (child.kindIs(RuleKind.RECORD_COMPONENTS)) {
+                           printNodeContent(child);
+                           afterComponents[0] = true;
+                       } else if (child.kindIs(RuleKind.RECORD_BODY)) {
+                           // RECORD_BODY may be a Leaf (empty `{}`) or a Branch (has members).
+                           // Always include a space before `{` (matches Records.java golden where
+                           // empty bodies render as `{}` with a separating space, never `(){}`.
+                           if (child instanceof Cursor.Branch rbBranch) {
+                           printRecordBody(rbBranch);
+                       } else {
+                           emit(" {}");
+                       }
+
+                           afterComponents[0] = false;
+                       } else {
+                           printNode(child);
+                       }
+                       }
 
             @Override
             public void onToken(int kind, String text) {
-                if ("{".equals(text) && afterComponents[0]) {
-                    emit(" {");
-                    afterComponents[0] = false;
-                } else {
-                    emitToken(text);
-                }
-            }
+                           if ("{".equals(text) && afterComponents[0]) {
+                           emit(" {");
+                           afterComponents[0] = false;
+                       } else {
+                           emitToken(text);
+                       }
+                       }
         });
     }
 
     private void printRecordComponents(Cursor.Branch components) {
         if (measuringMode) {
             walkTokens(components);
+
             return;
         }
 
@@ -1971,9 +2237,17 @@ final class FlowPrinter {
         // A line comment between components cannot be inlined — force broken layout so each
         // component (and its leading comment) lands on its own line (bug report mechanism A).
         if (!hasLineCommentToken(components) && currentColumn + width + 3 <= config.maxLineLength()) {
-            walkTokensWith(components, new TokenWalker() {
-                @Override public void onChild(Cursor c) { printNodeContent(c); }
-                @Override public void onToken(int kind, String text) { emitToken(text); }
+            walkTokensWith(components,
+                           new TokenWalker() {
+                @Override
+                public void onChild(Cursor c) {
+                               printNodeContent(c);
+                           }
+
+                @Override
+                public void onToken(int kind, String text) {
+                               emitToken(text);
+                           }
             });
         } else {
             printBrokenRecordComponents(components);
@@ -1982,83 +2256,89 @@ final class FlowPrinter {
 
     private void printBrokenRecordComponents(Cursor.Branch components) {
         int alignCol = currentColumn;
-        walkTokensWith(components, new TokenWalker() {
+
+        walkTokensWith(components,
+                       new TokenWalker() {
             @Override
             public void onChild(Cursor child) {
-                if (child.kindIs(RuleKind.RECORD_COMP)) {
-                    printOwnLineChildContentAligned(child, alignCol);
-                } else {
-                    printNode(child);
-                }
-            }
+                           if (child.kindIs(RuleKind.RECORD_COMP)) {
+                           printOwnLineChildContentAligned(child, alignCol);
+                       } else {
+                           printNode(child);
+                       }
+                       }
 
             @Override
             public void onToken(int kind, String text) {
-                if (",".equals(text)) {
-                    emit(",");
-                    newline();
-                } else {
-                    emitToken(text);
-                }
-            }
+                           if (",".equals(text)) {
+                           emit(",");
+                           newline();
+                       } else {
+                           emitToken(text);
+                       }
+                       }
         });
     }
 
     // ===== Resource spec =====
-
     private void printResourceSpec(Cursor.Branch resourceSpec) {
         if (measuringMode) {
             walkTokens(resourceSpec);
-            return;
-        }
-        int width = measureWidth(resourceSpec);
-        if (currentColumn + width <= config.maxLineLength()) {
-            walkTokens(resourceSpec);
+
             return;
         }
 
+        int width = measureWidth(resourceSpec);
+
+        if (currentColumn + width <= config.maxLineLength()) {
+            walkTokens(resourceSpec);
+
+            return;
+        }
         // Wrapped form: resources align after `(`, separated by `;` + newline.
         int[] alignCol = {0};
         boolean[] afterOpen = {false};
         boolean[] first = {true};
-        walkTokensWith(resourceSpec, new TokenWalker() {
+
+        walkTokensWith(resourceSpec,
+                       new TokenWalker() {
             @Override
             public void onChild(Cursor child) {
-                if (child.kindIs(RuleKind.RESOURCE)) {
-                    if (afterOpen[0]) {
-                        if (!first[0]) {
-                            newline();
-                            printAlignedTo(alignCol[0]);
-                        }
-                        printNodeContent(child);
-                        first[0] = false;
-                    } else {
-                        printNode(child);
-                    }
-                } else {
-                    printNode(child);
-                }
-            }
+                           if (child.kindIs(RuleKind.RESOURCE)) {
+                           if (afterOpen[0]) {
+                           if (!first[0]) {
+                           newline();
+                           printAlignedTo(alignCol[0]);
+                       }
+
+                           printNodeContent(child);
+                           first[0] = false;
+                       } else {
+                           printNode(child);
+                       }
+                       } else {
+                           printNode(child);
+                       }
+                       }
 
             @Override
             public void onToken(int kind, String text) {
-                if ("(".equals(text)) {
-                    emitToken("(");
-                    alignCol[0] = currentColumn;
-                    afterOpen[0] = true;
-                } else if (";".equals(text)) {
-                    emitToken(";");
-                } else if (")".equals(text)) {
-                    emitToken(")");
-                } else {
-                    emitToken(text);
-                }
-            }
+                           if ("(".equals(text)) {
+                           emitToken("(");
+                           alignCol[0] = currentColumn;
+                           afterOpen[0] = true;
+                       } else if (";".equals(text)) {
+                           emitToken(";");
+                       } else if (")".equals(text)) {
+                           emitToken(")");
+                       } else {
+                           emitToken(text);
+                       }
+                       }
         });
     }
 
     // ===== Type generics =====
-
     private void printTypeArgs(Cursor.Branch typeArgs) {
         typeContextDepth++;
         walkTokens(typeArgs);
@@ -2072,7 +2352,6 @@ final class FlowPrinter {
     }
 
     // ===== Method declarations =====
-
     private void printMethodDecl(Cursor.Branch methodDecl) {
         // Default: walk tokens for the entire method decl. v6 keeps modifiers and type
         // params naturally on the same line via the spacing rules; we only need a special
@@ -2086,9 +2365,9 @@ final class FlowPrinter {
     }
 
     // ===== Ternary =====
-
     private void printTernary(Cursor.Branch ternary) {
         var ternaryText = text(ternary);
+
         if (ternaryText.contains("?") && ternaryText.contains(":")) {
             // Align `?` and `:` under the first non-space char of the cond expression.
             // `currentColumn` at entry sits BEFORE any auto-space that the spacing
@@ -2098,39 +2377,43 @@ final class FlowPrinter {
             // currentColumn + 1 rather than currentColumn. Each ternary uses its
             // OWN cond-start column — nested ternaries do NOT inherit; e.g. the
             // inner ternary in `cond ? a : (b ? c : d)` aligns at `b`'s column.
-            int alignCol = currentColumn + (needsSpaceBefore("x") ? 1 : 0);
+            int alignCol = currentColumn + (needsSpaceBefore("x")
+                                            ? 1
+                                            : 0);
             boolean[] skipNext = {false};
-            walkTokensWith(ternary, new TokenWalker() {
+
+            walkTokensWith(ternary,
+                           new TokenWalker() {
                 @Override
                 public void onChild(Cursor child) {
-                    if (skipNext[0]) {
-                        printNodeContent(child);
-                        skipNext[0] = false;
-                    } else {
-                        // Ternary cond: suppress LOG_AND/LOG_OR breaking so `&&`/`||`
-                        // in the cond stay on one line per the always-break-`?`/`:` rule.
-                        try (var tc = alignment.enterTernaryCond()) {
-                            printNode(child);
-                        }
-                    }
-                }
+                               if (skipNext[0]) {
+                               printNodeContent(child);
+                               skipNext[0] = false;
+                           } else {
+                               // Ternary cond: suppress LOG_AND/LOG_OR breaking so `&&`/`||`
+                               // in the cond stay on one line per the always-break-`?`/`:` rule.
+                               try (var tc = alignment.enterTernaryCond()) {
+                               printNode(child);
+                           }
+                           }
+                           }
 
                 @Override
                 public void onToken(int kind, String text) {
-                    if ("?".equals(text)) {
-                        newline();
-                        printAlignedTo(alignCol);
-                        emit("? ");
-                        skipNext[0] = true;
-                    } else if (":".equals(text)) {
-                        newline();
-                        printAlignedTo(alignCol);
-                        emit(": ");
-                        skipNext[0] = true;
-                    } else {
-                        emitToken(text);
-                    }
-                }
+                               if ("?".equals(text)) {
+                               newline();
+                               printAlignedTo(alignCol);
+                               emit("? ");
+                               skipNext[0] = true;
+                           } else if (":".equals(text)) {
+                               newline();
+                               printAlignedTo(alignCol);
+                               emit(": ");
+                               skipNext[0] = true;
+                           } else {
+                               emitToken(text);
+                           }
+                           }
             });
         } else {
             walkTokens(ternary);
@@ -2138,43 +2421,80 @@ final class FlowPrinter {
     }
 
     // ===== Additive (string concatenation wrapping) =====
-
     private void printAdditive(Cursor.Branch additive) {
         if (measuringMode) {
-            walkTokensWith(additive, new TokenWalker() {
-                @Override public void onChild(Cursor c) { printNodeContent(c); }
-                @Override public void onToken(int kind, String text) { emitToken(text); }
+            walkTokensWith(additive,
+                           new TokenWalker() {
+                @Override
+                public void onChild(Cursor c) {
+                               printNodeContent(c);
+                           }
+
+                @Override
+                public void onToken(int kind, String text) {
+                               emitToken(text);
+                           }
             });
+
             return;
         }
 
         boolean hasStringLit = containsStringLit(additive);
+
         if (!hasStringLit) {
-            walkTokensWith(additive, new TokenWalker() {
-                @Override public void onChild(Cursor c) { printNodeContent(c); }
-                @Override public void onToken(int kind, String text) { emitToken(text); }
+            walkTokensWith(additive,
+                           new TokenWalker() {
+                @Override
+                public void onChild(Cursor c) {
+                               printNodeContent(c);
+                           }
+
+                @Override
+                public void onToken(int kind, String text) {
+                               emitToken(text);
+                           }
             });
+
             return;
         }
 
         int width = measureWidth(additive);
+
         if (currentColumn + width <= config.maxLineLength()) {
-            walkTokensWith(additive, new TokenWalker() {
-                @Override public void onChild(Cursor c) { printNodeContent(c); }
-                @Override public void onToken(int kind, String text) { emitToken(text); }
+            walkTokensWith(additive,
+                           new TokenWalker() {
+                @Override
+                public void onChild(Cursor c) {
+                               printNodeContent(c);
+                           }
+
+                @Override
+                public void onToken(int kind, String text) {
+                               emitToken(text);
+                           }
             });
+
             return;
         }
-
         // Multi-line: break before string-literal operands. Suppress breaking inside
         // switch case expressions — goldens render those inline regardless of width.
         if (alignment.isInInlineExpression()) {
-            walkTokensWith(additive, new TokenWalker() {
-                @Override public void onChild(Cursor c) { printNodeContent(c); }
-                @Override public void onToken(int kind, String text) { emitToken(text); }
+            walkTokensWith(additive,
+                           new TokenWalker() {
+                @Override
+                public void onChild(Cursor c) {
+                               printNodeContent(c);
+                           }
+
+                @Override
+                public void onToken(int kind, String text) {
+                               emitToken(text);
+                           }
             });
+
             return;
         }
+
         var kids = additive.children().toList();
         // alignCol = currentColumn - 1 so that the `+` lands one column LEFT of the
         // first operand (the goldens align `+` under the first operand's quote, but the
@@ -2183,44 +2503,50 @@ final class FlowPrinter {
         int alignCol = Math.max(0, currentColumn - 1);
         // Key by firstTokenIdx — Cursor identity is unstable across children() calls.
         var operandInfo = new HashMap<Integer, OperandInfo>();
+
         for (var child : kids) {
             operandInfo.put(child.firstTokenIdx(), new OperandInfo(startsWithStringLit(child), measureWidth(child)));
         }
 
         boolean[] firstPrinted = {false};
         boolean[] pendingPlus = {false};
-        walkTokensWith(additive, new TokenWalker() {
+
+        walkTokensWith(additive,
+                       new TokenWalker() {
             @Override
             public void onChild(Cursor child) {
-                if (pendingPlus[0]) {
-                    var info = operandInfo.get(child.firstTokenIdx());
-                    boolean startsWithStr = info != null && info.startsWithString();
-                    if (startsWithStr && firstPrinted[0]) {
-                        // Multi-line additive: every `+` followed by a string-literal
-                        // operand breaks onto its own line (the goldens render each
-                        // continuation aligned under the first operand).
-                        newline();
-                        printAlignedTo(alignCol);
-                        emit("+ ");
-                    } else {
-                        emit(" + ");
-                    }
-                    pendingPlus[0] = false;
-                }
-                printNodeContent(child);
-                firstPrinted[0] = true;
-            }
+                           if (pendingPlus[0]) {
+                           var info = operandInfo.get(child.firstTokenIdx());
+                           boolean startsWithStr = info != null && info.startsWithString();
+
+                           if (startsWithStr && firstPrinted[0]) {
+                           // Multi-line additive: every `+` followed by a string-literal
+                           // operand breaks onto its own line (the goldens render each
+                           // continuation aligned under the first operand).
+                           newline();
+                           printAlignedTo(alignCol);
+                           emit("+ ");
+                       } else {
+                           emit(" + ");
+                       }
+
+                           pendingPlus[0] = false;
+                       }
+
+                           printNodeContent(child);
+                           firstPrinted[0] = true;
+                       }
 
             @Override
             public void onToken(int kind, String text) {
-                if ("+".equals(text)) {
-                    pendingPlus[0] = true;
-                } else if ("-".equals(text)) {
-                    emit(" - ");
-                } else {
-                    emitToken(text);
-                }
-            }
+                           if ("+".equals(text)) {
+                           pendingPlus[0] = true;
+                       } else if ("-".equals(text)) {
+                           emit(" - ");
+                       } else {
+                           emitToken(text);
+                       }
+                       }
         });
     }
 
@@ -2232,42 +2558,55 @@ final class FlowPrinter {
         // short `a && b` chains stay inline.
         int operatorCount = 0;
         var tokens = logAnd.cst().tokens();
+
         for (int t = logAnd.firstTokenIdx(); t <= logAnd.lastTokenIdx(); t++) {
             if (tokens.isTrivia(t)) continue;
+
             if ("&&".equals(tokens.textAt(t).toString())) operatorCount++;
         }
-        if (measuringMode
-            || alignment.isInInlineExpression()
-            || alignment.isInTernaryCond()
-            || !alignment.isInTailContext()
-            || operatorCount < 2) {
-            walkTokensWith(logAnd, new TokenWalker() {
-                @Override public void onChild(Cursor c) { printNodeContent(c); }
-                @Override public void onToken(int kind, String text) { emitToken(text); }
+
+        if (measuringMode || alignment.isInInlineExpression() || alignment.isInTernaryCond() || !alignment.isInTailContext() || operatorCount < 2) {
+            walkTokensWith(logAnd,
+                           new TokenWalker() {
+                @Override
+                public void onChild(Cursor c) {
+                               printNodeContent(c);
+                           }
+
+                @Override
+                public void onToken(int kind, String text) {
+                               emitToken(text);
+                           }
             });
+
             return;
         }
         // Multi-line: break before each `&&` aligned to the first operand's column.
         // currentColumn at entry sits before any pending auto-space; add 1 if the next
         // emit would auto-space (e.g. after `return`).
-        int alignCol = currentColumn + (needsSpaceBefore("x") ? 1 : 0);
+        int alignCol = currentColumn + (needsSpaceBefore("x")
+                                        ? 1
+                                        : 0);
         boolean[] firstPrinted = {false};
-        walkTokensWith(logAnd, new TokenWalker() {
+
+        walkTokensWith(logAnd,
+                       new TokenWalker() {
             @Override
             public void onChild(Cursor c) {
-                printNodeContent(c);
-                firstPrinted[0] = true;
-            }
+                           printNodeContent(c);
+                           firstPrinted[0] = true;
+                       }
+
             @Override
             public void onToken(int kind, String text) {
-                if ("&&".equals(text) && firstPrinted[0]) {
-                    newline();
-                    printAlignedTo(alignCol);
-                    emit("&& ");
-                } else {
-                    emitToken(text);
-                }
-            }
+                           if ("&&".equals(text) && firstPrinted[0]) {
+                           newline();
+                           printAlignedTo(alignCol);
+                           emit("&& ");
+                       } else {
+                           emitToken(text);
+                       }
+                       }
         });
     }
 
@@ -2277,11 +2616,11 @@ final class FlowPrinter {
 
     private boolean startsWithStringLit(Cursor node) {
         var t = text(node).stripLeading();
-        return !t.isEmpty() && t.charAt(0) == '"';
+
+        return ! t.isEmpty() && t.charAt(0) == '"';
     }
 
     // ===== Content printing (no trivia, with spacing) =====
-
     private void printNodeContent(Cursor node) {
         switch (node) {
             case Cursor.Leaf leaf -> emitLeafTokens(leaf);
@@ -2296,7 +2635,7 @@ final class FlowPrinter {
                     case POST_OP -> printPostOp(br);
                     case TERNARY -> printTernary(br);
                     case ADDITIVE -> printAdditive(br);
-            case LOG_AND -> printLogAnd(br);
+                    case LOG_AND -> printLogAnd(br);
                     case PARAMS -> printParams(br);
                     case RECORD_COMPONENTS -> printRecordComponents(br);
                     case TYPE_ARGS -> printTypeArgs(br);
@@ -2314,15 +2653,22 @@ final class FlowPrinter {
                     case RESOURCE_SPEC -> printResourceSpec(br);
                     default -> {
                         boolean breakAfterAnnotation = annotationsBreakOnNewlineInParent(br.kind());
-                        walkTokensWith(br, new TokenWalker() {
-                            @Override public void onChild(Cursor c) {
-                                printNodeContent(c);
-                                if (breakAfterAnnotation && c.kindIs(RuleKind.ANNOTATION)) {
-                                    newline();
-                                    printIndent();
-                                }
-                            }
-                            @Override public void onToken(int kind, String text) { emitToken(text); }
+
+                        walkTokensWith(br,
+                                       new TokenWalker() {
+                            @Override
+                            public void onChild(Cursor c) {
+                                           printNodeContent(c);
+                                           if (breakAfterAnnotation && c.kindIs(RuleKind.ANNOTATION)) {
+                                           newline();
+                                           printIndent();
+                                       }
+                                       }
+
+                            @Override
+                            public void onToken(int kind, String text) {
+                                           emitToken(text);
+                                       }
                         });
                     }
                 }
@@ -2331,23 +2677,25 @@ final class FlowPrinter {
     }
 
     private void printLambdaContent(Cursor.Branch lambda) {
-        walkTokensWith(lambda, new TokenWalker() {
+        walkTokensWith(lambda,
+                       new TokenWalker() {
             @Override
-            public void onChild(Cursor child) { printNodeContent(child); }
+            public void onChild(Cursor child) {
+                           printNodeContent(child);
+                       }
 
             @Override
             public void onToken(int kind, String text) {
-                if ("->".equals(text)) {
-                    emit(" -> ");
-                } else {
-                    emitToken(text);
-                }
-            }
+                           if ("->".equals(text)) {
+                           emit(" -> ");
+                       } else {
+                           emitToken(text);
+                       }
+                       }
         });
     }
 
     // ===== Comment emission (inline, but never affects layout decisions) =====
-
     private void emitLeadingComments(Cursor node) {
         boolean emittedAny = false;
         // Iterate by token index so we can dedupe (under v6, leading trivia is sometimes
@@ -2355,23 +2703,28 @@ final class FlowPrinter {
         // most once across the whole format pass).
         var triviaTokenIdxs = node.leadingTriviaTokens().toArray();
         var tokens = node.cst().tokens();
+
         for (int tokIdx : triviaTokenIdxs) {
             if (emittedTriviaTokens.contains(tokIdx)) {
                 continue;
             }
+
             int kind = tokens.kindAt(tokIdx);
-            boolean isLine = kind == 1 || kind == 3;        // LINE_COMMENT or DOC_LINE_COMMENT
-            boolean isBlock = kind == 2 || kind == 4;       // BLOCK_COMMENT or DOC_BLOCK_COMMENT
+            boolean isLine = kind == 1 || kind == 3;  // LINE_COMMENT or DOC_LINE_COMMENT
+            boolean isBlock = kind == 2 || kind == 4;  // BLOCK_COMMENT or DOC_BLOCK_COMMENT
             if (isLine) {
                 if (currentColumn > 0) {
                     newline();
                 }
+
                 if (forcedIndentCol >= 0) {
                     printAlignedTo(forcedIndentCol);
                 } else {
                     printIndent();
                 }
+
                 var text = tokens.textAt(tokIdx).toString().stripTrailing();
+
                 output.append(text);
                 currentColumn += text.length();
                 newline();
@@ -2381,12 +2734,16 @@ final class FlowPrinter {
                 if (currentColumn > 0) {
                     newline();
                 }
+
                 var lines = tokens.textAt(tokIdx).toString().split("\n", -1);
+
                 for (int i = 0; i < lines.length; i++) {
                     if (i == 0) {
                         printIndent();
                     }
+
                     var line = lines[i].stripTrailing();
+
                     output.append(line);
                     currentColumn += line.length();
                     if (i < lines.length - 1) {
@@ -2395,12 +2752,14 @@ final class FlowPrinter {
                         currentLine++;
                     }
                 }
+
                 newline();
                 emittedAny = true;
                 emittedTriviaTokens.add(tokIdx);
             }
             // Whitespace trivia ignored — flow formatter controls all whitespace
         }
+
         if (emittedAny && currentColumn == 0) {
             if (forcedIndentCol >= 0) {
                 printAlignedTo(forcedIndentCol);
@@ -2411,14 +2770,15 @@ final class FlowPrinter {
     }
 
     // ===== Output helpers =====
-
     private void emitToken(String text) {
         if (text.isEmpty()) {
             return;
         }
+
         if (needsSpaceBefore(text)) {
             emit(" ");
         }
+
         emit(text);
         if (!measuringMode) {
             tokenLineMap.put(tokenIndex, currentLine);
@@ -2431,20 +2791,23 @@ final class FlowPrinter {
         emit(text);
     }
 
-
     private void emit(String text) {
         if (measuringMode) {
             measureBuffer += text.length();
             updateLastChars(text);
+
             return;
         }
+
         output.append(text);
         int lastNewline = text.lastIndexOf('\n');
+
         if (lastNewline >= 0) {
             currentColumn = text.length() - lastNewline - 1;
         } else {
             currentColumn += text.length();
         }
+
         updateLastChars(text);
     }
 
@@ -2455,6 +2818,7 @@ final class FlowPrinter {
             } else {
                 prevChar = lastChar;
             }
+
             lastChar = text.charAt(text.length() - 1);
             if (Character.isLetter(text.charAt(0))) {
                 lastWord = text;
@@ -2466,6 +2830,7 @@ final class FlowPrinter {
         if (measuringMode) {
             return;
         }
+
         output.append("\n");
         currentColumn = 0;
         lastChar = '\n';
@@ -2476,6 +2841,7 @@ final class FlowPrinter {
         if (measuringMode) {
             return;
         }
+
         emit(" ".repeat(indentLevel * config.indentSize()));
     }
 
@@ -2483,21 +2849,24 @@ final class FlowPrinter {
         if (measuringMode) {
             return;
         }
+
         if (currentColumn < column) {
             emit(" ".repeat(column - currentColumn));
         }
     }
 
     // ===== Spacing rules (inlined from SpacingRules — package-private in cst) =====
-
     private boolean needsSpaceBefore(String text) {
         if (lastChar == 0 || lastChar == '\n' || lastChar == ' ' || lastChar == '\t') {
             return false;
         }
+
         char firstChar = text.charAt(0);
+
         if (mustNotHaveSpaceBefore(text, firstChar)) {
             return false;
         }
+
         return checkSpaceRules(text, firstChar);
     }
 
@@ -2505,21 +2874,27 @@ final class FlowPrinter {
         if (firstChar == ')' || firstChar == ']' || firstChar == ';' || firstChar == ',') {
             return true;
         }
+
         if (lastChar == '@' || lastChar == '(' || lastChar == '[') {
             return true;
         }
+
         if (firstChar == '.' && !text.equals("...")) {
             return true;
         }
+
         if (lastChar == '.' && prevChar != '.') {
             return true;
         }
+
         if (text.equals("::") || (lastChar == ':' && prevChar == ':')) {
             return true;
         }
+
         if (firstChar == '>' && lastChar == ']') {
             return true;
         }
+
         if (lastChar == '<') {
             // Generic '<' (inside TYPE_ARGS / TYPE_PARAMS) glues to the type argument that follows
             // (`List<String`, `static <T`). A relational/shift operator '<' (any non-type context)
@@ -2528,8 +2903,10 @@ final class FlowPrinter {
             if (typeContextDepth > 0) {
                 return true;
             }
+
             return firstChar == '<';
         }
+
         if (firstChar == '>' && lastChar == '?') {
             return true;
         }
@@ -2539,6 +2916,7 @@ final class FlowPrinter {
         if ((lastChar == '-' || lastChar == '+') && isUnaryPosition()) {
             return true;
         }
+
         return false;
     }
 
@@ -2555,11 +2933,16 @@ final class FlowPrinter {
         // preceding it.
         int spaceIdx = output.length() - 2;
         boolean sawSpace = spaceIdx >= 0 && output.charAt(spaceIdx) == ' ';
-        int beforeIdx = sawSpace ? spaceIdx - 1 : spaceIdx;
+        int beforeIdx = sawSpace
+                        ? spaceIdx - 1
+                        : spaceIdx;
+
         if (beforeIdx < 0) {
             return true;
         }
+
         char before = output.charAt(beforeIdx);
+
         if (before == '(' || before == ',' || BINARY_OP_CHARS.contains(before)) {
             return true;
         }
@@ -2571,11 +2954,12 @@ final class FlowPrinter {
             // Confirm the letter run ending at `before` actually equals `lastWord` —
             // i.e. nothing was emitted between the keyword and this operator.
             int len = lastWord.length();
-            if (beforeIdx + 1 - len >= 0
-                && output.substring(beforeIdx + 1 - len, beforeIdx + 1).equals(lastWord)) {
+
+            if (beforeIdx + 1 - len >= 0 && output.substring(beforeIdx + 1 - len, beforeIdx + 1).equals(lastWord)) {
                 return true;
             }
         }
+
         return false;
     }
 
@@ -2609,6 +2993,7 @@ final class FlowPrinter {
         if (firstChar == '[' && lastChar == ')') {
             return true;
         }
+
         if (lastChar == ']' && isIdentifierStart(firstChar)) {
             return true;
         }
@@ -2648,6 +3033,7 @@ final class FlowPrinter {
         if (lastChar == '>') {
             return checkGenericClosing(firstChar);
         }
+
         return false;
     }
 
@@ -2663,31 +3049,39 @@ final class FlowPrinter {
         if (output.isEmpty() && !measuringMode) {
             return false;
         }
+
         if (!BINARY_OP_CHARS.contains(lastChar)) {
             return false;
         }
-        return !(lastChar == ':' && prevChar == ':');
+
+        return ! (lastChar == ':' && prevChar == ':');
     }
 
     private boolean checkAngleBracketRules(String text, char firstChar) {
         if (lastChar == '<' || lastChar == '>') {
             return false;
         }
+
         if (text.equals(">") && lastChar == '-') {
             return false;
         }
+
         if (Character.isLetterOrDigit(lastChar)) {
             if (!lastWord.isEmpty() && Character.isUpperCase(lastWord.charAt(0))) {
                 return false;
             }
+
             return true;
         }
+
         if (lastChar == ')') {
             return true;
         }
+
         if (lastChar == ']') {
             return false;
         }
+
         return lastChar != '.';
     }
 

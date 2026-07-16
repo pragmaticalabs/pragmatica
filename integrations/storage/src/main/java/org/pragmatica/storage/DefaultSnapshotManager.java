@@ -18,14 +18,15 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import static org.pragmatica.lang.io.FileOps.createDirectories;
 import static org.pragmatica.lang.io.FileOps.deleteIfExists;
 import static org.pragmatica.lang.io.FileOps.list;
 import static org.pragmatica.lang.io.FileOps.readString;
 import static org.pragmatica.lang.io.FileOps.writeString;
 
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 /// Default snapshot manager that writes text-format snapshots to local disk.
 /// Dual-condition trigger: snapshot when mutation count exceeds threshold OR time exceeds interval.
@@ -64,15 +65,15 @@ final class DefaultSnapshotManager implements SnapshotManager {
     @Contract
     public void forceSnapshot() {
         var snapshot = captureSnapshot();
-        writeSnapshotToDisk(snapshot)
-            .onSuccess(_ -> recordSnapshotTaken(snapshot))
-            .onFailure(cause -> LOG.warn("Snapshot write failed: {}", cause.message()));
+
+        writeSnapshotToDisk(snapshot).onSuccess(_ -> recordSnapshotTaken(snapshot))
+                           .onFailure(cause -> LOG.warn("Snapshot write failed: {}",
+                                                        cause.message()));
     }
 
     @Override
     public Option<MetadataSnapshot> restoreFromLatest() {
-        return readLatestSnapshotPath()
-            .flatMap(this::readAndValidateSnapshot);
+        return readLatestSnapshotPath().flatMap(this::readAndValidateSnapshot);
     }
 
     @Override
@@ -86,7 +87,6 @@ final class DefaultSnapshotManager implements SnapshotManager {
     }
 
     // --- Trigger logic ---
-
     private boolean shouldSnapshot() {
         var currentEpoch = metadataStore.currentEpoch();
         var epochDelta = currentEpoch - lastSnapshotEpoch.get();
@@ -96,14 +96,11 @@ final class DefaultSnapshotManager implements SnapshotManager {
     }
 
     // --- Snapshot capture ---
-
     private MetadataSnapshot captureSnapshot() {
-        return MetadataSnapshot.metadataSnapshot(
-            metadataStore.currentEpoch(),
-            config.nodeId(),
-            metadataStore.listAllLifecycles(),
-            metadataStore.listAllRefs()
-        );
+        return MetadataSnapshot.metadataSnapshot(metadataStore.currentEpoch(),
+                                                 config.nodeId(),
+                                                 metadataStore.listAllLifecycles(),
+                                                 metadataStore.listAllRefs());
     }
 
     private void recordSnapshotTaken(MetadataSnapshot snapshot) {
@@ -111,19 +108,18 @@ final class DefaultSnapshotManager implements SnapshotManager {
         lastSnapshotTimestamp = snapshot.timestamp();
         pruneOldSnapshots();
         LOG.info("Snapshot taken: epoch={}, lifecycles={}, refs={}",
-                 snapshot.epoch(), snapshot.lifecycles().size(), snapshot.refs().size());
+                 snapshot.epoch(),
+                 snapshot.lifecycles().size(),
+                 snapshot.refs().size());
     }
 
     // --- Disk write ---
-
     private Result<Path> writeSnapshotToDisk(MetadataSnapshot snapshot) {
-        return ensureDirectory()
-            .flatMap(_ -> serializeAndWrite(snapshot));
+        return ensureDirectory().flatMap(_ -> serializeAndWrite(snapshot));
     }
 
     private Result<Path> ensureDirectory() {
-        return createDirectories(config.snapshotPath())
-                            .mapError(e -> new SnapshotError.DirectoryCreateFailed(new RuntimeException(e.message())));
+        return createDirectories(config.snapshotPath()).mapError(e -> new SnapshotError.DirectoryCreateFailed(new RuntimeException(e.message())));
     }
 
     private Result<Path> serializeAndWrite(MetadataSnapshot snapshot) {
@@ -131,51 +127,47 @@ final class DefaultSnapshotManager implements SnapshotManager {
         var filePath = config.snapshotPath().resolve(fileName);
         var content = serializeSnapshot(snapshot);
 
-        return writeString(filePath, content)
-                     .mapError(e -> new SnapshotError.WriteFailed(new RuntimeException(e.message())))
-                     .flatMap(_ -> updateLatestLink(filePath))
-                     .map(_ -> filePath);
+        return writeString(filePath, content).mapError(e -> new SnapshotError.WriteFailed(new RuntimeException(e.message())))
+                          .flatMap(_ -> updateLatestLink(filePath))
+                          .map(_ -> filePath);
     }
 
     private Result<Unit> updateLatestLink(Path snapshotFile) {
         var latestPath = config.snapshotPath().resolve(LATEST_LINK);
 
-        return writeString(latestPath, snapshotFile.getFileName().toString())
-                            .mapError(e -> new SnapshotError.WriteFailed(new RuntimeException(e.message())));
+        return writeString(latestPath,
+                           snapshotFile.getFileName().toString()).mapError(e -> new SnapshotError.WriteFailed(new RuntimeException(e.message())));
     }
 
     // --- Disk read ---
-
     private Option<Path> readLatestSnapshotPath() {
         var latestPath = config.snapshotPath().resolve(LATEST_LINK);
 
-        return readString(latestPath)
-                     .mapError(e -> new SnapshotError.ReadFailed(new RuntimeException(e.message())))
-                     .map(String::trim)
-                     .map(name -> config.snapshotPath().resolve(name))
-                     .onFailure(cause -> LOG.debug("No LATEST snapshot file: {}", cause.message()))
-                     .option();
+        return readString(latestPath).mapError(e -> new SnapshotError.ReadFailed(new RuntimeException(e.message())))
+                         .map(String::trim)
+                         .map(name -> config.snapshotPath()
+                                            .resolve(name))
+                         .onFailure(cause -> LOG.debug("No LATEST snapshot file: {}",
+                                                       cause.message()))
+                         .option();
     }
 
     private Option<MetadataSnapshot> readAndValidateSnapshot(Path path) {
-        return readString(path)
-                     .mapError(e -> new SnapshotError.ReadFailed(new RuntimeException(e.message())))
-                     .flatMap(DefaultSnapshotManager::parseSnapshot)
-                     .filter(SnapshotError.INTEGRITY_CHECK_FAILED, MetadataSnapshot::isValid)
-                     .onFailure(cause -> LOG.warn("Snapshot restore failed: {}", cause.message()))
-                     .option();
+        return readString(path).mapError(e -> new SnapshotError.ReadFailed(new RuntimeException(e.message())))
+                         .flatMap(DefaultSnapshotManager::parseSnapshot)
+                         .filter(SnapshotError.INTEGRITY_CHECK_FAILED, MetadataSnapshot::isValid)
+                         .onFailure(cause -> LOG.warn("Snapshot restore failed: {}",
+                                                      cause.message()))
+                         .option();
     }
 
     // --- Pruning ---
-
     private void pruneOldSnapshots() {
-        performPrune()
-            .onFailure(cause -> LOG.warn("Snapshot pruning failed: {}", cause.message()));
+        performPrune().onFailure(cause -> LOG.warn("Snapshot pruning failed: {}", cause.message()));
     }
 
     private Result<Unit> performPrune() {
-        return listSnapshotFiles()
-            .flatMap(this::deleteExcessSnapshots);
+        return listSnapshotFiles().flatMap(this::deleteExcessSnapshots);
     }
 
     private Result<Unit> deleteExcessSnapshots(List<Path> snapshots) {
@@ -183,39 +175,39 @@ final class DefaultSnapshotManager implements SnapshotManager {
             return Result.unitResult();
         }
 
-        return Result.allOf(snapshots.subList(0, snapshots.size() - config.retentionCount())
+        return Result.allOf(snapshots.subList(0,
+                                              snapshots.size() - config.retentionCount())
                                      .stream()
-                                     .map(DefaultSnapshotManager::deleteSnapshotFile))
-                     .mapToUnit();
+                                     .map(DefaultSnapshotManager::deleteSnapshotFile)).mapToUnit();
     }
 
     private static Result<Boolean> deleteSnapshotFile(Path file) {
-        return deleteIfExists(file)
-            .mapError(e -> new SnapshotError.PruneFailed(new RuntimeException(e.message())));
+        return deleteIfExists(file).mapError(e -> new SnapshotError.PruneFailed(new RuntimeException(e.message())));
     }
 
     private Result<List<Path>> listSnapshotFiles() {
-        return list(config.snapshotPath())
-            .mapError(e -> new SnapshotError.PruneFailed(new RuntimeException(e.message())))
-            .map(DefaultSnapshotManager::sortedSnapshotFiles);
+        return list(config.snapshotPath()).mapError(e -> new SnapshotError.PruneFailed(new RuntimeException(e.message())))
+                   .map(DefaultSnapshotManager::sortedSnapshotFiles);
     }
 
     private static List<Path> sortedSnapshotFiles(List<Path> entries) {
         return entries.stream()
                       .filter(DefaultSnapshotManager::isSnapshotFile)
-                      .sorted(Comparator.comparing(p -> p.getFileName().toString()))
+                      .sorted(Comparator.comparing(p -> p.getFileName()
+                                                         .toString()))
                       .toList();
     }
 
     private static boolean isSnapshotFile(Path path) {
         var name = path.getFileName().toString();
+
         return name.startsWith(SNAPSHOT_PREFIX) && name.endsWith(SNAPSHOT_SUFFIX);
     }
 
     // --- Serialization ---
-
     private static String serializeSnapshot(MetadataSnapshot snapshot) {
         var sb = new StringBuilder();
+
         sb.append("epoch=").append(snapshot.epoch()).append('\n');
         sb.append("timestamp=").append(snapshot.timestamp()).append('\n');
         sb.append("nodeId=").append(snapshot.nodeId()).append('\n');
@@ -226,19 +218,24 @@ final class DefaultSnapshotManager implements SnapshotManager {
         sb.append('\n');
         sb.append("# Refs\n");
         snapshot.refs().forEach((name, id) -> appendRefLine(sb, name, id));
+
         return sb.toString();
     }
 
     private static void appendLifecycleLine(StringBuilder sb, BlockLifecycle lc) {
-        var tiers = lc.presentIn().stream()
-                      .map(TierLevel::name)
-                      .collect(Collectors.joining(","));
+        var tiers = lc.presentIn().stream().map(TierLevel::name).collect(Collectors.joining(","));
+
         sb.append(lc.blockId().hexString())
-          .append('|').append(tiers)
-          .append('|').append(lc.refCount())
-          .append('|').append(lc.lastAccessedAt())
-          .append('|').append(lc.createdAt())
-          .append('|').append(lc.accessCount())
+          .append('|')
+          .append(tiers)
+          .append('|')
+          .append(lc.refCount())
+          .append('|')
+          .append(lc.lastAccessedAt())
+          .append('|')
+          .append(lc.createdAt())
+          .append('|')
+          .append(lc.accessCount())
           .append('\n');
     }
 
@@ -247,25 +244,25 @@ final class DefaultSnapshotManager implements SnapshotManager {
     }
 
     // --- Deserialization ---
-
     private static Result<MetadataSnapshot> parseSnapshot(String content) {
-        return Result.lift(SnapshotError.ParseFailed::new, () -> parseSnapshotContent(content))
-                     .flatMap(parsed -> parsed);
+        return Result.lift(SnapshotError.ParseFailed::new, () -> parseSnapshotContent(content)).flatMap(parsed -> parsed);
     }
 
     private static Result<MetadataSnapshot> parseSnapshotContent(String content) {
         var lines = content.split("\n");
         var headers = parseHeaders(lines);
-
         var epoch = Long.parseLong(headers.get("epoch"));
         var timestamp = Long.parseLong(headers.get("timestamp"));
         var nodeId = headers.get("nodeId");
         var contentHash = HEX.parseHex(headers.get("contentHash"));
-
         var refs = new LinkedHashMap<String, BlockId>();
 
-        return parseLifecycles(lines, refs)
-            .map(lifecycles -> new MetadataSnapshot(epoch, timestamp, nodeId, lifecycles, refs, contentHash));
+        return parseLifecycles(lines, refs).map(lifecycles -> new MetadataSnapshot(epoch,
+                                                                                   timestamp,
+                                                                                   nodeId,
+                                                                                   lifecycles,
+                                                                                   refs,
+                                                                                   contentHash));
     }
 
     /// Parse the lifecycle and ref data lines, propagating any malformed-line failure rather than
@@ -289,7 +286,8 @@ final class DefaultSnapshotManager implements SnapshotManager {
         return Result.allOf(lifecycleResults);
     }
 
-    private static void collectDataLine(String section, String line,
+    private static void collectDataLine(String section,
+                                        String line,
                                         List<Result<BlockLifecycle>> lifecycleResults,
                                         Map<String, BlockId> refs) {
         if ("lifecycles".equals(section)) {
@@ -306,7 +304,9 @@ final class DefaultSnapshotManager implements SnapshotManager {
             if (line.isEmpty() || line.startsWith("#")) {
                 break;
             }
+
             var eqIndex = line.indexOf('=');
+
             if (eqIndex > 0) {
                 headers.put(line.substring(0, eqIndex), line.substring(eqIndex + 1));
             }
@@ -318,8 +318,7 @@ final class DefaultSnapshotManager implements SnapshotManager {
     private static Result<BlockLifecycle> parseLifecycleLine(String line) {
         var parts = line.split("\\|");
 
-        return BlockId.fromHex(parts[0])
-                      .map(id -> buildLifecycle(id, parts));
+        return BlockId.fromHex(parts[0]).map(id -> buildLifecycle(id, parts));
     }
 
     private static BlockLifecycle buildLifecycle(BlockId id, String[] parts) {
@@ -327,7 +326,9 @@ final class DefaultSnapshotManager implements SnapshotManager {
         var refCount = Integer.parseInt(parts[2]);
         var lastAccessed = Long.parseLong(parts[3]);
         var created = Long.parseLong(parts[4]);
-        var accessCount = parts.length > 5 ? Integer.parseInt(parts[5]) : 0;
+        var accessCount = parts.length > 5
+                          ? Integer.parseInt(parts[5])
+                          : 0;
 
         return BlockLifecycle.blockLifecycle(id, tiers, refCount, lastAccessed, created, accessCount);
     }
@@ -351,13 +352,12 @@ final class DefaultSnapshotManager implements SnapshotManager {
 
         if (pipeIndex > 0) {
             var name = line.substring(0, pipeIndex);
-            BlockId.fromHex(line.substring(pipeIndex + 1))
-                   .onSuccess(id -> refs.put(name, id));
+
+            BlockId.fromHex(line.substring(pipeIndex + 1)).onSuccess(id -> refs.put(name, id));
         }
     }
 
     // --- File naming ---
-
     private static String snapshotFileName(long epoch) {
         return SNAPSHOT_PREFIX + String.format("%06d", epoch) + SNAPSHOT_SUFFIX;
     }

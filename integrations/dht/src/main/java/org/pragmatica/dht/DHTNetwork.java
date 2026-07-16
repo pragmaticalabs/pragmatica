@@ -13,8 +13,9 @@
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  */
-
 package org.pragmatica.dht;
+
+import java.util.Set;
 
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.ProtocolMessage;
@@ -22,7 +23,6 @@ import org.pragmatica.consensus.net.WriteOutcome;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Promise;
 
-import java.util.Set;
 
 /// Minimal network abstraction for DHT inter-node messaging.
 /// Implemented by both core cluster network (via ClusterNetwork adapter)
@@ -45,6 +45,7 @@ public interface DHTNetwork {
     /// See `aether/docs/specs/dht-resilience-spec.md` Layer 3.
     default Promise<WriteOutcome> sendOutcome(NodeId target, ProtocolMessage message) {
         send(target, message);
+
         return Promise.success(new WriteOutcome.Sent(target));
     }
 

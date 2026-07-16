@@ -14,10 +14,10 @@
  *  limitations under the License.
  *
  */
-
 package org.pragmatica.cloud.hetzner.api;
 
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+
 
 /// Hetzner async operation tracking model.
 @JsonIgnoreProperties(ignoreUnknown = true)

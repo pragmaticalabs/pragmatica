@@ -1,14 +1,15 @@
 package org.pragmatica.storage;
 
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicLong;
+
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.atomic.AtomicLong;
-
 import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Unit.unit;
+
 
 /// In-memory storage tier using ConcurrentHashMap.
 /// Thread-safe, bounded by configurable max bytes.
@@ -48,23 +49,20 @@ public final class MemoryTier implements StorageTier {
             // For overwrites, we don't know old size yet — reserve full content.length.
             // Overcount is corrected after the actual put.
             updated = current + content.length;
-
             if (updated > maxBytes) {
                 return StorageError.TierFull.tierFull(TierLevel.MEMORY, current, maxBytes).promise();
             }
         } while (!usedBytes.compareAndSet(current, updated));
-
         // Now we have reserved space atomically. Perform the actual put.
-        option(store.put(id, content))
-            .onPresent(prev -> usedBytes.addAndGet(-prev.length));
+        option(store.put(id, content)).onPresent(prev -> usedBytes.addAndGet(-prev.length));
 
         return Promise.success(unit());
     }
 
     @Override
     public Promise<Unit> delete(BlockId id) {
-        option(store.remove(id))
-            .onPresent(removed -> usedBytes.addAndGet(-removed.length));
+        option(store.remove(id)).onPresent(removed -> usedBytes.addAndGet(-removed.length));
+
         return Promise.success(unit());
     }
 
@@ -87,5 +85,4 @@ public final class MemoryTier implements StorageTier {
     public long maxBytes() {
         return maxBytes;
     }
-
 }

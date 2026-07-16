@@ -14,10 +14,10 @@
  *  limitations under the License.
  *
  */
-
 package org.pragmatica.cloud.aws.s3;
 
 import org.pragmatica.cloud.aws.AwsConfig;
+
 
 /// S3-compatible object storage configuration.
 /// Supports both AWS S3 (virtual-hosted style) and MinIO/S3-compatible (path style).
@@ -27,16 +27,22 @@ public record S3Config(String endpoint,
                        String accessKeyId,
                        String secretAccessKey,
                        boolean pathStyle) {
-
     /// Creates S3 configuration for AWS S3 with virtual-hosted URL style.
     public static S3Config s3Config(String bucket, String region, String accessKeyId, String secretAccessKey) {
-        return new S3Config("https://s3." + region + ".amazonaws.com", bucket, region,
-                            accessKeyId, secretAccessKey, false);
+        return new S3Config("https://s3." + region + ".amazonaws.com",
+                            bucket,
+                            region,
+                            accessKeyId,
+                            secretAccessKey,
+                            false);
     }
 
     /// Creates S3 configuration for MinIO or S3-compatible storage with path-style URLs.
-    public static S3Config s3Config(String endpoint, String bucket, String region,
-                                    String accessKeyId, String secretAccessKey) {
+    public static S3Config s3Config(String endpoint,
+                                    String bucket,
+                                    String region,
+                                    String accessKeyId,
+                                    String secretAccessKey) {
         return new S3Config(endpoint, bucket, region, accessKeyId, secretAccessKey, true);
     }
 
@@ -75,18 +81,24 @@ public record S3Config(String endpoint,
     }
 
     private static String extractHost(String url) {
-        var withoutScheme = url.contains("://") ? url.substring(url.indexOf("://") + 3) : url;
+        var withoutScheme = url.contains("://")
+                            ? url.substring(url.indexOf("://") + 3)
+                            : url;
         var slashIdx = withoutScheme.indexOf('/');
-        return slashIdx >= 0 ? withoutScheme.substring(0, slashIdx) : withoutScheme;
+
+        return slashIdx >= 0
+               ? withoutScheme.substring(0, slashIdx)
+               : withoutScheme;
     }
 
     @Override
     public String toString() {
         return "S3Config[endpoint=" + endpoint
-               + ", bucket=" + bucket
-               + ", region=" + region
-               + ", accessKeyId=" + accessKeyId
-               + ", secretAccessKey=REDACTED"
-               + ", pathStyle=" + pathStyle + "]";
+             + ", bucket=" + bucket
+             + ", region=" + region
+             + ", accessKeyId=" + accessKeyId
+             + ", secretAccessKey=REDACTED"
+             + ", pathStyle=" + pathStyle
+             + "]";
     }
 }

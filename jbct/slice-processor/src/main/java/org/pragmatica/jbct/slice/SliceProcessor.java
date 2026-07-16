@@ -2,25 +2,7 @@
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
 // Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
 // See LICENSE in the repository root for full terms.
-
 package org.pragmatica.jbct.slice;
-
-import org.pragmatica.jbct.slice.generator.DependencyVersionResolver;
-import org.pragmatica.jbct.slice.generator.FactoryClassGenerator;
-import org.pragmatica.jbct.slice.generator.ManifestGenerator;
-import org.pragmatica.jbct.slice.model.MethodModel;
-import org.pragmatica.jbct.slice.model.ResolvedTopicConstant;
-import org.pragmatica.jbct.slice.model.SliceModel;
-import org.pragmatica.jbct.slice.routing.ErrorMappingValidator;
-import org.pragmatica.jbct.slice.routing.ErrorPatternConfig;
-import org.pragmatica.jbct.slice.routing.ErrorTypeDiscovery;
-import org.pragmatica.jbct.slice.routing.RouteConfig;
-import org.pragmatica.jbct.slice.routing.RouteConfigLoader;
-import org.pragmatica.jbct.slice.routing.RouteCoverageValidator;
-import org.pragmatica.jbct.slice.routing.RouteSourceGenerator;
-import org.pragmatica.lang.Option;
-import org.pragmatica.lang.Result;
-import org.pragmatica.lang.Unit;
 
 import javax.annotation.processing.AbstractProcessor;
 import javax.annotation.processing.Processor;
@@ -42,7 +24,25 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
+import org.pragmatica.jbct.slice.generator.DependencyVersionResolver;
+import org.pragmatica.jbct.slice.generator.FactoryClassGenerator;
+import org.pragmatica.jbct.slice.generator.ManifestGenerator;
+import org.pragmatica.jbct.slice.model.MethodModel;
+import org.pragmatica.jbct.slice.model.ResolvedTopicConstant;
+import org.pragmatica.jbct.slice.model.SliceModel;
+import org.pragmatica.jbct.slice.routing.ErrorMappingValidator;
+import org.pragmatica.jbct.slice.routing.ErrorPatternConfig;
+import org.pragmatica.jbct.slice.routing.ErrorTypeDiscovery;
+import org.pragmatica.jbct.slice.routing.RouteConfig;
+import org.pragmatica.jbct.slice.routing.RouteConfigLoader;
+import org.pragmatica.jbct.slice.routing.RouteCoverageValidator;
+import org.pragmatica.jbct.slice.routing.RouteSourceGenerator;
+import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Unit;
+
 import com.google.auto.service.AutoService;
+
 
 @AutoService(Processor.class)
 @SupportedAnnotationTypes("org.pragmatica.aether.slice.annotation.Slice")
@@ -61,7 +61,9 @@ public class SliceProcessor extends AbstractProcessor {
     private ErrorTypeDiscovery errorDiscovery;
     private boolean errorsStrict;
     private boolean coverageStrict;
+
     private final java.util.Map<String, TypeElement> packageToSlice = new java.util.concurrent.ConcurrentHashMap<>();
+
     private final java.util.Set<String> routeServiceEntries = java.util.Collections.synchronizedSet(new java.util.LinkedHashSet<>());
 
     @Override
@@ -71,6 +73,7 @@ public class SliceProcessor extends AbstractProcessor {
         var elements = processingEnv.getElementUtils();
         var types = processingEnv.getTypeUtils();
         var options = processingEnv.getOptions();
+
         this.versionResolver = new DependencyVersionResolver(processingEnv);
         this.factoryGenerator = new FactoryClassGenerator(processingEnv, filer, elements, types, versionResolver);
         this.manifestGenerator = new ManifestGenerator(filer, versionResolver, options);
@@ -90,7 +93,9 @@ public class SliceProcessor extends AbstractProcessor {
     /// remedy. No-op for consumers built outside this monorepo (no `jbct/` source tree to compare
     /// against) or when the build stamp is unresolved - see [StalenessGuard] (#403).
     private void warnIfProcessorStale() {
-        StalenessGuard.staleWarning(System.getProperty("user.dir", ""), BuildInfo.VERSION, BuildInfo.BUILD_TIMESTAMP)
+        StalenessGuard.staleWarning(System.getProperty("user.dir", ""),
+                                    BuildInfo.VERSION,
+                                    BuildInfo.BUILD_TIMESTAMP)
                       .onPresent(message -> processingEnv.getMessager()
                                                          .printMessage(Diagnostic.Kind.WARNING, message));
     }
@@ -103,11 +108,13 @@ public class SliceProcessor extends AbstractProcessor {
                     error(element, "@Slice can only be applied to interfaces, found: " + element.getKind());
                     continue;
                 }
+
                 var interfaceElement = (TypeElement) element;
                 // Enforce one-slice-per-package convention
                 if (!validateOneSlicePerPackage(interfaceElement)) {
                     return false;
                 }
+
                 processSliceInterface(interfaceElement, roundEnv.getRootElements());
             }
         }
@@ -115,23 +122,22 @@ public class SliceProcessor extends AbstractProcessor {
         if (roundEnv.processingOver() && !routeServiceEntries.isEmpty()) {
             writeRouteServiceFile();
         }
+
         return true;
     }
 
     private boolean validateOneSlicePerPackage(TypeElement interfaceElement) {
-        var packageName = processingEnv.getElementUtils()
-                                       .getPackageOf(interfaceElement)
-                                       .getQualifiedName()
-                                       .toString();
-        var sliceName = interfaceElement.getSimpleName()
-                                        .toString();
+        var packageName = processingEnv.getElementUtils().getPackageOf(interfaceElement).getQualifiedName().toString();
+        var sliceName = interfaceElement.getSimpleName().toString();
+
         if (packageToSlice.containsKey(packageName)) {
             var existingSlice = packageToSlice.get(packageName);
-            var existingName = existingSlice.getSimpleName()
-                                            .toString();
+            var existingName = existingSlice.getSimpleName().toString();
             var message = String.format("Multiple @Slice interfaces found in package '%s': %s and %s. "
-                                        + "Convention: One slice per package. " + "Move to separate packages:\n"
-                                        + "  - %s.%s (for %s)\n" + "  - %s.%s (for %s)",
+                                       + "Convention: One slice per package. "
+                                       + "Move to separate packages:\n"
+                                       + "  - %s.%s (for %s)\n"
+                                       + "  - %s.%s (for %s)",
                                         packageName,
                                         existingName,
                                         sliceName,
@@ -141,10 +147,14 @@ public class SliceProcessor extends AbstractProcessor {
                                         packageName,
                                         toKebabCase(sliceName),
                                         sliceName);
+
             error(interfaceElement, message);
+
             return false;
         }
+
         packageToSlice.put(packageName, interfaceElement);
+
         return true;
     }
 
@@ -162,13 +172,20 @@ public class SliceProcessor extends AbstractProcessor {
                                    SliceModel sliceModel,
                                    Set<? extends Element> roundRoots) {
         var topicBindings = ResolvedTopicConstant.resolveBindings(sliceModel, roundRoots, processingEnv);
+
         if (!topicBindings.errors().isEmpty()) {
             topicBindings.errors().forEach(message -> error(interfaceElement, message));
+
             return;
         }
-        generateFactory(interfaceElement, sliceModel, topicBindings.bindings())
-            .flatMap(_ -> generateRoutesAndManifest(interfaceElement, sliceModel, topicBindings.bindings()))
-            .onFailure(cause -> error(interfaceElement, cause.message()));
+
+        generateFactory(interfaceElement,
+                        sliceModel,
+                        topicBindings.bindings()).flatMap(_ -> generateRoutesAndManifest(interfaceElement,
+                                                                                         sliceModel,
+                                                                                         topicBindings.bindings()))
+                       .onFailure(cause -> error(interfaceElement,
+                                                 cause.message()));
     }
 
     private Result<Unit> generateFactory(TypeElement interfaceElement,
@@ -182,17 +199,20 @@ public class SliceProcessor extends AbstractProcessor {
     private Result<Unit> generateRoutesAndManifest(TypeElement interfaceElement,
                                                    SliceModel sliceModel,
                                                    Map<String, ResolvedTopicConstant> topicBindings) {
-        return loadRouteConfig(sliceModel.packageName())
-            .flatMap(configOpt -> generateRoutesClass(interfaceElement, sliceModel, configOpt)
-                .flatMap(routesClassOpt -> generateSliceManifest(interfaceElement, sliceModel, routesClassOpt, configOpt, topicBindings)));
+        return loadRouteConfig(sliceModel.packageName()).flatMap(configOpt -> generateRoutesClass(interfaceElement,
+                                                                                                  sliceModel,
+                                                                                                  configOpt).flatMap(routesClassOpt -> generateSliceManifest(interfaceElement,
+                                                                                                                                                             sliceModel,
+                                                                                                                                                             routesClassOpt,
+                                                                                                                                                             configOpt,
+                                                                                                                                                             topicBindings)));
     }
 
     private Result<Option<String>> generateRoutesClass(TypeElement interfaceElement,
-                                                        SliceModel sliceModel,
-                                                        Option<RouteConfig> configOpt) {
-        return configOpt.fold(
-            () -> Result.success(Option.<String>none()),
-            config -> generateRoutesFromConfig(interfaceElement, sliceModel, config));
+                                                       SliceModel sliceModel,
+                                                       Option<RouteConfig> configOpt) {
+        return configOpt.fold(() -> Result.success(Option.<String> none()),
+                              config -> generateRoutesFromConfig(interfaceElement, sliceModel, config));
     }
 
     private Result<Unit> generateSliceManifest(TypeElement interfaceElement,
@@ -203,11 +223,11 @@ public class SliceProcessor extends AbstractProcessor {
         return manifestGenerator.generateSliceManifest(sliceModel, routesClass, routeConfig, topicBindings)
                                 .onSuccess(_ -> note(interfaceElement,
                                                      "Generated slice manifest: META-INF/slice/" + sliceModel.simpleName()
-                                                     + ".manifest"));
+                                                    + ".manifest"));
     }
 
     private Result<Option<RouteConfig>> loadRouteConfig(String packageName) {
-        try{
+        try {
             var packagePath = packageName.replace('.', '/');
             var resource = processingEnv.getFiler()
                                         .getResource(StandardLocation.CLASS_OUTPUT,
@@ -216,10 +236,9 @@ public class SliceProcessor extends AbstractProcessor {
             var configPath = Path.of(resource.toUri());
             var packageDir = configPath.getParent();
             // Use loadMerged to support routes-base.toml inheritance
-            return RouteConfigLoader.loadMerged(packageDir)
-                                    .map(config -> config.hasRoutes()
-                                                   ? Option.some(config)
-                                                   : Option.none());
+            return RouteConfigLoader.loadMerged(packageDir).map(config -> config.hasRoutes()
+                                                                          ? Option.some(config)
+                                                                          : Option.none());
         } catch (IOException | IllegalArgumentException | UnsupportedOperationException | FileSystemNotFoundException _) {
             // routes.toml not found or not accessible (e.g., in test environment) - routes are optional
             return Result.success(Option.none());
@@ -231,12 +250,19 @@ public class SliceProcessor extends AbstractProcessor {
                                                             RouteConfig config) {
         var packageName = sliceModel.packageName();
         var routesTomlPath = packageName.replace('.', '/') + "/routes.toml";
+
         reportRouteCoverageIssues(interfaceElement, sliceModel, config, routesTomlPath);
-        return errorDiscovery.discover(packageName, config.errors(), routesTomlPath)
+
+        return errorDiscovery.discover(packageName,
+                                       config.errors(),
+                                       routesTomlPath)
                              .onSuccess(discovery -> reportErrorMappingIssues(interfaceElement,
                                                                               discovery.issues(),
                                                                               strictErrorMapping(config)))
-                             .flatMap(discovery -> routeGenerator.generate(interfaceElement, sliceModel, config, discovery.mappings()))
+                             .flatMap(discovery -> routeGenerator.generate(interfaceElement,
+                                                                           sliceModel,
+                                                                           config,
+                                                                           discovery.mappings()))
                              .onSuccess(qualifiedNameOpt -> {
                                             qualifiedNameOpt.onPresent(routeServiceEntries::add);
                                             note(interfaceElement,
@@ -268,8 +294,8 @@ public class SliceProcessor extends AbstractProcessor {
         var kind = strict && issue.kind() == ErrorMappingValidator.IssueKind.UNMAPPED_CAUSE
                    ? Diagnostic.Kind.ERROR
                    : Diagnostic.Kind.WARNING;
-        processingEnv.getMessager()
-                     .printMessage(kind, issue.message(), interfaceElement);
+
+        processingEnv.getMessager().printMessage(kind, issue.message(), interfaceElement);
     }
 
     /// Report the forward routes<->methods coverage check (#389): every public, HTTP-eligible slice
@@ -280,11 +306,9 @@ public class SliceProcessor extends AbstractProcessor {
                                            SliceModel sliceModel,
                                            RouteConfig config,
                                            String routesTomlPath) {
-        var descriptors = sliceModel.methods()
-                                    .stream()
-                                    .map(SliceProcessor::routeCoverageDescriptor)
-                                    .toList();
+        var descriptors = sliceModel.methods().stream().map(SliceProcessor::routeCoverageDescriptor).toList();
         var issues = RouteCoverageValidator.validate(descriptors, routedHandlerNames(config), routesTomlPath);
+
         for (var issue : issues) {
             emitRouteCoverageIssue(interfaceElement, issue);
         }
@@ -296,8 +320,8 @@ public class SliceProcessor extends AbstractProcessor {
         var kind = coverageStrict
                    ? Diagnostic.Kind.ERROR
                    : Diagnostic.Kind.WARNING;
-        processingEnv.getMessager()
-                     .printMessage(kind, issue.message(), interfaceElement);
+
+        processingEnv.getMessager().printMessage(kind, issue.message(), interfaceElement);
     }
 
     private static RouteCoverageValidator.MethodDescriptor routeCoverageDescriptor(MethodModel method) {
@@ -308,39 +332,36 @@ public class SliceProcessor extends AbstractProcessor {
     /// transport rather than over HTTP. Rate guards are interceptors on an HTTP route, not a transport,
     /// so a rate-guarded method is NOT exempt.
     private static boolean isHttpExempt(MethodModel method) {
-        return method.hasSubscriptions()
-               || method.hasScheduled()
-               || method.hasStreamSubscriptions()
-               || method.hasPgNotificationSubscriptions()
-               || method.hasConfigUpdateSubscriptions();
+        return method.hasSubscriptions() || method.hasScheduled() || method.hasStreamSubscriptions() || method.hasPgNotificationSubscriptions() || method.hasConfigUpdateSubscriptions();
     }
 
     /// The set of method names covered by routes: the `[routes]` handler keys plus, for versioned
     /// slices, every method a `[vN]` version binding resolves to.
     private static Set<String> routedHandlerNames(RouteConfig config) {
         var names = new HashSet<>(config.routes().keySet());
+
         for (var version : config.versions().values()) {
             names.addAll(version.bindKeyToMethod().values());
         }
+
         return names;
     }
 
     private void error(Element element, String message) {
-        processingEnv.getMessager()
-                     .printMessage(Diagnostic.Kind.ERROR, message, element);
+        processingEnv.getMessager().printMessage(Diagnostic.Kind.ERROR, message, element);
     }
 
     private void note(Element element, String message) {
-        processingEnv.getMessager()
-                     .printMessage(Diagnostic.Kind.NOTE, message, element);
+        processingEnv.getMessager().printMessage(Diagnostic.Kind.NOTE, message, element);
     }
 
     private void writeRouteServiceFile() {
-        try{
+        try {
             var serviceFile = processingEnv.getFiler()
                                            .createResource(StandardLocation.CLASS_OUTPUT,
                                                            "",
                                                            "META-INF/services/org.pragmatica.aether.http.adapter.SliceRouterFactory");
+
             try (var writer = new java.io.PrintWriter(serviceFile.openWriter())) {
                 for (var entry : routeServiceEntries) {
                     writer.println(entry);
@@ -362,9 +383,11 @@ public class SliceProcessor extends AbstractProcessor {
 
     private static String doToKebabCase(String camelCase) {
         var result = new StringBuilder();
+
         result.append(Character.toLowerCase(camelCase.charAt(0)));
         for (int i = 1; i < camelCase.length(); i++) {
             char c = camelCase.charAt(i);
+
             if (Character.isUpperCase(c)) {
                 result.append('-');
                 result.append(Character.toLowerCase(c));
@@ -372,6 +395,7 @@ public class SliceProcessor extends AbstractProcessor {
                 result.append(c);
             }
         }
+
         return result.toString();
     }
 }

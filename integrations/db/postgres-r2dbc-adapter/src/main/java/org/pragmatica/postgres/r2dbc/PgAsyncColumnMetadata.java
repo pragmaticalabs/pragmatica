@@ -14,15 +14,15 @@
  *  limitations under the License.
  *
  */
-
 package org.pragmatica.postgres.r2dbc;
+
+import org.pragmatica.postgres.Oid;
+import org.pragmatica.postgres.PgColumn;
 
 import io.r2dbc.spi.ColumnMetadata;
 import io.r2dbc.spi.R2dbcType;
 import io.r2dbc.spi.Type;
 
-import org.pragmatica.postgres.Oid;
-import org.pragmatica.postgres.PgColumn;
 
 /// R2DBC [ColumnMetadata] backed by a postgres-async [PgColumn].
 ///

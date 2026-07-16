@@ -1,15 +1,16 @@
 package org.pragmatica.jbct.lint.cst.rules;
 
+import java.util.Set;
+import java.util.stream.Stream;
+
 import org.pragmatica.jbct.lint.Diagnostic;
 import org.pragmatica.jbct.lint.LintContext;
 import org.pragmatica.jbct.lint.cst.CstLintRule;
 import org.pragmatica.jbct.parser.Cursor;
 import org.pragmatica.jbct.parser.RuleKind;
 
-import java.util.Set;
-import java.util.stream.Stream;
-
 import static org.pragmatica.jbct.parser.CstNodes.*;
+
 
 /// JBCT-MIX-01: No I/O operations in domain packages.
 public class CstDomainIoRule implements CstLintRule {
@@ -58,22 +59,25 @@ public class CstDomainIoRule implements CstLintRule {
 
     private boolean isIoImport(Cursor imp) {
         var importText = text(imp);
+
         for (var ioPkg : IO_PACKAGES) {
             if (importText.contains(ioPkg)) {
                 return true;
             }
         }
+
         for (var ioCls : IO_CLASSES) {
-            if (importText.contains("." + ioCls + ";") ||
-            importText.endsWith("." + ioCls)) {
+            if (importText.contains("." + ioCls + ";") || importText.endsWith("." + ioCls)) {
                 return true;
             }
         }
+
         return false;
     }
 
     private Diagnostic createDiagnostic(Cursor imp, LintContext ctx) {
         var importText = text(imp).trim();
+
         return Diagnostic.diagnostic(RULE_ID,
                                      ctx.severityFor(RULE_ID),
                                      ctx.fileName(),

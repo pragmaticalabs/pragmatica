@@ -13,7 +13,6 @@
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  */
-
 /// Production-ready value objects for common types.
 ///
 /// **Check this package before writing a custom value object.** Hand-rolling a value object that

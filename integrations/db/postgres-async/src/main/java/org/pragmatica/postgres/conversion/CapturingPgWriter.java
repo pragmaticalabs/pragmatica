@@ -1,8 +1,9 @@
 package org.pragmatica.postgres.conversion;
 
+import java.nio.charset.Charset;
+
 import org.pragmatica.postgres.net.PgWriter;
 
-import java.nio.charset.Charset;
 
 /// Single-shot, reusable `PgWriter` implementation. The framework allocates one per
 /// Bind message and resets it between parameters; converters write exactly once and
@@ -41,11 +42,13 @@ final class CapturingPgWriter implements PgWriter {
 
     byte[] bytes() {
         ensureWritten();
+
         return bytes;
     }
 
     boolean isBinary() {
         ensureWritten();
+
         return binary;
     }
 

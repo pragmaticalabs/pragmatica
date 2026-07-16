@@ -11,14 +11,14 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package org.pragmatica.postgres.io.frontend;
+
+import java.nio.ByteBuffer;
+import java.nio.charset.Charset;
 
 import org.pragmatica.postgres.io.IO;
 import org.pragmatica.postgres.message.frontend.Close;
 
-import java.nio.ByteBuffer;
-import java.nio.charset.Charset;
 
 /**
  * See <a href="https://www.postgresql.org/docs/11/protocol-message-formats.html">Postgres message formats</a>
@@ -49,7 +49,7 @@ public class CloseEncoder extends ExtendedQueryEncoder<Close> {
 
     @Override
     protected byte getMessageId() {
-        return (byte) 'C';
+        return (byte)'C';
     }
 
     @Override

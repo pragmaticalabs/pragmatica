@@ -1,10 +1,5 @@
 package org.pragmatica.statemachine;
 
-import org.pragmatica.lang.Option;
-import org.pragmatica.lang.Promise;
-import org.pragmatica.lang.Result;
-import org.pragmatica.lang.Unit;
-
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -14,7 +9,13 @@ import java.util.Set;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 
+import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Unit;
+
 import static org.pragmatica.lang.Option.option;
+
 
 /// Defines the structure of a state machine.
 ///
@@ -35,9 +36,7 @@ public record StateMachineDefinition<S, E, C>(String name,
     /// Finds the first transition matching the given state and event. Guards are NOT consulted here;
     /// callers that need guard-aware selection should filter transitions themselves.
     public Option<Transition<S, E, C>> findTransition(S currentState, E event) {
-        return Option.from(transitions.stream()
-                                      .filter(t -> t.matches(currentState, event))
-                                      .findFirst());
+        return Option.from(transitions.stream().filter(t -> t.matches(currentState, event)).findFirst());
     }
 
     /// Checks if a state is a final state.
@@ -47,18 +46,18 @@ public record StateMachineDefinition<S, E, C>(String name,
 
     /// Gets all possible events from a given state.
     public Set<E> getEventsFrom(S state) {
-        var fromState = transitions.stream()
-                                   .filter(t -> t.fromState()
-                                                 .equals(state));
+        var fromState = transitions.stream().filter(t -> t.fromState()
+                                                          .equals(state));
+
         return fromState.map(Transition::event)
                         .collect(Collectors.toUnmodifiableSet());
     }
 
     /// Gets all possible target states from a given state.
     public Set<S> getTargetStatesFrom(S state) {
-        var fromState = transitions.stream()
-                                   .filter(t -> t.fromState()
-                                                 .equals(state));
+        var fromState = transitions.stream().filter(t -> t.fromState()
+                                                          .equals(state));
+
         return fromState.map(Transition::toState)
                         .collect(Collectors.toUnmodifiableSet());
     }
@@ -79,7 +78,9 @@ public record StateMachineDefinition<S, E, C>(String name,
         private S initialState;
         private final Set<S> finalStates = new HashSet<>();
         private final List<Transition<S, E, C>> transitions = new ArrayList<>();
+
         private final Map<S, Function<TransitionContext<S, E, C>, Promise<Unit>>> entryActions = new HashMap<>();
+
         private final Map<S, Function<TransitionContext<S, E, C>, Promise<Unit>>> exitActions = new HashMap<>();
 
         private Builder(String name) {
@@ -88,21 +89,25 @@ public record StateMachineDefinition<S, E, C>(String name,
 
         public Builder<S, E, C> initialState(S state) {
             this.initialState = state;
+
             return this;
         }
 
         public Builder<S, E, C> finalState(S state) {
             this.finalStates.add(state);
+
             return this;
         }
 
         public Builder<S, E, C> finalStates(Set<S> states) {
             this.finalStates.addAll(states);
+
             return this;
         }
 
         public Builder<S, E, C> transition(Transition<S, E, C> transition) {
             this.transitions.add(transition);
+
             return this;
         }
 
@@ -114,6 +119,7 @@ public record StateMachineDefinition<S, E, C>(String name,
         /// triggering transition's action. Not invoked for self-transitions (fromState == toState).
         public Builder<S, E, C> onEntry(S state, Function<TransitionContext<S, E, C>, Promise<Unit>> action) {
             this.entryActions.put(state, action);
+
             return this;
         }
 
@@ -121,17 +127,17 @@ public record StateMachineDefinition<S, E, C>(String name,
         /// triggering transition's action. Not invoked for self-transitions (fromState == toState).
         public Builder<S, E, C> onExit(S state, Function<TransitionContext<S, E, C>, Promise<Unit>> action) {
             this.exitActions.put(state, action);
+
             return this;
         }
 
         public Result<StateMachineDefinition<S, E, C>> build() {
-            return validate()
-            .map(v -> new StateMachineDefinition<>(name,
-                                                   initialState,
-                                                   Set.copyOf(finalStates),
-                                                   List.copyOf(transitions),
-                                                   Map.copyOf(entryActions),
-                                                   Map.copyOf(exitActions)));
+            return validate().map(v -> new StateMachineDefinition<>(name,
+                                                                    initialState,
+                                                                    Set.copyOf(finalStates),
+                                                                    List.copyOf(transitions),
+                                                                    Map.copyOf(entryActions),
+                                                                    Map.copyOf(exitActions)));
         }
 
         private Result<Builder<S, E, C>> validate() {

@@ -6,6 +6,7 @@ import static org.pragmatica.postgres.conversion.Common.returnError;
 import static org.pragmatica.postgres.util.HexConverter.parseHexBinary;
 import static org.pragmatica.postgres.util.HexConverter.printHexBinary;
 
+
 /**
  * @author Antti Laisi
  */

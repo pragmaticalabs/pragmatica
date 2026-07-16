@@ -13,12 +13,12 @@
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  */
-
 package org.pragmatica.consensus.topology;
 
 import org.pragmatica.lang.utils.Retry.BackoffStrategy;
 
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
+
 
 /// Configuration for connection backoff and node disabling.
 ///

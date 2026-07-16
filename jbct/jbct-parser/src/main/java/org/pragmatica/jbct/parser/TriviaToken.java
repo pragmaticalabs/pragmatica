@@ -2,6 +2,7 @@ package org.pragmatica.jbct.parser;
 
 import org.pragmatica.peg.v6.token.TokenArray;
 
+
 /// View over a single trivia token in a TokenArray. Trivia tokens are produced by the v6
 /// lexer for whitespace runs and comments, and live in the TokenArray inline with regular
 /// tokens (per the `%whitespace` grammar directive). Consumers receive token indices from
@@ -21,12 +22,14 @@ public record TriviaToken(TokenArray tokens, int idx) {
     /// True for `//` and `///` style line comments (KIND_LINE_COMMENT or KIND_DOC_LINE_COMMENT).
     public boolean isLineComment() {
         int k = kind();
+
         return k == TokenArray.KIND_LINE_COMMENT || k == TokenArray.KIND_DOC_LINE_COMMENT;
     }
 
     /// True for `/* … */` and `/** … */` style block comments.
     public boolean isBlockComment() {
         int k = kind();
+
         return k == TokenArray.KIND_BLOCK_COMMENT || k == TokenArray.KIND_DOC_BLOCK_COMMENT;
     }
 
@@ -35,6 +38,7 @@ public record TriviaToken(TokenArray tokens, int idx) {
     /// available for lint rules that care about doc-vs-plain distinction.
     public boolean isDocComment() {
         int k = kind();
+
         return k == TokenArray.KIND_DOC_LINE_COMMENT || k == TokenArray.KIND_DOC_BLOCK_COMMENT;
     }
 

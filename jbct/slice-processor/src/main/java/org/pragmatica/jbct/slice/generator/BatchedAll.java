@@ -2,7 +2,6 @@
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
 // Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
 // See LICENSE in the repository root for full terms.
-
 package org.pragmatica.jbct.slice.generator;
 
 import java.io.PrintWriter;
@@ -10,6 +9,7 @@ import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Queue;
+
 
 /// Batches a `<Monad>.all(...)` assembly so it stays within the core combinator ceiling.
 ///
@@ -52,21 +52,25 @@ final class BatchedAll {
 
         var topArgs = new ArrayList<String>();
         var topBinds = new ArrayList<String>();
+
         for (var root : roots) {
             topArgs.add(root.varName);
             topBinds.add(root.bindName);
         }
+
         out.println("        return Promise.all(" + String.join(", ", topArgs) + ")");
         out.println("        ." + outerChain + "((" + String.join(", ", topBinds) + ") ->");
-
         var order = bfsGroups(roots);
+
         for (var i = 0; i < order.size(); i++) {
             var group = order.get(i);
             var opener = (i == order.size() - 1)
                          ? " -> {"
                          : " ->";
+
             out.println("            " + group.bindName + ".map((" + String.join(", ", boundNames(group)) + ")" + opener);
         }
+
         return order.size() + 1;
     }
 
@@ -81,30 +85,36 @@ final class BatchedAll {
     /// carrier), and the cascade rebinds every component for `<typeName>.<factoryMethod>(...)`.
     /// `suffix` (e.g. `.async()`) is appended verbatim.
     static String renderConfigExpression(String monad,
-                                          List<String> memberExprs,
-                                          List<String> leafNames,
-                                          String typeName,
-                                          String factoryMethod,
-                                          String suffix) {
+                                         List<String> memberExprs,
+                                         List<String> leafNames,
+                                         String typeName,
+                                         String factoryMethod,
+                                         String suffix) {
         var roots = plan(memberExprs, leafNames);
-
         var topArgs = new ArrayList<String>();
         var topBinds = new ArrayList<String>();
+
         for (var root : roots) {
             topArgs.add(inlineExpr(monad, root));
             topBinds.add(root.bindName);
         }
 
         var sb = new StringBuilder();
+
         sb.append(monad).append(".all(").append(String.join(", ", topArgs)).append(')');
         sb.append(".flatMap((").append(String.join(", ", topBinds)).append(") -> ");
-
         var order = bfsGroups(roots);
+
         for (var group : order) {
             sb.append(group.bindName).append(".map((").append(String.join(", ", boundNames(group))).append(") -> ");
         }
-        sb.append(typeName).append('.').append(factoryMethod)
-          .append('(').append(String.join(", ", leafNames)).append(')');
+
+        sb.append(typeName)
+          .append('.')
+          .append(factoryMethod)
+          .append('(')
+          .append(String.join(", ", leafNames))
+          .append(')');
         sb.append(")".repeat(order.size() + 1));
         sb.append(suffix);
 
@@ -117,44 +127,54 @@ final class BatchedAll {
                 emitPartDecl(out, monad, inner);
             }
         }
+
         out.println("        var " + group.varName + " = " + monad + ".all(");
         var members = memberExprs(group);
+
         for (var i = 0; i < members.size(); i++) {
             var comma = (i < members.size() - 1)
                         ? ","
                         : "";
+
             out.println("            " + members.get(i) + comma);
         }
+
         out.println("        ).id();");
     }
 
     private static String inlineExpr(String monad, Group group) {
         var members = new ArrayList<String>();
+
         for (var child : group.children) {
             members.add(child instanceof Leaf leaf
                         ? leaf.expr()
                         : inlineExpr(monad, (Group) child));
         }
+
         return monad + ".all(" + String.join(", ", members) + ").id()";
     }
 
     private static List<String> memberExprs(Group group) {
         var members = new ArrayList<String>();
+
         for (var child : group.children) {
             members.add(child instanceof Leaf leaf
                         ? leaf.expr()
                         : ((Group) child).varName);
         }
+
         return members;
     }
 
     private static List<String> boundNames(Group group) {
         var names = new ArrayList<String>();
+
         for (var child : group.children) {
             names.add(child instanceof Leaf leaf
                       ? leaf.name()
                       : ((Group) child).bindName);
         }
+
         return names;
     }
 
@@ -163,24 +183,34 @@ final class BatchedAll {
     /// parts). For N &gt; 15 the first pass always yields &gt;=2 groups, so the roots are always groups.
     private static List<Group> plan(List<String> exprs, List<String> leafNames) {
         var nodes = new ArrayList<Node>();
+
         for (var i = 0; i < exprs.size(); i++) {
             nodes.add(new Leaf(exprs.get(i), leafNames.get(i)));
         }
+
         while (nodes.size() > MAX_FLAT_ARITY) {
             var grouped = new ArrayList<Node>();
+
             for (var i = 0; i < nodes.size(); i += MAX_FLAT_ARITY) {
-                grouped.add(new Group(new ArrayList<>(nodes.subList(i, Math.min(i + MAX_FLAT_ARITY, nodes.size())))));
+                grouped.add(new Group(new ArrayList<>(nodes.subList(i,
+                                                                    Math.min(i + MAX_FLAT_ARITY, nodes.size())))));
             }
+
             nodes = grouped;
         }
+
         var roots = new ArrayList<Group>();
+
         for (var node : nodes) {
             roots.add((Group) node);
         }
+
         var counter = new int[]{0};
+
         for (var root : roots) {
             assignNames(root, counter);
         }
+
         return roots;
     }
 
@@ -190,7 +220,9 @@ final class BatchedAll {
                 assignNames(inner, counter);
             }
         }
+
         var k = ++counter[0];
+
         group.varName = "part" + k;
         group.bindName = "t" + k;
     }
@@ -198,8 +230,10 @@ final class BatchedAll {
     private static List<Group> bfsGroups(List<Group> roots) {
         var order = new ArrayList<Group>();
         Queue<Group> queue = new ArrayDeque<>(roots);
+
         while (!queue.isEmpty()) {
             var group = queue.poll();
+
             order.add(group);
             for (var child : group.children) {
                 if (child instanceof Group inner) {
@@ -207,6 +241,7 @@ final class BatchedAll {
                 }
             }
         }
+
         return order;
     }
 

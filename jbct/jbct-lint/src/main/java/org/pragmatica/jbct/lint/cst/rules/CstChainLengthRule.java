@@ -1,13 +1,14 @@
 package org.pragmatica.jbct.lint.cst.rules;
 
+import java.util.stream.Stream;
+
 import org.pragmatica.jbct.lint.Diagnostic;
 import org.pragmatica.jbct.lint.LintContext;
 import org.pragmatica.jbct.lint.cst.CstLintRule;
 import org.pragmatica.jbct.parser.Cursor;
 
-import java.util.stream.Stream;
-
 import static org.pragmatica.jbct.parser.CstNodes.*;
+
 
 /// JBCT-SEQ-01: Chain length limit (2-5 steps).
 public class CstChainLengthRule implements CstLintRule {
@@ -26,8 +27,8 @@ public class CstChainLengthRule implements CstLintRule {
         }
         // Find statements with long method chains
         return findAllStatements(root).stream()
-                      .filter(stmt -> countChainedCalls(stmt) > MAX_CHAIN_LENGTH)
-                      .map(stmt -> createDiagnostic(stmt, ctx));
+                                .filter(stmt -> countChainedCalls(stmt) > MAX_CHAIN_LENGTH)
+                                .map(stmt -> createDiagnostic(stmt, ctx));
     }
 
     private int countChainedCalls(Cursor stmt) {
@@ -36,17 +37,22 @@ public class CstChainLengthRule implements CstLintRule {
         int depth = 0;
         boolean inString = false;
         boolean inChar = false;
+
         for (int i = 0; i < stmtText.length(); i++) {
             char c = stmtText.charAt(i);
+
             if (c == '"' && !inChar && (i == 0 || stmtText.charAt(i - 1) != '\\')) {
                 inString = !inString;
                 continue;
             }
+
             if (c == '\'' && !inString && (i == 0 || stmtText.charAt(i - 1) != '\\')) {
                 inChar = !inChar;
                 continue;
             }
+
             if (inString || inChar) continue;
+
             if (c == '(' || c == '[') {
                 depth++;
             } else if (c == ')' || c == ']') {
@@ -57,20 +63,27 @@ public class CstChainLengthRule implements CstLintRule {
                 }
             }
         }
+
         return count;
     }
 
     private boolean isFollowedByMethodCall(String text, int dotIndex) {
         int j = dotIndex + 1;
+
         while (j < text.length() && Character.isWhitespace(text.charAt(j))) j++;
+
         if (j >= text.length() || !Character.isJavaIdentifierStart(text.charAt(j))) return false;
+
         while (j < text.length() && Character.isJavaIdentifierPart(text.charAt(j))) j++;
+
         while (j < text.length() && Character.isWhitespace(text.charAt(j))) j++;
+
         return j < text.length() && text.charAt(j) == '(';
     }
 
     private Diagnostic createDiagnostic(Cursor stmt, LintContext ctx) {
         var chainLength = countChainedCalls(stmt);
+
         return Diagnostic.diagnostic(RULE_ID,
                                      ctx.severityFor(RULE_ID),
                                      ctx.fileName(),

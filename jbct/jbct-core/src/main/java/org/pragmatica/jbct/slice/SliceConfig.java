@@ -1,10 +1,11 @@
 package org.pragmatica.jbct.slice;
 
+import java.nio.file.Path;
+
 import org.pragmatica.config.toml.TomlParser;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 
-import java.nio.file.Path;
 
 /// Slice configuration loaded from {SliceName}.toml files.
 /// Located in src/main/resources/slices/
@@ -32,14 +33,13 @@ public record SliceConfig(BlueprintConfig blueprint) {
 
     /// Load slice config from a TOML file.
     public static Result<SliceConfig> load(Path configPath) {
-        return TomlParser.parseFile(configPath)
-                         .map(SliceConfig::fromTomlDocument);
+        return TomlParser.parseFile(configPath).map(SliceConfig::fromTomlDocument);
     }
 
     private static SliceConfig fromTomlDocument(org.pragmatica.config.toml.TomlDocument toml) {
-        var instances = toml.getInt("blueprint", "instances")
-                            .or(3);
+        var instances = toml.getInt("blueprint", "instances").or(3);
         var blueprint = BlueprintConfig.blueprintConfig(instances);
+
         return sliceConfig(blueprint);
     }
 }

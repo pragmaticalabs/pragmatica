@@ -1,19 +1,20 @@
 package org.pragmatica.jbct.maven;
 
-import org.pragmatica.jbct.format.JbctFormatter;
-import org.pragmatica.jbct.lint.Diagnostic;
-import org.pragmatica.jbct.lint.JbctLinter;
-import org.pragmatica.jbct.shared.SourceFile;
-
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
 
+import org.pragmatica.jbct.format.JbctFormatter;
+import org.pragmatica.jbct.lint.Diagnostic;
+import org.pragmatica.jbct.lint.JbctLinter;
+import org.pragmatica.jbct.shared.SourceFile;
+
 import org.apache.maven.plugin.MojoExecutionException;
 import org.apache.maven.plugin.MojoFailureException;
 import org.apache.maven.plugins.annotations.LifecyclePhase;
 import org.apache.maven.plugins.annotations.Mojo;
+
 
 /// Maven goal combining format check and lint (for CI).
 @Mojo(name = "check", defaultPhase = LifecyclePhase.VERIFY)
@@ -23,15 +24,19 @@ public class CheckMojo extends AbstractJbctMojo {
         if (shouldSkip("check")) {
             return;
         }
+
         var jbctConfig = loadConfig();
         var formatter = JbctFormatter.jbctFormatter(jbctConfig.formatter());
         var context = createLintContext(jbctConfig);
         var linter = JbctLinter.jbctLinter(context);
         var filesToProcess = collectJavaFiles(jbctConfig.files());
+
         if (filesToProcess.isEmpty()) {
             getLog().info("No Java files found.");
+
             return;
         }
+
         getLog().info("Running JBCT check on " + filesToProcess.size() + " Java file(s)");
         // Format check
         var needsFormatting = new ArrayList<Path>();
@@ -41,6 +46,7 @@ public class CheckMojo extends AbstractJbctMojo {
         var lintErrors = new AtomicInteger(0);
         var warnings = new AtomicInteger(0);
         var parseErrors = new AtomicInteger(0);
+
         for (var file : filesToProcess) {
             checkFormat(file, formatter, needsFormatting, formatErrors);
             checkLint(file, linter, allDiagnostics, lintErrors, warnings, parseErrors);
@@ -61,40 +67,49 @@ public class CheckMojo extends AbstractJbctMojo {
             }
         }
         // Summary
-        getLog()
-        .info("Check results: " + needsFormatting.size() + " format issue(s), " + lintErrors.get() + " lint error(s), " + warnings.get()
-              + " warning(s)");
+        getLog().info("Check results: " + needsFormatting.size()
+                     + " format issue(s), " + lintErrors.get()
+                     + " lint error(s), " + warnings.get()
+                     + " warning(s)");
         // Fail build if needed
         var hasFailures = false;
         var failures = new ArrayList<String>();
+
         if (!needsFormatting.isEmpty()) {
             var fileList = new StringBuilder();
+
             for (var file : needsFormatting) {
                 fileList.append("\n  ").append(file);
             }
+
             failures.add(needsFormatting.size() + " file(s) need formatting:" + fileList);
             hasFailures = true;
         }
+
         if (formatErrors.get() > 0) {
             failures.add(formatErrors.get() + " format check error(s)");
             hasFailures = true;
         }
+
         if (parseErrors.get() > 0) {
             failures.add(parseErrors.get() + " parse error(s)");
             hasFailures = true;
         }
+
         if (lintErrors.get() > 0) {
             failures.add(lintErrors.get() + " lint error(s)");
             hasFailures = true;
         }
-        if (jbctConfig.lint()
-                      .failOnWarning() && warnings.get() > 0) {
+
+        if (jbctConfig.lint().failOnWarning() && warnings.get() > 0) {
             failures.add(warnings.get() + " warning(s) (failOnWarning is enabled)");
             hasFailures = true;
         }
+
         if (hasFailures) {
             throw new MojoFailureException("JBCT check failed: " + String.join(", ", failures));
         }
+
         getLog().info("JBCT check passed.");
     }
 
@@ -103,8 +118,8 @@ public class CheckMojo extends AbstractJbctMojo {
                   .flatMap(formatter::isFormatted)
                   .onSuccess(isFormatted -> {
                       if (!isFormatted) {
-                          needsFormatting.add(file);
-                      }
+                      needsFormatting.add(file);
+                  }
                   })
                   .onFailure(cause -> {
                                  errors.incrementAndGet();
@@ -123,12 +138,12 @@ public class CheckMojo extends AbstractJbctMojo {
                   .onSuccess(diagnostics -> {
                                  allDiagnostics.addAll(diagnostics);
                                  for (var d : diagnostics) {
-                                     switch (d.severity()) {
+                                 switch (d.severity()) {
             case ERROR -> errors.incrementAndGet();
             case WARNING -> warnings.incrementAndGet();
             default -> {}
         }
-                                 }
+                             }
                              })
                   .onFailure(cause -> {
                                  parseErrors.incrementAndGet();

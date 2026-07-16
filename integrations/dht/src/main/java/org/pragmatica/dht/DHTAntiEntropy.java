@@ -13,15 +13,7 @@
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  */
-
 package org.pragmatica.dht;
-
-import org.pragmatica.consensus.NodeId;
-import org.pragmatica.lang.Contract;
-import org.pragmatica.lang.Option;
-import org.pragmatica.lang.io.TimeSpan;
-import org.pragmatica.lang.utils.SharedScheduler;
-import org.pragmatica.utility.IdGenerator;
 
 import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
@@ -31,15 +23,22 @@ import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
+import org.pragmatica.consensus.NodeId;
+import org.pragmatica.lang.Contract;
+import org.pragmatica.lang.Option;
+import org.pragmatica.lang.io.TimeSpan;
+import org.pragmatica.lang.utils.SharedScheduler;
+import org.pragmatica.utility.IdGenerator;
+
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
 
 /// Periodic anti-entropy process that synchronizes replicas.
 /// Computes partition digests and exchanges them with peer nodes
 /// to detect and repair inconsistencies.
 public final class DHTAntiEntropy {
     private static final Logger log = LoggerFactory.getLogger(DHTAntiEntropy.class);
-
     /// Default anti-entropy synchronization interval.
     public static final TimeSpan DEFAULT_ANTI_ENTROPY_INTERVAL = TimeSpan.timeSpan(30).seconds();
 
@@ -50,9 +49,10 @@ public final class DHTAntiEntropy {
     private final DHTNetwork network;
     private final DHTConfig config;
     private final TimeSpan antiEntropyInterval;
-    private final AtomicReference<Option<ScheduledFuture<?>>> scheduledTask = new AtomicReference<>(Option.none());
-    private final AtomicBoolean running = new AtomicBoolean(false);
 
+    private final AtomicReference<Option<ScheduledFuture<?>>> scheduledTask = new AtomicReference<>(Option.none());
+
+    private final AtomicBoolean running = new AtomicBoolean(false);
     /// Pending digest comparisons indexed by correlation ID.
     private final ConcurrentHashMap<String, PendingDigest> pendingDigests = new ConcurrentHashMap<>();
 
@@ -78,7 +78,10 @@ public final class DHTAntiEntropy {
     /// @param network             cluster network for sending digest requests
     /// @param config              DHT configuration
     /// @param antiEntropyInterval interval between anti-entropy synchronization rounds
-    public static DHTAntiEntropy dhtAntiEntropy(DHTNode node, DHTNetwork network, DHTConfig config, TimeSpan antiEntropyInterval) {
+    public static DHTAntiEntropy dhtAntiEntropy(DHTNode node,
+                                                DHTNetwork network,
+                                                DHTConfig config,
+                                                TimeSpan antiEntropyInterval) {
         return new DHTAntiEntropy(node, network, config, antiEntropyInterval);
     }
 
@@ -88,6 +91,7 @@ public final class DHTAntiEntropy {
         if (!running.compareAndSet(false, true)) {
             return;
         }
+
         scheduledTask.set(Option.some(SharedScheduler.scheduleAtFixedRate(this::runAntiEntropy, antiEntropyInterval)));
         log.info("DHT anti-entropy started (interval: {}s)", antiEntropyInterval.millis() / 1000);
     }
@@ -98,8 +102,8 @@ public final class DHTAntiEntropy {
         if (!running.compareAndSet(true, false)) {
             return;
         }
-        scheduledTask.getAndSet(Option.none())
-                     .onPresent(task -> task.cancel(false));
+
+        scheduledTask.getAndSet(Option.none()).onPresent(task -> task.cancel(false));
         log.info("DHT anti-entropy stopped");
     }
 
@@ -107,7 +111,8 @@ public final class DHTAntiEntropy {
         if (config.isFullReplication()) {
             return;
         }
-        try{
+
+        try {
             synchronizePartitions();
         } catch (Exception e) {
             log.error("Anti-entropy cycle failed", e);
@@ -115,26 +120,29 @@ public final class DHTAntiEntropy {
     }
 
     private void synchronizePartitions() {
-        var replicationFactor = config.effectiveReplicationFactor(node.ring()
-                                                                      .nodeCount());
+        var replicationFactor = config.effectiveReplicationFactor(node.ring().nodeCount());
+
         for (int p = 0; p < Partition.MAX_PARTITIONS; p++) {
             var partitionKey = ("partition:" + p).getBytes(StandardCharsets.UTF_8);
-            var nodes = node.ring()
-                            .nodesFor(partitionKey, replicationFactor);
+            var nodes = node.ring().nodesFor(partitionKey, replicationFactor);
+
             if (!nodes.contains(node.nodeId())) {
                 continue;
             }
+
             sendDigestRequests(p, nodes);
         }
     }
 
     private void sendDigestRequests(int partitionIndex, List<NodeId> nodes) {
         var partition = Partition.at(partitionIndex);
+
         node.storage()
             .entriesForPartition(node.ring(),
                                  partition)
             .onSuccess(entries -> {
                            var digest = computeDigest(entries);
+
                            sendDigestToPeers(partitionIndex, nodes, digest);
                        });
     }
@@ -148,7 +156,9 @@ public final class DHTAntiEntropy {
             if (peer.equals(node.nodeId())) {
                 continue;
             }
+
             var correlationId = IdGenerator.generate();
+
             pendingDigests.put(correlationId, new PendingDigest(peer, partitionIndex, localDigest));
             network.send(peer,
                          new DHTMessage.DigestRequest(correlationId, node.nodeId(), partitionIndex, partitionIndex));
@@ -159,17 +169,22 @@ public final class DHTAntiEntropy {
     /// Compares local vs remote digest; if they differ, requests migration data.
     @Contract
     public void onDigestResponse(DHTMessage.DigestResponse response) {
-        Option.option(pendingDigests.remove(response.requestId()))
-              .onPresent(pending -> handleDigestComparison(pending, response));
+        Option.option(pendingDigests.remove(response.requestId())).onPresent(pending -> handleDigestComparison(pending,
+                                                                                                               response));
     }
 
     private void handleDigestComparison(PendingDigest pending, DHTMessage.DigestResponse response) {
         if (Arrays.equals(pending.localDigest(), response.digest())) {
-            log.debug("Partition {} in sync with {}", pending.partitionIndex(), pending.peer().id());
+            log.debug("Partition {} in sync with {}",
+                      pending.partitionIndex(),
+                      pending.peer().id());
+
             return;
         }
+
         log.info("Partition {} diverged from {}, requesting migration data",
-                 pending.partitionIndex(), pending.peer().id());
+                 pending.partitionIndex(),
+                 pending.peer().id());
         requestMigrationData(pending.peer(), pending.partitionIndex());
     }
 
@@ -180,7 +195,8 @@ public final class DHTAntiEntropy {
     public void onMigrationDataResponse(DHTMessage.MigrationDataResponse response) {
         applyMigrationEntries(response);
         if (response.ackRequested()) {
-            network.send(response.sender(), new DHTMessage.MigrationDataAck(response.requestId(), node.nodeId()));
+            network.send(response.sender(),
+                         new DHTMessage.MigrationDataAck(response.requestId(), node.nodeId()));
         }
     }
 
@@ -188,12 +204,16 @@ public final class DHTAntiEntropy {
         if (response.entries().isEmpty()) {
             return;
         }
-        log.info("Received {} entries from {} for repair", response.entries().size(), response.sender().id());
+
+        log.info("Received {} entries from {} for repair",
+                 response.entries().size(),
+                 response.sender().id());
         node.applyMigrationData(response.entries());
     }
 
     private void requestMigrationData(NodeId peer, int partitionIndex) {
         var correlationId = IdGenerator.generate();
+
         network.send(peer,
                      new DHTMessage.MigrationDataRequest(correlationId, node.nodeId(), partitionIndex, partitionIndex));
     }
@@ -202,5 +222,4 @@ public final class DHTAntiEntropy {
     int pendingDigestCount() {
         return pendingDigests.size();
     }
-
 }

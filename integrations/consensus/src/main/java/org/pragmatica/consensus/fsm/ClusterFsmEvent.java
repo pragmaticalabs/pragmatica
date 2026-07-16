@@ -4,13 +4,13 @@
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
  */
-
 package org.pragmatica.consensus.fsm;
+
+import java.util.List;
 
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Option;
 
-import java.util.List;
 
 /// Shared cluster-lifecycle event vocabulary for FSMs that react to cluster state changes.
 ///

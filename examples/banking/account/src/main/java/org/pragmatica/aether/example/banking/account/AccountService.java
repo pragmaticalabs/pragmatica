@@ -1,5 +1,8 @@
 package org.pragmatica.aether.example.banking.account;
 
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+
 import org.pragmatica.aether.example.banking.shared.Account;
 import org.pragmatica.aether.example.banking.shared.AccountId;
 import org.pragmatica.aether.example.banking.shared.Balance;
@@ -13,10 +16,8 @@ import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 
-import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
-
 import static org.pragmatica.lang.Option.option;
+
 
 /// Account management service.
 ///
@@ -29,7 +30,6 @@ import static org.pragmatica.lang.Option.option;
 ///   - @Sql resource dependency for factory injection
 @Slice
 public interface AccountService {
-
     // === Errors ===
     sealed interface AccountError extends Cause {
         record NotFound(AccountId accountId) implements AccountError {
@@ -50,13 +50,13 @@ public interface AccountService {
             @Override
             public String message() {
                 return "Insufficient funds in " + accountId.value()
-                       + ": requested " + requested + ", available " + available;
+                     + ": requested " + requested
+                     + ", available " + available;
             }
         }
     }
 
     // === Operations ===
-
     /// Open a new bank account. 3-param method.
     Promise<Account> openAccount(String holderName, String email, Currency currency);
 
@@ -83,53 +83,47 @@ public interface AccountService {
         return new accountService(db, new ConcurrentHashMap<>(), new ConcurrentHashMap<>());
     }
 
-    record accountService(SqlConnector db,
-                          Map<AccountId, Account> accounts,
-                          Map<AccountId, Balance> balances) implements AccountService {
-
+    record accountService(SqlConnector db, Map<AccountId, Account> accounts, Map<AccountId, Balance> balances) implements AccountService {
         @Override
         public Promise<Account> openAccount(String holderName, String email, Currency currency) {
             var id = AccountId.generate();
             var account = Account.account(id, holderName, email, currency);
+
             accounts.put(id, account);
             balances.put(id, Balance.zero(currency));
+
             return Promise.success(account);
         }
 
         @Override
         public Promise<Account> getAccount(AccountId accountId) {
-            return option(accounts.get(accountId))
-                .map(Promise::success)
-                .or(() -> new AccountError.NotFound(accountId).promise());
+            return option(accounts.get(accountId)).map(Promise::success)
+                         .or(() -> new AccountError.NotFound(accountId).promise());
         }
 
         @Override
         public Promise<Balance> getBalance(AccountId accountId) {
-            return option(balances.get(accountId))
-                .map(Promise::success)
-                .or(() -> new AccountError.NotFound(accountId).promise());
+            return option(balances.get(accountId)).map(Promise::success)
+                         .or(() -> new AccountError.NotFound(accountId).promise());
         }
 
         @Override
         public Promise<Unit> closeAccount(AccountId accountId) {
-            return getAccount(accountId)
-                .flatMap(account -> ensureActive(accountId, account))
-                .map(account -> markClosed(accountId, account));
+            return getAccount(accountId).flatMap(account -> ensureActive(accountId, account))
+                             .map(account -> markClosed(accountId, account));
         }
 
         @Override
         public Promise<Unit> credit(AccountId accountId, Money amount) {
-            return getBalance(accountId)
-                .flatMap(balance -> addToBalance(balance, amount))
-                .map(newBalance -> storeBalance(accountId, newBalance));
+            return getBalance(accountId).flatMap(balance -> addToBalance(balance, amount))
+                             .map(newBalance -> storeBalance(accountId, newBalance));
         }
 
         @Override
         public Promise<Unit> debit(AccountId accountId, Money amount) {
-            return getBalance(accountId)
-                .flatMap(balance -> ensureSufficientFunds(accountId, balance, amount))
-                .flatMap(balance -> subtractFromBalance(balance, amount))
-                .map(newBalance -> storeBalance(accountId, newBalance));
+            return getBalance(accountId).flatMap(balance -> ensureSufficientFunds(accountId, balance, amount))
+                             .flatMap(balance -> subtractFromBalance(balance, amount))
+                             .map(newBalance -> storeBalance(accountId, newBalance));
         }
 
         private static Promise<Account> ensureActive(AccountId accountId, Account account) {
@@ -140,19 +134,23 @@ public interface AccountService {
 
         private Unit markClosed(AccountId accountId, Account account) {
             accounts.compute(accountId, (_, _) -> account.withStatus(Account.AccountStatus.CLOSED));
+
             return Unit.unit();
         }
 
         private static Promise<Balance> addToBalance(Balance balance, Money amount) {
             return balance.available()
                           .add(amount)
-                          .map(newAvailable -> Balance.balance(newAvailable, balance.pending()))
+                          .map(newAvailable -> Balance.balance(newAvailable,
+                                                               balance.pending()))
                           .async();
         }
 
         private static Promise<Balance> ensureSufficientFunds(AccountId accountId, Balance balance, Money amount) {
             var available = balance.available();
-            return available.amount().compareTo(amount.amount()) >= 0
+
+            return available.amount()
+                            .compareTo(amount.amount()) >= 0
                    ? Promise.success(balance)
                    : new AccountError.InsufficientFunds(accountId, amount, available).promise();
         }
@@ -160,12 +158,14 @@ public interface AccountService {
         private static Promise<Balance> subtractFromBalance(Balance balance, Money amount) {
             return balance.available()
                           .subtract(amount)
-                          .map(newAvailable -> Balance.balance(newAvailable, balance.pending()))
+                          .map(newAvailable -> Balance.balance(newAvailable,
+                                                               balance.pending()))
                           .async();
         }
 
         private Unit storeBalance(AccountId accountId, Balance newBalance) {
             balances.put(accountId, newBalance);
+
             return Unit.unit();
         }
     }

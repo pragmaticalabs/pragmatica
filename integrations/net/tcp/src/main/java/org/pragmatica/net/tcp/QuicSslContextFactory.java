@@ -13,7 +13,6 @@
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  */
-
 package org.pragmatica.net.tcp;
 
 import java.io.ByteArrayInputStream;
@@ -29,19 +28,20 @@ import java.security.spec.PKCS8EncodedKeySpec;
 import java.nio.file.Path;
 import java.util.Base64;
 
-import org.bouncycastle.asn1.pkcs.PrivateKeyInfo;
-import org.bouncycastle.openssl.PEMKeyPair;
-import org.bouncycastle.openssl.PEMParser;
-import org.bouncycastle.openssl.jcajce.JcaPEMKeyConverter;
+import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Result;
 
 import io.netty.handler.codec.quic.QuicSslContext;
 import io.netty.handler.codec.quic.QuicSslContextBuilder;
 import io.netty.handler.ssl.util.InsecureTrustManagerFactory;
 import io.netty.handler.ssl.util.SelfSignedCertificate;
-import org.pragmatica.lang.Option;
-import org.pragmatica.lang.Result;
+import org.bouncycastle.asn1.pkcs.PrivateKeyInfo;
+import org.bouncycastle.openssl.PEMKeyPair;
+import org.bouncycastle.openssl.PEMParser;
+import org.bouncycastle.openssl.jcajce.JcaPEMKeyConverter;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
 
 /// Factory for creating QUIC-specific SSL contexts from TLS configuration.
 ///
@@ -70,13 +70,13 @@ public final class QuicSslContextFactory {
     /// @return QUIC SSL context or error
     public static Result<QuicSslContext> createServer(TlsConfig config, String... applicationProtocols) {
         return switch (config) {
-            case TlsConfig.Server(var identity, var clientAuth) ->
-                buildServerContext(identity, clientAuth, applicationProtocols);
-            case TlsConfig.Mutual(var identity, var trust) ->
-                buildMutualServerContext(identity, trust, applicationProtocols);
-            case TlsConfig.Client _ ->
-                TlsError.wrongMode("Cannot create QUIC server context from Client config")
-                        .result();
+            case TlsConfig.Server(var identity, var clientAuth) -> buildServerContext(identity,
+                                                                                      clientAuth,
+                                                                                      applicationProtocols);
+            case TlsConfig.Mutual(var identity, var trust) -> buildMutualServerContext(identity,
+                                                                                       trust,
+                                                                                       applicationProtocols);
+            case TlsConfig.Client _ -> TlsError.wrongMode("Cannot create QUIC server context from Client config").result();
         };
     }
 
@@ -102,8 +102,7 @@ public final class QuicSslContextFactory {
     private static Result<QuicSslContext> loadIdentityAndBuild(TlsConfig.Identity identity,
                                                                Option<TlsConfig.Trust> trust,
                                                                String[] applicationProtocols) {
-        return loadKeyMaterial(identity)
-            .flatMap(keyMaterial -> buildContext(keyMaterial, trust, applicationProtocols));
+        return loadKeyMaterial(identity).flatMap(keyMaterial -> buildContext(keyMaterial, trust, applicationProtocols));
     }
 
     @SuppressWarnings("JBCT-UTIL-01")
@@ -112,27 +111,31 @@ public final class QuicSslContextFactory {
                                                        String[] applicationProtocols) {
         try {
             var builder = configureIdentity(keyMaterial);
+
             trust.onPresent(t -> configureTrust(builder, t));
             if (applicationProtocols.length > 0) {
                 builder.applicationProtocols(applicationProtocols);
             }
+
             return Result.success(builder.build());
         } catch (Exception e) {
             return new TlsError.ContextBuildFailed(e).result();
         }
     }
 
-    @SuppressWarnings("JBCT-NULL-01") // Netty API requires nullable password parameter
+    @SuppressWarnings("JBCT-NULL-01")  // Netty API requires nullable password parameter
     private static QuicSslContextBuilder configureIdentity(KeyMaterial keyMaterial) {
         return switch (keyMaterial) {
-            case KeyMaterial.FromFile(var certFile, var keyFile, var password) ->
-                QuicSslContextBuilder.forServer(keyFile, password.or((String) null), certFile);
-            case KeyMaterial.FromCerts(var key, var password, var chain) ->
-                QuicSslContextBuilder.forServer(key, password.or((String) null), chain);
+            case KeyMaterial.FromFile(var certFile, var keyFile, var password) -> QuicSslContextBuilder.forServer(keyFile,
+                                                                                                                  password.or((String) null),
+                                                                                                                  certFile);
+            case KeyMaterial.FromCerts(var key, var password, var chain) -> QuicSslContextBuilder.forServer(key,
+                                                                                                            password.or((String) null),
+                                                                                                            chain);
         };
     }
 
-    @SuppressWarnings("JBCT-PAT-01") // Switch over sealed trust variants
+    @SuppressWarnings("JBCT-PAT-01")  // Switch over sealed trust variants
     private static void configureTrust(QuicSslContextBuilder builder, TlsConfig.Trust trust) {
         switch (trust) {
             case TlsConfig.Trust.SystemDefault() -> {}
@@ -150,6 +153,7 @@ public final class QuicSslContextFactory {
         try {
             var factory = CertificateFactory.getInstance("X.509");
             var cert = (X509Certificate) factory.generateCertificate(new ByteArrayInputStream(caPem));
+
             builder.trustManager(cert);
         } catch (Exception e) {
             log.error("Failed to parse CA certificate from PEM bytes: {}", e.getMessage());
@@ -170,6 +174,7 @@ public final class QuicSslContextFactory {
                                                                 String... applicationProtocols) {
         var identity = new TlsConfig.Identity.FromProvider(bundle.certificatePem(), bundle.privateKeyPem());
         var trust = new TlsConfig.Trust.FromCaBytes(bundle.caCertificatePem());
+
         return loadIdentityAndBuild(identity, Option.some(trust), applicationProtocols);
     }
 
@@ -185,11 +190,11 @@ public final class QuicSslContextFactory {
     /// Create a QUIC client SSL context from a [CertificateBundle] with ALPN application protocols.
     public static Result<QuicSslContext> createClientFromBundle(org.pragmatica.net.tcp.security.CertificateBundle bundle,
                                                                 String... applicationProtocols) {
-        return buildClientContext(new TlsConfig.Trust.FromCaBytes(bundle.caCertificatePem()), applicationProtocols);
+        return buildClientContext(new TlsConfig.Trust.FromCaBytes(bundle.caCertificatePem()),
+                                  applicationProtocols);
     }
 
     // ===== Client Context =====
-
     /// Create a QUIC client SSL context from TLS configuration.
     ///
     /// @param config TLS configuration (must be Client or Mutual mode)
@@ -204,9 +209,7 @@ public final class QuicSslContextFactory {
         return switch (config) {
             case TlsConfig.Client(var trust, _) -> buildClientContext(trust, applicationProtocols);
             case TlsConfig.Mutual(_, var trust) -> buildClientContext(trust, applicationProtocols);
-            case TlsConfig.Server _ ->
-                TlsError.wrongMode("Cannot create QUIC client context from Server config")
-                        .result();
+            case TlsConfig.Server _ -> TlsError.wrongMode("Cannot create QUIC client context from Server config").result();
         };
     }
 
@@ -217,9 +220,8 @@ public final class QuicSslContextFactory {
     public static Result<QuicSslContext> createInsecureClient() {
         try {
             log.warn("Creating insecure QUIC client context - FOR DEVELOPMENT ONLY!");
-            var context = QuicSslContextBuilder.forClient()
-                                               .trustManager(InsecureTrustManagerFactory.INSTANCE)
-                                               .build();
+            var context = QuicSslContextBuilder.forClient().trustManager(InsecureTrustManagerFactory.INSTANCE).build();
+
             return Result.success(context);
         } catch (Exception e) {
             return new TlsError.ContextBuildFailed(e).result();
@@ -230,10 +232,12 @@ public final class QuicSslContextFactory {
     private static Result<QuicSslContext> buildClientContext(TlsConfig.Trust trust, String[] applicationProtocols) {
         try {
             var builder = QuicSslContextBuilder.forClient();
+
             configureTrust(builder, trust);
             if (applicationProtocols.length > 0) {
                 builder.applicationProtocols(applicationProtocols);
             }
+
             return Result.success(builder.build());
         } catch (Exception e) {
             return new TlsError.ContextBuildFailed(e).result();
@@ -243,44 +247,45 @@ public final class QuicSslContextFactory {
     // ===== Key Material =====
     private sealed interface KeyMaterial {
         record FromFile(java.io.File certFile, java.io.File keyFile, Option<String> password) implements KeyMaterial {}
-        record FromCerts(java.security.PrivateKey key,
-                         Option<String> password,
-                         X509Certificate[] chain) implements KeyMaterial {}
+
+        record FromCerts(java.security.PrivateKey key, Option<String> password, X509Certificate[] chain) implements KeyMaterial {}
     }
 
     private static Result<KeyMaterial> loadKeyMaterial(TlsConfig.Identity identity) {
         return switch (identity) {
             case TlsConfig.Identity.SelfSigned() -> generateSelfSigned();
-            case TlsConfig.Identity.FromFiles(var certPath, var keyPath, var password) ->
-                loadFromFiles(certPath, keyPath, password);
-            case TlsConfig.Identity.FromProvider(var certPem, var keyPem) ->
-                loadFromPemBytes(certPem, keyPem);
+            case TlsConfig.Identity.FromFiles(var certPath, var keyPath, var password) -> loadFromFiles(certPath,
+                                                                                                        keyPath,
+                                                                                                        password);
+            case TlsConfig.Identity.FromProvider(var certPem, var keyPem) -> loadFromPemBytes(certPem, keyPem);
         };
     }
 
-    @SuppressWarnings({"deprecation", "JBCT-UTIL-01"}) // SelfSignedCertificate is for dev/testing only
+    @SuppressWarnings({"deprecation", "JBCT-UTIL-01"})  // SelfSignedCertificate is for dev/testing only
     private static Result<KeyMaterial> generateSelfSigned() {
         try {
             var ssc = new SelfSignedCertificate("localhost", "RSA", 2048);
+
             return Result.success(new KeyMaterial.FromFile(ssc.certificate(), ssc.privateKey(), Option.empty()));
         } catch (Exception e) {
             return new TlsError.SelfSignedGenerationFailed(e).result();
         }
     }
 
-    private static Result<KeyMaterial> loadFromFiles(Path certPath,
-                                                     Path keyPath,
-                                                     Option<String> password) {
+    private static Result<KeyMaterial> loadFromFiles(Path certPath, Path keyPath, Option<String> password) {
         var certFile = certPath.toFile();
         var keyFile = keyPath.toFile();
+
         if (!certFile.exists() || !certFile.canRead()) {
             return new TlsError.CertificateLoadFailed(certPath,
-                new java.io.FileNotFoundException("Certificate file not found or not readable: " + certPath)).result();
+                                                      new java.io.FileNotFoundException("Certificate file not found or not readable: " + certPath)).result();
         }
+
         if (!keyFile.exists() || !keyFile.canRead()) {
             return new TlsError.PrivateKeyLoadFailed(keyPath,
-                new java.io.FileNotFoundException("Private key file not found or not readable: " + keyPath)).result();
+                                                     new java.io.FileNotFoundException("Private key file not found or not readable: " + keyPath)).result();
         }
+
         return Result.success(new KeyMaterial.FromFile(certFile, keyFile, password));
     }
 
@@ -290,6 +295,7 @@ public final class QuicSslContextFactory {
             var certFactory = CertificateFactory.getInstance("X.509");
             var cert = (X509Certificate) certFactory.generateCertificate(new ByteArrayInputStream(certPem));
             var privateKey = loadPrivateKeyFromPem(keyPem);
+
             return Result.success(new KeyMaterial.FromCerts(privateKey, Option.empty(), new X509Certificate[]{cert}));
         } catch (Exception e) {
             return new TlsError.ContextBuildFailed(e).result();
@@ -303,12 +309,16 @@ public final class QuicSslContextFactory {
              var parser = new PEMParser(reader)) {
             var obj = parser.readObject();
             var converter = new JcaPEMKeyConverter().setProvider("BC");
+
             if (obj instanceof PEMKeyPair pemKeyPair) {
-                return converter.getKeyPair(pemKeyPair).getPrivate();
+                return converter.getKeyPair(pemKeyPair)
+                                .getPrivate();
             }
+
             if (obj instanceof PrivateKeyInfo keyInfo) {
                 return converter.getPrivateKey(keyInfo);
             }
+
             throw new GeneralSecurityException("Unsupported PEM object: " + obj.getClass().getName());
         }
     }

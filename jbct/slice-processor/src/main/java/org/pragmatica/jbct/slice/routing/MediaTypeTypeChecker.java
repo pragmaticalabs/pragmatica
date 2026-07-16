@@ -2,10 +2,10 @@
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
 // Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
 // See LICENSE in the repository root for full terms.
-
 package org.pragmatica.jbct.slice.routing;
 
 import org.pragmatica.lang.Option;
+
 
 /// Strict (decision D3) compile-time validator for `consumes`/`produces` media types against
 /// the Java types of a slice method.
@@ -27,7 +27,6 @@ import org.pragmatica.lang.Option;
 ///     `consumes` it is rejected until form-body binding is implemented (#414)
 ///
 public sealed interface MediaTypeTypeChecker {
-
     /// Validate a `produces` media category against the method's response type.
     ///
     /// @param category     the ContentCategory enum constant name (e.g. "TEXT", "BINARY", "JSON")
@@ -43,9 +42,7 @@ public sealed interface MediaTypeTypeChecker {
             case "BINARY" -> isByteArray(responseType) || isString(responseType)
                              ? Option.none()
                              : producesError(category, "byte[] (or String)", responseType, methodName);
-            case "FORM_URLENCODED", "MULTIPART" ->
-                Option.some("Slice method '" + methodName + "': produces media type with category " + category
-                            + " is input-only and cannot be used for responses");
+            case "FORM_URLENCODED", "MULTIPART" -> Option.some("Slice method '" + methodName + "': produces media type with category " + category + " is input-only and cannot be used for responses");
             default -> Option.some("Slice method '" + methodName + "': unknown produces content category " + category);
         };
     }
@@ -68,22 +65,23 @@ public sealed interface MediaTypeTypeChecker {
             case "MULTIPART" -> isMultipart(parameterType)
                                 ? Option.none()
                                 : consumesError(category, "MultipartRequest", parameterType, methodName);
-            case "FORM_URLENCODED" ->
-                Option.some("Slice method '" + methodName + "': consumes media type with category " + category
-                            + " is not supported yet — form-body binding is unimplemented; use application/json"
-                            + " or a supported type");
+            case "FORM_URLENCODED" -> Option.some("Slice method '" + methodName + "': consumes media type with category " + category + " is not supported yet — form-body binding is unimplemented; use application/json" + " or a supported type");
             default -> Option.some("Slice method '" + methodName + "': unknown consumes content category " + category);
         };
     }
 
     private static Option<String> producesError(String category, String expected, String actual, String methodName) {
-        return Option.some("Slice method '" + methodName + "': produces category " + category + " requires return type "
-                           + expected + ", but method returns " + actual);
+        return Option.some("Slice method '" + methodName
+                          + "': produces category " + category
+                          + " requires return type " + expected
+                          + ", but method returns " + actual);
     }
 
     private static Option<String> consumesError(String category, String expected, String actual, String methodName) {
-        return Option.some("Slice method '" + methodName + "': consumes category " + category
-                           + " requires parameter type " + expected + ", but method parameter is " + actual);
+        return Option.some("Slice method '" + methodName
+                          + "': consumes category " + category
+                          + " requires parameter type " + expected
+                          + ", but method parameter is " + actual);
     }
 
     private static boolean isString(String type) {

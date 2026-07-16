@@ -5,6 +5,7 @@ import java.util.List;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 
+
 /// Manages background tier promotion — copies frequently-accessed blocks from slower
 /// tiers to faster tiers to optimize read latency.
 ///
@@ -12,25 +13,19 @@ import org.pragmatica.lang.Unit;
 /// Use the dormant/active lifecycle (activate/deactivate) to enforce single-leader coordination:
 /// the leader activates promotion on election and deactivates on step-down.
 public interface PromotionManager {
-
     /// Run one promotion cycle across all tiers. Returns total blocks promoted.
     /// No-ops when not active.
     int promote();
-
     /// Get cumulative promotion statistics.
     PromotionStats stats();
-
     /// Activate the promotion manager, allowing promote() to process blocks.
     Result<Unit> activate();
-
     /// Deactivate the promotion manager. Subsequent promote() calls will no-op.
     Result<Unit> deactivate();
-
     /// Whether the promotion manager is currently active.
     boolean isActive();
 
     record PromotionStats(int blocksPromoted, long bytesMoved, long lastRunMs) {
-
         static PromotionStats promotionStats() {
             return new PromotionStats(0, 0, 0);
         }

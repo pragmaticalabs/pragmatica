@@ -13,11 +13,11 @@
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  */
-
 package org.pragmatica.consensus.rabia;
 
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.messaging.Message;
+
 
 /// Engine-level consensus events emitted by `RabiaEngine` on phase-transitions that affect
 /// "is consensus operational?" semantics. These are the authoritative source for cluster-state

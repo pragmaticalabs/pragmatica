@@ -14,7 +14,6 @@
  *  limitations under the License.
  *
  */
-
 package org.pragmatica.cloud.aws.api;
 
 import java.util.List;
@@ -22,31 +21,23 @@ import java.util.List;
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.annotation.JsonProperty;
 
+
 /// ELBv2 DescribeTargetHealth JSON response.
 @JsonIgnoreProperties(ignoreUnknown = true)
-public record DescribeTargetHealthResponse(
-    @JsonProperty("TargetHealthDescriptions") List<TargetHealthDescription> targetHealthDescriptions
-) {
+public record DescribeTargetHealthResponse(@JsonProperty("TargetHealthDescriptions") List<TargetHealthDescription> targetHealthDescriptions) {
     /// Target health description entry.
     @JsonIgnoreProperties(ignoreUnknown = true)
-    public record TargetHealthDescription(
-        @JsonProperty("Target") Target target,
-        @JsonProperty("TargetHealth") TargetHealthState targetHealth
-    ) {}
+    public record TargetHealthDescription(@JsonProperty("Target") Target target,
+                                          @JsonProperty("TargetHealth") TargetHealthState targetHealth) {}
 
     /// Target identifier.
     @JsonIgnoreProperties(ignoreUnknown = true)
-    public record Target(
-        @JsonProperty("Id") String id,
-        @JsonProperty("Port") int port
-    ) {}
+    public record Target(@JsonProperty("Id") String id, @JsonProperty("Port") int port) {}
 
     /// Target health state.
     @JsonIgnoreProperties(ignoreUnknown = true)
-    public record TargetHealthState(
-        @JsonProperty("State") String state,
-        @JsonProperty("Description") String description
-    ) {}
+    public record TargetHealthState(@JsonProperty("State") String state,
+                                    @JsonProperty("Description") String description) {}
 
     /// Extracts flat list of TargetHealth records.
     public List<TargetHealth> toTargetHealthList() {
@@ -56,11 +47,9 @@ public record DescribeTargetHealthResponse(
     }
 
     private static TargetHealth toTargetHealth(TargetHealthDescription desc) {
-        return new TargetHealth(
-            desc.target().id(),
-            desc.target().port(),
-            desc.targetHealth().state(),
-            desc.targetHealth().description()
-        );
+        return new TargetHealth(desc.target().id(),
+                                desc.target().port(),
+                                desc.targetHealth().state(),
+                                desc.targetHealth().description());
     }
 }

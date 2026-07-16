@@ -13,17 +13,17 @@
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  */
-
 package org.pragmatica.dht;
+
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.UnaryOperator;
 
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 
-import java.util.concurrent.atomic.AtomicInteger;
-import java.util.concurrent.atomic.AtomicReference;
-import java.util.function.UnaryOperator;
 
 /// Collects responses from multiple nodes and resolves a promise when quorum is reached.
 /// Thread-safe: multiple threads can call onSuccess/onFailure concurrently.
@@ -82,6 +82,7 @@ public final class QuorumCollector<T> {
     @Contract
     public void onFailure(Cause cause) {
         var failures = failureCount.incrementAndGet();
+
         if (total - failures < quorum) {
             promise.fail(DHTError.quorumNotReached(quorum, successCount.get()));
         }
@@ -97,6 +98,7 @@ public final class QuorumCollector<T> {
                    ? incoming
                    : existing;
         }
+
         return existing;
     }
 }

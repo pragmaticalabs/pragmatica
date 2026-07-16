@@ -1,8 +1,9 @@
 package org.pragmatica.http.routing;
 
+import java.util.function.Supplier;
+
 import org.pragmatica.lang.Contract;
 
-import java.util.function.Supplier;
 
 /// API-versioning observability sink (#198 §11.1).
 ///
@@ -50,15 +51,12 @@ public interface VersioningMetricsSink {
 
     enum Noop implements VersioningMetricsSink {
         INSTANCE;
-
         @Override
         @Contract
         public void versionedRequest(String slice, int version, String method, int status) {}
-
         @Override
         @Contract
         public void deprecatedRequest(String slice, int version) {}
-
         @Override
         @Contract
         public void missingVersionHeader(String slice) {}

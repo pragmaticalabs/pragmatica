@@ -14,27 +14,23 @@
  *  limitations under the License.
  *
  */
-
 package org.pragmatica.cloud.azure.api;
 
 import java.util.List;
 
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 
+
 /// Azure ARM Load Balancer resource.
 @JsonIgnoreProperties(ignoreUnknown = true)
-public record AzureLoadBalancer(String id,
-                                 String name,
-                                 LbProperties properties) {
+public record AzureLoadBalancer(String id, String name, LbProperties properties) {
     /// Load balancer properties.
     @JsonIgnoreProperties(ignoreUnknown = true)
     public record LbProperties(List<BackendPool> backendAddressPools) {}
 
     /// Backend address pool.
     @JsonIgnoreProperties(ignoreUnknown = true)
-    public record BackendPool(String id,
-                               String name,
-                               PoolProperties properties) {}
+    public record BackendPool(String id, String name, PoolProperties properties) {}
 
     /// Pool properties containing backend addresses.
     @JsonIgnoreProperties(ignoreUnknown = true)
@@ -42,8 +38,7 @@ public record AzureLoadBalancer(String id,
 
     /// Individual backend address entry.
     @JsonIgnoreProperties(ignoreUnknown = true)
-    public record BackendAddress(String name,
-                                  BackendAddressProperties properties) {}
+    public record BackendAddress(String name, BackendAddressProperties properties) {}
 
     /// Backend address properties containing IP address.
     @JsonIgnoreProperties(ignoreUnknown = true)

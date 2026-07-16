@@ -13,7 +13,6 @@
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  */
-
 package org.pragmatica.consensus.net.quic;
 
 import org.pragmatica.consensus.NodeId;
@@ -28,7 +27,8 @@ import org.pragmatica.lang.Contract;
 /// `ClusterSyncPong`.
 ///
 /// See `aether/docs/specs/clustersync-refactor-spec.md` commit 2.
-@Contract public interface PeerConnectivityReporter {
+@Contract
+public interface PeerConnectivityReporter {
     /// Follower observed the peer as DISCONNECTED at the given epoch.
     ///
     /// `deathPathInitiated` (cluster-topology-overhaul Wave 9 Fix B) marks a REMOVE that THIS
@@ -40,7 +40,6 @@ import org.pragmatica.lang.Contract;
     /// observation itself is still reported (transport coherence); only the liveness-gone tap is
     /// gated. Organic closes (`deathPathInitiated == false`) remain independent death evidence.
     void onPeerDisconnected(NodeId peerId, long observedTerm, long observedCounter, boolean deathPathInitiated);
-
     /// Follower observed the peer as CONNECTED at the given epoch. Fired on
     /// transitions into `PeerState.Phase.CONNECTED` (initial handshake completion
     /// or reconnection). Symmetric to `onPeerDisconnected`; the leader-side
@@ -50,8 +49,16 @@ import org.pragmatica.lang.Contract;
 
     static PeerConnectivityReporter noop() {
         return new PeerConnectivityReporter() {
-            @Contract @Override public void onPeerDisconnected(NodeId peerId, long observedTerm, long observedCounter, boolean deathPathInitiated) {}
-            @Contract @Override public void onPeerConnected(NodeId peerId, long observedTerm, long observedCounter) {}
+            @Contract
+            @Override
+            public void onPeerDisconnected(NodeId peerId,
+                                           long observedTerm,
+                                           long observedCounter,
+                                           boolean deathPathInitiated) {}
+
+            @Contract
+            @Override
+            public void onPeerConnected(NodeId peerId, long observedTerm, long observedCounter) {}
         };
     }
 }

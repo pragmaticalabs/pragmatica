@@ -14,18 +14,18 @@
  *  limitations under the License.
  *
  */
-
 package org.pragmatica.cloud.azure.api;
 
 import java.util.Map;
 
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 
+
 /// A single resource row from Azure Resource Graph query results.
 @JsonIgnoreProperties(ignoreUnknown = true)
 public record ResourceRow(String id,
-                           String name,
-                           String type,
-                           String location,
-                           Map<String, String> tags,
-                           Map<String, Object> properties) {}
+                          String name,
+                          String type,
+                          String location,
+                          Map<String, String> tags,
+                          Map<String, Object> properties) {}

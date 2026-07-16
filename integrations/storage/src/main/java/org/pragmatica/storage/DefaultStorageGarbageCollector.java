@@ -10,6 +10,7 @@ import org.slf4j.LoggerFactory;
 
 import static org.pragmatica.lang.Unit.unit;
 
+
 /// Default garbage collector implementation.
 /// Scans all lifecycle entries for orphaned blocks past their grace period,
 /// deletes them in batches, and tracks cumulative statistics.
@@ -33,12 +34,14 @@ final class DefaultStorageGarbageCollector implements StorageGarbageCollector {
     @Override
     public Result<Unit> activate() {
         active = true;
+
         return Result.success(unit());
     }
 
     @Override
     public Result<Unit> deactivate() {
         active = false;
+
         return Result.success(unit());
     }
 
@@ -55,7 +58,6 @@ final class DefaultStorageGarbageCollector implements StorageGarbageCollector {
 
         var now = System.currentTimeMillis();
         var cutoff = now - config.gracePeriodMs();
-
         var collected = metadataStore.listAllLifecycles()
                                      .stream()
                                      .filter(BlockLifecycle::isOrphaned)
@@ -66,6 +68,7 @@ final class DefaultStorageGarbageCollector implements StorageGarbageCollector {
 
         stats.updateAndGet(s -> s.withCollected(collected, now));
         log.debug("GC cycle completed: {} block(s) collected", collected);
+
         return collected;
     }
 
@@ -77,7 +80,8 @@ final class DefaultStorageGarbageCollector implements StorageGarbageCollector {
     /// Synchronous block deletion. Uses .await() because GC runs on a dedicated
     /// background thread, not on the hot path. Blocking here is intentional.
     private int deleteBlock(BlockId blockId) {
-        return instance.delete(blockId).await()
+        return instance.delete(blockId)
+                       .await()
                        .fold(_ -> 0, _ -> 1);
     }
 }

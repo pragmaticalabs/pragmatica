@@ -1,23 +1,23 @@
 package org.pragmatica.postgres;
 
-import org.pragmatica.postgres.conversion.DataConverter;
-import org.pragmatica.postgres.net.Connectible;
-import org.pragmatica.postgres.net.ConnectibleBuilder;
-import org.pragmatica.lang.Promise;
-import org.pragmatica.lang.Unit;
-
 import java.nio.charset.Charset;
 import java.util.Map;
 import java.util.function.BiConsumer;
 import java.util.function.Consumer;
 import java.util.function.Supplier;
 
+import org.pragmatica.postgres.conversion.DataConverter;
+import org.pragmatica.postgres.net.Connectible;
+import org.pragmatica.postgres.net.ConnectibleBuilder;
+import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Unit;
+
+
 public abstract class PgConnectible implements Connectible {
     final String validationQuery;
     final String username;
     final DataConverter dataConverter;
     final Supplier<Promise<ProtocolStream>> obtainStream;
-
     protected final String password;
     protected final String database;
     protected final Charset encoding;
@@ -38,10 +38,8 @@ public abstract class PgConnectible implements Connectible {
                                 Consumer<PgRow> onRow,
                                 Consumer<Integer> onAffected,
                                 String sql) {
-        return getConnection()
-            .flatMap(connection ->
-                         connection.script(onColumns, onRow, onAffected, sql)
-                                   .withResult(_ -> connection.close()));
+        return getConnection().flatMap(connection -> connection.script(onColumns, onRow, onAffected, sql)
+                                                               .withResult(_ -> connection.close()));
     }
 
     @Override
@@ -49,9 +47,7 @@ public abstract class PgConnectible implements Connectible {
                                   Consumer<PgRow> onRow,
                                   String sql,
                                   Object... params) {
-        return getConnection()
-            .flatMap(connection ->
-                         connection.query(onColumns, onRow, sql, params)
-                                   .withResult(_ -> connection.close()));
+        return getConnection().flatMap(connection -> connection.query(onColumns, onRow, sql, params)
+                                                               .withResult(_ -> connection.close()));
     }
 }

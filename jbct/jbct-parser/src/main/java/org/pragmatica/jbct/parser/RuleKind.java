@@ -121,24 +121,21 @@ public enum RuleKind {
     ERROR(105),
     ROOT(106),
     UNKNOWN(-1);
-
     private final int kindId;
-
     RuleKind(int kindId) {
         this.kindId = kindId;
     }
-
     public int kindId() {
         return kindId;
     }
-
     private static final RuleKind[] BY_ID;
-
     static {
         int max = -1;
+
         for (var k : values()) {
             max = Math.max(max, k.kindId);
         }
+
         BY_ID = new RuleKind[max + 1];
         for (var k : values()) {
             if (k.kindId >= 0) {
@@ -146,28 +143,29 @@ public enum RuleKind {
             }
         }
     }
-
     /// O(1) lookup of the enum value for a v6 kindId. Returns UNKNOWN for out-of-range or
     /// unmapped kinds (defensive — should not occur in practice for grammar-emitted kinds).
     public static RuleKind of(int kindId) {
         if (kindId < 0 || kindId >= BY_ID.length) {
             return UNKNOWN;
         }
-        var k = BY_ID[kindId];
-        return k != null ? k : UNKNOWN;
-    }
 
+        var k = BY_ID[kindId];
+
+        return k != null
+               ? k
+               : UNKNOWN;
+    }
     /// True for leaves that originate from a `< … >` token-boundary or named-token rule
     /// (Identifier, Modifier, *KW, PrimType, NumLit, StringLit, CharLit). Used by emit code
     /// to distinguish token-like leaves from grammar-literal leaves where the difference
     /// affects spacing or display.
     public boolean isTokenLike() {
-        return false; // No grammar rules currently emit leaves with rule kinds matching
-                      // token-like categories — tokens surface in TokenArray, not as
-                      // CstArray leaves. Kept for forward-compatibility; flip per kind
-                      // if Stage 4 discovers leaf nodes that need this distinction.
+        return false;  // No grammar rules currently emit leaves with rule kinds matching
+        // token-like categories — tokens surface in TokenArray, not as
+        // CstArray leaves. Kept for forward-compatibility; flip per kind
+        // if Stage 4 discovers leaf nodes that need this distinction.
     }
-
     /// True for grammar-literal leaf rules (specifically the `Literal` rule for numeric,
     /// string, and character literals). Used by emit code that needs to distinguish a
     /// generic terminal from a grammar-defined literal node.

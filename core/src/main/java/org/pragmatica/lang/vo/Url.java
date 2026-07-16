@@ -13,7 +13,6 @@
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  */
-
 package org.pragmatica.lang.vo;
 
 import java.net.URI;
@@ -24,6 +23,7 @@ import org.pragmatica.lang.parse.Network;
 
 import static org.pragmatica.lang.utils.Causes.cause;
 
+
 /// Validated URL with accessible components. Requires scheme and host.
 ///
 /// Factory `url(String)` parses the URI and requires both scheme and host; accessors expose
@@ -33,6 +33,7 @@ import static org.pragmatica.lang.utils.Causes.cause;
 /// catalog of built-in value objects.
 public record Url(URI uri) {
     private static final Cause MISSING_SCHEME = cause("URL must have a scheme");
+
     private static final Cause MISSING_HOST = cause("URL must have a host");
 
     /// Parse and validate a URL string.
@@ -41,8 +42,10 @@ public record Url(URI uri) {
     /// @return Result containing validated Url or parsing failure
     public static Result<Url> url(String raw) {
         return Network.parseURI(raw)
-                      .filter(MISSING_SCHEME, u -> u.getScheme() != null)
-                      .filter(MISSING_HOST, u -> u.getHost() != null)
+                      .filter(MISSING_SCHEME,
+                              u -> u.getScheme() != null)
+                      .filter(MISSING_HOST,
+                              u -> u.getHost() != null)
                       .map(Url::new);
     }
 

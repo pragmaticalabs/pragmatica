@@ -1,12 +1,13 @@
 package org.pragmatica.aether.example.banking.account;
 
-import org.pragmatica.aether.resource.interceptor.CacheMethodInterceptor;
-import org.pragmatica.aether.slice.annotation.ResourceQualifier;
-
 import java.lang.annotation.ElementType;
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
 import java.lang.annotation.Target;
+
+import org.pragmatica.aether.resource.interceptor.CacheMethodInterceptor;
+import org.pragmatica.aether.slice.annotation.ResourceQualifier;
+
 
 /// Invalidates the balance cache when a debit operation succeeds.
 /// Uses WRITE_AROUND strategy: call method, then remove stale cached balance.

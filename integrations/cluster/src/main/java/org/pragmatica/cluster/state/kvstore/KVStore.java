@@ -1,5 +1,11 @@
 package org.pragmatica.cluster.state.kvstore;
 
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.BiConsumer;
+
 import org.pragmatica.consensus.StateMachine;
 import org.pragmatica.consensus.StateMachine.Batch;
 import org.pragmatica.cluster.state.kvstore.KVCommand.Get;
@@ -21,11 +27,6 @@ import org.pragmatica.messaging.MessageRouter;
 import org.pragmatica.serialization.Deserializer;
 import org.pragmatica.serialization.Serializer;
 
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.function.BiConsumer;
 
 public class KVStore<K extends StructuredKey, V> implements StateMachine<KVCommand<K>> {
     private final Map<K, V> storage = new ConcurrentHashMap<>();
@@ -71,7 +72,9 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
 
     private Option<V> handleGet(Get<K> get) {
         var value = Option.option(storage.get(get.key()));
+
         router.route(new ValueGet<>(get, value));
+
         return value;
     }
 
@@ -79,8 +82,11 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
         if (staleWrite(put.key(), put.value())) {
             return Option.option(storage.get(put.key()));
         }
+
         var oldValue = Option.option(storage.put(put.key(), put.value()));
+
         router.route(new ValuePut<>(put, oldValue));
+
         return oldValue;
     }
 
@@ -128,15 +134,19 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
     @SuppressWarnings("unchecked")
     private static <E extends Comparable<E>> boolean incomingEpochIsStale(EpochBearing<E> incoming,
                                                                           EpochBearing<?> stored) {
-        return incoming.fenceEpoch().compareTo((E) stored.fenceEpoch()) < 0;
+        return incoming.fenceEpoch()
+                       .compareTo((E) stored.fenceEpoch()) < 0;
     }
 
     private Option<V> handleRemove(Remove<K> remove) {
         if (staleRemove(remove)) {
             return Option.option(storage.get(remove.key()));
         }
+
         var oldValue = Option.option(storage.remove(remove.key()));
+
         router.route(new ValueRemove<>(remove, oldValue));
+
         return oldValue;
     }
 
@@ -153,8 +163,10 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
     /// the command, so every replica accepts or rejects a delete identically inside the applier.
     private boolean staleRemove(Remove<K> remove) {
         var key = remove.key();
+
         return switch (storage.get(key)) {
-            case LeaderValue committed when key instanceof LeaderKey -> !currentLeaderWitness(committed, remove.witness());
+            case LeaderValue committed when key instanceof LeaderKey -> !currentLeaderWitness(committed,
+                                                                                              remove.witness());
             case EpochBearing<?> committed -> !currentEpochWitness(committed, remove.witness());
             case null, default -> false;
         };
@@ -229,8 +241,10 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
         } finally {
             replaying.set(Boolean.FALSE);
         }
+
         lastReplayedView.clear();
         lastReplayedView.putAll(storage);
+
         return Unit.unit();
     }
 
@@ -258,7 +272,8 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
     private void replayPutKeys() {
         storage.forEach((key, value) -> {
             if (!value.equals(lastReplayedView.get(key))) {
-                router.route(new ValuePut<>(new Put<>(key, value), Option.option(lastReplayedView.get(key))));
+                router.route(new ValuePut<>(new Put<>(key, value),
+                                            Option.option(lastReplayedView.get(key))));
             }
         });
     }
@@ -268,6 +283,7 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
         notifyRemoveAll();
         storage.clear();
         lastReplayedView.clear();
+
         return Unit.unit();
     }
 
@@ -292,9 +308,11 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
     @SuppressWarnings({"unchecked", "rawtypes"})
     public <VV> Option<VV> getTyped(StructuredKey key, Class<VV> valueClass) {
         var raw = ((Map) storage).get(key);
+
         if (raw == null || !valueClass.isInstance(raw)) {
             return Option.none();
         }
+
         return Option.some((VV) raw);
     }
 
@@ -310,10 +328,10 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
     @Contract
     public <KK, VV> void forEach(Class<KK> keyClass, Class<VV> valueClass, BiConsumer<KK, VV> consumer) {
         storage.forEach((key, value) -> {
-                            if (keyClass.isInstance(key) && valueClass.isInstance(value)) {
-                                consumer.accept((KK) key, (VV) value);
-                            }
-                        });
+            if (keyClass.isInstance(key) && valueClass.isInstance(value)) {
+                consumer.accept((KK) key, (VV) value);
+            }
+        });
     }
 
     @MessageReceiver

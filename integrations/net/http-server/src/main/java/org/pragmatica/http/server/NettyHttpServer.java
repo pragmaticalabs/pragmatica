@@ -13,8 +13,12 @@
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  */
-
 package org.pragmatica.http.server;
+
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.function.BiConsumer;
 
 import org.pragmatica.http.*;
 import org.pragmatica.http.HttpMethod;
@@ -28,11 +32,6 @@ import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.net.tcp.TlsContextFactory;
 import org.pragmatica.utility.IdGenerator;
-
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
-import java.util.function.BiConsumer;
 
 import io.netty.bootstrap.ServerBootstrap;
 import io.netty.buffer.Unpooled;
@@ -49,6 +48,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import static org.pragmatica.lang.Unit.unit;
+
 
 /// Netty-based HTTP server implementation.
 final class NettyHttpServer implements HttpServer {
@@ -80,23 +80,26 @@ final class NettyHttpServer implements HttpServer {
     @Override
     public Promise<Unit> stop() {
         return Promise.promise(promise -> {
-                                   log.info("Stopping HTTP server on port {}", port);
-                                   if (serverChannel.isEmpty()) {
-                                       cleanupAndComplete(promise);
-                                   } else {
-                                       serverChannel.onPresent(channel -> channel.close()
-                                                                                 .addListener(_ -> cleanupAndComplete(promise)));
-                                   }
-                               });
+            log.info("Stopping HTTP server on port {}", port);
+            if (serverChannel.isEmpty()) {
+                cleanupAndComplete(promise);
+            } else {
+                serverChannel.onPresent(channel -> channel.close()
+                                                          .addListener(_ -> cleanupAndComplete(promise)));
+            }
+        });
     }
 
     private void cleanupAndComplete(Promise<Unit> promise) {
         if (!ownsGroups) {
             promise.succeed(unit());
+
             return;
         }
+
         var workerFuture = workerGroup.map(EventLoopGroup::shutdownGracefully);
         var bossFuture = bossGroup.map(EventLoopGroup::shutdownGracefully);
+
         if (workerFuture.isPresent() && bossFuture.isPresent()) {
             workerFuture.onPresent(wf -> bossFuture.onPresent(bf -> wf.addListener(_ -> bf.addListener(_ -> promise.succeed(unit())))));
         } else if (workerFuture.isPresent()) {
@@ -110,10 +113,7 @@ final class NettyHttpServer implements HttpServer {
 
     static Promise<HttpServer> create(HttpServerConfig config, BiConsumer<HttpRequest, ResponseWriter> handler) {
         // Handle TLS
-        var sslContext = config.tls()
-                               .await()
-                               .flatMap(TlsContextFactory::create)
-                               .option();
+        var sslContext = config.tls().await().flatMap(TlsContextFactory::create).option();
         var bossGroup = new MultiThreadIoEventLoopGroup(1, NioIoHandler.newFactory());
         var workerGroup = new MultiThreadIoEventLoopGroup(NioIoHandler.newFactory());
         var socketOptions = config.socketOptions();
@@ -124,6 +124,7 @@ final class NettyHttpServer implements HttpServer {
                                                      socketOptions.soBacklog())
                                              .childOption(ChannelOption.SO_KEEPALIVE,
                                                           socketOptions.soKeepalive());
+
         return Promise.promise(promise -> bootstrap.bind(config.port())
                                                    .addListener((ChannelFuture future) -> onBind(config,
                                                                                                  promise,
@@ -138,10 +139,7 @@ final class NettyHttpServer implements HttpServer {
                                             BiConsumer<HttpRequest, ResponseWriter> handler,
                                             EventLoopGroup bossGroup,
                                             EventLoopGroup workerGroup) {
-        var sslContext = config.tls()
-                               .await()
-                               .flatMap(TlsContextFactory::create)
-                               .option();
+        var sslContext = config.tls().await().flatMap(TlsContextFactory::create).option();
         var socketOptions = config.socketOptions();
         var bootstrap = new ServerBootstrap().group(bossGroup, workerGroup)
                                              .channel(NioServerSocketChannel.class)
@@ -150,6 +148,7 @@ final class NettyHttpServer implements HttpServer {
                                                      socketOptions.soBacklog())
                                              .childOption(ChannelOption.SO_KEEPALIVE,
                                                           socketOptions.soKeepalive());
+
         return Promise.promise(promise -> bootstrap.bind(config.port())
                                                    .addListener((ChannelFuture future) -> onBind(config,
                                                                                                  promise,
@@ -168,8 +167,8 @@ final class NettyHttpServer implements HttpServer {
                                EventLoopGroup workerGroup,
                                boolean ownsGroups) {
         if (future.isSuccess()) {
-            var protocol = sslContext.map(_ -> "HTTPS")
-                                     .or("HTTP");
+            var protocol = sslContext.map(_ -> "HTTPS").or("HTTP");
+
             log.info("{} server '{}' started on port {}", protocol, config.name(), config.port());
             promise.succeed(new NettyHttpServer(config.port(),
                                                 Option.option(bossGroup),
@@ -181,6 +180,7 @@ final class NettyHttpServer implements HttpServer {
                 bossGroup.shutdownGracefully();
                 workerGroup.shutdownGracefully();
             }
+
             promise.fail(new HttpServerError.BindFailed(config.port(), future.cause()));
         }
     }
@@ -206,6 +206,7 @@ final class NettyHttpServer implements HttpServer {
         @Override
         protected void initChannel(SocketChannel ch) {
             var pipeline = ch.pipeline();
+
             sslContext.onPresent(ctx -> pipeline.addLast(ctx.newHandler(ch.alloc())));
             pipeline.addLast(new HttpServerCodec());
             pipeline.addLast(new HttpObjectAggregator(config.maxContentLength()));
@@ -249,25 +250,29 @@ final class NettyHttpServer implements HttpServer {
             // Check if this is a WebSocket upgrade
             var path = new QueryStringDecoder(request.uri()).path();
             var wsEndpoint = Option.option(wsEndpoints.get(path));
+
             if (wsEndpoint.isPresent() && isWebSocketUpgrade(request)) {
                 // WebSocket upgrade will be handled by WebSocketServerProtocolHandler
                 // Store handler and session in channel attribute for later use
                 wsEndpoint.onPresent(endpoint -> {
-                                         var wsHandler = endpoint.handler()
-                                                                 .get();
-                                         var wsSession = new NettyWebSocketSession(ctx.channel());
-                                         ctx.channel()
-                                            .attr(WS_STATE)
-                                            .set(Option.some(new WebSocketState(wsHandler, wsSession)));
-                                         ctx.fireChannelRead(request.retain());
-                                     });
+                    var wsHandler = endpoint.handler()
+                                            .get();
+                    var wsSession = new NettyWebSocketSession(ctx.channel());
+
+                    ctx.channel()
+                       .attr(WS_STATE)
+                       .set(Option.some(new WebSocketState(wsHandler, wsSession)));
+                    ctx.fireChannelRead(request.retain());
+                });
+
                 return;
             }
             // Regular HTTP request - generate request ID
             var requestId = IdGenerator.generate("req");
             var requestContext = createRequestContext(requestId, request);
             var responseWriter = new NettyResponseWriter(ctx, requestId, HttpUtil.isKeepAlive(request));
-            try{
+
+            try {
                 handler.accept(requestContext, responseWriter);
             } catch (Exception e) {
                 log.error("Error handling request {}", requestId, e);
@@ -281,41 +286,39 @@ final class NettyHttpServer implements HttpServer {
         }
 
         private void handleWebSocketFrame(ChannelHandlerContext ctx, WebSocketFrame frame) {
-            Option.option(ctx.channel()
-                             .attr(WS_STATE)
-                             .get())
+            Option.option(ctx.channel().attr(WS_STATE).get())
                   .flatMap(opt -> opt)
                   .onPresent(state -> {
                                  if (frame instanceof TextWebSocketFrame textFrame) {
-                                     state.handler.handle(state.session,
-                                                          new WebSocketMessage.Text(textFrame.text()));
-                                 } else if (frame instanceof BinaryWebSocketFrame binaryFrame) {
-                                     var bytes = new byte[binaryFrame.content()
-                                                                     .readableBytes()];
-                                     binaryFrame.content()
-                                                .readBytes(bytes);
-                                     state.handler.handle(state.session,
-                                                          new WebSocketMessage.Binary(bytes));
-                                 } else if (frame instanceof CloseWebSocketFrame) {
-                                     state.handler.handle(state.session,
-                                                          new WebSocketMessage.Close());
-                                     ctx.channel()
-                                        .attr(WS_STATE)
-                                        .set(Option.none());
-                                 }
+                                 state.handler.handle(state.session,
+                                                      new WebSocketMessage.Text(textFrame.text()));
+                             } else if (frame instanceof BinaryWebSocketFrame binaryFrame) {
+                                 var bytes = new byte[binaryFrame.content()
+                                                                 .readableBytes()];
+
+                                 binaryFrame.content()
+                                            .readBytes(bytes);
+                                 state.handler.handle(state.session,
+                                                      new WebSocketMessage.Binary(bytes));
+                             } else if (frame instanceof CloseWebSocketFrame) {
+                                 state.handler.handle(state.session,
+                                                      new WebSocketMessage.Close());
+                                 ctx.channel()
+                                    .attr(WS_STATE)
+                                    .set(Option.none());
+                             }
                              });
         }
 
         @Override
         public void userEventTriggered(ChannelHandlerContext ctx, Object evt) throws Exception {
             if (evt instanceof WebSocketServerProtocolHandler.HandshakeComplete) {
-                Option.option(ctx.channel()
-                                 .attr(WS_STATE)
-                                 .get())
+                Option.option(ctx.channel().attr(WS_STATE).get())
                       .flatMap(opt -> opt)
                       .onPresent(state -> state.handler.handle(state.session,
                                                                new WebSocketMessage.Open()));
             }
+
             super.userEventTriggered(ctx, evt);
         }
 
@@ -329,24 +332,25 @@ final class NettyHttpServer implements HttpServer {
             var decoder = new QueryStringDecoder(request.uri());
             var path = decoder.path();
             // Netty validates the HTTP method before we receive it, so this will always succeed
-            var method = HttpMethod.httpMethod(request.method()
-                                                      .name())
-                                   .fold(_ -> HttpMethod.GET, v -> v);
+            var method = HttpMethod.httpMethod(request.method().name()).fold(_ -> HttpMethod.GET, v -> v);
             // Parse headers
             var headerMap = new HashMap<String, List<String>>();
+
             for (var entry : request.headers()) {
-                headerMap.computeIfAbsent(entry.getKey()
-                                               .toLowerCase(),
+                headerMap.computeIfAbsent(entry.getKey().toLowerCase(),
                                           _ -> new java.util.ArrayList<>())
                          .add(entry.getValue());
             }
+
             var headers = Headers.headers(headerMap);
             // Parse query params
             var queryParams = QueryParams.queryParams(decoder.parameters());
             // Read body
             var content = request.content();
             var body = new byte[content.readableBytes()];
+
             content.readBytes(body);
+
             return new NettyRequestContext(requestId, method, path, headers, queryParams, body);
         }
     }
@@ -366,6 +370,7 @@ final class NettyHttpServer implements HttpServer {
         private final String requestId;
         private final boolean keepAlive;
         private final io.netty.handler.codec.http.HttpHeaders responseHeaders;
+
         private final java.util.concurrent.atomic.AtomicBoolean written = new java.util.concurrent.atomic.AtomicBoolean(false);
 
         NettyResponseWriter(ChannelHandlerContext ctx, String requestId, boolean keepAlive) {
@@ -378,6 +383,7 @@ final class NettyHttpServer implements HttpServer {
         @Override
         public ResponseWriter header(String name, String value) {
             responseHeaders.set(name, value);
+
             return this;
         }
 
@@ -386,23 +392,21 @@ final class NettyHttpServer implements HttpServer {
             if (!written.compareAndSet(false, true)) {
                 return;
             }
+
             var nettyStatus = HttpResponseStatus.valueOf(status.code());
             var content = Unpooled.wrappedBuffer(body);
             var response = new DefaultFullHttpResponse(HttpVersion.HTTP_1_1, nettyStatus, content);
-            response.headers()
-                    .set(HttpHeaderNames.CONTENT_TYPE,
-                         contentType.headerText());
-            response.headers()
-                    .set(HttpHeaderNames.CONTENT_LENGTH, body.length);
-            response.headers()
-                    .set(X_REQUEST_ID, requestId);
+
+            response.headers().set(HttpHeaderNames.CONTENT_TYPE, contentType.headerText());
+            response.headers().set(HttpHeaderNames.CONTENT_LENGTH, body.length);
+            response.headers().set(X_REQUEST_ID, requestId);
             if (keepAlive) {
-                response.headers()
-                        .set(HttpHeaderNames.CONNECTION, HttpHeaderValues.KEEP_ALIVE);
+                response.headers().set(HttpHeaderNames.CONNECTION, HttpHeaderValues.KEEP_ALIVE);
             }
-            response.headers()
-                    .add(responseHeaders);
+
+            response.headers().add(responseHeaders);
             var future = ctx.writeAndFlush(response);
+
             if (!keepAlive) {
                 future.addListener(ChannelFutureListener.CLOSE);
             }
@@ -440,8 +444,7 @@ final class NettyHttpServer implements HttpServer {
         @Override
         public void close() {
             if (channel.isActive()) {
-                channel.writeAndFlush(new CloseWebSocketFrame())
-                       .addListener(ChannelFutureListener.CLOSE);
+                channel.writeAndFlush(new CloseWebSocketFrame()).addListener(ChannelFutureListener.CLOSE);
             }
         }
 

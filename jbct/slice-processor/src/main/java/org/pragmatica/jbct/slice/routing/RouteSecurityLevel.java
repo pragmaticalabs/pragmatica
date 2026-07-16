@@ -2,7 +2,6 @@
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
 // Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
 // See LICENSE in the repository root for full terms.
-
 package org.pragmatica.jbct.slice.routing;
 
 import org.pragmatica.lang.Cause;
@@ -10,9 +9,9 @@ import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.utils.Causes;
 
+
 /// Per-route security level declared in routes.toml [security] section.
 public sealed interface RouteSecurityLevel {
-
     /// No authentication required.
     record Public() implements RouteSecurityLevel {}
 
@@ -24,7 +23,6 @@ public sealed interface RouteSecurityLevel {
 
     RouteSecurityLevel PUBLIC = new Public();
     RouteSecurityLevel AUTHENTICATED = new Authenticated();
-
     Cause EMPTY_VALUE = Causes.cause("Empty security value");
     Cause EMPTY_ROLE = Causes.cause("Empty role name");
     Fn1<Cause, String> UNKNOWN_LEVEL = Causes.forOneValue("Unknown security level: %s");

@@ -16,9 +16,7 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 ///   longer holds; over-protecting a syncing node is safer than under-protecting it.
 public record SyncHoldConfig(TimeSpan minHold, TimeSpan maxHold, double expectedSyncBps) {
     public static final TimeSpan DEFAULT_MIN_HOLD = timeSpan(5).seconds();
-
     public static final TimeSpan DEFAULT_MAX_HOLD = timeSpan(60).seconds();
-
     public static final double DEFAULT_EXPECTED_SYNC_BPS = 10_000_000.0;
 
     public static SyncHoldConfig defaults() {
@@ -31,12 +29,21 @@ public record SyncHoldConfig(TimeSpan minHold, TimeSpan maxHold, double expected
     public long holdMs(long snapshotBytes) {
         var minMs = minHold.millis();
         var maxMs = maxHold.millis();
+
         if (snapshotBytes <= 0L || expectedSyncBps <= 0.0) {
             return minMs;
         }
-        var rawMs = (long) ((snapshotBytes * 1000.0) / expectedSyncBps);
-        if (rawMs < minMs) {return minMs;}
-        if (rawMs > maxMs) {return maxMs;}
+
+        var rawMs = (long)((snapshotBytes * 1000.0) / expectedSyncBps);
+
+        if (rawMs < minMs) {
+            return minMs;
+        }
+
+        if (rawMs > maxMs) {
+            return maxMs;
+        }
+
         return rawMs;
     }
 }

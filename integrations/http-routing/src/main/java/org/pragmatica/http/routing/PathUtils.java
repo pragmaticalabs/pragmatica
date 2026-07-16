@@ -1,8 +1,9 @@
 package org.pragmatica.http.routing;
 
+import java.util.regex.Pattern;
+
 import org.pragmatica.lang.Option;
 
-import java.util.regex.Pattern;
 
 /// Utility methods for HTTP path normalization.
 public sealed interface PathUtils {
@@ -23,12 +24,14 @@ public sealed interface PathUtils {
         var path = query >= 0
                    ? fullPath.substring(0, query)
                    : fullPath;
+
         if (path.isBlank() || "/".equals(path)) {
             return "/";
         }
-        var stringPath = MULTISLASH.matcher("/" + path)
-                                   .replaceAll("/");
+
+        var stringPath = MULTISLASH.matcher("/" + path).replaceAll("/");
         var index = stringPath.lastIndexOf('/');
+
         if (index < (stringPath.length() - 1)) {
             return stringPath + "/";
         } else {

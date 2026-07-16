@@ -14,10 +14,10 @@
  *  limitations under the License.
  *
  */
-
 package org.pragmatica.cloud.gcp.api;
 
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+
 
 /// GCP Secret Manager secret version access response.
 @JsonIgnoreProperties(ignoreUnknown = true)

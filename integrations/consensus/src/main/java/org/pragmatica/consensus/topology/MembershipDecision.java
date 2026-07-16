@@ -13,14 +13,14 @@
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  */
-
 package org.pragmatica.consensus.topology;
+
+import java.util.List;
 
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.hlc.HlcTimestamp;
 import org.pragmatica.messaging.Message;
 
-import java.util.List;
 
 /// Cluster-canonical decisions about membership, projected from the authoritative
 /// per-node membership FSM's delta edges (cluster-topology-overhaul Wave 4).
@@ -71,17 +71,13 @@ public sealed interface MembershipDecision extends Message.Local {
     /// Sentinel `logIndex` for cold-replay or unwired emission sites. Subscribers reading
     /// `logIndex` for dedup MUST guard against this value.
     long UNKNOWN_LOG_INDEX = -1L;
-
     /// The node whose membership status changed.
     NodeId nodeId();
-
     /// Cluster-canonical view of core members after this decision was committed.
     List<NodeId> topology();
-
     /// Rabia commit index of the underlying KV snapshot for dedup / ordering. `-1L` indicates
     /// cold-replay where no committed index is reconstructible — subscribers MUST guard.
     long logIndex();
-
     /// HLC timestamp captured at emission time. `HlcTimestamp.ZERO` indicates cold-replay /
     /// unwired sentinel.
     HlcTimestamp stampedAt();
@@ -141,7 +137,10 @@ public sealed interface MembershipDecision extends Message.Local {
         return new NodeDecommissioned(nodeId, view, UNKNOWN_LOG_INDEX, HlcTimestamp.ZERO);
     }
 
-    static NodeDecommissioned nodeDecommissioned(NodeId nodeId, List<NodeId> view, long logIndex, HlcTimestamp stampedAt) {
+    static NodeDecommissioned nodeDecommissioned(NodeId nodeId,
+                                                 List<NodeId> view,
+                                                 long logIndex,
+                                                 HlcTimestamp stampedAt) {
         return new NodeDecommissioned(nodeId, view, logIndex, stampedAt);
     }
 

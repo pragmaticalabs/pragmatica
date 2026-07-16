@@ -13,11 +13,11 @@
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  */
-
 package org.pragmatica.http;
 
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.type.TypeToken;
+
 
 /// JSON serialization seam.
 ///
@@ -26,6 +26,5 @@ import org.pragmatica.lang.type.TypeToken;
 /// the `byte[]` produced by [#serialize] directly to their response sink.
 public interface JsonCodec {
     Result<byte[]> serialize(Object value);
-
     <T> Result<T> deserialize(byte[] bytes, TypeToken<T> token);
 }

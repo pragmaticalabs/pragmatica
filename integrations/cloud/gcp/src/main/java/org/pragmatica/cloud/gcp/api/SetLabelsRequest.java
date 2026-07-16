@@ -14,12 +14,12 @@
  *  limitations under the License.
  *
  */
-
 package org.pragmatica.cloud.gcp.api;
 
 import java.util.Map;
 
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+
 
 /// Request to set labels on a GCP Compute Engine instance.
 @JsonIgnoreProperties(ignoreUnknown = true)

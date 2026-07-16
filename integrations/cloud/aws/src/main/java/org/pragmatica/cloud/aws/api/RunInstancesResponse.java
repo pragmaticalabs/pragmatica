@@ -14,7 +14,6 @@
  *  limitations under the License.
  *
  */
-
 package org.pragmatica.cloud.aws.api;
 
 import java.util.List;
@@ -25,18 +24,14 @@ import tools.jackson.dataformat.xml.annotation.JacksonXmlElementWrapper;
 import tools.jackson.dataformat.xml.annotation.JacksonXmlProperty;
 import tools.jackson.dataformat.xml.annotation.JacksonXmlRootElement;
 
+
 /// EC2 RunInstances XML response wrapper.
 @JacksonXmlRootElement(localName = "RunInstancesResponse")
 @JsonIgnoreProperties(ignoreUnknown = true)
-public record RunInstancesResponse(
-    @JacksonXmlProperty(localName = "instancesSet") InstancesSet instancesSet
-) {
+public record RunInstancesResponse(@JacksonXmlProperty(localName = "instancesSet") InstancesSet instancesSet) {
     /// Container for launched instances.
     @JsonIgnoreProperties(ignoreUnknown = true)
-    public record InstancesSet(
-        @JacksonXmlElementWrapper(useWrapping = false)
-        @JacksonXmlProperty(localName = "item") List<Instance> items
-    ) {}
+    public record InstancesSet(@JacksonXmlElementWrapper(useWrapping = false) @JacksonXmlProperty(localName = "item") List<Instance> items) {}
 
     /// Returns the list of launched instances.
     public List<Instance> instances() {

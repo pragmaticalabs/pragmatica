@@ -5,10 +5,7 @@ package org.pragmatica.storage;
 /// @param accessThreshold promote when accessCount exceeds this value within the time window
 /// @param windowMs time window in milliseconds for frequency measurement
 /// @param batchSize maximum number of blocks to promote per cycle
-public record PromotionConfig(int accessThreshold,
-                              long windowMs,
-                              int batchSize) {
-
+public record PromotionConfig(int accessThreshold, long windowMs, int batchSize) {
     /// Clamp configuration parameters to valid ranges on construction.
     public PromotionConfig {
         accessThreshold = Math.max(accessThreshold, 1);
@@ -22,9 +19,7 @@ public record PromotionConfig(int accessThreshold,
     }
 
     /// Full factory with custom parameters.
-    public static PromotionConfig promotionConfig(int accessThreshold,
-                                                  long windowMs,
-                                                  int batchSize) {
+    public static PromotionConfig promotionConfig(int accessThreshold, long windowMs, int batchSize) {
         return new PromotionConfig(accessThreshold, windowMs, batchSize);
     }
 }

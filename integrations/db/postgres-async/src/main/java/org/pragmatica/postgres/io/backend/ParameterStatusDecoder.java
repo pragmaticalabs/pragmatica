@@ -1,11 +1,12 @@
 package org.pragmatica.postgres.io.backend;
 
+import java.nio.ByteBuffer;
+import java.nio.charset.Charset;
+
 import org.pragmatica.postgres.io.Decoder;
 import org.pragmatica.postgres.io.IO;
 import org.pragmatica.postgres.message.backend.ParameterStatus;
 
-import java.nio.ByteBuffer;
-import java.nio.charset.Charset;
 
 /**
  * ParameterStatus (B)

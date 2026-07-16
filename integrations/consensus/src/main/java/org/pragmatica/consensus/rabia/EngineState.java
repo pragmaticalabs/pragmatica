@@ -13,10 +13,10 @@
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  */
-
 package org.pragmatica.consensus.rabia;
 
 import java.util.concurrent.ScheduledFuture;
+
 
 /// Explicit state machine for Rabia engine node lifecycle.
 /// Replaces 4 independent atomic variables (active, isInPhase, pendingSyncTask, phaseStallTask)

@@ -13,11 +13,11 @@
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  */
-
 package org.pragmatica.serialization;
 
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.PooledByteBufAllocator;
+
 
 /// Basic serialization interface for encoding objects to binary format.
 ///
@@ -38,7 +38,9 @@ public interface Serializer {
         try {
             write(byteBuf, object);
             var bytes = new byte[byteBuf.readableBytes()];
+
             byteBuf.readBytes(bytes);
+
             return bytes;
         } finally {
             byteBuf.release();

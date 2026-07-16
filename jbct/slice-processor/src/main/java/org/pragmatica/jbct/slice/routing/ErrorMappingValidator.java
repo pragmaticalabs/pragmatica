@@ -2,12 +2,12 @@
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
 // Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
 // See LICENSE in the repository root for full terms.
-
 package org.pragmatica.jbct.slice.routing;
 
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+
 
 /// Pure compile-time totality + dead-mapping check for a slice's error->HTTP configuration (#385).
 ///
@@ -31,7 +31,6 @@ import java.util.Map;
 /// mode is on (`[errors] strict = true` or `-Ajbct.routes.errors.strict=true`); everything else is
 /// a warning by default so existing slices with unmapped causes keep building.
 public sealed interface ErrorMappingValidator {
-
     /// A concrete or abstract Cause type discovered in the routed slice's hierarchy.
     ///
     /// @param simpleName    the simple name (e.g. `SeatNotFound`)
@@ -64,13 +63,13 @@ public sealed interface ErrorMappingValidator {
     /// @param routesTomlPath the resource path of the `routes.toml` to name in messages
     /// @return the mapping problems, in a stable order (unmapped, then dead globs/refs, then dead
     ///         explicit mappings); empty when the configuration is total and has no dead entries
-    static List<Issue> validate(List<CauseDescriptor> causes,
-                                ErrorPatternConfig config,
-                                String routesTomlPath) {
+    static List<Issue> validate(List<CauseDescriptor> causes, ErrorPatternConfig config, String routesTomlPath) {
         var issues = new ArrayList<Issue>();
+
         collectUnmappedCauses(causes, config, routesTomlPath, issues);
         collectDeadStatusEntries(causes, config, routesTomlPath, issues);
         collectDeadExplicitMappings(causes, config, routesTomlPath, issues);
+
         return List.copyOf(issues);
     }
 
@@ -87,7 +86,8 @@ public sealed interface ErrorMappingValidator {
     }
 
     private static boolean isMapped(CauseDescriptor cause, ErrorPatternConfig config) {
-        return config.explicitMappings().containsKey(cause.simpleName()) || matchesAnyPattern(cause, config);
+        return config.explicitMappings()
+                     .containsKey(cause.simpleName()) || matchesAnyPattern(cause, config);
     }
 
     private static boolean matchesAnyPattern(CauseDescriptor cause, ErrorPatternConfig config) {
@@ -98,6 +98,7 @@ public sealed interface ErrorMappingValidator {
                 }
             }
         }
+
         return false;
     }
 
@@ -109,7 +110,11 @@ public sealed interface ErrorMappingValidator {
               .entrySet()
               .stream()
               .sorted(Map.Entry.comparingByKey())
-              .forEach(entry -> collectDeadEntriesForStatus(entry.getKey(), entry.getValue(), causes, routesTomlPath, issues));
+              .forEach(entry -> collectDeadEntriesForStatus(entry.getKey(),
+                                                            entry.getValue(),
+                                                            causes,
+                                                            routesTomlPath,
+                                                            issues));
     }
 
     private static void collectDeadEntriesForStatus(int status,
@@ -130,6 +135,7 @@ public sealed interface ErrorMappingValidator {
                 return true;
             }
         }
+
         return false;
     }
 
@@ -166,29 +172,37 @@ public sealed interface ErrorMappingValidator {
                 return true;
             }
         }
+
         return false;
     }
 
     private static String unmappedMessage(CauseDescriptor cause, int defaultStatus, String routesTomlPath) {
-        return "Unmapped Cause '" + cause.qualifiedName() + "': no HTTP status mapping, so it would fall through to HTTP "
-               + defaultStatus + ". Add it under [errors] in " + routesTomlPath + " (e.g. 400 = [\"" + cause.simpleName()
-               + "\"]).";
+        return "Unmapped Cause '" + cause.qualifiedName()
+             + "': no HTTP status mapping, so it would fall through to HTTP " + defaultStatus
+             + ". Add it under [errors] in " + routesTomlPath
+             + " (e.g. 400 = [\"" + cause.simpleName()
+             + "\"]).";
     }
 
     private static String deadPatternMessage(String pattern, int status, String routesTomlPath) {
-        return "Dead error pattern '" + pattern + "' (HTTP " + status
-               + "): it matches no Cause type in this slice. Remove it or fix the glob in " + routesTomlPath + ".";
+        return "Dead error pattern '" + pattern
+             + "' (HTTP " + status
+             + "): it matches no Cause type in this slice. Remove it or fix the glob in " + routesTomlPath
+             + ".";
     }
 
     private static String deadReferenceMessage(String reference, int status, String routesTomlPath) {
-        return "Dead error type reference '" + reference + "' (HTTP " + status
-               + "): it resolves to no Cause type in this slice - a renamed or removed Cause? Fix or remove it in "
-               + routesTomlPath + ".";
+        return "Dead error type reference '" + reference
+             + "' (HTTP " + status
+             + "): it resolves to no Cause type in this slice - a renamed or removed Cause? Fix or remove it in " + routesTomlPath
+             + ".";
     }
 
     private static String deadExplicitMessage(String name, int status, String routesTomlPath) {
-        return "Dead explicit error mapping '" + name + "' (HTTP " + status
-               + "): it resolves to no Cause type in this slice. Fix or remove it in " + routesTomlPath + ".";
+        return "Dead explicit error mapping '" + name
+             + "' (HTTP " + status
+             + "): it resolves to no Cause type in this slice. Fix or remove it in " + routesTomlPath
+             + ".";
     }
 
     record unused() implements ErrorMappingValidator {}

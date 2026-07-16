@@ -14,12 +14,12 @@
  *  limitations under the License.
  *
  */
-
 package org.pragmatica.lang.utils;
+
+import java.util.concurrent.ScheduledFuture;
 
 import org.pragmatica.lang.io.TimeSpan;
 
-import java.util.concurrent.ScheduledFuture;
 
 /// Common scheduler for periodic and one-shot work across the runtime.
 ///

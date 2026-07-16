@@ -13,10 +13,10 @@
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  */
-
 package org.pragmatica.consensus.topology;
 
 import org.pragmatica.messaging.Message;
+
 
 /// Notification related to topology change.
 sealed public interface TopologyManagementMessage extends Message.Local {

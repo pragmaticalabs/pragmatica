@@ -1,10 +1,5 @@
 package org.pragmatica.jbct.init;
 
-import org.pragmatica.lang.Option;
-import org.pragmatica.lang.Result;
-import org.pragmatica.lang.Unit;
-import org.pragmatica.lang.utils.Causes;
-
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -12,14 +7,19 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 
+import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.utils.Causes;
+
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
 
 /// Initializes a new Aether slice project structure.
 public final class SliceProjectInitializer {
     private static final Logger log = LoggerFactory.getLogger(SliceProjectInitializer.class);
     private static final String TEMPLATES_PATH = "/templates/slice/";
-
     // Default versions - used as fallback when offline
     private static final String DEFAULT_JBCT_VERSION = GitHubVersionResolver.defaultJbctVersion();
     private static final String DEFAULT_PRAGMATICA_VERSION = GitHubVersionResolver.defaultPragmaticaVersion();
@@ -57,7 +57,11 @@ public final class SliceProjectInitializer {
     public static Result<SliceProjectInitializer> sliceProjectInitializer(Path projectDir,
                                                                           String groupId,
                                                                           String artifactId) {
-        return sliceProjectInitializer(projectDir, groupId, artifactId, null, GitHubVersionResolver.gitHubVersionResolver());
+        return sliceProjectInitializer(projectDir,
+                                       groupId,
+                                       artifactId,
+                                       null,
+                                       GitHubVersionResolver.gitHubVersionResolver());
     }
 
     /// Create initializer with project parameters and version resolver.
@@ -74,7 +78,11 @@ public final class SliceProjectInitializer {
                                                                           String groupId,
                                                                           String artifactId,
                                                                           String sliceName) {
-        return sliceProjectInitializer(projectDir, groupId, artifactId, sliceName, GitHubVersionResolver.gitHubVersionResolver());
+        return sliceProjectInitializer(projectDir,
+                                       groupId,
+                                       artifactId,
+                                       sliceName,
+                                       GitHubVersionResolver.gitHubVersionResolver());
     }
 
     /// Create initializer with explicit slice name and version resolver.
@@ -84,17 +92,18 @@ public final class SliceProjectInitializer {
                                                                           String sliceName,
                                                                           GitHubVersionResolver resolver) {
         if (artifactId == null || artifactId.isBlank()) {
-            return Causes.cause("artifactId must not be null or empty")
-                         .result();
+            return Causes.cause("artifactId must not be null or empty").result();
         }
+
         if (groupId == null || groupId.isBlank()) {
-            return Causes.cause("groupId must not be null or empty")
-                         .result();
+            return Causes.cause("groupId must not be null or empty").result();
         }
+
         var basePackage = groupId + "." + artifactId.replace("-", "");
         var effectiveName = (sliceName != null && !sliceName.isBlank())
                             ? sliceName
                             : ProjectFiles.toCamelCase(artifactId);
+
         return Result.success(new SliceProjectInitializer(projectDir,
                                                           groupId,
                                                           artifactId,
@@ -114,17 +123,18 @@ public final class SliceProjectInitializer {
                                                                           String pragmaticaVersion,
                                                                           String aetherVersion) {
         if (artifactId == null || artifactId.isBlank()) {
-            return Causes.cause("artifactId must not be null or empty")
-                         .result();
+            return Causes.cause("artifactId must not be null or empty").result();
         }
+
         if (groupId == null || groupId.isBlank()) {
-            return Causes.cause("groupId must not be null or empty")
-                         .result();
+            return Causes.cause("groupId must not be null or empty").result();
         }
+
         var basePackage = groupId + "." + artifactId.replace("-", "");
         var effectiveName = (sliceName != null && !sliceName.isBlank())
                             ? sliceName
                             : ProjectFiles.toCamelCase(artifactId);
+
         return Result.success(new SliceProjectInitializer(projectDir,
                                                           groupId,
                                                           artifactId,
@@ -143,13 +153,14 @@ public final class SliceProjectInitializer {
     }
 
     private Result<Unit> createDirectories() {
-        try{
+        try {
             var srcMainJava = projectDir.resolve("src/main/java");
             var srcTestJava = projectDir.resolve("src/test/java");
             var srcTestResources = projectDir.resolve("src/test/resources");
             var metaInfDeps = projectDir.resolve("src/main/resources/META-INF/dependencies");
             var slicesDir = projectDir.resolve("src/main/resources/slices");
             var schemaDir = projectDir.resolve("schema");
+
             Files.createDirectories(srcMainJava);
             Files.createDirectories(srcTestJava);
             Files.createDirectories(srcTestResources);
@@ -158,13 +169,14 @@ public final class SliceProjectInitializer {
             Files.createDirectories(schemaDir);
             var packagePath = basePackage.replace(".", "/");
             var sliceSubPackage = sliceName.toLowerCase();
+
             Files.createDirectories(srcMainJava.resolve(packagePath + "/" + sliceSubPackage));
             Files.createDirectories(srcTestJava.resolve(packagePath + "/" + sliceSubPackage));
             Files.createDirectories(projectDir.resolve("src/main/resources/" + packagePath + "/" + sliceSubPackage));
+
             return Result.success(Unit.unit());
         } catch (Exception e) {
-            return Causes.cause("Failed to create directories: " + e.getMessage())
-                         .result();
+            return Causes.cause("Failed to create directories: " + e.getMessage()).result();
         }
     }
 
@@ -177,8 +189,7 @@ public final class SliceProjectInitializer {
                             createInfraFiles(),
                             createRunScripts(),
                             createRoutes(),
-                            createSchema())
-                     .flatMap(this::combineWithDependencyManifest);
+                            createSchema()).flatMap(this::combineWithDependencyManifest);
     }
 
     private Result<List<Path>> combineWithDependencyManifest(List<List<Path>> fileLists) {
@@ -189,12 +200,15 @@ public final class SliceProjectInitializer {
         var allFiles = fileLists.stream()
                                 .flatMap(List::stream)
                                 .collect(java.util.stream.Collectors.toCollection(ArrayList::new));
+
         allFiles.add(manifest);
+
         return allFiles;
     }
 
     private Result<List<Path>> createSliceConfigFiles() {
         var slicesDir = projectDir.resolve("src/main/resources/slices");
+
         return createFile("slice.toml.template", slicesDir.resolve(sliceName + ".toml")).map(path -> List.of(path));
     }
 
@@ -209,16 +223,16 @@ public final class SliceProjectInitializer {
         var packagePath = basePackage.replace(".", "/") + "/" + sliceSubPackage;
         var srcMainJava = projectDir.resolve("src/main/java");
         var srcTestJava = projectDir.resolve("src/test/java");
+
         return Result.allOf(createFile("Slice.java.template",
-                                       srcMainJava.resolve(packagePath)
-                                                  .resolve(sliceName + ".java")),
+                                       srcMainJava.resolve(packagePath).resolve(sliceName + ".java")),
                             createFile("SliceTest.java.template",
-                                       srcTestJava.resolve(packagePath)
-                                                  .resolve(sliceName + "Test.java")));
+                                       srcTestJava.resolve(packagePath).resolve(sliceName + "Test.java")));
     }
 
     private Result<List<Path>> createTestResources() {
         var srcTestResources = projectDir.resolve("src/test/resources");
+
         return createFile("log4j2-test.xml.template", srcTestResources.resolve("log4j2-test.xml")).map(path -> List.of(path));
     }
 
@@ -241,9 +255,12 @@ public final class SliceProjectInitializer {
     }
 
     private Result<List<Path>> createRunScripts() {
-        return Result.allOf(createFile("run-forge.sh.template", projectDir.resolve("run-forge.sh")),
-                            createFile("start-postgres.sh.template", projectDir.resolve("start-postgres.sh")),
-                            createFile("stop-postgres.sh.template", projectDir.resolve("stop-postgres.sh")))
+        return Result.allOf(createFile("run-forge.sh.template",
+                                       projectDir.resolve("run-forge.sh")),
+                            createFile("start-postgres.sh.template",
+                                       projectDir.resolve("start-postgres.sh")),
+                            createFile("stop-postgres.sh.template",
+                                       projectDir.resolve("stop-postgres.sh")))
                      .onSuccess(scripts -> scripts.forEach(SliceProjectInitializer::makeExecutable));
     }
 
@@ -251,6 +268,7 @@ public final class SliceProjectInitializer {
         var sliceSubPackage = sliceName.toLowerCase();
         var packagePath = basePackage.replace(".", "/") + "/" + sliceSubPackage;
         var routesDir = projectDir.resolve("src/main/resources/" + packagePath);
+
         return createFile("routes.toml.template", routesDir.resolve("routes.toml")).map(path -> List.of(path));
     }
 
@@ -259,14 +277,15 @@ public final class SliceProjectInitializer {
     }
 
     private Result<Path> createDependencyManifest() {
-        try{
+        try {
             var resources = projectDir.resolve("src/main/resources/META-INF/dependencies");
             var dependencyFile = resources.resolve(basePackage + "." + sliceName.toLowerCase() + "." + sliceName);
+
             Files.writeString(dependencyFile, "# Slice dependencies (one artifact per line)\n");
+
             return Result.success(dependencyFile);
         } catch (Exception e) {
-            return Causes.cause("Failed to create dependency manifest: " + e.getMessage())
-                         .result();
+            return Causes.cause("Failed to create dependency manifest: " + e.getMessage()).result();
         }
     }
 
@@ -274,17 +293,20 @@ public final class SliceProjectInitializer {
         if (Files.exists(targetPath)) {
             return Result.success(targetPath);
         }
+
         try (var in = getClass().getResourceAsStream(TEMPLATES_PATH + templateName)) {
             if (in == null) {
                 return createFromInlineTemplate(templateName, targetPath);
             }
+
             var content = new String(in.readAllBytes(), StandardCharsets.UTF_8);
+
             content = substituteVariables(content);
             Files.writeString(targetPath, content);
+
             return Result.success(targetPath);
         } catch (IOException e) {
-            return Causes.cause("Failed to create " + targetPath + ": " + e.getMessage())
-                         .result();
+            return Causes.cause("Failed to create " + targetPath + ": " + e.getMessage()).result();
         }
     }
 
@@ -294,13 +316,14 @@ public final class SliceProjectInitializer {
     }
 
     private Result<Path> writeTemplate(String template, Path targetPath) {
-        try{
+        try {
             var content = substituteVariables(template);
+
             Files.writeString(targetPath, content);
+
             return Result.success(targetPath);
         } catch (IOException e) {
-            return Causes.cause("Failed to create " + targetPath + ": " + e.getMessage())
-                         .result();
+            return Causes.cause("Failed to create " + targetPath + ": " + e.getMessage()).result();
         }
     }
 
@@ -331,6 +354,7 @@ public final class SliceProjectInitializer {
 
     private String substituteVariables(String content) {
         var slicePackage = basePackage + "." + sliceName.toLowerCase();
+
         return content.replace("{{groupId}}", groupId)
                       .replace("{{artifactId}}", artifactId)
                       .replace("{{sliceName}}", sliceName)
@@ -344,8 +368,9 @@ public final class SliceProjectInitializer {
     }
 
     private static void makeExecutable(Path path) {
-        try{
+        try {
             var perms = Files.getPosixFilePermissions(path);
+
             perms.add(java.nio.file.attribute.PosixFilePermission.OWNER_EXECUTE);
             perms.add(java.nio.file.attribute.PosixFilePermission.GROUP_EXECUTE);
             Files.setPosixFilePermissions(path, perms);

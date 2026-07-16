@@ -13,7 +13,6 @@
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  */
-
 package org.pragmatica.consensus.net.quic;
 
 import org.pragmatica.consensus.NodeId;
@@ -30,25 +29,29 @@ import org.pragmatica.lang.Contract;
 /// `HealthReconciler` with a `HealthSignal.QuicDisconnect` and does NOT fire on
 /// join/reconnect. This listener fires on every QUIC peer-state change so CTM-style
 /// stability bookkeeping can remain consistent with the transport.
-@Contract public interface QuicPeerStateListener {
+@Contract
+public interface QuicPeerStateListener {
     /// First-time peer attach (INIT/CONNECTING -> CONNECTED). Upstream consumers
     /// receive a fresh `TransportObservation.PeerJoined`.
     void onPeerJoined(NodeId nodeId);
-
     /// Reconnect after a transient eviction (EVICTED -> CONNECTED, or a stale
     /// CONNECTED link replaced). Upstream `TransportObservation.PeerJoined` is suppressed;
     /// consumers that track peer-state churn (e.g., CTM stability gate) observe via this hook
     /// or via `TransportObservation.PeerReconnected`.
     void onPeerReconnected(NodeId nodeId);
-
     /// Peer authoritatively left (REMOVED) or QUIC view-change emitted REMOVE.
     void onPeerLeft(NodeId nodeId);
 
     static QuicPeerStateListener noop() {
         return new QuicPeerStateListener() {
-            @Override public void onPeerJoined(NodeId nodeId) {}
-            @Override public void onPeerReconnected(NodeId nodeId) {}
-            @Override public void onPeerLeft(NodeId nodeId) {}
+            @Override
+            public void onPeerJoined(NodeId nodeId) {}
+
+            @Override
+            public void onPeerReconnected(NodeId nodeId) {}
+
+            @Override
+            public void onPeerLeft(NodeId nodeId) {}
         };
     }
 }

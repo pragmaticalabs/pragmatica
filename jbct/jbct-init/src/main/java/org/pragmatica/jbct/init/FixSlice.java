@@ -1,12 +1,5 @@
 package org.pragmatica.jbct.init;
 
-import org.pragmatica.jbct.slice.SliceManifest;
-import org.pragmatica.lang.Cause;
-import org.pragmatica.lang.Option;
-import org.pragmatica.lang.Result;
-import org.pragmatica.lang.Unit;
-import org.pragmatica.lang.utils.Causes;
-
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -17,6 +10,14 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.regex.Pattern;
+
+import org.pragmatica.jbct.slice.SliceManifest;
+import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.utils.Causes;
+
 
 /// Fills add-only, manifest-derived configuration gaps in an existing Aether slice project.
 ///
@@ -38,13 +39,11 @@ public final class FixSlice {
     /// SQL datasource resource types get a `[database]`-style stub (reused from
     /// [PersistenceAdder]); every other type gets a bare header plus a TODO comment.
     private static final Set<String> SQL_RESOURCE_TYPES = Set.of("SqlConnector", "PgSqlConnector");
-
     /// Matches a whole-line TOML section header, e.g. `[database.pool_config]`.
     /// Mirrors the pattern used by the blueprint generator so the diff semantics match.
     private static final Pattern SECTION_HEADER = Pattern.compile("^\\s*\\[([^\\[\\]]+)]\\s*$");
 
-    private static final Cause NO_MANIFESTS =
-        Causes.cause("No slice manifests found under target/classes/META-INF/slice. Run 'mvn compile' first.");
+    private static final Cause NO_MANIFESTS = Causes.cause("No slice manifests found under target/classes/META-INF/slice. Run 'mvn compile' first.");
 
     private final Path projectDir;
 
@@ -70,28 +69,26 @@ public final class FixSlice {
     }
 
     private Result<FixResult> applyFixes(List<SliceManifest> manifests) {
-        return createMissingSliceConfigs(manifests)
-                  .flatMap(createdConfigs -> ensureResourceSections(manifests, createdConfigs));
+        return createMissingSliceConfigs(manifests).flatMap(createdConfigs -> ensureResourceSections(manifests,
+                                                                                                     createdConfigs));
     }
 
     // --- Fix 1: missing slices/<Name>.toml ---
-
     private Result<List<Path>> createMissingSliceConfigs(List<SliceManifest> manifests) {
-        var writes = manifests.stream()
-                              .filter(this::sliceConfigMissing)
-                              .map(this::writeSliceConfig)
-                              .toList();
+        var writes = manifests.stream().filter(this::sliceConfigMissing).map(this::writeSliceConfig).toList();
+
         return Result.allOf(writes);
     }
 
     private boolean sliceConfigMissing(SliceManifest manifest) {
-        return !Files.exists(sliceConfigPath(manifest));
+        return ! Files.exists(sliceConfigPath(manifest));
     }
 
     private Result<Path> writeSliceConfig(SliceManifest manifest) {
         var target = sliceConfigPath(manifest);
-        return createDirectories(target.getParent())
-                  .flatMap(_ -> ProjectFiles.writeNewFile(target, SliceAdder.sliceConfigContent(manifest.sliceName())));
+
+        return createDirectories(target.getParent()).flatMap(_ -> ProjectFiles.writeNewFile(target,
+                                                                                            SliceAdder.sliceConfigContent(manifest.sliceName())));
     }
 
     private Path sliceConfigPath(SliceManifest manifest) {
@@ -99,7 +96,6 @@ public final class FixSlice {
     }
 
     // --- Fix 2: missing resources.toml [section] ---
-
     private Result<FixResult> ensureResourceSections(List<SliceManifest> manifests, List<Path> createdConfigs) {
         return readResourcesToml().flatMap(existing -> applyResourceSections(manifests, createdConfigs, existing));
     }
@@ -109,14 +105,17 @@ public final class FixSlice {
                                                     Option<String> existingContent) {
         Set<String> existingSections = existingContent.map(FixSlice::extractSectionHeaders).or(Set.of());
         var missing = missingSections(manifests, existingSections);
+
         if (missing.isEmpty()) {
             return Result.success(new FixResult(createdConfigs, List.of()));
         }
+
         return writeSections(existingContent, missing, createdConfigs);
     }
 
     private static Map<String, String> missingSections(List<SliceManifest> manifests, Set<String> existingSections) {
         var missing = new LinkedHashMap<String, String>();
+
         for (var manifest : manifests) {
             for (var ref : manifest.resourceConfigRefs()) {
                 if (!existingSections.contains(ref.configSection()) && !missing.containsKey(ref.configSection())) {
@@ -124,6 +123,7 @@ public final class FixSlice {
                 }
             }
         }
+
         return missing;
     }
 
@@ -133,23 +133,30 @@ public final class FixSlice {
         var blocks = renderBlocks(missing);
         var newContent = existingContent.map(content -> content + sectionSeparator(content) + blocks)
                                         .or(RESOURCES_HEADER + blocks);
-        return writeString(resourcesTomlPath(), newContent)
-                  .map(_ -> buildResult(createdConfigs, existingContent.isEmpty(), missing));
+
+        return writeString(resourcesTomlPath(), newContent).map(_ -> buildResult(createdConfigs,
+                                                                                 existingContent.isEmpty(),
+                                                                                 missing));
     }
 
     private FixResult buildResult(List<Path> createdConfigs, boolean freshResources, Map<String, String> missing) {
         var created = new ArrayList<>(createdConfigs);
+
         if (freshResources) {
             created.add(resourcesTomlPath());
         }
-        return new FixResult(List.copyOf(created), List.copyOf(missing.keySet()));
+
+        return new FixResult(List.copyOf(created),
+                             List.copyOf(missing.keySet()));
     }
 
     private static String renderBlocks(Map<String, String> missing) {
         var sb = new StringBuilder();
+
         for (var entry : missing.entrySet()) {
             sb.append(renderBlock(entry.getKey(), entry.getValue()));
         }
+
         return sb.toString();
     }
 
@@ -171,12 +178,15 @@ public final class FixSlice {
 
     private static Set<String> extractSectionHeaders(String content) {
         var sections = new LinkedHashSet<String>();
+
         for (var line : content.split("\n")) {
             var matcher = SECTION_HEADER.matcher(line);
+
             if (matcher.matches()) {
                 sections.add(matcher.group(1).trim());
             }
         }
+
         return sections;
     }
 
@@ -185,24 +195,25 @@ public final class FixSlice {
     }
 
     // --- Manifest loading ---
-
     private Result<List<SliceManifest>> loadManifests() {
         var manifestDir = projectDir.resolve("target/classes/META-INF/slice");
+
         if (!Files.isDirectory(manifestDir)) {
             return NO_MANIFESTS.result();
         }
+
         return listManifestFiles(manifestDir).flatMap(FixSlice::loadAll);
     }
 
     private static Result<List<Path>> listManifestFiles(Path dir) {
         try (var stream = Files.list(dir)) {
-            var files = stream.filter(path -> path.getFileName().toString().endsWith(".manifest"))
-                              .sorted()
-                              .toList();
+            var files = stream.filter(path -> path.getFileName()
+                                                  .toString()
+                                                  .endsWith(".manifest")).sorted().toList();
+
             return Result.success(files);
         } catch (IOException e) {
-            return Causes.cause("Failed to list manifests in " + dir + ": " + e.getMessage())
-                         .result();
+            return Causes.cause("Failed to list manifests in " + dir + ": " + e.getMessage()).result();
         }
     }
 
@@ -210,18 +221,18 @@ public final class FixSlice {
         if (files.isEmpty()) {
             return NO_MANIFESTS.result();
         }
+
         return Result.allOf(files.stream().map(SliceManifest::load).toList());
     }
 
     // --- File IO ---
-
     private static Result<Unit> createDirectories(Path dir) {
         try {
             Files.createDirectories(dir);
+
             return Result.success(Unit.unit());
         } catch (IOException e) {
-            return Causes.cause("Failed to create directory " + dir + ": " + e.getMessage())
-                         .result();
+            return Causes.cause("Failed to create directory " + dir + ": " + e.getMessage()).result();
         }
     }
 
@@ -229,8 +240,7 @@ public final class FixSlice {
         try {
             return Result.success(Files.readString(path));
         } catch (IOException e) {
-            return Causes.cause("Failed to read " + path + ": " + e.getMessage())
-                         .result();
+            return Causes.cause("Failed to read " + path + ": " + e.getMessage()).result();
         }
     }
 
@@ -238,21 +248,21 @@ public final class FixSlice {
         try {
             return Result.success(Files.writeString(path, content));
         } catch (IOException e) {
-            return Causes.cause("Failed to write " + path + ": " + e.getMessage())
-                         .result();
+            return Causes.cause("Failed to write " + path + ": " + e.getMessage()).result();
         }
     }
 
     private Result<Option<String>> readResourcesToml() {
         var path = resourcesTomlPath();
+
         if (!Files.exists(path)) {
             return Result.success(Option.none());
         }
+
         return readString(path).map(Option::some);
     }
 
     // Templates
-
     private static final String RESOURCES_HEADER = """
         # Resource configuration
         # Sections below are referenced by @ResourceQualifier annotations in the slices.

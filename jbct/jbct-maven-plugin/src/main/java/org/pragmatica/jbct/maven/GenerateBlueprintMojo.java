@@ -1,16 +1,5 @@
 package org.pragmatica.jbct.maven;
 
-import org.pragmatica.jbct.config.BlueprintConfig;
-import org.pragmatica.jbct.config.BlueprintConfig.SchemaMode;
-import org.pragmatica.jbct.config.ConfigLoader;
-import org.pragmatica.jbct.slice.SliceConfig;
-import org.pragmatica.lang.Contract;
-import org.pragmatica.jbct.slice.SliceManifest;
-import org.pragmatica.jbct.slice.SliceManifest.ResourceConfigRef;
-import org.pragmatica.jbct.slice.SliceManifest.SliceDependency;
-import org.pragmatica.lang.Option;
-import org.pragmatica.lang.io.FileOps;
-
 import java.io.File;
 import java.io.IOException;
 import java.nio.file.Path;
@@ -25,6 +14,17 @@ import java.util.Set;
 import java.util.jar.JarFile;
 import java.util.regex.Pattern;
 
+import org.pragmatica.jbct.config.BlueprintConfig;
+import org.pragmatica.jbct.config.BlueprintConfig.SchemaMode;
+import org.pragmatica.jbct.config.ConfigLoader;
+import org.pragmatica.jbct.slice.SliceConfig;
+import org.pragmatica.lang.Contract;
+import org.pragmatica.jbct.slice.SliceManifest;
+import org.pragmatica.jbct.slice.SliceManifest.ResourceConfigRef;
+import org.pragmatica.jbct.slice.SliceManifest.SliceDependency;
+import org.pragmatica.lang.Option;
+import org.pragmatica.lang.io.FileOps;
+
 import org.apache.maven.archiver.MavenArchiveConfiguration;
 import org.apache.maven.archiver.MavenArchiver;
 import org.apache.maven.plugin.AbstractMojo;
@@ -38,12 +38,11 @@ import org.apache.maven.project.MavenProject;
 import org.apache.maven.project.MavenProjectHelper;
 import org.codehaus.plexus.archiver.jar.JarArchiver;
 
+
 /// Generates Blueprint.toml from slice manifests and their transitive dependencies.
 /// The blueprint lists all slices in topological order (dependencies before dependents).
 @Contract
-@Mojo(name = "generate-blueprint",
- defaultPhase = LifecyclePhase.PACKAGE,
- requiresDependencyResolution = ResolutionScope.COMPILE)
+@Mojo(name = "generate-blueprint", defaultPhase = LifecyclePhase.PACKAGE, requiresDependencyResolution = ResolutionScope.COMPILE)
 public class GenerateBlueprintMojo extends AbstractMojo {
     @Parameter(defaultValue = "${project}", readonly = true, required = true)
     private MavenProject project;
@@ -54,8 +53,7 @@ public class GenerateBlueprintMojo extends AbstractMojo {
     @Parameter(defaultValue = "${project.build.directory}", readonly = true)
     private File outputDirectory;
 
-    @Parameter(property = "jbct.blueprint.output",
-    defaultValue = "${project.build.directory}/blueprint.toml")
+    @Parameter(property = "jbct.blueprint.output", defaultValue = "${project.build.directory}/blueprint.toml")
     private File blueprintFile;
 
     @Parameter(property = "jbct.blueprint.id")
@@ -83,7 +81,6 @@ public class GenerateBlueprintMojo extends AbstractMojo {
     private final List<SliceEntry> orderedSlices = new ArrayList<>();
     private final Set<String> visited = new HashSet<>();
     private final Set<String> inStack = new HashSet<>();
-
     // Maps interface qualified name to artifact for local slices
     private final Map<String, String> interfaceToArtifact = new LinkedHashMap<>();
 
@@ -91,42 +88,48 @@ public class GenerateBlueprintMojo extends AbstractMojo {
     public void execute() throws MojoExecutionException {
         if (skip) {
             getLog().info("Skipping blueprint generation");
+
             return;
         }
+
         var localManifests = loadLocalManifests();
         var dependencyManifests = loadDependencyManifests(localManifests);
+
         if (localManifests.isEmpty() && dependencyManifests.isEmpty()) {
             getLog().info("No slice manifests found (local or dependency) - skipping blueprint generation");
+
             return;
         }
+
         validateResourceConfigs(localManifests, dependencyManifests);
         validateSchemaPresence(localManifests, dependencyManifests);
         var graph = buildDependencyGraph(localManifests, dependencyManifests);
+
         topologicalSort(graph);
         generateBlueprint();
         getLog().info("Generated blueprint: " + blueprintFile);
-
         if (packageBlueprint) {
             packageBlueprintJar();
         }
     }
 
     // --- Resource config validation ---
-
     private static final Pattern SECTION_HEADER = Pattern.compile("^\\s*\\[([^\\[\\]]+)]\\s*$");
 
     private void validateResourceConfigs(List<SliceManifest> localManifests,
                                          List<DependencyManifest> dependencyManifests) throws MojoExecutionException {
         var allManifests = new ArrayList<SliceManifest>(localManifests);
-        dependencyManifests.stream().map(DependencyManifest::manifest).forEach(allManifests::add);
 
+        dependencyManifests.stream().map(DependencyManifest::manifest).forEach(allManifests::add);
         var allRefs = collectAllConfigRefs(allManifests);
+
         if (allRefs.isEmpty()) {
             return;
         }
 
         var availableSections = parseResourcesTomlSections();
         var missing = new LinkedHashSet<String>();
+
         for (var ref : allRefs) {
             if (!availableSections.contains(ref.configSection())) {
                 missing.add(ref.configSection());
@@ -135,74 +138,97 @@ public class GenerateBlueprintMojo extends AbstractMojo {
 
         if (!missing.isEmpty()) {
             var message = new StringBuilder("Resource config validation failed.\n");
+
             message.append("The following config sections are referenced by @ResourceQualifier annotations but missing from resources.toml:\n\n");
             for (var section : missing) {
                 var slices = allRefs.stream()
-                                    .filter(r -> r.configSection().equals(section))
+                                    .filter(r -> r.configSection()
+                                                  .equals(section))
                                     .map(ResourceConfigRef::resourceType)
                                     .distinct()
                                     .toList();
-                message.append("  [").append(section).append("]  — required by: ").append(String.join(", ", slices)).append("\n");
+
+                message.append("  [")
+                       .append(section)
+                       .append("]  — required by: ")
+                       .append(String.join(", ", slices))
+                       .append("\n");
             }
+
             message.append("\nAdd the missing sections to: ").append(resourcesTomlFile.getPath());
+
             throw new MojoExecutionException(message.toString());
         }
 
-        getLog().info("Resource config validation passed: " + allRefs.size() + " reference(s), "
-                      + availableSections.size() + " section(s) in resources.toml");
+        getLog().info("Resource config validation passed: " + allRefs.size()
+                     + " reference(s), " + availableSections.size()
+                     + " section(s) in resources.toml");
     }
 
     private List<ResourceConfigRef> collectAllConfigRefs(List<SliceManifest> manifests) {
         var refs = new ArrayList<ResourceConfigRef>();
+
         for (var manifest : manifests) {
             for (var ref : manifest.resourceConfigRefs()) {
-                refs.add(new ResourceConfigRef(manifest.sliceName() + ":" + ref.resourceType(), ref.configSection()));
+                refs.add(new ResourceConfigRef(manifest.sliceName() + ":" + ref.resourceType(),
+                                               ref.configSection()));
             }
         }
+
         return refs;
     }
 
     private Set<String> parseResourcesTomlSections() throws MojoExecutionException {
         var path = resourcesTomlFile.toPath();
+
         if (!FileOps.exists(path)) {
             return Set.of();
         }
+
         var result = FileOps.readString(path).map(this::extractSectionHeaders);
+
         if (result.isFailure()) {
             throw new MojoExecutionException("Failed to read resources.toml: " + resourcesTomlFile);
         }
+
         return result.unwrap();
     }
 
     private Set<String> extractSectionHeaders(String content) {
         var sections = new LinkedHashSet<String>();
+
         for (var line : content.split("\n")) {
             var matcher = SECTION_HEADER.matcher(line);
+
             if (matcher.matches()) {
                 sections.add(matcher.group(1).trim());
             }
         }
+
         return sections;
     }
 
     // --- Schema validation ---
-
     private static final Set<String> SQL_RESOURCE_TYPES = Set.of("SqlConnector", "PgSqlConnector");
 
     private void validateSchemaPresence(List<SliceManifest> localManifests,
                                         List<DependencyManifest> dependencyManifests) throws MojoExecutionException {
         var blueprintConfig = loadBlueprintConfig();
+
         if (blueprintConfig.schema() == SchemaMode.EXTERNAL) {
             getLog().debug("Schema validation skipped (blueprint.schema = external)");
+
             return;
         }
 
         var datasources = collectDatasources(localManifests, dependencyManifests);
+
         if (datasources.isEmpty()) {
             return;
         }
 
         var missing = new LinkedHashSet<String>();
+
         for (var datasource : datasources) {
             if (!hasSchemaFiles(datasource)) {
                 missing.add(datasource);
@@ -211,10 +237,12 @@ public class GenerateBlueprintMojo extends AbstractMojo {
 
         if (missing.isEmpty()) {
             getLog().info("Schema validation passed: " + datasources.size() + " datasource(s) with migrations");
+
             return;
         }
 
         var message = buildSchemaErrorMessage(missing);
+
         if (blueprintConfig.schema() == SchemaMode.OPTIONAL) {
             getLog().warn(message);
         } else {
@@ -224,14 +252,19 @@ public class GenerateBlueprintMojo extends AbstractMojo {
 
     private BlueprintConfig loadBlueprintConfig() {
         var projectDir = Option.some(project.getBasedir().toPath());
-        return ConfigLoader.load(Option.none(), projectDir).blueprint();
+
+        return ConfigLoader.load(Option.none(),
+                                 projectDir)
+                           .blueprint();
     }
 
     private Set<String> collectDatasources(List<SliceManifest> localManifests,
-                                            List<DependencyManifest> dependencyManifests) {
+                                           List<DependencyManifest> dependencyManifests) {
         var allManifests = new ArrayList<SliceManifest>(localManifests);
+
         dependencyManifests.stream().map(DependencyManifest::manifest).forEach(allManifests::add);
         var datasources = new LinkedHashSet<String>();
+
         for (var manifest : allManifests) {
             for (var ref : manifest.resourceConfigRefs()) {
                 if (SQL_RESOURCE_TYPES.contains(ref.resourceType())) {
@@ -239,11 +272,13 @@ public class GenerateBlueprintMojo extends AbstractMojo {
                 }
             }
         }
+
         return datasources;
     }
 
     private boolean hasSchemaFiles(String datasource) {
         var schemaPath = schemaDirectory.toPath();
+
         if (!FileOps.exists(schemaPath) || !FileOps.isDirectory(schemaPath)) {
             return false;
         }
@@ -251,49 +286,64 @@ public class GenerateBlueprintMojo extends AbstractMojo {
         var migrationDir = datasource.equals("database")
                            ? schemaPath
                            : schemaPath.resolve(datasource.substring("database.".length()));
+
         if (!FileOps.exists(migrationDir) || !FileOps.isDirectory(migrationDir)) {
             return false;
         }
+
         return FileOps.list(migrationDir)
-                      .map(paths -> paths.stream().anyMatch(p -> p.getFileName().toString().matches("V\\d+__.*\\.sql")))
+                      .map(paths -> paths.stream()
+                                         .anyMatch(p -> p.getFileName()
+                                                         .toString()
+                                                         .matches("V\\d+__.*\\.sql")))
                       .or(false);
     }
 
     private String buildSchemaErrorMessage(Set<String> missing) {
         var sb = new StringBuilder("Schema validation failed.\n");
+
         sb.append("The following datasources are referenced by @Sql/@PgSql annotations but have no migration scripts:\n\n");
         for (var datasource : missing) {
             var expectedPath = datasource.equals("database")
                                ? "schema/V1__<name>.sql"
                                : "schema/" + datasource.substring("database.".length()) + "/V1__<name>.sql";
+
             sb.append("  ").append(datasource).append("  — expected at: ").append(expectedPath).append("\n");
         }
+
         sb.append("\nIf the schema is managed externally, add to jbct.toml:\n\n");
         sb.append("  [blueprint]\n");
         sb.append("  schema = \"external\"\n");
+
         return sb.toString();
     }
 
     // --- Manifest loading ---
-
     private List<SliceManifest> loadLocalManifests() throws MojoExecutionException {
         var manifestDir = new File(classesDirectory, "META-INF/slice");
+
         if (!manifestDir.exists()) {
             return List.of();
         }
+
         var manifestFiles = manifestDir.listFiles((d, n) -> n.endsWith(".manifest"));
+
         if (manifestFiles == null) {
             return List.of();
         }
+
         var manifests = new ArrayList<SliceManifest>();
+
         for (var file : manifestFiles) {
             var result = SliceManifest.load(file.toPath());
+
             if (result.isSuccess()) {
                 manifests.add(result.unwrap());
             } else {
                 throw new MojoExecutionException("Failed to load: " + file);
             }
         }
+
         return manifests;
     }
 
@@ -302,23 +352,31 @@ public class GenerateBlueprintMojo extends AbstractMojo {
     private List<DependencyManifest> loadDependencyManifests(List<SliceManifest> localManifests) {
         // Collect local slice interface names to avoid duplicating local slices found in dependency JARs
         var localInterfaces = new HashSet<String>();
+
         for (var m : localManifests) {
             localInterfaces.add(m.slicePackage() + "." + m.sliceName());
         }
+
         var result = new ArrayList<DependencyManifest>();
+
         for (var artifact : project.getArtifacts()) {
             if (!"compile".equals(artifact.getScope()) && !"runtime".equals(artifact.getScope())) {
                 continue;
             }
+
             var jar = artifact.getFile();
+
             if (jar == null || !jar.exists() || !jar.getName().endsWith(".jar")) {
                 continue;
             }
+
             loadManifestFromJar(jar).onPresent(manifest -> addIfNotLocal(manifest, artifact, localInterfaces, result));
         }
+
         if (!result.isEmpty()) {
             getLog().info("Discovered " + result.size() + " external slice manifest(s) from dependencies");
         }
+
         return result;
     }
 
@@ -327,55 +385,60 @@ public class GenerateBlueprintMojo extends AbstractMojo {
                                Set<String> localInterfaces,
                                List<DependencyManifest> result) {
         var iface = manifest.slicePackage() + "." + manifest.sliceName();
+
         if (!localInterfaces.contains(iface)) {
             var coords = artifact.getGroupId() + ":" + artifact.getArtifactId() + ":" + artifact.getVersion();
+
             result.add(new DependencyManifest(coords, manifest));
             getLog().debug("Discovered external slice manifest: " + iface + " from " + coords);
         }
     }
 
     private Map<String, SliceEntry> buildDependencyGraph(List<SliceManifest> localManifests,
-                                                         List<DependencyManifest> dependencyManifests)
-    throws MojoExecutionException {
+                                                         List<DependencyManifest> dependencyManifests) throws MojoExecutionException {
         var graph = new LinkedHashMap<String, SliceEntry>();
         // First pass: register all local slices and build interface-to-artifact map
         for (var manifest : localManifests) {
             var artifact = project.getGroupId() + ":" + manifest.implArtifactId() + ":" + project.getVersion();
             var config = loadSliceConfig(manifest);
             var entry = new SliceEntry(artifact, manifest, config, false);
+
             graph.put(artifact, entry);
             // Map the slice interface to its artifact for dependency resolution
             var sliceInterface = manifest.slicePackage() + "." + manifest.sliceName();
+
             interfaceToArtifact.put(sliceInterface, artifact);
         }
         // Register external dependency manifests as top-level entries
         for (var dep : dependencyManifests) {
             if (!graph.containsKey(dep.artifact())) {
                 var entry = new SliceEntry(dep.artifact(), dep.manifest(), SliceConfig.defaultConfig(), true);
+
                 graph.put(dep.artifact(), entry);
                 var iface = dep.manifest().slicePackage() + "." + dep.manifest().sliceName();
+
                 interfaceToArtifact.put(iface, dep.artifact());
             }
         }
         // Third pass: resolve transitive external dependencies from JAR files
         var allManifests = new ArrayList<SliceManifest>();
+
         localManifests.forEach(allManifests::add);
         dependencyManifests.stream().map(DependencyManifest::manifest).forEach(allManifests::add);
         for (var manifest : allManifests) {
             resolveExternalDependencies(manifest, graph);
         }
+
         return graph;
     }
 
-    private void resolveExternalDependencies(SliceManifest manifest,
-                                             Map<String, SliceEntry> graph)
-    throws MojoExecutionException {
+    private void resolveExternalDependencies(SliceManifest manifest, Map<String, SliceEntry> graph) throws MojoExecutionException {
         for (var dep : manifest.dependencies()) {
             // Skip dependencies without artifact coordinates (local to this module)
-            if (dep.artifact() == null || dep.artifact()
-                                             .isEmpty()) {
+            if (dep.artifact() == null || dep.artifact().isEmpty()) {
                 continue;
             }
+
             var depArtifact = dep.artifact() + ":" + dep.version();
             // Skip if already in graph (includes local slices and previously resolved deps)
             if (graph.containsKey(depArtifact)) {
@@ -388,6 +451,7 @@ public class GenerateBlueprintMojo extends AbstractMojo {
                                        .stream()
                                        .filter(key -> key.startsWith(artifactWithoutVersion + ":"))
                                        .findFirst();
+
                 if (resolvedKey.isPresent()) {
                     // Dependency already in graph with resolved version, skip adding duplicate
                     continue;
@@ -396,9 +460,12 @@ public class GenerateBlueprintMojo extends AbstractMojo {
                 getLog().warn("Skipping UNRESOLVED dependency: " + dep.artifact() + " - not found in local graph");
                 continue;
             }
+
             var depManifestOpt = loadManifestFromDependency(dep.artifact(), dep.version());
+
             if (depManifestOpt.isPresent()) {
                 var depManifest = depManifestOpt.unwrap();
+
                 graph.put(depArtifact, new SliceEntry(depArtifact, depManifest, SliceConfig.defaultConfig(), true));
                 resolveExternalDependencies(depManifest, graph);
             } else {
@@ -410,41 +477,48 @@ public class GenerateBlueprintMojo extends AbstractMojo {
 
     private SliceConfig loadSliceConfig(SliceManifest manifest) {
         var configFile = manifest.configFile();
+
         if (configFile == null || configFile.isEmpty()) {
             getLog().info("No config file specified for slice: " + manifest.sliceName() + " - using defaults");
+
             return SliceConfig.defaultConfig();
         }
-        var configPath = classesDirectory.toPath()
-                                         .resolve(configFile);
+
+        var configPath = classesDirectory.toPath().resolve(configFile);
+
         if (!FileOps.exists(configPath)) {
-            getLog().info("Config file not found for slice " + manifest.sliceName() + " (" + configFile
-                          + ") - using defaults");
+            getLog().info("Config file not found for slice " + manifest.sliceName()
+                         + " (" + configFile
+                         + ") - using defaults");
+
             return SliceConfig.defaultConfig();
         }
+
         return SliceConfig.load(configPath)
                           .onFailure(cause -> getLog().warn("Failed to load config for slice " + manifest.sliceName()
-                                                            + ": " + cause.message() + " - using defaults"))
+                                                           + ": " + cause.message()
+                                                           + " - using defaults"))
                           .onSuccess(_ -> getLog().debug("Loaded config for slice: " + manifest.sliceName()))
                           .or(SliceConfig.defaultConfig());
     }
 
     private Option<SliceManifest> loadManifestFromDependency(String groupArtifact, String version) {
         var parts = groupArtifact.split(":");
+
         if (parts.length != 2) {
             return Option.none();
         }
+
         var groupId = parts[0];
         var artifactId = parts[1];
+
         for (var artifact : project.getArtifacts()) {
-            if (artifact.getGroupId()
-                        .equals(groupId) &&
-            artifact.getArtifactId()
-                    .equals(artifactId) &&
-            artifact.getVersion()
-                    .equals(version)) {
+            if (artifact.getGroupId().equals(groupId) && artifact.getArtifactId().equals(artifactId) && artifact.getVersion()
+                                                                                                                .equals(version)) {
                 return loadManifestFromJar(artifact.getFile());
             }
         }
+
         return Option.none();
     }
 
@@ -452,16 +526,17 @@ public class GenerateBlueprintMojo extends AbstractMojo {
         if (jarFile == null || !jarFile.exists()) {
             return Option.none();
         }
+
         try (var jar = new JarFile(jarFile)) {
             var entries = jar.entries();
+
             while (entries.hasMoreElements()) {
                 var entry = entries.nextElement();
-                if (entry.getName()
-                         .startsWith("META-INF/slice/") &&
-                entry.getName()
-                     .endsWith(".manifest")) {
+
+                if (entry.getName().startsWith("META-INF/slice/") && entry.getName().endsWith(".manifest")) {
                     try (var input = jar.getInputStream(entry)) {
                         var result = SliceManifest.load(input);
+
                         if (result.isSuccess()) {
                             return Option.some(result.unwrap());
                         }
@@ -471,6 +546,7 @@ public class GenerateBlueprintMojo extends AbstractMojo {
         } catch (IOException e) {
             getLog().debug("Failed to read JAR: " + jarFile);
         }
+
         return Option.none();
     }
 
@@ -480,29 +556,32 @@ public class GenerateBlueprintMojo extends AbstractMojo {
                 dfs(artifact, graph);
             }
         }
+
         Collections.reverse(orderedSlices);
     }
 
-    private void dfs(String artifact, Map<String, SliceEntry> graph)
-    throws MojoExecutionException {
+    private void dfs(String artifact, Map<String, SliceEntry> graph) throws MojoExecutionException {
         if (inStack.contains(artifact)) {
             throw new MojoExecutionException("Circular dependency detected: " + artifact);
         }
+
         if (visited.contains(artifact)) {
             return;
         }
+
         inStack.add(artifact);
         var entry = graph.get(artifact);
+
         if (entry != null && entry.manifest() != null) {
-            for (var dep : entry.manifest()
-                                .dependencies()) {
+            for (var dep : entry.manifest().dependencies()) {
                 String depArtifact;
-                if (dep.artifact() != null && !dep.artifact()
-                                                  .isEmpty()) {
+
+                if (dep.artifact() != null && !dep.artifact().isEmpty()) {
                     // Dependency with artifact coordinates
                     if ("UNRESOLVED".equals(dep.version())) {
                         // Find matching resolved key in graph
                         var artifactPrefix = dep.artifact() + ":";
+
                         depArtifact = graph.keySet()
                                            .stream()
                                            .filter(key -> key.startsWith(artifactPrefix))
@@ -522,11 +601,13 @@ public class GenerateBlueprintMojo extends AbstractMojo {
                         continue;
                     }
                 }
+
                 if (graph.containsKey(depArtifact)) {
                     dfs(depArtifact, graph);
                 }
             }
         }
+
         inStack.remove(artifact);
         visited.add(artifact);
         if (entry != null) {
@@ -539,38 +620,31 @@ public class GenerateBlueprintMojo extends AbstractMojo {
                  ? blueprintId
                  : project.getGroupId() + ":" + project.getArtifactId() + ":" + project.getVersion();
         var sb = new StringBuilder();
+
         sb.append("# Generated by jbct:generate-blueprint\n");
         sb.append("# Regenerate with: mvn jbct:generate-blueprint\n\n");
-        sb.append("id = \"")
-          .append(id)
-          .append("\"\n");
-        sb.append("version = \"")
-          .append(project.getVersion())
-          .append("\"\n\n");
+        sb.append("id = \"").append(id).append("\"\n");
+        sb.append("version = \"").append(project.getVersion()).append("\"\n\n");
         for (var entry : orderedSlices) {
             sb.append("[[slices]]\n");
-            sb.append("artifact = \"")
-              .append(entry.artifact())
-              .append("\"\n");
-            sb.append("instances = ")
-              .append(entry.config()
-                           .blueprint()
-                           .instances())
-              .append("\n");
+            sb.append("artifact = \"").append(entry.artifact()).append("\"\n");
+            sb.append("instances = ").append(entry.config().blueprint().instances()).append("\n");
             if (entry.isDependency()) {
                 sb.append("# transitive dependency\n");
             }
+
             sb.append("\n");
         }
-        var writeResult = FileOps.createDirectories(blueprintFile.toPath().getParent())
-                                   .flatMap(_ -> FileOps.writeString(blueprintFile.toPath(), sb.toString()));
+
+        var writeResult = FileOps.createDirectories(blueprintFile.toPath().getParent()).flatMap(_ -> FileOps.writeString(blueprintFile.toPath(),
+                                                                                                                         sb.toString()));
+
         if (writeResult.isFailure()) {
             throw new MojoExecutionException("Failed to write blueprint: " + blueprintFile);
         }
     }
 
     // --- Blueprint JAR packaging ---
-
     private static final String CLASSIFIER = "blueprint";
     private static final String BLUEPRINT_TOML = "blueprint.toml";
     private static final String RESOURCES_TOML = "resources.toml";
@@ -581,47 +655,50 @@ public class GenerateBlueprintMojo extends AbstractMojo {
 
         createBlueprintJar(jarFile, id);
         attachArtifact(jarFile);
-
         getLog().info("Created blueprint JAR: " + jarFile.getName());
     }
 
     private String readBlueprintId() throws MojoExecutionException {
         var defaultId = project.getGroupId() + ":" + project.getArtifactId() + ":" + project.getVersion();
         var result = FileOps.readString(blueprintFile.toPath());
+
         if (result.isFailure()) {
             throw new MojoExecutionException("Failed to read blueprint.toml");
         }
+
         for (var line : result.unwrap().split("\n")) {
             var trimmed = line.trim();
+
             if (trimmed.startsWith("id = \"") && trimmed.endsWith("\"")) {
                 return trimmed.substring(6, trimmed.length() - 1);
             }
         }
+
         return defaultId;
     }
 
     private File buildJarFile() {
         var jarName = project.getArtifactId() + "-" + project.getVersion() + "-" + CLASSIFIER + ".jar";
+
         return new File(outputDirectory, jarName);
     }
 
     private void createBlueprintJar(File jarFile, String id) throws MojoExecutionException {
         try {
             var archiver = new JarArchiver();
-            archiver.setDestFile(jarFile);
 
+            archiver.setDestFile(jarFile);
             archiver.addFile(blueprintFile, "META-INF/" + BLUEPRINT_TOML);
             addOptionalResourcesToml(archiver);
             addOptionalSchemaFiles(archiver);
-
             var mavenArchiver = new MavenArchiver();
+
             mavenArchiver.setArchiver(archiver);
             mavenArchiver.setOutputFile(jarFile);
-
             var config = new MavenArchiveConfiguration();
+
             config.addManifestEntry("Blueprint-Id", id);
             config.addManifestEntry("Blueprint-Version", project.getVersion());
-
             mavenArchiver.createArchive(null, project, config);
         } catch (Exception e) {
             throw new MojoExecutionException("Failed to create blueprint JAR", e);
@@ -637,18 +714,25 @@ public class GenerateBlueprintMojo extends AbstractMojo {
 
     private void addOptionalSchemaFiles(JarArchiver archiver) throws MojoExecutionException {
         var schemaPath = schemaDirectory.toPath();
+
         if (!FileOps.exists(schemaPath) || !FileOps.isDirectory(schemaPath)) {
             return;
         }
-        var sqlFiles = FileOps.walk(schemaPath, p -> FileOps.isRegularFile(p) && p.toString().endsWith(".sql"));
+
+        var sqlFiles = FileOps.walk(schemaPath,
+                                    p -> FileOps.isRegularFile(p) && p.toString()
+                                                                      .endsWith(".sql"));
+
         if (sqlFiles.isFailure()) {
             throw new MojoExecutionException("Failed to scan schema directory: " + schemaDirectory);
         }
+
         sqlFiles.unwrap().forEach(file -> addSchemaFile(archiver, schemaPath, file));
     }
 
     private void addSchemaFile(JarArchiver archiver, Path schemaRoot, Path sqlFile) {
         var relativePath = schemaRoot.relativize(sqlFile).toString().replace('\\', '/');
+
         archiver.addFile(sqlFile.toFile(), "schema/" + relativePath);
         getLog().debug("Added schema file: " + relativePath);
     }

@@ -14,19 +14,19 @@
  *  limitations under the License.
  *
  */
-
 package org.pragmatica.jpa;
+
+import java.util.List;
 
 import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 
-import java.util.List;
-
 import jakarta.persistence.EntityManager;
 import jakarta.persistence.Query;
 import jakarta.persistence.TypedQuery;
+
 
 /// Functional wrapper around JPA EntityManager for Promise-based operations.
 /// All operations use Promise.lift() to convert exceptions to typed Causes.
@@ -158,12 +158,15 @@ public interface JpaOperations {
                                 () -> {
                                     var results = query.setMaxResults(2)
                                                        .getResultList();
+
                                     if (results.isEmpty()) {
-                                        return Option.none();
-                                    }
+                                    return Option.none();
+                                }
+
                                     if (results.size() > 1) {
-                                        throw new jakarta.persistence.NonUniqueResultException("Query returned more than one result");
-                                    }
+                                    throw new jakarta.persistence.NonUniqueResultException("Query returned more than one result");
+                                }
+
                                     return Option.option(results.getFirst());
                                 });
         }
@@ -178,6 +181,7 @@ public interface JpaOperations {
             return Promise.lift(errorMapper,
                                 () -> {
                                     em.persist(entity);
+
                                     return entity;
                                 });
         }
@@ -192,6 +196,7 @@ public interface JpaOperations {
             return Promise.lift(errorMapper,
                                 () -> {
                                     em.remove(entity);
+
                                     return Unit.unit();
                                 });
         }
@@ -212,6 +217,7 @@ public interface JpaOperations {
             return Promise.lift(errorMapper,
                                 () -> {
                                     em.refresh(entity);
+
                                     return entity;
                                 });
         }
@@ -221,6 +227,7 @@ public interface JpaOperations {
             return Promise.lift(errorMapper,
                                 () -> {
                                     em.flush();
+
                                     return Unit.unit();
                                 });
         }

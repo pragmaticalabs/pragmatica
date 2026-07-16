@@ -4,10 +4,10 @@
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
  */
-
 package org.pragmatica.statemachine;
 
 import org.pragmatica.lang.Contract;
+
 
 /// A state in a GoF-style state machine. Each state owns the logic for the events it accepts.
 /// Implementations pattern-match the event and call [`TransitionRequest#transitionTo`] (or a

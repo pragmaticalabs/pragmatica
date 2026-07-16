@@ -1,8 +1,5 @@
 package org.pragmatica.jbct.maven;
 
-import org.pragmatica.jbct.slice.SliceManifest;
-import org.pragmatica.lang.Option;
-
 import java.io.File;
 import java.io.FileWriter;
 import java.io.IOException;
@@ -27,6 +24,9 @@ import java.util.Map;
 import java.util.jar.JarEntry;
 import java.util.jar.JarFile;
 
+import org.pragmatica.jbct.slice.SliceManifest;
+import org.pragmatica.lang.Option;
+
 import org.apache.maven.archiver.MavenArchiveConfiguration;
 import org.apache.maven.archiver.MavenArchiver;
 import org.apache.maven.artifact.Artifact;
@@ -38,6 +38,7 @@ import org.apache.maven.plugins.annotations.Parameter;
 import org.apache.maven.plugins.annotations.ResolutionScope;
 import org.apache.maven.project.MavenProject;
 import org.codehaus.plexus.archiver.jar.JarArchiver;
+
 
 /// Packages slices into separate JAR artifacts.
 /// Reads slice manifests from META-INF/slice/*.manifest and creates:
@@ -52,9 +53,7 @@ import org.codehaus.plexus.archiver.jar.JarArchiver;
 ///   - Bundled external libs (compile scope, non-slice, non-infra, non-provided)
 ///   - Application shared code (sibling shared package or slice subpackages)
 ///
-@Mojo(name = "package-slices",
- defaultPhase = LifecyclePhase.PACKAGE,
- requiresDependencyResolution = ResolutionScope.COMPILE)
+@Mojo(name = "package-slices", defaultPhase = LifecyclePhase.PACKAGE, requiresDependencyResolution = ResolutionScope.COMPILE)
 public class PackageSlicesMojo extends AbstractMojo {
     private static final String SLICE_MANIFEST_DIR = "META-INF/slice/";
 
@@ -74,18 +73,26 @@ public class PackageSlicesMojo extends AbstractMojo {
     public void execute() throws MojoExecutionException {
         if (skip) {
             getLog().info("Skipping slice packaging");
+
             return;
         }
+
         var manifestDir = new File(classesDirectory, "META-INF/slice");
+
         if (!manifestDir.exists() || !manifestDir.isDirectory()) {
             getLog().info("No slice manifests found in " + manifestDir);
+
             return;
         }
+
         var manifestFiles = manifestDir.listFiles((dir, name) -> name.endsWith(".manifest"));
+
         if (manifestFiles == null || manifestFiles.length == 0) {
             getLog().info("No .manifest files found");
+
             return;
         }
+
         getLog().info("Found " + manifestFiles.length + " slice manifest(s)");
         for (var manifestFile : manifestFiles) {
             processManifest(manifestFile.toPath());
@@ -94,10 +101,13 @@ public class PackageSlicesMojo extends AbstractMojo {
 
     private void processManifest(Path manifestPath) throws MojoExecutionException {
         var result = SliceManifest.load(manifestPath);
+
         if (result.isFailure()) {
             throw new MojoExecutionException("Failed to load manifest: " + manifestPath);
         }
+
         var manifest = result.unwrap();
+
         getLog().info("Processing slice: " + manifest.sliceName());
         // Classify dependencies
         var classification = classifyDependencies(manifest);
@@ -114,6 +124,7 @@ public class PackageSlicesMojo extends AbstractMojo {
         var externalDeps = new ArrayList<Artifact>();
         // Collect direct dependency keys for filtering transitives
         var directDependencyKeys = collectDirectDependencyKeys();
+
         for (var artifact : project.getArtifacts()) {
             var artifactId = artifact.getArtifactId();
             var scope = artifact.getScope();
@@ -124,6 +135,7 @@ public class PackageSlicesMojo extends AbstractMojo {
             // Skip transitives of provided dependencies (only include direct deps in dependencies file)
             var key = artifact.getGroupId() + ":" + artifact.getArtifactId();
             var isDirectDependency = directDependencyKeys.contains(key);
+
             if (artifactId.startsWith("infra-") && isDirectDependency) {
                 // Infrastructure dependencies (direct only)
                 infraDeps.add(toArtifactInfo(artifact));
@@ -141,6 +153,7 @@ public class PackageSlicesMojo extends AbstractMojo {
         }
         // Add same-module slice dependencies from manifest
         addLocalSliceDependencies(manifest, sliceDeps);
+
         return new DependencyClassification(sharedDeps, infraDeps, sliceDeps, externalDeps);
     }
 
@@ -148,18 +161,18 @@ public class PackageSlicesMojo extends AbstractMojo {
         // Check manifest dependencies for local slices (same module)
         for (var dep : manifest.dependencies()) {
             // Local slice dependencies have artifact coordinates but may be UNRESOLVED
-            if (dep.artifact() == null || dep.artifact()
-                                             .isEmpty()) {
+            if (dep.artifact() == null || dep.artifact().isEmpty()) {
                 continue;
             }
             // Check if this is a local slice (same groupId and base artifactId)
             var depArtifact = dep.artifact();
+
             if (depArtifact.startsWith(project.getGroupId() + ":" + project.getArtifactId() + "-")) {
                 // Extract slice artifact ID and create version range
                 var version = "^" + project.getVersion();
+
                 sliceDeps.add(new ArtifactInfo(project.getGroupId(),
-                                               depArtifact.substring(project.getGroupId()
-                                                                            .length() + 1),
+                                               depArtifact.substring(project.getGroupId().length() + 1),
                                                version));
                 getLog().debug("Added local slice dependency: " + depArtifact + ":" + version);
             }
@@ -168,9 +181,11 @@ public class PackageSlicesMojo extends AbstractMojo {
 
     private java.util.Set<String> collectDirectDependencyKeys() {
         var keys = new java.util.HashSet<String>();
+
         for (var dep : project.getDependencies()) {
             keys.add(dep.getGroupId() + ":" + dep.getArtifactId());
         }
+
         return keys;
     }
 
@@ -188,50 +203,58 @@ public class PackageSlicesMojo extends AbstractMojo {
 
     private boolean isSliceDependency(Artifact artifact) {
         var file = artifact.getFile();
-        if (file == null || !file.exists() || !file.getName()
-                                                   .endsWith(".jar")) {
+
+        if (file == null || !file.exists() || !file.getName().endsWith(".jar")) {
             return false;
         }
+
         try (var jar = new JarFile(file)) {
             var entries = jar.entries();
+
             while (entries.hasMoreElements()) {
                 var entry = entries.nextElement();
-                if (entry.getName()
-                         .startsWith(SLICE_MANIFEST_DIR) && entry.getName()
-                                                                 .endsWith(".manifest")) {
+
+                if (entry.getName().startsWith(SLICE_MANIFEST_DIR) && entry.getName().endsWith(".manifest")) {
                     return true;
                 }
             }
+
             return false;
         } catch (IOException e) {
             getLog().debug("Could not read JAR: " + file + " - " + e.getMessage());
+
             return false;
         }
     }
 
     private Option<java.util.Properties> readFirstSliceManifest(Artifact artifact) {
         var file = artifact.getFile();
-        if (file == null || !file.exists() || !file.getName()
-                                                   .endsWith(".jar")) {
+
+        if (file == null || !file.exists() || !file.getName().endsWith(".jar")) {
             return Option.none();
         }
+
         try (var jar = new JarFile(file)) {
             var entries = jar.entries();
+
             while (entries.hasMoreElements()) {
                 var entry = entries.nextElement();
-                if (entry.getName()
-                         .startsWith(SLICE_MANIFEST_DIR) && entry.getName()
-                                                                 .endsWith(".manifest")) {
+
+                if (entry.getName().startsWith(SLICE_MANIFEST_DIR) && entry.getName().endsWith(".manifest")) {
                     var props = new java.util.Properties();
+
                     try (var stream = jar.getInputStream(entry)) {
                         props.load(stream);
                     }
+
                     return Option.some(props);
                 }
             }
+
             return Option.none();
         } catch (IOException e) {
             getLog().debug("Could not read JAR: " + file + " - " + e.getMessage());
+
             return Option.none();
         }
     }
@@ -248,12 +271,11 @@ public class PackageSlicesMojo extends AbstractMojo {
     }
 
     private Option<ArtifactInfo> extractSliceArtifactInfo(java.util.Properties props, String version) {
-        return Option.option(props.getProperty("slice.artifactId"))
-                     .flatMap(sliceArtifactId -> Option.option(props.getProperty("base.artifact"))
-                                                       .filter(base -> base.contains(":"))
-                                                       .map(base -> new ArtifactInfo(base.split(":") [0],
-                                                                                     sliceArtifactId,
-                                                                                     toSemverRange(version))));
+        return Option.option(props.getProperty("slice.artifactId")).flatMap(sliceArtifactId -> Option.option(props.getProperty("base.artifact"))
+                                                                                                     .filter(base -> base.contains(":"))
+                                                                                                     .map(base -> new ArtifactInfo(base.split(":") [0],
+                                                                                                                                   sliceArtifactId,
+                                                                                                                                   toSemverRange(version))));
     }
 
     private String toSemverRange(String version) {
@@ -261,15 +283,17 @@ public class PackageSlicesMojo extends AbstractMojo {
         if (version.startsWith("^") || version.startsWith("~")) {
             return version;
         }
+
         return "^" + version;
     }
 
-    private void createImplJar(SliceManifest manifest, DependencyClassification classification)
-    throws MojoExecutionException {
+    private void createImplJar(SliceManifest manifest, DependencyClassification classification) throws MojoExecutionException {
         var jarName = manifest.implArtifactId() + "-" + project.getVersion() + ".jar";
         var jarFile = new File(outputDirectory, jarName);
-        try{
+
+        try {
             var archiver = new JarArchiver();
+
             archiver.setDestFile(jarFile);
             // Generate dependency file content
             var depsContent = generateDependencyFile(manifest, classification);
@@ -289,6 +313,7 @@ public class PackageSlicesMojo extends AbstractMojo {
             addServiceFile(archiver, manifest);
             // Include Properties manifest in per-slice JAR for runtime access
             var manifestFile = new File(classesDirectory, "META-INF/slice/" + manifest.sliceName() + ".manifest");
+
             if (manifestFile.exists()) {
                 archiver.addFile(manifestFile, "META-INF/slice/" + manifest.sliceName() + ".manifest");
             }
@@ -296,16 +321,21 @@ public class PackageSlicesMojo extends AbstractMojo {
             // (Batch 1 layered-config refactor). Without this the slice classloader returns null
             // and the slice's intrinsic config (@PgSql/@Http/@Heartbeat sections) is unreachable.
             var resourcesTomlFile = new File(classesDirectory, "resources.toml");
+
             if (resourcesTomlFile.exists()) {
                 archiver.addFile(resourcesTomlFile, "META-INF/resources.toml");
             }
+
             var mavenArchiver = new MavenArchiver();
+
             mavenArchiver.setArchiver(archiver);
             mavenArchiver.setOutputFile(jarFile);
             // Read envelope version from Properties manifest
             var envelopeVersion = "1";
+
             if (manifestFile.exists()) {
                 var props = new java.util.Properties();
+
                 try (var input = new java.io.FileInputStream(manifestFile)) {
                     props.load(input);
                     envelopeVersion = props.getProperty("envelope.version", "1");
@@ -315,16 +345,16 @@ public class PackageSlicesMojo extends AbstractMojo {
             }
             // Configure manifest entries
             var config = new MavenArchiveConfiguration();
+
             config.addManifestEntry("Envelope-Version", envelopeVersion);
             config.addManifestEntry("Slice-Artifact",
                                     project.getGroupId() + ":" + manifest.implArtifactId() + ":" + project.getVersion());
             config.addManifestEntry("Slice-Class",
                                     manifest.slicePackage() + "." + manifest.sliceName() + "Factory");
             mavenArchiver.createArchive(null, project, config);
-            getLog()
-            .info("Created Impl JAR: " + jarFile.getName() + " (fat JAR with " + classification.externalDeps()
-                                                                                               .size()
-                  + " bundled libs)");
+            getLog().info("Created Impl JAR: " + jarFile.getName()
+                         + " (fat JAR with " + classification.externalDeps().size()
+                         + " bundled libs)");
         } catch (Exception e) {
             throw new MojoExecutionException("Failed to create Impl JAR", e);
         }
@@ -332,20 +362,24 @@ public class PackageSlicesMojo extends AbstractMojo {
 
     private void addSharedCode(JarArchiver archiver, SliceManifest manifest) {
         var slicePackage = manifest.slicePackage();
+
         if (slicePackage == null || slicePackage.isEmpty()) {
             return;
         }
+
         var classesPath = classesDirectory.toPath();
         // Find sibling shared package (e.g., org.example.shared for org.example.order)
         var packageParts = slicePackage.split("\\.");
+
         if (packageParts.length > 1) {
             var parentPackage = String.join("/", java.util.Arrays.copyOf(packageParts, packageParts.length - 1));
-            var sharedDir = classesPath.resolve(parentPackage)
-                                       .resolve("shared");
+            var sharedDir = classesPath.resolve(parentPackage).resolve("shared");
+
             addDirectoryClasses(archiver, sharedDir, classesPath);
         }
         // Find subpackages of slice package (e.g., org.example.order.utils)
         var sliceDir = classesPath.resolve(slicePackage.replace('.', '/'));
+
         if (Files.isDirectory(sliceDir)) {
             try (var stream = Files.walk(sliceDir)) {
                 stream.filter(Files::isDirectory)
@@ -361,6 +395,7 @@ public class PackageSlicesMojo extends AbstractMojo {
         if (!Files.isDirectory(dir)) {
             return;
         }
+
         try (var stream = Files.list(dir)) {
             stream.filter(p -> p.toString()
                                 .endsWith(".class"))
@@ -368,6 +403,7 @@ public class PackageSlicesMojo extends AbstractMojo {
                                var relativePath = classesPath.relativize(classFile)
                                                              .toString()
                                                              .replace('\\', '/');
+
                                archiver.addFile(classFile.toFile(),
                                                 relativePath);
                            });
@@ -379,18 +415,19 @@ public class PackageSlicesMojo extends AbstractMojo {
     private void bundleExternalLibs(JarArchiver archiver, List<Artifact> externalDeps) {
         for (var artifact : externalDeps) {
             var file = artifact.getFile();
-            if (file == null || !file.exists() || !file.getName()
-                                                       .endsWith(".jar")) {
+
+            if (file == null || !file.exists() || !file.getName().endsWith(".jar")) {
                 continue;
             }
+
             try (var jar = new JarFile(file)) {
                 Enumeration<JarEntry> entries = jar.entries();
+
                 while (entries.hasMoreElements()) {
                     var entry = entries.nextElement();
                     var entryName = entry.getName();
                     // Skip META-INF files to avoid conflicts (except services)
-                    if (entryName.startsWith("META-INF/") &&
-                    !entryName.startsWith("META-INF/services/")) {
+                    if (entryName.startsWith("META-INF/") && !entryName.startsWith("META-INF/services/")) {
                         continue;
                     }
                     // Skip directories
@@ -404,8 +441,8 @@ public class PackageSlicesMojo extends AbstractMojo {
                     // Extract and add to archiver
                     try (var input = jar.getInputStream(entry)) {
                         var tempFile = Files.createTempFile("jbct-", ".tmp");
-                        tempFile.toFile()
-                                .deleteOnExit();
+
+                        tempFile.toFile().deleteOnExit();
                         Files.copy(input, tempFile, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
                         archiver.addFile(tempFile.toFile(), entryName);
                     }
@@ -418,8 +455,8 @@ public class PackageSlicesMojo extends AbstractMojo {
 
     private String generateDependencyFile(SliceManifest manifest, DependencyClassification classification) {
         var sb = new StringBuilder();
-        if (!classification.sharedDeps()
-                           .isEmpty()) {
+
+        if (!classification.sharedDeps().isEmpty()) {
             sb.append("[shared]\n");
             for (var dep : classification.sharedDeps()) {
                 sb.append(dep.groupId())
@@ -429,10 +466,11 @@ public class PackageSlicesMojo extends AbstractMojo {
                   .append(dep.version())
                   .append("\n");
             }
+
             sb.append("\n");
         }
-        if (!classification.infraDeps()
-                           .isEmpty()) {
+
+        if (!classification.infraDeps().isEmpty()) {
             sb.append("[infra]\n");
             for (var dep : classification.infraDeps()) {
                 sb.append(dep.groupId())
@@ -442,10 +480,11 @@ public class PackageSlicesMojo extends AbstractMojo {
                   .append(dep.version())
                   .append("\n");
             }
+
             sb.append("\n");
         }
-        if (!classification.sliceDeps()
-                           .isEmpty()) {
+
+        if (!classification.sliceDeps().isEmpty()) {
             sb.append("[slices]\n");
             for (var dep : classification.sliceDeps()) {
                 sb.append(dep.groupId())
@@ -455,39 +494,40 @@ public class PackageSlicesMojo extends AbstractMojo {
                   .append(dep.version())
                   .append("\n");
             }
+
             sb.append("\n");
         }
+
         return sb.toString();
     }
 
-    private void addDependencyFile(JarArchiver archiver, SliceManifest manifest, String content)
-    throws IOException {
+    private void addDependencyFile(JarArchiver archiver, SliceManifest manifest, String content) throws IOException {
         var factoryClassName = manifest.slicePackage() + "." + manifest.sliceName() + "Factory";
         var tempFile = Files.createTempFile("deps-", ".txt");
-        tempFile.toFile()
-                .deleteOnExit();
+
+        tempFile.toFile().deleteOnExit();
         Files.writeString(tempFile, content);
         archiver.addFile(tempFile.toFile(), "META-INF/dependencies/" + factoryClassName);
     }
 
-    private void addServiceFile(JarArchiver archiver, SliceManifest manifest)
-    throws MojoExecutionException {
+    private void addServiceFile(JarArchiver archiver, SliceManifest manifest) throws MojoExecutionException {
         var serviceFile = new File(classesDirectory,
                                    "META-INF/services/org.pragmatica.aether.http.adapter.SliceRouterFactory");
+
         if (!serviceFile.exists()) {
             return;
         }
-        try{
+
+        try {
             var routesClass = manifest.slicePackage() + "." + manifest.sliceName() + "Routes";
             var lines = Files.readAllLines(serviceFile.toPath());
-            var filteredLines = lines.stream()
-                                     .filter(line -> line.trim()
-                                                         .equals(routesClass))
-                                     .toList();
+            var filteredLines = lines.stream().filter(line -> line.trim()
+                                                                  .equals(routesClass)).toList();
+
             if (!filteredLines.isEmpty()) {
                 var tempService = Files.createTempFile("service-", ".txt");
-                tempService.toFile()
-                           .deleteOnExit();
+
+                tempService.toFile().deleteOnExit();
                 Files.writeString(tempService, String.join("\n", filteredLines));
                 archiver.addFile(tempService.toFile(),
                                  "META-INF/services/org.pragmatica.aether.http.adapter.SliceRouterFactory");
@@ -502,30 +542,39 @@ public class PackageSlicesMojo extends AbstractMojo {
     /// Maps "groupId:artifactId" → "1.0.0" (strips semver range prefix)
     private Map<String, String> buildVersionMap(String depsContent) {
         var map = new HashMap<String, String>();
+
         if (depsContent == null || depsContent.isEmpty()) {
             return map;
         }
+
         var lines = depsContent.split("\n");
         boolean inSlicesSection = false;
+
         for (var line : lines) {
             var trimmed = line.trim();
+
             if (trimmed.equals("[slices]")) {
                 inSlicesSection = true;
                 continue;
             }
+
             if (trimmed.startsWith("[")) {
                 inSlicesSection = false;
             }
+
             if (inSlicesSection && !trimmed.isEmpty() && !trimmed.startsWith("#")) {
                 // Parse: org.example:artifact-name:^1.0.0
                 var parts = trimmed.split(":");
+
                 if (parts.length == 3) {
                     var artifact = parts[0] + ":" + parts[1];
                     var version = stripSemverPrefix(parts[2]);
+
                     map.put(artifact, version);
                 }
             }
         }
+
         return map;
     }
 
@@ -535,19 +584,22 @@ public class PackageSlicesMojo extends AbstractMojo {
         if (version.startsWith("^") || version.startsWith("~")) {
             return version.substring(1);
         }
+
         return version;
     }
 
     /// Transforms factory .class file to replace UNRESOLVED version strings in constant pool.
     /// Uses JEP 484 Class-File API for bytecode manipulation.
-    private byte[] transformFactoryBytecode(File classFile, Map<String, String> versionMap)
-    throws IOException {
+    private byte[] transformFactoryBytecode(File classFile, Map<String, String> versionMap) throws IOException {
         var originalBytes = Files.readAllBytes(classFile.toPath());
+
         if (versionMap.isEmpty()) {
             return originalBytes;
         }
+
         var cf = ClassFile.of();
         var classModel = cf.parse(originalBytes);
+
         return cf.transformClass(classModel, (builder, element) -> transformClassElement(builder, element, versionMap));
     }
 
@@ -587,35 +639,41 @@ public class PackageSlicesMojo extends AbstractMojo {
                                            Map<String, String> versionMap) {
         if (str.contains(":UNRESOLVED")) {
             var lastColonIdx = str.lastIndexOf(":UNRESOLVED");
+
             if (lastColonIdx > 0) {
                 var artifact = str.substring(0, lastColonIdx);
                 var version = versionMap.get(artifact);
+
                 if (version != null) {
                     builder.loadConstant(artifact + ":" + version);
                     getLog().debug("Transformed: " + str + " → " + artifact + ":" + version);
+
                     return;
                 }
             }
         }
+
         builder.with(element);
     }
 
-    private void addClassFiles(JarArchiver archiver, String className, Map<String, String> versionMap)
-    throws MojoExecutionException {
+    private void addClassFiles(JarArchiver archiver, String className, Map<String, String> versionMap) throws MojoExecutionException {
         var classesPath = classesDirectory.toPath();
         var paths = SliceManifest.classToPathsWithInner(className, classesPath);
-        try{
+
+        try {
             for (var relativePath : paths) {
                 var classFile = new File(classesDirectory, relativePath);
+
                 if (classFile.exists()) {
                     // Transform factory classes with UNRESOLVED versions
-                    if (className.endsWith("Factory") && !versionMap.isEmpty() &&
-                    relativePath.equals(className.replace('.', '/') + ".class")) {
+                    if (className.endsWith("Factory") && !versionMap.isEmpty() && relativePath.equals(className.replace('.',
+                                                                                                                        '/')
+                                                                                                     + ".class")) {
                         var transformedBytes = transformFactoryBytecode(classFile, versionMap);
                         // Write transformed bytecode to temp file for archiving
                         var tempClass = Files.createTempFile("factory-", ".class");
-                        tempClass.toFile()
-                                 .deleteOnExit();
+
+                        tempClass.toFile().deleteOnExit();
                         Files.write(tempClass, transformedBytes);
                         archiver.addFile(tempClass.toFile(), relativePath);
                         getLog().info("Transformed bytecode: " + className);
@@ -633,6 +691,7 @@ public class PackageSlicesMojo extends AbstractMojo {
     private void generatePom(SliceManifest manifest) throws MojoExecutionException {
         var artifactId = manifest.implArtifactId();
         var pomFile = new File(outputDirectory, artifactId + "-" + project.getVersion() + ".pom");
+
         try (var writer = new FileWriter(pomFile)) {
             writer.write(generatePomContent(manifest));
             getLog().debug("Generated POM: " + pomFile.getName());
@@ -644,26 +703,19 @@ public class PackageSlicesMojo extends AbstractMojo {
     private String generatePomContent(SliceManifest manifest) {
         var artifactId = manifest.implArtifactId();
         var sb = new StringBuilder();
+
         sb.append("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
         sb.append("<project xmlns=\"http://maven.apache.org/POM/4.0.0\"\n");
         sb.append("         xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\"\n");
         sb.append("         xsi:schemaLocation=\"http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd\">\n");
         sb.append("    <modelVersion>4.0.0</modelVersion>\n");
         sb.append("\n");
-        sb.append("    <groupId>")
-          .append(project.getGroupId())
-          .append("</groupId>\n");
-        sb.append("    <artifactId>")
-          .append(artifactId)
-          .append("</artifactId>\n");
-        sb.append("    <version>")
-          .append(project.getVersion())
-          .append("</version>\n");
+        sb.append("    <groupId>").append(project.getGroupId()).append("</groupId>\n");
+        sb.append("    <artifactId>").append(artifactId).append("</artifactId>\n");
+        sb.append("    <version>").append(project.getVersion()).append("</version>\n");
         sb.append("    <packaging>jar</packaging>\n");
         sb.append("\n");
-        sb.append("    <name>")
-          .append(manifest.sliceName())
-          .append("</name>\n");
+        sb.append("    <name>").append(manifest.sliceName()).append("</name>\n");
         sb.append("    <description>Generated slice artifact</description>\n");
         sb.append("\n");
         sb.append("    <dependencies>\n");
@@ -683,6 +735,7 @@ public class PackageSlicesMojo extends AbstractMojo {
         sb.append("        </dependency>\n");
         sb.append("    </dependencies>\n");
         sb.append("</project>\n");
+
         return sb.toString();
     }
 

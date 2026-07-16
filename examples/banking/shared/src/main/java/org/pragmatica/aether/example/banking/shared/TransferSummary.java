@@ -2,6 +2,7 @@ package org.pragmatica.aether.example.banking.shared;
 
 import java.time.Instant;
 
+
 /// Brief listing record for transfer history.
 public record TransferSummary(TransferId transferId,
                               AccountId from,
@@ -9,7 +10,6 @@ public record TransferSummary(TransferId transferId,
                               Money amount,
                               TransferStatus status,
                               Instant timestamp) {
-
     public static TransferSummary transferSummary(TransferId transferId,
                                                   AccountId from,
                                                   AccountId to,

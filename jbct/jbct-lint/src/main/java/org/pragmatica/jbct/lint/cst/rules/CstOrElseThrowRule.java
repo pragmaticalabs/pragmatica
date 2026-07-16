@@ -1,14 +1,15 @@
 package org.pragmatica.jbct.lint.cst.rules;
 
+import java.util.stream.Stream;
+
 import org.pragmatica.jbct.lint.Diagnostic;
 import org.pragmatica.jbct.lint.LintContext;
 import org.pragmatica.jbct.lint.cst.CstLintRule;
 import org.pragmatica.jbct.parser.Cursor;
 import org.pragmatica.jbct.parser.RuleKind;
 
-import java.util.stream.Stream;
-
 import static org.pragmatica.jbct.parser.CstNodes.*;
+
 
 /// JBCT-EX-02: Don't use orElseThrow().
 ///
@@ -44,7 +45,7 @@ public class CstOrElseThrowRule implements CstLintRule {
                                      startColumn(node),
                                      "orElseThrow() bypasses JBCT error handling",
                                      "Use Result/Option composition instead of throwing exceptions. "
-                                     + "Exceptions break the functional pipeline.")
+                                    + "Exceptions break the functional pipeline.")
                          .withExample("""
             // Before: using orElseThrow
             User user = findUser(id).orElseThrow();

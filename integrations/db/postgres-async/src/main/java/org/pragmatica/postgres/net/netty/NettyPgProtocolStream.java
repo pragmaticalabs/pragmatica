@@ -11,8 +11,15 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package org.pragmatica.postgres.net.netty;
+
+import javax.net.ssl.SSLParameters;
+import java.io.IOException;
+import java.net.InetSocketAddress;
+import java.net.SocketAddress;
+import java.nio.charset.Charset;
+import java.security.cert.X509Certificate;
+import java.util.List;
 
 import org.pragmatica.postgres.PgProtocolStream;
 import org.pragmatica.postgres.SqlError;
@@ -24,6 +31,9 @@ import org.pragmatica.postgres.message.frontend.Terminate;
 import org.pragmatica.postgres.net.SslConfig;
 import org.pragmatica.postgres.sasl.ChannelBindingDigest;
 import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Unit;
+
 import io.netty.bootstrap.Bootstrap;
 import io.netty.buffer.ByteBuf;
 import io.netty.channel.*;
@@ -37,20 +47,11 @@ import io.netty.handler.ssl.SslHandshakeCompletionEvent;
 import io.netty.handler.ssl.util.InsecureTrustManagerFactory;
 import io.netty.util.concurrent.Future;
 import io.netty.util.concurrent.GenericFutureListener;
-import org.pragmatica.lang.Promise;
-import org.pragmatica.lang.Unit;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import javax.net.ssl.SSLParameters;
-import java.io.IOException;
-import java.net.InetSocketAddress;
-import java.net.SocketAddress;
-import java.nio.charset.Charset;
-import java.security.cert.X509Certificate;
-import java.util.List;
-
 import static org.pragmatica.lang.Unit.unit;
+
 
 /**
  * Netty messages stream to Postgres backend.
@@ -74,8 +75,11 @@ public class NettyPgProtocolStream extends PgProtocolStream {
         }
     };
 
-    public NettyPgProtocolStream(SocketAddress address, String hostname, SslConfig sslConfig,
-                                  Charset encoding, EventLoopGroup eventLoopGroup) {
+    public NettyPgProtocolStream(SocketAddress address,
+                                 String hostname,
+                                 SslConfig sslConfig,
+                                 Charset encoding,
+                                 EventLoopGroup eventLoopGroup) {
         super(encoding);
         this.address = address;
         this.hostname = hostname;
@@ -87,21 +91,23 @@ public class NettyPgProtocolStream extends PgProtocolStream {
             // plain). Both produce a working connection against either server config; the
             // strict ALLOW semantics matter only if a network observer can be reasoned about.
             log.warn("SslMode.ALLOW currently behaves as PREFER (TLS first, plain fallback); "
-                      + "true ALLOW (plain first, TLS retry) is tracked as follow-up");
+                    + "true ALLOW (plain first, TLS retry) is tracked as follow-up");
         }
-        this.channelPipeline = new Bootstrap()
-            .group(eventLoopGroup)
-            .channel(NioSocketChannel.class)
-            .handler(newProtocolInitializer());
+
+        this.channelPipeline = new Bootstrap().group(eventLoopGroup)
+                                              .channel(NioSocketChannel.class)
+                                              .handler(newProtocolInitializer());
     }
 
     @Override
     public Promise<Message> connect(StartupMessage startup) {
         startupWith = startup;
+
         return offerRoundTrip(new ActiveQuery.SingleMessage(),
-                              () -> channelPipeline.connect(address).addListener(outboundErrorListener), false)
-            .flatMap(this::send)
-            .flatMap(message -> connectSslOrDirect(message, startup));
+                              () -> channelPipeline.connect(address)
+                                                   .addListener(outboundErrorListener),
+                              false).flatMap(this::send)
+                             .flatMap(message -> connectSslOrDirect(message, startup));
     }
 
     private Promise<Message> connectSslOrDirect(Message message, StartupMessage startup) {
@@ -114,28 +120,29 @@ public class NettyPgProtocolStream extends PgProtocolStream {
 
     @Override
     public boolean isConnected() {
-        return ctx.channel().isOpen();
+        return ctx.channel()
+                  .isOpen();
     }
 
     @Override
     public Promise<Unit> close() {
-        var uponClose = Promise.<Unit>promise();
+        var uponClose = Promise.<Unit> promise();
 
-        ctx.writeAndFlush(Terminate.INSTANCE)
-           .addListener(written -> handleWriteResult(written, uponClose));
+        ctx.writeAndFlush(Terminate.INSTANCE).addListener(written -> handleWriteResult(written, uponClose));
+
         return uponClose;
     }
 
     private void handleWriteResult(io.netty.util.concurrent.Future<? super Void> written, Promise<Unit> uponClose) {
         if (written.isSuccess()) {
-            ctx.close()
-               .addListener(closed -> handleCloseResult(closed, uponClose));
+            ctx.close().addListener(closed -> handleCloseResult(closed, uponClose));
         } else {
             uponClose.fail(SqlError.fromThrowable(written.cause()));
         }
     }
 
-    private static void handleCloseResult(io.netty.util.concurrent.Future<? super Void> closed, Promise<Unit> uponClose) {
+    private static void handleCloseResult(io.netty.util.concurrent.Future<? super Void> closed,
+                                          Promise<Unit> uponClose) {
         if (closed.isSuccess()) {
             uponClose.succeed(unit());
         } else {
@@ -146,9 +153,9 @@ public class NettyPgProtocolStream extends PgProtocolStream {
     @Override
     protected void write(Message... messages) {
         for (Message message : messages) {
-            ctx.write(message)
-               .addListener(outboundErrorListener);
+            ctx.write(message).addListener(outboundErrorListener);
         }
+
         ctx.flush();
     }
 
@@ -161,11 +168,11 @@ public class NettyPgProtocolStream extends PgProtocolStream {
                 if (useSsl) {
                     pipeline.addLast(newSslInitiator());
                 }
-                pipeline
-                    .addLast(new LengthFieldBasedFrameDecoder(Integer.MAX_VALUE, 1, 4, -4, 0, true))
-                    .addLast(new NettyMessageDecoder(encoding))
-                    .addLast(new NettyMessageEncoder(encoding))
-                    .addLast(newProtocolHandler());
+
+                pipeline.addLast(new LengthFieldBasedFrameDecoder(Integer.MAX_VALUE, 1, 4, -4, 0, true))
+                        .addLast(new NettyMessageDecoder(encoding))
+                        .addLast(new NettyMessageEncoder(encoding))
+                        .addLast(newProtocolHandler());
             }
         };
     }
@@ -176,7 +183,9 @@ public class NettyPgProtocolStream extends PgProtocolStream {
             protected void decode(ChannelHandlerContext ctx, ByteBuf in, List<Object> out) throws Exception {
                 if (in.readableBytes() >= 1) {
                     var response = in.readByte();
-                    ctx.pipeline().remove(this);
+
+                    ctx.pipeline()
+                       .remove(this);
                     if ('S' == response) {
                         installSslHandler(ctx);
                     } else if (allowPlainFallback()) {
@@ -184,11 +193,11 @@ public class NettyPgProtocolStream extends PgProtocolStream {
                         // Reuse the SslHandshake sentinel to signal "negotiation done, proceed
                         // to send StartupMessage" via connectSslOrDirect.
                         log.warn("Postgres server does not support TLS; falling back to plain text per SslMode.{}",
-                                  sslConfig.mode());
+                                 sslConfig.mode());
                         gotMessage(SslHandshake.INSTANCE);
                     } else {
-                        ctx.fireExceptionCaught(new IllegalStateException(
-                            "SSL required (SslMode." + sslConfig.mode() + ") but not supported by Postgres server"));
+                        ctx.fireExceptionCaught(new IllegalStateException("SSL required (SslMode." + sslConfig.mode()
+                                                                         + ") but not supported by Postgres server"));
                     }
                 }
             }
@@ -196,8 +205,7 @@ public class NettyPgProtocolStream extends PgProtocolStream {
     }
 
     private boolean allowPlainFallback() {
-        return sslConfig.mode() == SslConfig.SslMode.PREFER
-               || sslConfig.mode() == SslConfig.SslMode.ALLOW;
+        return sslConfig.mode() == SslConfig.SslMode.PREFER || sslConfig.mode() == SslConfig.SslMode.ALLOW;
     }
 
     @Override
@@ -210,33 +218,44 @@ public class NettyPgProtocolStream extends PgProtocolStream {
         if (ctx == null) {
             return Option.none();
         }
+
         var sslHandler = ctx.pipeline().get(SslHandler.class);
+
         if (sslHandler == null) {
             return Option.none();
         }
+
         try {
             var peerCerts = sslHandler.engine().getSession().getPeerCertificates();
+
             if (peerCerts.length == 0 || !(peerCerts[0] instanceof X509Certificate x509)) {
                 return Option.none();
             }
+
             return Option.some(ChannelBindingDigest.tlsServerEndPoint(x509));
         } catch (javax.net.ssl.SSLPeerUnverifiedException e) {
             log.debug("Cannot extract server certificate for channel binding: {}", e.getMessage());
+
             return Option.none();
         }
     }
 
     private void installSslHandler(ChannelHandlerContext ctx) throws Exception {
-        var port = address instanceof InetSocketAddress isa ? isa.getPort() : -1;
+        var port = address instanceof InetSocketAddress isa
+                   ? isa.getPort()
+                   : -1;
         var sslHandler = buildSslContext().newHandler(ctx.alloc(), hostname, port);
+
         if (sslConfig.mode() == SslConfig.SslMode.VERIFY_FULL) {
             // Enable JDK hostname verification — without this, Netty's default
             // SslHandler does not verify the hostname even when given hostname/port.
             var sslEngine = sslHandler.engine();
             var params = sslEngine.getSSLParameters();
+
             params.setEndpointIdentificationAlgorithm("HTTPS");
             sslEngine.setSSLParameters(params);
         }
+
         ctx.pipeline().addFirst(sslHandler);
     }
 
@@ -250,14 +269,18 @@ public class NettyPgProtocolStream extends PgProtocolStream {
             sslConfig.rootCertPem().onPresent(path -> builder.trustManager(path.toFile()));
         }
 
-        sslConfig.clientCertificate().onPresent(cc -> {
-            if (cc.password().isPresent()) {
-                builder.keyManager(cc.cert().toFile(), cc.key().toFile(), cc.password().or((String) null));
-            } else {
-                builder.keyManager(cc.cert().toFile(), cc.key().toFile());
-            }
-        });
-
+        sslConfig.clientCertificate()
+                 .onPresent(cc -> {
+                                if (cc.password()
+                                      .isPresent()) {
+                                builder.keyManager(cc.cert().toFile(),
+                                                   cc.key().toFile(),
+                                                   cc.password().or((String) null));
+                            } else {
+                                builder.keyManager(cc.cert().toFile(),
+                                                   cc.key().toFile());
+                            }
+                            });
         sslConfig.sslContextCustomizer().onPresent(c -> c.accept(builder));
 
         return builder.build();
@@ -265,7 +288,6 @@ public class NettyPgProtocolStream extends PgProtocolStream {
 
     private ChannelHandler newProtocolHandler() {
         return new ChannelInboundHandlerAdapter() {
-
             @Override
             public void channelActive(ChannelHandlerContext context) {
                 NettyPgProtocolStream.this.ctx = context;

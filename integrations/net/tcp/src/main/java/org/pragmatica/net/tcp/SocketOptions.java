@@ -13,12 +13,12 @@
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  */
-
 package org.pragmatica.net.tcp;
 
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.utils.Causes;
+
 
 /// Socket-level options for server configuration.
 ///
@@ -37,6 +37,7 @@ public record SocketOptions(int soBacklog, boolean soKeepalive, boolean tcpNoDel
         if (soBacklog <= 0) {
             return INVALID_BACKLOG.result();
         }
+
         return Result.success(new SocketOptions(soBacklog, soKeepalive, tcpNoDelay, reuseAddress));
     }
 

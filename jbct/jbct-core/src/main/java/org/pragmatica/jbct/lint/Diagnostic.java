@@ -2,6 +2,7 @@ package org.pragmatica.jbct.lint;
 
 import org.pragmatica.lang.Option;
 
+
 /// A lint diagnostic representing a JBCT rule violation or suggestion.
 public record Diagnostic(String ruleId,
                          DiagnosticSeverity severity,
@@ -57,27 +58,28 @@ public record Diagnostic(String ruleId,
     /// Format as human-readable string.
     public String toHumanReadable() {
         var sb = new StringBuilder();
+
         sb.append("%s:%d:%d: %s [%s] %s%n".formatted(file, line, column, severity, ruleId, message));
         if (!details.isEmpty()) {
-            sb.append("  ")
-              .append(details)
-              .append("\n");
+            sb.append("  ").append(details).append("\n");
         }
+
         example.onPresent(ex -> {
-                              sb.append("  Example:\n");
-                              ex.lines()
-                                .forEach(l -> sb.append("    ")
-                                                .append(l)
-                                                .append("\n"));
-                          });
+            sb.append("  Example:\n");
+            ex.lines()
+              .forEach(l -> sb.append("    ")
+                              .append(l)
+                              .append("\n"));
+        });
         docLink.onPresent(link -> sb.append("  See: ")
                                     .append(link)
                                     .append("\n"));
+
         return sb.toString();
     }
 
     /// Format location as file:line:column.
     public String location() {
-        return "%s:%d:%d". formatted(file, line, column);
+        return "%s:%d:%d".formatted(file, line, column);
     }
 }

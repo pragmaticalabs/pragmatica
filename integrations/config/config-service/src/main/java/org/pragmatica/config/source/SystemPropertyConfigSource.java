@@ -1,13 +1,14 @@
 package org.pragmatica.config.source;
 
-import org.pragmatica.config.ConfigSource;
-import org.pragmatica.lang.Option;
-
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Set;
 
+import org.pragmatica.config.ConfigSource;
+import org.pragmatica.lang.Option;
+
 import static org.pragmatica.lang.Option.option;
+
 
 /// Configuration source backed by Java system properties.
 ///
@@ -46,6 +47,7 @@ public final class SystemPropertyConfigSource implements ConfigSource {
     /// @return New SystemPropertyConfigSource
     public static SystemPropertyConfigSource systemPropertyConfigSource(String prefix, int priority) {
         var values = fetchFromSystemProperties(prefix);
+
         return new SystemPropertyConfigSource(prefix, priority, values);
     }
 
@@ -77,12 +79,11 @@ public final class SystemPropertyConfigSource implements ConfigSource {
     private static Map<String, String> fetchFromSystemProperties(String prefix) {
         var properties = System.getProperties();
         var result = new LinkedHashMap<String, String>();
-        var filteredNames = properties.stringPropertyNames()
-                                      .stream()
-                                      .filter(key -> key.startsWith(prefix))
-                                      .toList();
+        var filteredNames = properties.stringPropertyNames().stream().filter(key -> key.startsWith(prefix)).toList();
+
         filteredNames.forEach(key -> result.put(key.substring(prefix.length()),
                                                 properties.getProperty(key)));
+
         return result;
     }
 }

@@ -14,8 +14,9 @@
  *  limitations under the License.
  *
  */
-
 package org.pragmatica.jooq.r2dbc;
+
+import java.util.List;
 
 import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Option;
@@ -23,8 +24,6 @@ import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.r2dbc.R2dbcError;
 import org.pragmatica.r2dbc.ReactiveOperations;
-
-import java.util.List;
 
 import io.r2dbc.spi.Connection;
 import io.r2dbc.spi.ConnectionFactory;
@@ -36,6 +35,7 @@ import org.jooq.SQLDialect;
 import org.jooq.impl.DSL;
 
 import static org.pragmatica.lang.Result.success;
+
 
 /// Promise-based JOOQ R2DBC operations interface.
 /// Provides a thin wrapper over JOOQ with R2DBC connection management.
@@ -112,7 +112,8 @@ final class ConnectionFactoryJooqR2dbcOperations implements JooqR2dbcOperations 
 
     @Override
     public <R extends Record> Promise<R> fetchOne(ResultQuery<R> query) {
-        return withConnection(conn -> Promise.lift(e -> R2dbcError.fromException(e, query.getSQL()),
+        return withConnection(conn -> Promise.lift(e -> R2dbcError.fromException(e,
+                                                                                 query.getSQL()),
                                                    () -> DSL.using(conn, dialect).fetch(query))
                                              .flatMap(result -> extractSingleRecord(result).async()));
     }
@@ -154,12 +155,15 @@ final class ConnectionFactoryJooqR2dbcOperations implements JooqR2dbcOperations 
 
     private <R extends Record> Option<R> fetchOptionalRecord(Connection conn, ResultQuery<R> query) {
         var result = DSL.using(conn, dialect).fetch(query);
-        return result.isEmpty() ? Option.none() : Option.some(result.getFirst());
+
+        return result.isEmpty()
+               ? Option.none()
+               : Option.some(result.getFirst());
     }
 
     private <T> Promise<T> withConnection(Fn1<Promise<T>, Connection> operation) {
-        return ReactiveOperations.<Connection>fromPublisher(connectionFactory.create())
-                                 .flatMap(conn -> executeAndClose(conn, operation));
+        return ReactiveOperations.<Connection> fromPublisher(connectionFactory.create()).flatMap(conn -> executeAndClose(conn,
+                                                                                                                         operation));
     }
 
     private <T> Promise<T> executeAndClose(Connection conn, Fn1<Promise<T>, Connection> operation) {
@@ -168,7 +172,6 @@ final class ConnectionFactoryJooqR2dbcOperations implements JooqR2dbcOperations 
     }
 
     private static <T> Promise<T> closeAndResolve(Connection conn, Result<T> result) {
-        return ReactiveOperations.fromVoidPublisher(conn.close())
-                                 .fold(_ -> Promise.resolved(result));
+        return ReactiveOperations.fromVoidPublisher(conn.close()).fold(_ -> Promise.resolved(result));
     }
 }

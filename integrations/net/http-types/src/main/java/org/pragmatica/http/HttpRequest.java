@@ -13,10 +13,10 @@
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  */
-
 package org.pragmatica.http;
 
 import java.nio.charset.StandardCharsets;
+
 
 /// Transport-agnostic HTTP request surface.
 ///
@@ -28,25 +28,21 @@ public interface HttpRequest {
     /// Unique request ID for tracing and logging.
     /// Format: req_[ulid] (e.g., req_01hq4x2abc...)
     String requestId();
-
     /// HTTP method.
     HttpMethod method();
-
     /// Request path (without query string).
     String path();
-
     /// Request headers.
     Headers headers();
-
     /// Query parameters.
     QueryParams queryParams();
-
     /// Request body as bytes.
     byte[] body();
 
     /// Request body as UTF-8 string.
     default String bodyAsString() {
         var bytes = body();
+
         return bytes.length == 0
                ? ""
                : new String(bytes, StandardCharsets.UTF_8);

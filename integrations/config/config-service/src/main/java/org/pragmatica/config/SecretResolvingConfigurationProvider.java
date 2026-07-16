@@ -1,12 +1,5 @@
 package org.pragmatica.config;
 
-import org.pragmatica.lang.Cause;
-import org.pragmatica.lang.Functions.Fn1;
-import org.pragmatica.lang.Option;
-import org.pragmatica.lang.Promise;
-import org.pragmatica.lang.Result;
-import org.pragmatica.lang.Unit;
-
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -14,9 +7,17 @@ import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
+import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Functions.Fn1;
+import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Unit;
+
 import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Result.success;
 import static org.pragmatica.lang.Result.unitResult;
+
 
 /// Decorates a ConfigurationProvider by resolving ${secrets:path} placeholders
 /// in all string values using a resolver function.
@@ -52,12 +53,15 @@ final class SecretResolvingConfigurationProvider implements ConfigurationProvide
                                                                  Fn1<Promise<String>, String> secretResolver) {
         var originalMap = provider.asMap();
         var resolvedMap = new LinkedHashMap<String, String>();
+
         for (var entry : originalMap.entrySet()) {
             var resolved = storeResolvedEntry(entry, secretResolver, resolvedMap);
+
             if (resolved.isFailure()) {
                 return resolved.map(_ -> resolvedMap);
             }
         }
+
         return success(resolvedMap);
     }
 
@@ -65,10 +69,13 @@ final class SecretResolvingConfigurationProvider implements ConfigurationProvide
                                                    Fn1<Promise<String>, String> secretResolver,
                                                    Map<String, String> resolvedMap) {
         var resolved = fetchResolvedValue(entry.getKey(), entry.getValue(), secretResolver);
+
         if (resolved.isFailure()) {
             return resolved.mapToUnit();
         }
+
         resolvedMap.put(entry.getKey(), resolved.unwrap());
+
         return unitResult();
     }
 
@@ -76,9 +83,11 @@ final class SecretResolvingConfigurationProvider implements ConfigurationProvide
                                                      String value,
                                                      Fn1<Promise<String>, String> secretResolver) {
         var matcher = SECRET_PATTERN.matcher(value);
+
         if (!matcher.find()) {
             return success(value);
         }
+
         return replaceSecrets(key, value, secretResolver);
     }
 
@@ -88,10 +97,13 @@ final class SecretResolvingConfigurationProvider implements ConfigurationProvide
         var matcher = SECRET_PATTERN.matcher(value);
         var result = new StringBuilder();
         var replacementResult = matchReplacements(matcher, result, key, secretResolver);
+
         if (replacementResult.isFailure()) {
             return replacementResult.map(_ -> "");
         }
+
         matcher.appendTail(result);
+
         return success(result.toString());
     }
 
@@ -102,8 +114,11 @@ final class SecretResolvingConfigurationProvider implements ConfigurationProvide
         if (!matcher.find()) {
             return unitResult();
         }
-        return substituteSecret(matcher, result, key, secretResolver)
-        .flatMap(_ -> matchReplacements(matcher, result, key, secretResolver));
+
+        return substituteSecret(matcher, result, key, secretResolver).flatMap(_ -> matchReplacements(matcher,
+                                                                                                     result,
+                                                                                                     key,
+                                                                                                     secretResolver));
     }
 
     private static Result<Unit> substituteSecret(Matcher matcher,
@@ -112,9 +127,9 @@ final class SecretResolvingConfigurationProvider implements ConfigurationProvide
                                                  Fn1<Promise<String>, String> secretResolver) {
         var secretPath = matcher.group(1);
         var fetched = fetchSecret(secretResolver, secretPath);
+
         return switch (fetched) {
-            case Result.Failure<String>(var cause) ->
-            secretFailure(key, secretPath, cause);
+            case Result.Failure<String>(var cause) -> secretFailure(key, secretPath, cause);
             case Result.Success<String>(var secretValue) -> {
                 matcher.appendReplacement(result, Matcher.quoteReplacement(secretValue));
                 yield unitResult();
@@ -128,8 +143,7 @@ final class SecretResolvingConfigurationProvider implements ConfigurationProvide
     }
 
     private static Result<Unit> secretFailure(String key, String secretPath, Cause cause) {
-        return ConfigError.secretResolutionFailed(key, secretPath, cause)
-                          .result();
+        return ConfigError.secretResolutionFailed(key, secretPath, cause).result();
     }
 
     @Override

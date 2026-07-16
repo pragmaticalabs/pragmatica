@@ -2,8 +2,8 @@ package org.pragmatica.jbct.parser.v6;
 
 import org.pragmatica.peg.v6.cst.CstArray;
 
-public abstract class Java25Visitor<T> {
 
+public abstract class Java25Visitor<T> {
     protected static final int RULE_CompilationUnit_KIND = 0;
     protected static final int RULE_OrdinaryUnit_KIND = 1;
     protected static final int RULE_PackageDecl_KIND = 2;
@@ -112,6 +112,7 @@ public abstract class Java25Visitor<T> {
 
     public T visit(CstArray cst, int nodeIdx) {
         int kind = cst.kindAt(nodeIdx);
+
         return switch (kind) {
             case RULE_CompilationUnit_KIND -> visitCompilationUnit(cst, nodeIdx);
             case RULE_OrdinaryUnit_KIND -> visitOrdinaryUnit(cst, nodeIdx);
@@ -225,17 +226,24 @@ public abstract class Java25Visitor<T> {
     protected T visitChildren(CstArray cst, int nodeIdx) {
         T agg = defaultResult();
         var iter = cst.children(nodeIdx).iterator();
+
         while (iter.hasNext()) {
             int child = iter.next();
             T childResult = visit(cst, child);
+
             agg = aggregateResult(agg, childResult);
         }
+
         return agg;
     }
 
-    protected T defaultResult() { return null; }
+    protected T defaultResult() {
+        return null;
+    }
 
-    protected T aggregateResult(T agg, T next) { return next; }
+    protected T aggregateResult(T agg, T next) {
+        return next;
+    }
 
     public T visitCompilationUnit(CstArray cst, int nodeIdx) {
         return visitChildren(cst, nodeIdx);
@@ -656,5 +664,4 @@ public abstract class Java25Visitor<T> {
     public T visitLiteral(CstArray cst, int nodeIdx) {
         return visitChildren(cst, nodeIdx);
     }
-
 }

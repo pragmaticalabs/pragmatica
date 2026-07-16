@@ -11,15 +11,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package org.pragmatica.postgres.net.netty;
-
-import org.pragmatica.postgres.io.Encoder;
-import org.pragmatica.postgres.io.frontend.*;
-import org.pragmatica.postgres.message.Message;
-import io.netty.buffer.ByteBuf;
-import io.netty.channel.ChannelHandlerContext;
-import io.netty.handler.codec.MessageToByteEncoder;
 
 import java.nio.BufferOverflowException;
 import java.nio.ByteBuffer;
@@ -28,33 +20,39 @@ import java.util.Map;
 import java.util.Set;
 import java.util.stream.Collectors;
 
+import org.pragmatica.postgres.io.Encoder;
+import org.pragmatica.postgres.io.frontend.*;
+import org.pragmatica.postgres.message.Message;
+
+import io.netty.buffer.ByteBuf;
+import io.netty.channel.ChannelHandlerContext;
+import io.netty.handler.codec.MessageToByteEncoder;
+
+
 /**
  * Encodes Postgres v11 protocol v3 messages to bytes.
  *
  * @author Antti Laisi
  */
 public class NettyMessageEncoder extends MessageToByteEncoder<Message> {
-
-    private static final Map<Class<?>, Encoder<?>> ENCODERS =
-        Set.of(
-               new SSLRequestEncoder(),
-               new StartupMessageEncoder(),
-               new PasswordMessageEncoder(),
-               new QueryEncoder(),
-               new ParseEncoder(),
-               new BindEncoder(),
-               new DescribeEncoder(),
-               new ExecuteEncoder(),
-               new SASLInitialResponseEncoder(),
-               new SASLResponseEncoder(),
-               new CloseEncoder(),
-               new FIndicatorsEncoder(),
-               new TerminateEncoder()
-           ).stream()
-           .collect(Collectors.toMap(Encoder::getMessageType, encoder -> encoder));
+    private static final Map<Class<?>, Encoder<?>> ENCODERS = Set.of(new SSLRequestEncoder(),
+                                                                     new StartupMessageEncoder(),
+                                                                     new PasswordMessageEncoder(),
+                                                                     new QueryEncoder(),
+                                                                     new ParseEncoder(),
+                                                                     new BindEncoder(),
+                                                                     new DescribeEncoder(),
+                                                                     new ExecuteEncoder(),
+                                                                     new SASLInitialResponseEncoder(),
+                                                                     new SASLResponseEncoder(),
+                                                                     new CloseEncoder(),
+                                                                     new FIndicatorsEncoder(),
+                                                                     new TerminateEncoder())
+                                                                 .stream()
+                                                                 .collect(Collectors.toMap(Encoder::getMessageType,
+                                                                                           encoder -> encoder));
 
     private final ByteBuffer buffer = ByteBuffer.allocate(Integer.getInteger("pg.io.buffer.length", 4096));
-
     private final Charset encoding;
 
     public NettyMessageEncoder(Charset encoding) {
@@ -65,9 +63,11 @@ public class NettyMessageEncoder extends MessageToByteEncoder<Message> {
     @SuppressWarnings("unchecked")
     protected void encode(ChannelHandlerContext ctx, Message msg, ByteBuf out) {
         Encoder<Message> encoder = (Encoder<Message>) ENCODERS.get(msg.getClass());
-
         int estimated = encoder.estimateSize(msg, encoding);
-        ByteBuffer msgbuf = estimated <= buffer.capacity() ? buffer : ByteBuffer.allocate(estimated);
+        ByteBuffer msgbuf = estimated <= buffer.capacity()
+                            ? buffer
+                            : ByteBuffer.allocate(estimated);
+
         msgbuf.clear();
         try {
             while (true) {
@@ -87,5 +87,4 @@ public class NettyMessageEncoder extends MessageToByteEncoder<Message> {
             ctx.fireExceptionCaught(t);
         }
     }
-
 }

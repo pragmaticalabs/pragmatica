@@ -1,8 +1,5 @@
 package org.pragmatica.jbct.init;
 
-import org.pragmatica.lang.Result;
-import org.pragmatica.lang.utils.Causes;
-
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
@@ -11,10 +8,13 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 
+import org.pragmatica.lang.Result;
+import org.pragmatica.lang.utils.Causes;
+
+
 /// Initializes a new JBCT project structure.
 public final class ProjectInitializer {
     private static final String TEMPLATES_PATH = "/templates/";
-
     // Default versions - used as fallback when offline
     private static final String DEFAULT_JBCT_VERSION = GitHubVersionResolver.defaultJbctVersion();
     private static final String DEFAULT_PRAGMATICA_VERSION = GitHubVersionResolver.defaultPragmaticaVersion();
@@ -43,6 +43,7 @@ public final class ProjectInitializer {
     /// Create initializer with project parameters, fetching latest versions from GitHub.
     public static ProjectInitializer projectInitializer(Path projectDir, String groupId, String artifactId) {
         var resolver = GitHubVersionResolver.gitHubVersionResolver();
+
         return projectInitializer(projectDir, groupId, artifactId, resolver);
     }
 
@@ -52,6 +53,7 @@ public final class ProjectInitializer {
                                                         String artifactId,
                                                         GitHubVersionResolver resolver) {
         var basePackage = groupId + "." + artifactId.replace("-", "");
+
         return new ProjectInitializer(projectDir,
                                       groupId,
                                       artifactId,
@@ -63,6 +65,7 @@ public final class ProjectInitializer {
     /// Create initializer with project parameters and fallback versions (no network).
     public static ProjectInitializer projectInitializerOffline(Path projectDir, String groupId, String artifactId) {
         var basePackage = groupId + "." + artifactId.replace("-", "");
+
         return new ProjectInitializer(projectDir,
                                       groupId,
                                       artifactId,
@@ -78,6 +81,7 @@ public final class ProjectInitializer {
                                                         String jbctVersion,
                                                         String pragmaticaVersion) {
         var basePackage = groupId + "." + artifactId.replace("-", "");
+
         return new ProjectInitializer(projectDir, groupId, artifactId, basePackage, jbctVersion, pragmaticaVersion);
     }
 
@@ -98,32 +102,33 @@ public final class ProjectInitializer {
     ///
     /// @return List of created files
     public Result<List<Path>> initialize() {
-        return createDirectories()
-        .flatMap(_ -> Result.all(createTemplateFiles(),
-                                 createGitkeepFiles())
-                            .map(this::combineFileLists));
+        return createDirectories().flatMap(_ -> Result.all(createTemplateFiles(), createGitkeepFiles()).map(this::combineFileLists));
     }
 
     private List<Path> combineFileLists(List<Path> templateFiles, List<Path> gitkeepFiles) {
         var allFiles = new ArrayList<Path>();
+
         allFiles.addAll(templateFiles);
         allFiles.addAll(gitkeepFiles);
+
         return allFiles;
     }
 
     private Result<Path> createDirectories() {
-        try{
+        try {
             var srcMainJava = projectDir.resolve("src/main/java");
             var srcTestJava = projectDir.resolve("src/test/java");
+
             Files.createDirectories(srcMainJava);
             Files.createDirectories(srcTestJava);
             var packagePath = basePackage.replace(".", "/");
+
             Files.createDirectories(srcMainJava.resolve(packagePath));
             Files.createDirectories(srcTestJava.resolve(packagePath));
+
             return Result.success(projectDir);
         } catch (Exception e) {
-            return Causes.cause("Failed to create directories: " + e.getMessage())
-                         .result();
+            return Causes.cause("Failed to create directories: " + e.getMessage()).result();
         }
     }
 
@@ -136,23 +141,21 @@ public final class ProjectInitializer {
 
     private Result<List<Path>> createGitkeepFiles() {
         var packagePath = basePackage.replace(".", "/");
-        var srcKeep = projectDir.resolve("src/main/java")
-                                .resolve(packagePath)
-                                .resolve(".gitkeep");
-        var testKeep = projectDir.resolve("src/test/java")
-                                 .resolve(packagePath)
-                                 .resolve(".gitkeep");
-        try{
+        var srcKeep = projectDir.resolve("src/main/java").resolve(packagePath).resolve(".gitkeep");
+        var testKeep = projectDir.resolve("src/test/java").resolve(packagePath).resolve(".gitkeep");
+
+        try {
             if (!Files.exists(srcKeep)) {
                 Files.createFile(srcKeep);
             }
+
             if (!Files.exists(testKeep)) {
                 Files.createFile(testKeep);
             }
+
             return Result.success(List.of(srcKeep, testKeep));
         } catch (Exception e) {
-            return Causes.cause("Failed to create .gitkeep files: " + e.getMessage())
-                         .result();
+            return Causes.cause("Failed to create .gitkeep files: " + e.getMessage()).result();
         }
     }
 
@@ -161,18 +164,20 @@ public final class ProjectInitializer {
             // Don't overwrite existing files
             return Result.success(targetPath);
         }
+
         try (var in = getClass().getResourceAsStream(TEMPLATES_PATH + templateName)) {
             if (in == null) {
-                return Causes.cause("Template not found: " + templateName)
-                             .result();
+                return Causes.cause("Template not found: " + templateName).result();
             }
+
             var content = new String(in.readAllBytes(), StandardCharsets.UTF_8);
+
             content = substituteVariables(content);
             Files.writeString(targetPath, content);
+
             return Result.success(targetPath);
         } catch (IOException e) {
-            return Causes.cause("Failed to create " + targetPath + ": " + e.getMessage())
-                         .result();
+            return Causes.cause("Failed to create " + targetPath + ": " + e.getMessage()).result();
         }
     }
 
@@ -189,15 +194,18 @@ public final class ProjectInitializer {
     private String capitalizeWords(String s) {
         var words = s.split("-");
         var sb = new StringBuilder();
+
         for (var word : words) {
             if (!word.isEmpty()) {
                 if (sb.length() > 0) {
                     sb.append(" ");
                 }
+
                 sb.append(Character.toUpperCase(word.charAt(0)));
                 sb.append(word.substring(1));
             }
         }
+
         return sb.toString();
     }
 

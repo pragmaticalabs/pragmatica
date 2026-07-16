@@ -20,8 +20,9 @@ import org.pragmatica.serialization.Codec;
 /// @param observedEpochTerm     observer's epoch term at the time of the observation
 /// @param observedEpochCounter  observer's epoch counter at the time of the observation
 /// @param producedAtMs          observer's wall-clock millis when the observation was produced
-@Codec public record PeerHealthObservation(NodeId peerId,
-                                           HealthHintWire hint,
-                                           long observedEpochTerm,
-                                           long observedEpochCounter,
-                                           long producedAtMs) {}
+@Codec
+public record PeerHealthObservation(NodeId peerId,
+                                    HealthHintWire hint,
+                                    long observedEpochTerm,
+                                    long observedEpochCounter,
+                                    long producedAtMs) {}

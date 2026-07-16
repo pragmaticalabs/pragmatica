@@ -4,17 +4,7 @@
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
  */
-
 package org.pragmatica.consensus.leader.fsm;
-
-import org.pragmatica.consensus.NodeId;
-import org.pragmatica.consensus.fsm.ClusterFsmEvent;
-import org.pragmatica.consensus.leader.LeaderManager.LeaderProposalHandler;
-import org.pragmatica.lang.Contract;
-import org.pragmatica.lang.Option;
-import org.pragmatica.lang.io.TimeSpan;
-import org.pragmatica.messaging.MessageRouter;
-import org.pragmatica.statemachine.Fsm;
 
 import java.util.ArrayList;
 import java.util.Collections;
@@ -27,6 +17,16 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.DoubleSupplier;
 import java.util.function.Predicate;
 import java.util.function.Supplier;
+
+import org.pragmatica.consensus.NodeId;
+import org.pragmatica.consensus.fsm.ClusterFsmEvent;
+import org.pragmatica.consensus.leader.LeaderManager.LeaderProposalHandler;
+import org.pragmatica.lang.Contract;
+import org.pragmatica.lang.Option;
+import org.pragmatica.lang.io.TimeSpan;
+import org.pragmatica.messaging.MessageRouter;
+import org.pragmatica.statemachine.Fsm;
+
 
 /// Shared context for the leader-election FSM. Holds:
 /// - Configuration that never changes during the FSM's lifetime (self, expectedCluster, router,
@@ -49,7 +49,6 @@ public final class LeaderElectionContext {
     /// so the election layer doesn't conclude "lost election" while Rabia is still resolving.
     public static final TimeSpan DEFAULT_MIN_PROPOSAL_TIMEOUT = TimeSpan.timeSpan(10).seconds();
     public static final int DEFAULT_STUCK_ELECTION_THRESHOLD = 10;
-
     /// Grace window after [`LeaderElectionState.QuorumWaiting`] before the FSM gives up on
     /// observing a peer-committed leader and falls through to [`LeaderElectionState.Electing`] /
     /// [`LeaderElectionState.ReElecting`]. Sized to absorb the typical KV-sync propagation
@@ -65,7 +64,6 @@ public final class LeaderElectionContext {
     /// Production callers can override via the full-arity factory; the default is intentionally
     /// conservative so a misconfiguration doesn't introduce a deadlock-shaped bug.
     public static final TimeSpan DEFAULT_KV_SYNC_GRACE_DELAY = TimeSpan.timeSpan(3).seconds();
-
     /// Cadence for the independent peer-observation timer scheduled in
     /// [`LeaderElectionState.Electing`] / [`LeaderElectionState.ReElecting`]. Names a real
     /// architectural smell: `Electing.handle` previously conflated "drive my own proposal" with
@@ -86,14 +84,12 @@ public final class LeaderElectionContext {
     /// 500ms is the smallest cadence that doesn't measurably load the KV-store accessor while
     /// keeping the worst-case observation latency well under any meaningful operator timeout.
     public static final TimeSpan DEFAULT_PEER_OBSERVATION_INTERVAL = TimeSpan.timeSpan(500).millis();
-
     /// Cadence at which [`LeaderElectionState.Led`] re-checks whether the believed leader's
     /// leader-stamped `ClusterSync` ping is still fresh (the leader-acting lease). One check per
     /// interval; [`#LEADER_SILENCE_THRESHOLD_INTERVALS`] consecutive silent checks trip a
     /// `LeaderSilent` → `ReElecting`. 1s matches the typical leader ping cadence, so a check
     /// roughly aligns with one expected ping arrival.
     public static final TimeSpan DEFAULT_LEADER_LEASE_CHECK_INTERVAL = TimeSpan.timeSpan(1).seconds();
-
     /// Tenure warm-up: initial delay before the FIRST lease check fires in
     /// [`LeaderElectionState.Led`]. A freshly-elected leader must activate consensus, collect its
     /// first pongs, broadcast its readiness view, and have each follower's
@@ -106,7 +102,6 @@ public final class LeaderElectionContext {
     /// hosts; 15s is comfortably above it. The zero-leader wedge the lease guards against is
     /// PERMANENT, so the extra +15s recovery latency is immaterial.
     public static final TimeSpan DEFAULT_LEADER_LEASE_WARMUP = TimeSpan.timeSpan(15).seconds();
-
     /// Number of CONSECUTIVE silent lease checks (no fresh ping from the believed leader) a
     /// follower tolerates in [`LeaderElectionState.Led`] before declaring the leader silent and
     /// re-electing. Tradeoff: too LOW and ordinary ping loss / GC pause / scheduling jitter on a
@@ -118,7 +113,6 @@ public final class LeaderElectionContext {
     /// production wiring's `FollowerReadinessCache` already applies a 3-ping TTL), so this counter
     /// only escalates on SUSTAINED silence.
     public static final int LEADER_SILENCE_THRESHOLD_INTERVALS = 4;
-
     /// Default leader-ping-freshness predicate — reports EVERY believed leader as fresh, so the
     /// lease in [`LeaderElectionState.Led`] never trips. Lease-neutral: callers that do not wire a
     /// real freshness signal (test stubs, local-election mode, legacy overloads) keep the prior
@@ -129,21 +123,18 @@ public final class LeaderElectionContext {
 
     /// Default jitter source — uniform random in [0.0, 0.5). Captured once per FSM so tests can
     /// inject a deterministic alternative via the full-arity constructor.
-    public static final DoubleSupplier DEFAULT_JITTER_SOURCE =
-            () -> ThreadLocalRandom.current().nextDouble(0.5);
+    public static final DoubleSupplier DEFAULT_JITTER_SOURCE = () -> ThreadLocalRandom.current().nextDouble(0.5);
 
     /// Default rabia term supplier — returns 0 when not injected. Real consumers (Aether) inject
     /// the cluster-side leader-term counter so [`LeaderManager#currentLeaderEpoch`] returns the
     /// canonical epoch source.
     public static final Supplier<Long> DEFAULT_RABIA_TERM_SUPPLIER = () -> 0L;
-
     /// Default consensus-ready supplier — returns `false` when not injected. Production wiring
     /// (Aether's `RabiaNode`) supplies the actual consensus-engine readiness accessor
     /// (e.g. `RabiaEngine::isActive`); the FSM consults this supplier on entry to `QuorumWaiting`
     /// to decide whether consensus is already ready, eliminating the need to buffer a
     /// `ConsensusReady` event between FSM states.
     public static final Supplier<Boolean> DEFAULT_CONSENSUS_READY_SUPPLIER = () -> false;
-
     /// Default current-leader-from-KV supplier — returns `Option.none()` when not injected.
     /// Production wiring reads `LeaderKey` from the cluster KV-Store
     /// (`kvStore.get(LeaderKey.INSTANCE).map(LeaderValue::leader)`). The FSM consults this on
@@ -172,7 +163,6 @@ public final class LeaderElectionContext {
     private final Supplier<Boolean> consensusReadySupplier;
     private final Supplier<Option<NodeId>> currentLeaderFromKvSupplier;
     private final Predicate<NodeId> leaderPingFreshFn;
-
     // Per-FSM "singletons" — one instance per state class, shared for the lifetime of this FSM.
     // Built in the constructor via the constructor-driven initial-state factory, so the fields
     // are `final` and CAS comparisons against them return the same reference.
@@ -183,13 +173,13 @@ public final class LeaderElectionContext {
     // shared one.
     private final LeaderElectionState.QuorumLost quorumLost;
     private final LeaderElectionState.Stopped stopped;
-
     // Per-FSM Fsm reference — bound at construction time via the constructor-driven initial-state
     // factory. Replaces the global static FSM_REF.
     private final Fsm<LeaderElectionState, ClusterFsmEvent> fsm;
-
     private final AtomicReference<Option<NodeId>> currentLeader = new AtomicReference<>(Option.none());
+
     private final AtomicReference<Option<NodeId>> lastNotifiedLeader = new AtomicReference<>(Option.none());
+
     private final AtomicReference<List<NodeId>> currentTopology = new AtomicReference<>(List.of());
     private final AtomicBoolean hasEverHadLeader = new AtomicBoolean(false);
     private final AtomicBoolean proposalInFlight = new AtomicBoolean(false);
@@ -219,9 +209,19 @@ public final class LeaderElectionContext {
                           TimeSpan perRankDelay,
                           TimeSpan proposalTimeout,
                           int stuckElectionThreshold) {
-        this(fsm, self, proposalHandler, expectedCluster, router, proposalRetryDelay,
-             baseElectionDelay, perRankDelay, proposalTimeout, stuckElectionThreshold,
-             DEFAULT_JITTER_SOURCE, DEFAULT_RABIA_TERM_SUPPLIER, DEFAULT_CONSENSUS_READY_SUPPLIER,
+        this(fsm,
+             self,
+             proposalHandler,
+             expectedCluster,
+             router,
+             proposalRetryDelay,
+             baseElectionDelay,
+             perRankDelay,
+             proposalTimeout,
+             stuckElectionThreshold,
+             DEFAULT_JITTER_SOURCE,
+             DEFAULT_RABIA_TERM_SUPPLIER,
+             DEFAULT_CONSENSUS_READY_SUPPLIER,
              DEFAULT_CURRENT_LEADER_FROM_KV_SUPPLIER);
     }
 
@@ -238,9 +238,19 @@ public final class LeaderElectionContext {
                           TimeSpan proposalTimeout,
                           int stuckElectionThreshold,
                           DoubleSupplier jitterSource) {
-        this(fsm, self, proposalHandler, expectedCluster, router, proposalRetryDelay,
-             baseElectionDelay, perRankDelay, proposalTimeout, stuckElectionThreshold,
-             jitterSource, DEFAULT_RABIA_TERM_SUPPLIER, DEFAULT_CONSENSUS_READY_SUPPLIER,
+        this(fsm,
+             self,
+             proposalHandler,
+             expectedCluster,
+             router,
+             proposalRetryDelay,
+             baseElectionDelay,
+             perRankDelay,
+             proposalTimeout,
+             stuckElectionThreshold,
+             jitterSource,
+             DEFAULT_RABIA_TERM_SUPPLIER,
+             DEFAULT_CONSENSUS_READY_SUPPLIER,
              DEFAULT_CURRENT_LEADER_FROM_KV_SUPPLIER);
     }
 
@@ -259,9 +269,19 @@ public final class LeaderElectionContext {
                           int stuckElectionThreshold,
                           DoubleSupplier jitterSource,
                           Supplier<Long> rabiaTermSupplier) {
-        this(fsm, self, proposalHandler, expectedCluster, router, proposalRetryDelay,
-             baseElectionDelay, perRankDelay, proposalTimeout, stuckElectionThreshold,
-             jitterSource, rabiaTermSupplier, DEFAULT_CONSENSUS_READY_SUPPLIER,
+        this(fsm,
+             self,
+             proposalHandler,
+             expectedCluster,
+             router,
+             proposalRetryDelay,
+             baseElectionDelay,
+             perRankDelay,
+             proposalTimeout,
+             stuckElectionThreshold,
+             jitterSource,
+             rabiaTermSupplier,
+             DEFAULT_CONSENSUS_READY_SUPPLIER,
              DEFAULT_CURRENT_LEADER_FROM_KV_SUPPLIER);
     }
 
@@ -281,9 +301,19 @@ public final class LeaderElectionContext {
                           DoubleSupplier jitterSource,
                           Supplier<Long> rabiaTermSupplier,
                           Supplier<Boolean> consensusReadySupplier) {
-        this(fsm, self, proposalHandler, expectedCluster, router, proposalRetryDelay,
-             baseElectionDelay, perRankDelay, proposalTimeout, stuckElectionThreshold,
-             jitterSource, rabiaTermSupplier, consensusReadySupplier,
+        this(fsm,
+             self,
+             proposalHandler,
+             expectedCluster,
+             router,
+             proposalRetryDelay,
+             baseElectionDelay,
+             perRankDelay,
+             proposalTimeout,
+             stuckElectionThreshold,
+             jitterSource,
+             rabiaTermSupplier,
+             consensusReadySupplier,
              DEFAULT_CURRENT_LEADER_FROM_KV_SUPPLIER);
     }
 
@@ -310,10 +340,21 @@ public final class LeaderElectionContext {
                           Supplier<Long> rabiaTermSupplier,
                           Supplier<Boolean> consensusReadySupplier,
                           Supplier<Option<NodeId>> currentLeaderFromKvSupplier) {
-        this(fsm, self, proposalHandler, expectedCluster, router, proposalRetryDelay,
-             baseElectionDelay, perRankDelay, proposalTimeout, stuckElectionThreshold,
-             jitterSource, rabiaTermSupplier, consensusReadySupplier,
-             currentLeaderFromKvSupplier, DEFAULT_KV_SYNC_GRACE_DELAY);
+        this(fsm,
+             self,
+             proposalHandler,
+             expectedCluster,
+             router,
+             proposalRetryDelay,
+             baseElectionDelay,
+             perRankDelay,
+             proposalTimeout,
+             stuckElectionThreshold,
+             jitterSource,
+             rabiaTermSupplier,
+             consensusReadySupplier,
+             currentLeaderFromKvSupplier,
+             DEFAULT_KV_SYNC_GRACE_DELAY);
     }
 
     /// Constructor adding the KvSync grace delay — the cold-boot self-proposal gate.
@@ -337,10 +378,21 @@ public final class LeaderElectionContext {
                           Supplier<Boolean> consensusReadySupplier,
                           Supplier<Option<NodeId>> currentLeaderFromKvSupplier,
                           TimeSpan kvSyncGraceDelay) {
-        this(fsm, self, proposalHandler, expectedCluster, router, proposalRetryDelay,
-             baseElectionDelay, perRankDelay, proposalTimeout, stuckElectionThreshold,
-             jitterSource, rabiaTermSupplier, consensusReadySupplier,
-             currentLeaderFromKvSupplier, kvSyncGraceDelay,
+        this(fsm,
+             self,
+             proposalHandler,
+             expectedCluster,
+             router,
+             proposalRetryDelay,
+             baseElectionDelay,
+             perRankDelay,
+             proposalTimeout,
+             stuckElectionThreshold,
+             jitterSource,
+             rabiaTermSupplier,
+             consensusReadySupplier,
+             currentLeaderFromKvSupplier,
+             kvSyncGraceDelay,
              DEFAULT_PEER_OBSERVATION_INTERVAL);
     }
 
@@ -368,11 +420,24 @@ public final class LeaderElectionContext {
                           Supplier<Option<NodeId>> currentLeaderFromKvSupplier,
                           TimeSpan kvSyncGraceDelay,
                           TimeSpan peerObservationInterval) {
-        this(fsm, self, proposalHandler, expectedCluster, router, proposalRetryDelay,
-             baseElectionDelay, perRankDelay, proposalTimeout, stuckElectionThreshold,
-             jitterSource, rabiaTermSupplier, consensusReadySupplier,
-             currentLeaderFromKvSupplier, kvSyncGraceDelay, peerObservationInterval,
-             DEFAULT_LEADER_LEASE_CHECK_INTERVAL, DEFAULT_LEADER_PING_FRESH_FN);
+        this(fsm,
+             self,
+             proposalHandler,
+             expectedCluster,
+             router,
+             proposalRetryDelay,
+             baseElectionDelay,
+             perRankDelay,
+             proposalTimeout,
+             stuckElectionThreshold,
+             jitterSource,
+             rabiaTermSupplier,
+             consensusReadySupplier,
+             currentLeaderFromKvSupplier,
+             kvSyncGraceDelay,
+             peerObservationInterval,
+             DEFAULT_LEADER_LEASE_CHECK_INTERVAL,
+             DEFAULT_LEADER_PING_FRESH_FN);
     }
 
     /// Full-arity constructor adding the leader-acting lease parameters — the lease-check cadence
@@ -401,11 +466,25 @@ public final class LeaderElectionContext {
                           TimeSpan peerObservationInterval,
                           TimeSpan leaderLeaseCheckInterval,
                           Predicate<NodeId> leaderPingFreshFn) {
-        this(fsm, self, proposalHandler, expectedCluster, router, proposalRetryDelay,
-             baseElectionDelay, perRankDelay, proposalTimeout, stuckElectionThreshold,
-             jitterSource, rabiaTermSupplier, consensusReadySupplier,
-             currentLeaderFromKvSupplier, kvSyncGraceDelay, peerObservationInterval,
-             leaderLeaseCheckInterval, leaderPingFreshFn, DEFAULT_LEADER_LEASE_WARMUP);
+        this(fsm,
+             self,
+             proposalHandler,
+             expectedCluster,
+             router,
+             proposalRetryDelay,
+             baseElectionDelay,
+             perRankDelay,
+             proposalTimeout,
+             stuckElectionThreshold,
+             jitterSource,
+             rabiaTermSupplier,
+             consensusReadySupplier,
+             currentLeaderFromKvSupplier,
+             kvSyncGraceDelay,
+             peerObservationInterval,
+             leaderLeaseCheckInterval,
+             leaderPingFreshFn,
+             DEFAULT_LEADER_LEASE_WARMUP);
     }
 
     /// Full-arity constructor adding the lease tenure warm-up — the initial delay before the FIRST
@@ -469,71 +548,115 @@ public final class LeaderElectionContext {
     }
 
     static TimeSpan proposalTimeoutFor(TimeSpan proposalRetryDelay) {
-        return TimeSpan.timeSpan(Math.max(proposalRetryDelay.millis() * 3L,
-                                          DEFAULT_MIN_PROPOSAL_TIMEOUT.millis())).millis();
+        return TimeSpan.timeSpan(Math.max(proposalRetryDelay.millis() * 3L, DEFAULT_MIN_PROPOSAL_TIMEOUT.millis())).millis();
     }
 
     // --- Configuration accessors ---
+    public NodeId self() {
+        return self;
+    }
 
-    public NodeId self() { return self; }
-    public Option<LeaderProposalHandler> proposalHandler() { return proposalHandler; }
-    public List<NodeId> expectedCluster() { return expectedCluster; }
-    public MessageRouter router() { return router; }
-    public TimeSpan proposalRetryDelay() { return proposalRetryDelay; }
-    public TimeSpan baseElectionDelay() { return baseElectionDelay; }
-    public TimeSpan perRankDelay() { return perRankDelay; }
-    public TimeSpan proposalTimeout() { return proposalTimeout; }
+    public Option<LeaderProposalHandler> proposalHandler() {
+        return proposalHandler;
+    }
+
+    public List<NodeId> expectedCluster() {
+        return expectedCluster;
+    }
+
+    public MessageRouter router() {
+        return router;
+    }
+
+    public TimeSpan proposalRetryDelay() {
+        return proposalRetryDelay;
+    }
+
+    public TimeSpan baseElectionDelay() {
+        return baseElectionDelay;
+    }
+
+    public TimeSpan perRankDelay() {
+        return perRankDelay;
+    }
+
+    public TimeSpan proposalTimeout() {
+        return proposalTimeout;
+    }
 
     /// Grace window used by [`LeaderElectionState.AwaitingKvSync`]. Defaults to
     /// [`#DEFAULT_KV_SYNC_GRACE_DELAY`]; tests inject shorter values to drive the timeout
     /// fall-through deterministically.
-    public TimeSpan kvSyncGraceDelay() { return kvSyncGraceDelay; }
+    public TimeSpan kvSyncGraceDelay() {
+        return kvSyncGraceDelay;
+    }
 
     /// Observation cadence for the independent peer-observation timer scheduled in
     /// [`LeaderElectionState.Electing`] / [`LeaderElectionState.ReElecting`]. Defaults to
     /// [`#DEFAULT_PEER_OBSERVATION_INTERVAL`]; tests inject shorter values to drive the
     /// observation path deterministically.
-    public TimeSpan peerObservationInterval() { return peerObservationInterval; }
+    public TimeSpan peerObservationInterval() {
+        return peerObservationInterval;
+    }
 
     /// Cadence for the leader-acting lease re-check in [`LeaderElectionState.Led`]. Defaults to
     /// [`#DEFAULT_LEADER_LEASE_CHECK_INTERVAL`]; tests inject shorter values to drive the lease
     /// expiry deterministically.
-    public TimeSpan leaderLeaseCheckInterval() { return leaderLeaseCheckInterval; }
+    public TimeSpan leaderLeaseCheckInterval() {
+        return leaderLeaseCheckInterval;
+    }
 
     /// Tenure warm-up: initial delay before the FIRST lease check in [`LeaderElectionState.Led`].
     /// Defaults to [`#DEFAULT_LEADER_LEASE_WARMUP`]; tests inject a short warm-up to drive the
     /// lease deterministically without waiting the production 15s.
-    public TimeSpan leaderLeaseWarmup() { return leaderLeaseWarmup; }
+    public TimeSpan leaderLeaseWarmup() {
+        return leaderLeaseWarmup;
+    }
 
     /// Predicate consulted by [`LeaderElectionState.Led`]'s lease timer: given the believed
     /// leader, returns `true` while its leader-stamped `ClusterSync` ping is still fresh. A node
     /// in `Led(X)` (X != self) that sees this return `false` for
     /// [`#LEADER_SILENCE_THRESHOLD_INTERVALS`] consecutive checks dispatches a `LeaderSilent`.
     /// Defaults to the lease-neutral [`#DEFAULT_LEADER_PING_FRESH_FN`].
-    public Predicate<NodeId> leaderPingFreshFn() { return leaderPingFreshFn; }
+    public Predicate<NodeId> leaderPingFreshFn() {
+        return leaderPingFreshFn;
+    }
 
-    public int stuckElectionThreshold() { return stuckElectionThreshold; }
+    public int stuckElectionThreshold() {
+        return stuckElectionThreshold;
+    }
 
     // --- Mutable state accessors ---
+    public Option<NodeId> currentLeader() {
+        return currentLeader.get();
+    }
 
-    public Option<NodeId> currentLeader() { return currentLeader.get(); }
-    @Contract public void setCurrentLeader(Option<NodeId> leader) { currentLeader.set(leader); }
+    @Contract
+    public void setCurrentLeader(Option<NodeId> leader) {
+        currentLeader.set(leader);
+    }
 
     /// Dedup helper: returns `true` iff `leader` differs from the last notified leader and
     /// atomically records the new value. Callers that receive `true` are the ones that should
     /// emit the `LeaderChange` message; others skip to avoid duplicate notifications.
     public boolean markNotified(Option<NodeId> leader) {
         var previous = lastNotifiedLeader.getAndSet(leader);
-        return !previous.equals(leader);
+
+        return ! previous.equals(leader);
     }
 
-    public List<NodeId> currentTopology() { return currentTopology.get(); }
+    public List<NodeId> currentTopology() {
+        return currentTopology.get();
+    }
+
     @Contract
     public void setCurrentTopology(List<NodeId> topology) {
         if (topology.isEmpty()) {
             return;
         }
+
         var sorted = new ArrayList<>(topology);
+
         Collections.sort(sorted);
         currentTopology.set(List.copyOf(sorted));
     }
@@ -541,7 +664,9 @@ public final class LeaderElectionContext {
     /// Live accessor for the consensus-engine readiness state — the SSOT consulted by
     /// [`LeaderElectionState.QuorumWaiting#onEntry`]. When `true`, the FSM self-dispatches a
     /// [`LeaderElectionEvents.ConsensusReady`] to immediately advance to `Electing`/`ReElecting`.
-    public Supplier<Boolean> consensusReadySupplier() { return consensusReadySupplier; }
+    public Supplier<Boolean> consensusReadySupplier() {
+        return consensusReadySupplier;
+    }
 
     /// Live accessor for the cluster's current leader as recorded in the KV-Store
     /// (`LeaderKey` → `LeaderValue.leader()`). Consulted by `Electing.onEntry` /
@@ -549,21 +674,53 @@ public final class LeaderElectionContext {
     /// committed a leader. Pull-side complement to the push-based
     /// `KVStoreNotification.ValuePut<LeaderKey>` listener — the FSM never gets stuck waiting
     /// for a notification that already fired (or never will).
-    public Supplier<Option<NodeId>> currentLeaderFromKvSupplier() { return currentLeaderFromKvSupplier; }
+    public Supplier<Option<NodeId>> currentLeaderFromKvSupplier() {
+        return currentLeaderFromKvSupplier;
+    }
 
-    public boolean hasEverHadLeader() { return hasEverHadLeader.get(); }
-    @Contract public void markHasEverHadLeader() { hasEverHadLeader.set(true); }
+    public boolean hasEverHadLeader() {
+        return hasEverHadLeader.get();
+    }
 
-    public boolean tryStartProposal() { return proposalInFlight.compareAndSet(false, true); }
-    @Contract public void clearProposalInFlight() { proposalInFlight.set(false); }
-    public boolean proposalInFlight() { return proposalInFlight.get(); }
+    @Contract
+    public void markHasEverHadLeader() {
+        hasEverHadLeader.set(true);
+    }
 
-    public int incrementElectionRetryCount() { return electionRetryCount.incrementAndGet(); }
-    @Contract public void resetElectionRetryCount() { electionRetryCount.set(0); }
+    public boolean tryStartProposal() {
+        return proposalInFlight.compareAndSet(false, true);
+    }
 
-    public int incrementStuckElectionCount() { return stuckElectionCount.incrementAndGet(); }
-    @Contract public void resetStuckElectionCount() { stuckElectionCount.set(0); }
-    public int stuckElectionCount() { return stuckElectionCount.get(); }
+    @Contract
+    public void clearProposalInFlight() {
+        proposalInFlight.set(false);
+    }
+
+    public boolean proposalInFlight() {
+        return proposalInFlight.get();
+    }
+
+    public int incrementElectionRetryCount() {
+        return electionRetryCount.incrementAndGet();
+    }
+
+    @Contract
+    public void resetElectionRetryCount() {
+        electionRetryCount.set(0);
+    }
+
+    public int incrementStuckElectionCount() {
+        return stuckElectionCount.incrementAndGet();
+    }
+
+    @Contract
+    public void resetStuckElectionCount() {
+        stuckElectionCount.set(0);
+    }
+
+    public int stuckElectionCount() {
+        return stuckElectionCount.get();
+    }
 
     /// The viewSequence to carry on the NEXT leader proposal: one above the highest COMMITTED
     /// sequence this node has observed. Deliberately NOT a per-attempt counter (H4 fence,
@@ -575,80 +732,122 @@ public final class LeaderElectionContext {
     ///     or below the committed one and the KV applier rejects it.
     /// Does not mutate state; the baseline advances only when a commit is observed
     /// ([#observeViewSequence(long)]).
-    public long nextViewSequence() { return viewSequence.get() + 1; }
+    public long nextViewSequence() {
+        return viewSequence.get() + 1;
+    }
 
     /// Record a leader `viewSequence` observed COMMITTED (from the `LeaderKey`
     /// `ValuePut` notification or its snapshot-replay re-fire). Max-merge keeps the baseline
     /// monotone, so an out-of-order or duplicate observation can never regress it.
     @Contract
-    public void observeViewSequence(long committed) { viewSequence.accumulateAndGet(committed, Math::max); }
+    public void observeViewSequence(long committed) {
+        viewSequence.accumulateAndGet(committed, Math::max);
+    }
 
     /// The highest COMMITTED leader `viewSequence` this node has observed (the baseline
     /// [#nextViewSequence] sits one above). Snapshotted on entry to `Electing` / `ReElecting` as
     /// the adoption fence: WITHIN an election, only a commit whose sequence POSTDATES the decision
     /// to elect (`committedViewSequence() > entryBaseline`) is adopted, so the stale pre-death
     /// commit (≤ baseline) cannot resurrect the corpse and wedge re-election (FIX-1 refinement).
-    public long committedViewSequence() { return viewSequence.get(); }
+    public long committedViewSequence() {
+        return viewSequence.get();
+    }
 
     /// Sequence at which the live `Led` leader was adopted — the fence reference for the `Led` swap
     /// guard (FIX 2). Returns 0 before any leader is adopted.
-    public long adoptedViewSequence() { return adoptedViewSequence.get(); }
+    public long adoptedViewSequence() {
+        return adoptedViewSequence.get();
+    }
 
     /// Records the sequence of a leader just adopted into `Led`. Called from the `Led` swap path so
     /// a subsequent later-arriving lower-sequence commit is fenced out.
     @Contract
-    public void setAdoptedViewSequence(long sequence) { adoptedViewSequence.set(sequence); }
+    public void setAdoptedViewSequence(long sequence) {
+        adoptedViewSequence.set(sequence);
+    }
 
-    public long nextProposalEpoch() { return proposalEpoch.incrementAndGet(); }
+    public long nextProposalEpoch() {
+        return proposalEpoch.incrementAndGet();
+    }
 
-    public AtomicLong quorumSequence() { return quorumSequence; }
+    public AtomicLong quorumSequence() {
+        return quorumSequence;
+    }
 
     // --- Per-FSM state instances ---
+    public LeaderElectionState.Dormant dormant() {
+        return dormant;
+    }
 
-    public LeaderElectionState.Dormant dormant() { return dormant; }
     /// Fresh data-carrying instance per call. Each instance owns its own consensus-readiness
     /// poll `ScheduledFuture` and cancels it on `onExit`/`onCasLost`.
-    public LeaderElectionState.QuorumWaiting quorumWaiting() { return LeaderElectionState.QuorumWaiting.fresh(this); }
+    public LeaderElectionState.QuorumWaiting quorumWaiting() {
+        return LeaderElectionState.QuorumWaiting.fresh(this);
+    }
+
     /// Fresh data-carrying instance per call. Each instance owns its own KvSync grace
     /// `ScheduledFuture` and cancels it on `onExit`/`onCasLost`.
-    public LeaderElectionState.AwaitingKvSync awaitingKvSync() { return LeaderElectionState.AwaitingKvSync.fresh(this); }
+    public LeaderElectionState.AwaitingKvSync awaitingKvSync() {
+        return LeaderElectionState.AwaitingKvSync.fresh(this);
+    }
+
     /// Fresh data-carrying instance per call. Each instance owns its own pending-tick /
     /// proposal-timeout `ScheduledFuture`s and cancels them on `onExit`/`onCasLost`.
-    public LeaderElectionState.Electing electing() { return LeaderElectionState.Electing.fresh(this); }
+    public LeaderElectionState.Electing electing() {
+        return LeaderElectionState.Electing.fresh(this);
+    }
+
     /// Fresh data-carrying instance per call. See [`#electing`].
-    public LeaderElectionState.ReElecting reElecting() { return LeaderElectionState.ReElecting.fresh(this); }
-    public LeaderElectionState.QuorumLost quorumLost() { return quorumLost; }
-    public LeaderElectionState.Stopped stopped() { return stopped; }
+    public LeaderElectionState.ReElecting reElecting() {
+        return LeaderElectionState.ReElecting.fresh(this);
+    }
+
+    public LeaderElectionState.QuorumLost quorumLost() {
+        return quorumLost;
+    }
+
+    public LeaderElectionState.Stopped stopped() {
+        return stopped;
+    }
 
     public Fsm<LeaderElectionState, ClusterFsmEvent> fsm() {
         return fsm;
     }
 
     // --- Derived helpers ---
-
     /// Candidate pool for leader election.
     public List<NodeId> candidatePool() {
         if (expectedCluster.isEmpty() || stuckElectionCount.get() >= stuckElectionThreshold) {
             return currentTopology.get();
         }
+
         if (!hasEverHadLeader.get()) {
             return expectedCluster;
         }
+
         var topology = currentTopology.get();
-        var filtered = expectedCluster.stream()
-                                      .filter(topology::contains)
-                                      .toList();
-        return filtered.isEmpty() ? topology : filtered;
+        var filtered = expectedCluster.stream().filter(topology::contains).toList();
+
+        return filtered.isEmpty()
+               ? topology
+               : filtered;
     }
 
     public int rankOfSelf() {
-        var pool = expectedCluster.isEmpty() ? currentTopology.get() : expectedCluster;
+        var pool = expectedCluster.isEmpty()
+                   ? currentTopology.get()
+                   : expectedCluster;
         var sorted = pool.stream().sorted().toList();
         var rank = sorted.indexOf(self);
-        return rank >= 0 ? rank : sorted.size();
+
+        return rank >= 0
+               ? rank
+               : sorted.size();
     }
 
     public boolean isLeader() {
-        return currentLeader.get().filter(self::equals).isPresent();
+        return currentLeader.get()
+                            .filter(self::equals)
+                            .isPresent();
     }
 }

@@ -13,14 +13,14 @@
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  */
-
 package org.pragmatica.net.tcp;
+
+import java.nio.file.Path;
 
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.net.tcp.security.CertificateProvider;
 
-import java.nio.file.Path;
 
 /// Unified TLS configuration supporting server-side, client-side, and mutual TLS.
 ///
@@ -46,9 +46,7 @@ public sealed interface TlsConfig {
 
         /// Certificate and private key loaded from PEM files.
         /// Suitable for production use.
-        record FromFiles(Path certificatePath,
-                         Path privateKeyPath,
-                         Option<String> keyPassword) implements Identity {}
+        record FromFiles(Path certificatePath, Path privateKeyPath, Option<String> keyPassword) implements Identity {}
 
         /// Certificate and private key provided as in-memory PEM bytes.
         /// Suitable for programmatic certificate provisioning.
@@ -204,9 +202,9 @@ public sealed interface TlsConfig {
     /// @return mutual TLS configuration or error
     static Result<TlsConfig> fromProvider(CertificateProvider provider, String nodeId, String hostname) {
         return provider.issueCertificate(nodeId, hostname)
-                       .map(bundle -> new Mutual(
-                           new Identity.FromProvider(bundle.certificatePem(), bundle.privateKeyPem()),
-                           new Trust.FromCaBytes(bundle.caCertificatePem())));
+                       .map(bundle -> new Mutual(new Identity.FromProvider(bundle.certificatePem(),
+                                                                           bundle.privateKeyPem()),
+                                                 new Trust.FromCaBytes(bundle.caCertificatePem())));
     }
 
     // ===== Deprecated Legacy API =====

@@ -13,16 +13,16 @@
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  */
-
 package org.pragmatica.consensus.topology;
+
+import java.time.Instant;
 
 import org.pragmatica.consensus.net.NodeInfo;
 import org.pragmatica.lang.Option;
 
-import java.time.Instant;
-
 import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.some;
+
 
 /// State of a node in the topology, tracking health and connection attempts.
 ///
@@ -51,8 +51,7 @@ public record NodeState(NodeInfo info,
     public boolean canAttemptConnection(Instant now) {
         return switch (health) {
             case HEALTHY -> true;
-            case SUSPECTED -> nextAttemptAfter.map(next -> now.isAfter(next) || now.equals(next))
-                                              .or(true);
+            case SUSPECTED -> nextAttemptAfter.map(next -> now.isAfter(next) || now.equals(next)).or(true);
         };
     }
 }

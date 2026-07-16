@@ -14,17 +14,17 @@
  *  limitations under the License.
  *
  */
-
 package org.pragmatica.metrics;
+
+import java.util.function.Supplier;
 
 import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Result;
 
-import java.util.function.Supplier;
-
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Timer;
+
 
 /// Aspect decorator for adding Micrometer metrics to Result-returning functions.
 /// Supports timer-based metrics (duration + counts), counter-based metrics (counts only),
@@ -145,7 +145,9 @@ public interface ResultMetrics {
             return input -> {
                 var sample = Timer.start();
                 var result = fn.apply(input);
+
                 recordResult(sample, result);
+
                 return result;
             };
         }
@@ -155,7 +157,9 @@ public interface ResultMetrics {
             return () -> {
                 var sample = Timer.start();
                 var result = supplier.get();
+
                 recordResult(sample, result);
+
                 return result;
             };
         }
@@ -174,7 +178,9 @@ public interface ResultMetrics {
         public <T, R> Fn1<Result<R>, T> around(Fn1<Result<R>, T> fn) {
             return input -> {
                 var result = fn.apply(input);
+
                 recordResult(result);
+
                 return result;
             };
         }
@@ -183,7 +189,9 @@ public interface ResultMetrics {
         public <R> Supplier<Result<R>> around(Supplier<Result<R>> supplier) {
             return () -> {
                 var result = supplier.get();
+
                 recordResult(result);
+
                 return result;
             };
         }
@@ -203,7 +211,9 @@ public interface ResultMetrics {
             return input -> {
                 var sample = Timer.start();
                 var result = fn.apply(input);
+
                 recordResult(sample, result);
+
                 return result;
             };
         }
@@ -213,7 +223,9 @@ public interface ResultMetrics {
             return () -> {
                 var sample = Timer.start();
                 var result = supplier.get();
+
                 recordResult(sample, result);
+
                 return result;
             };
         }

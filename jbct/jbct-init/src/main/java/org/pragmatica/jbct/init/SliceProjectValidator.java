@@ -1,9 +1,5 @@
 package org.pragmatica.jbct.init;
 
-import org.pragmatica.lang.Cause;
-import org.pragmatica.lang.Result;
-import org.pragmatica.lang.utils.Causes;
-
 import java.io.FileInputStream;
 import java.io.IOException;
 import java.nio.file.Files;
@@ -12,6 +8,11 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Properties;
 import java.util.jar.Manifest;
+
+import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Result;
+import org.pragmatica.lang.utils.Causes;
+
 
 /// Validates slice project configuration.
 public final class SliceProjectValidator {
@@ -35,18 +36,22 @@ public final class SliceProjectValidator {
     private ValidationResult combinePartialResults(PartialResult... partials) {
         var errors = new ArrayList<String>();
         var warnings = new ArrayList<String>();
+
         for (var partial : partials) {
             errors.addAll(partial.errors());
             warnings.addAll(partial.warnings());
         }
+
         return ValidationResult.validationResult(errors, warnings);
     }
 
     private PartialResult checkPomFile() {
         var pomFile = projectDir.resolve("pom.xml");
+
         if (!Files.exists(pomFile)) {
             return PartialResult.error("pom.xml not found in project directory");
         }
+
         return readFile(pomFile).fold(cause -> pomReadError(cause), this::checkPomContent);
     }
 
@@ -56,40 +61,50 @@ public final class SliceProjectValidator {
 
     private PartialResult checkPomContent(String content) {
         var warnings = new ArrayList<String>();
+
         if (!content.contains("slice.class")) {
             warnings.add("Missing slice.class property in pom.xml");
         }
+
         if (!content.contains("collect-slice-deps")) {
             warnings.add("Missing collect-slice-deps goal configuration");
         }
+
         return PartialResult.partialResult(List.of(), warnings);
     }
 
     private PartialResult checkSliceManifests() {
         var targetDir = projectDir.resolve("target/classes");
+
         if (!Files.exists(targetDir)) {
             return PartialResult.warning("target/classes not found - run 'mvn compile' first");
         }
+
         var sliceDir = targetDir.resolve("META-INF/slice");
+
         if (!Files.exists(sliceDir)) {
             return PartialResult.error("META-INF/slice/ directory not found - ensure annotation processor is configured");
         }
+
         try (var files = Files.list(sliceDir)) {
             var manifestFiles = files.filter(p -> p.toString()
-                                                   .endsWith(".manifest"))
-                                     .toList();
+                                                   .endsWith(".manifest")).toList();
+
             if (manifestFiles.isEmpty()) {
                 return PartialResult.error("No .manifest files found in META-INF/slice/");
             }
+
             var errors = new ArrayList<String>();
+
             for (var manifestFile : manifestFiles) {
                 loadProperties(manifestFile).onFailure(cause -> errors.add("Failed to read " + manifestFile.getFileName()
-                                                                           + ": " + cause.message()))
+                                                                          + ": " + cause.message()))
                               .onSuccess(props -> {
                                              checkRequired(props, "slice.interface", errors);
                                              checkRequired(props, "slice.artifactId", errors);
                                          });
             }
+
             return PartialResult.partialResult(errors, List.of());
         } catch (Exception e) {
             return PartialResult.error("Failed to scan META-INF/slice/: " + e.getMessage());
@@ -104,13 +119,17 @@ public final class SliceProjectValidator {
 
     private PartialResult checkManifestEntries() {
         var targetDir = projectDir.resolve("target/classes");
+
         if (!Files.exists(targetDir)) {
             return PartialResult.empty();
         }
+
         var manifestFile = targetDir.resolve("META-INF/MANIFEST.MF");
+
         if (!Files.exists(manifestFile)) {
             return PartialResult.warning("MANIFEST.MF not found - will be created during packaging");
         }
+
         return loadManifest(manifestFile).fold(cause -> manifestReadError(cause), this::checkManifestAttributes);
     }
 
@@ -121,32 +140,35 @@ public final class SliceProjectValidator {
     private PartialResult checkManifestAttributes(Manifest manifest) {
         var warnings = new ArrayList<String>();
         var attrs = manifest.getMainAttributes();
+
         if (attrs.getValue("Slice-Artifact") == null) {
             warnings.add("Missing Slice-Artifact manifest entry");
         }
+
         if (attrs.getValue("Slice-Class") == null) {
             warnings.add("Missing Slice-Class manifest entry");
         }
+
         return PartialResult.partialResult(List.of(), warnings);
     }
 
     private Result<String> readFile(Path path) {
-        try{
+        try {
             return Result.success(Files.readString(path));
         } catch (IOException e) {
-            return Causes.cause(e.getMessage())
-                         .result();
+            return Causes.cause(e.getMessage()).result();
         }
     }
 
     private Result<Properties> loadProperties(Path path) {
         try (var input = new FileInputStream(path.toFile())) {
             var props = new Properties();
+
             props.load(input);
+
             return Result.success(props);
         } catch (IOException e) {
-            return Causes.cause(e.getMessage())
-                         .result();
+            return Causes.cause(e.getMessage()).result();
         }
     }
 
@@ -154,8 +176,7 @@ public final class SliceProjectValidator {
         try (var input = new FileInputStream(path.toFile())) {
             return Result.success(new Manifest(input));
         } catch (IOException e) {
-            return Causes.cause(e.getMessage())
-                         .result();
+            return Causes.cause(e.getMessage()).result();
         }
     }
 

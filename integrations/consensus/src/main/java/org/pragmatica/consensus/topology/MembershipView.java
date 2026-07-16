@@ -13,12 +13,12 @@
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  */
-
 package org.pragmatica.consensus.topology;
+
+import java.util.Set;
 
 import org.pragmatica.consensus.NodeId;
 
-import java.util.Set;
 
 /// Read-only projection of cluster membership used by `TopologyObserver` read paths
 /// when a snapshot-backed view is available.
@@ -42,13 +42,10 @@ import java.util.Set;
 public interface MembershipView {
     /// All node IDs the snapshot lists as core members, irrespective of lifecycle.
     Set<NodeId> coreMemberIds();
-
     /// Node IDs whose lifecycle is `ON_DUTY` (fully operational core members).
     Set<NodeId> onDutyMemberIds();
-
     /// Count of `ON_DUTY` members with `HEALTHY` health hint.
     int healthyOnDutyCount();
-
     /// Operator-declared target core size at the snapshot's epoch.
     int desiredCoreSize();
 

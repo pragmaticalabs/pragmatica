@@ -13,19 +13,19 @@
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  */
-
 package org.pragmatica.http;
-
-import org.pragmatica.lang.Cause;
-import org.pragmatica.lang.Option;
-import org.pragmatica.lang.utils.Causes;
 
 import java.util.Map;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
+import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Option;
+import org.pragmatica.lang.utils.Causes;
+
 import static org.pragmatica.http.HttpError.httpError;
+
 
 /// HTTP response status codes.
 @SuppressWarnings("unused")
@@ -92,9 +92,7 @@ public enum HttpStatus {
     private final String message;
     private static final Map<Integer, HttpStatus> LOOKUP;
     static {
-        LOOKUP = Stream.of(values())
-                       .collect(Collectors.toMap(HttpStatus::code,
-                                                 Function.identity()));
+        LOOKUP = Stream.of(values()).collect(Collectors.toMap(HttpStatus::code, Function.identity()));
     }
     HttpStatus(int code, String message) {
         this.code = code;
@@ -131,7 +129,6 @@ public enum HttpStatus {
         return httpError(this, Causes.fromThrowable(cause));
     }
     public static HttpStatus httpStatus(int code) {
-        return Option.option(LOOKUP.get(code))
-                     .or(UNKNOWN_ERROR);
+        return Option.option(LOOKUP.get(code)).or(UNKNOWN_ERROR);
     }
 }

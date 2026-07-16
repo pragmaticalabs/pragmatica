@@ -1,10 +1,11 @@
 package org.pragmatica.jbct.lint.cst;
 
+import java.util.stream.Stream;
+
 import org.pragmatica.jbct.lint.Diagnostic;
 import org.pragmatica.jbct.lint.LintContext;
 import org.pragmatica.jbct.parser.Cursor;
 
-import java.util.stream.Stream;
 
 /// Interface for CST-based JBCT lint rules.
 ///

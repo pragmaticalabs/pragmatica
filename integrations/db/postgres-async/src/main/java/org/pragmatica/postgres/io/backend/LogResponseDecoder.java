@@ -11,15 +11,15 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package org.pragmatica.postgres.io.backend;
+
+import java.nio.ByteBuffer;
+import java.nio.charset.Charset;
 
 import org.pragmatica.postgres.io.Decoder;
 import org.pragmatica.postgres.io.IO;
 import org.pragmatica.postgres.message.backend.LogResponse;
 
-import java.nio.ByteBuffer;
-import java.nio.charset.Charset;
 
 /**
  * Base class for NoticeResponse and for ErrorResponse.
@@ -36,17 +36,18 @@ public abstract class LogResponseDecoder<M extends LogResponse> implements Decod
 
         for (byte type = buffer.get(); type != 0; type = buffer.get()) {
             var value = IO.getCString(buffer, encoding);
-            if (type == (byte) 'S') {
+
+            if (type == (byte)'S') {
                 level = value;
-            } else if (type == (byte) 'C') {
+            } else if (type == (byte)'C') {
                 code = value;
-            } else if (type == (byte) 'M') {
+            } else if (type == (byte)'M') {
                 message = value;
             }
         }
+
         return asMessage(level, code, message);
     }
 
     protected abstract M asMessage(String level, String code, String message);
-
 }

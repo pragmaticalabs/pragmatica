@@ -11,17 +11,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package org.pragmatica.postgres;
-
-import org.pragmatica.postgres.conversion.DataConverter;
-import org.pragmatica.postgres.message.backend.DataRow;
-import org.pragmatica.postgres.net.Row;
-import org.pragmatica.postgres.net.SqlException;
-import org.pragmatica.lang.Option;
-import org.pragmatica.lang.Result;
-import org.pragmatica.lang.type.KeyToValue;
-import org.pragmatica.lang.type.TypeToken;
 
 import java.math.BigDecimal;
 import java.math.BigInteger;
@@ -32,7 +22,17 @@ import java.time.LocalTime;
 import java.util.Locale;
 import java.util.Map;
 
+import org.pragmatica.postgres.conversion.DataConverter;
+import org.pragmatica.postgres.message.backend.DataRow;
+import org.pragmatica.postgres.net.Row;
+import org.pragmatica.postgres.net.SqlException;
+import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Result;
+import org.pragmatica.lang.type.KeyToValue;
+import org.pragmatica.lang.type.TypeToken;
+
 import static org.pragmatica.lang.Option.option;
+
 
 /**
  * Result row, uses {@link DataConverter} for all conversions.
@@ -54,7 +54,11 @@ public class PgRow implements Row, KeyToValue {
 
     @Override
     public String getString(int index) {
-        return dataConverter.toString(columns[index].type(), data.data(), data.offset(index), data.length(index), columns[index].isBinary());
+        return dataConverter.toString(columns[index].type(),
+                                      data.data(),
+                                      data.offset(index),
+                                      data.length(index),
+                                      columns[index].isBinary());
     }
 
     @Override
@@ -64,7 +68,11 @@ public class PgRow implements Row, KeyToValue {
 
     @Override
     public Character getChar(int index) {
-        return dataConverter.toChar(columns[index].type(), data.data(), data.offset(index), data.length(index), columns[index].isBinary());
+        return dataConverter.toChar(columns[index].type(),
+                                    data.data(),
+                                    data.offset(index),
+                                    data.length(index),
+                                    columns[index].isBinary());
     }
 
     @Override
@@ -74,7 +82,11 @@ public class PgRow implements Row, KeyToValue {
 
     @Override
     public Byte getByte(int index) {
-        return dataConverter.toByte(columns[index].type(), data.data(), data.offset(index), data.length(index), columns[index].isBinary());
+        return dataConverter.toByte(columns[index].type(),
+                                    data.data(),
+                                    data.offset(index),
+                                    data.length(index),
+                                    columns[index].isBinary());
     }
 
     @Override
@@ -84,7 +96,11 @@ public class PgRow implements Row, KeyToValue {
 
     @Override
     public Short getShort(int index) {
-        return dataConverter.toShort(columns[index].type(), data.data(), data.offset(index), data.length(index), columns[index].isBinary());
+        return dataConverter.toShort(columns[index].type(),
+                                     data.data(),
+                                     data.offset(index),
+                                     data.length(index),
+                                     columns[index].isBinary());
     }
 
     @Override
@@ -94,7 +110,11 @@ public class PgRow implements Row, KeyToValue {
 
     @Override
     public Integer getInt(int index) {
-        return dataConverter.toInteger(columns[index].type(), data.data(), data.offset(index), data.length(index), columns[index].isBinary());
+        return dataConverter.toInteger(columns[index].type(),
+                                       data.data(),
+                                       data.offset(index),
+                                       data.length(index),
+                                       columns[index].isBinary());
     }
 
     @Override
@@ -104,7 +124,11 @@ public class PgRow implements Row, KeyToValue {
 
     @Override
     public Long getLong(int index) {
-        return dataConverter.toLong(columns[index].type(), data.data(), data.offset(index), data.length(index), columns[index].isBinary());
+        return dataConverter.toLong(columns[index].type(),
+                                    data.data(),
+                                    data.offset(index),
+                                    data.length(index),
+                                    columns[index].isBinary());
     }
 
     @Override
@@ -114,7 +138,11 @@ public class PgRow implements Row, KeyToValue {
 
     @Override
     public BigInteger getBigInteger(int index) {
-        return dataConverter.toBigInteger(columns[index].type(), data.data(), data.offset(index), data.length(index), columns[index].isBinary());
+        return dataConverter.toBigInteger(columns[index].type(),
+                                          data.data(),
+                                          data.offset(index),
+                                          data.length(index),
+                                          columns[index].isBinary());
     }
 
     @Override
@@ -124,7 +152,11 @@ public class PgRow implements Row, KeyToValue {
 
     @Override
     public BigDecimal getBigDecimal(int index) {
-        return dataConverter.toBigDecimal(columns[index].type(), data.data(), data.offset(index), data.length(index), columns[index].isBinary());
+        return dataConverter.toBigDecimal(columns[index].type(),
+                                          data.data(),
+                                          data.offset(index),
+                                          data.length(index),
+                                          columns[index].isBinary());
     }
 
     @Override
@@ -134,7 +166,11 @@ public class PgRow implements Row, KeyToValue {
 
     @Override
     public Double getDouble(int index) {
-        return dataConverter.toDouble(columns[index].type(), data.data(), data.offset(index), data.length(index), columns[index].isBinary());
+        return dataConverter.toDouble(columns[index].type(),
+                                      data.data(),
+                                      data.offset(index),
+                                      data.length(index),
+                                      columns[index].isBinary());
     }
 
     @Override
@@ -144,7 +180,11 @@ public class PgRow implements Row, KeyToValue {
 
     @Override
     public LocalDate getLocalDate(int index) {
-        return dataConverter.toLocalDate(columns[index].type(), data.data(), data.offset(index), data.length(index), columns[index].isBinary());
+        return dataConverter.toLocalDate(columns[index].type(),
+                                         data.data(),
+                                         data.offset(index),
+                                         data.length(index),
+                                         columns[index].isBinary());
     }
 
     @Override
@@ -154,7 +194,11 @@ public class PgRow implements Row, KeyToValue {
 
     @Override
     public LocalTime getLocalTime(int index) {
-        return dataConverter.toLocalTime(columns[index].type(), data.data(), data.offset(index), data.length(index), columns[index].isBinary());
+        return dataConverter.toLocalTime(columns[index].type(),
+                                         data.data(),
+                                         data.offset(index),
+                                         data.length(index),
+                                         columns[index].isBinary());
     }
 
     @Override
@@ -164,7 +208,11 @@ public class PgRow implements Row, KeyToValue {
 
     @Override
     public LocalDateTime getLocalDateTime(int index) {
-        return dataConverter.toLocalDateTime(columns[index].type(), data.data(), data.offset(index), data.length(index), columns[index].isBinary());
+        return dataConverter.toLocalDateTime(columns[index].type(),
+                                             data.data(),
+                                             data.offset(index),
+                                             data.length(index),
+                                             columns[index].isBinary());
     }
 
     @Override
@@ -174,7 +222,11 @@ public class PgRow implements Row, KeyToValue {
 
     @Override
     public Instant getInstant(int index) {
-        return dataConverter.toInstant(columns[index].type(), data.data(), data.offset(index), data.length(index), columns[index].isBinary());
+        return dataConverter.toInstant(columns[index].type(),
+                                       data.data(),
+                                       data.offset(index),
+                                       data.length(index),
+                                       columns[index].isBinary());
     }
 
     @Override
@@ -184,7 +236,11 @@ public class PgRow implements Row, KeyToValue {
 
     @Override
     public byte[] getBytes(int index) {
-        return dataConverter.toBytes(columns[index].type(), data.data(), data.offset(index), data.length(index), columns[index].isBinary());
+        return dataConverter.toBytes(columns[index].type(),
+                                     data.data(),
+                                     data.offset(index),
+                                     data.length(index),
+                                     columns[index].isBinary());
     }
 
     @Override
@@ -194,7 +250,11 @@ public class PgRow implements Row, KeyToValue {
 
     @Override
     public Boolean getBoolean(int index) {
-        return dataConverter.toBoolean(columns[index].type(), data.data(), data.offset(index), data.length(index), columns[index].isBinary());
+        return dataConverter.toBoolean(columns[index].type(),
+                                       data.data(),
+                                       data.offset(index),
+                                       data.length(index),
+                                       columns[index].isBinary());
     }
 
     @Override
@@ -224,6 +284,7 @@ public class PgRow implements Row, KeyToValue {
 
     public Object get(int index) {
         var col = columns[index];
+
         return dataConverter.toObject(col.type(), data.getValue(index), null, col.isBinary());
     }
 
@@ -244,13 +305,15 @@ public class PgRow implements Row, KeyToValue {
         var rawType = typeToken.rawType();
 
         if (rawType.equals(Option.class)) {
-            var value = typeToken.typeArgument(0)
-                                 .map(cls -> get(column.index(), cls));
+            var value = typeToken.typeArgument(0).map(cls -> get(column.index(), cls));
+
             return Result.success((T) option(value));
         }
+
         if (rawType.isArray()) {
             return Result.success(getArray(column.index(), (Class<T>) rawType));
         }
+
         return Result.success(get(column.index(), (Class<T>) rawType));
     }
 
@@ -271,8 +334,8 @@ public class PgRow implements Row, KeyToValue {
     @Override
     public String toString() {
         var builder = new StringBuilder("PgRow[");
-
         int last = builder.length();
+
         for (int i = 0; i < columns.length; i++) {
             builder.append(columns[i].name());
             builder.append("=");
@@ -280,6 +343,7 @@ public class PgRow implements Row, KeyToValue {
             last = builder.length();
             builder.append(", ");
         }
+
         builder.setLength(last);
         builder.append("]");
 

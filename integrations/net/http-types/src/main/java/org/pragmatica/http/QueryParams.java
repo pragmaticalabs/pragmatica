@@ -13,22 +13,20 @@
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  */
-
 package org.pragmatica.http;
-
-import org.pragmatica.lang.Option;
 
 import java.util.List;
 import java.util.Map;
+
+import org.pragmatica.lang.Option;
+
 
 /// HTTP query parameters.
 public interface QueryParams {
     /// Get the first value for a parameter.
     Option<String> get(String name);
-
     /// Get all values for a parameter.
     List<String> getAll(String name);
-
     /// Get all parameters as a map.
     Map<String, List<String>> asMap();
 
@@ -49,8 +47,7 @@ public interface QueryParams {
 
             @Override
             public List<String> getAll(String name) {
-                return Option.option(params.get(name))
-                             .or(List::of);
+                return Option.option(params.get(name)).or(List::of);
             }
 
             @Override
@@ -58,6 +55,7 @@ public interface QueryParams {
                 return params;
             }
         }
+
         return new queryParams(Map.copyOf(raw));
     }
 

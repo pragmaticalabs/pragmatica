@@ -14,7 +14,6 @@
  *  limitations under the License.
  *
  */
-
 package org.pragmatica.json;
 
 import org.pragmatica.lang.Option;
@@ -22,6 +21,7 @@ import org.pragmatica.lang.Result;
 
 import tools.jackson.core.Version;
 import tools.jackson.databind.module.SimpleModule;
+
 
 /// Jackson module for Pragmatica-Lite types (Result, Option).
 /// Registers custom serializers and deserializers for functional types.

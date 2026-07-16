@@ -11,26 +11,22 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package org.pragmatica.postgres.message.frontend;
 
 import org.pragmatica.postgres.message.ExtendedQueryMessage;
+
 
 /**
  * @author Marat Gainullin
  */
 public final class Describe implements ExtendedQueryMessage {
-
     public enum Kind {
-        STATEMENT((byte) 'S'),
-        PORTAL((byte) 'P');
-
+        STATEMENT((byte)'S'),
+        PORTAL((byte)'P');
         final byte code;
-
         Kind(byte code) {
             this.code = code;
         }
-
         public byte getCode() {
             return code;
         }

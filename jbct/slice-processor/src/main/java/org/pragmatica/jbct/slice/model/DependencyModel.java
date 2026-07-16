@@ -2,12 +2,7 @@
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
 // Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
 // See LICENSE in the repository root for full terms.
-
 package org.pragmatica.jbct.slice.model;
-
-import org.pragmatica.lang.Option;
-import org.pragmatica.lang.Result;
-import org.pragmatica.lang.utils.Causes;
 
 import javax.annotation.processing.ProcessingEnvironment;
 import javax.lang.model.element.ElementKind;
@@ -16,24 +11,29 @@ import javax.lang.model.element.VariableElement;
 import javax.lang.model.type.DeclaredType;
 import javax.lang.model.type.TypeMirror;
 
+import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Result;
+import org.pragmatica.lang.utils.Causes;
+
+
 public record DependencyModel(String parameterName,
-                               TypeMirror interfaceType,
-                               String interfaceQualifiedName,
-                               String interfaceSimpleName,
-                               String interfacePackage,
-                               Option<String> sliceArtifact,
-                               Option<String> version,
-                               Option<ResourceQualifierModel> resourceQualifier,
-                               boolean sliceAnnotated,
-                               boolean hasFactoryMethod) {
+                              TypeMirror interfaceType,
+                              String interfaceQualifiedName,
+                              String interfaceSimpleName,
+                              String interfacePackage,
+                              Option<String> sliceArtifact,
+                              Option<String> version,
+                              Option<ResourceQualifierModel> resourceQualifier,
+                              boolean sliceAnnotated,
+                              boolean hasFactoryMethod) {
     /// Backward-compatible constructor without resourceQualifier, sliceAnnotated, hasFactoryMethod.
     public DependencyModel(String parameterName,
-                            TypeMirror interfaceType,
-                            String interfaceQualifiedName,
-                            String interfaceSimpleName,
-                            String interfacePackage,
-                            Option<String> sliceArtifact,
-                            Option<String> version) {
+                           TypeMirror interfaceType,
+                           String interfaceQualifiedName,
+                           String interfaceSimpleName,
+                           String interfacePackage,
+                           Option<String> sliceArtifact,
+                           Option<String> version) {
         this(parameterName,
              interfaceType,
              interfaceQualifiedName,
@@ -52,44 +52,44 @@ public record DependencyModel(String parameterName,
     private static final String STREAM_ACCESS_TYPE = "org.pragmatica.aether.slice.StreamAccess";
 
     public static Result<DependencyModel> dependencyModel(VariableElement param, ProcessingEnvironment env) {
-        var paramName = param.getSimpleName()
-                             .toString();
+        var paramName = param.getSimpleName().toString();
         var type = param.asType();
+
         if (! (type instanceof DeclaredType dt)) {
-            return Causes.cause("Dependency parameter must be an interface: " + paramName)
-                         .result();
+            return Causes.cause("Dependency parameter must be an interface: " + paramName).result();
         }
+
         var element = dt.asElement();
         // Check for @ResourceQualifier meta-annotation early — ConfigurationSection allows records
         var resourceQualifier = ResourceQualifierModel.fromParameter(param, env);
         var isConfigSection = resourceQualifier.map(ResourceQualifierModel::isConfigurationSection).or(false);
+
         if (element.getKind() != ElementKind.INTERFACE && !isConfigSection) {
-            return Causes.cause("Dependency parameter '" + paramName + "' must be an interface, found: " + element.getKind())
-                         .result();
+            return Causes.cause("Dependency parameter '" + paramName
+                               + "' must be an interface, found: " + element.getKind()).result();
         }
+
         var typeElement = (TypeElement) element;
-        var qualifiedName = typeElement.getQualifiedName()
-                                       .toString();
-        var simpleName = typeElement.getSimpleName()
-                                    .toString();
-        var packageName = env.getElementUtils()
-                             .getPackageOf(typeElement)
-                             .getQualifiedName()
-                             .toString();
+        var qualifiedName = typeElement.getQualifiedName().toString();
+        var simpleName = typeElement.getSimpleName().toString();
+        var packageName = env.getElementUtils().getPackageOf(typeElement).getQualifiedName().toString();
         // Check if the interface has @Slice annotation
-        var isSlice = isConfigSection ? false : hasSliceAnnotation(typeElement);
+        var isSlice = isConfigSection
+                      ? false
+                      : hasSliceAnnotation(typeElement);
         // Check if the interface has a factory method (lowercase-first of simple name, static)
         var hasFactory = hasFactoryMethod(typeElement, simpleName);
+
         return Result.success(new DependencyModel(paramName,
-                                                   type,
-                                                   qualifiedName,
-                                                   simpleName,
-                                                   packageName,
-                                                   Option.none(),
-                                                   Option.none(),
-                                                   resourceQualifier,
-                                                   isSlice,
-                                                   hasFactory));
+                                                  type,
+                                                  qualifiedName,
+                                                  simpleName,
+                                                  packageName,
+                                                  Option.none(),
+                                                  Option.none(),
+                                                  resourceQualifier,
+                                                  isSlice,
+                                                  hasFactory));
     }
 
     /// Check if this dependency is a resource (has @ResourceQualifier).
@@ -104,7 +104,9 @@ public record DependencyModel(String parameterName,
 
     /// Check if this dependency is a plain interface: not resource, not slice, has factory method.
     public boolean isPlainInterface() {
-        return !isResource() && !sliceAnnotated && hasFactoryMethod;
+        return ! isResource()
+               && !sliceAnnotated
+               && hasFactoryMethod;
     }
 
     /// Check if this dependency is a ConfigurationSection resource.
@@ -144,8 +146,12 @@ public record DependencyModel(String parameterName,
         if (!isPublisher() || !(interfaceType instanceof DeclaredType dt)) {
             return Option.none();
         }
+
         var typeArgs = dt.getTypeArguments();
-        return typeArgs.isEmpty() ? Option.none() : Option.some(typeArgs.getFirst().toString());
+
+        return typeArgs.isEmpty()
+               ? Option.none()
+               : Option.some(typeArgs.getFirst().toString());
     }
 
     /// Extract event type from StreamPublisher<T> or StreamAccess<T> generic parameter.
@@ -154,8 +160,12 @@ public record DependencyModel(String parameterName,
         if ((!isStreamPublisher() && !isStreamAccess()) || !(interfaceType instanceof DeclaredType dt)) {
             return Option.none();
         }
+
         var typeArgs = dt.getTypeArguments();
-        return typeArgs.isEmpty() ? Option.none() : Option.some(typeArgs.getFirst().toString());
+
+        return typeArgs.isEmpty()
+               ? Option.none()
+               : Option.some(typeArgs.getFirst().toString());
     }
 
     /// Returns usable name for nested types: "EnclosingType.SimpleName" for nested, just "SimpleName" for top-level.
@@ -168,10 +178,13 @@ public record DependencyModel(String parameterName,
         if (interfacePackage.isEmpty()) {
             return interfaceQualifiedName;
         }
+
         var prefix = interfacePackage + ".";
+
         if (interfaceQualifiedName.startsWith(prefix)) {
             return interfaceQualifiedName.substring(prefix.length());
         }
+
         return interfaceSimpleName;
     }
 
@@ -181,28 +194,29 @@ public record DependencyModel(String parameterName,
     public String importName() {
         var localName = interfaceLocalName();
         var dotIndex = localName.indexOf('.');
+
         if (dotIndex > 0) {
             return interfacePackage + "." + localName.substring(0, dotIndex);
         }
+
         return interfaceQualifiedName;
     }
 
     public DependencyModel withResolved(String sliceArtifact, String version) {
         return new DependencyModel(parameterName,
-                                    interfaceType,
-                                    interfaceQualifiedName,
-                                    interfaceSimpleName,
-                                    interfacePackage,
-                                    Option.some(sliceArtifact),
-                                    Option.some(version),
-                                    resourceQualifier,
-                                    sliceAnnotated,
-                                    hasFactoryMethod);
+                                   interfaceType,
+                                   interfaceQualifiedName,
+                                   interfaceSimpleName,
+                                   interfacePackage,
+                                   Option.some(sliceArtifact),
+                                   Option.some(version),
+                                   resourceQualifier,
+                                   sliceAnnotated,
+                                   hasFactoryMethod);
     }
 
     public Option<String> fullArtifact() {
-        return Option.all(sliceArtifact, version)
-                     .map((artifact, ver) -> artifact + ":" + ver);
+        return Option.all(sliceArtifact, version).map((artifact, ver) -> artifact + ":" + ver);
     }
 
     /// Get lowercase name for local proxy record (JBCT naming convention).
@@ -213,12 +227,15 @@ public record DependencyModel(String parameterName,
         }
         // Find the end of leading uppercase sequence
         int i = 0;
+
         while (i < interfaceSimpleName.length() && Character.isUpperCase(interfaceSimpleName.charAt(i))) {
             i++;
         }
+
         if (i == 0) {
             return interfaceSimpleName;
         }
+
         if (i == 1) {
             return Character.toLowerCase(interfaceSimpleName.charAt(0)) + interfaceSimpleName.substring(1);
         }
@@ -227,6 +244,7 @@ public record DependencyModel(String parameterName,
             return interfaceSimpleName.substring(0, i - 1)
                                       .toLowerCase() + interfaceSimpleName.substring(i - 1);
         }
+
         return interfaceSimpleName.toLowerCase();
     }
 
@@ -241,6 +259,7 @@ public record DependencyModel(String parameterName,
 
     private static boolean hasFactoryMethod(TypeElement typeElement, String simpleName) {
         var expectedName = Character.toLowerCase(simpleName.charAt(0)) + simpleName.substring(1);
+
         return typeElement.getEnclosedElements()
                           .stream()
                           .filter(e -> e.getKind() == ElementKind.METHOD)

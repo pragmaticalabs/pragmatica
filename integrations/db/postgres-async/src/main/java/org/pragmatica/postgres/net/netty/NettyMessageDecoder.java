@@ -11,15 +11,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package org.pragmatica.postgres.net.netty;
-
-import org.pragmatica.postgres.io.Decoder;
-import org.pragmatica.postgres.io.backend.*;
-import org.pragmatica.postgres.message.backend.UnknownMessage;
-import io.netty.buffer.ByteBuf;
-import io.netty.channel.ChannelHandlerContext;
-import io.netty.handler.codec.ByteToMessageDecoder;
 
 import java.nio.ByteBuffer;
 import java.nio.charset.Charset;
@@ -29,32 +21,38 @@ import java.util.Set;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 
+import org.pragmatica.postgres.io.Decoder;
+import org.pragmatica.postgres.io.backend.*;
+import org.pragmatica.postgres.message.backend.UnknownMessage;
+
+import io.netty.buffer.ByteBuf;
+import io.netty.channel.ChannelHandlerContext;
+import io.netty.handler.codec.ByteToMessageDecoder;
+
+
 /**
  * Decodes incoming bytes to Postgres V11 protocol message instances.
  *
  * @author Antti Laisi
  */
 class NettyMessageDecoder extends ByteToMessageDecoder {
-
-    private static final Map<Byte, Decoder<?>> DECODERS =
-        Set.of(
-            new ErrorResponseDecoder(),
-            new BackendKeyDataDecoder(),
-            new ParameterStatusDecoder(),
-            new AuthenticationDecoder(),
-            new ReadyForQueryDecoder(),
-            new RowDescriptionDecoder(),
-            new ParseCompleteDecoder(),
-            new CloseCompleteDecoder(),
-            new BindCompleteDecoder(),
-            new NoDataDecoder(),
-            new CommandCompleteDecoder(),
-            new DataRowDecoder(),
-            new NotificationResponseDecoder(),
-            new NoticeResponseDecoder()
-        ).stream().collect(
-            Collectors.toMap(Decoder::getMessageId, Function.identity())
-        );
+    private static final Map<Byte, Decoder<?>> DECODERS = Set.of(new ErrorResponseDecoder(),
+                                                                 new BackendKeyDataDecoder(),
+                                                                 new ParameterStatusDecoder(),
+                                                                 new AuthenticationDecoder(),
+                                                                 new ReadyForQueryDecoder(),
+                                                                 new RowDescriptionDecoder(),
+                                                                 new ParseCompleteDecoder(),
+                                                                 new CloseCompleteDecoder(),
+                                                                 new BindCompleteDecoder(),
+                                                                 new NoDataDecoder(),
+                                                                 new CommandCompleteDecoder(),
+                                                                 new DataRowDecoder(),
+                                                                 new NotificationResponseDecoder(),
+                                                                 new NoticeResponseDecoder())
+                                                             .stream()
+                                                             .collect(Collectors.toMap(Decoder::getMessageId,
+                                                                                       Function.identity()));
 
     private final Charset encoding;
 
@@ -67,11 +65,12 @@ class NettyMessageDecoder extends ByteToMessageDecoder {
         if (in.readableBytes() > 0) {
             byte id = in.readByte();
             int length = in.readInt();
-
             Decoder<?> decoder = DECODERS.get(id);
+
             try {
                 if (decoder != null) {
                     ByteBuffer buffer = in.nioBuffer();
+
                     out.add(decoder.read(buffer, length - 4, encoding));
                     in.skipBytes(buffer.position());
                 } else {

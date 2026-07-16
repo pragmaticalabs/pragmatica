@@ -3,9 +3,9 @@ package org.pragmatica.swim;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.utils.Causes;
 
+
 /// Error types for gossip message encryption/decryption.
 public sealed interface GossipEncryptionError extends Cause {
-
     /// Encryption operation failed.
     record EncryptionFailed(Throwable cause) implements GossipEncryptionError {
         @Override

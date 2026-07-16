@@ -4,6 +4,7 @@ import org.pragmatica.postgres.Oid;
 
 import static org.pragmatica.postgres.conversion.Common.returnError;
 
+
 /**
  * @author Antti Laisi
  */
@@ -21,6 +22,8 @@ final class BooleanConversions {
     }
 
     static String fromBoolean(boolean value) {
-        return value ? TRUE : FALSE;
+        return value
+               ? TRUE
+               : FALSE;
     }
 }

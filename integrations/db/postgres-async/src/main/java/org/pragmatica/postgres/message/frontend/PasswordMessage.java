@@ -11,27 +11,31 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package org.pragmatica.postgres.message.frontend;
-
-import org.pragmatica.postgres.message.FrontendMessage;
 
 import java.nio.charset.Charset;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 
+import org.pragmatica.postgres.message.FrontendMessage;
+
 import static org.pragmatica.postgres.util.HexConverter.printHexBinary;
+
 
 /**
  * @author Antti Laisi
  */
 public record PasswordMessage(String password, byte[] passwordHash) implements FrontendMessage {
     public static PasswordMessage passwordMessage(String username, String password, byte[] md5salt, Charset encoding) {
-        return new PasswordMessage(password, md5salt != null ? md5(username, password, md5salt, encoding) : null);
+        return new PasswordMessage(password,
+                                   md5salt != null
+                                   ? md5(username, password, md5salt, encoding)
+                                   : null);
     }
 
     private static byte[] md5(String username, String password, byte[] md5salt, Charset encoding) {
         var md5 = md5();
+
         md5.update(password.getBytes(encoding));
         md5.update(username.getBytes(encoding));
         byte[] hash = printHexBinary(md5.digest()).toLowerCase().getBytes(encoding);
@@ -39,11 +43,11 @@ public record PasswordMessage(String password, byte[] passwordHash) implements F
         md5.update(hash);
         md5.update(md5salt);
         hash = printHexBinary(md5.digest()).toLowerCase().getBytes(encoding);
-
         var prefixed = new byte[hash.length + 3];
-        prefixed[0] = (byte) 'm';
-        prefixed[1] = (byte) 'd';
-        prefixed[2] = (byte) '5';
+
+        prefixed[0] = (byte)'m';
+        prefixed[1] = (byte)'d';
+        prefixed[2] = (byte)'5';
         System.arraycopy(hash, 0, prefixed, 3, hash.length);
 
         return prefixed;

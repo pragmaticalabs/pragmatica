@@ -1,24 +1,23 @@
 package org.pragmatica.jbct.lint.cst.rules;
 
+import java.util.regex.Pattern;
+import java.util.stream.Stream;
+
 import org.pragmatica.jbct.lint.Diagnostic;
 import org.pragmatica.jbct.lint.LintContext;
 import org.pragmatica.jbct.lint.cst.CstLintRule;
 import org.pragmatica.jbct.parser.Cursor;
 
-import java.util.regex.Pattern;
-import java.util.stream.Stream;
-
 import static org.pragmatica.jbct.parser.CstNodes.*;
+
 
 /// JBCT-STY-03: No fully qualified class names in code.
 ///
 /// Use `@SuppressWarnings("JBCT-STY-03")` for unavoidable cases.
 public class CstFullyQualifiedNameRule implements CstLintRule {
     private static final String RULE_ID = "JBCT-STY-03";
-
     // Pattern to detect FQCN like java.util.List or com.example.Foo
     private static final Pattern FQCN_PATTERN = Pattern.compile("\\b([a-z][a-z0-9]*\\.)+[A-Z][a-zA-Z0-9]*\\b");
-
     private static final Pattern METHOD_NAME_PATTERN = Pattern.compile("\\b([a-zA-Z_$][a-zA-Z0-9_$]*)\\s*\\(");
 
     @Override
@@ -33,12 +32,13 @@ public class CstFullyQualifiedNameRule implements CstLintRule {
         }
         // Find FQCN in method bodies (not imports or package declaration)
         return findAllMethods(root).stream()
-                      .flatMap(method -> findFqcnInMethod(method, ctx));
+                             .flatMap(method -> findFqcnInMethod(method, ctx));
     }
 
     private Stream<Diagnostic> findFqcnInMethod(Cursor method, LintContext ctx) {
         var methodText = text(method);
         var matcher = FQCN_PATTERN.matcher(methodText);
+
         return Stream.iterate(matcher.find(),
                               found -> found,
                               found -> matcher.find())
@@ -60,6 +60,9 @@ public class CstFullyQualifiedNameRule implements CstLintRule {
     @SuppressWarnings("unused")
     private static String extractMethodName(String memberText) {
         var matcher = METHOD_NAME_PATTERN.matcher(memberText);
-        return matcher.find() ? matcher.group(1) : "(unknown)";
+
+        return matcher.find()
+               ? matcher.group(1)
+               : "(unknown)";
     }
 }

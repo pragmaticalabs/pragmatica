@@ -13,24 +13,24 @@
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  */
-
 package org.pragmatica.testing;
 
 import java.util.Objects;
 import java.util.function.Supplier;
 import java.util.stream.Stream;
 
+
 /// A value that can be shrunk to find smaller failing examples.
 public interface Shrinkable<T> {
     /// Get the current value.
     T value();
-
     /// Get a stream of shrunk alternatives, ordered from smallest to largest.
     Stream<Shrinkable<T>> shrink();
 
     /// Create a shrinkable with a custom shrinking function.
     static <T> Shrinkable<T> shrinkable(T value, Supplier<Stream<Shrinkable<T>>> shrinker) {
         Objects.requireNonNull(shrinker, "shrinker must not be null");
+
         return new ShrinkableImpl<>(value, shrinker);
     }
 

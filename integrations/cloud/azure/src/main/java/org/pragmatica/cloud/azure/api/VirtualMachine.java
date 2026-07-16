@@ -14,7 +14,6 @@
  *  limitations under the License.
  *
  */
-
 package org.pragmatica.cloud.azure.api;
 
 import java.util.List;
@@ -22,18 +21,17 @@ import java.util.Map;
 
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 
+
 /// Azure ARM Virtual Machine resource.
 @JsonIgnoreProperties(ignoreUnknown = true)
 public record VirtualMachine(String id,
-                              String name,
-                              String location,
-                              Map<String, String> tags,
-                              VmProperties properties) {
+                             String name,
+                             String location,
+                             Map<String, String> tags,
+                             VmProperties properties) {
     /// VM properties containing provisioning state and instance view.
     @JsonIgnoreProperties(ignoreUnknown = true)
-    public record VmProperties(String vmId,
-                                String provisioningState,
-                                InstanceViewStatus instanceView) {}
+    public record VmProperties(String vmId, String provisioningState, InstanceViewStatus instanceView) {}
 
     /// Instance view containing status information.
     @JsonIgnoreProperties(ignoreUnknown = true)

@@ -14,7 +14,6 @@
  *  limitations under the License.
  *
  */
-
 package org.pragmatica.json;
 
 import org.pragmatica.lang.Option;
@@ -29,6 +28,7 @@ import tools.jackson.databind.ValueDeserializer;
 
 import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.option;
+
 
 /// Jackson deserializer for Option<T> types.
 /// Deserializes null as None, any other value as Some<T>
@@ -50,6 +50,7 @@ public class OptionDeserializer extends ValueDeserializer<Option<?>> {
         if (p.currentToken() == JsonToken.VALUE_NULL) {
             return none();
         }
+
         return option(valueDeserializer).map(deser -> deser.deserialize(p, ctxt))
                      .orElse(() -> option(valueType).map(type -> ctxt.readValue(p, type)))
                      .orElse(() -> option(p.readValueAs(Object.class)));
@@ -64,9 +65,9 @@ public class OptionDeserializer extends ValueDeserializer<Option<?>> {
     }
 
     private OptionDeserializer createContextualDeserializer(DeserializationContext ctxt, BeanProperty prop) {
-        var contentType = prop.getType()
-                              .getContentType();
+        var contentType = prop.getType().getContentType();
         var deser = ctxt.findContextualValueDeserializer(contentType, prop);
+
         return new OptionDeserializer(contentType, deser);
     }
 

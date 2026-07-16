@@ -1,5 +1,22 @@
 package org.pragmatica.consensus.topology;
 
+import java.net.InetSocketAddress;
+import java.net.SocketAddress;
+import java.time.Instant;
+import java.util.Collections;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.BooleanSupplier;
+import java.util.function.Predicate;
+import java.util.function.Supplier;
+
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.NetworkMessage;
 import org.pragmatica.consensus.net.NetworkServiceMessage;
@@ -19,25 +36,9 @@ import org.pragmatica.messaging.MessageRouter;
 import org.pragmatica.net.tcp.NodeAddress;
 import org.pragmatica.net.tcp.TlsConfig;
 
-import java.net.InetSocketAddress;
-import java.net.SocketAddress;
-import java.time.Instant;
-import java.util.Collections;
-import java.util.HashSet;
-import java.util.List;
-import java.util.Map;
-import java.util.Set;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ScheduledFuture;
-import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.atomic.AtomicInteger;
-import java.util.concurrent.atomic.AtomicReference;
-import java.util.function.BooleanSupplier;
-import java.util.function.Predicate;
-import java.util.function.Supplier;
-
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
 
 /// Topology observer for cluster networks. Tracks connections, health states,
 /// SWIM events, and reconnection. This is the read-only topology tracking component;
@@ -85,7 +86,8 @@ public interface TopologyObserver extends TopologyManager {
     /// `coreMemberIds.size() >= clusterSize/2 + 1`. Subsequent smaller snapshots do
     /// not flip back to `BOOTING`.
     enum TopologyMode {
-        BOOTING, NORMAL
+        BOOTING,
+        NORMAL
     }
 
     /// Current topology mode. Default `NORMAL` for the abstract interface so legacy /
@@ -147,26 +149,40 @@ public interface TopologyObserver extends TopologyManager {
     /// legacy call sites). Preserves pre-rc1 behaviour: nothing is treated as
     /// DECOMMISSIONED, so `initReconcile` reseeds every `config.coreNodes()` entry.
     Predicate<NodeId> NEVER_DECOMMISSIONED = _ -> false;
-
     /// RC1 Step 2 default HLC supplier used by legacy factory overloads / tests that
     /// haven't wired `HlcClock`. Always returns `HlcTimestamp.ZERO` — subscribers that
     /// dedup on `stampedAt` must treat ZERO as a cold-replay sentinel.
     Supplier<HlcTimestamp> ZERO_HLC_SUPPLIER = () -> HlcTimestamp.ZERO;
 
     static Result<TopologyObserver> topologyObserver(TopologyConfig config, MessageRouter router) {
-        return topologyObserver(config, router, TimeSource.system(), GenerationSnapshotSource.noop(), NEVER_DECOMMISSIONED, ZERO_HLC_SUPPLIER);
+        return topologyObserver(config,
+                                router,
+                                TimeSource.system(),
+                                GenerationSnapshotSource.noop(),
+                                NEVER_DECOMMISSIONED,
+                                ZERO_HLC_SUPPLIER);
     }
 
     static Result<TopologyObserver> topologyObserver(TopologyConfig config,
                                                      MessageRouter router,
                                                      TimeSource timeSource) {
-        return topologyObserver(config, router, timeSource, GenerationSnapshotSource.noop(), NEVER_DECOMMISSIONED, ZERO_HLC_SUPPLIER);
+        return topologyObserver(config,
+                                router,
+                                timeSource,
+                                GenerationSnapshotSource.noop(),
+                                NEVER_DECOMMISSIONED,
+                                ZERO_HLC_SUPPLIER);
     }
 
     static Result<TopologyObserver> topologyObserver(TopologyConfig config,
                                                      MessageRouter router,
                                                      GenerationSnapshotSource snapshotSource) {
-        return topologyObserver(config, router, TimeSource.system(), snapshotSource, NEVER_DECOMMISSIONED, ZERO_HLC_SUPPLIER);
+        return topologyObserver(config,
+                                router,
+                                TimeSource.system(),
+                                snapshotSource,
+                                NEVER_DECOMMISSIONED,
+                                ZERO_HLC_SUPPLIER);
     }
 
     static Result<TopologyObserver> topologyObserver(TopologyConfig config,
@@ -190,7 +206,12 @@ public interface TopologyObserver extends TopologyManager {
     static Result<TopologyObserver> topologyObserver(TopologyConfig config,
                                                      MessageRouter router,
                                                      Predicate<NodeId> isDecommissioned) {
-        return topologyObserver(config, router, TimeSource.system(), GenerationSnapshotSource.noop(), isDecommissioned, ZERO_HLC_SUPPLIER);
+        return topologyObserver(config,
+                                router,
+                                TimeSource.system(),
+                                GenerationSnapshotSource.noop(),
+                                isDecommissioned,
+                                ZERO_HLC_SUPPLIER);
     }
 
     static Result<TopologyObserver> topologyObserver(TopologyConfig config,
@@ -221,7 +242,13 @@ public interface TopologyObserver extends TopologyManager {
                                                      GenerationSnapshotSource snapshotSource,
                                                      Predicate<NodeId> isDecommissioned,
                                                      Supplier<HlcTimestamp> hlcSupplier) {
-        return topologyObserver(config, router, TimeSource.system(), snapshotSource, isDecommissioned, hlcSupplier, router);
+        return topologyObserver(config,
+                                router,
+                                TimeSource.system(),
+                                snapshotSource,
+                                isDecommissioned,
+                                hlcSupplier,
+                                router);
     }
 
     /// Quorum-presence rewiring overload: accepts an explicit `quorumPresenceRouter` that
@@ -237,7 +264,13 @@ public interface TopologyObserver extends TopologyManager {
                                                      Predicate<NodeId> isDecommissioned,
                                                      Supplier<HlcTimestamp> hlcSupplier,
                                                      MessageRouter quorumPresenceRouter) {
-        return topologyObserver(config, router, TimeSource.system(), snapshotSource, isDecommissioned, hlcSupplier, quorumPresenceRouter);
+        return topologyObserver(config,
+                                router,
+                                TimeSource.system(),
+                                snapshotSource,
+                                isDecommissioned,
+                                hlcSupplier,
+                                quorumPresenceRouter);
     }
 
     static Result<TopologyObserver> topologyObserver(TopologyConfig config,
@@ -260,13 +293,13 @@ public interface TopologyObserver extends TopologyManager {
                                                      Supplier<HlcTimestamp> hlcSupplier,
                                                      MessageRouter quorumPresenceRouter) {
         // Validate that self node is in coreNodes - required for self() to work
-        var selfInCoreNodes = config.coreNodes()
-                                    .stream()
-                                    .anyMatch(info -> info.id()
-                                                          .equals(config.self()));
+        var selfInCoreNodes = config.coreNodes().stream().anyMatch(info -> info.id()
+                                                                               .equals(config.self()));
+
         if (!selfInCoreNodes) {
             return new TopologyError.SelfNodeNotInCoreNodes(config.self()).result();
         }
+
         record Manager(Map<NodeId, NodeState> nodeStatesById,
                        Map<NodeAddress, NodeId> nodeIdsByAddress,
                        MessageRouter router,
@@ -334,10 +367,7 @@ public interface TopologyObserver extends TopologyManager {
                 // solely while that view is `none()` (cold-start formation, before the FSM latch
                 // flips — load-bearing, must not be removed: integrations/consensus cannot import
                 // the aether MembershipFsm, and quorum must bootstrap before the view exists).
-                config().coreNodes()
-                      .stream()
-                      .map(NodeInfo::id)
-                      .forEach(coreNodeIds::add);
+                config().coreNodes().stream().map(NodeInfo::id).forEach(coreNodeIds::add);
                 // QUIC DIAL SET (v2-architecture §5.4): `nodeStatesById` is populated by SWIM
                 // discovery (`handleDiscoveredNodes` → `addNode`) + self ONLY. Static
                 // `config.coreNodes()` is NOT seeded here — a configured peer becomes dialable
@@ -345,10 +375,8 @@ public interface TopologyObserver extends TopologyManager {
                 // Self must be present so `self()` works and so the local node counts itself.
                 // PEERS/`coreNodes` continue to feed SWIM's seed/ANNOUNCE path (NettySwimTransport),
                 // which is outside this observer; SWIM then feeds QUIC via discovery.
-                config().coreNodes()
-                      .stream()
-                      .filter(node -> node.id().equals(config.self()))
-                      .forEach(this::addNode);
+                config().coreNodes().stream().filter(node -> node.id()
+                                                                 .equals(config.self())).forEach(this::addNode);
                 // Self node validation is done in the factory method before construction
                 log.trace("Topology observer {} initialized (dial set = self only; coreNodeIds from config), cluster size {}",
                           config.self(),
@@ -403,8 +431,7 @@ public interface TopologyObserver extends TopologyManager {
                 // Self node is never in peerLinks (no self-connection), so always exclude it
                 // to avoid routing a ConnectNode(self) message every reconciliation interval.
                 snapshot.remove(config.self());
-                connectedNodesList.connected()
-                                  .forEach(snapshot::remove);
+                connectedNodesList.connected().forEach(snapshot::remove);
                 snapshot.forEach(this::requestConnectionIfEligible);
             }
 
@@ -431,10 +458,8 @@ public interface TopologyObserver extends TopologyManager {
             @Contract
             @Override
             public void handleDiscoverNodes(NetworkMessage.DiscoverNodes discoverNodes) {
-                var nodeInfos = nodeStatesById.values()
-                                              .stream()
-                                              .map(NodeState::info)
-                                              .toList();
+                var nodeInfos = nodeStatesById.values().stream().map(NodeState::info).toList();
+
                 router().route(new NetworkServiceMessage.Send(discoverNodes.self(),
                                                               new NetworkMessage.DiscoveredNodes(discoverNodes.self(),
                                                                                                  nodeInfos)));
@@ -450,8 +475,7 @@ public interface TopologyObserver extends TopologyManager {
                 // peer is pruned via pruneDeparted and its DEAD identity reopens only on a
                 // strictly higher incarnation). Cross-restart protection stays with the
                 // `isDecommissioned` KV predicate at the factory seam.
-                discoveredNodes.nodes()
-                               .forEach(this::addNode);
+                discoveredNodes.nodes().forEach(this::addNode);
             }
 
             private void addNode(NodeInfo nodeInfo) {
@@ -459,18 +483,16 @@ public interface TopologyObserver extends TopologyManager {
                 var initialState = NodeState.healthy(nodeInfo, now);
                 // To avoid reliance on the networking layer behavior, adding is done
                 // atomically and the command to establish the connection is sent only once.
-                Option.option(nodeStatesById().putIfAbsent(nodeInfo.id(),
-                                                           initialState))
-                      .onEmpty(() -> {
-                                   nodeIdsByAddress().putIfAbsent(nodeInfo.address(),
-                                                                  nodeInfo.id());
-                                   coreNodeIds.add(nodeInfo.id());
-                                   // Only request connection if topology observer is active (router is ready)
-                if (active().get()) {
-                                       requestConnection(nodeInfo.id());
-                                   }
-                                   evaluateQuorumState();
-                               });
+                Option.option(nodeStatesById().putIfAbsent(nodeInfo.id(), initialState)).onEmpty(() -> {
+                    nodeIdsByAddress().putIfAbsent(nodeInfo.address(), nodeInfo.id());
+                    coreNodeIds.add(nodeInfo.id());
+                    // Only request connection if topology observer is active (router is ready)
+                    if (active().get()) {
+                        requestConnection(nodeInfo.id());
+                    }
+
+                    evaluateQuorumState();
+                });
             }
 
             private void requestConnection(NodeId id) {
@@ -481,25 +503,23 @@ public interface TopologyObserver extends TopologyManager {
                 // Never remove self node - would cause NPE in self() method
                 if (nodeId.equals(config.self())) {
                     log.warn("Ignoring removal of self node {}", nodeId);
+
                     return;
                 }
                 // Remove from core node set — node is no longer operational
                 coreNodeIds.remove(nodeId);
                 // To avoid reliance on the networking layer behavior, removing is done
                 // atomically and command to drop the connection is sent only once.
-                Option.option(nodeStatesById().remove(nodeId))
-                      .onPresent(state -> {
-                                     nodeIdsByAddress.remove(state.info()
-                                                                  .address());
-                                     router().route(new NetworkServiceMessage.DisconnectNode(nodeId));
-                                     evaluateQuorumState();
-                                 });
+                Option.option(nodeStatesById().remove(nodeId)).onPresent(state -> {
+                    nodeIdsByAddress.remove(state.info().address());
+                    router().route(new NetworkServiceMessage.DisconnectNode(nodeId));
+                    evaluateQuorumState();
+                });
             }
 
             @Override
             public Option<NodeInfo> get(NodeId id) {
-                return Option.option(nodeStatesById.get(id))
-                             .map(NodeState::info);
+                return Option.option(nodeStatesById.get(id)).map(NodeState::info);
             }
 
             @Override
@@ -518,9 +538,9 @@ public interface TopologyObserver extends TopologyManager {
             public EffectiveMembership effectiveMembership() {
                 return snapshotSource.currentMembershipView()
                                      .map(view -> new EffectiveMembership(view.coreMemberIds(),
-                                                                           EffectiveMembership.Source.SNAPSHOT))
+                                                                          EffectiveMembership.Source.SNAPSHOT))
                                      .or(() -> new EffectiveMembership(Collections.unmodifiableSet(coreNodeIds),
-                                                                        EffectiveMembership.Source.LEGACY));
+                                                                       EffectiveMembership.Source.LEGACY));
             }
 
             /// RC1 Step 5: expose the same `AtomicBoolean` mutated by `evaluateQuorumState`.
@@ -560,13 +580,19 @@ public interface TopologyObserver extends TopologyManager {
                 //     during steady state), report 0 rather than leak a transport-derived
                 //     count that disagrees with the leader's view.
                 var view = snapshotSource.currentMembershipView();
+
                 if (view.isPresent()) {
                     maybeTransitionToNormal(view.unwrap());
-                    return view.unwrap().onDutyMemberIds().size();
+
+                    return view.unwrap()
+                               .onDutyMemberIds()
+                               .size();
                 }
+
                 if (mode.get() == TopologyMode.BOOTING) {
                     return legacyActiveNodeCount();
                 }
+
                 return 0;
             }
 
@@ -577,13 +603,18 @@ public interface TopologyObserver extends TopologyManager {
                 //     add) so the bootstrap path can advance before the first snapshot.
                 //   NORMAL — snapshot is the SOLE source. If absent, report 0.
                 var view = snapshotSource.currentMembershipView();
+
                 if (view.isPresent()) {
                     maybeTransitionToNormal(view.unwrap());
-                    return view.unwrap().healthyOnDutyCount();
+
+                    return view.unwrap()
+                               .healthyOnDutyCount();
                 }
+
                 if (mode.get() == TopologyMode.BOOTING) {
                     return legacyHealthyActiveNodeCount();
                 }
+
                 return 0;
             }
 
@@ -597,11 +628,14 @@ public interface TopologyObserver extends TopologyManager {
                 if (mode.get() == TopologyMode.NORMAL) {
                     return;
                 }
+
                 var quorum = quorumSize();
-                if (view.coreMemberIds().size() >= quorum
-                    && mode.compareAndSet(TopologyMode.BOOTING, TopologyMode.NORMAL)) {
+
+                if (view.coreMemberIds().size() >= quorum && mode.compareAndSet(TopologyMode.BOOTING,
+                                                                                TopologyMode.NORMAL)) {
                     log.info("Topology mode transitioned BOOTING -> NORMAL (snapshot coreMemberIds={} >= quorum={})",
-                             view.coreMemberIds().size(), quorum);
+                             view.coreMemberIds().size(),
+                             quorum);
                 }
             }
 
@@ -683,7 +717,9 @@ public interface TopologyObserver extends TopologyManager {
                 if (!started.get()) {
                     return;
                 }
+
                 var haveQuorum = haveQuorum();
+
                 if (haveQuorum) {
                     if (quorumEstablished.compareAndSet(false, true)) {
                         log.info("Quorum established (local view) — routing ClusterStateNotification.ACTIVE to RabiaEngine via private quorum-presence channel");
@@ -708,16 +744,24 @@ public interface TopologyObserver extends TopologyManager {
             /// + 1 >= quorumSize()`) so construction and view-less tests still cold-start.
             private boolean haveQuorum() {
                 var view = snapshotSource.currentMembershipView();
+
                 if (view.isPresent()) {
                     maybeTransitionToNormal(view.unwrap());
                     var healthyOnDuty = view.unwrap().healthyOnDutyCount();
                     var quorum = quorumSize();
-                    log.debug("Quorum evaluation (membership view): healthyOnDuty={} threshold={}", healthyOnDuty, quorum);
+
+                    log.debug("Quorum evaluation (membership view): healthyOnDuty={} threshold={}",
+                              healthyOnDuty,
+                              quorum);
+
                     return healthyOnDuty >= quorum;
                 }
+
                 var peers = legacyHealthyActivePeerCount();
                 var quorum = quorumSize();
+
                 log.debug("Quorum evaluation (legacy fallback): healthyActivePeers+1={} threshold={}", peers + 1, quorum);
+
                 return (peers + 1) >= quorum;
             }
 
@@ -739,13 +783,17 @@ public interface TopologyObserver extends TopologyManager {
             ///     authoritative snapshot's coreMemberIds.
             private int healthyActivePeerCount() {
                 var view = snapshotSource.currentMembershipView();
+
                 if (view.isPresent()) {
                     maybeTransitionToNormal(view.unwrap());
+
                     return swimHealthyCorePeerCount(view.unwrap().coreMemberIds());
                 }
+
                 if (mode.get() == TopologyMode.BOOTING) {
                     return legacyHealthyActivePeerCount();
                 }
+
                 return 0;
             }
 
@@ -756,7 +804,9 @@ public interface TopologyObserver extends TopologyManager {
             private int swimHealthyCorePeerCount(Set<NodeId> coreMembers) {
                 return (int) nodeStatesById.values()
                                            .stream()
-                                           .filter(state -> !state.info().id().equals(config.self()))
+                                           .filter(state -> !state.info()
+                                                                  .id()
+                                                                  .equals(config.self()))
                                            .filter(state -> state.health() == NodeHealth.HEALTHY)
                                            .filter(state -> coreMembers.contains(state.info().id()))
                                            .count();
@@ -769,10 +819,12 @@ public interface TopologyObserver extends TopologyManager {
             /// status) remains snapshot-only.
             private int legacyHealthyActivePeerCount() {
                 return (int) nodeStatesById.values()
-                                          .stream()
-                                          .filter(state -> !state.info().id().equals(config.self()))
-                                          .filter(state -> state.health() == NodeHealth.HEALTHY)
-                                          .count();
+                                           .stream()
+                                           .filter(state -> !state.info()
+                                                                  .id()
+                                                                  .equals(config.self()))
+                                           .filter(state -> state.health() == NodeHealth.HEALTHY)
+                                           .count();
             }
 
             /// Updates the quorum denominator from a `SetClusterSize` message.
@@ -793,27 +845,35 @@ public interface TopologyObserver extends TopologyManager {
             public void handleSetClusterSize(TopologyManagementMessage.SetClusterSize message) {
                 int newSize = message.clusterSize();
                 int currentSize = effectiveClusterSize.get();
+
                 if (newSize < 3) {
-                    log.info("rejected: cluster size change to {} below minimum 3 for Byzantine fault tolerance", newSize);
+                    log.info("rejected: cluster size change to {} below minimum 3 for Byzantine fault tolerance",
+                             newSize);
+
                     return;
                 }
+
                 if (newSize > currentSize) {
                     int newQuorum = newSize / 2 + 1;
                     // RC1-9 audit Step 5: handleSetClusterSize uses the same snapshot-derived
                     // healthy count as `healthyActivePeerCount`; the legacy
                     // `activeTopologySize()` (transport-only count) is gone.
                     int activeNodes = healthyActivePeerCount() + 1;
+
                     if (activeNodes < newQuorum) {
                         log.info("rejected: insufficient healthy nodes for cluster size {} -> {} (active={}, required quorum={})",
                                  currentSize,
                                  newSize,
                                  activeNodes,
                                  newQuorum);
+
                         return;
                     }
                 }
+
                 int oldQuorum = currentSize / 2 + 1;
                 int newQuorum = newSize / 2 + 1;
+
                 effectiveClusterSize.set(newSize);
                 log.info("Cluster size changed from {} to {} (quorum: {} -> {})",
                          currentSize,
@@ -847,6 +907,7 @@ public interface TopologyObserver extends TopologyManager {
                 // run AFTER releasing the lock so a re-entrant `MessageRouter`
                 // recipient cannot deadlock with the lifecycle lock.
                 var shouldPublish = false;
+
                 synchronized (lifecycleLock) {
                     if (active().compareAndSet(false, true)) {
                         log.trace("Starting topology observer at {}", config.self());
@@ -857,15 +918,18 @@ public interface TopologyObserver extends TopologyManager {
                         // below publishes the initial edge exactly once.
                         started.set(true);
                         var future = SharedScheduler.scheduleAtFixedRate(this::initReconcile,
-                                                                          config.reconciliationInterval());
+                                                                         config.reconciliationInterval());
+
                         reconcileFuture.set(Option.some(future));
                         shouldPublish = true;
                     }
                 }
+
                 if (shouldPublish) {
                     evaluateQuorumState();
                     initReconcile();
                 }
+
                 return Promise.success(Unit.unit());
             }
 
@@ -880,9 +944,9 @@ public interface TopologyObserver extends TopologyManager {
                     // Without this, `initReconcile` would continue firing forever after the
                     // observer is stopped (keeps routing `ListConnectedNodes` reconnect
                     // requests for the discovery-derived dial set).
-                    reconcileFuture.getAndSet(Option.none())
-                                   .onPresent(f -> f.cancel(false));
+                    reconcileFuture.getAndSet(Option.none()).onPresent(f -> f.cancel(false));
                 }
+
                 return Promise.success(Unit.unit());
             }
 
@@ -909,6 +973,7 @@ public interface TopologyObserver extends TopologyManager {
                 return config().tls();
             }
         }
+
         return Result.success(new Manager(new ConcurrentHashMap<>(),
                                           new ConcurrentHashMap<>(),
                                           router,

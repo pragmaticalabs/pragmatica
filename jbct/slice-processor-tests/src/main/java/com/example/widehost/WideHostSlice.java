@@ -2,12 +2,13 @@
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
 // Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
 // See LICENSE in the repository root for full terms.
-
 package com.example.widehost;
 
-import com.example.widedep.WideDepSlice;
 import org.pragmatica.aether.slice.annotation.Slice;
 import org.pragmatica.lang.Promise;
+
+import com.example.widedep.WideDepSlice;
+
 
 /// Host slice that injects [WideDepSlice] (16 methods). Its generated `WideHostSliceFactory` must
 /// provision 16 slice-method handles — past the flat `Promise.all` arity-15 ceiling — proving the

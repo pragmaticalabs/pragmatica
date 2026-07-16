@@ -4,8 +4,14 @@
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
  */
-
 package org.pragmatica.net.tcp.security;
+
+import java.time.Duration;
+import java.time.Instant;
+import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Consumer;
+import java.util.function.Function;
 
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
@@ -15,15 +21,10 @@ import org.pragmatica.lang.utils.SharedScheduler;
 import org.pragmatica.statemachine.Fsm;
 import org.pragmatica.statemachine.FsmState;
 import org.pragmatica.statemachine.TransitionRequest;
+
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.time.Duration;
-import java.time.Instant;
-import java.util.concurrent.ScheduledFuture;
-import java.util.concurrent.atomic.AtomicReference;
-import java.util.function.Consumer;
-import java.util.function.Function;
 
 /// Schedules certificate renewal at 40% of remaining validity (60% remaining). Built on an
 /// explicit FSM with four states:
@@ -79,14 +80,15 @@ public final class CertificateRenewalScheduler {
         final Consumer<CertificateBundle> renewalCallback;
         final AtomicReference<Instant> currentNotAfter;
         final AtomicReference<Instant> lastRenewalAt = new AtomicReference<>(Instant.now());
+
         final AtomicReference<Option<ScheduledFuture<?>>> scheduledTask = new AtomicReference<>(Option.none());
 
         final Idle idle;
         final Healthy healthy;
         final Renewing renewing;
         final Stopped stopped;
-        // RetryBackoff is data-carrying (retryCount) — fresh instance per failure.
 
+        // RetryBackoff is data-carrying (retryCount) — fresh instance per failure.
         Context(Fsm<SchedulerState, RenewalEvent> fsm,
                 CertificateProvider provider,
                 String nodeId,
@@ -106,8 +108,7 @@ public final class CertificateRenewalScheduler {
         }
 
         void cancelScheduledTask() {
-            scheduledTask.getAndSet(Option.none())
-                         .onPresent(task -> task.cancel(false));
+            scheduledTask.getAndSet(Option.none()).onPresent(task -> task.cancel(false));
         }
 
         void dispatch(RenewalEvent event) {
@@ -115,8 +116,7 @@ public final class CertificateRenewalScheduler {
         }
     }
 
-    public sealed interface SchedulerState extends FsmState<SchedulerState, RenewalEvent>
-            permits Idle, Healthy, Renewing, RetryBackoff, Stopped {}
+    public sealed interface SchedulerState extends FsmState<SchedulerState, RenewalEvent> permits Idle, Healthy, Renewing, RetryBackoff, Stopped {}
 
     record Idle(Context ctx) implements SchedulerState {
         @Override
@@ -137,10 +137,11 @@ public final class CertificateRenewalScheduler {
             // (delay <= 0) branch must NOT skip the store, otherwise stale ticks fire after a
             // transition out of `Healthy` and the cancellation in `onExit` becomes a no-op.
             var scheduleDelay = delay.isNegative() || delay.isZero()
-                    ? TimeSpan.timeSpan(0).millis()
-                    : TimeSpan.timeSpan(delay.toMillis()).millis();
+                                ? TimeSpan.timeSpan(0).millis()
+                                : TimeSpan.timeSpan(delay.toMillis()).millis();
             var task = SharedScheduler.schedule(() -> ctx.dispatch(new RenewalEvent.Tick()),
                                                 scheduleDelay);
+
             ctx.scheduledTask.set(Option.some(task));
             if (delay.isNegative() || delay.isZero()) {
                 log.info("Certificate validity window passed — renewing immediately");
@@ -176,8 +177,10 @@ public final class CertificateRenewalScheduler {
         @Override
         public void handle(RenewalEvent event, TransitionRequest<SchedulerState, RenewalEvent> tx) {
             switch (event) {
-                case RenewalEvent.RenewalSucceeded rs -> tx.transitionTo(ctx.healthy, () -> applySuccess(ctx, rs.bundle()));
-                case RenewalEvent.RenewalFailed rf -> tx.transitionTo(new RetryBackoff(ctx, 1), () -> logFailure(rf.reason(), 1));
+                case RenewalEvent.RenewalSucceeded rs -> tx.transitionTo(ctx.healthy,
+                                                                         () -> applySuccess(ctx, rs.bundle()));
+                case RenewalEvent.RenewalFailed rf -> tx.transitionTo(new RetryBackoff(ctx, 1),
+                                                                      () -> logFailure(rf.reason(), 1));
                 case RenewalEvent.Stop _ -> tx.transitionTo(ctx.stopped);
                 default -> tx.ignore();
             }
@@ -191,10 +194,14 @@ public final class CertificateRenewalScheduler {
             var jitteredMs = JitterUtil.applyJitter(delayMinutes * 60_000L,
                                                     JitterUtil.MIN_FACTOR_DEFAULT,
                                                     JitterUtil.MAX_FACTOR_DEFAULT);
+
             log.error("Scheduling certificate renewal retry #{} in {}ms (base {} minutes)",
-                      retryCount, jitteredMs, delayMinutes);
+                      retryCount,
+                      jitteredMs,
+                      delayMinutes);
             var task = SharedScheduler.schedule(() -> ctx.dispatch(new RenewalEvent.Tick()),
                                                 TimeSpan.timeSpan(jitteredMs).millis());
+
             ctx.scheduledTask.set(Option.some(task));
         }
 
@@ -240,10 +247,15 @@ public final class CertificateRenewalScheduler {
                                                                           Consumer<CertificateBundle> renewalCallback,
                                                                           Instant initialNotAfter) {
         var ctxHolder = new AtomicReference<Context>();
-        Function<Fsm<SchedulerState, RenewalEvent>, SchedulerState> initialStateFactory =
-            f -> buildContextAndInitialState(ctxHolder, f, provider, nodeId, hostname,
-                                             renewalCallback, initialNotAfter);
+        Function<Fsm<SchedulerState, RenewalEvent>, SchedulerState> initialStateFactory = f -> buildContextAndInitialState(ctxHolder,
+                                                                                                                           f,
+                                                                                                                           provider,
+                                                                                                                           nodeId,
+                                                                                                                           hostname,
+                                                                                                                           renewalCallback,
+                                                                                                                           initialNotAfter);
         var fsm = Fsm.fsm("cert-renewal", nodeId, initialStateFactory);
+
         return new CertificateRenewalScheduler(ctxHolder.get(), fsm);
     }
 
@@ -255,7 +267,9 @@ public final class CertificateRenewalScheduler {
                                                               Consumer<CertificateBundle> renewalCallback,
                                                               Instant initialNotAfter) {
         var ctx = new Context(fsm, provider, nodeId, hostname, renewalCallback, initialNotAfter);
+
         ctxHolder.set(ctx);
+
         return ctx.idle;
     }
 
@@ -273,7 +287,9 @@ public final class CertificateRenewalScheduler {
     }
 
     public long secondsUntilExpiry() {
-        return Duration.between(Instant.now(), ctx.currentNotAfter.get()).toSeconds();
+        return Duration.between(Instant.now(),
+                                ctx.currentNotAfter.get())
+                       .toSeconds();
     }
 
     public Instant lastRenewalAt() {
@@ -305,6 +321,7 @@ public final class CertificateRenewalScheduler {
     /// - Returns the new `notAfter` instant so the caller can surface it in the response.
     public Instant configureShortValidity(int validitySeconds) {
         var newNotAfter = Instant.now().plusSeconds(validitySeconds);
+
         ctx.currentNotAfter.set(newNotAfter);
         if (fsm.current() instanceof Healthy) {
             // Re-enter Healthy with the new currentNotAfter so the timer reschedules.
@@ -313,22 +330,24 @@ public final class CertificateRenewalScheduler {
             ctx.cancelScheduledTask();
             var delay = calculateRenewalDelay(newNotAfter);
             var scheduleDelay = delay.isNegative() || delay.isZero()
-                    ? TimeSpan.timeSpan(0).millis()
-                    : TimeSpan.timeSpan(delay.toMillis()).millis();
+                                ? TimeSpan.timeSpan(0).millis()
+                                : TimeSpan.timeSpan(delay.toMillis()).millis();
             var task = SharedScheduler.schedule(() -> ctx.dispatch(new RenewalEvent.Tick()),
-                                                 scheduleDelay);
+                                                scheduleDelay);
+
             ctx.scheduledTask.set(Option.some(task));
             log.info("Short-validity reconfiguration: certificate notAfter set to {}, next Tick in {}",
-                      newNotAfter, formatDuration(delay));
+                     newNotAfter,
+                     formatDuration(delay));
         } else {
             log.info("Short-validity reconfiguration: certificate notAfter set to {} (scheduler not in Healthy state — timer untouched)",
-                      newNotAfter);
+                     newNotAfter);
         }
+
         return newNotAfter;
     }
 
     // --- Shared transition-action / computation helpers ---
-
     private static void applySuccess(Context ctx, CertificateBundle bundle) {
         ctx.currentNotAfter.set(bundle.notAfter());
         ctx.lastRenewalAt.set(Instant.now());
@@ -341,18 +360,24 @@ public final class CertificateRenewalScheduler {
     }
 
     private static long calculateRetryDelay(int retryCount) {
-        var delayMinutes = (long) (INITIAL_RETRY_MINUTES * Math.pow(RETRY_MULTIPLIER, retryCount - 1));
+        var delayMinutes = (long)(INITIAL_RETRY_MINUTES * Math.pow(RETRY_MULTIPLIER, retryCount - 1));
+
         return Math.min(delayMinutes, MAX_RETRY_MINUTES);
     }
 
     private static Duration calculateRenewalDelay(Instant notAfter) {
         var remaining = Duration.between(Instant.now(), notAfter);
-        return remaining.multipliedBy(RENEWAL_NUMERATOR).dividedBy(RENEWAL_DENOMINATOR);
+
+        return remaining.multipliedBy(RENEWAL_NUMERATOR)
+                        .dividedBy(RENEWAL_DENOMINATOR);
     }
 
     private static String formatDuration(Duration d) {
         var hours = d.toHours();
         var minutes = d.toMinutesPart();
-        return hours > 0 ? hours + "h " + minutes + "m" : minutes + "m";
+
+        return hours > 0
+               ? hours + "h " + minutes + "m"
+               : minutes + "m";
     }
 }

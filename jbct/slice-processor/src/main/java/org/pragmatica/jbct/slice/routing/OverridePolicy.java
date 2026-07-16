@@ -2,13 +2,13 @@
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
 // Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
 // See LICENSE in the repository root for full terms.
-
 package org.pragmatica.jbct.slice.routing;
 
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.utils.Causes;
+
 
 /// Controls how operators can override per-route security in blueprint.toml.
 public enum OverridePolicy {
@@ -18,17 +18,16 @@ public enum OverridePolicy {
     FULL,
     /// No overrides allowed — security is baked in at compile time.
     NONE;
-
     private static final Cause EMPTY_POLICY = Causes.cause("Empty override policy");
     private static final Fn1<Cause, String> UNKNOWN_POLICY = Causes.forOneValue("Unknown override policy: %s");
-
     /// Parse from TOML string value.
     public static Result<OverridePolicy> parse(String value) {
         if (value == null || value.isBlank()) {
             return EMPTY_POLICY.result();
         }
 
-        return switch (value.trim().toLowerCase()) {
+        return switch (value.trim()
+                            .toLowerCase()) {
             case "strengthen_only" -> Result.success(STRENGTHEN_ONLY);
             case "full" -> Result.success(FULL);
             case "none" -> Result.success(NONE);

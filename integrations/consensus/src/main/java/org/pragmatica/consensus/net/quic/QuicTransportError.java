@@ -13,29 +13,25 @@
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  */
-
 package org.pragmatica.consensus.net.quic;
 
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.utils.Causes;
 
+
 /// Error types for QUIC transport operations.
 public sealed interface QuicTransportError extends Cause {
-
     /// Fixed-message transport errors.
     enum General implements QuicTransportError {
         HELLO_TIMEOUT("Hello handshake timed out"),
         UNEXPECTED_MESSAGE("Expected Hello message but received different type"),
         SERVER_NOT_STARTED("QUIC server is not started"),
         NO_TLS_CONFIGURATION("No TLS configuration provided. Set AETHER_INSECURE_DEV_MODE=true for development without TLS verification");
-
         private final String text;
-
         General(String text) {
             this.text = text;
         }
-
         @Override
         public String message() {
             return text;
@@ -96,8 +92,9 @@ public sealed interface QuicTransportError extends Cause {
         @Override
         public String message() {
             return "QUIC dialer Hello identity mismatch: dialed=" + expected.id()
-                   + " helloSender=" + actual.id()
-                   + " address=" + address + " — connection rejected";
+                 + " helloSender=" + actual.id()
+                 + " address=" + address
+                 + " — connection rejected";
         }
     }
 

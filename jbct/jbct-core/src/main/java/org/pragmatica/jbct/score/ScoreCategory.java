@@ -1,4 +1,5 @@
 package org.pragmatica.jbct.score;
+
 /// JBCT score categories with their weights.
 ///
 /// Categories track compliance across different JBCT principles.

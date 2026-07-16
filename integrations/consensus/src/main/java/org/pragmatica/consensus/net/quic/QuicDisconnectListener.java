@@ -13,7 +13,6 @@
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  */
-
 package org.pragmatica.consensus.net.quic;
 
 import org.pragmatica.consensus.NodeId;
@@ -25,10 +24,11 @@ import org.pragmatica.lang.Contract;
 /// Kept intentionally minimal — consensus has no awareness of cluster-generation
 /// typing (that lives in `aether-slice`). Higher layers adapt these callbacks
 /// into richer domain events (e.g. `HealthSignal.QuicDisconnect`).
-@Contract public interface QuicDisconnectListener {
+@Contract
+public interface QuicDisconnectListener {
     void onDisconnect(NodeId nodeId);
 
     static QuicDisconnectListener noop() {
-        return nodeId -> { };
+        return nodeId -> {};
     }
 }

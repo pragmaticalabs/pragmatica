@@ -11,17 +11,15 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package org.pragmatica.postgres.message.frontend;
 
 import org.pragmatica.postgres.message.ExtendedQueryMessage;
 
+
 /**
  * @author Antti Laisi
  */
-public record Bind(String sname, byte[][] params, short[] paramFormatCodes, short[] resultFormatCodes)
-    implements ExtendedQueryMessage {
-
+public record Bind(String sname, byte[][] params, short[] paramFormatCodes, short[] resultFormatCodes) implements ExtendedQueryMessage {
     public Bind(String sname, byte[][] params) {
         this(sname, params, new short[0], new short[0]);
     }

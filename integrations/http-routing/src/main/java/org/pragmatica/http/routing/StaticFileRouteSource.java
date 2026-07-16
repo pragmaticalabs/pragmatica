@@ -1,14 +1,14 @@
 package org.pragmatica.http.routing;
 
-import org.pragmatica.http.CommonContentType;
-import org.pragmatica.http.ContentType;
-import org.pragmatica.lang.Cause;
-import org.pragmatica.lang.Promise;
-
 import java.io.IOException;
 import java.io.InputStream;
 import java.util.Map;
 import java.util.stream.Stream;
+
+import org.pragmatica.http.CommonContentType;
+import org.pragmatica.http.ContentType;
+import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Promise;
 
 import static org.pragmatica.http.ContentCategory.BINARY;
 import static org.pragmatica.http.ContentCategory.HTML;
@@ -17,6 +17,7 @@ import static org.pragmatica.http.ContentCategory.TEXT;
 import static org.pragmatica.http.ContentType.contentType;
 import static org.pragmatica.http.HttpMethod.GET;
 import static org.pragmatica.http.routing.Route.route;
+
 
 /// Route source for serving static files from the classpath.
 ///
@@ -35,8 +36,7 @@ public interface StaticFileRouteSource extends RouteSource {
                                                            Map.entry(".css",
                                                                      contentType("text/css; charset=UTF-8", TEXT)),
                                                            Map.entry(".js",
-                                                                     contentType("text/javascript; charset=UTF-8",
-                                                                                 TEXT)),
+                                                                     contentType("text/javascript; charset=UTF-8", TEXT)),
                                                            Map.entry(".json",
                                                                      contentType("application/json; charset=UTF-8", JSON)),
                                                            Map.entry(".png", contentType("image/png", BINARY)),
@@ -51,8 +51,7 @@ public interface StaticFileRouteSource extends RouteSource {
                                                            Map.entry(".eot",
                                                                      contentType("application/vnd.ms-fontobject", BINARY)),
                                                            Map.entry(".xml",
-                                                                     contentType("application/xml; charset=UTF-8",
-                                                                                 TEXT)),
+                                                                     contentType("application/xml; charset=UTF-8", TEXT)),
                                                            Map.entry(".txt",
                                                                      contentType("text/plain; charset=UTF-8", TEXT)),
                                                            Map.entry(".map",
@@ -68,6 +67,7 @@ public interface StaticFileRouteSource extends RouteSource {
     static StaticFileRouteSource staticFiles(String urlPrefix, String classpathPrefix) {
         var normalizedUrlPrefix = PathUtils.normalize(urlPrefix);
         var normalizedClasspathPrefix = normalizeClasspathPrefix(classpathPrefix);
+
         return () -> Stream.of(route(GET,
                                      normalizedUrlPrefix,
                                      createHandler(normalizedUrlPrefix, normalizedClasspathPrefix),
@@ -78,6 +78,7 @@ public interface StaticFileRouteSource extends RouteSource {
         var result = prefix.startsWith("/")
                      ? prefix
                      : "/" + prefix;
+
         return result.endsWith("/")
                ? result.substring(0, result.length() - 1)
                : result;
@@ -87,6 +88,7 @@ public interface StaticFileRouteSource extends RouteSource {
         return ctx -> {
             var requestPath = ctx.requestPath();
             var relativePath = extractRelativePath(requestPath, urlPrefix);
+
             return validatePath(relativePath).async()
                                .flatMap(validPath -> loadResource(classpathPrefix, validPath, ctx));
         };
@@ -96,6 +98,7 @@ public interface StaticFileRouteSource extends RouteSource {
         var path = requestPath.startsWith(urlPrefix)
                    ? requestPath.substring(urlPrefix.length())
                    : requestPath;
+
         return path.isEmpty()
                ? "/"
                : path;
@@ -105,29 +108,31 @@ public interface StaticFileRouteSource extends RouteSource {
         if (path.contains("..")) {
             return StaticFileError.DIRECTORY_TRAVERSAL.result();
         }
+
         return org.pragmatica.lang.Result.success(path);
     }
 
     private static Promise<byte[]> loadResource(String classpathPrefix, String relativePath, RequestContext ctx) {
         var resourcePath = resolveResourcePath(classpathPrefix, relativePath);
         var contentType = detectContentType(resourcePath);
-        ctx.responseHeaders()
-           .set("Content-Type",
-                contentType.headerText());
-        ctx.responseHeaders()
-           .set("Cache-Control", "no-cache");
+
+        ctx.responseHeaders().set("Content-Type", contentType.headerText());
+        ctx.responseHeaders().set("Cache-Control", "no-cache");
+
         return Promise.resolved(readResource(resourcePath));
     }
 
     private static org.pragmatica.lang.Result<byte[]> readResource(String resourcePath) {
         var stream = StaticFileRouteSource.class.getResourceAsStream(resourcePath);
+
         if (stream == null) {
             return StaticFileError.NOT_FOUND.result();
         }
+
         return org.pragmatica.lang.Result.lift(StaticFileError.ReadFailed::new, () -> readAll(stream));
     }
 
-    @SuppressWarnings("JBCT-EX-01") // Adapter boundary: JDK InputStream throwing supplier for Result.lift
+    @SuppressWarnings("JBCT-EX-01")  // Adapter boundary: JDK InputStream throwing supplier for Result.lift
     private static byte[] readAll(InputStream stream) throws IOException {
         try (stream) {
             return stream.readAllBytes();
@@ -138,6 +143,7 @@ public interface StaticFileRouteSource extends RouteSource {
         var path = relativePath.endsWith("/")
                    ? relativePath + "index.html"
                    : relativePath;
+
         return classpathPrefix + (path.startsWith("/")
                                   ? path
                                   : "/" + path);
@@ -145,11 +151,13 @@ public interface StaticFileRouteSource extends RouteSource {
 
     static ContentType detectContentType(String path) {
         var lastDot = path.lastIndexOf('.');
+
         if (lastDot < 0) {
             return DEFAULT_CONTENT_TYPE;
         }
-        var extension = path.substring(lastDot)
-                            .toLowerCase();
+
+        var extension = path.substring(lastDot).toLowerCase();
+
         return CONTENT_TYPES.getOrDefault(extension, DEFAULT_CONTENT_TYPE);
     }
 

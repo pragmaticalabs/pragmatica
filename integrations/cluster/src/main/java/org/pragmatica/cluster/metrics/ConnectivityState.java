@@ -13,4 +13,9 @@ import org.pragmatica.serialization.Codec;
 /// within the stale-detection window.
 ///
 /// Top-level by design — see `HealthHintWire` for the tag-collision rationale.
-@Codec public enum ConnectivityState {CONNECTED, DISCONNECTED, STALE}
+@Codec
+public enum ConnectivityState {
+    CONNECTED,
+    DISCONNECTED,
+    STALE
+}

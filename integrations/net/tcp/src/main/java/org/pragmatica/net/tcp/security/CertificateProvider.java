@@ -13,18 +13,17 @@
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  */
-
 package org.pragmatica.net.tcp.security;
 
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
+
 
 /// Service Provider Interface for certificate issuance and management.
 ///
 /// Implementations provide certificate material for inter-node mTLS
 /// and gossip encryption keys for authenticated cluster communication.
 public interface CertificateProvider {
-
     /// Issue a node certificate signed by the cluster CA.
     ///
     /// @param nodeId   identity of the node requesting the certificate

@@ -1,5 +1,9 @@
 package org.pragmatica.jbct.maven;
 
+import java.io.File;
+import java.nio.file.Path;
+import java.util.List;
+
 import org.pragmatica.jbct.config.ConfigLoader;
 import org.pragmatica.jbct.config.FilesConfig;
 import org.pragmatica.jbct.config.JbctConfig;
@@ -7,13 +11,10 @@ import org.pragmatica.jbct.lint.LintContext;
 import org.pragmatica.jbct.shared.FileCollector;
 import org.pragmatica.lang.Option;
 
-import java.io.File;
-import java.nio.file.Path;
-import java.util.List;
-
 import org.apache.maven.plugin.AbstractMojo;
 import org.apache.maven.plugins.annotations.Parameter;
 import org.apache.maven.project.MavenProject;
+
 
 /// Base class for JBCT Maven mojos with common configuration parameters.
 public abstract class AbstractJbctMojo extends AbstractMojo {
@@ -34,8 +35,8 @@ public abstract class AbstractJbctMojo extends AbstractMojo {
 
     /// Load JBCT configuration from project directory.
     protected JbctConfig loadConfig() {
-        var projectDir = project.getBasedir()
-                                .toPath();
+        var projectDir = project.getBasedir().toPath();
+
         return ConfigLoader.load(Option.none(), Option.option(projectDir));
     }
 
@@ -46,10 +47,8 @@ public abstract class AbstractJbctMojo extends AbstractMojo {
 
     /// Collect Java files from source directories, applying file filters.
     protected List<Path> collectJavaFiles(FilesConfig filesConfig) {
-        return FileCollector.collectFromDirectories(Option.option(sourceDirectory)
-                                                          .map(File::toPath),
-                                                    Option.option(testSourceDirectory)
-                                                          .map(File::toPath),
+        return FileCollector.collectFromDirectories(Option.option(sourceDirectory).map(File::toPath),
+                                                    Option.option(testSourceDirectory).map(File::toPath),
                                                     includeTests,
                                                     filesConfig,
                                                     msg -> getLog().info(msg));
@@ -59,8 +58,10 @@ public abstract class AbstractJbctMojo extends AbstractMojo {
     protected boolean shouldSkip(String goalName) {
         if (skip) {
             getLog().info("Skipping JBCT " + goalName);
+
             return true;
         }
+
         return false;
     }
 }

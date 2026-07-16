@@ -14,7 +14,6 @@
  *  limitations under the License.
  *
  */
-
 package org.pragmatica.cloud.hetzner.api;
 
 import java.util.List;
@@ -22,6 +21,7 @@ import java.util.Map;
 
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.annotation.JsonProperty;
+
 
 /// Hetzner Cloud server model.
 @JsonIgnoreProperties(ignoreUnknown = true)
@@ -88,8 +88,17 @@ public record Server(long id,
                                                               String userData,
                                                               boolean startAfterCreate,
                                                               Map<String, String> labels) {
-            return createServerRequest(name, serverType, image, sshKeys, networks, firewalls,
-                                       location, userData, startAfterCreate, null, labels);
+            return createServerRequest(name,
+                                       serverType,
+                                       image,
+                                       sshKeys,
+                                       networks,
+                                       firewalls,
+                                       location,
+                                       userData,
+                                       startAfterCreate,
+                                       null,
+                                       labels);
         }
 
         /// Factory method overload for explicit public_net spec (e.g. IPv4-only to conserve Primary IPs).
@@ -109,9 +118,7 @@ public record Server(long id,
                                            image,
                                            sshKeys,
                                            networks,
-                                           firewalls.stream()
-                                                    .map(FirewallRef::new)
-                                                    .toList(),
+                                           firewalls.stream().map(FirewallRef::new).toList(),
                                            location,
                                            userData,
                                            startAfterCreate,

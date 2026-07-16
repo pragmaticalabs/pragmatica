@@ -4,8 +4,11 @@
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
  */
-
 package org.pragmatica.consensus.leader;
+
+import java.util.List;
+import java.util.function.Predicate;
+import java.util.function.Supplier;
 
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.fsm.ClusterFsmEvent;
@@ -30,9 +33,6 @@ import org.pragmatica.messaging.MessageRouter;
 import org.pragmatica.statemachine.Fsm;
 import org.pragmatica.statemachine.FsmObserver;
 
-import java.util.List;
-import java.util.function.Predicate;
-import java.util.function.Supplier;
 
 /// Leader manager responsible for choosing the cluster leader. Backed by the
 /// [`LeaderElectionFsm`](fsm/LeaderElectionFsm.java) — a GoF-style state machine with CAS-guarded
@@ -46,9 +46,7 @@ import java.util.function.Supplier;
 ///    back via [`onLeaderCommitted`](#onLeaderCommitted(NodeId)).
 public interface LeaderManager {
     Option<NodeId> leader();
-
     boolean isLeader();
-
     /// Returns the current leader's epoch (the cluster-side rabia term) iff this node is the
     /// elected leader; otherwise [`Option#none`]. Source: the [`Supplier<Long>`] injected at
     /// construction (`leaderManager(...)` overloads). Consumers (e.g. Aether's
@@ -112,9 +110,11 @@ public interface LeaderManager {
     }
 
     // --- Factories ---
-
     static LeaderManager leaderManager(NodeId self, MessageRouter router) {
-        return build(self, router, Option.none(), List.of(),
+        return build(self,
+                     router,
+                     Option.none(),
+                     List.of(),
                      LeaderElectionContext.DEFAULT_PROPOSAL_RETRY_DELAY,
                      LeaderElectionContext.DEFAULT_BASE_ELECTION_DELAY,
                      LeaderElectionContext.DEFAULT_PER_RANK_DELAY,
@@ -124,7 +124,10 @@ public interface LeaderManager {
     }
 
     static LeaderManager leaderManager(NodeId self, MessageRouter router, LeaderProposalHandler proposalHandler) {
-        return build(self, router, Option.some(proposalHandler), List.of(),
+        return build(self,
+                     router,
+                     Option.some(proposalHandler),
+                     List.of(),
                      LeaderElectionContext.DEFAULT_PROPOSAL_RETRY_DELAY,
                      LeaderElectionContext.DEFAULT_BASE_ELECTION_DELAY,
                      LeaderElectionContext.DEFAULT_PER_RANK_DELAY,
@@ -137,7 +140,10 @@ public interface LeaderManager {
                                        MessageRouter router,
                                        LeaderProposalHandler proposalHandler,
                                        List<NodeId> expectedCluster) {
-        return build(self, router, Option.some(proposalHandler), expectedCluster,
+        return build(self,
+                     router,
+                     Option.some(proposalHandler),
+                     expectedCluster,
                      LeaderElectionContext.DEFAULT_PROPOSAL_RETRY_DELAY,
                      LeaderElectionContext.DEFAULT_BASE_ELECTION_DELAY,
                      LeaderElectionContext.DEFAULT_PER_RANK_DELAY,
@@ -153,8 +159,13 @@ public interface LeaderManager {
                                        TimeSpan proposalRetryDelay,
                                        TimeSpan baseElectionDelay,
                                        TimeSpan perRankDelay) {
-        return build(self, router, Option.some(proposalHandler), expectedCluster,
-                     proposalRetryDelay, baseElectionDelay, perRankDelay,
+        return build(self,
+                     router,
+                     Option.some(proposalHandler),
+                     expectedCluster,
+                     proposalRetryDelay,
+                     baseElectionDelay,
+                     perRankDelay,
                      LeaderElectionContext.DEFAULT_RABIA_TERM_SUPPLIER,
                      LeaderElectionContext.DEFAULT_CONSENSUS_READY_SUPPLIER,
                      LeaderElectionContext.DEFAULT_CURRENT_LEADER_FROM_KV_SUPPLIER);
@@ -169,7 +180,10 @@ public interface LeaderManager {
                                        LeaderProposalHandler proposalHandler,
                                        List<NodeId> expectedCluster,
                                        Supplier<Long> rabiaTermSupplier) {
-        return build(self, router, Option.some(proposalHandler), expectedCluster,
+        return build(self,
+                     router,
+                     Option.some(proposalHandler),
+                     expectedCluster,
                      LeaderElectionContext.DEFAULT_PROPOSAL_RETRY_DELAY,
                      LeaderElectionContext.DEFAULT_BASE_ELECTION_DELAY,
                      LeaderElectionContext.DEFAULT_PER_RANK_DELAY,
@@ -187,7 +201,10 @@ public interface LeaderManager {
                                        List<NodeId> expectedCluster,
                                        Supplier<Long> rabiaTermSupplier,
                                        Supplier<Boolean> consensusReadySupplier) {
-        return build(self, router, Option.some(proposalHandler), expectedCluster,
+        return build(self,
+                     router,
+                     Option.some(proposalHandler),
+                     expectedCluster,
                      LeaderElectionContext.DEFAULT_PROPOSAL_RETRY_DELAY,
                      LeaderElectionContext.DEFAULT_BASE_ELECTION_DELAY,
                      LeaderElectionContext.DEFAULT_PER_RANK_DELAY,
@@ -211,7 +228,10 @@ public interface LeaderManager {
                                        Supplier<Long> rabiaTermSupplier,
                                        Supplier<Boolean> consensusReadySupplier,
                                        Supplier<Option<NodeId>> currentLeaderFromKvSupplier) {
-        return build(self, router, Option.some(proposalHandler), expectedCluster,
+        return build(self,
+                     router,
+                     Option.some(proposalHandler),
+                     expectedCluster,
                      LeaderElectionContext.DEFAULT_PROPOSAL_RETRY_DELAY,
                      LeaderElectionContext.DEFAULT_BASE_ELECTION_DELAY,
                      LeaderElectionContext.DEFAULT_PER_RANK_DELAY,
@@ -234,7 +254,10 @@ public interface LeaderManager {
                                        Supplier<Boolean> consensusReadySupplier,
                                        Supplier<Option<NodeId>> currentLeaderFromKvSupplier,
                                        Predicate<NodeId> leaderPingFreshFn) {
-        return buildWithLease(self, router, Option.some(proposalHandler), expectedCluster,
+        return buildWithLease(self,
+                              router,
+                              Option.some(proposalHandler),
+                              expectedCluster,
                               LeaderElectionContext.DEFAULT_PROPOSAL_RETRY_DELAY,
                               LeaderElectionContext.DEFAULT_BASE_ELECTION_DELAY,
                               LeaderElectionContext.DEFAULT_PER_RANK_DELAY,
@@ -254,9 +277,16 @@ public interface LeaderManager {
                                        Supplier<Long> rabiaTermSupplier,
                                        Supplier<Boolean> consensusReadySupplier,
                                        Supplier<Option<NodeId>> currentLeaderFromKvSupplier) {
-        return buildWithLease(self, router, proposalHandler, expectedCluster, proposalRetryDelay,
-                              baseElectionDelay, perRankDelay, rabiaTermSupplier,
-                              consensusReadySupplier, currentLeaderFromKvSupplier,
+        return buildWithLease(self,
+                              router,
+                              proposalHandler,
+                              expectedCluster,
+                              proposalRetryDelay,
+                              baseElectionDelay,
+                              perRankDelay,
+                              rabiaTermSupplier,
+                              consensusReadySupplier,
+                              currentLeaderFromKvSupplier,
                               LeaderElectionContext.DEFAULT_LEADER_PING_FRESH_FN);
     }
 
@@ -271,13 +301,19 @@ public interface LeaderManager {
                                                 Supplier<Boolean> consensusReadySupplier,
                                                 Supplier<Option<NodeId>> currentLeaderFromKvSupplier,
                                                 Predicate<NodeId> leaderPingFreshFn) {
-        var built = LeaderElectionFsm.leaderElectionFsm(self, proposalHandler, expectedCluster,
-                                                        router, proposalRetryDelay,
-                                                        baseElectionDelay, perRankDelay,
-                                                        FsmObserver.noop(), rabiaTermSupplier,
+        var built = LeaderElectionFsm.leaderElectionFsm(self,
+                                                        proposalHandler,
+                                                        expectedCluster,
+                                                        router,
+                                                        proposalRetryDelay,
+                                                        baseElectionDelay,
+                                                        perRankDelay,
+                                                        FsmObserver.noop(),
+                                                        rabiaTermSupplier,
                                                         consensusReadySupplier,
                                                         currentLeaderFromKvSupplier,
                                                         leaderPingFreshFn);
+
         return new FsmBackedLeaderManager(built.fsm(), built.context(), proposalHandler.isEmpty());
     }
 
@@ -298,7 +334,9 @@ public interface LeaderManager {
 
         @Override
         public Option<Long> currentLeaderEpoch() {
-            return context.isLeader() ? Option.some(context.rabiaTermSupplier().get()) : Option.none();
+            return context.isLeader()
+                   ? Option.some(context.rabiaTermSupplier().get())
+                   : Option.none();
         }
 
         @Contract
@@ -348,6 +386,7 @@ public interface LeaderManager {
             if (localMode) {
                 dispatchLocalModeAdoption(peerDisconnected.topology());
             }
+
             fsm.dispatch(new ClusterFsmEvent.NodeGone(peerDisconnected.nodeId(), peerDisconnected.topology()));
         }
 
@@ -358,13 +397,14 @@ public interface LeaderManager {
             if (localMode) {
                 dispatchLocalModeAdoption(peerObservedFaulty.topology());
             }
+
             fsm.dispatch(new ClusterFsmEvent.NodeGone(peerObservedFaulty.nodeId(), peerObservedFaulty.topology()));
         }
 
         @Contract
         @Override
         public void peerReconnected(PeerReconnected peerReconnected) {
-            // Transparent — peer is already known to the FSM via prior PeerJoined. No event.
+        // Transparent — peer is already known to the FSM via prior PeerJoined. No event.
         }
 
         @Contract
@@ -376,9 +416,11 @@ public interface LeaderManager {
 
         private void dispatchLocalModeAdoption(List<NodeId> topology) {
             var sorted = topology.stream().sorted().toList();
+
             if (sorted.isEmpty()) {
                 return;
             }
+
             fsm.dispatch(new LeaderElectionEvents.LeaderCommitted(sorted.getFirst()));
         }
 
@@ -388,6 +430,7 @@ public interface LeaderManager {
             if (!clusterState.advanceSequence(context.quorumSequence())) {
                 return;
             }
+
             switch (clusterState.state()) {
                 case ACTIVE -> onClusterActive();
                 case PASSIVE -> fsm.dispatch(new ClusterFsmEvent.QuorumDisappeared());
@@ -409,9 +452,11 @@ public interface LeaderManager {
             // NodeId), so an empty topology short-circuits before event construction — this is
             // a data-validity check, not a TOCTOU guard on FSM state.
             var topology = context.currentTopology();
+
             if (topology.isEmpty()) {
                 return;
             }
+
             fsm.dispatch(new LeaderElectionEvents.LeaderCommitted(topology.getFirst()));
         }
     }

@@ -13,14 +13,10 @@
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  */
-
 package org.pragmatica.consensus.net.quic;
 
 import java.util.function.Consumer;
 
-import io.netty.channel.WriteBufferWaterMark;
-import io.netty.handler.codec.quic.QuicChannel;
-import io.netty.handler.codec.quic.QuicStreamChannel;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
@@ -28,7 +24,12 @@ import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.messaging.StreamType;
 
+import io.netty.channel.WriteBufferWaterMark;
+import io.netty.handler.codec.quic.QuicChannel;
+import io.netty.handler.codec.quic.QuicStreamChannel;
+
 import static org.pragmatica.lang.Option.option;
+
 
 /// Wraps a QUIC connection to a single peer with named streams.
 ///
@@ -107,7 +108,9 @@ public final class QuicPeerConnection {
     /// (re)open it on the live channel instead of failing. A `null` opener resets to the no-op.
     @Contract
     public void laneOpener(LaneOpener opener) {
-        this.laneOpener = opener == null ? LaneOpener.noop() : opener;
+        this.laneOpener = opener == null
+                          ? LaneOpener.noop()
+                          : opener;
     }
 
     /// Lazily (re)open a missing long-lived `lane` stream on this live connection, invoking
@@ -136,8 +139,10 @@ public final class QuicPeerConnection {
     public void registerStream(StreamType type, QuicStreamChannel channel) {
         if (type == StreamType.CONSENSUS) {
             channel.config()
-                   .setWriteBufferWaterMark(new WriteBufferWaterMark(consensusWatermarkLowBytes, consensusWatermarkHighBytes));
+                   .setWriteBufferWaterMark(new WriteBufferWaterMark(consensusWatermarkLowBytes,
+                                                                     consensusWatermarkHighBytes));
         }
+
         longLivedStreams[type.streamIndex()] = channel;
     }
 
@@ -161,9 +166,11 @@ public final class QuicPeerConnection {
     private void closeLongLivedStreams() {
         for (int i = 0; i < longLivedStreams.length; i++) {
             var stream = longLivedStreams[i];
+
             if (stream != null && stream.isActive()) {
                 stream.close();
             }
+
             longLivedStreams[i] = null;
         }
     }

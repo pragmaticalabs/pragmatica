@@ -13,10 +13,10 @@
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  */
-
 package org.pragmatica.consensus.rabia;
 
 import org.pragmatica.serialization.Codec;
+
 
 /// Represents a protocol phase as defined in the Rabia formal specification.
 /// Note: The constructor validation throw is intentional - negative phase values
@@ -25,10 +25,7 @@ import org.pragmatica.serialization.Codec;
 public record Phase(long value) implements Comparable<Phase> {
     public static final Phase ZERO = new Phase(0);
 
-    @SuppressWarnings("JBCT-EX-01") // TODO(RC2): negative phase is a constructor invariant
-    // (programming error, not business validation). Converting to a Result factory removes the
-    // throwing constructor and ripples into `new Phase(...)`/`successor()` call sites cross-module.
-    public Phase {
+    @SuppressWarnings("JBCT-EX-01") public Phase {
         if (value < 0) {
             throw new IllegalArgumentException("Phase value must be non-negative: " + value);
         }

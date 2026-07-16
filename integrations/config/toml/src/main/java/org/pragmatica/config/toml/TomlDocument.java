@@ -13,16 +13,16 @@
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  */
-
 package org.pragmatica.config.toml;
-
-import org.pragmatica.lang.Option;
 
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+
+import org.pragmatica.lang.Option;
+
 
 /// Immutable TOML document providing typed access to configuration values.
 ///
@@ -172,8 +172,10 @@ public record TomlDocument(Map<String, Map<String, Object>> sections,
     public TomlDocument with(String section, String key, Object value) {
         var newSections = new LinkedHashMap<>(sections);
         var sectionMap = new LinkedHashMap<>(newSections.getOrDefault(section, Map.of()));
+
         sectionMap.put(key, value);
         newSections.put(section, sectionMap);
+
         return new TomlDocument(Map.copyOf(newSections), tableArrays);
     }
 
@@ -215,24 +217,26 @@ public record TomlDocument(Map<String, Map<String, Object>> sections,
     }
 
     private Option<Object> getValue(String section, String key) {
-        return Option.option(sections.get(section))
-                     .flatMap(m -> Option.option(m.get(key)));
+        return Option.option(sections.get(section)).flatMap(m -> Option.option(m.get(key)));
     }
 
     private Option<Integer> toInt(Object value) {
         if (value instanceof Integer i) {
             return Option.some(i);
         }
+
         if (value instanceof Long l && l >= Integer.MIN_VALUE && l <= Integer.MAX_VALUE) {
             return Option.some(l.intValue());
         }
+
         if (value instanceof String s) {
-            try{
+            try {
                 return Option.some(Integer.parseInt(s));
             } catch (NumberFormatException _) {
                 return Option.none();
             }
         }
+
         return Option.none();
     }
 
@@ -240,16 +244,19 @@ public record TomlDocument(Map<String, Map<String, Object>> sections,
         if (value instanceof Long l) {
             return Option.some(l);
         }
+
         if (value instanceof Integer i) {
             return Option.some(i.longValue());
         }
+
         if (value instanceof String s) {
-            try{
+            try {
                 return Option.some(Long.parseLong(s));
             } catch (NumberFormatException _) {
                 return Option.none();
             }
         }
+
         return Option.none();
     }
 
@@ -257,19 +264,23 @@ public record TomlDocument(Map<String, Map<String, Object>> sections,
         if (value instanceof Double d) {
             return Option.some(d);
         }
+
         if (value instanceof Long l) {
             return Option.some(l.doubleValue());
         }
+
         if (value instanceof Integer i) {
             return Option.some(i.doubleValue());
         }
+
         if (value instanceof String s) {
-            try{
+            try {
                 return Option.some(Double.parseDouble(s));
             } catch (NumberFormatException _) {
                 return Option.none();
             }
         }
+
         return Option.none();
     }
 
@@ -277,29 +288,33 @@ public record TomlDocument(Map<String, Map<String, Object>> sections,
         if (value instanceof Boolean b) {
             return Option.some(b);
         }
+
         if (value instanceof String s) {
             if ("true".equalsIgnoreCase(s)) {
                 return Option.some(true);
             }
+
             if ("false".equalsIgnoreCase(s)) {
                 return Option.some(false);
             }
         }
+
         return Option.none();
     }
 
     private Option<List<String>> toStringList(Object value) {
         if (value instanceof List<?> list) {
-            return Option.some(list.stream()
-                                   .map(Object::toString)
-                                   .toList());
+            return Option.some(list.stream().map(Object::toString).toList());
         }
+
         return Option.none();
     }
 
     private Map<String, String> toStringMap(Map<String, Object> map) {
         var result = new LinkedHashMap<String, String>();
+
         map.forEach((k, v) -> result.put(k, v.toString()));
+
         return Collections.unmodifiableMap(result);
     }
 }

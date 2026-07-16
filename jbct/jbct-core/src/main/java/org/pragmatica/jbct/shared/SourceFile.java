@@ -1,12 +1,13 @@
 package org.pragmatica.jbct.shared;
 
-import org.pragmatica.lang.Result;
-import org.pragmatica.lang.utils.Causes;
-
 import java.nio.file.Files;
 import java.nio.file.Path;
 
+import org.pragmatica.lang.Result;
+import org.pragmatica.lang.utils.Causes;
+
 import static org.pragmatica.lang.Result.lift;
+
 
 /// Value object representing a Java source file with its content.
 public record SourceFile(Path path, String content) {
@@ -25,6 +26,7 @@ public record SourceFile(Path path, String content) {
         return lift(Causes::fromThrowable,
                     () -> {
                         Files.writeString(path, content);
+
                         return this;
                     });
     }

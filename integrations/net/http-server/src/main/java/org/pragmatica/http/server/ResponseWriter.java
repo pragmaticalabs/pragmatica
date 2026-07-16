@@ -13,8 +13,9 @@
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  */
-
 package org.pragmatica.http.server;
+
+import java.nio.charset.StandardCharsets;
 
 import org.pragmatica.http.CommonContentType;
 import org.pragmatica.http.ContentType;
@@ -22,7 +23,6 @@ import org.pragmatica.http.HttpStatus;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 
-import java.nio.charset.StandardCharsets;
 
 /// Response writer for HTTP handlers.
 ///
@@ -30,10 +30,8 @@ import java.nio.charset.StandardCharsets;
 public interface ResponseWriter {
     /// Standard header name for request ID tracing.
     String X_REQUEST_ID = "X-Request-Id";
-
     /// Write response with status, body, and content type.
     void write(HttpStatus status, byte[] body, ContentType contentType);
-
     /// Add header to the response. Must be called before write methods.
     ResponseWriter header(String name, String value);
 
@@ -76,6 +74,7 @@ public interface ResponseWriter {
     /// Write error response.
     default void error(HttpStatus status, String message) {
         var json = "{\"error\":\"" + escapeJson(message) + "\"}";
+
         write(status, json.getBytes(StandardCharsets.UTF_8), CommonContentType.APPLICATION_JSON);
     }
 

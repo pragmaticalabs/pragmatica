@@ -13,12 +13,12 @@
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  */
-
 package org.pragmatica.lang;
+
+import java.util.stream.Stream;
 
 import org.pragmatica.lang.Functions.Fn1;
 
-import java.util.stream.Stream;
 
 /// Basic interface for failure cause types.
 public interface Cause {
@@ -56,6 +56,7 @@ public interface Cause {
     /// @return result of the last action.
     default <T> T iterate(Fn1<T, Cause> action) {
         var value = action.apply(this);
+
         return source().fold(() -> value, src -> src.iterate(action));
     }
 

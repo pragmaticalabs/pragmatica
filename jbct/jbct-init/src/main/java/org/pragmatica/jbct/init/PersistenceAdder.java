@@ -1,14 +1,15 @@
 package org.pragmatica.jbct.init;
 
-import org.pragmatica.lang.Result;
-import org.pragmatica.lang.Unit;
-import org.pragmatica.lang.utils.Causes;
-
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.regex.Pattern;
+
+import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.utils.Causes;
+
 
 /// Adds PostgreSQL persistence support to an existing Aether slice project.
 /// Creates schema directory, migration template, persistence interface,
@@ -43,16 +44,16 @@ public final class PersistenceAdder {
 
     /// Create a PersistenceAdder with an optional package override.
     public static Result<PersistenceAdder> persistenceAdder(Path projectDir, String packageOverride) {
-        return ProjectConfig.projectConfig(projectDir)
-                            .map(config -> buildPersistenceAdder(projectDir, packageOverride, config));
+        return ProjectConfig.projectConfig(projectDir).map(config -> buildPersistenceAdder(projectDir,
+                                                                                           packageOverride,
+                                                                                           config));
     }
 
     /// Add persistence support to the project.
     public Result<List<Path>> addPersistence() {
-        return updatePom()
-                  .flatMap(_ -> createDirectories())
-                  .flatMap(_ -> createFiles())
-                  .flatMap(this::ensureDatabaseConfig);
+        return updatePom().flatMap(_ -> createDirectories())
+                        .flatMap(_ -> createFiles())
+                        .flatMap(this::ensureDatabaseConfig);
     }
 
     public String persistencePackage() {
@@ -65,14 +66,16 @@ public final class PersistenceAdder {
     /// `database.orders`) get a correctly-scoped stub. Exposed for add-only config
     /// fixers (e.g. `fix-slice`).
     public static String databaseConfigStub(String section) {
-        return DATABASE_CONFIG_TEMPLATE.replace("[database.pool_config]", "[" + section + ".pool_config]")
-                                       .replace("[database]", "[" + section + "]");
+        return DATABASE_CONFIG_TEMPLATE.replace("[database.pool_config]", "[" + section + ".pool_config]").replace("[database]",
+                                                                                                                   "[" + section
+                                                                                                                  + "]");
     }
 
     private static PersistenceAdder buildPersistenceAdder(Path projectDir,
-                                                           String packageOverride,
-                                                           ProjectConfig config) {
+                                                          String packageOverride,
+                                                          ProjectConfig config) {
         var persistencePackage = resolvePersistencePackage(config, packageOverride);
+
         return new PersistenceAdder(projectDir,
                                     config.basePackage(),
                                     config.groupId(),
@@ -84,6 +87,7 @@ public final class PersistenceAdder {
         if (packageOverride == null || packageOverride.isBlank()) {
             return config.basePackage() + ".persistence";
         }
+
         return config.resolvePackage(packageOverride);
     }
 
@@ -92,12 +96,13 @@ public final class PersistenceAdder {
             var packagePath = persistencePackage.replace(".", "/");
             var srcMainJava = projectDir.resolve("src/main/java");
             var schemaDir = projectDir.resolve("src/main/resources/schema");
+
             Files.createDirectories(srcMainJava.resolve(packagePath));
             Files.createDirectories(schemaDir);
+
             return Result.success(Unit.unit());
         } catch (Exception e) {
-            return Causes.cause("Failed to create directories: " + e.getMessage())
-                         .result();
+            return Causes.cause("Failed to create directories: " + e.getMessage()).result();
         }
     }
 
@@ -107,23 +112,26 @@ public final class PersistenceAdder {
         var schemaDir = projectDir.resolve("src/main/resources/schema");
         var interfacePath = srcMainJava.resolve(packagePath).resolve("SamplePersistence.java");
         var migrationPath = schemaDir.resolve("V001__initial.sql");
+
         return Result.allOf(ProjectFiles.writeNewFile(interfacePath, substituteVariables(PERSISTENCE_INTERFACE_TEMPLATE)),
                             ProjectFiles.writeNewFile(migrationPath, MIGRATION_TEMPLATE));
     }
 
     private Result<Unit> updatePom() {
         var pomPath = projectDir.resolve("pom.xml");
+
         try {
             var content = Files.readString(pomPath);
             var updated = addAnnotationProcessor(content);
+
             updated = addResourceApiDependency(updated);
             if (!updated.equals(content)) {
                 Files.writeString(pomPath, updated);
             }
+
             return Result.success(Unit.unit());
         } catch (Exception e) {
-            return Causes.cause("Failed to update pom.xml: " + e.getMessage())
-                         .result();
+            return Causes.cause("Failed to update pom.xml: " + e.getMessage()).result();
         }
     }
 
@@ -132,26 +140,33 @@ public final class PersistenceAdder {
     /// and is a no-op when a [database] table already exists (idempotent).
     private Result<List<Path>> ensureDatabaseConfig(List<Path> createdFiles) {
         var resourcesToml = projectDir.resolve("src/main/resources/resources.toml");
+
         try {
             if (!Files.exists(resourcesToml)) {
                 Files.writeString(resourcesToml, DATABASE_CONFIG_TEMPLATE);
+
                 return Result.success(append(createdFiles, resourcesToml));
             }
+
             var content = Files.readString(resourcesToml);
+
             if (DATABASE_SECTION_PRESENT.matcher(content).find()) {
                 return Result.success(createdFiles);
             }
+
             Files.writeString(resourcesToml, content + sectionSeparator(content) + DATABASE_CONFIG_TEMPLATE);
+
             return Result.success(append(createdFiles, resourcesToml));
         } catch (Exception e) {
-            return Causes.cause("Failed to update resources.toml: " + e.getMessage())
-                         .result();
+            return Causes.cause("Failed to update resources.toml: " + e.getMessage()).result();
         }
     }
 
     private static List<Path> append(List<Path> files, Path added) {
         var result = new ArrayList<>(files);
+
         result.add(added);
+
         return result;
     }
 
@@ -165,11 +180,15 @@ public final class PersistenceAdder {
         if (PG_CODEGEN_PRESENT.matcher(pomContent).find()) {
             return pomContent;
         }
+
         var marker = "</annotationProcessorPaths>";
+
         if (!pomContent.contains(marker)) {
             return pomContent;
         }
+
         var insertion = PG_CODEGEN_PATH_FRAGMENT + "                ";
+
         return pomContent.replace(marker, insertion + marker);
     }
 
@@ -177,10 +196,13 @@ public final class PersistenceAdder {
         if (RESOURCE_API_PRESENT.matcher(pomContent).find()) {
             return pomContent;
         }
+
         var marker = "<!-- Testing -->";
+
         if (!pomContent.contains(marker)) {
             return pomContent;
         }
+
         return pomContent.replace(marker, RESOURCE_API_DEPENDENCY_FRAGMENT + marker);
     }
 
@@ -189,7 +211,6 @@ public final class PersistenceAdder {
     }
 
     // POM fragments
-
     private static final String PG_CODEGEN_PATH_FRAGMENT = """
                                     <path>
                                         <groupId>org.pragmatica-lite.aether</groupId>
@@ -210,7 +231,6 @@ public final class PersistenceAdder {
                 """;
 
     // File templates
-
     private static final String PERSISTENCE_INTERFACE_TEMPLATE = """
         package {{persistencePackage}};
 

@@ -2,6 +2,7 @@ package org.pragmatica.storage;
 
 import java.nio.file.Path;
 
+
 /// Configuration for metadata snapshot manager.
 ///
 /// @param snapshotPath directory where snapshot files are stored
@@ -14,13 +15,14 @@ public record SnapshotConfig(Path snapshotPath,
                              long maxIntervalMillis,
                              int retentionCount,
                              String nodeId) {
-
     public static SnapshotConfig snapshotConfig(Path snapshotPath, String nodeId) {
         return new SnapshotConfig(snapshotPath, 1000, 60_000, 5, nodeId);
     }
 
-    public static SnapshotConfig snapshotConfig(Path snapshotPath, int mutationThreshold,
-                                                long maxIntervalMillis, int retentionCount,
+    public static SnapshotConfig snapshotConfig(Path snapshotPath,
+                                                int mutationThreshold,
+                                                long maxIntervalMillis,
+                                                int retentionCount,
                                                 String nodeId) {
         return new SnapshotConfig(snapshotPath, mutationThreshold, maxIntervalMillis, retentionCount, nodeId);
     }

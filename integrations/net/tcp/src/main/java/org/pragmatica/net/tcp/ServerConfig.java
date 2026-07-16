@@ -13,10 +13,10 @@
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  */
-
 package org.pragmatica.net.tcp;
 
 import org.pragmatica.lang.Option;
+
 
 /// Configuration for TCP server with optional UDP port.
 ///
@@ -33,11 +33,21 @@ public record ServerConfig(String name,
                            Option<TlsConfig> clientTls,
                            SocketOptions socketOptions) {
     public static ServerConfig serverConfig(String name, int port) {
-        return new ServerConfig(name, port, Option.empty(), Option.empty(), Option.empty(), SocketOptions.defaultConfig());
+        return new ServerConfig(name,
+                                port,
+                                Option.empty(),
+                                Option.empty(),
+                                Option.empty(),
+                                SocketOptions.defaultConfig());
     }
 
     public static ServerConfig serverConfig(String name, int port, TlsConfig tls) {
-        return new ServerConfig(name, port, Option.empty(), Option.some(tls), Option.empty(), SocketOptions.defaultConfig());
+        return new ServerConfig(name,
+                                port,
+                                Option.empty(),
+                                Option.some(tls),
+                                Option.empty(),
+                                SocketOptions.defaultConfig());
     }
 
     public ServerConfig withUdpPort(int udpPort) {

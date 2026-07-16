@@ -13,8 +13,13 @@
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  */
-
 package org.pragmatica.consensus;
+
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.util.ArrayList;
+import java.util.HexFormat;
+import java.util.List;
 
 import org.pragmatica.consensus.rabia.CorrelationId;
 import org.pragmatica.lang.Result;
@@ -23,14 +28,10 @@ import org.pragmatica.lang.Verify;
 import org.pragmatica.serialization.Codec;
 import org.pragmatica.serialization.Serializer;
 import org.pragmatica.utility.IdGenerator;
+
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
-import java.util.ArrayList;
-import java.util.HexFormat;
-import java.util.List;
 
 /// Replicated state machine interface.
 /// Implementations must ensure deterministic command execution.
@@ -109,17 +110,19 @@ public interface StateMachine<C extends Command> {
     ///
     /// Two batches with the same id are required to have identical content (the id is a
     /// content hash). Differing ids indicate a programming error and are rejected.
-    @SuppressWarnings("JBCT-EX-01") // TODO(RC2): merge() returns a bare Batch from the consensus
-    // consolidation path; mismatched ids are a content-hash invariant violation (programming error).
-    // Converting to Result<Batch> ripples into the sealed dispatch callers — defer to RC2.
+    @SuppressWarnings("JBCT-EX-01")  // TODO(RC2): merge() returns a bare Batch from the consensus
     default Batch<C> merge(Batch<C> a, Batch<C> b) {
         if (!a.id().equals(b.id())) {
             log.error("Cannot merge batches with different ids: {} vs {}", a.id(), b.id());
+
             throw new IllegalArgumentException("Cannot merge batches with different ids: " + a.id() + " vs " + b.id());
         }
+
         var merged = new ArrayList<>(a.correlationIds());
+
         merged.addAll(b.correlationIds());
         var earliestTimestamp = Math.min(a.timestamp(), b.timestamp());
+
         return new Batch<>(a.id(), List.copyOf(merged), earliestTimestamp, a.commands());
     }
 
@@ -129,10 +132,7 @@ public interface StateMachine<C extends Command> {
     ///
     /// @param <C> Command type
     @Codec
-    record Batch<C extends Command>(Id id,
-                                    List<CorrelationId> correlationIds,
-                                    long timestamp,
-                                    List<C> commands) implements Comparable<Batch<C>> {
+    record Batch<C extends Command>(Id id, List<CorrelationId> correlationIds, long timestamp, List<C> commands) implements Comparable<Batch<C>> {
         public Batch {
             commands = List.copyOf(commands);
             correlationIds = List.copyOf(correlationIds);
@@ -141,18 +141,21 @@ public interface StateMachine<C extends Command> {
         @Override
         public int compareTo(Batch<C> o) {
             var timestampCompare = Long.compare(timestamp, o.timestamp);
+
             if (timestampCompare != 0) {
                 return timestampCompare;
             }
-            return id.id().compareTo(o.id.id());
+
+            return id.id()
+                     .compareTo(o.id.id());
         }
 
         public static <C extends Command> Batch<C> create(Serializer serializer, List<C> commands) {
             // Route through the validating Id factory rather than `new Id(...)` (JBCT-VO-02).
             // The argument is a non-blank SHA-256 hex prefix, so validation always succeeds; the
             // `randomId` fallback is unreachable and exists only to satisfy the bare-Batch return.
-            var batchId = Id.id("batch-" + sha256Hex(serializer.encode(commands)))
-                            .or(Id.randomId());
+            var batchId = Id.id("batch-" + sha256Hex(serializer.encode(commands))).or(Id.randomId());
+
             return new Batch<>(batchId,
                                List.of(CorrelationId.randomCorrelationId()),
                                System.nanoTime(),
@@ -165,9 +168,7 @@ public interface StateMachine<C extends Command> {
             return HexFormat.of().formatHex(sha256().digest(bytes));
         }
 
-        @SuppressWarnings("JBCT-EX-01") // SHA-256 is a JVM-mandated algorithm (always present); the
-        // NoSuchAlgorithmException branch is unreachable infrastructure-impossibility, not a
-        // business failure worth threading through a Result.
+        @SuppressWarnings("JBCT-EX-01")  // SHA-256 is a JVM-mandated algorithm (always present); the
         private static MessageDigest sha256() {
             try {
                 return MessageDigest.getInstance("SHA-256");
@@ -191,7 +192,9 @@ public interface StateMachine<C extends Command> {
         @Override
         public boolean equals(Object o) {
             if (this == o) return true;
+
             if (! (o instanceof Batch<?> batch)) return false;
+
             return id.equals(batch.id);
         }
 
@@ -203,8 +206,7 @@ public interface StateMachine<C extends Command> {
         @Codec
         public record Id(String id) implements Comparable<Id> {
             public static Result<Id> id(String id) {
-                return Verify.ensure(id, Verify.Is::notBlank)
-                             .map(Id::new);
+                return Verify.ensure(id, Verify.Is::notBlank).map(Id::new);
             }
 
             public static Id randomId() {

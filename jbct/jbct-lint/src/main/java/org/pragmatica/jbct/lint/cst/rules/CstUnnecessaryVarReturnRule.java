@@ -1,15 +1,16 @@
 package org.pragmatica.jbct.lint.cst.rules;
 
+import java.util.regex.Pattern;
+import java.util.stream.Stream;
+
 import org.pragmatica.jbct.lint.Diagnostic;
 import org.pragmatica.jbct.lint.LintContext;
 import org.pragmatica.jbct.lint.cst.CstLintRule;
 import org.pragmatica.jbct.parser.Cursor;
 import org.pragmatica.jbct.parser.RuleKind;
 
-import java.util.regex.Pattern;
-import java.util.stream.Stream;
-
 import static org.pragmatica.jbct.parser.CstNodes.*;
+
 
 /// JBCT-STY-07: Unnecessary intermediate variable before return.
 ///
@@ -31,13 +32,15 @@ public class CstUnnecessaryVarReturnRule implements CstLintRule {
         if (!ctx.shouldLint(packageName(root))) {
             return Stream.empty();
         }
+
         return findAll(root, RuleKind.MEMBER).stream()
                       .flatMap(method -> analyzeMethod(root, method, ctx));
     }
 
     private Stream<Diagnostic> analyzeMethod(Cursor root, Cursor method, LintContext ctx) {
         var statements = findAllStatements(method);
-        var diagnostics = Stream.<Diagnostic>builder();
+        var diagnostics = Stream.<Diagnostic> builder();
+
         for (int i = 0; i < statements.size() - 1; i++) {
             var current = statements.get(i);
             var next = statements.get(i + 1);
@@ -45,11 +48,14 @@ public class CstUnnecessaryVarReturnRule implements CstLintRule {
             var nextText = text(next).trim();
             var varMatcher = VAR_DECL_PATTERN.matcher(currentText);
             var returnMatcher = RETURN_VAR_PATTERN.matcher(nextText);
+
             if (!varMatcher.find() || !returnMatcher.find()) {
                 continue;
             }
+
             var varName = varMatcher.group(1);
             var returnedName = returnMatcher.group(1);
+
             if (!varName.equals(returnedName)) {
                 continue;
             }
@@ -58,6 +64,7 @@ public class CstUnnecessaryVarReturnRule implements CstLintRule {
             var varRefPattern = Pattern.compile("\\b" + Pattern.quote(varName) + "\\b");
             var varRefMatcher = varRefPattern.matcher(methodText);
             var refCount = 0;
+
             while (varRefMatcher.find()) {
                 refCount++;
             }
@@ -66,22 +73,24 @@ public class CstUnnecessaryVarReturnRule implements CstLintRule {
                 diagnostics.add(createDiagnostic(root, current, varName, ctx));
             }
         }
+
         return diagnostics.build();
     }
 
     private Diagnostic createDiagnostic(Cursor root, Cursor stmt, String varName, LintContext ctx) {
-        var methodName = findAncestor(root, stmt, RuleKind.MEMBER)
-                .map(member -> extractMethodName(text(member)))
-                .or("(unknown)");
+        var methodName = findAncestor(root, stmt, RuleKind.MEMBER).map(member -> extractMethodName(text(member)))
+                                     .or("(unknown)");
+
         return Diagnostic.diagnostic(RULE_ID,
                                      ctx.severityFor(RULE_ID),
                                      ctx.fileName(),
                                      startLine(stmt),
                                      startColumn(stmt),
-                                     "Unnecessary variable '" + varName + "' in method '" + methodName
-                                     + "' — return the expression directly",
+                                     "Unnecessary variable '" + varName
+                                    + "' in method '" + methodName
+                                    + "' — return the expression directly",
                                      "The variable is only used to hold a value that is immediately returned. "
-                                     + "Remove the intermediate variable and return the expression directly.")
+                                    + "Remove the intermediate variable and return the expression directly.")
                          .withExample("""
             // Before: unnecessary intermediate variable
             var result = computeValue();
@@ -94,6 +103,9 @@ public class CstUnnecessaryVarReturnRule implements CstLintRule {
 
     private static String extractMethodName(String memberText) {
         var matcher = METHOD_NAME_PATTERN.matcher(memberText);
-        return matcher.find() ? matcher.group(1) : "(unknown)";
+
+        return matcher.find()
+               ? matcher.group(1)
+               : "(unknown)";
     }
 }

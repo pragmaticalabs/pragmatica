@@ -6,6 +6,7 @@ import java.util.Properties;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+
 /// Provides version information for JBCT CLI.
 public final class Version {
     private static final Logger log = LoggerFactory.getLogger(Version.class);
@@ -13,6 +14,7 @@ public final class Version {
 
     static {
         var props = new Properties();
+
         try (var is = Version.class.getResourceAsStream("/jbct-version.properties")) {
             if (is != null) {
                 props.load(is);
@@ -20,6 +22,7 @@ public final class Version {
         } catch (IOException e) {
             log.debug("Failed to load version properties: {}", e.getMessage());
         }
+
         VERSION = props.getProperty("version", "unknown");
     }
 

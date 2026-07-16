@@ -13,8 +13,13 @@
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  */
-
 package org.pragmatica.net.dns;
+
+import java.net.InetAddress;
+import java.net.InetSocketAddress;
+import java.time.Duration;
+import java.util.List;
+import java.util.concurrent.ConcurrentHashMap;
 
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
@@ -22,12 +27,6 @@ import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.AsyncCloseable;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.net.dns.ResolverError.UnknownDomain;
-
-import java.net.InetAddress;
-import java.net.InetSocketAddress;
-import java.time.Duration;
-import java.util.List;
-import java.util.concurrent.ConcurrentHashMap;
 
 import io.netty.channel.EventLoopGroup;
 import io.netty.channel.MultiThreadIoEventLoopGroup;
@@ -40,6 +39,7 @@ import static org.pragmatica.lang.Promise.resolved;
 import static org.pragmatica.lang.Promise.success;
 import static org.pragmatica.net.dns.DomainAddress.domainAddress;
 import static org.pragmatica.net.dns.DomainName.domainName;
+
 
 /// Asynchronous domain name resolver with TTL-based caching.
 ///
@@ -74,6 +74,7 @@ public interface DomainNameResolver extends AsyncCloseable {
     /// @return new resolver instance
     static DomainNameResolver domainNameResolver(List<InetAddress> servers) {
         var eventLoop = new MultiThreadIoEventLoopGroup(1, NioIoHandler.newFactory());
+
         return new Resolver(DnsClient.dnsClient(eventLoop), prepareServers(servers), buildDnsCache(), eventLoop, true);
     }
 
@@ -98,7 +99,9 @@ public interface DomainNameResolver extends AsyncCloseable {
         // "localhost" is a well-known valid domain name, safe to use directly
         var localhost = new DomainName("localhost");
         var resolvedLocalHost = domainAddress(localhost, InetAddress.getLoopbackAddress(), Duration.ofSeconds(0));
+
         cache.put(localhost, success(resolvedLocalHost));
+
         return cache;
     }
 }
@@ -125,6 +128,7 @@ record Resolver(DnsClient client,
                                                domainAddress.name(),
                                                domainAddress.ttl());
                                      var ttl = TimeSpan.fromDuration(domainAddress.ttl());
+
                                      promise.async(ttl,
                                                    _ -> {
                                                        cache.remove(domainAddress.name());
@@ -136,9 +140,7 @@ record Resolver(DnsClient client,
 
     private Promise<DomainAddress> fireRequest(DomainName domainName) {
         return Promise.any(UNKNOWN_DOMAIN,
-                           serverList.stream()
-                                     .map(server -> client.resolve(domainName, server))
-                                     .toList());
+                           serverList.stream().map(server -> client.resolve(domainName, server)).toList());
     }
 
     @Override
@@ -146,6 +148,7 @@ record Resolver(DnsClient client,
         if (!ownsEventLoop) {
             return client.close();
         }
+
         return client.close()
                      .flatMap(_ -> Promise.promise(promise -> eventLoop.shutdownGracefully()
                                                                        .addListener(_ -> promise.succeed(Unit.unit()))));

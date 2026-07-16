@@ -1,24 +1,27 @@
 package org.pragmatica.postgres;
 
+import java.util.function.Supplier;
+
 import org.pragmatica.postgres.net.ConnectibleBuilder;
 import org.pragmatica.postgres.net.Connection;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 
-import java.util.function.Supplier;
-
 import static org.pragmatica.lang.Unit.unit;
 
-public class PgDatabase extends PgConnectible {
 
-    public PgDatabase(ConnectibleBuilder.ConnectibleConfiguration properties, Supplier<Promise<ProtocolStream>> obtainStream) {
+public class PgDatabase extends PgConnectible {
+    public PgDatabase(ConnectibleBuilder.ConnectibleConfiguration properties,
+                      Supplier<Promise<ProtocolStream>> obtainStream) {
         super(properties, obtainStream);
     }
 
     @Override
     public Promise<Connection> getConnection() {
         return obtainStream.get()
-                           .flatMap(stream -> new PgConnection(stream, dataConverter, 0).connect(username, password, database))
+                           .flatMap(stream -> new PgConnection(stream, dataConverter, 0).connect(username,
+                                                                                                 password,
+                                                                                                 database))
                            .flatMap(this::validateConnection);
     }
 

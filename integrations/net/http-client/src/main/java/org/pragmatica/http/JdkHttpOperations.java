@@ -14,17 +14,17 @@
  *  limitations under the License.
  *
  */
-
 package org.pragmatica.http;
-
-import org.pragmatica.lang.Option;
-import org.pragmatica.lang.Promise;
 
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse.BodyHandler;
 import java.time.Duration;
 import java.util.concurrent.Executor;
+
+import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Promise;
+
 
 /// JDK HttpClient-based implementation of HttpOperations.
 /// Bridges CompletableFuture to Promise for seamless integration.
@@ -61,10 +61,10 @@ public final class JdkHttpOperations implements HttpOperations {
     public static JdkHttpOperations jdkHttpOperations(Duration connectTimeout,
                                                       HttpClient.Redirect followRedirects,
                                                       Option<Executor> executor) {
-        var builder = HttpClient.newBuilder()
-                                .connectTimeout(connectTimeout)
-                                .followRedirects(followRedirects);
+        var builder = HttpClient.newBuilder().connectTimeout(connectTimeout).followRedirects(followRedirects);
+
         executor.onPresent(builder::executor);
+
         return new JdkHttpOperations(builder.build());
     }
 

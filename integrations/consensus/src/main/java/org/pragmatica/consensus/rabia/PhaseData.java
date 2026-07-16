@@ -13,8 +13,14 @@
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  */
-
 package org.pragmatica.consensus.rabia;
+
+import java.util.Comparator;
+import java.util.List;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.stream.Collectors;
 
 import org.pragmatica.consensus.Command;
 import org.pragmatica.consensus.NodeId;
@@ -25,14 +31,8 @@ import org.pragmatica.consensus.rabia.RabiaProtocolMessage.Synchronous.VoteRound
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 
-import java.util.Comparator;
-import java.util.List;
-import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.stream.Collectors;
-
 import static org.pragmatica.consensus.StateMachine.Batch.emptyBatch;
+
 
 /// Represents the outcome of Round 2 completion per Rabia specification.
 /// Three possible outcomes:
@@ -183,9 +183,8 @@ final class PhaseData<C extends Command> {
         return batchesById.entrySet()
                           .stream()
                           .max(Comparator.<Map.Entry<Id, List<Batch<C>>>> comparingInt(e -> e.getValue()
-                                                                                                  .size())
-                                         .thenComparing(e -> e.getKey()
-                                                              .id()))
+                                                                                             .size()).thenComparing(e -> e.getKey()
+                                                                                                                          .id()))
                           .map(e -> e.getValue()
                                      .getFirst())
                           .orElse(emptyBatch());
@@ -203,12 +202,11 @@ final class PhaseData<C extends Command> {
                                       .collect(Collectors.groupingBy(Batch::id,
                                                                      Collectors.counting()));
         // Check if any BatchId has quorum support
-        boolean hasQuorumAgreement = countByBatchId.values()
-                                                   .stream()
-                                                   .anyMatch(count -> count >= quorumSize);
+        boolean hasQuorumAgreement = countByBatchId.values().stream().anyMatch(count -> count >= quorumSize);
         var stateValue = hasQuorumAgreement
                          ? StateValue.V1
                          : StateValue.V0;
+
         return new VoteRound1(self, phase, stateValue);
     }
 
@@ -220,15 +218,16 @@ final class PhaseData<C extends Command> {
                 return value;
             }
         }
+
         return StateValue.VQUESTION;
     }
 
     /// Counts round 1 votes for a specific state value.
     int countRound1VotesForValue(StateValue value) {
         return (int) round1Votes.values()
-                               .stream()
-                               .filter(v -> v == value)
-                               .count();
+                                .stream()
+                                .filter(v -> v == value)
+                                .count();
     }
 
     /// Checks if we have a super-majority agreement on a single value in Round 1.
@@ -242,15 +241,16 @@ final class PhaseData<C extends Command> {
                 return Option.some(value);
             }
         }
+
         return Option.none();
     }
 
     /// Counts round 2 votes for a specific state value.
     int countRound2VotesForValue(StateValue value) {
         return (int) round2Votes.values()
-                               .stream()
-                               .filter(v -> v == value)
-                               .count();
+                                .stream()
+                                .filter(v -> v == value)
+                                .count();
     }
 
     /// Processes round 2 completion and determines the outcome.
@@ -263,6 +263,7 @@ final class PhaseData<C extends Command> {
         if (countRound2VotesForValue(StateValue.V1) >= fPlusOneSize) {
             return new Round2Outcome.Decided<>(new Decision<>(self, phase, StateValue.V1, findAgreedProposal(quorumSize)));
         }
+
         if (countRound2VotesForValue(StateValue.V0) >= fPlusOneSize) {
             return new Round2Outcome.Decided<>(new Decision<>(self, phase, StateValue.V0, emptyBatch()));
         }
@@ -276,7 +277,8 @@ final class PhaseData<C extends Command> {
         var coinValue = coinFlip();
         var batch = coinValue == StateValue.V1
                     ? findAgreedProposal(quorumSize)
-                    : Batch.<C>emptyBatch();
+                    : Batch.<C> emptyBatch();
+
         return new Round2Outcome.Decided<>(new Decision<>(self, phase, coinValue, batch));
     }
 
@@ -285,6 +287,7 @@ final class PhaseData<C extends Command> {
     /// Uses bit-based check to avoid Math.abs(Long.MIN_VALUE) returning negative.
     StateValue coinFlip() {
         long seed = phase.value();
+
         return (seed & 1) == 0
                ? StateValue.V0
                : StateValue.V1;
