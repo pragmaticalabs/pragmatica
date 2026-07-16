@@ -4,14 +4,14 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.api;
 
-import org.pragmatica.lang.Option;
-import org.pragmatica.lang.io.TimeSpan;
-import org.pragmatica.lang.utils.SharedScheduler;
-
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Supplier;
+
+import org.pragmatica.lang.Option;
+import org.pragmatica.lang.io.TimeSpan;
+import org.pragmatica.lang.utils.SharedScheduler;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;

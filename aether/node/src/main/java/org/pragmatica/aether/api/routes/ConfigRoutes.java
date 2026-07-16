@@ -4,6 +4,9 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.api.routes;
 
+import java.util.function.Supplier;
+import java.util.stream.Stream;
+
 import org.pragmatica.aether.api.DynamicConfigManager;
 import org.pragmatica.aether.api.OperationalEvent;
 import org.pragmatica.aether.http.security.AuditLog;
@@ -18,9 +21,6 @@ import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
-
-import java.util.function.Supplier;
-import java.util.stream.Stream;
 
 import static org.pragmatica.http.routing.PathParameter.aString;
 
@@ -67,20 +67,22 @@ public final class ConfigRoutes implements RouteSource {
         return req.nodeId()
                   .filter(id -> !id.isEmpty())
                   .fold(() -> configManager.setConfig(req.key(),
-                                                      req.value()).onSuccess(_ -> auditAndEmitConfigSet(req.key(),
-                                                                                                        "cluster"))
-                                                     .map(_ -> new ConfigSetResponse("config_set",
-                                                                                     req.key(),
-                                                                                     req.value())),
+                                                      req.value())
+                                           .onSuccess(_ -> auditAndEmitConfigSet(req.key(),
+                                                                                 "cluster"))
+                                           .map(_ -> new ConfigSetResponse("config_set",
+                                                                           req.key(),
+                                                                           req.value())),
                         nodeIdStr -> NodeId.nodeId(nodeIdStr)
                                            .async()
                                            .flatMap(nodeId -> configManager.setNodeConfig(req.key(),
                                                                                           req.value(),
-                                                                                          nodeId).onSuccess(_ -> auditAndEmitConfigSet(req.key(),
-                                                                                                                                       "node:" + nodeIdStr))
-                                                                                         .map(_ -> new ConfigSetResponse("config_set",
-                                                                                                                         req.key(),
-                                                                                                                         req.value()))));
+                                                                                          nodeId)
+                                                                           .onSuccess(_ -> auditAndEmitConfigSet(req.key(),
+                                                                                                                 "node:" + nodeIdStr))
+                                                                           .map(_ -> new ConfigSetResponse("config_set",
+                                                                                                           req.key(),
+                                                                                                           req.value()))));
     }
 
     private Result<SetConfigRequest> validateSetRequest(SetConfigRequest req) {

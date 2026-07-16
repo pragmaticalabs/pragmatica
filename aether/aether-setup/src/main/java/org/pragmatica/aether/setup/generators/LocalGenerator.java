@@ -4,14 +4,14 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.setup.generators;
 
-import org.pragmatica.aether.config.AetherConfig;
-import org.pragmatica.aether.config.Environment;
-import org.pragmatica.lang.Result;
-
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.stream.IntStream;
+
+import org.pragmatica.aether.config.AetherConfig;
+import org.pragmatica.aether.config.Environment;
+import org.pragmatica.lang.Result;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;

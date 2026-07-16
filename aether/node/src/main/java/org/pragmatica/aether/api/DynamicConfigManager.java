@@ -4,6 +4,9 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.api;
 
+import java.util.List;
+import java.util.Map;
+
 import org.pragmatica.config.DynamicConfigurationProvider;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ConfigKey;
@@ -18,9 +21,6 @@ import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
-
-import java.util.List;
-import java.util.Map;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -219,8 +219,12 @@ public class DynamicConfigManager {
         for (var entry : map.entrySet()) {
             if (!first) sb.append(",");
 
-            sb.append("\"").append(escapeJson(entry.getKey())).append("\":\"").append(escapeJson(redactIfSensitive(entry.getKey(),
-                                                                                                                   entry.getValue()))).append("\"");
+            sb.append("\"")
+              .append(escapeJson(entry.getKey()))
+              .append("\":\"")
+              .append(escapeJson(redactIfSensitive(entry.getKey(),
+                                                   entry.getValue())))
+              .append("\"");
             first = false;
         }
 

@@ -4,13 +4,13 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.cli.cluster;
 
-import org.pragmatica.lang.Result;
-
 import java.util.ArrayList;
 import java.util.EnumMap;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+
+import org.pragmatica.lang.Result;
 
 
 @SuppressWarnings("JBCT-SEQ-01")

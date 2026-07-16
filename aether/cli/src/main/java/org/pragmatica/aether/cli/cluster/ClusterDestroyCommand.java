@@ -4,18 +4,18 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.cli.cluster;
 
+import java.util.ArrayList;
+import java.util.List;
+import java.util.concurrent.Callable;
+import java.util.function.Function;
+import java.util.regex.Pattern;
+
 import org.pragmatica.aether.cli.ExitCode;
 import org.pragmatica.json.JsonMapper;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
-
-import java.util.ArrayList;
-import java.util.List;
-import java.util.concurrent.Callable;
-import java.util.function.Function;
-import java.util.regex.Pattern;
 
 import picocli.CommandLine.Command;
 import picocli.CommandLine.Option;
@@ -240,8 +240,12 @@ class ClusterDestroyCommand implements Callable<Integer> {
         var deadline = System.currentTimeMillis() + (long) DRAIN_TIMEOUT_SECONDS * 1000;
 
         while (System.currentTimeMillis() < deadline) {
-            var state = ClusterHttpClient.fetch(NODE_LIFECYCLE_GET, List.of(nodeId)).flatMap(MAPPER::readTree).map(node -> node.path("state")
-                                                                                                                               .asText("UNKNOWN")).or("UNKNOWN");
+            var state = ClusterHttpClient.fetch(NODE_LIFECYCLE_GET,
+                                                List.of(nodeId))
+                                         .flatMap(MAPPER::readTree)
+                                         .map(node -> node.path("state")
+                                                          .asText("UNKNOWN"))
+                                         .or("UNKNOWN");
 
             if ("DECOMMISSIONED".equals(state)) {
                 return true;

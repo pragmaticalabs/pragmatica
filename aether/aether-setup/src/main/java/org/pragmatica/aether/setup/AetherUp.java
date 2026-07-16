@@ -4,6 +4,12 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.setup;
 
+import java.nio.file.Path;
+import java.util.Arrays;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+
 import org.pragmatica.aether.config.AetherConfig;
 import org.pragmatica.aether.config.ConfigLoader;
 import org.pragmatica.aether.config.Environment;
@@ -14,12 +20,6 @@ import org.pragmatica.aether.setup.generators.LocalGenerator;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Verify;
 import org.pragmatica.lang.parse.Number;
-
-import java.nio.file.Path;
-import java.util.Arrays;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
 
 
 public final class AetherUp {
@@ -77,7 +77,10 @@ public final class AetherUp {
 
     private static AetherConfig configFromDefaults(Map<String, String> options) {
         var envStr = options.getOrDefault("env", "docker");
-        var env = Environment.environment(envStr).onFailure(cause -> printErrorAndExit("Error:", cause.message())).expect("printErrorAndExit calls System.exit; unwrap unreachable on failure");
+        var env = Environment.environment(envStr)
+                             .onFailure(cause -> printErrorAndExit("Error:",
+                                                                   cause.message()))
+                             .expect("printErrorAndExit calls System.exit; unwrap unreachable on failure");
         var builder = AetherConfig.builder().withEnvironment(env);
 
         withOverrides(builder, options);
@@ -88,8 +91,10 @@ public final class AetherUp {
     @Contract
     private static void withOverrides(AetherConfig.Builder builder, Map<String, String> options) {
         if (options.containsKey("nodes")) {
-            Number.parseInt(options.get("nodes")).onFailure(cause -> printErrorAndExit("Invalid --nodes value:",
-                                                                                       cause.message())).onSuccess(builder::nodes);
+            Number.parseInt(options.get("nodes"))
+                  .onFailure(cause -> printErrorAndExit("Invalid --nodes value:",
+                                                        cause.message()))
+                  .onSuccess(builder::nodes);
         }
 
         if (options.containsKey("heap")) {
@@ -129,8 +134,9 @@ public final class AetherUp {
     private static void runGeneration(Generator generator, AetherConfig config, Path outputDir) {
         var result = generator.generate(config, outputDir);
 
-        result.onSuccess(output -> System.out.println(output.instructions())).onFailure(cause -> printErrorAndExit("Error generating artifacts:",
-                                                                                                                   cause.message()));
+        result.onSuccess(output -> System.out.println(output.instructions()))
+              .onFailure(cause -> printErrorAndExit("Error generating artifacts:",
+                                                    cause.message()));
     }
 
     private static void printErrorAndExit(String header, String detail) {

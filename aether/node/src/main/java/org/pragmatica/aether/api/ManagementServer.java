@@ -4,6 +4,18 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.api;
 
+import java.net.URLDecoder;
+import java.nio.charset.StandardCharsets;
+import java.time.Instant;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Consumer;
+import java.util.function.Supplier;
+import java.util.stream.Collectors;
+
 import org.pragmatica.aether.slice.resource.ResourceAddress;
 import org.pragmatica.aether.config.HttpProtocol;
 import org.pragmatica.aether.config.TimeoutsConfig.ForwardingTimeouts;
@@ -72,6 +84,9 @@ import org.pragmatica.aether.deployment.DeploymentMap.SliceDeploymentInfo;
 import org.pragmatica.aether.deployment.DeploymentMap.SliceInstanceInfo;
 import org.pragmatica.aether.metrics.observability.HttpRequestObserver;
 import org.pragmatica.aether.metrics.observability.ObservabilityRegistry;
+import org.pragmatica.aether.metrics.observability.AetherMetrics;
+import org.pragmatica.aether.http.AetherVersioningMetricsSink;
+import org.pragmatica.lang.Contract;
 import org.pragmatica.aether.node.ManageableNode;
 import org.pragmatica.aether.stream.StreamPartitionManager;
 import org.pragmatica.consensus.NodeId;
@@ -80,7 +95,7 @@ import org.pragmatica.http.HttpStatus;
 import org.pragmatica.http.routing.RouteSource;
 import org.pragmatica.http.server.HttpServer;
 import org.pragmatica.http.server.HttpServerConfig;
-import org.pragmatica.http.server.RequestContext;
+import org.pragmatica.http.HttpRequest;
 import org.pragmatica.http.server.ResponseWriter;
 import org.pragmatica.net.tcp.QuicSslContextFactory;
 import org.pragmatica.http.websocket.WebSocketEndpoint;
@@ -92,18 +107,6 @@ import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.net.tcp.TlsConfig;
-
-import java.net.URLDecoder;
-import java.nio.charset.StandardCharsets;
-import java.time.Instant;
-import java.util.ArrayList;
-import java.util.List;
-import java.util.Map;
-import java.util.Set;
-import java.util.concurrent.atomic.AtomicReference;
-import java.util.function.Consumer;
-import java.util.function.Supplier;
-import java.util.stream.Collectors;
 
 import io.netty.channel.EventLoopGroup;
 import org.slf4j.Logger;
@@ -126,7 +129,7 @@ public interface ManagementServer {
     static ManagementServer managementServer(int port,
                                              Supplier<ManageableNode> nodeSupplier,
                                              AlertManager alertManager,
-                                             ObservabilityDepthRegistry depthRegistry,
+                                             ObservabilityConfigRegistry configRegistry,
                                              InvocationTraceStore traceStore,
                                              LogLevelRegistry logLevelRegistry,
                                              Option<DynamicConfigManager> dynamicConfigManager,
@@ -149,7 +152,7 @@ public interface ManagementServer {
         return new ManagementServerImpl(port,
                                         nodeSupplier,
                                         alertManager,
-                                        depthRegistry,
+                                        configRegistry,
                                         traceStore,
                                         logLevelRegistry,
                                         dynamicConfigManager,
@@ -179,7 +182,7 @@ class ManagementServerImpl implements ManagementServer {
     private final int port;
     private final Supplier<ManageableNode> nodeSupplier;
     private final AlertManager alertManager;
-    private final ObservabilityDepthRegistry depthRegistry;
+    private final ObservabilityConfigRegistry configRegistry;
     private final InvocationTraceStore traceStore;
     private final LogLevelRegistry logLevelRegistry;
     private final DashboardMetricsPublisher metricsPublisher;
@@ -216,7 +219,7 @@ class ManagementServerImpl implements ManagementServer {
     ManagementServerImpl(int port,
                          Supplier<ManageableNode> nodeSupplier,
                          AlertManager alertManager,
-                         ObservabilityDepthRegistry depthRegistry,
+                         ObservabilityConfigRegistry configRegistry,
                          InvocationTraceStore traceStore,
                          LogLevelRegistry logLevelRegistry,
                          Option<DynamicConfigManager> dynamicConfigManager,
@@ -239,7 +242,7 @@ class ManagementServerImpl implements ManagementServer {
         this.port = port;
         this.nodeSupplier = nodeSupplier;
         this.alertManager = alertManager;
-        this.depthRegistry = depthRegistry;
+        this.configRegistry = configRegistry;
         this.traceStore = traceStore;
         this.logLevelRegistry = logLevelRegistry;
         this.securityValidator = securityValidator;
@@ -280,7 +283,7 @@ class ManagementServerImpl implements ManagementServer {
         routeSources.add(AlertRoutes.alertRoutes(alertManager));
         routeSources.add(org.pragmatica.aether.api.routes.CertificateRoutes.certificateRoutes(nodeSupplier));
         routeSources.add(LogLevelRoutes.logLevelRoutes(logLevelRegistry));
-        routeSources.add(ObservabilityRoutes.observabilityRoutes(depthRegistry, traceStore));
+        routeSources.add(ObservabilityRoutes.observabilityRoutes(configRegistry, traceStore));
         routeSources.add(ControllerRoutes.controllerRoutes(nodeSupplier));
         routeSources.add(SliceRoutes.sliceRoutes(nodeSupplier));
         routeSources.add(MetricsRoutes.metricsRoutes(nodeSupplier, observability));
@@ -297,8 +300,11 @@ class ManagementServerImpl implements ManagementServer {
         routeSources.add(ClusterJournalRoutes.clusterJournalRoutes(nodeSupplier));
         routeSources.add(ClusterGenerationRoutes.clusterGenerationRoutes(nodeSupplier));
         routeSources.add(ClusterAwaitQuiescedRoute.clusterAwaitQuiescedRoute(nodeSupplier));
-        routeSources.add(nodeSupplier.get().clusterTopologyManager().map(ClusterConfigApplier::clusterConfigApplier).map(applier -> ClusterConfigRoutes.clusterConfigRoutes(nodeSupplier,
-                                                                                                                                                                            applier)).or(ClusterConfigRoutes.clusterConfigRoutes(nodeSupplier)));
+        routeSources.add(nodeSupplier.get()
+                                     .clusterTopologyManager()
+                                     .map(ClusterConfigApplier::clusterConfigApplier)
+                                     .map(applier -> ClusterConfigRoutes.clusterConfigRoutes(nodeSupplier, applier))
+                                     .or(ClusterConfigRoutes.clusterConfigRoutes(nodeSupplier)));
         routeSources.add(BackupRoutes.backupRoutes(() -> nodeSupplier.get()
                                                                      .backupService(),
                                                    nodeSupplier));
@@ -307,16 +313,36 @@ class ManagementServerImpl implements ManagementServer {
                                                    nodeSupplier.get().consumerGroupCoordinator(),
                                                    nodeSupplier.get().consumerGroupRegistry()));
         routeSources.add(org.pragmatica.aether.api.routes.StreamApiRoutes.streamApiRoutes(nodeSupplier,
-                                                                                          nodeSupplier.get().streamNamespacesService(),
-                                                                                          nodeSupplier.get().consumerGroupCoordinator(),
-                                                                                          nodeSupplier.get().consumerGroupRegistry()));
-        routeSources.add(org.pragmatica.aether.api.routes.StreamNamespacesRoutes.streamNamespacesRoutes(nodeSupplier.get().streamNamespacesService()));
+                                                                                          nodeSupplier.get()
+                                                                                                      .streamNamespacesService(),
+                                                                                          nodeSupplier.get()
+                                                                                                      .consumerGroupCoordinator(),
+                                                                                          nodeSupplier.get()
+                                                                                                      .consumerGroupRegistry()));
+        routeSources.add(org.pragmatica.aether.api.routes.StreamNamespacesRoutes.streamNamespacesRoutes(nodeSupplier.get()
+                                                                                                                    .streamNamespacesService()));
         routeSources.add(StorageRoutes.storageRoutes(nodeSupplier));
         routeSources.add(ApiKeyRoutes.apiKeyRoutes(nodeSupplier));
         routeSources.add(DhtRoutes.dhtRoutes(nodeSupplier));
+        routeSources.add(org.pragmatica.aether.api.routes.VersionRoutes.versionRoutes(nodeSupplier));
         dynamicConfigManager.onPresent(dcm -> routeSources.add(ConfigRoutes.configRoutes(dcm, nodeSupplier)));
         this.router = ManagementRouter.managementRouter(routeSources.toArray(RouteSource[]::new));
         this.legacyRoutes = List.of(MavenProtocolRoutes.mavenProtocolRoutes(nodeSupplier));
+        installVersioningMetricsSink(nodeSupplier, observability);
+    }
+
+    /// #198 §11.1: install the AetherMetrics-backed versioning sink into the node's
+    /// `HttpRoutePublisher` so versioned-request / deprecated / missing-header counters reach the
+    /// Micrometer registry owned here. No-op when the app HTTP server has no publisher.
+    @Contract
+    private static void installVersioningMetricsSink(Supplier<ManageableNode> nodeSupplier,
+                                                     ObservabilityRegistry observability) {
+        var sink = AetherVersioningMetricsSink.aetherVersioningMetricsSink(AetherMetrics.aetherMetrics(observability));
+
+        nodeSupplier.get()
+                    .appHttpServer()
+                    .httpRoutePublisher()
+                    .onPresent(publisher -> publisher.setVersioningMetricsSink(sink));
     }
 
     @Override
@@ -333,14 +359,14 @@ class ManagementServerImpl implements ManagementServer {
 
     private Promise<Unit> startH1Server() {
         var serverConfig = buildServerConfig();
-        java.util.function.BiConsumer<RequestContext, ResponseWriter> handler = httpProtocol == HttpProtocol.BOTH
-                                                                                ? this::handleRequestWithAltSvc
-                                                                                : this::handleRequest;
+        java.util.function.BiConsumer<HttpRequest, ResponseWriter> handler = httpProtocol == HttpProtocol.BOTH
+                                                                             ? this::handleRequestWithAltSvc
+                                                                             : this::handleRequest;
         var serverPromise = bossGroup.flatMap(bg -> workerGroup.map(wg -> HttpServer.httpServer(serverConfig,
                                                                                                 handler,
                                                                                                 bg,
-                                                                                                wg))).or(HttpServer.httpServer(serverConfig,
-                                                                                                                               handler));
+                                                                                                wg)))
+                                     .or(HttpServer.httpServer(serverConfig, handler));
 
         return serverPromise.map(this::registerStartedH1Server)
                             .onFailure(cause -> log.error("Failed to start management server on port {}: {}",
@@ -362,9 +388,8 @@ class ManagementServerImpl implements ManagementServer {
         var serverPromise = workerGroup.map(wg -> HttpServer.http3Server(serverConfig,
                                                                          quicSslContext,
                                                                          this::handleRequest,
-                                                                         wg)).or(HttpServer.http3Server(serverConfig,
-                                                                                                        quicSslContext,
-                                                                                                        this::handleRequest));
+                                                                         wg))
+                                       .or(HttpServer.http3Server(serverConfig, quicSslContext, this::handleRequest));
 
         return serverPromise.map(this::registerStartedH3Server)
                             .onFailure(cause -> log.error("Failed to start management HTTP/3 server on port {}: {}",
@@ -377,7 +402,11 @@ class ManagementServerImpl implements ManagementServer {
         var wsEndpoint = WebSocketEndpoint.webSocketEndpoint("/ws/dashboard", wsHandler);
         var statusWsEndpoint = WebSocketEndpoint.webSocketEndpoint("/ws/status", statusWsHandler);
         var eventWsEndpoint = WebSocketEndpoint.webSocketEndpoint("/ws/events", eventWsHandler);
-        var config = HttpServerConfig.httpServerConfig("management", port).withMaxContentLength(MAX_CONTENT_LENGTH).withWebSocket(wsEndpoint).withWebSocket(statusWsEndpoint).withWebSocket(eventWsEndpoint);
+        var config = HttpServerConfig.httpServerConfig("management", port)
+                                     .withMaxContentLength(MAX_CONTENT_LENGTH)
+                                     .withWebSocket(wsEndpoint)
+                                     .withWebSocket(statusWsEndpoint)
+                                     .withWebSocket(eventWsEndpoint);
 
         return tls.map(config::withTls)
                   .or(config);
@@ -397,7 +426,7 @@ class ManagementServerImpl implements ManagementServer {
         return unit();
     }
 
-    private void handleRequestWithAltSvc(RequestContext request, ResponseWriter response) {
+    private void handleRequestWithAltSvc(HttpRequest request, ResponseWriter response) {
         response.header("Alt-Svc", "h3=\":" + port + "\"; ma=3600");
         handleRequest(request, response);
     }
@@ -407,10 +436,14 @@ class ManagementServerImpl implements ManagementServer {
         metricsPublisher.stop();
         statusWsPublisher.stop();
         eventWsPublisher.stop();
-        var h1Stop = Option.option(serverRef.get()).map(server -> server.stop()
-                                                                        .onSuccessRun(() -> log.info("Management HTTP/1.1 server stopped"))).or(Promise.success(unit()));
-        var h3Stop = Option.option(h3ServerRef.get()).map(server -> server.stop()
-                                                                          .onSuccessRun(() -> log.info("Management HTTP/3 server stopped"))).or(Promise.success(unit()));
+        var h1Stop = Option.option(serverRef.get())
+                           .map(server -> server.stop()
+                                                .onSuccessRun(() -> log.info("Management HTTP/1.1 server stopped")))
+                           .or(Promise.success(unit()));
+        var h3Stop = Option.option(h3ServerRef.get())
+                           .map(server -> server.stop()
+                                                .onSuccessRun(() -> log.info("Management HTTP/3 server stopped")))
+                           .or(Promise.success(unit()));
 
         return h1Stop.flatMap(_ -> h3Stop);
     }
@@ -448,16 +481,20 @@ class ManagementServerImpl implements ManagementServer {
         var wsEndpoint = WebSocketEndpoint.webSocketEndpoint("/ws/dashboard", wsHandler);
         var statusWsEndpoint = WebSocketEndpoint.webSocketEndpoint("/ws/status", statusWsHandler);
         var eventWsEndpoint = WebSocketEndpoint.webSocketEndpoint("/ws/events", eventWsHandler);
-        var config = HttpServerConfig.httpServerConfig("management", port).withMaxContentLength(MAX_CONTENT_LENGTH).withWebSocket(wsEndpoint).withWebSocket(statusWsEndpoint).withWebSocket(eventWsEndpoint);
+        var config = HttpServerConfig.httpServerConfig("management", port)
+                                     .withMaxContentLength(MAX_CONTENT_LENGTH)
+                                     .withWebSocket(wsEndpoint)
+                                     .withWebSocket(statusWsEndpoint)
+                                     .withWebSocket(eventWsEndpoint);
         var serverConfig = newTls.map(config::withTls).or(config);
-        java.util.function.BiConsumer<RequestContext, ResponseWriter> handler = httpProtocol == HttpProtocol.BOTH
-                                                                                ? this::handleRequestWithAltSvc
-                                                                                : this::handleRequest;
+        java.util.function.BiConsumer<HttpRequest, ResponseWriter> handler = httpProtocol == HttpProtocol.BOTH
+                                                                             ? this::handleRequestWithAltSvc
+                                                                             : this::handleRequest;
         var serverPromise = bossGroup.flatMap(bg -> workerGroup.map(wg -> HttpServer.httpServer(serverConfig,
                                                                                                 handler,
                                                                                                 bg,
-                                                                                                wg))).or(HttpServer.httpServer(serverConfig,
-                                                                                                                               handler));
+                                                                                                wg)))
+                                     .or(HttpServer.httpServer(serverConfig, handler));
 
         return serverPromise.map(this::registerStartedH1Server)
                             .onSuccess(_ -> log.info("Management HTTP/1.1 server restarted with new certificate"))
@@ -666,7 +703,11 @@ class ManagementServerImpl implements ManagementServer {
         for (var entry : event.details().entrySet()) {
             if (!firstDetail) sb.append(",");
 
-            sb.append("\"").append(escapeJson(entry.getKey())).append("\":\"").append(escapeJson(entry.getValue())).append("\"");
+            sb.append("\"")
+              .append(escapeJson(entry.getKey()))
+              .append("\":\"")
+              .append(escapeJson(entry.getValue()))
+              .append("\"");
             firstDetail = false;
         }
 
@@ -674,7 +715,7 @@ class ManagementServerImpl implements ManagementServer {
     }
 
     @SuppressWarnings("JBCT-PAT-01")
-    private void handleRequest(RequestContext ctx, ResponseWriter response) {
+    private void handleRequest(HttpRequest ctx, ResponseWriter response) {
         var startTime = System.nanoTime();
         var path = ctx.path();
         var method = ctx.method();
@@ -724,7 +765,7 @@ class ManagementServerImpl implements ManagementServer {
         dispatchManagementRequest(ctx, instrumented, methodName, startTime);
     }
 
-    private void dispatchManagementRequest(RequestContext ctx,
+    private void dispatchManagementRequest(HttpRequest ctx,
                                            InstrumentedResponseWriter instrumented,
                                            String methodName,
                                            long startTime) {
@@ -752,7 +793,7 @@ class ManagementServerImpl implements ManagementServer {
         recordRequestMetrics(methodName, path, instrumented, startTime);
     }
 
-    private boolean tryForwardToRouteOwner(RequestContext ctx,
+    private boolean tryForwardToRouteOwner(HttpRequest ctx,
                                            InstrumentedResponseWriter response,
                                            String methodName,
                                            long startTime) {
@@ -789,7 +830,7 @@ class ManagementServerImpl implements ManagementServer {
         };
     }
 
-    private boolean tryForwardIfNotLeader(RequestContext ctx,
+    private boolean tryForwardIfNotLeader(HttpRequest ctx,
                                           InstrumentedResponseWriter response,
                                           String methodName,
                                           long startTime) {
@@ -804,7 +845,7 @@ class ManagementServerImpl implements ManagementServer {
         return true;
     }
 
-    private boolean tryForwardIfNotCore(RequestContext ctx,
+    private boolean tryForwardIfNotCore(HttpRequest ctx,
                                         InstrumentedResponseWriter response,
                                         String methodName,
                                         long startTime) {
@@ -820,7 +861,7 @@ class ManagementServerImpl implements ManagementServer {
         return true;
     }
 
-    private boolean tryForwardIfNotOwner(RequestContext ctx,
+    private boolean tryForwardIfNotOwner(HttpRequest ctx,
                                          InstrumentedResponseWriter response,
                                          String methodName,
                                          long startTime,
@@ -846,7 +887,7 @@ class ManagementServerImpl implements ManagementServer {
     /// Forward if the path-param-named node id != local node. The forwarder also re-checks
     /// (locality + connectedness) but we short-circuit here to avoid an unnecessary forwarder
     /// instantiation when the target is local.
-    private boolean tryForwardIfNotTargetNode(RequestContext ctx,
+    private boolean tryForwardIfNotTargetNode(HttpRequest ctx,
                                               InstrumentedResponseWriter response,
                                               String methodName,
                                               long startTime,
@@ -875,7 +916,7 @@ class ManagementServerImpl implements ManagementServer {
         return true;
     }
 
-    private void forwardManagementRequest(RequestContext ctx,
+    private void forwardManagementRequest(HttpRequest ctx,
                                           InstrumentedResponseWriter response,
                                           String methodName,
                                           long startTime) {
@@ -885,16 +926,13 @@ class ManagementServerImpl implements ManagementServer {
         ensureMgmtForwarder().fold(() -> sendForwardUnavailable(response, path, requestId, methodName, startTime),
                                    forwarder -> {
                                        forwarder.forwardManagement(toManagementRequestContext(ctx, path),
-                                                                   requestId).onSuccess(responseData -> sendForwardedResponse(response,
-                                                                                                                              responseData))
-                                                                  .onFailure(cause -> sendForwardError(response,
-                                                                                                       path,
-                                                                                                       requestId,
-                                                                                                       cause))
-                                                                  .onResultRun(() -> recordRequestMetrics(methodName,
-                                                                                                          path,
-                                                                                                          response,
-                                                                                                          startTime));
+                                                                   requestId)
+                                                .onSuccess(responseData -> sendForwardedResponse(response, responseData))
+                                                .onFailure(cause -> sendForwardError(response, path, requestId, cause))
+                                                .onResultRun(() -> recordRequestMetrics(methodName,
+                                                                                        path,
+                                                                                        response,
+                                                                                        startTime));
 
                                        return Unit.unit();
                                    });
@@ -939,15 +977,16 @@ class ManagementServerImpl implements ManagementServer {
                    .collect(Collectors.toSet());
     }
 
-    private static Option<org.pragmatica.http.routing.HttpMethod> parseRoutingMethod(String raw) {
+    private static Option<org.pragmatica.http.HttpMethod> parseRoutingMethod(String raw) {
         return Result.lift(Causes::fromThrowable,
-                           () -> org.pragmatica.http.routing.HttpMethod.valueOf(raw.toUpperCase()))
+                           () -> org.pragmatica.http.HttpMethod.valueOf(raw.toUpperCase()))
                      .option();
     }
 
     private void sendForwardedResponse(InstrumentedResponseWriter response, HttpResponseData responseData) {
-        var contentType = Option.option(responseData.headers().get("Content-Type")).map(ct -> ContentType.contentType(ct,
-                                                                                                                      ContentCategory.JSON)).or(CommonContentType.APPLICATION_JSON);
+        var contentType = Option.option(responseData.headers().get("Content-Type"))
+                                .map(ct -> ContentType.contentType(ct, ContentCategory.JSON))
+                                .or(CommonContentType.APPLICATION_JSON);
 
         response.write(toServerStatus(responseData.statusCode()), responseData.body(), contentType);
     }
@@ -955,7 +994,7 @@ class ManagementServerImpl implements ManagementServer {
     private void sendForwardError(InstrumentedResponseWriter response, String path, String requestId, Cause cause) {
         log.warn("Management forward failed [{}] {}: {}", requestId, path, cause.message());
         ProblemResponses.writeProblem(response,
-                                      org.pragmatica.http.routing.HttpStatus.SERVICE_UNAVAILABLE,
+                                      org.pragmatica.http.HttpStatus.SERVICE_UNAVAILABLE,
                                       "Management forward failed: " + cause.message(),
                                       path,
                                       requestId);
@@ -968,7 +1007,7 @@ class ManagementServerImpl implements ManagementServer {
                                         long startTime) {
         log.warn("Management forwarder unavailable [{}] {} {}", requestId, methodName, path);
         ProblemResponses.writeProblem(response,
-                                      org.pragmatica.http.routing.HttpStatus.SERVICE_UNAVAILABLE,
+                                      org.pragmatica.http.HttpStatus.SERVICE_UNAVAILABLE,
                                       "Management forwarding not yet available",
                                       path,
                                       requestId);
@@ -1015,12 +1054,12 @@ class ManagementServerImpl implements ManagementServer {
         var ser = forwardSerializer.unwrap();
         var network = clusterNetwork.unwrap();
 
-        Result.<HttpRequestContext, byte[]> lift1(des::decode, request.requestData()).onFailure(cause -> sendManagementForwardError(network,
-                                                                                                                                    request,
-                                                                                                                                    "Deserialization failed: " + cause.message())).onSuccess(context -> dispatchManagementForward(context,
-                                                                                                                                                                                                                                  request,
-                                                                                                                                                                                                                                  network,
-                                                                                                                                                                                                                                  ser));
+        Result.<HttpRequestContext, byte[]> lift1(des::decode,
+                                                  request.requestData())
+              .onFailure(cause -> sendManagementForwardError(network,
+                                                             request,
+                                                             "Deserialization failed: " + cause.message()))
+              .onSuccess(context -> dispatchManagementForward(context, request, network, ser));
     }
 
     @SuppressWarnings("JBCT-PAT-01")
@@ -1033,7 +1072,8 @@ class ManagementServerImpl implements ManagementServer {
 
         if (securityEnabled) {
             var method = Result.lift(Causes::fromThrowable,
-                                     () -> HttpMethod.valueOf(context.method().toUpperCase())).option();
+                                     () -> HttpMethod.valueOf(context.method().toUpperCase()))
+                               .option();
 
             if (method.isEmpty()) {
                 sendManagementForwardError(network, request, "Unsupported HTTP method: " + context.method());
@@ -1042,42 +1082,45 @@ class ManagementServerImpl implements ManagementServer {
             }
 
             if (validateManagementSecurity(serverCtx, responseCapture, context.path(), method.unwrap()).isFailure()) {
-                responseCapture.completion().onSuccess(responseData -> sendManagementForwardSuccess(network,
-                                                                                                    request,
-                                                                                                    ser,
-                                                                                                    responseData)).onFailure(cause -> sendManagementForwardError(network,
-                                                                                                                                                                 request,
-                                                                                                                                                                 cause.message()));
+                responseCapture.completion()
+                               .onSuccess(responseData -> sendManagementForwardSuccess(network,
+                                                                                       request,
+                                                                                       ser,
+                                                                                       responseData))
+                               .onFailure(cause -> sendManagementForwardError(network,
+                                                                              request,
+                                                                              cause.message()));
 
                 return;
             }
         }
 
         if (router.handle(serverCtx, responseCapture)) {
-            responseCapture.completion().onSuccess(responseData -> sendManagementForwardSuccess(network,
-                                                                                                request,
-                                                                                                ser,
-                                                                                                responseData)).onFailure(cause -> sendManagementForwardError(network,
-                                                                                                                                                             request,
-                                                                                                                                                             cause.message()));
+            responseCapture.completion()
+                           .onSuccess(responseData -> sendManagementForwardSuccess(network, request, ser, responseData))
+                           .onFailure(cause -> sendManagementForwardError(network,
+                                                                          request,
+                                                                          cause.message()));
 
             return;
         }
 
         for (var handler : legacyRoutes) {
             if (handler.handle(serverCtx, responseCapture)) {
-                responseCapture.completion().onSuccess(responseData -> sendManagementForwardSuccess(network,
-                                                                                                    request,
-                                                                                                    ser,
-                                                                                                    responseData)).onFailure(cause -> sendManagementForwardError(network,
-                                                                                                                                                                 request,
-                                                                                                                                                                 cause.message()));
+                responseCapture.completion()
+                               .onSuccess(responseData -> sendManagementForwardSuccess(network,
+                                                                                       request,
+                                                                                       ser,
+                                                                                       responseData))
+                               .onFailure(cause -> sendManagementForwardError(network,
+                                                                              request,
+                                                                              cause.message()));
 
                 return;
             }
         }
 
-        var notFoundBody = ProblemResponses.renderProblemBytes(org.pragmatica.http.routing.HttpStatus.NOT_FOUND,
+        var notFoundBody = ProblemResponses.renderProblemBytes(org.pragmatica.http.HttpStatus.NOT_FOUND,
                                                                "No route found for " + context.method()
                                                               + " " + context.path(),
                                                                context.path(),
@@ -1093,11 +1136,11 @@ class ManagementServerImpl implements ManagementServer {
                                               HttpForwardRequest request,
                                               Serializer ser,
                                               HttpResponseData responseData) {
-        Result.lift1(ser::encode, responseData).onSuccess(payload -> sendManagementForwardPayload(network,
-                                                                                                  request,
-                                                                                                  payload)).onFailure(cause -> sendManagementForwardError(network,
-                                                                                                                                                          request,
-                                                                                                                                                          "Response serialization failed: " + cause.message()));
+        Result.lift1(ser::encode, responseData)
+              .onSuccess(payload -> sendManagementForwardPayload(network, request, payload))
+              .onFailure(cause -> sendManagementForwardError(network,
+                                                             request,
+                                                             "Response serialization failed: " + cause.message()));
     }
 
     private void sendManagementForwardPayload(ClusterNetwork network, HttpForwardRequest request, byte[] payload) {
@@ -1156,11 +1199,13 @@ class ManagementServerImpl implements ManagementServer {
     }
 
     private void writeProbeJson(ResponseWriter response, Object value, HttpStatus httpStatus) {
-        probeJsonMapper.writeAsString(value).onSuccess(json -> response.respond(httpStatus, json)).onFailure(cause -> ProblemResponses.writeProblem(response,
-                                                                                                                                                    org.pragmatica.http.routing.HttpStatus.INTERNAL_SERVER_ERROR,
-                                                                                                                                                    cause.message(),
-                                                                                                                                                    "/health",
-                                                                                                                                                    ""));
+        probeJsonMapper.writeAsString(value)
+                       .onSuccess(json -> response.respond(httpStatus, json))
+                       .onFailure(cause -> ProblemResponses.writeProblem(response,
+                                                                         org.pragmatica.http.HttpStatus.INTERNAL_SERVER_ERROR,
+                                                                         cause.message(),
+                                                                         "/health",
+                                                                         ""));
     }
 
     /// Spec event-stream-namespaces §6.1/§12.2: writes to `system:*` streams are forbidden over the
@@ -1174,16 +1219,13 @@ class ManagementServerImpl implements ManagementServer {
     /// (`/api/streams/{publish,publish-batch,delete}/system/...`,
     /// `/api/streams/groups/{create,delete}/system/...`) or the legacy colon-form
     /// (`/api/streams/...` with a `system:<stream>:<version>` name segment).
-    private boolean rejectSystemStreamWrite(RequestContext ctx,
-                                            ResponseWriter response,
-                                            String path,
-                                            String methodName) {
+    private boolean rejectSystemStreamWrite(HttpRequest ctx, ResponseWriter response, String path, String methodName) {
         if (!isSystemStreamWriteOverHttp(methodName, path)) {
             return false;
         }
 
         ProblemResponses.writeProblem(response,
-                                      org.pragmatica.http.routing.HttpStatus.METHOD_NOT_ALLOWED,
+                                      org.pragmatica.http.HttpStatus.METHOD_NOT_ALLOWED,
                                       "Writes to system:* streams are not permitted over HTTP",
                                       path,
                                       ctx.requestId());
@@ -1239,14 +1281,14 @@ class ManagementServerImpl implements ManagementServer {
     private static final String SYSTEM_NAMESPACE_COLON = org.pragmatica.aether.slice.resource.ResourceAddress.SYSTEM_NAMESPACE
                                                        + ":";
 
-    private Result<SecurityContext> validateManagementSecurity(RequestContext ctx,
+    private Result<SecurityContext> validateManagementSecurity(HttpRequest ctx,
                                                                ResponseWriter response,
                                                                String path,
                                                                HttpMethod method) {
         var httpContext = toManagementRequestContext(ctx, path);
         var policy = SecurityPolicy.apiKeyRequired();
         var methodName = method.name();
-        var permission = RoutePermissionRegistry.resolve(methodName, path);
+        var permission = resolvePermission(methodName, path);
 
         return securityValidator.validate(httpContext, policy)
                                 .flatMap(sc -> enforceAndAuditDenial(sc, permission, methodName, path))
@@ -1256,6 +1298,16 @@ class ManagementServerImpl implements ManagementServer {
                                                                                     methodName,
                                                                                     ctx.requestId()))
                                 .onSuccess(sc -> logManagementAccess(sc, methodName, path));
+    }
+
+    /// #299: per-operation authorization. Resolve the minimum role by EXACT route match
+    /// ([ManagementRoute#match]) against the per-operation table, rather than coarse path-prefix
+    /// containment. A path with no matching ManagementRoute (e.g. an unknown or future route) falls
+    /// back to the prefix registry, which itself denies-by-default (ADMIN) for unrecognized mutations.
+    private static RoutePermission resolvePermission(String methodName, String path) {
+        return parseRoutingMethod(methodName).flatMap(m -> ManagementRoute.match(m, path).option())
+                                 .map(matched -> ManagementRoutePermissions.permissionFor(matched.route()))
+                                 .or(RoutePermissionRegistry.resolve(methodName, path));
     }
 
     private Result<SecurityContext> enforceAndAuditDenial(SecurityContext sc,
@@ -1273,11 +1325,8 @@ class ManagementServerImpl implements ManagementServer {
         var requiredRole = permission.minimumRole().name();
 
         AuditLog.accessDenied(principal, method, path, actualRole, requiredRole);
-        nodeSupplier.get().route(OperationalEvent.AccessDenied.accessDenied(principal,
-                                                                            method,
-                                                                            path,
-                                                                            actualRole,
-                                                                            requiredRole));
+        nodeSupplier.get()
+                    .route(OperationalEvent.AccessDenied.accessDenied(principal, method, path, actualRole, requiredRole));
     }
 
     private static void logManagementAccess(SecurityContext securityContext, String method, String path) {
@@ -1288,7 +1337,7 @@ class ManagementServerImpl implements ManagementServer {
         AuditLog.managementAccess("mgmt", principal, method, path);
     }
 
-    private static HttpRequestContext toManagementRequestContext(RequestContext ctx, String path) {
+    private static HttpRequestContext toManagementRequestContext(HttpRequest ctx, String path) {
         return HttpRequestContext.httpRequestContext(path,
                                                      ctx.method().name(),
                                                      ctx.queryParams().asMap(),
@@ -1314,14 +1363,14 @@ class ManagementServerImpl implements ManagementServer {
         ProblemResponses.writeProblem(response, toRoutingStatus(status), cause.message(), path, requestId);
     }
 
-    private static org.pragmatica.http.routing.HttpStatus toRoutingStatus(HttpStatus status) {
-        for (var s : org.pragmatica.http.routing.HttpStatus.values()) {
+    private static org.pragmatica.http.HttpStatus toRoutingStatus(HttpStatus status) {
+        for (var s : org.pragmatica.http.HttpStatus.values()) {
             if (s.code() == status.code()) {
                 return s;
             }
         }
 
-        return org.pragmatica.http.routing.HttpStatus.INTERNAL_SERVER_ERROR;
+        return org.pragmatica.http.HttpStatus.INTERNAL_SERVER_ERROR;
     }
 
     private static String classifyDenialType(Cause cause) {

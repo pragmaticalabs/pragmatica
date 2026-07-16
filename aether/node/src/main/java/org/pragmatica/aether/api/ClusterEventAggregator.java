@@ -4,6 +4,17 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.api;
 
+import java.time.Instant;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.BooleanSupplier;
+import java.util.function.Function;
+import java.util.function.IntSupplier;
+import java.util.function.Supplier;
+
 import org.pragmatica.aether.api.ClusterEvent.AccessDenied;
 import org.pragmatica.aether.api.ClusterEvent.BackupCreated;
 import org.pragmatica.aether.api.ClusterEvent.BackupRestored;
@@ -12,6 +23,7 @@ import org.pragmatica.aether.api.ClusterEvent.BlueprintDeployed;
 import org.pragmatica.aether.api.ClusterEvent.ConfigChanged;
 import org.pragmatica.aether.api.ClusterEvent.ConnectionEstablished;
 import org.pragmatica.aether.api.ClusterEvent.ConnectionFailed;
+import org.pragmatica.aether.api.ClusterEvent.DeparturePushIncomplete;
 import org.pragmatica.aether.api.ClusterEvent.DeploymentCompleted;
 import org.pragmatica.aether.api.ClusterEvent.DeploymentFailed;
 import org.pragmatica.aether.api.ClusterEvent.DeploymentStarted;
@@ -24,6 +36,7 @@ import org.pragmatica.aether.api.ClusterEvent.NodeLeft;
 import org.pragmatica.aether.api.ClusterEvent.NodeLifecycleChanged;
 import org.pragmatica.aether.api.ClusterEvent.QuorumEstablished;
 import org.pragmatica.aether.api.ClusterEvent.QuorumLost;
+import org.pragmatica.aether.api.ClusterEvent.ScaleCapped;
 import org.pragmatica.aether.api.ClusterEvent.ScaleDown;
 import org.pragmatica.aether.api.ClusterEvent.ScaleUp;
 import org.pragmatica.aether.api.ClusterEvent.Severity;
@@ -51,17 +64,8 @@ import org.pragmatica.hlc.HlcClock;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
-
-import java.time.Instant;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.atomic.AtomicLong;
-import java.util.function.BooleanSupplier;
-import java.util.function.Function;
-import java.util.function.IntSupplier;
-import java.util.function.Supplier;
+import org.pragmatica.lang.Result;
+import org.pragmatica.lang.utils.Causes;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -333,10 +337,7 @@ public final class ClusterEventAggregator {
             return;
         }
 
-        Option.option(publisherSupplier.get()).onPresent(publisher -> {
-            Promise<?> ignored = publisher.publish(event);
-        }).onEmpty(() -> LOG.info("ClusterEventAggregator publisher not yet bound — event {} dropped (bootstrap window)",
-                                  event));
+        publishSafely(event);
     }
 
     /// Leader-gated emit for consensus-committed membership-DEPARTURE facts (NODE_FAILED / NODE_LEFT).
@@ -362,10 +363,7 @@ public final class ClusterEventAggregator {
             return;
         }
 
-        Option.option(publisherSupplier.get()).onPresent(publisher -> {
-            Promise<?> ignored = publisher.publish(event);
-        }).onEmpty(() -> LOG.info("ClusterEventAggregator publisher not yet bound — event {} dropped (bootstrap window)",
-                                  event));
+        publishSafely(event);
     }
 
     /// Owner-gate-bypassing emit for per-node facts (spec §4.5c). Identical to {@link #emit} except it
@@ -380,10 +378,25 @@ public final class ClusterEventAggregator {
             return;
         }
 
-        Option.option(publisherSupplier.get()).onPresent(publisher -> {
-            Promise<?> ignored = publisher.publish(event);
-        }).onEmpty(() -> LOG.info("ClusterEventAggregator publisher not yet bound — local event {} dropped (bootstrap window)",
-                                  event));
+        publishSafely(event);
+    }
+
+    /// Publish `event` to the cluster-events stream, ISOLATING any synchronous throw from the publisher
+    /// so it can never propagate to the caller. {@link #onConfirmedDeparture} runs on the MembershipFsm
+    /// DEAD-edge chokepoint (`enteredDead`) BEFORE the FSM emits its REMOVED membership delta; a publish
+    /// that threw there (e.g. the leader's cluster-events partition not yet materialized mid-churn) would
+    /// abort the death edge and starve membership recovery. The async publish Promise is fire-and-forget
+    /// (observability); a synchronous failure is logged and dropped, never re-thrown.
+    @Contract
+    private void publishSafely(ClusterEvent event) {
+        Option.option(publisherSupplier.get())
+              .onPresent(publisher -> Result.lift(Causes::fromThrowable,
+                                                  () -> publisher.publish(event))
+                                            .onFailure(cause -> LOG.warn("ClusterEventAggregator: publish of {} threw, dropped: {}",
+                                                                         event,
+                                                                         cause.message())))
+              .onEmpty(() -> LOG.info("ClusterEventAggregator publisher not yet bound — event {} dropped (bootstrap window)",
+                                      event));
     }
 
     /// Budget-exhaustion sink entry point (spec §4.5c / reconciliation #13). Bound into the
@@ -469,14 +482,16 @@ public final class ClusterEventAggregator {
 
     @Contract
     public void onLeaderChange(LeaderNotification.LeaderChange event) {
-        event.leaderId().onPresent(leaderId -> emitAsLeader(new LeaderElected(hlcClock.now(),
-                                                                              Severity.INFO,
-                                                                              "Node " + leaderId.id()
-                                                                             + " elected as leader",
-                                                                              Map.of("leaderId", leaderId.id())))).onEmpty(() -> emitAsLeader(new LeaderLost(hlcClock.now(),
-                                                                                                                                                             Severity.WARNING,
-                                                                                                                                                             "Leadership lost, election in progress",
-                                                                                                                                                             Map.of())));
+        event.leaderId()
+             .onPresent(leaderId -> emitAsLeader(new LeaderElected(hlcClock.now(),
+                                                                   Severity.INFO,
+                                                                   "Node " + leaderId.id() + " elected as leader",
+                                                                   Map.of("leaderId",
+                                                                          leaderId.id()))))
+             .onEmpty(() -> emitAsLeader(new LeaderLost(hlcClock.now(),
+                                                        Severity.WARNING,
+                                                        "Leadership lost, election in progress",
+                                                        Map.of())));
     }
 
     @Contract
@@ -494,23 +509,22 @@ public final class ClusterEventAggregator {
         }
     }
 
-    /// Subscriber hook for `MembershipDecision` — re-sources NODE_FAILED / NODE_LEFT that
-    /// previously came from the now-deleted node-lifecycle atom (membership-v2 finale).
-    /// `NodeRemoved` → NODE_FAILED (CRITICAL); `NodeDecommissioned` / `NodeDraining` → NODE_LEFT
-    /// (WARNING). LEADER-gated via {@link #emitAsLeader}: a committed membership departure's
-    /// authoritative emitter is the cluster leader. The owner-gate cannot be used here — for a
-    /// DEPARTURE the trigger IS the membership change, and the snapshot-updating reconcile is deferred
-    /// to an executor while this emit runs synchronously on the same `NodeRemoved` dispatch, so the
-    /// owner-check sees the PRE-removal placement; when the pre-removal owner is the removed node every
-    /// survivor suppresses and the event is lost with no replay.
+    /// Subscriber hook for `MembershipDecision` — re-sources the GRACEFUL departure event NODE_LEFT.
+    /// `NodeDecommissioned` / `NodeDraining` → NODE_LEFT (WARNING), genuine consensus-committed
+    /// scale-down/drain decisions. NODE_FAILED is NO LONGER sourced here (#210): `NodeRemoved` is a
+    /// quorum-gated, drainer-confined projection of the FSM DEAD edge, so on a multi-node cluster a
+    /// non-leader CRASH heals (the DEAD edge fires, auto-heal runs) but the `NodeRemoved` decision is
+    /// dropped by the projector's `inQuorum` gate / `announced` baseline during the post-kill churn
+    /// window — the failure event then never reached `/api/events`. NODE_FAILED is now emitted from the
+    /// ungated FSM DEAD edge (see {@link #onConfirmedDeparture}), the SAME signal that drives auto-heal.
+    /// LEADER-gated via {@link #emitAsLeader}: a committed membership departure's authoritative emitter
+    /// is the cluster leader.
     @Contract
     public void onMembershipDecision(MembershipDecision decision) {
         switch (decision) {
-            case MembershipDecision.NodeRemoved removed -> emitAsLeader(new NodeFailed(hlcClock.now(),
-                                                                                       Severity.CRITICAL,
-                                                                                       "Node " + removed.nodeId().id() + " removed from membership",
-                                                                                       Map.of("nodeId",
-                                                                                              removed.nodeId().id())));
+            // NODE_FAILED moved to the ungated FSM DEAD edge (#210) — the projector can drop this
+            // quorum-gated decision during post-kill churn, so it is no longer the failure source.
+            case MembershipDecision.NodeRemoved ignored -> {}
             case MembershipDecision.NodeDecommissioned decommissioned -> emitAsLeader(new NodeLeft(hlcClock.now(),
                                                                                                    Severity.WARNING,
                                                                                                    "Node " + decommissioned.nodeId().id() + " decommissioned",
@@ -527,13 +541,57 @@ public final class ClusterEventAggregator {
             // promotion, later than the handshake). The
             // authoritative join surface is the transport `PeerJoined` handshake (onPeerJoined), now
             // LEADER-gated (the leader dials every core member, so it observes the replacement's
-            // handshake). Departures differ — the delta DOES fire on the dead node leaving the counted
-            // set — which is why NodeRemoved/Decommissioned/Draining above emit from here.
+            // handshake).
             case MembershipDecision.NodeJoined ignored -> {}
             case MembershipDecision.NodeJoining ignored -> {}
             case MembershipDecision.NodeFailedDrain ignored -> {}
             case MembershipDecision.NodeShuttingDown ignored -> {}
         }
+    }
+
+    /// FSM DEAD-edge failure hook (#210): NODE_FAILED is sourced from the SAME ungated confirmed-death
+    /// edge that drives auto-heal ({@code MembershipFsm.onConfirmedDeparture}), NOT the quorum-gated
+    /// {@link MembershipDecision.NodeRemoved}. On a multi-node cluster a non-leader kill heals (the DEAD
+    /// edge fires on every node's FSM) but the `NodeRemoved` decision is dropped by the projector's
+    /// `inQuorum` gate / drainer-confined `announced` baseline during the post-kill re-election window,
+    /// so NODE_FAILED never reached `/api/events`. The DEAD edge is the reliable signal — the projector
+    /// derives `NodeRemoved` FROM it, so it is a strict superset — and whenever the cluster confirms a
+    /// death, the leader emits here. LEADER-gated via {@link #emitAsLeader}: the hook fires on every
+    /// node's FSM but only the leader publishes (no N-way fan-out). Mirrors the NODE_JOINED fix
+    /// (sourced from the ungated transport handshake, not the unreliable membership delta).
+    @Contract
+    public void onConfirmedDeparture(NodeId departed) {
+        emitAsLeader(new NodeFailed(hlcClock.now(),
+                                    Severity.CRITICAL,
+                                    "Node " + departed.id() + " failed (confirmed departure)",
+                                    Map.of("nodeId", departed.id())));
+    }
+
+    /// Departure-push overrun sink (issue #427, D4). The gracefully-departing node reports the chunks
+    /// it could not confirm reached a surviving replica within the drain grace window. A per-node fact
+    /// — the leaving node is the only source of truth for its own unpushed chunks — so it is emitted
+    /// through the un-gated {@link #emitLocal} path (mirrors the `SelfDrainInitiated` / per-node
+    /// contract), not owner- or leader-gated. Best-effort observability: the keys are named for
+    /// operator follow-up, never silently lost.
+    @Contract
+    public void onDeparturePushIncomplete(NodeId departingNode, int keysAtRisk, List<String> sampleKeys) {
+        emitLocal(new DeparturePushIncomplete(hlcClock.now(),
+                                              Severity.WARNING,
+                                              "Departure push incomplete on " + departingNode.id()
+                                             + ": " + keysAtRisk
+                                             + " chunk(s) at risk",
+                                              buildDepartureDetails(departingNode, keysAtRisk, sampleKeys)));
+    }
+
+    private static Map<String, String> buildDepartureDetails(NodeId departingNode,
+                                                             int keysAtRisk,
+                                                             List<String> sampleKeys) {
+        return Map.of("nodeId",
+                      departingNode.id(),
+                      "keysAtRisk",
+                      String.valueOf(keysAtRisk),
+                      "sampleKeys",
+                      String.join(",", sampleKeys));
     }
 
     @Contract
@@ -631,6 +689,25 @@ public final class ClusterEventAggregator {
                                   String.valueOf(event.previousInstances()),
                                   "newInstances",
                                   String.valueOf(event.newInstances()))));
+    }
+
+    @Contract
+    public void onScaleCapped(ScalingEvent.ScaleCapped event) {
+        emit(new ScaleCapped(hlcClock.now(),
+                             Severity.WARNING,
+                             event.artifact().asString()
+                            + " scaling capped at " + event.cappedAtInstances()
+                            + " instances (requested " + event.requestedInstances()
+                            + ", reason: " + event.reason()
+                            + ")",
+                             Map.of("artifact",
+                                    event.artifact().asString(),
+                                    "requestedInstances",
+                                    String.valueOf(event.requestedInstances()),
+                                    "cappedAtInstances",
+                                    String.valueOf(event.cappedAtInstances()),
+                                    "reason",
+                                    event.reason())));
     }
 
     @Contract

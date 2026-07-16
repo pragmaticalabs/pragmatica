@@ -4,6 +4,15 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.api.routes;
 
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.function.BooleanSupplier;
+import java.util.function.Supplier;
+import java.util.stream.Stream;
+
 import org.pragmatica.aether.api.ManagementApiResponses.ArtifactMetricsResponse;
 import org.pragmatica.aether.api.ManagementApiResponses.BackfillMetricsRequest;
 import org.pragmatica.aether.api.ManagementApiResponses.BackfillMetricsResponse;
@@ -29,10 +38,10 @@ import org.pragmatica.aether.metrics.timeout.TimeoutSubsystem;
 import org.pragmatica.aether.management.route.ManagementRoute;
 import org.pragmatica.aether.metrics.observability.ObservabilityRegistry;
 import org.pragmatica.aether.node.ManageableNode;
-import org.pragmatica.http.routing.ContentCategory;
-import org.pragmatica.http.routing.ContentType;
-import org.pragmatica.http.routing.HttpError;
-import org.pragmatica.http.routing.HttpStatus;
+import org.pragmatica.http.ContentCategory;
+import org.pragmatica.http.ContentType;
+import org.pragmatica.http.HttpError;
+import org.pragmatica.http.HttpStatus;
 import org.pragmatica.http.routing.Route;
 import org.pragmatica.http.routing.RouteSource;
 import org.pragmatica.lang.Cause;
@@ -40,21 +49,12 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 
-import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.LinkedHashMap;
-import java.util.List;
-import java.util.Map;
-import java.util.function.BooleanSupplier;
-import java.util.function.Supplier;
-import java.util.stream.Stream;
-
 import static org.pragmatica.http.routing.QueryParameter.aString;
 
 
 public final class MetricsRoutes implements RouteSource {
     private static final ContentType PROMETHEUS_CONTENT_TYPE = ContentType.contentType("text/plain; version=0.0.4; charset=utf-8",
-                                                                                       ContentCategory.PLAIN_TEXT);
+                                                                                       ContentCategory.TEXT);
 
     private static final String DEV_MODE_ENV = "AETHER_INSECURE_DEV_MODE";
 
@@ -276,9 +276,13 @@ public final class MetricsRoutes implements RouteSource {
 
     private InvocationMetricsResponse buildInvocationMetricsResponse(Option<String> artifactFilter,
                                                                      Option<String> methodFilter) {
-        var snapshots = nodeSupplier.get().invocationMetrics().snapshot().stream().filter(snapshot -> matchesFilters(snapshot,
-                                                                                                                     artifactFilter,
-                                                                                                                     methodFilter)).map(this::toInvocationSnapshot).toList();
+        var snapshots = nodeSupplier.get()
+                                    .invocationMetrics()
+                                    .snapshot()
+                                    .stream()
+                                    .filter(snapshot -> matchesFilters(snapshot, artifactFilter, methodFilter))
+                                    .map(this::toInvocationSnapshot)
+                                    .toList();
 
         return new InvocationMetricsResponse(snapshots);
     }
@@ -288,7 +292,8 @@ public final class MetricsRoutes implements RouteSource {
                                    Option<String> methodFilter) {
         boolean matchesArtifact = artifactFilter.map(filter -> snapshot.artifact()
                                                                        .asString()
-                                                                       .contains(filter)).or(true);
+                                                                       .contains(filter))
+                                                .or(true);
         boolean matchesMethod = methodFilter.map(filter -> snapshot.methodName()
                                                                    .name()
                                                                    .equals(filter)).or(true);
@@ -315,10 +320,14 @@ public final class MetricsRoutes implements RouteSource {
     }
 
     private SlowInvocationsResponse buildSlowInvocationsResponse() {
-        var slowInvocations = nodeSupplier.get().invocationMetrics().snapshot().stream().flatMap(snapshot -> snapshot.slowInvocations()
-                                                                                                                     .stream()
-                                                                                                                     .map(slow -> toSlowInvocation(snapshot,
-                                                                                                                                                   slow))).toList();
+        var slowInvocations = nodeSupplier.get()
+                                          .invocationMetrics()
+                                          .snapshot()
+                                          .stream()
+                                          .flatMap(snapshot -> snapshot.slowInvocations()
+                                                                       .stream()
+                                                                       .map(slow -> toSlowInvocation(snapshot, slow)))
+                                          .toList();
 
         return new SlowInvocationsResponse(slowInvocations);
     }

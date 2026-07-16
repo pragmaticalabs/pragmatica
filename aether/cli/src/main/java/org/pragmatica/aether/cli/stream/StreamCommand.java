@@ -4,15 +4,17 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.cli.stream;
 
+import java.util.List;
+import java.util.concurrent.Callable;
+
 import org.pragmatica.aether.cli.AetherCli;
 import org.pragmatica.aether.cli.OutputFormatter;
+import org.pragmatica.aether.cli.OutputFormatter.Column;
+import org.pragmatica.aether.cli.OutputFormatter.TableSpec;
 import org.pragmatica.aether.cli.Prompt;
 import org.pragmatica.aether.management.route.ManagementRoute;
 import org.pragmatica.aether.slice.resource.ResourceAddress;
 import org.pragmatica.lang.Contract;
-
-import java.util.List;
-import java.util.concurrent.Callable;
 
 import picocli.CommandLine;
 import picocli.CommandLine.Command;
@@ -28,7 +30,7 @@ import picocli.CommandLine.Parameters;
 /// Exit codes follow [StreamExitCode]: 0=success, 1=error, 2=validation, 3=user-cancelled,
 /// 4=not-found, 5=conflict, 6=gone. HTTP errors are scraped from the JSON envelope returned by
 /// the base CLI HTTP helpers (see [StreamHttpResponse]).
-@Command(name = "stream", description = "Manage event streams (list, show, tail, delete, group create/delete)", subcommands = {StreamCommand.ListCommand.class, StreamCommand.ShowCommand.class, StreamCommand.TailCommand.class, StreamCommand.DeleteCommand.class, StreamCommand.GroupCommand.class})
+@Command(name = "stream", description = "Manage event streams (list, show, tail, delete, group create/delete)", subcommands = {StreamCommand.ListCommand.class, StreamCommand.ShowCommand.class, StreamCommand.ReplicasCommand.class, StreamCommand.HydrationCommand.class, StreamCommand.TailCommand.class, StreamCommand.DeleteCommand.class, StreamCommand.GroupCommand.class})
 public class StreamCommand implements Runnable {
     @CommandLine.ParentCommand
     private AetherCli parent;
@@ -74,6 +76,34 @@ public class StreamCommand implements Runnable {
         public Integer call() {
             return StreamAddressArg.parse(address).fold(StreamCommand::handleAddressError,
                                                         addr -> fetchMetadata(addr, streamParent.parent()));
+        }
+    }
+
+    @Command(name = "replicas", description = "Show per-node replica state for a stream partition (replication/backfill health; #260/#261/#333 sensor)")
+    public static class ReplicasCommand implements Callable<Integer> {
+        @CommandLine.ParentCommand
+        private StreamCommand streamParent;
+
+        @Parameters(index = "0", description = "Stream name (the partition manager's local stream name, e.g. system:cluster-events:1.0.0)")
+        private String stream;
+
+        @Parameters(index = "1", description = "Partition number")
+        private int partition;
+
+        @Override
+        public Integer call() {
+            return fetchReplicas(stream, partition, streamParent.parent());
+        }
+    }
+
+    @Command(name = "hydration", description = "Show per-node stream hydration state (materialized rings, floor bytes, placement-role counts, budget) — the #265 memory/placement observability sensor")
+    public static class HydrationCommand implements Callable<Integer> {
+        @CommandLine.ParentCommand
+        private StreamCommand streamParent;
+
+        @Override
+        public Integer call() {
+            return fetchHydration(streamParent.parent());
         }
     }
 
@@ -208,6 +238,75 @@ public class StreamCommand implements Runnable {
                                          addr.version().asString()));
 
         return renderQueryOrError(response, cli, "Failed to load stream metadata");
+    }
+
+    /// Per-replica rows are drawn from the `replicas` array; the partition-level fields (`hrwOwner`,
+    /// `servedByOwner`, `ownerHeadOffset`, `earliestRetainedOffset`) live at the response root and are
+    /// visible in `--format json`. NODE marks the resolved HRW owner via `isHrwOwner`; compare a
+    /// `CAUGHT_UP` replica's CONFIRMED against the root `ownerHeadOffset` to spot the #333 lag.
+    private static final TableSpec REPLICAS_TABLE_SPEC = new TableSpec("Stream Partition Replicas",
+                                                                       List.of(new Column("NODE", "nodeId", 24),
+                                                                               new Column("STATE", "state", 10),
+                                                                               new Column("CONFIRMED",
+                                                                                          "confirmedOffset",
+                                                                                          12),
+                                                                               new Column("HRW-OWNER", "isHrwOwner", 9)),
+                                                                       "replicas");
+
+    private static int fetchReplicas(String stream, int partition, AetherCli cli) {
+        var response = cli.fetch(ManagementRoute.STREAM_REPLICAS,
+                                 List.of(stream, Integer.toString(partition)));
+        var errorCode = OutputFormatter.checkResponseError(response, cli.outputOptions(), "Failed to load replica state");
+
+        if (errorCode >= 0) {
+            return mapHttpErrorOrFallback(response, errorCode);
+        }
+
+        return OutputFormatter.printQuery(response, cli.outputOptions(), REPLICAS_TABLE_SPEC);
+    }
+
+    /// Per-stream rows are drawn from the `streams` array; the per-node fields (`totalAllocatedBytes`,
+    /// `maxTotalBytes`, `overBudget`, `deferredPartitions`), the partition-cap fields (`perStreamCeiling`,
+    /// `clusterAggregateGuard`, `currentAggregatePartitionSlots`, `aggregateHeadroom`,
+    /// `configOverCeilingStreams` — #265 increment 4), and the reshuffle-lifecycle fields
+    /// (`releaseCandidates`, `releasedPartitionsSinceBoot`, `materializeQueueDepth` — #265 increment 5) live
+    /// at the response root and are visible in `--format json`. DECLARED/RINGS diverge once materialization is
+    /// placement-gated (non-replicas materialize fewer rings); DEFERRED counts held partitions not yet
+    /// materialized (budget-deferred per spec §6 or pre-membership); OVER-CEIL flags a committed config over
+    /// the per-stream ceiling (spec §7); OWNER/REPLICA/NONE are this node's placement-role tally per stream.
+    private static final TableSpec HYDRATION_TABLE_SPEC = new TableSpec("Stream Hydration",
+                                                                        List.of(new Column("STREAM", "stream", 32),
+                                                                                new Column("DECLARED",
+                                                                                           "partitionsDeclared",
+                                                                                           9),
+                                                                                new Column("RINGS",
+                                                                                           "ringsMaterialized",
+                                                                                           6),
+                                                                                new Column("DEFERRED",
+                                                                                           "partitionsDeferred",
+                                                                                           9),
+                                                                                new Column("FLOOR-BYTES",
+                                                                                           "floorBytesAllocated",
+                                                                                           14),
+                                                                                new Column("OVER-CEIL", "overCeiling", 9),
+                                                                                new Column("OWNER", "ownerPartitions", 6),
+                                                                                new Column("REPLICA",
+                                                                                           "replicaPartitions",
+                                                                                           8),
+                                                                                new Column("NONE", "nonePartitions", 5)),
+                                                                        "streams");
+
+    private static int fetchHydration(AetherCli cli) {
+        var response = cli.fetch(ManagementRoute.STREAM_HYDRATION, List.of());
+        var errorCode = OutputFormatter.checkResponseError(response,
+                                                           cli.outputOptions(),
+                                                           "Failed to load hydration state");
+
+        if (errorCode >= 0) {
+            return mapHttpErrorOrFallback(response, errorCode);
+        }
+
+        return OutputFormatter.printQuery(response, cli.outputOptions(), HYDRATION_TABLE_SPEC);
     }
 
     /// Polling-based tail (Wave 6B). SSE/WebSocket on `/tail` is deferred to issue #212; this

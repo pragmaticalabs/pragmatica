@@ -4,10 +4,10 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.cli.cluster;
 
+import java.security.SecureRandom;
+
 import org.pragmatica.aether.config.cluster.ClusterBootstrapConfig;
 import org.pragmatica.aether.config.cluster.PortMapping;
-
-import java.security.SecureRandom;
 
 
 sealed interface DockerComposeGenerator {
@@ -96,7 +96,9 @@ sealed interface DockerComposeGenerator {
 
     private static void appendHealthcheck(StringBuilder sb, int managementPort) {
         sb.append("    healthcheck:\n");
-        sb.append("      test: [\"CMD\", \"wget\", \"--spider\", \"-q\", \"http://localhost:").append(managementPort).append("/health/live\"]\n");
+        sb.append("      test: [\"CMD\", \"wget\", \"--spider\", \"-q\", \"http://localhost:")
+          .append(managementPort)
+          .append("/health/live\"]\n");
         sb.append("      interval: 5s\n");
         sb.append("      timeout: 3s\n");
         sb.append("      retries: 20\n");

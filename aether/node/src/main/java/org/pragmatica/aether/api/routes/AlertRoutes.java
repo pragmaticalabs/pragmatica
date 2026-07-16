@@ -4,6 +4,9 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.api.routes;
 
+import java.util.List;
+import java.util.stream.Stream;
+
 import org.pragmatica.aether.api.AlertManager;
 import org.pragmatica.aether.api.AlertManager.AlertHistoryView;
 import org.pragmatica.aether.api.AlertManager.AlertView;
@@ -21,9 +24,6 @@ import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
-
-import java.util.List;
-import java.util.stream.Stream;
 
 import static org.pragmatica.http.routing.PathParameter.aString;
 

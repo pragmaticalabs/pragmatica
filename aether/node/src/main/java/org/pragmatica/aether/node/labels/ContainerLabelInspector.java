@@ -4,11 +4,6 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.node.labels;
 
-import org.pragmatica.lang.Cause;
-import org.pragmatica.lang.Option;
-import org.pragmatica.lang.Result;
-import org.pragmatica.lang.utils.Causes;
-
 import java.io.ByteArrayOutputStream;
 import java.net.UnixDomainSocketAddress;
 import java.nio.ByteBuffer;
@@ -19,6 +14,11 @@ import java.nio.file.Path;
 import java.util.Map;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+
+import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Result;
+import org.pragmatica.lang.utils.Causes;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;

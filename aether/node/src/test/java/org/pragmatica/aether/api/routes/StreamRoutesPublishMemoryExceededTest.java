@@ -7,7 +7,7 @@ package org.pragmatica.aether.api.routes;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.http.adapter.ErrorMapper;
 import org.pragmatica.aether.stream.StreamError;
-import org.pragmatica.http.routing.HttpStatus;
+import org.pragmatica.http.HttpStatus;
 
 import static org.assertj.core.api.Assertions.assertThat;
 

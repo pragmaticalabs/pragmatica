@@ -499,7 +499,8 @@ class BootstrapPhaseDeployCloudSshRestartTest {
                                                            8090,
                                                            8091,
                                                            "eu-1-core-0:1.2.3.4:8090,eu-1-core-1:1.2.3.5:8091",
-                                                           CLUSTER_SECRET);
+                                                           CLUSTER_SECRET,
+                                                           emptyEnv());
         assertTrue(cmd.contains("docker rm -f aether-node"), cmd);
         assertTrue(cmd.contains("docker run -d --name aether-node --restart no --network host"), cmd);
         assertTrue(cmd.contains("-l aether-cluster=" + CLUSTER_NAME), cmd);
@@ -512,6 +513,136 @@ class BootstrapPhaseDeployCloudSshRestartTest {
         assertTrue(cmd.contains("-e AETHER_CLUSTER_SECRET=\"" + CLUSTER_SECRET + "\""), cmd);
         assertTrue(cmd.endsWith("ghcr.io/pragmaticalabs/aether-node:" + CLUSTER_VERSION), cmd);
         assertFalse(cmd.contains(":latest"), "Image tag must follow cluster.version, not :latest. Got: " + cmd);
+    }
+
+    // --- Env-parity regression: the finalized-PEERS re-launch MUST carry the SAME
+    // host-env-derived identity allow-list + isolated AETHER_INSECURE_DEV_MODE that the
+    // cloud-init start emits, or the C2 security gate refuses to serve /health/live. ---
+
+    private static Fn1<String, String> envOf(Map<String, String> map) {
+        return name -> map.get(name);
+    }
+
+    @Test
+    void buildRestartCommand_emitsInsecureDevMode_whenPresentInInjectedEnv() {
+        var cmd = BootstrapPhaseDeploy.buildRestartCommand("img:1",
+                                                           CLUSTER_NAME,
+                                                           "eu-1-core-0",
+                                                           8090,
+                                                           8091,
+                                                           "eu-1-core-0:1.2.3.4:8090",
+                                                           CLUSTER_SECRET,
+                                                           envOf(Map.of("AETHER_INSECURE_DEV_MODE", "true")));
+        assertTrue(cmd.contains("-e AETHER_INSECURE_DEV_MODE=\"true\""),
+                   () -> "Re-launch MUST carry AETHER_INSECURE_DEV_MODE from the host env (C2 gate): " + cmd);
+    }
+
+    @Test
+    void buildRestartCommand_omitsInsecureDevMode_whenAbsentFromInjectedEnv() {
+        var cmd = BootstrapPhaseDeploy.buildRestartCommand("img:1",
+                                                           CLUSTER_NAME,
+                                                           "eu-1-core-0",
+                                                           8090,
+                                                           8091,
+                                                           "eu-1-core-0:1.2.3.4:8090",
+                                                           CLUSTER_SECRET,
+                                                           emptyEnv());
+        assertFalse(cmd.contains("AETHER_INSECURE_DEV_MODE"),
+                    () -> "Unset dev-mode MUST NOT be emitted (no empty -e VAR=\"\"; prod-safe): " + cmd);
+    }
+
+    @Test
+    void buildRestartCommand_emitsPresentIdentityVar_andOmitsAbsentOnes() {
+        var cmd = BootstrapPhaseDeploy.buildRestartCommand("img:1",
+                                                           CLUSTER_NAME,
+                                                           "eu-1-core-0",
+                                                           8090,
+                                                           8091,
+                                                           "eu-1-core-0:1.2.3.4:8090",
+                                                           CLUSTER_SECRET,
+                                                           envOf(Map.of("AETHER_API_KEY", "ak-123")));
+        assertTrue(cmd.contains("-e AETHER_API_KEY=\"ak-123\""),
+                   () -> "Present identity allow-list var MUST be threaded into the re-launch: " + cmd);
+        assertFalse(cmd.contains("AETHER_PROVISIONED_BY"),
+                    () -> "Absent identity var MUST NOT be emitted as empty -e VAR=\"\": " + cmd);
+        assertFalse(cmd.contains("-e VAR=\"\""), cmd);
+    }
+
+    @Test
+    void buildRestartCommand_clusterSecretAppearsExactlyOnce_evenWhenInIdentityAllowList() {
+        // AETHER_CLUSTER_SECRET is BOTH in ClusterIdentityEnv.IDENTITY_VARS AND passed explicitly.
+        // The allow-list pass must exclude it so it is never emitted twice. Inject it into the
+        // host-env lookup too, to prove the exclusion holds regardless of host env.
+        var cmd = BootstrapPhaseDeploy.buildRestartCommand("img:1",
+                                                           CLUSTER_NAME,
+                                                           "eu-1-core-0",
+                                                           8090,
+                                                           8091,
+                                                           "eu-1-core-0:1.2.3.4:8090",
+                                                           CLUSTER_SECRET,
+                                                           envOf(Map.of("AETHER_CLUSTER_SECRET", "host-env-secret")));
+        var occurrences = cmd.split("-e AETHER_CLUSTER_SECRET=", -1).length - 1;
+        assertEquals(1, occurrences,
+                     () -> "AETHER_CLUSTER_SECRET must appear exactly once (explicit param, not duplicated "
+                           + "from the identity allow-list). Got " + occurrences + " in: " + cmd);
+        assertTrue(cmd.contains("-e AETHER_CLUSTER_SECRET=\"" + CLUSTER_SECRET + "\""),
+                   () -> "The single AETHER_CLUSTER_SECRET must carry the finalized param value: " + cmd);
+        assertFalse(cmd.contains("host-env-secret"),
+                    () -> "Host-env AETHER_CLUSTER_SECRET must NOT leak in via the allow-list pass: " + cmd);
+    }
+
+    @Test
+    void buildRestartCommand_identityEnvFlags_useSingleLineForm_noLineContinuation() {
+        // SSH-exec'd single line: env flags must be ' -e VAR="value"' with NO trailing backslash.
+        var cmd = BootstrapPhaseDeploy.buildRestartCommand("img:1",
+                                                           CLUSTER_NAME,
+                                                           "eu-1-core-0",
+                                                           8090,
+                                                           8091,
+                                                           "eu-1-core-0:1.2.3.4:8090",
+                                                           CLUSTER_SECRET,
+                                                           envOf(Map.of("AETHER_INSECURE_DEV_MODE", "true",
+                                                                        "AETHER_API_KEY", "ak-1")));
+        assertFalse(cmd.contains("\\\n"), () -> "Single-line SSH command must not contain line continuations: " + cmd);
+        assertFalse(cmd.contains("\n"), () -> "Restart command must be a single line: " + cmd);
+        assertTrue(cmd.endsWith("img:1"), () -> "Identity flags must precede the image; image stays last: " + cmd);
+    }
+
+    @Test
+    void buildJvmRestartCommand_inlinesInsecureDevMode_whenPresentInInjectedEnv_secretOnce() {
+        var cmd = BootstrapPhaseDeploy.buildJvmRestartCommand("eu-1-core-0",
+                                                             8090,
+                                                             8091,
+                                                             "eu-1-core-0:1.2.3.4:8090",
+                                                             CLUSTER_SECRET,
+                                                             CLUSTER_NAME,
+                                                             envOf(Map.of("AETHER_INSECURE_DEV_MODE", "true")));
+        assertTrue(cmd.contains("AETHER_INSECURE_DEV_MODE=\"true\""),
+                   () -> "JVM re-launch MUST inline AETHER_INSECURE_DEV_MODE from host env (C2 gate): " + cmd);
+        assertTrue(cmd.contains("AETHER_INSECURE_DEV_MODE=\"true\" nohup java")
+                   || cmd.contains("AETHER_INSECURE_DEV_MODE=\"true\"") && cmd.contains("nohup java"),
+                   () -> "Env assignments must prefix the nohup java invocation: " + cmd);
+        var secretOccurrences = cmd.split("AETHER_CLUSTER_SECRET=", -1).length - 1;
+        assertEquals(1, secretOccurrences,
+                     () -> "AETHER_CLUSTER_SECRET must appear exactly once in the JVM command: " + cmd);
+        assertTrue(cmd.contains("nohup java -jar /opt/aether/aether-node.jar"),
+                   () -> "JVM re-launch must still relaunch via nohup java -jar: " + cmd);
+        assertFalse(cmd.contains("docker"), () -> "JVM command must NOT mention docker: " + cmd);
+    }
+
+    @Test
+    void buildJvmRestartCommand_omitsIdentityVars_whenInjectedEnvEmpty() {
+        var cmd = BootstrapPhaseDeploy.buildJvmRestartCommand("eu-1-core-0",
+                                                             8090,
+                                                             8091,
+                                                             "eu-1-core-0:1.2.3.4:8090",
+                                                             CLUSTER_SECRET,
+                                                             CLUSTER_NAME,
+                                                             emptyEnv());
+        assertFalse(cmd.contains("AETHER_INSECURE_DEV_MODE"),
+                    () -> "Unset dev-mode MUST NOT be inlined in the JVM command: " + cmd);
+        assertFalse(cmd.contains("AETHER_API_KEY"),
+                    () -> "Unset identity var MUST NOT be inlined in the JVM command: " + cmd);
     }
 
     @Test

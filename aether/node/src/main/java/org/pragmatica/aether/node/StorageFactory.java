@@ -4,6 +4,11 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.node;
 
+import java.nio.file.Path;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+
 import org.pragmatica.aether.config.StorageConfig;
 import org.pragmatica.aether.storage.DhtStorageTier;
 import org.pragmatica.dht.DHTClient;
@@ -21,11 +26,6 @@ import org.pragmatica.storage.StorageInstance;
 import org.pragmatica.storage.StorageReadinessGate;
 import org.pragmatica.storage.StorageTier;
 
-import java.nio.file.Path;
-import java.util.LinkedHashMap;
-import java.util.List;
-import java.util.Map;
-
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -33,18 +33,31 @@ import org.slf4j.LoggerFactory;
 public final class StorageFactory {
     private static final Logger log = LoggerFactory.getLogger(StorageFactory.class);
     private static final long DEFAULT_MEMORY_BYTES = 256L * 1024 * 1024;
+    private static final String STREAMS_NAME = "streams";
+    /// Hot-ring mirror in the memory tier — small; the live ring already holds recent events,
+    /// the memory tier is only the first read-waterfall hop for just-sealed segment blocks.
+    private static final long STREAM_MEMORY_BYTES = 16L * 1024 * 1024;
+    /// Durable segment-block cap on the local disk tier. Larger than the memory tier: this is the
+    /// substrate that lets sealed segments survive a same-node restart. Not pre-allocated — it is a
+    /// reservation ceiling enforced per-write by `LocalDiskTier`.
+    private static final long STREAM_DISK_BYTES = 4L * 1024 * 1024 * 1024;
+    private static final int STREAM_SNAPSHOT_MUTATION_THRESHOLD = 100;
+    private static final long STREAM_SNAPSHOT_INTERVAL_MILLIS = 30_000L;
+    private static final int STREAM_SNAPSHOT_RETENTION_COUNT = 5;
 
     private StorageFactory() {}
 
     public record StorageSetup(String name,
                                StorageInstance instance,
                                SnapshotManager snapshotManager,
-                               StorageReadinessGate readinessGate) {
+                               StorageReadinessGate readinessGate,
+                               MetadataStore metadataStore) {
         public static StorageSetup storageSetup(String name,
                                                 StorageInstance instance,
                                                 SnapshotManager snapshotManager,
-                                                StorageReadinessGate readinessGate) {
-            return new StorageSetup(name, instance, snapshotManager, readinessGate);
+                                                StorageReadinessGate readinessGate,
+                                                MetadataStore metadataStore) {
+            return new StorageSetup(name, instance, snapshotManager, readinessGate, metadataStore);
         }
     }
 
@@ -65,10 +78,13 @@ public final class StorageFactory {
         // (`handleDiskTierUnavailable` falls back to memory+DHT when the default disk path
         // isn't mountable, e.g. inside the aether-node container).
         if (!result.containsKey(ARTIFACTS_NAME)) {
-            createOne(ARTIFACTS_NAME, StorageConfig.storageConfig(), nodeId, dhtClient).onSuccess(setup -> result.put(ARTIFACTS_NAME,
-                                                                                                                      setup)).onFailure(cause -> log.error("Failed to create default '{}' storage: {}",
-                                                                                                                                                           ARTIFACTS_NAME,
-                                                                                                                                                           cause.message()));
+            createOne(ARTIFACTS_NAME,
+                      StorageConfig.storageConfig(),
+                      nodeId,
+                      dhtClient).onSuccess(setup -> result.put(ARTIFACTS_NAME, setup))
+                     .onFailure(cause -> log.error("Failed to create default '{}' storage: {}",
+                                                   ARTIFACTS_NAME,
+                                                   cause.message()));
         }
 
         return Map.copyOf(result);
@@ -84,6 +100,80 @@ public final class StorageFactory {
                                                                     List.of(memoryTier, dht)))
                         .or(StorageInstance.storageInstance("artifacts",
                                                             List.of(memoryTier)));
+    }
+
+    /// Default `StorageInstance` backing slice-facing `ContentStore` resources (#251). Registered as
+    /// the SPI `StorageInstance` extension so `ContentStoreFactory.provision(config, context)` can
+    /// resolve a tiered store — without this, ContentStore provisioning fails at runtime with
+    /// "requires ProvisioningContext with StorageInstance extension". Mirrors `defaultArtifactStorage`:
+    /// memory cache tier over a DHT durable tier (memory-only when no DHT client is wired).
+    static StorageInstance defaultContentStorage(Option<DHTClient> dhtClient) {
+        var memoryTier = MemoryTier.memoryTier(DEFAULT_MEMORY_BYTES);
+
+        return dhtClient.map(client -> DhtStorageTier.dhtStorageTier(client, "content-blocks"))
+                        .map(dht -> StorageInstance.storageInstance("content",
+                                                                    List.of(memoryTier, dht)))
+                        .or(StorageInstance.storageInstance("content",
+                                                            List.of(memoryTier)));
+    }
+
+    /// Build the disk-backed, snapshot-capable `streams` StorageSetup that durably backs the stream
+    /// segment store. Tiers are layered memory -> LocalDisk -> DHT (hot read hop, durable local
+    /// segments, replication), the in-memory MetadataStore is wrapped by a SnapshotManager that
+    /// restores refs at boot, and both the segment blocks (`<streamDataDir>/segments`) and the
+    /// metadata snapshots (`<streamDataDir>/snapshots`) live under the caller-supplied per-node
+    /// `streamDataDir` so blocks and refs survive a same-node restart. The disk tier degrades to
+    /// memory+DHT when `streamDataDir` is not writable (mirrors `createOne`'s
+    /// `handleDiskTierUnavailable`), so node boot never fails on an unmountable data dir.
+    static StorageSetup defaultStreamStorage(Option<DHTClient> dhtClient, Path streamDataDir, String nodeId) {
+        var tiers = buildStreamTiers(dhtClient, streamDataDir.resolve("segments"));
+
+        return assembleStreamSetup(tiers, streamDataDir.resolve("snapshots"), nodeId);
+    }
+
+    private static List<StorageTier> buildStreamTiers(Option<DHTClient> dhtClient, Path segmentsDir) {
+        var memoryTier = MemoryTier.memoryTier(STREAM_MEMORY_BYTES);
+        var dhtTier = dhtClient.map(client -> DhtStorageTier.dhtStorageTier(client, "stream-segments"));
+
+        return LocalDiskTier.localDiskTier(segmentsDir, STREAM_DISK_BYTES).fold(cause -> streamTiersWithoutDisk(cause,
+                                                                                                                memoryTier,
+                                                                                                                dhtTier),
+                                                                                disk -> streamTiers(memoryTier,
+                                                                                                    disk,
+                                                                                                    dhtTier));
+    }
+
+    private static List<StorageTier> streamTiersWithoutDisk(Cause cause,
+                                                            MemoryTier memoryTier,
+                                                            Option<DhtStorageTier> dhtTier) {
+        log.warn("Disk tier for 'streams' unavailable: {}, using memory + DHT fallback", cause.message());
+
+        return dhtTier.map(dht -> List.<StorageTier> of(memoryTier, dht))
+                      .or(List.of(memoryTier));
+    }
+
+    private static List<StorageTier> streamTiers(MemoryTier memoryTier,
+                                                 StorageTier diskTier,
+                                                 Option<DhtStorageTier> dhtTier) {
+        return dhtTier.map(dht -> List.<StorageTier> of(memoryTier, diskTier, dht))
+                      .or(List.of(memoryTier, diskTier));
+    }
+
+    private static StorageSetup assembleStreamSetup(List<StorageTier> tiers, Path snapshotDir, String nodeId) {
+        var metadataStore = MetadataStore.inMemoryMetadataStore(STREAMS_NAME);
+        var instance = StorageInstance.storageInstance(STREAMS_NAME, tiers, metadataStore);
+        var snapshotConfig = SnapshotConfig.snapshotConfig(snapshotDir,
+                                                           STREAM_SNAPSHOT_MUTATION_THRESHOLD,
+                                                           STREAM_SNAPSHOT_INTERVAL_MILLIS,
+                                                           STREAM_SNAPSHOT_RETENTION_COUNT,
+                                                           nodeId);
+        var snapshotManager = SnapshotManager.snapshotManager(metadataStore, snapshotConfig);
+        var readinessGate = StorageReadinessGate.storageReadinessGate();
+
+        restoreAndSignalReady(STREAMS_NAME, snapshotManager, metadataStore, readinessGate);
+        log.info("Storage 'streams' created: {} tier(s), data dir={}", tiers.size(), snapshotDir.getParent());
+
+        return StorageSetup.storageSetup(STREAMS_NAME, instance, snapshotManager, readinessGate, metadataStore);
     }
 
     private static Result<StorageSetup> createOne(String name,
@@ -134,7 +224,7 @@ public final class StorageFactory {
         restoreAndSignalReady(name, snapshotManager, metadataStore, readinessGate);
         log.info("Storage '{}' created: {} tier(s), snapshot path={}", name, tiers.size(), config.snapshotPath());
 
-        return StorageSetup.storageSetup(name, instance, snapshotManager, readinessGate);
+        return StorageSetup.storageSetup(name, instance, snapshotManager, readinessGate, metadataStore);
     }
 
     private static SnapshotConfig buildSnapshotConfig(StorageConfig config, String nodeId) {

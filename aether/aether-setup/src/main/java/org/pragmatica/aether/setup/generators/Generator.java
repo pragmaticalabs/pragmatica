@@ -4,10 +4,10 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.setup.generators;
 
+import java.nio.file.Path;
+
 import org.pragmatica.aether.config.AetherConfig;
 import org.pragmatica.lang.Result;
-
-import java.nio.file.Path;
 
 
 public interface Generator {

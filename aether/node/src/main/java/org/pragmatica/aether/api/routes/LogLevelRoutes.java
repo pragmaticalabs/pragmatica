@@ -4,6 +4,9 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.api.routes;
 
+import java.util.Set;
+import java.util.stream.Stream;
+
 import org.pragmatica.aether.api.LogLevelRegistry;
 import org.pragmatica.aether.api.ManagementApiResponses.LogLevelResetResponse;
 import org.pragmatica.aether.api.ManagementApiResponses.LogLevelSetResponse;
@@ -13,9 +16,6 @@ import org.pragmatica.http.routing.RouteSource;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
-
-import java.util.Set;
-import java.util.stream.Stream;
 
 import static org.pragmatica.http.routing.PathParameter.aString;
 

@@ -31,8 +31,9 @@ public interface BuiltinRepository extends Repository {
     private static Promise<Location> writeToTempFile(Artifact artifact, ResolvedArtifact resolved) {
         return createTempFile("aether-" + artifact.artifactId().id() + "-",
                               ".jar").flatMap(tempFile -> writeBytes(tempFile,
-                                                                     resolved.content()).map(_ -> tempFile)).mapError(e -> new RepositoryError.WriteFailed(artifact,
-                                                                                                                                                           new RuntimeException(e.message())))
+                                                                     resolved.content()).map(_ -> tempFile))
+                             .mapError(e -> new RepositoryError.WriteFailed(artifact,
+                                                                            new RuntimeException(e.message())))
                              .async()
                              .onSuccess(_ -> log.info("Resolved artifact {} (SHA1={}, {} bytes)",
                                                       artifact.asString(),

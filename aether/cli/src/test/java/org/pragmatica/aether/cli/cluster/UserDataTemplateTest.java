@@ -6,6 +6,7 @@
 package org.pragmatica.aether.cli.cluster;
 
 import org.junit.jupiter.api.Test;
+import org.pragmatica.aether.config.cluster.BootstrapOverlayGenerator;
 import org.pragmatica.aether.config.cluster.ClusterBootstrapConfigParser;
 import org.pragmatica.aether.config.cluster.NodeRole;
 import org.pragmatica.config.toml.TomlDocument;
@@ -94,10 +95,10 @@ class UserDataTemplateTest {
     }
 
     @Test
-    void render_chmodsConfigSoInContainerAetherUserCanRead() {
-        // The aether-node Dockerfile runs as user `aether` (uid 1000). Bind-mounted files inherit
-        // the host file mode; without chmod the in-container user may be unable to read root-owned
-        // 0600 files written by cloud-init.
+    void render_securesConfigOwnerOnlyAndChownsToContainerUser() {
+        // #287: aether.toml carries cluster_secret so it must be owner-only (0600), not 0644. The
+        // aether-node Dockerfile runs as user `aether` (uid 1000); the file is chowned to uid 1000 so
+        // the read-only bind-mount stays readable to the node process without world-exposing the secret.
         var config = ClusterBootstrapConfigParser.parse(CLOUD_BASE).unwrap();
         var source = config.sources().get("eu-1");
         var script = UserDataTemplate.render(config,
@@ -110,14 +111,16 @@ class UserDataTemplateTest {
                                              TomlDocument.EMPTY);
 
         var configWriteIdx = script.indexOf("AETHER_CONFIG\n");
-        var chmodIdx = script.indexOf("chmod 644 /opt/aether/config/aether.toml");
+        var chownIdx = script.indexOf("chown 1000:1000 /opt/aether/config/aether.toml");
+        var chmodIdx = script.indexOf("chmod 600 /opt/aether/config/aether.toml");
         var dockerRunIdx = script.indexOf("docker run");
 
-        assertTrue(chmodIdx > 0, "Must chmod 644 the composed config so uid 1000 can read it");
-        assertTrue(configWriteIdx > 0 && chmodIdx > configWriteIdx,
-                   "chmod must happen after the heredoc write");
+        assertTrue(chmodIdx > 0, "Must chmod 600 the composed config (cluster_secret at rest)");
+        assertTrue(chownIdx > 0, "Must chown to uid 1000 so the in-container aether user can read it");
+        assertTrue(configWriteIdx > 0 && chownIdx > configWriteIdx && chmodIdx > configWriteIdx,
+                   "chown/chmod must happen after the heredoc write");
         assertTrue(dockerRunIdx > chmodIdx,
-                   "chmod must happen before docker run so the bind-mount sees readable file");
+                   "chmod must happen before docker run so the bind-mount sees the secured file");
     }
 
     @Test
@@ -335,5 +338,75 @@ class UserDataTemplateTest {
                    "Operator-supplied cluster port must be exported as AETHER_CLUSTER_PORT shell var");
         assertTrue(script.contains("AETHER_MANAGEMENT_PORT=\"5160\""),
                    "Operator-supplied management port must be exported as AETHER_MANAGEMENT_PORT shell var");
+    }
+
+    @Test
+    void render_containerRuntime_resolvesRoutableAdvertiseHostAndPassesItConditionally() {
+        // A CTM auto-heal replacement must advertise the VM's routable IP, not its hostname (which
+        // peers cannot resolve, getting it SWIM-killed). The user-data resolves the host IP on the
+        // VM (outside the container) via the provider-agnostic 'ip route get', never failing the
+        // boot, then passes it into the container as -e AETHER_ADVERTISE_HOST ONLY when non-empty.
+        var config = ClusterBootstrapConfigParser.parse(CLOUD_BASE).unwrap();
+        var source = config.sources().get("eu-1");
+
+        var script = UserDataTemplate.render(config,
+                                             source,
+                                             NodeRole.CORE,
+                                             "node-1",
+                                             0,
+                                             "secret",
+                                             "prod-cluster",
+                                             TomlDocument.EMPTY);
+
+        assertTrue(script.contains("AETHER_ADVERTISE_HOST=\"$(ip route get 1.1.1.1 2>/dev/null | sed -n 's/.*src \\([0-9.]*\\).*/\\1/p' | head -n1)\" || true"),
+                   "Must resolve the VM's routable IPv4 with a provider-agnostic command that never fails the boot");
+        assertTrue(script.contains("if [ -n \"${AETHER_ADVERTISE_HOST}\" ]; then ADVERTISE_ENV=\"-e AETHER_ADVERTISE_HOST=${AETHER_ADVERTISE_HOST}\"; fi"),
+                   "Must build the -e flag only when the resolved host is non-empty (runtime test)");
+        assertTrue(script.contains("    ${ADVERTISE_ENV} \\\n"),
+                   "docker run must expand the conditional advertise-host env so an unset IP adds no flag");
+    }
+
+    @Test
+    void render_jvmRuntime_resolvesRoutableAdvertiseHostAndExportsItConditionally() {
+        // Same routable-IP requirement on the bare-process path: resolve on the VM, then export
+        // AETHER_ADVERTISE_HOST (the node reads it from env via Main.findAdvertiseHostOverride)
+        // ONLY when non-empty, so an unset IP leaves the node's SWIM-reflection chain in charge.
+        var jvmToml = """
+                config_version = "1.0.0"
+
+                [cluster]
+                name = "prod-cluster"
+                version = "1.0.0"
+
+                [runtime.bare-metal]
+                type = "jvm"
+
+                [source.eu-1]
+                type = "cloud"
+                provider = "hetzner"
+                region = "eu-central"
+
+                [source.eu-1.core]
+                count = 3
+                runtime = "bare-metal"
+                """;
+        var config = ClusterBootstrapConfigParser.parse(jvmToml).unwrap();
+        var source = config.sources().get("eu-1");
+
+        var script = UserDataTemplate.render(config,
+                                             source,
+                                             NodeRole.CORE,
+                                             "node-1",
+                                             0,
+                                             "secret",
+                                             "prod-cluster",
+                                             TomlDocument.EMPTY);
+
+        assertTrue(script.contains("AETHER_ADVERTISE_HOST=\"$(ip route get 1.1.1.1 2>/dev/null | sed -n 's/.*src \\([0-9.]*\\).*/\\1/p' | head -n1)\" || true"),
+                   "JVM-mode must also resolve the VM's routable IPv4 with the provider-agnostic command");
+        assertTrue(script.contains("if [ -n \"${AETHER_ADVERTISE_HOST}\" ]; then export AETHER_ADVERTISE_HOST; fi"),
+                   "JVM-mode must export AETHER_ADVERTISE_HOST only when the resolved host is non-empty");
+        assertFalse(script.contains("ADVERTISE_ENV"),
+                    "JVM-mode must not use the container-only ADVERTISE_ENV docker-run construct");
     }
 }

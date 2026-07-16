@@ -4,11 +4,11 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.worker.governor;
 
+import java.util.Map;
+
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Option;
 import org.pragmatica.messaging.MessageRouter.DelegateRouter;
-
-import java.util.Map;
 
 
 public interface GovernorMesh {

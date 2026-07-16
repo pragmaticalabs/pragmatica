@@ -4,15 +4,6 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.cli.cluster;
 
-import org.pragmatica.aether.config.cluster.ClusterBootstrapConfig;
-import org.pragmatica.aether.environment.NodeAddress;
-import org.pragmatica.aether.environment.ProvisionedNode;
-import org.pragmatica.lang.Cause;
-import org.pragmatica.lang.Contract;
-import org.pragmatica.lang.Option;
-import org.pragmatica.lang.Result;
-import org.pragmatica.lang.Unit;
-
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.SecureRandom;
@@ -23,6 +14,15 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Function;
+
+import org.pragmatica.aether.config.cluster.ClusterBootstrapConfig;
+import org.pragmatica.aether.environment.NodeAddress;
+import org.pragmatica.aether.environment.ProvisionedNode;
+import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Contract;
+import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Unit;
 
 import static org.pragmatica.aether.cli.cluster.BootstrapState.PhaseStatus;
 import static org.pragmatica.lang.Option.none;
@@ -77,7 +77,6 @@ public sealed interface ClusterBootstrapOrchestrator permits ClusterBootstrapOrc
                                              List<SshPublicKey> sshPublicKeys,
                                              boolean keepOnFailure,
                                              String rawTomlContent) {
-        configureClusterHttpClient(config);
         if (resume) {
             return resumeBootstrap(config, fullCheck, sshPublicKeys, keepOnFailure, rawTomlContent);
         }
@@ -85,10 +84,14 @@ public sealed interface ClusterBootstrapOrchestrator permits ClusterBootstrapOrc
         return freshBootstrap(config, fullCheck, sshPublicKeys, keepOnFailure, rawTomlContent);
     }
 
+    /// #209: once the cluster secret is known (post-Validate for fresh, post-resume otherwise),
+    /// install a trust store containing ONLY the CA derived from it, so all subsequent bootstrap HTTPS
+    /// calls (node health, formation POSTs carrying the operator API key) verify the cluster's own
+    /// auto-generated certificates and reject any other — a real MITM defense rather than trust-all.
     @Contract
-    private static void configureClusterHttpClient(ClusterBootstrapConfig config) {
+    private static void configureClusterHttpClient(ClusterBootstrapConfig config, String clusterSecret) {
         if (config.operations().tls().autoGenerate()) {
-            ClusterHttpClient.enableTlsSkipVerify();
+            ClusterHttpClient.enableClusterTrust(clusterSecret);
         }
     }
 
@@ -148,12 +151,20 @@ public sealed interface ClusterBootstrapOrchestrator permits ClusterBootstrapOrc
         var resumedState = state.clusterSecret().isEmpty()
                            ? state.withClusterSecret(resumedSecret)
                            : state;
-        var ctx = BootstrapContext.bootstrapContext(config, resumedState, List.of(), List.of()).withSshPublicKeys(sshPublicKeys).withClusterSecret(resumedSecret).withRawTomlContent(rawTomlContent);
+        var ctx = BootstrapContext.bootstrapContext(config,
+                                                    resumedState,
+                                                    List.of(),
+                                                    List.of())
+                                  .withSshPublicKeys(sshPublicKeys)
+                                  .withClusterSecret(resumedSecret)
+                                  .withRawTomlContent(rawTomlContent);
 
         return runPhaseChain(ctx);
     }
 
     private static Result<BootstrapResult> runPhaseChain(BootstrapContext ctx) {
+        configureClusterHttpClient(ctx.config(), ctx.clusterSecret());
+
         return executePhase(ctx, BootstrapPhase.UPLOAD_SSH_KEYS, BootstrapPhaseSshKey::execute).flatMap(c -> executePhase(c,
                                                                                                                           BootstrapPhase.PROVISION,
                                                                                                                           BootstrapPhaseProvision::execute))
@@ -322,6 +333,10 @@ public sealed interface ClusterBootstrapOrchestrator permits ClusterBootstrapOrc
 
     static Result<String> httpGet(String url) {
         return ClusterHttpClient.getDirect(url);
+    }
+
+    static Result<String> httpGet(String url, Option<String> apiKey) {
+        return ClusterHttpClient.getDirect(url, apiKey);
     }
 
     @SuppressWarnings("JBCT-EX-01")

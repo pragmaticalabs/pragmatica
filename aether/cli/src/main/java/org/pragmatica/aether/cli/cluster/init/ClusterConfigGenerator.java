@@ -4,6 +4,8 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.cli.cluster.init;
 
+import java.util.List;
+
 import org.pragmatica.aether.cli.cluster.init.ClusterConfigAnswers.CloudAnswers;
 import org.pragmatica.aether.cli.cluster.init.ClusterConfigAnswers.DatabaseAnswers;
 import org.pragmatica.aether.cli.cluster.init.ClusterConfigAnswers.DatabaseAnswers.PasswordSource;
@@ -12,8 +14,6 @@ import org.pragmatica.aether.cli.cluster.init.ClusterConfigAnswers.SshAnswers;
 import org.pragmatica.aether.cli.cluster.init.ClusterConfigAnswers.TlsAnswers;
 import org.pragmatica.aether.config.cluster.FirewallRule;
 import org.pragmatica.aether.config.cluster.SourceType;
-
-import java.util.List;
 
 
 public sealed interface ClusterConfigGenerator {

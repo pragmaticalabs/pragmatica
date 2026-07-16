@@ -4,12 +4,12 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.worker.governor;
 
+import java.util.List;
+
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Option;
 import org.pragmatica.swim.SwimMember;
 import org.pragmatica.swim.SwimMember.MemberState;
-
-import java.util.List;
 
 
 public interface GovernorElection {

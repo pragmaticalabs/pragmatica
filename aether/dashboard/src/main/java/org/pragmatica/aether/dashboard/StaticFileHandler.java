@@ -4,19 +4,19 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.dashboard;
 
-import org.pragmatica.http.CommonContentType;
-import org.pragmatica.http.ContentType;
-import org.pragmatica.http.HttpStatus;
-import org.pragmatica.http.server.RequestContext;
-import org.pragmatica.http.server.ResponseWriter;
-import org.pragmatica.lang.Option;
-
 import java.io.IOException;
 import java.io.InputStream;
 import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+
+import org.pragmatica.http.CommonContentType;
+import org.pragmatica.http.ContentType;
+import org.pragmatica.http.HttpStatus;
+import org.pragmatica.http.HttpRequest;
+import org.pragmatica.http.server.ResponseWriter;
+import org.pragmatica.lang.Option;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -75,7 +75,7 @@ public final class StaticFileHandler {
         return new StaticFileHandler(classpathPrefix);
     }
 
-    public void handle(RequestContext request, ResponseWriter response) {
+    public void handle(HttpRequest request, ResponseWriter response) {
         var path = request.path();
 
         if (path.equals("/") || path.equals("/index.html")) {
@@ -95,9 +95,10 @@ public final class StaticFileHandler {
                                               : finalPath);
 
         loadResource(resourcePath).onEmpty(() -> {
-            log.debug("Static file not found: {}", resourcePath);
-            sendError(response, HttpStatus.NOT_FOUND, "File not found: " + finalPath);
-        }).onPresent(content -> sendStaticContent(response, finalPath, content));
+                                               log.debug("Static file not found: {}", resourcePath);
+                                               sendError(response, HttpStatus.NOT_FOUND, "File not found: " + finalPath);
+                                           })
+                    .onPresent(content -> sendStaticContent(response, finalPath, content));
     }
 
     private void sendStaticContent(ResponseWriter response, String path, byte[] content) {

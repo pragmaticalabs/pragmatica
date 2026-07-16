@@ -4,12 +4,13 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.cli.cluster;
 
+import java.util.concurrent.Callable;
+
+import org.pragmatica.aether.cli.DestructiveAction;
 import org.pragmatica.aether.cli.ExitCode;
 import org.pragmatica.aether.cli.OutputFormatter;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Result;
-
-import java.util.concurrent.Callable;
 
 import picocli.CommandLine;
 import picocli.CommandLine.Command;
@@ -38,6 +39,9 @@ class ClusterMigrateCommand implements Callable<Integer> {
     @Option(names = "--dry-run", description = "Show migration plan without executing")
     private boolean dryRun;
 
+    @Option(names = {"--yes", "--force"}, description = "Skip interactive confirmation")
+    private boolean skipConfirmation;
+
     @CommandLine.ParentCommand
     private ClusterCommand parent;
 
@@ -46,10 +50,24 @@ class ClusterMigrateCommand implements Callable<Integer> {
 
     @Override
     public Integer call() {
+        if (!dryRun && !confirmMigration()) {
+            System.out.println("Aborted.");
+
+            return ExitCode.SUCCESS;
+        }
+
         return clusterTarget.applyOverrides()
                             .flatMap(_ -> validateStrategy())
                             .flatMap(this::sendMigrateRequest)
-                            .fold(ClusterMigrateCommand::onFailure, this::onSuccess);
+                            .fold(this::onFailure, this::onSuccess);
+    }
+
+    private boolean confirmMigration() {
+        return DestructiveAction.destructiveAction().confirm(skipConfirmation,
+                                                             "This will migrate the cluster to " + targetProvider
+                                                            + "/" + targetZone
+                                                            + " (strategy: " + strategy
+                                                            + ").");
     }
 
     private Result<String> validateStrategy() {
@@ -96,10 +114,8 @@ class ClusterMigrateCommand implements Callable<Integer> {
         return OutputFormatter.printAction(json, parent.outputOptions(), label);
     }
 
-    private static int onFailure(Cause cause) {
-        System.err.println("Error: " + cause.message());
-
-        return ExitCode.ERROR;
+    private int onFailure(Cause cause) {
+        return OutputFormatter.printError(cause, parent.outputOptions());
     }
 
     sealed interface MigrateError extends Cause {

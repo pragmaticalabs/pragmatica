@@ -4,15 +4,15 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.cli.cluster;
 
-import org.pragmatica.aether.cli.ExitCode;
-import org.pragmatica.aether.cli.OutputFormatter;
-import org.pragmatica.lang.Cause;
-import org.pragmatica.lang.Result;
-
 import java.security.SecureRandom;
 import java.util.Base64;
 import java.util.Set;
 import java.util.concurrent.Callable;
+
+import org.pragmatica.aether.cli.ExitCode;
+import org.pragmatica.aether.cli.OutputFormatter;
+import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Result;
 
 import picocli.CommandLine;
 import picocli.CommandLine.Command;

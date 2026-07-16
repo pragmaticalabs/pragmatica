@@ -4,11 +4,11 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.cli.cluster;
 
-import org.pragmatica.lang.Cause;
-import org.pragmatica.lang.Result;
-
 import java.util.List;
 import java.util.Set;
+
+import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Result;
 
 
 public record SshPublicKey(String value) {

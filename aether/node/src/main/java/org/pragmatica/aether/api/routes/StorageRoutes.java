@@ -4,6 +4,13 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.api.routes;
 
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.function.Supplier;
+import java.util.stream.Stream;
+
 import org.pragmatica.aether.management.route.ManagementRoute;
 import org.pragmatica.aether.node.ManageableNode;
 import org.pragmatica.aether.node.StorageFactory.StorageSetup;
@@ -24,13 +31,6 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.utils.Causes;
-
-import java.util.ArrayList;
-import java.util.LinkedHashMap;
-import java.util.List;
-import java.util.Map;
-import java.util.function.Supplier;
-import java.util.stream.Stream;
 
 
 @SuppressWarnings({"JBCT-SEQ-01", "JBCT-PAT-01"})
@@ -260,11 +260,12 @@ public final class StorageRoutes implements RouteSource {
     private static Map<String, List<Map.Entry<StorageStatusKey, StorageStatusValue>>> collectStatusesByInstance(ManageableNode node) {
         var grouped = new LinkedHashMap<String, List<Map.Entry<StorageStatusKey, StorageStatusValue>>>();
 
-        node.kvStore().forEach(StorageStatusKey.class,
-                               StorageStatusValue.class,
-                               (key, value) -> grouped.computeIfAbsent(key.instanceName(),
-                                                                       _ -> new ArrayList<>())
-                                                      .add(Map.entry(key, value)));
+        node.kvStore()
+            .forEach(StorageStatusKey.class,
+                     StorageStatusValue.class,
+                     (key, value) -> grouped.computeIfAbsent(key.instanceName(),
+                                                             _ -> new ArrayList<>())
+                                            .add(Map.entry(key, value)));
 
         return grouped;
     }

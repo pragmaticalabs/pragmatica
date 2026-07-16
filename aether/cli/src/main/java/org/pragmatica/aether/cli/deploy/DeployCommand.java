@@ -4,13 +4,13 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.cli.deploy;
 
+import java.util.List;
+import java.util.concurrent.Callable;
+
 import org.pragmatica.aether.cli.AetherCli;
 import org.pragmatica.aether.cli.OutputFormatter;
 import org.pragmatica.aether.cli.OutputOptions;
 import org.pragmatica.lang.Contract;
-
-import java.util.List;
-import java.util.concurrent.Callable;
 
 import picocli.CommandLine;
 import picocli.CommandLine.Command;

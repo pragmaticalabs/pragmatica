@@ -4,12 +4,12 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.worker.heartbeat;
 
-import org.pragmatica.consensus.NodeId;
-
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.stream.Collectors;
+
+import org.pragmatica.consensus.NodeId;
 
 
 @SuppressWarnings({"JBCT-UTIL-02", "JBCT-STY-04", "JBCT-RET-01"})

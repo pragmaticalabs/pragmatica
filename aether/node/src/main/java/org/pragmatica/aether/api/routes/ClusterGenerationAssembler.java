@@ -4,6 +4,13 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.api.routes;
 
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.stream.Collectors;
+import java.util.stream.Stream;
+
 import org.pragmatica.aether.api.ManagementApiResponses.ClusterGenerationCommunity;
 import org.pragmatica.aether.api.ManagementApiResponses.ClusterGenerationCore;
 import org.pragmatica.aether.api.ManagementApiResponses.ClusterGenerationHealth;
@@ -34,13 +41,6 @@ import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Option;
 import org.pragmatica.net.tcp.NodeAddress;
-
-import java.util.LinkedHashMap;
-import java.util.List;
-import java.util.Map;
-import java.util.Set;
-import java.util.stream.Collectors;
-import java.util.stream.Stream;
 
 
 /// Live assembler for the cluster-generation STATUS view. Builds [`ClusterGenerationResponse`]

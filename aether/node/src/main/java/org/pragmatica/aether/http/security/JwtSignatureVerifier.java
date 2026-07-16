@@ -4,11 +4,11 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.http.security;
 
-import org.pragmatica.lang.Result;
-
 import java.nio.charset.StandardCharsets;
 import java.security.PublicKey;
 import java.security.Signature;
+
+import org.pragmatica.lang.Result;
 
 import static org.pragmatica.lang.Result.success;
 

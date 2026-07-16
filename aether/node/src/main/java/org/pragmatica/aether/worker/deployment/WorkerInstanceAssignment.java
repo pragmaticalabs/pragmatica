@@ -4,11 +4,11 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.worker.deployment;
 
-import org.pragmatica.aether.artifact.Artifact;
-import org.pragmatica.consensus.NodeId;
-
 import java.util.Comparator;
 import java.util.List;
+
+import org.pragmatica.aether.artifact.Artifact;
+import org.pragmatica.consensus.NodeId;
 
 
 @SuppressWarnings("JBCT-UTIL-02")
@@ -20,7 +20,9 @@ public sealed interface WorkerInstanceAssignment {
             return 0;
         }
 
-        var sortedMembers = aliveMembers.stream().sorted(Comparator.comparingInt(member -> hashFor(member, artifact))).toList();
+        var sortedMembers = aliveMembers.stream()
+                                        .sorted(Comparator.comparingInt(member -> hashFor(member, artifact)))
+                                        .toList();
         var selfIndex = sortedMembers.indexOf(self);
 
         if (selfIndex < 0) {

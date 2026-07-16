@@ -4,6 +4,12 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.worker.deployment;
 
+import java.util.List;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Supplier;
+
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.slice.Slice;
 import org.pragmatica.aether.slice.SliceState;
@@ -21,12 +27,6 @@ import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
-
-import java.util.List;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.atomic.AtomicLong;
-import java.util.concurrent.atomic.AtomicReference;
-import java.util.function.Supplier;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -105,7 +105,9 @@ public interface WorkerDeploymentManager {
             public void onDirectiveRemove(Artifact artifact) {
                 directives.remove(artifact);
                 log.info("Worker directive removed for {}", artifact);
-                Option.option(deployments.remove(artifact)).filter(d -> d.state() != DeploymentState.IDLE).onPresent(_ -> teardownSlice(artifact));
+                Option.option(deployments.remove(artifact))
+                      .filter(d -> d.state() != DeploymentState.IDLE)
+                      .onPresent(_ -> teardownSlice(artifact));
             }
 
             @Override
@@ -147,12 +149,15 @@ public interface WorkerDeploymentManager {
                 var sliceKey = new SliceNodeKey(artifact, self);
 
                 forwardSliceStateUpdate(sliceKey, SliceState.LOADING);
-                sliceStore.loadSlice(artifact).flatMap(_ -> transitionToLoaded(artifact, sliceKey)).flatMap(_ -> sliceStore.activateSlice(artifact)).flatMap(_ -> transitionToActive(artifact,
-                                                                                                                                                                                     sliceKey)).flatMap(_ -> publishEndpoints(artifact)).onSuccess(_ -> log.info("Slice {} fully deployed and active on worker {}",
-                                                                                                                                                                                                                                                                 artifact,
-                                                                                                                                                                                                                                                                 self.id())).onFailure(cause -> handleDeploymentFailure(artifact,
-                                                                                                                                                                                                                                                                                                                        sliceKey,
-                                                                                                                                                                                                                                                                                                                        cause));
+                sliceStore.loadSlice(artifact)
+                          .flatMap(_ -> transitionToLoaded(artifact, sliceKey))
+                          .flatMap(_ -> sliceStore.activateSlice(artifact))
+                          .flatMap(_ -> transitionToActive(artifact, sliceKey))
+                          .flatMap(_ -> publishEndpoints(artifact))
+                          .onSuccess(_ -> log.info("Slice {} fully deployed and active on worker {}",
+                                                   artifact,
+                                                   self.id()))
+                          .onFailure(cause -> handleDeploymentFailure(artifact, sliceKey, cause));
             }
 
             private Promise<Unit> transitionToLoaded(Artifact artifact, SliceNodeKey sliceKey) {
@@ -186,12 +191,16 @@ public interface WorkerDeploymentManager {
                 var sliceKey = new SliceNodeKey(artifact, self);
 
                 log.info("Tearing down slice {} on worker {}", artifact, self.id());
-                unpublishEndpoints(artifact).flatMap(_ -> sliceStore.deactivateSlice(artifact)).flatMap(_ -> sliceStore.unloadSlice(artifact)).onSuccess(_ -> forwardSliceRemoval(sliceKey)).onSuccess(_ -> log.info("Slice {} torn down on worker {}",
-                                                                                                                                                                                                                     artifact,
-                                                                                                                                                                                                                     self.id())).onFailure(cause -> log.error("Failed to tear down slice {} on worker {}: {}",
-                                                                                                                                                                                                                                                              artifact,
-                                                                                                                                                                                                                                                              self.id(),
-                                                                                                                                                                                                                                                              cause.message()));
+                unpublishEndpoints(artifact).flatMap(_ -> sliceStore.deactivateSlice(artifact))
+                                  .flatMap(_ -> sliceStore.unloadSlice(artifact))
+                                  .onSuccess(_ -> forwardSliceRemoval(sliceKey))
+                                  .onSuccess(_ -> log.info("Slice {} torn down on worker {}",
+                                                           artifact,
+                                                           self.id()))
+                                  .onFailure(cause -> log.error("Failed to tear down slice {} on worker {}: {}",
+                                                                artifact,
+                                                                self.id(),
+                                                                cause.message()));
             }
 
             private Promise<Unit> publishEndpoints(Artifact artifact) {

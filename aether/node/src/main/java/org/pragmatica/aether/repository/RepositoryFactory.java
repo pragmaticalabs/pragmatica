@@ -4,13 +4,13 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.repository;
 
+import java.util.List;
+
 import org.pragmatica.aether.config.RepositoryType;
 import org.pragmatica.aether.config.SliceConfig;
 import org.pragmatica.aether.resource.artifact.ArtifactStore;
 import org.pragmatica.aether.slice.repository.Repository;
 import org.pragmatica.aether.slice.repository.maven.RemoteRepository;
-
-import java.util.List;
 
 import static org.pragmatica.aether.slice.repository.maven.LocalRepository.localRepository;
 

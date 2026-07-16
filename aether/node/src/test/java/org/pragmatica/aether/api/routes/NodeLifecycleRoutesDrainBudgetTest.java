@@ -11,8 +11,8 @@ import org.pragmatica.aether.metrics.ClusterSyncCollector;
 import org.pragmatica.aether.metrics.NodeReportedState;
 import org.pragmatica.aether.node.ManageableNode;
 import org.pragmatica.consensus.NodeId;
-import org.pragmatica.http.routing.HttpError;
-import org.pragmatica.http.routing.HttpStatus;
+import org.pragmatica.http.HttpError;
+import org.pragmatica.http.HttpStatus;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 

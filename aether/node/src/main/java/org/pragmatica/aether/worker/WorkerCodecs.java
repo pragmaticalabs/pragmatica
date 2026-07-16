@@ -4,6 +4,10 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.worker;
 
+import java.net.InetSocketAddress;
+import java.util.ArrayList;
+import java.util.Set;
+
 import org.pragmatica.aether.invoke.InvokeCodecsInvoke;
 import org.pragmatica.aether.slice.SliceCodecsInvoke;
 import org.pragmatica.aether.slice.SliceCodecsNode;
@@ -22,10 +26,6 @@ import org.pragmatica.serialization.CodecFor;
 import org.pragmatica.serialization.SliceCodec;
 import org.pragmatica.serialization.SliceCodec.TypeCodec;
 import org.pragmatica.swim.SwimCodecs;
-
-import java.net.InetSocketAddress;
-import java.util.ArrayList;
-import java.util.Set;
 
 import static org.pragmatica.serialization.SliceCodec.deterministicTag;
 import static org.pragmatica.serialization.SliceCodec.readCompact;

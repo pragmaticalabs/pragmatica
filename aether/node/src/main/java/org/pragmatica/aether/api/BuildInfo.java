@@ -4,9 +4,9 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.api;
 
-import org.pragmatica.lang.io.StreamOps;
-
 import java.util.Properties;
+
+import org.pragmatica.lang.io.StreamOps;
 
 
 public record BuildInfo(String buildTimestamp, String buildVersion) {
@@ -19,11 +19,13 @@ public record BuildInfo(String buildTimestamp, String buildVersion) {
     private static BuildInfo loadBuildInfo() {
         var props = new Properties();
 
-        StreamOps.openResource(BuildInfo.class.getClassLoader(), "build-info.properties").onSuccess(is -> {
-            try {
-                props.load(is);
-            } catch (Exception ignored) {}
-        });
+        StreamOps.openResource(BuildInfo.class.getClassLoader(),
+                               "build-info.properties")
+                 .onSuccess(is -> {
+                     try {
+                     props.load(is);
+                 } catch (Exception ignored) {}
+                 });
 
         return new BuildInfo(props.getProperty("build.timestamp", "unknown"),
                              props.getProperty("build.version", "unknown"));

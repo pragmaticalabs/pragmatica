@@ -4,10 +4,10 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.cli.cluster.init;
 
+import java.util.List;
+
 import org.pragmatica.aether.config.cluster.FirewallRule;
 import org.pragmatica.lang.Option;
-
-import java.util.List;
 
 
 public sealed interface FirewallPresets {

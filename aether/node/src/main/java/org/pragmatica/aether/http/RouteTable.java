@@ -4,10 +4,10 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.http;
 
-import org.pragmatica.aether.slice.kvstore.AetherKey.HttpNodeRouteKey;
-
 import java.util.List;
 import java.util.Set;
+
+import org.pragmatica.aether.slice.kvstore.AetherKey.HttpNodeRouteKey;
 
 
 public record RouteTable(Set<HttpNodeRouteKey> localRoutes, List<HttpRouteRegistry.RouteInfo> remoteRoutes) {

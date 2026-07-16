@@ -4,6 +4,10 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.api;
 
+import java.net.URI;
+import java.net.http.HttpRequest;
+import java.time.Duration;
+
 import org.pragmatica.aether.config.AlertConfig;
 import org.pragmatica.aether.config.AlertConfig.WebhookConfig;
 import org.pragmatica.http.HttpOperations;
@@ -16,10 +20,6 @@ import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.JitterUtil;
 import org.pragmatica.lang.utils.SharedScheduler;
 import org.pragmatica.messaging.MessageReceiver;
-
-import java.net.URI;
-import java.net.http.HttpRequest;
-import java.time.Duration;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -88,8 +88,12 @@ public class AlertForwarder {
     }
 
     private Promise<Integer> doSend(HttpOperations ops, String url, String payload) {
-        var request = HttpRequest.newBuilder().uri(URI.create(url)).timeout(Duration.ofMillis(config.timeout().millis())).header("Content-Type",
-                                                                                                                                 "application/json").POST(HttpRequest.BodyPublishers.ofString(payload)).build();
+        var request = HttpRequest.newBuilder()
+                                 .uri(URI.create(url))
+                                 .timeout(Duration.ofMillis(config.timeout().millis()))
+                                 .header("Content-Type", "application/json")
+                                 .POST(HttpRequest.BodyPublishers.ofString(payload))
+                                 .build();
 
         return ops.sendString(request)
                   .map(org.pragmatica.http.HttpResult::statusCode);

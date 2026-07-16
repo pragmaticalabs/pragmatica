@@ -4,6 +4,9 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.cli.cluster;
 
+import java.time.Instant;
+import java.util.List;
+
 import org.pragmatica.aether.config.cluster.ClusterBootstrapConfig;
 import org.pragmatica.aether.config.cluster.ClusterBootstrapConfigDiff;
 import org.pragmatica.aether.config.cluster.ClusterConfigError;
@@ -12,9 +15,6 @@ import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
-
-import java.time.Instant;
-import java.util.List;
 
 import static org.pragmatica.aether.cli.cluster.ApplyResult.applyResult;
 import static org.pragmatica.lang.Result.success;

@@ -4,13 +4,13 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.worker.group;
 
-import org.pragmatica.consensus.NodeId;
-import org.pragmatica.swim.SwimMember;
-import org.pragmatica.swim.SwimMember.MemberState;
-
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CopyOnWriteArrayList;
+
+import org.pragmatica.consensus.NodeId;
+import org.pragmatica.swim.SwimMember;
+import org.pragmatica.swim.SwimMember.MemberState;
 
 
 @SuppressWarnings({"JBCT-RET-01", "JBCT-STY-05"})
@@ -75,9 +75,13 @@ public final class GroupMembershipTracker {
         var aliveIds = allAliveMembers();
 
         currentGroups = GroupAssignment.computeGroups(aliveIds, groupName, maxGroupSize);
-        myGroup = currentGroups.entrySet().stream().filter(e -> e.getValue()
-                                                                 .contains(self)).map(Map.Entry::getKey).findFirst().orElse(WorkerGroupId.workerGroupId(groupName,
-                                                                                                                                                        "local"));
+        myGroup = currentGroups.entrySet()
+                               .stream()
+                               .filter(e -> e.getValue()
+                                             .contains(self))
+                               .map(Map.Entry::getKey)
+                               .findFirst()
+                               .orElse(WorkerGroupId.workerGroupId(groupName, "local"));
     }
 
     private static boolean isAlive(SwimMember member) {

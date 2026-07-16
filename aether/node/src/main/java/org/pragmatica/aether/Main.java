@@ -4,6 +4,17 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether;
 
+import java.net.InetAddress;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.regex.Pattern;
+import java.util.stream.IntStream;
+
 import org.pragmatica.aether.config.AetherConfig;
 import org.pragmatica.aether.config.AppHttpConfig;
 import org.pragmatica.aether.config.BackupConfig;
@@ -21,6 +32,8 @@ import org.pragmatica.aether.environment.EnvironmentIntegration;
 import org.pragmatica.aether.environment.EnvironmentIntegrationFactory;
 import org.pragmatica.aether.node.AetherNode;
 import org.pragmatica.aether.node.AetherNodeConfig;
+import org.pragmatica.aether.node.NodeCodecs;
+import org.pragmatica.aether.node.SwimGossipEncryptors;
 import org.pragmatica.aether.node.labels.ContainerLabelInspector;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.NodeInfo;
@@ -33,17 +46,8 @@ import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.net.tcp.security.CertificateProvider;
 import org.pragmatica.net.tcp.security.SelfSignedCertificateProvider;
-
-import java.net.InetAddress;
-import java.nio.charset.StandardCharsets;
-import java.nio.file.Path;
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
-import java.util.regex.Pattern;
-import java.util.stream.IntStream;
+import org.pragmatica.serialization.FrameworkCodecs;
+import org.pragmatica.swim.NettySwimTransport;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -63,6 +67,7 @@ public record Main(String[] args) {
     private record TlsBundle(org.pragmatica.net.tcp.TlsConfig tls, CertificateProvider provider) {}
 
     private void run() {
+        publishConfigPath();
         var aetherConfig = loadConfig();
 
         verifyClusterLabelConsistency(aetherConfig);
@@ -80,7 +85,25 @@ public record Main(String[] args) {
         var coreMax = parseCoreMax(aetherConfig);
         var tlsBundle = resolveTls(nodeId, peers, aetherConfig).expect("Failed to resolve TLS configuration at node startup");
         var appHttpTls = aetherConfig.filter(AetherConfig::tlsEnabled).map(_ -> tlsBundle.tls());
-        var config = AetherNodeConfig.builder().self(nodeId).coreNodes(peers).managementPort(managementPort).sliceConfig(sliceConfig).artifactRepo(dhtConfig).coreMax(coreMax).appHttp(resolveAppHttp(aetherConfig)).tls(appHttpTls).quicTls(tlsBundle.tls()).certificateProvider(tlsBundle.provider()).configProvider(resolveConfigProvider()).environment(resolveEnvironment(aetherConfig)).managementHttpProtocol(resolveManagementHttpProtocol(aetherConfig)).storageConfig(resolveStorage(aetherConfig)).backupConfig(resolveBackup(aetherConfig)).membership(resolveMembership(aetherConfig)).streaming(resolveStreaming(aetherConfig)).build();
+        var config = AetherNodeConfig.builder()
+                                     .self(nodeId)
+                                     .coreNodes(peers)
+                                     .managementPort(managementPort)
+                                     .sliceConfig(sliceConfig)
+                                     .artifactRepo(dhtConfig)
+                                     .coreMax(coreMax)
+                                     .appHttp(resolveAppHttp(aetherConfig))
+                                     .tls(appHttpTls)
+                                     .quicTls(tlsBundle.tls())
+                                     .certificateProvider(tlsBundle.provider())
+                                     .configProvider(resolveConfigProvider())
+                                     .environment(resolveEnvironment(aetherConfig))
+                                     .managementHttpProtocol(resolveManagementHttpProtocol(aetherConfig))
+                                     .storageConfig(resolveStorage(aetherConfig))
+                                     .backupConfig(resolveBackup(aetherConfig))
+                                     .membership(resolveMembership(aetherConfig))
+                                     .streaming(resolveStreaming(aetherConfig))
+                                     .build();
         var node = AetherNode.aetherNode(config).expect("Failed to initialize Aether node at startup");
 
         registerShutdownHook(node);
@@ -115,13 +138,14 @@ public record Main(String[] args) {
         }
 
         ContainerLabelInspector.inspectSelfLabels().onPresent(labels -> ContainerLabelInspector.compareWithConfigured(configured,
-                                                                                                                      labels).onSuccess(_ -> log.info("Cluster label consistency OK: aether.cluster='{}' matches AETHER_CLUSTER_NAME",
-                                                                                                                                                      configured))
-                                                                                                                     .onFailure(cause -> {
-                                                                                                                                    log.error("FATAL: {}",
-                                                                                                                                              cause.message());
-                                                                                                                                    System.exit(1);
-                                                                                                                                }));
+                                                                                                                      labels)
+                                                                                               .onSuccess(_ -> log.info("Cluster label consistency OK: aether.cluster='{}' matches AETHER_CLUSTER_NAME",
+                                                                                                                        configured))
+                                                                                               .onFailure(cause -> {
+                                                                                                              log.error("FATAL: {}",
+                                                                                                                        cause.message());
+                                                                                                              System.exit(1);
+                                                                                                          }));
     }
 
     /// Cluster-name format: same shape as the CLI's `InputValidators.CLUSTER_NAME_PATTERN`
@@ -184,7 +208,9 @@ public record Main(String[] args) {
     /// config, delegates to the pure [#verifyDevModeCompatibility] guard, exits on violation.
     @Contract
     private void enforceDevModeCompatibility(Option<AetherConfig> aetherConfig) {
-        var devMode = Option.option(System.getenv("AETHER_INSECURE_DEV_MODE")).map(v -> v.equalsIgnoreCase("true")).or(false);
+        var devMode = Option.option(System.getenv("AETHER_INSECURE_DEV_MODE"))
+                            .map(v -> v.equalsIgnoreCase("true"))
+                            .or(false);
 
         verifyDevModeCompatibility(devMode, resolveTlsConfig(aetherConfig)).onFailure(this::abortBoot);
         if (devMode) {
@@ -327,6 +353,23 @@ public record Main(String[] args) {
                       .flatMap(this::loadConfigFile);
     }
 
+    /// #336 — publish the resolved `--config=` path as the `aether.config.path` system property so
+    /// the static `AetherNode` assemble site can parse this node's OWN resolved config (its per-node
+    /// overlay rendered by the CLI with `${env:...}` placeholders resolved to literals) for the CTM
+    /// placeholder-resolution path, WITHOUT threading the path through the 31-stage
+    /// [AetherNodeConfig] builder. Only published when the `--config=` file actually exists; absent
+    /// (forge / tests / config-by-other-means) the CTM degrades to none() and composed overlays pass
+    /// through unchanged.
+    @Contract
+    private void publishConfigPath() {
+        findArg("--config=").map(Path::of)
+               .filter(p -> p.toFile()
+                             .exists())
+               .map(Path::toAbsolutePath)
+               .onPresent(p -> System.setProperty(AetherNode.CONFIG_PATH_PROPERTY,
+                                                  p.toString()));
+    }
+
     private Option<AetherConfig> loadConfigFile(Path path) {
         return ConfigLoader.load(path)
                            .onFailure(cause -> log.error("Failed to load config: {}",
@@ -365,7 +408,10 @@ public record Main(String[] args) {
     }
 
     private void startNodeAndWait(AetherNode node, NodeId nodeId) {
-        node.start().onSuccess(_ -> log.info("Node {} is running. Press Ctrl+C to stop.", nodeId)).onFailure(cause -> exitWithError(cause.message())).await();
+        node.start()
+            .onSuccess(_ -> log.info("Node {} is running. Press Ctrl+C to stop.", nodeId))
+            .onFailure(cause -> exitWithError(cause.message()))
+            .await();
         waitForInterrupt();
     }
 
@@ -442,29 +488,139 @@ public record Main(String[] args) {
                            .or(AetherNodeConfig.DEFAULT_MANAGEMENT_PORT);
     }
 
+    /// Parse the cluster peers and, when this node is NOT already named in its own seed set,
+    /// synthesize a self `NodeInfo` advertising a ROUTABLE host resolved by [SelfAddressResolver]
+    /// (override → SWIM WhoAmI reflection → loud hostname fallback) BEFORE building `selfInfo`,
+    /// so the advertised address is correct ONCE and propagates immutably to SWIM/QUIC/consensus/DHT.
+    ///
+    /// Bootstrap (self already present in PEERS) is byte-identical to the prior behaviour: the
+    /// parsed list is returned UNCHANGED and no resolution runs — `selfInfo` was discarded there
+    /// anyway. The CTM-provisioned-replacement case (self ABSENT) is the one that previously
+    /// appended a poisoned hostname-based entry; it now appends a resolved one.
     private List<NodeInfo> parsePeers(NodeId self,
                                       int selfPort,
                                       Map<String, String> labels,
                                       Option<AetherConfig> aetherConfig) {
-        var selfHost = resolveHostname();
-        var selfInfo = NodeInfo.nodeInfo(self,
-                                         nodeAddress(selfHost, selfPort).expect("self host is a valid node address"),
-                                         labels);
-
-        return findArg("--peers=").map(peersStr -> parsePeersFromString(peersStr, self, selfInfo))
-                      .orElse(findEnv("CLUSTER_PEERS").map(peersStr -> parsePeersFromString(peersStr, self, selfInfo)))
-                      .orElse(aetherConfig.map(this::generatePeersFromConfig))
-                      .or(() -> List.of(selfInfo));
+        return findArg("--peers=").map(peersStr -> resolvePeersFromString(peersStr, self, selfPort, labels, aetherConfig))
+                      .orElse(findEnv("CLUSTER_PEERS").map(peersStr -> resolvePeersFromString(peersStr,
+                                                                                              self,
+                                                                                              selfPort,
+                                                                                              labels,
+                                                                                              aetherConfig)))
+                      .orElse(aetherConfig.map(cfg -> generatePeersFromConfig(cfg, self)))
+                      .or(() -> List.of(bootstrapSelfInfo(self, selfPort, labels)));
     }
 
-    private List<NodeInfo> generatePeersFromConfig(AetherConfig aetherConfig) {
+    /// Explicit advertise-host override: `--advertise-host=` arg or `AETHER_ADVERTISE_HOST` env.
+    /// The primary load-bearing path — CTM user-data sets it to the replacement VM's routable IP.
+    private Option<String> findAdvertiseHostOverride() {
+        return findArg("--advertise-host=").orElse(findEnv("AETHER_ADVERTISE_HOST"));
+    }
+
+    /// Single-node bootstrap fallback (no `--peers=`/`CLUSTER_PEERS`/config): honor the explicit
+    /// override if set (cheap, consistent), else the local hostname. No seeds exist to reflect against.
+    private NodeInfo bootstrapSelfInfo(NodeId self, int selfPort, Map<String, String> labels) {
+        var host = findAdvertiseHostOverride().or(Main::resolveHostname);
+
+        return NodeInfo.nodeInfo(self, nodeAddress(host, selfPort).expect("self host is a valid node address"), labels);
+    }
+
+    /// Parse the `--peers=`/`CLUSTER_PEERS` list, then branch on self-presence via the pure
+    /// [#assembleSelfPeers] seam, supplying a host resolver bound to this node's args/env/config.
+    private List<NodeInfo> resolvePeersFromString(String peersStr,
+                                                  NodeId self,
+                                                  int selfPort,
+                                                  Map<String, String> labels,
+                                                  Option<AetherConfig> aetherConfig) {
+        return assembleSelfPeers(parsePeerList(peersStr),
+                                 self,
+                                 selfPort,
+                                 labels,
+                                 seeds -> resolveAdvertiseHost(self, selfPort, seeds, aetherConfig));
+    }
+
+    /// Pure, unit-testable peer-assembly seam: self PRESENT in the parsed list → return it
+    /// UNCHANGED (byte-identical bootstrap); self ABSENT → resolve a routable advertise host via
+    /// `hostResolver` (override → SWIM reflection → fallback, injected so tests stay deterministic),
+    /// build `selfInfo` ONCE, and append it.
+    static List<NodeInfo> assembleSelfPeers(List<NodeInfo> peers,
+                                            NodeId self,
+                                            int selfPort,
+                                            Map<String, String> labels,
+                                            Fn1<String, List<NodeInfo>> hostResolver) {
+        return peers.stream()
+                    .anyMatch(p -> p.id()
+                                    .equals(self))
+               ? peers
+               : ensureSelfIncluded(peers, self, selfInfoForHost(self, selfPort, labels, hostResolver.apply(peers)));
+    }
+
+    private static NodeInfo selfInfoForHost(NodeId self, int selfPort, Map<String, String> labels, String host) {
+        return NodeInfo.nodeInfo(self, nodeAddress(host, selfPort).expect("self host is a valid node address"), labels);
+    }
+
+    private List<NodeInfo> parsePeerList(String peersStr) {
+        return Arrays.stream(peersStr.split(","))
+                     .map(String::trim)
+                     .filter(s -> !s.isEmpty())
+                     .flatMap(peerStr -> parsePeerAddress(peerStr).stream())
+                     .toList();
+    }
+
+    /// Drive [SelfAddressResolver] over the seeds, assembling the SAME serializer/encryptor the
+    /// running SWIM transport uses (so a seed can decrypt the WhoAmI probe), with a real
+    /// `NettySwimTransport` factory.
+    private String resolveAdvertiseHost(NodeId self,
+                                        int selfPort,
+                                        List<NodeInfo> seeds,
+                                        Option<AetherConfig> aetherConfig) {
+        var codec = NodeCodecs.nodeCodecs(FrameworkCodecs.frameworkCodecs());
+        var encryptor = SwimGossipEncryptors.fromCertificateProvider(resolveCertificateProvider(aetherConfig));
+        var resolver = SelfAddressResolver.selfAddressResolver(codec,
+                                                               codec,
+                                                               encryptor,
+                                                               NettySwimTransport::nettySwimTransport);
+
+        return resolver.resolve(self, selfPort, seeds, findAdvertiseHostOverride(), Main::resolveHostname);
+    }
+
+    /// Resolve the cluster `CertificateProvider` from the same cluster secret [#resolveTls] uses,
+    /// so the reflection encryptor's gossip keys match the running transport's. Absent (e.g.
+    /// insecure dev-mode without a secret) → `none()`, yielding the no-op encryptor — which matches
+    /// a dev-mode seed.
+    private Option<CertificateProvider> resolveCertificateProvider(Option<AetherConfig> aetherConfig) {
+        return resolveClusterSecret(resolveTlsConfig(aetherConfig)).flatMap(SelfSignedCertificateProvider::selfSignedCertificateProvider)
+                                   .option();
+    }
+
+    private List<NodeInfo> generatePeersFromConfig(AetherConfig aetherConfig, NodeId self) {
         var nodes = aetherConfig.cluster().nodes();
         var clusterPort = aetherConfig.cluster().ports().cluster();
         var env = aetherConfig.environment();
+        var override = findAdvertiseHostOverride();
 
         return IntStream.range(0, nodes)
                         .mapToObj(i -> createNodeInfoForIndex(i, clusterPort, env))
+                        .map(node -> applyOverrideToSelf(node, self, override))
                         .toList();
+    }
+
+    /// Config-path override: when the explicit advertise-host is set, replace the host of the
+    /// generated entry that IS this node; other entries are untouched (Docker/local behaviour
+    /// otherwise unchanged).
+    private static NodeInfo applyOverrideToSelf(NodeInfo node, NodeId self, Option<String> override) {
+        return node.id()
+                   .equals(self)
+               ? override.map(host -> overrideHost(node, host))
+                         .or(node)
+               : node;
+    }
+
+    private static NodeInfo overrideHost(NodeInfo node, String host) {
+        return NodeInfo.nodeInfo(node.id(),
+                                 nodeAddress(host,
+                                             node.address().port()).expect("override host is a valid node address"),
+                                 node.labels());
     }
 
     private NodeInfo createNodeInfoForIndex(int index, int clusterPort, Environment env) {
@@ -479,13 +635,7 @@ public record Main(String[] args) {
                                  nodeAddress(host, port).expect("generated node address must be valid"));
     }
 
-    private List<NodeInfo> parsePeersFromString(String peersStr, NodeId self, NodeInfo selfInfo) {
-        var peers = Arrays.stream(peersStr.split(",")).map(String::trim).filter(s -> !s.isEmpty()).flatMap(peerStr -> parsePeerAddress(peerStr).stream()).toList();
-
-        return ensureSelfIncluded(peers, self, selfInfo);
-    }
-
-    private List<NodeInfo> ensureSelfIncluded(List<NodeInfo> peers, NodeId self, NodeInfo selfInfo) {
+    private static List<NodeInfo> ensureSelfIncluded(List<NodeInfo> peers, NodeId self, NodeInfo selfInfo) {
         var selfMissing = peers.stream().noneMatch(p -> p.id()
                                                          .equals(self));
 

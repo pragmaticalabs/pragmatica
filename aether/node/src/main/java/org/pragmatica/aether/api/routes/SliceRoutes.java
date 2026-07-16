@@ -4,6 +4,13 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.api.routes;
 
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.function.Supplier;
+import java.util.stream.Stream;
+
 import org.pragmatica.aether.api.OperationalEvent;
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.deployment.DeploymentMap;
@@ -36,13 +43,6 @@ import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.utils.Causes;
-
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
-import java.util.Set;
-import java.util.function.Supplier;
-import java.util.stream.Stream;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -257,7 +257,10 @@ public final class SliceRoutes implements RouteSource {
     }
 
     private void pushSecurityOverrides(ExpandedBlueprint expanded) {
-        nodeSupplier.get().appHttpServer().httpRoutePublisher().onPresent(pub -> pub.updateSecurityOverrides(expanded.securityOverrides()));
+        nodeSupplier.get()
+                    .appHttpServer()
+                    .httpRoutePublisher()
+                    .onPresent(pub -> pub.updateSecurityOverrides(expanded.securityOverrides()));
     }
 
     private BlueprintListResponse buildBlueprintListResponse() {
@@ -283,8 +286,12 @@ public final class SliceRoutes implements RouteSource {
 
     private BlueprintDetailResponse toBlueprintDetailResponse(ExpandedBlueprint blueprint) {
         var slices = blueprint.loadOrder().stream().map(this::toBlueprintSliceInfo).toList();
-        var dependencies = blueprint.loadOrder().stream().filter(ResolvedSlice::isDependency).map(s -> s.artifact()
-                                                                                                        .asString()).toList();
+        var dependencies = blueprint.loadOrder()
+                                    .stream()
+                                    .filter(ResolvedSlice::isDependency)
+                                    .map(s -> s.artifact()
+                                               .asString())
+                                    .toList();
 
         return new BlueprintDetailResponse(blueprint.id().asString(),
                                            slices,
@@ -419,9 +426,12 @@ public final class SliceRoutes implements RouteSource {
     private Promise<List<Long>> applyDeployCommand(Artifact artifact, int instances, Option<String> placement) {
         var node = nodeSupplier.get();
         var key = AetherKey.SliceTargetKey.sliceTargetKey(artifact.base());
-        var existing = node.kvStore().get(key).filter(v -> v instanceof AetherValue.SliceTargetValue).map(v -> applyScaleToExisting((AetherValue.SliceTargetValue) v,
-                                                                                                                                    instances,
-                                                                                                                                    placement));
+        var existing = node.kvStore()
+                           .get(key)
+                           .filter(v -> v instanceof AetherValue.SliceTargetValue)
+                           .map(v -> applyScaleToExisting((AetherValue.SliceTargetValue) v,
+                                                          instances,
+                                                          placement));
         var defaultPlacement = placement.or("CORE_ONLY");
         AetherValue value = existing.or(AetherValue.SliceTargetValue.sliceTargetValue(artifact.version(),
                                                                                       instances,
@@ -482,9 +492,11 @@ public final class SliceRoutes implements RouteSource {
         var loaded = node.sliceStore().loaded();
 
         log.debug("buildTopologyResponse: loaded slices={}", loaded.size());
-        var topologies = loaded.stream().flatMap(ls -> TopologyParser.parse(ls.slice(),
-                                                                            ls.artifact().asString())
-                                                                     .stream()).toList();
+        var topologies = loaded.stream()
+                               .flatMap(ls -> TopologyParser.parse(ls.slice(),
+                                                                   ls.artifact().asString())
+                                                            .stream())
+                               .toList();
 
         log.debug("buildTopologyResponse: topologies={}", topologies.size());
 
@@ -495,14 +507,20 @@ public final class SliceRoutes implements RouteSource {
         log.debug("buildTopologyResponse: graph nodes={}, edges={}",
                   graph.nodes().size(),
                   graph.edges().size());
-        var nodes = graph.nodes().stream().map(n -> new TopologyNodeInfo(n.id(),
-                                                                         n.type().name(),
-                                                                         n.label(),
-                                                                         n.sliceArtifact())).toList();
-        var edges = graph.edges().stream().map(e -> new TopologyEdgeInfo(e.from(),
-                                                                         e.to(),
-                                                                         e.style().name(),
-                                                                         e.topicConfig())).toList();
+        var nodes = graph.nodes()
+                         .stream()
+                         .map(n -> new TopologyNodeInfo(n.id(),
+                                                        n.type().name(),
+                                                        n.label(),
+                                                        n.sliceArtifact()))
+                         .toList();
+        var edges = graph.edges()
+                         .stream()
+                         .map(e -> new TopologyEdgeInfo(e.from(),
+                                                        e.to(),
+                                                        e.style().name(),
+                                                        e.topicConfig()))
+                         .toList();
 
         return new TopologyResponse(nodes, edges);
     }
@@ -519,10 +537,13 @@ public final class SliceRoutes implements RouteSource {
         var node = nodeSupplier.get();
         var targets = collectSliceTargets(node);
         var normalizedFilter = stateFilter.map(RouteFilters::parseStateFilter);
-        var slices = node.deploymentMap().allDeployments().stream().map(info -> toClusterSliceInfo(info,
-                                                                                                   targets,
-                                                                                                   normalizedFilter)).filter(slice -> slice.instances()
-                                                                                                                                           .size() > 0 || normalizedFilter.isEmpty()).toList();
+        var slices = node.deploymentMap()
+                         .allDeployments()
+                         .stream()
+                         .map(info -> toClusterSliceInfo(info, targets, normalizedFilter))
+                         .filter(slice -> slice.instances()
+                                               .size() > 0 || normalizedFilter.isEmpty())
+                         .toList();
 
         return new ClusterSlicesResponse(slices);
     }
@@ -530,10 +551,11 @@ public final class SliceRoutes implements RouteSource {
     private Map<String, SliceTargetValue> collectSliceTargets(ManageableNode node) {
         var targets = new HashMap<String, SliceTargetValue>();
 
-        node.kvStore().forEach(SliceTargetKey.class,
-                               SliceTargetValue.class,
-                               (key, value) -> targets.put(key.artifactBase().asString(),
-                                                           value));
+        node.kvStore()
+            .forEach(SliceTargetKey.class,
+                     SliceTargetValue.class,
+                     (key, value) -> targets.put(key.artifactBase().asString(),
+                                                 value));
 
         return targets;
     }
@@ -546,11 +568,14 @@ public final class SliceRoutes implements RouteSource {
                            ? artifactStr.substring(0, artifactStr.lastIndexOf(':'))
                            : artifactStr;
         var target = Option.option(targets.get(artifactBase));
-        var instances = info.instances().stream().filter(i -> normalizedFilter.map(set -> set.contains(i.state().name()))
-                                                                              .or(true)).map(i -> new ClusterSliceInstance(i.nodeId(),
-                                                                                                                           i.state()
-                                                                                                                            .name(),
-                                                                                                                           "")).toList();
+        var instances = info.instances()
+                            .stream()
+                            .filter(i -> normalizedFilter.map(set -> set.contains(i.state().name()))
+                                                         .or(true))
+                            .map(i -> new ClusterSliceInstance(i.nodeId(),
+                                                               i.state().name(),
+                                                               ""))
+                            .toList();
 
         return new ClusterSliceInfo(artifactStr,
                                     target.map(SliceTargetValue::targetInstances).or(instances.size()),

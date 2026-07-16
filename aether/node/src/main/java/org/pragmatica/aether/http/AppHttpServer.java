@@ -4,6 +4,15 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.http;
 
+import java.nio.charset.StandardCharsets;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.ThreadLocalRandom;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Function;
+
 import org.pragmatica.aether.slice.RateGuardError;
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.artifact.Version;
@@ -51,11 +60,11 @@ import org.pragmatica.consensus.topology.ClusterStateNotification;
 import org.pragmatica.consensus.topology.MembershipDecision;
 import org.pragmatica.consensus.topology.TransportObservation;
 import org.pragmatica.http.CommonContentType;
-import org.pragmatica.http.routing.HttpStatus;
-import org.pragmatica.http.routing.ProblemDetail;
+import org.pragmatica.http.HttpStatus;
+import org.pragmatica.http.ProblemDetail;
 import org.pragmatica.http.server.HttpServer;
 import org.pragmatica.http.server.HttpServerConfig;
-import org.pragmatica.http.server.RequestContext;
+import org.pragmatica.http.HttpRequest;
 import org.pragmatica.http.server.ResponseWriter;
 import org.pragmatica.json.JsonMapper;
 import org.pragmatica.lang.Cause;
@@ -72,15 +81,6 @@ import org.pragmatica.net.tcp.security.CertificateBundle;
 import org.pragmatica.serialization.Deserializer;
 import org.pragmatica.serialization.Serializer;
 import org.pragmatica.statemachine.Fsm;
-
-import java.nio.charset.StandardCharsets;
-import java.util.List;
-import java.util.Map;
-import java.util.Set;
-import java.util.concurrent.ThreadLocalRandom;
-import java.util.concurrent.atomic.AtomicLong;
-import java.util.concurrent.atomic.AtomicReference;
-import java.util.function.Function;
 
 import io.netty.channel.EventLoopGroup;
 import org.slf4j.Logger;
@@ -464,14 +464,14 @@ class AppHttpServerAdapter implements AppHttpServer {
 
     private Promise<Unit> startH1Server() {
         var serverConfig = buildServerConfig();
-        java.util.function.BiConsumer<org.pragmatica.http.server.RequestContext, org.pragmatica.http.server.ResponseWriter> handler = config.httpProtocol() == HttpProtocol.BOTH
-                                                                                                                                      ? this::handleRequestWithAltSvc
-                                                                                                                                      : this::handleRequest;
+        java.util.function.BiConsumer<org.pragmatica.http.HttpRequest, org.pragmatica.http.server.ResponseWriter> handler = config.httpProtocol() == HttpProtocol.BOTH
+                                                                                                                            ? this::handleRequestWithAltSvc
+                                                                                                                            : this::handleRequest;
         var serverPromise = bossGroup.flatMap(bg -> workerGroup.map(wg -> HttpServer.httpServer(serverConfig,
                                                                                                 handler,
                                                                                                 bg,
-                                                                                                wg))).or(HttpServer.httpServer(serverConfig,
-                                                                                                                               handler));
+                                                                                                wg)))
+                                     .or(HttpServer.httpServer(serverConfig, handler));
 
         return serverPromise.map(this::registerStartedH1Server)
                             .onFailure(cause -> log.error("Failed to start App HTTP server on port {}: {}",
@@ -496,13 +496,14 @@ class AppHttpServerAdapter implements AppHttpServer {
     }
 
     private Promise<Unit> startH3WithSslContext(io.netty.handler.codec.quic.QuicSslContext quicSslContext) {
-        var serverConfig = HttpServerConfig.httpServerConfig("app-http-h3", config.port()).withMaxContentLength(config.maxRequestSize());
+        var serverConfig = HttpServerConfig.httpServerConfig("app-http-h3",
+                                                             config.port())
+                                           .withMaxContentLength(config.maxRequestSize());
         var serverPromise = workerGroup.map(wg -> HttpServer.http3Server(serverConfig,
                                                                          quicSslContext,
                                                                          this::handleRequest,
-                                                                         wg)).or(HttpServer.http3Server(serverConfig,
-                                                                                                        quicSslContext,
-                                                                                                        this::handleRequest));
+                                                                         wg))
+                                       .or(HttpServer.http3Server(serverConfig, quicSslContext, this::handleRequest));
 
         return serverPromise.map(this::registerStartedH3Server)
                             .onFailure(cause -> log.error("Failed to start App HTTP/3 server on port {}: {}",
@@ -510,14 +511,16 @@ class AppHttpServerAdapter implements AppHttpServer {
                                                           cause.message()));
     }
 
-    private void handleRequestWithAltSvc(org.pragmatica.http.server.RequestContext request,
+    private void handleRequestWithAltSvc(org.pragmatica.http.HttpRequest request,
                                          org.pragmatica.http.server.ResponseWriter response) {
         response.header("Alt-Svc", "h3=\":" + config.port() + "\"; ma=3600");
         handleRequest(request, response);
     }
 
     private HttpServerConfig buildServerConfig() {
-        var serverConfig = HttpServerConfig.httpServerConfig("app-http", config.port()).withMaxContentLength(config.maxRequestSize());
+        var serverConfig = HttpServerConfig.httpServerConfig("app-http",
+                                                             config.port())
+                                           .withMaxContentLength(config.maxRequestSize());
 
         return tls.map(serverConfig::withTls)
                   .or(serverConfig);
@@ -561,11 +564,12 @@ class AppHttpServerAdapter implements AppHttpServer {
         context.dispatch(new AppHttpEvents.CertRotationRequested(newBundle));
 
         return context.stopServersAsync(previous.server(),
-                                        previous.h3()).flatMap(_ -> restartWithNewBundle(newBundle))
-                                       .onSuccess(pair -> context.dispatch(new AppHttpEvents.CertRotationApplied(pair.server(),
-                                                                                                                 pair.h3(),
-                                                                                                                 currentRoutes)))
-                                       .mapToUnit();
+                                        previous.h3())
+                      .flatMap(_ -> restartWithNewBundle(newBundle))
+                      .onSuccess(pair -> context.dispatch(new AppHttpEvents.CertRotationApplied(pair.server(),
+                                                                                                pair.h3(),
+                                                                                                currentRoutes)))
+                      .mapToUnit();
     }
 
     private Promise<AppHttpContext.ServerPair> restartWithNewBundle(CertificateBundle newBundle) {
@@ -602,16 +606,18 @@ class AppHttpServerAdapter implements AppHttpServer {
     }
 
     private Promise<Option<HttpServer>> restartH1WithTls(Option<TlsConfig> newTls) {
-        var serverConfig = HttpServerConfig.httpServerConfig("app-http", config.port()).withMaxContentLength(config.maxRequestSize());
+        var serverConfig = HttpServerConfig.httpServerConfig("app-http",
+                                                             config.port())
+                                           .withMaxContentLength(config.maxRequestSize());
         var finalConfig = newTls.map(serverConfig::withTls).or(serverConfig);
-        java.util.function.BiConsumer<RequestContext, ResponseWriter> handler = config.httpProtocol() == HttpProtocol.BOTH
-                                                                                ? this::handleRequestWithAltSvc
-                                                                                : this::handleRequest;
+        java.util.function.BiConsumer<HttpRequest, ResponseWriter> handler = config.httpProtocol() == HttpProtocol.BOTH
+                                                                             ? this::handleRequestWithAltSvc
+                                                                             : this::handleRequest;
         var serverPromise = bossGroup.flatMap(bg -> workerGroup.map(wg -> HttpServer.httpServer(finalConfig,
                                                                                                 handler,
                                                                                                 bg,
-                                                                                                wg))).or(HttpServer.httpServer(finalConfig,
-                                                                                                                               handler));
+                                                                                                wg)))
+                                     .or(HttpServer.httpServer(finalConfig, handler));
 
         return serverPromise.map(Option::some)
                             .onSuccessRun(() -> log.info("App HTTP/1.1 server restarted with new certificate"))
@@ -636,13 +642,14 @@ class AppHttpServerAdapter implements AppHttpServer {
     }
 
     private Promise<Option<HttpServer>> startH3WithSslContextReturningServer(io.netty.handler.codec.quic.QuicSslContext quicSslContext) {
-        var serverConfig = HttpServerConfig.httpServerConfig("app-http-h3", config.port()).withMaxContentLength(config.maxRequestSize());
+        var serverConfig = HttpServerConfig.httpServerConfig("app-http-h3",
+                                                             config.port())
+                                           .withMaxContentLength(config.maxRequestSize());
         var serverPromise = workerGroup.map(wg -> HttpServer.http3Server(serverConfig,
                                                                          quicSslContext,
                                                                          this::handleRequest,
-                                                                         wg)).or(HttpServer.http3Server(serverConfig,
-                                                                                                        quicSslContext,
-                                                                                                        this::handleRequest));
+                                                                         wg))
+                                       .or(HttpServer.http3Server(serverConfig, quicSslContext, this::handleRequest));
 
         return serverPromise.map(Option::some);
     }
@@ -672,9 +679,14 @@ class AppHttpServerAdapter implements AppHttpServer {
 
     private RouteTable computeRouteTable() {
         var localRoutes = httpRoutePublisher.map(HttpRoutePublisher::allLocalRoutes).or(Set.of());
-        var localIdentities = localRoutes.stream().map(HttpNodeRouteKey::routeIdentity).collect(java.util.stream.Collectors.toSet());
-        var remoteRoutes = routeRegistry.allRoutes().stream().filter(route -> !localIdentities.contains(route.httpMethod()
-                                                                                                       + ":" + route.pathPrefix())).toList();
+        var localIdentities = localRoutes.stream()
+                                         .map(HttpNodeRouteKey::routeIdentity)
+                                         .collect(java.util.stream.Collectors.toSet());
+        var remoteRoutes = routeRegistry.allRoutes()
+                                        .stream()
+                                        .filter(route -> !localIdentities.contains(route.httpMethod()
+                                                                                  + ":" + route.pathPrefix()))
+                                        .toList();
 
         return RouteTable.routeTable(localRoutes, remoteRoutes);
     }
@@ -728,13 +740,13 @@ class AppHttpServerAdapter implements AppHttpServer {
         publishRouteTable();
     }
 
-    private void handleRequest(RequestContext request, ResponseWriter response) {
+    private void handleRequest(HttpRequest request, ResponseWriter response) {
         var requestId = request.requestId();
 
         InvocationContext.runWithRequestId(requestId, () -> handleRequestInScope(request, response, requestId));
     }
 
-    private void handleRequestInScope(RequestContext request, ResponseWriter response, String requestId) {
+    private void handleRequestInScope(HttpRequest request, ResponseWriter response, String requestId) {
         var method = request.method().name();
         var path = request.path();
 
@@ -758,20 +770,17 @@ class AppHttpServerAdapter implements AppHttpServer {
 
         var httpContext = toHttpRequestContext(request, requestId);
 
-        securityValidator.validate(httpContext, effectivePolicy).flatMap(ctx -> enforceRoleIfRequired(ctx,
-                                                                                                      effectivePolicy)).apply(cause -> handleSecurityFailure(response,
-                                                                                                                                                             cause,
-                                                                                                                                                             path,
-                                                                                                                                                             requestId,
-                                                                                                                                                             method),
-                                                                                                                              ctx -> dispatchAuthenticated(request,
-                                                                                                                                                           response,
-                                                                                                                                                           routeTable,
-                                                                                                                                                           ctx,
-                                                                                                                                                           method,
-                                                                                                                                                           normalizedPath,
-                                                                                                                                                           path,
-                                                                                                                                                           requestId));
+        securityValidator.validate(httpContext, effectivePolicy)
+                         .flatMap(ctx -> enforceRoleIfRequired(ctx, effectivePolicy))
+                         .apply(cause -> handleSecurityFailure(response, cause, path, requestId, method),
+                                ctx -> dispatchAuthenticated(request,
+                                                             response,
+                                                             routeTable,
+                                                             ctx,
+                                                             method,
+                                                             normalizedPath,
+                                                             path,
+                                                             requestId));
     }
 
     private SecurityPolicy resolveEffectivePolicy(String method, String normalizedPath, RouteTable routeTable) {
@@ -783,7 +792,9 @@ class AppHttpServerAdapter implements AppHttpServer {
     private Option<SecurityPolicy> findRouteSecurityPolicy(String method,
                                                            String normalizedPath,
                                                            RouteTable routeTable) {
-        var localPolicy = httpRoutePublisher.flatMap(pub -> pub.findLocalRoute(method, normalizedPath)).map(LocalRouteInfo::security).filter(AppHttpServerAdapter::isExplicitPolicy);
+        var localPolicy = httpRoutePublisher.flatMap(pub -> pub.findLocalRoute(method, normalizedPath))
+                                            .map(LocalRouteInfo::security)
+                                            .filter(AppHttpServerAdapter::isExplicitPolicy);
 
         if (localPolicy.isPresent()) {
             return localPolicy;
@@ -822,7 +833,7 @@ class AppHttpServerAdapter implements AppHttpServer {
     }
 
     @Contract
-    private void dispatchAuthenticated(RequestContext request,
+    private void dispatchAuthenticated(HttpRequest request,
                                        ResponseWriter response,
                                        RouteTable routeTable,
                                        SecurityContext securityContext,
@@ -836,20 +847,22 @@ class AppHttpServerAdapter implements AppHttpServer {
             AuditLog.authSuccess(requestId, principal, method, path);
         }
 
-        ScopedValue.where(SecurityContextHolder.scopedValue(), securityContext).run(() -> InvocationContext.runWithContext(requestId,
-                                                                                                                           principal,
-                                                                                                                           selfNodeId.id(),
-                                                                                                                           0,
-                                                                                                                           true,
-                                                                                                                           () -> dispatchToRoute(request,
-                                                                                                                                                 response,
-                                                                                                                                                 routeTable,
-                                                                                                                                                 method,
-                                                                                                                                                 normalizedPath,
-                                                                                                                                                 requestId)));
+        ScopedValue.where(SecurityContextHolder.scopedValue(),
+                          securityContext)
+                   .run(() -> InvocationContext.runWithContext(requestId,
+                                                               principal,
+                                                               selfNodeId.id(),
+                                                               0,
+                                                               true,
+                                                               () -> dispatchToRoute(request,
+                                                                                     response,
+                                                                                     routeTable,
+                                                                                     method,
+                                                                                     normalizedPath,
+                                                                                     requestId)));
     }
 
-    private void dispatchToRoute(RequestContext request,
+    private void dispatchToRoute(HttpRequest request,
                                  ResponseWriter response,
                                  RouteTable routeTable,
                                  String method,
@@ -882,7 +895,7 @@ class AppHttpServerAdapter implements AppHttpServer {
         sendNoRouteFound(response, request, method, requestId);
     }
 
-    private void dispatchLocalRoute(RequestContext request,
+    private void dispatchLocalRoute(HttpRequest request,
                                     ResponseWriter response,
                                     RouteTable routeTable,
                                     String method,
@@ -906,14 +919,14 @@ class AppHttpServerAdapter implements AppHttpServer {
         handleLocalRoute(request, response, localRouteKey, requestId);
     }
 
-    private void dispatchRemoteRoute(RequestContext request,
+    private void dispatchRemoteRoute(HttpRequest request,
                                      ResponseWriter response,
                                      HttpRouteRegistry.RouteInfo route,
                                      String requestId) {
         handleRemoteRoute(request, response, route, requestId);
     }
 
-    private void sendNoRouteFound(ResponseWriter response, RequestContext request, String method, String requestId) {
+    private void sendNoRouteFound(ResponseWriter response, HttpRequest request, String method, String requestId) {
         var routeReady = isRouteReady();
 
         if (!routeReady && httpRoutePublisher.isPresent()) {
@@ -1169,24 +1182,26 @@ class AppHttpServerAdapter implements AppHttpServer {
     private void sendHealthResponse(ResponseWriter response, String requestId) {
         var body = "{\"status\":\"UP\",\"nodeId\":\"" + selfNodeId.id() + "\"}";
 
-        response.header(ResponseWriter.X_REQUEST_ID, requestId).header("X-Node-Id", selfNodeId.id()).write(org.pragmatica.http.HttpStatus.OK,
-                                                                                                           body.getBytes(StandardCharsets.UTF_8),
-                                                                                                           CommonContentType.APPLICATION_JSON);
+        response.header(ResponseWriter.X_REQUEST_ID, requestId)
+                .header("X-Node-Id",
+                        selfNodeId.id())
+                .write(org.pragmatica.http.HttpStatus.OK,
+                       body.getBytes(StandardCharsets.UTF_8),
+                       CommonContentType.APPLICATION_JSON);
     }
 
-    private void handleLocalRoute(RequestContext request,
+    private void handleLocalRoute(HttpRequest request,
                                   ResponseWriter response,
                                   HttpNodeRouteKey routeKey,
                                   String requestId) {
         log.trace("Handling local route {} {} [{}]", routeKey.httpMethod(), routeKey.pathPrefix(), requestId);
-        httpRoutePublisher.flatMap(pub -> pub.findLocalRouter(routeKey.httpMethod(), routeKey.pathPrefix())).onEmpty(() -> handleMissingLocalRouter(response,
-                                                                                                                                                    request.path(),
-                                                                                                                                                    routeKey,
-                                                                                                                                                    requestId)).onPresent(router -> invokeLocalRouter(request,
-                                                                                                                                                                                                      response,
-                                                                                                                                                                                                      router,
-                                                                                                                                                                                                      routeKey,
-                                                                                                                                                                                                      requestId));
+        httpRoutePublisher.flatMap(pub -> pub.findLocalRouter(routeKey.httpMethod(),
+                                                              routeKey.pathPrefix()))
+                          .onEmpty(() -> handleMissingLocalRouter(response,
+                                                                  request.path(),
+                                                                  routeKey,
+                                                                  requestId))
+                          .onPresent(router -> invokeLocalRouter(request, response, router, routeKey, requestId));
     }
 
     private void handleMissingLocalRouter(ResponseWriter response,
@@ -1197,7 +1212,7 @@ class AppHttpServerAdapter implements AppHttpServer {
         sendProblem(response, HttpStatus.INTERNAL_SERVER_ERROR, "Local router not found", path, requestId);
     }
 
-    private void invokeLocalRouter(RequestContext request,
+    private void invokeLocalRouter(HttpRequest request,
                                    ResponseWriter response,
                                    SliceRouter router,
                                    HttpNodeRouteKey routeKey,
@@ -1207,18 +1222,20 @@ class AppHttpServerAdapter implements AppHttpServer {
         var startTime = System.nanoTime();
 
         routeInfo.onPresent(info -> recordMetricsStart(info));
-        router.handle(httpCtx).onSuccess(responseData -> handleLocalRouterSuccess(response,
-                                                                                  responseData,
-                                                                                  requestId,
-                                                                                  routeInfo,
-                                                                                  startTime,
-                                                                                  httpCtx)).onFailure(cause -> handleLocalRouterFailure(response,
-                                                                                                                                        request.path(),
-                                                                                                                                        requestId,
-                                                                                                                                        cause,
-                                                                                                                                        routeInfo,
-                                                                                                                                        startTime,
-                                                                                                                                        httpCtx));
+        router.handle(httpCtx)
+              .onSuccess(responseData -> handleLocalRouterSuccess(response,
+                                                                  responseData,
+                                                                  requestId,
+                                                                  routeInfo,
+                                                                  startTime,
+                                                                  httpCtx))
+              .onFailure(cause -> handleLocalRouterFailure(response,
+                                                           request.path(),
+                                                           requestId,
+                                                           cause,
+                                                           routeInfo,
+                                                           startTime,
+                                                           httpCtx));
     }
 
     private void handleLocalRouterSuccess(ResponseWriter response,
@@ -1275,7 +1292,7 @@ class AppHttpServerAdapter implements AppHttpServer {
         sendProblem(response, HttpStatus.TOO_MANY_REQUESTS, exceeded.message(), path, requestId);
     }
 
-    private HttpRequestContext toHttpRequestContext(RequestContext request, String requestId) {
+    private HttpRequestContext toHttpRequestContext(HttpRequest request, String requestId) {
         return HttpRequestContext.httpRequestContext(request.path(),
                                                      request.method().name(),
                                                      request.queryParams().asMap(),
@@ -1284,7 +1301,7 @@ class AppHttpServerAdapter implements AppHttpServer {
                                                      requestId);
     }
 
-    private void handleRemoteRoute(RequestContext request,
+    private void handleRemoteRoute(HttpRequest request,
                                    ResponseWriter response,
                                    HttpRouteRegistry.RouteInfo route,
                                    String requestId) {
@@ -1306,13 +1323,17 @@ class AppHttpServerAdapter implements AppHttpServer {
 
         var httpCtx = toHttpRequestContext(request, requestId);
 
-        httpForwarder.unwrap().forward(httpCtx, route.httpMethod(), route.pathPrefix(), requestId).onSuccess(responseData -> sendResponse(response,
-                                                                                                                                          responseData,
-                                                                                                                                          requestId)).onFailure(cause -> sendProblem(response,
-                                                                                                                                                                                     HttpStatus.GATEWAY_TIMEOUT,
-                                                                                                                                                                                     cause.message(),
-                                                                                                                                                                                     request.path(),
-                                                                                                                                                                                     requestId));
+        httpForwarder.unwrap()
+                     .forward(httpCtx,
+                              route.httpMethod(),
+                              route.pathPrefix(),
+                              requestId)
+                     .onSuccess(responseData -> sendResponse(response, responseData, requestId))
+                     .onFailure(cause -> sendProblem(response,
+                                                     HttpStatus.GATEWAY_TIMEOUT,
+                                                     cause.message(),
+                                                     request.path(),
+                                                     requestId));
     }
 
     @Override
@@ -1329,13 +1350,10 @@ class AppHttpServerAdapter implements AppHttpServer {
         var ser = serializer.unwrap();
         var network = clusterNetwork.unwrap();
 
-        Result.<HttpRequestContext, byte[]> lift1(des::decode, request.requestData()).onFailure(cause -> logAndSendForwardError(network,
-                                                                                                                                request,
-                                                                                                                                "Deserialization failed",
-                                                                                                                                cause)).onSuccess(httpCtx -> dispatchForwardedRequest(httpCtx,
-                                                                                                                                                                                      request,
-                                                                                                                                                                                      network,
-                                                                                                                                                                                      ser));
+        Result.<HttpRequestContext, byte[]> lift1(des::decode,
+                                                  request.requestData())
+              .onFailure(cause -> logAndSendForwardError(network, request, "Deserialization failed", cause))
+              .onSuccess(httpCtx -> dispatchForwardedRequest(httpCtx, request, network, ser));
     }
 
     private void logAndSendForwardError(ClusterNetwork network,
@@ -1367,18 +1385,16 @@ class AppHttpServerAdapter implements AppHttpServer {
         var startTime = System.nanoTime();
 
         routeInfo.onPresent(this::recordMetricsStart);
-        routerOpt.unwrap().handle(httpCtx).onSuccess(responseData -> handleForwardSuccess(network,
-                                                                                          request,
-                                                                                          ser,
-                                                                                          responseData,
-                                                                                          routeInfo,
-                                                                                          startTime,
-                                                                                          httpCtx)).onFailure(cause -> handleForwardFailure(network,
-                                                                                                                                            request,
-                                                                                                                                            cause,
-                                                                                                                                            routeInfo,
-                                                                                                                                            startTime,
-                                                                                                                                            httpCtx));
+        routerOpt.unwrap()
+                 .handle(httpCtx)
+                 .onSuccess(responseData -> handleForwardSuccess(network,
+                                                                 request,
+                                                                 ser,
+                                                                 responseData,
+                                                                 routeInfo,
+                                                                 startTime,
+                                                                 httpCtx))
+                 .onFailure(cause -> handleForwardFailure(network, request, cause, routeInfo, startTime, httpCtx));
     }
 
     private void handleForwardSuccess(ClusterNetwork network,
@@ -1414,10 +1430,9 @@ class AppHttpServerAdapter implements AppHttpServer {
                                     HttpForwardRequest request,
                                     Serializer ser,
                                     HttpResponseData responseData) {
-        Result.lift1(ser::encode, responseData).onSuccess(payload -> sendForwardPayload(network, request, payload)).onFailure(cause -> logAndSendForwardError(network,
-                                                                                                                                                              request,
-                                                                                                                                                              "Response serialization failed",
-                                                                                                                                                              cause));
+        Result.lift1(ser::encode, responseData)
+              .onSuccess(payload -> sendForwardPayload(network, request, payload))
+              .onFailure(cause -> logAndSendForwardError(network, request, "Response serialization failed", cause));
     }
 
     private void sendForwardPayload(ClusterNetwork network, HttpForwardRequest request, byte[] payload) {
@@ -1526,15 +1541,14 @@ class AppHttpServerAdapter implements AppHttpServer {
                              String requestId) {
         var problem = ProblemDetail.problemDetail(status, detail, instance, requestId);
 
-        JSON_MAPPER.writeAsString(problem).onSuccess(json -> response.header(ResponseWriter.X_REQUEST_ID, requestId)
-                                                                     .header("X-Node-Id",
-                                                                             selfNodeId.id())
-                                                                     .write(toServerStatus(status.code()),
-                                                                            json.getBytes(StandardCharsets.UTF_8),
-                                                                            CONTENT_TYPE_PROBLEM)).onFailure(cause -> handleProblemSerializationFailure(response,
-                                                                                                                                                        status,
-                                                                                                                                                        requestId,
-                                                                                                                                                        cause));
+        JSON_MAPPER.writeAsString(problem)
+                   .onSuccess(json -> response.header(ResponseWriter.X_REQUEST_ID, requestId)
+                                              .header("X-Node-Id",
+                                                      selfNodeId.id())
+                                              .write(toServerStatus(status.code()),
+                                                     json.getBytes(StandardCharsets.UTF_8),
+                                                     CONTENT_TYPE_PROBLEM))
+                   .onFailure(cause -> handleProblemSerializationFailure(response, status, requestId, cause));
     }
 
     private void handleProblemSerializationFailure(ResponseWriter response,
@@ -1566,18 +1580,66 @@ class AppHttpServerAdapter implements AppHttpServer {
             writer = writer.header(entry.getKey(), entry.getValue());
         }
 
-        var contentType = Option.option(responseData.headers().get("Content-Type")).map(ct -> org.pragmatica.http.ContentType.contentType(ct,
-                                                                                                                                          org.pragmatica.http.ContentCategory.JSON)).or(CommonContentType.APPLICATION_JSON);
+        var contentType = Option.option(responseData.headers().get("Content-Type"))
+                                .map(AppHttpServerAdapter::resolveContentType)
+                                .or(CommonContentType.APPLICATION_JSON);
 
         writer.write(toServerStatus(responseData.statusCode()), responseData.body(), contentType);
+    }
+
+    private static org.pragmatica.http.ContentType resolveContentType(String headerText) {
+        return matchCommonContentType(headerText).or(() -> org.pragmatica.http.ContentType.contentType(headerText,
+                                                                                                       guessCategory(headerText)));
+    }
+
+    private static Option<org.pragmatica.http.ContentType> matchCommonContentType(String headerText) {
+        return java.util.stream.Stream.<org.pragmatica.http.ContentType> of(CommonContentType.values())
+                                      .filter(ct -> ct.headerText()
+                                                      .equalsIgnoreCase(headerText))
+                                      .findFirst()
+                                      .map(Option::option)
+                                      .orElseGet(Option::none);
+    }
+
+    private static org.pragmatica.http.ContentCategory guessCategory(String headerText) {
+        var lower = headerText.toLowerCase();
+
+        if (lower.contains("json")) {
+            return org.pragmatica.http.ContentCategory.JSON;
+        }
+
+        if (lower.startsWith("text/html") || lower.contains("html")) {
+            return org.pragmatica.http.ContentCategory.HTML;
+        }
+
+        if (lower.contains("xml")) {
+            return org.pragmatica.http.ContentCategory.XML;
+        }
+
+        if (lower.startsWith("text/")) {
+            return org.pragmatica.http.ContentCategory.TEXT;
+        }
+
+        if (lower.contains("x-www-form-urlencoded")) {
+            return org.pragmatica.http.ContentCategory.FORM_URLENCODED;
+        }
+
+        if (lower.contains("multipart/")) {
+            return org.pragmatica.http.ContentCategory.MULTIPART;
+        }
+
+        return org.pragmatica.http.ContentCategory.BINARY;
     }
 
     private void sendPlainError(ResponseWriter response, HttpStatus status, String requestId) {
         var content = "{\"error\":\"" + status.message() + "\"}";
 
-        response.header(ResponseWriter.X_REQUEST_ID, requestId).header("X-Node-Id", selfNodeId.id()).write(toServerStatus(status.code()),
-                                                                                                           content.getBytes(StandardCharsets.UTF_8),
-                                                                                                           CommonContentType.APPLICATION_JSON);
+        response.header(ResponseWriter.X_REQUEST_ID, requestId)
+                .header("X-Node-Id",
+                        selfNodeId.id())
+                .write(toServerStatus(status.code()),
+                       content.getBytes(StandardCharsets.UTF_8),
+                       CommonContentType.APPLICATION_JSON);
     }
 
     private static org.pragmatica.http.HttpStatus toServerStatus(int code) {

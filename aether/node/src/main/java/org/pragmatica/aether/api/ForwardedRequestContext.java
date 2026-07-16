@@ -8,13 +8,13 @@ import org.pragmatica.aether.http.handler.HttpRequestContext;
 import org.pragmatica.http.Headers;
 import org.pragmatica.http.HttpMethod;
 import org.pragmatica.http.QueryParams;
-import org.pragmatica.http.server.RequestContext;
+import org.pragmatica.http.HttpRequest;
 
 
 record ForwardedRequestContext(HttpRequestContext source,
                                HttpMethod httpMethod,
                                Headers headers,
-                               QueryParams queryParams) implements RequestContext {
+                               QueryParams queryParams) implements HttpRequest {
     static ForwardedRequestContext forwardedRequestContext(HttpRequestContext source) {
         return new ForwardedRequestContext(source,
                                            HttpMethod.valueOf(source.method().toUpperCase()),

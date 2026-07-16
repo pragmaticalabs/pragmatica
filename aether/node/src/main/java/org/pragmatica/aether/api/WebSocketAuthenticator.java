@@ -4,17 +4,17 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.api;
 
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+
 import org.pragmatica.aether.http.handler.HttpRequestContext;
 import org.pragmatica.aether.http.handler.security.SecurityPolicy;
 import org.pragmatica.aether.http.security.AuditLog;
 import org.pragmatica.aether.http.security.SecurityValidator;
 import org.pragmatica.http.websocket.WebSocketSession;
 import org.pragmatica.json.JsonMapper;
-
-import java.util.List;
-import java.util.Map;
-import java.util.Set;
-import java.util.concurrent.ConcurrentHashMap;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -65,12 +65,21 @@ public final class WebSocketAuthenticator {
     }
 
     public boolean onMessage(WebSocketSession session, String text) {
+        return onMessage(session,
+                         text,
+                         () -> {});
+    }
+
+    /// Variant that runs `onAuthSuccess` immediately after a session authenticates (used by the
+    /// dashboard to deliver INITIAL_STATE on the authenticated path — #293). The callback fires only
+    /// on a fresh successful authentication, never on already-authenticated or failed messages.
+    public boolean onMessage(WebSocketSession session, String text, Runnable onAuthSuccess) {
         if (!securityEnabled || authenticatedSessions.contains(session.id())) {
             return false;
         }
 
         if (pendingSessions.containsKey(session.id())) {
-            return handleAuthMessage(session, text);
+            return handleAuthMessage(session, text, onAuthSuccess);
         }
 
         session.send("{\"type\":\"AUTH_FAILED\",\"reason\":\"not_authenticated\"}");
@@ -111,7 +120,7 @@ public final class WebSocketAuthenticator {
     }
 
     @SuppressWarnings("JBCT-PAT-01")
-    private boolean handleAuthMessage(WebSocketSession session, String text) {
+    private boolean handleAuthMessage(WebSocketSession session, String text, Runnable onAuthSuccess) {
         var parsed = JSON.readString(text, AuthMessage.class);
 
         if (parsed.isFailure() || !AUTH_TYPE.equals(parsed.unwrap().type())) {
@@ -130,18 +139,19 @@ public final class WebSocketAuthenticator {
             return true;
         }
 
-        return validateApiKeyAndRespond(session, apiKey);
+        return validateApiKeyAndRespond(session, apiKey, onAuthSuccess);
     }
 
     @SuppressWarnings("JBCT-PAT-01")
-    private boolean validateApiKeyAndRespond(WebSocketSession session, String apiKey) {
+    private boolean validateApiKeyAndRespond(WebSocketSession session, String apiKey, Runnable onAuthSuccess) {
         var headers = Map.of("x-api-key", List.of(apiKey));
         var context = HttpRequestContext.httpRequestContext("/ws", "GET", Map.of(), headers, "ws-auth");
         var result = securityValidator.validate(context, SecurityPolicy.apiKeyRequired());
 
         if (result.isSuccess()) {
             acceptSession(session,
-                          result.unwrap().principal().value());
+                          result.unwrap().principal().value(),
+                          onAuthSuccess);
         } else {
             rejectSession(session);
         }
@@ -149,11 +159,12 @@ public final class WebSocketAuthenticator {
         return true;
     }
 
-    private void acceptSession(WebSocketSession session, String principal) {
+    private void acceptSession(WebSocketSession session, String principal, Runnable onAuthSuccess) {
         pendingSessions.remove(session.id());
         authenticatedSessions.add(session.id());
         AuditLog.wsAuthSuccess(session.id(), principal);
         session.send("{\"type\":\"AUTH_SUCCESS\"}");
+        onAuthSuccess.run();
     }
 
     private void rejectSession(WebSocketSession session) {

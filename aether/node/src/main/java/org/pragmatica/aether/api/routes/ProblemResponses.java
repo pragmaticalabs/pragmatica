@@ -4,17 +4,17 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.api.routes;
 
+import java.nio.charset.StandardCharsets;
+
 import org.pragmatica.http.ContentCategory;
 import org.pragmatica.http.ContentType;
-import org.pragmatica.http.routing.HttpStatus;
-import org.pragmatica.http.routing.HttpStatusAware;
-import org.pragmatica.http.routing.ProblemDetail;
+import org.pragmatica.http.HttpStatus;
+import org.pragmatica.http.HttpStatusAware;
+import org.pragmatica.http.ProblemDetail;
 import org.pragmatica.http.server.ResponseWriter;
 import org.pragmatica.json.JsonMapper;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
-
-import java.nio.charset.StandardCharsets;
 
 
 /// Canonical RFC 9457 ProblemDetail emission helper for the management plane.
@@ -67,11 +67,12 @@ public final class ProblemResponses {
         var problem = ProblemDetail.problemDetail(status, detail, instance, requestId);
         var serverStatus = toServerStatus(status.code());
 
-        MAPPER.writeAsString(problem).onSuccess(json -> response.header(ResponseWriter.X_REQUEST_ID, requestId)
-                                                                .write(serverStatus,
-                                                                       json.getBytes(StandardCharsets.UTF_8),
-                                                                       CONTENT_TYPE_PROBLEM)).onFailure(_ -> response.error(serverStatus,
-                                                                                                                            detail));
+        MAPPER.writeAsString(problem)
+              .onSuccess(json -> response.header(ResponseWriter.X_REQUEST_ID, requestId)
+                                         .write(serverStatus,
+                                                json.getBytes(StandardCharsets.UTF_8),
+                                                CONTENT_TYPE_PROBLEM))
+              .onFailure(_ -> response.error(serverStatus, detail));
     }
 
     /// Render a ProblemDetail as JSON bytes — used by paths that must bypass `ResponseWriter`

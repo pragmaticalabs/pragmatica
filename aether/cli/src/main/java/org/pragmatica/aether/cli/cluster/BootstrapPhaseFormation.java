@@ -4,20 +4,23 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.cli.cluster;
 
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.List;
+
 import org.pragmatica.aether.cli.cluster.ClusterBootstrapOrchestrator.BootstrapContext;
 import org.pragmatica.aether.cli.cluster.ClusterBootstrapOrchestrator.BootstrapError;
 import org.pragmatica.aether.config.cluster.ClusterBootstrapConfig;
 import org.pragmatica.aether.environment.NodeAddress;
+import org.pragmatica.json.JsonMapper;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.utils.Causes;
 
-import java.io.IOException;
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.util.List;
+import tools.jackson.databind.JsonNode;
 
 import static org.pragmatica.aether.cli.cluster.BootstrapPhase.CLUSTER_FORMATION;
 
@@ -26,6 +29,7 @@ import static org.pragmatica.aether.cli.cluster.BootstrapPhase.CLUSTER_FORMATION
 sealed interface BootstrapPhaseFormation {
     record unused() implements BootstrapPhaseFormation {}
 
+    JsonMapper JSON = JsonMapper.defaultJsonMapper();
     long STORE_RETRY_BUDGET_MS = 60_000L;
     long STORE_RETRY_INTERVAL_MS = 2_000L;
 
@@ -37,9 +41,16 @@ sealed interface BootstrapPhaseFormation {
                           ClusterBootstrapOrchestrator.API_KEY_BYTES);
         var managementPort = ctx.config().operations().ports().management();
         var scheme = managementScheme(ctx);
-        var healthTimeoutMs = ClusterBootstrapOrchestrator.parseDurationMs(ctx.config().operations().timeouts().healthCheck());
-        var quorumTimeoutMs = ClusterBootstrapOrchestrator.parseDurationMs(ctx.config().operations().timeouts().quorumFormation());
+        var healthTimeoutMs = ClusterBootstrapOrchestrator.parseDurationMs(ctx.config()
+                                                                              .operations()
+                                                                              .timeouts()
+                                                                              .healthCheck());
+        var quorumTimeoutMs = ClusterBootstrapOrchestrator.parseDurationMs(ctx.config()
+                                                                              .operations()
+                                                                              .timeouts()
+                                                                              .quorumFormation());
         var requiredCores = ctx.config().derivedCoreCount();
+        var configuredKey = extractConfiguredApiKey(ctx.config());
 
         return waitForHealth(ctx.addresses(),
                              managementPort,
@@ -48,7 +59,8 @@ sealed interface BootstrapPhaseFormation {
                                                                 managementPort,
                                                                 quorumTimeoutMs,
                                                                 requiredCores,
-                                                                scheme))
+                                                                scheme,
+                                                                configuredKey))
                             .flatMap(_ -> finalizeClusterFormation(ctx, apiKey));
     }
 
@@ -76,20 +88,17 @@ sealed interface BootstrapPhaseFormation {
     @Contract
     private static void persistApiKeyFile(String clusterName, String apiKey) {
         var keyFile = Path.of(System.getProperty("user.home"), ".aether", "clusters", clusterName, "api-key");
+        // #287: the persisted admin api-key file must be owner-only (0600). Replaces the deprecated
+        // File.setReadable/setWritable dance with POSIX permissions via SecureFiles.
+        ensureParentDir(keyFile).flatMap(_ -> SecureFiles.writeSecure(keyFile, apiKey))
+                       .onSuccessRun(() -> System.out.printf("  API key persisted to %s%n", keyFile))
+                       .onFailure(cause -> System.err.println("  Warning: failed to persist API key file: " + cause.message()));
+    }
 
-        try {
-            Files.createDirectories(keyFile.getParent());
-            Files.writeString(keyFile, apiKey);
-            var file = keyFile.toFile();
-            var _ = file.setReadable(false, false);
-            var _ = file.setReadable(true, true);
-            var _ = file.setWritable(false, false);
-            var _ = file.setWritable(true, true);
-
-            System.out.printf("  API key persisted to %s%n", keyFile);
-        } catch (IOException e) {
-            System.err.println("  Warning: failed to persist API key file: " + e.getMessage());
-        }
+    private static Result<Unit> ensureParentDir(Path keyFile) {
+        return Result.lift(Causes::fromThrowable,
+                           () -> Files.createDirectories(keyFile.getParent()))
+                     .mapToUnit();
     }
 
     @SuppressWarnings("JBCT-EX-01")
@@ -104,10 +113,12 @@ sealed interface BootstrapPhaseFormation {
         System.out.printf("  Waiting for %d node(s) to become healthy (timeout: %ds)%n",
                           addresses.size(),
                           timeoutMs / 1000);
-        var promises = addresses.stream().map(addr -> pollSingleNodeHealth(addr.publicIp(),
-                                                                           managementPort,
-                                                                           timeoutMs,
-                                                                           scheme)).toList();
+        var promises = addresses.stream()
+                                .map(addr -> pollSingleNodeHealth(addr.publicIp(),
+                                                                  managementPort,
+                                                                  timeoutMs,
+                                                                  scheme))
+                                .toList();
         var results = Promise.allOf(promises).await();
 
         return results.flatMap(BootstrapPhaseFormation::checkAllHealthy);
@@ -149,25 +160,27 @@ sealed interface BootstrapPhaseFormation {
                                               int managementPort,
                                               long timeoutMs,
                                               int requiredCores,
-                                              String scheme) {
+                                              String scheme,
+                                              Option<String> apiKey) {
         if (addresses.isEmpty()) {
             return Result.unitResult();
         }
 
         var endpoint = addresses.getFirst().publicIp();
-        var url = scheme + "://" + endpoint + ":" + managementPort + "/health/ready";
+        var quorumFloor = quorumFloor(requiredCores);
 
-        System.out.printf("  Waiting for quorum at %s (need %d core(s), timeout: %ds)%n",
-                          url,
+        System.out.printf("  Waiting for quorum at %s://%s:%d (need %d of %d core(s), timeout: %ds)%n",
+                          scheme,
+                          endpoint,
+                          managementPort,
+                          quorumFloor,
                           requiredCores,
                           timeoutMs / 1000);
         var deadline = System.currentTimeMillis() + timeoutMs;
 
         while (System.currentTimeMillis() < deadline) {
-            var response = ClusterBootstrapOrchestrator.httpGet(url);
-
-            if (response.isSuccess()) {
-                System.out.printf("  Quorum established (%d core(s) required)%n", requiredCores);
+            if (quorumReached(endpoint, managementPort, scheme, requiredCores, quorumFloor, apiKey)) {
+                System.out.printf("  Quorum established (>= %d of %d core(s))%n", quorumFloor, requiredCores);
 
                 return Result.unitResult();
             }
@@ -175,7 +188,53 @@ sealed interface BootstrapPhaseFormation {
             ClusterBootstrapOrchestrator.sleepQuietly(ClusterBootstrapOrchestrator.POLL_INTERVAL_MS);
         }
 
-        return new BootstrapError.QuorumNotEstablished(0, requiredCores).result();
+        return new BootstrapError.QuorumNotEstablished(0, quorumFloor).result();
+    }
+
+    /// Strict majority floor for a cluster of `requiredCores` (`n/2 + 1`), mirroring
+    /// `StatusRoutes.quorumOf`. For `requiredCores <= 1` the floor is 1 (a genuine single-node dev
+    /// cluster the operator explicitly configured).
+    private static int quorumFloor(int requiredCores) {
+        return requiredCores <= 1
+               ? 1
+               : requiredCores / 2 + 1;
+    }
+
+    /// #295: split-brain fence at formation. A 200 from a single endpoint's `/health/ready` is NOT
+    /// sufficient to declare quorum for a multi-node cluster — a lone node reports itself ready and two
+    /// concurrent bootstraps could each conclude they own the cluster. For `requiredCores > 1` we read
+    /// the leader-authoritative `/api/health` (forwarded to the leader; carries the cluster-wide
+    /// `nodeCount` + `quorum`) and require the reported member count to meet the strict-majority floor.
+    /// For a single-core cluster the lightweight readiness probe is sufficient.
+    private static boolean quorumReached(String endpoint,
+                                         int managementPort,
+                                         String scheme,
+                                         int requiredCores,
+                                         int quorumFloor,
+                                         Option<String> apiKey) {
+        if (requiredCores <= 1) {
+            var readyUrl = scheme + "://" + endpoint + ":" + managementPort + "/health/ready";
+
+            return ClusterBootstrapOrchestrator.httpGet(readyUrl).isSuccess();
+        }
+
+        var healthUrl = scheme + "://" + endpoint + ":" + managementPort + "/api/health";
+
+        return ClusterBootstrapOrchestrator.httpGet(healthUrl, apiKey)
+                                           .flatMap(JSON::readTree)
+                                           .map(node -> healthMeetsFloor(node, quorumFloor))
+                                           .or(false);
+    }
+
+    /// Decide whether the `/api/health` view has reached the quorum floor: the leader must report
+    /// `quorum:true` AND a member count (`nodeCount`) at or above the strict majority. A single-node
+    /// self-view (`nodeCount:1`) against an expected multi-core cluster fails this check — exactly the
+    /// split-brain case being fenced.
+    static boolean healthMeetsFloor(JsonNode health, int quorumFloor) {
+        var nodeCount = health.path("nodeCount").asInt(0);
+        var hasQuorum = health.path("quorum").asBoolean(false);
+
+        return hasQuorum && nodeCount >= quorumFloor;
     }
 
     @SuppressWarnings("JBCT-EX-01")
@@ -185,7 +244,12 @@ sealed interface BootstrapPhaseFormation {
         }
 
         var endpoint = buildManagementEndpoint(ctx);
-        var configJson = buildConfigJson(ctx.rawTomlContent());
+        var persistedToml = SshAuthorizedKeysToml.withAuthorizedKeys(ctx.rawTomlContent(),
+                                                                     ctx.sshPublicKeys()
+                                                                        .stream()
+                                                                        .map(SshPublicKey::value)
+                                                                        .toList());
+        var configJson = buildConfigJson(persistedToml);
         var configuredKey = extractConfiguredApiKey(ctx.config());
 
         return retryFormationPost(endpoint + "/api/cluster/config", configJson, "cluster config", configuredKey).onSuccess(_ -> System.out.println("  Cluster config stored in KV-Store"));
@@ -200,9 +264,12 @@ sealed interface BootstrapPhaseFormation {
         var endpoint = buildManagementEndpoint(ctx);
         var keyHash = KvStoreApiKeyHasher.hashKey(apiKey);
         var keyId = "ak_" + keyHash.substring(0, 8);
+        // The operator who bootstraps the cluster owns it — their persisted key must be ADMIN, not
+        // the server-side VIEWER default (#290). Without an explicit role the key lands as VIEWER and
+        // cannot call ADMIN/OPERATOR management endpoints (auto-heal toggle, deploy, drain, …).
         var keyJson = "{\"keyId\":\"" + keyId
                     + "\",\"keyHash\":\"" + keyHash
-                    + "\",\"gracePeriodMs\":300000,\"auditAction\":\"CREATED\",\"operatorHint\":\"bootstrap\"}";
+                    + "\",\"authorizationRole\":\"ADMIN\",\"gracePeriodMs\":300000,\"auditAction\":\"CREATED\",\"operatorHint\":\"bootstrap\"}";
         var configuredKey = extractConfiguredApiKey(ctx.config());
 
         return retryFormationPost(endpoint + "/api/cluster/keys", keyJson, "API key", configuredKey).onSuccess(_ -> System.out.printf("  API key stored (keyId=%s)%n",
