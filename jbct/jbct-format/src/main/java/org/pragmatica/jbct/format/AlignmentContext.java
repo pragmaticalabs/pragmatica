@@ -142,7 +142,6 @@ public final class AlignmentContext {
         private final boolean wasBreaking;
         private boolean lastPostOpSpannedNonLambdaLines = false;
         private boolean lastPostOpWasBrokenArgs = false;
-        private int postBrokenArgsAnchor = - 1;
 
         ChainScope(int prevColumn, boolean wasBreaking) {
             this.prevColumn = prevColumn;
@@ -158,34 +157,21 @@ public final class AlignmentContext {
             this.lastPostOpSpannedNonLambdaLines = spannedLines && ! containedLambda;
         }
 
-        /// Note that the previous post-op was a bare `(...)` invocation whose args
-        /// broke onto multiple lines. The next dot-method stays inline on the same line
-        /// as the closing `)`, and subsequent dot-methods align under the args-open-paren
-        /// column `argsOpenParenColumn`.
-        public void noteBrokenArgsPostOp(int argsOpenParenColumn) {
+        /// Note that the previous post-op was a bare `(...)` invocation whose args broke
+        /// onto multiple lines. The next dot-method breaks onto its own line aligned to
+        /// the chain column.
+        public void noteBrokenArgsPostOp() {
             this.lastPostOpWasBrokenArgs = true;
-            this.postBrokenArgsAnchor = argsOpenParenColumn;
         }
 
         public boolean lastPostOpWasBrokenArgs() {
             return lastPostOpWasBrokenArgs;
         }
 
-        public void consumeBrokenArgsInlineSlot() {
-            this.lastPostOpWasBrokenArgs = false;
-            // postBrokenArgsAnchor stays — it's the column for subsequent breaks.
-        }
-
-        /// Clear the args-open-paren anchor so subsequent dot-methods use the chain
-        /// column instead. Used when the chain breaks immediately after broken args
-        /// (only one follow-up remains).
+        /// Clear the broken-args flag once the first follow-up after broken args has been
+        /// positioned at the chain column.
         public void clearBrokenArgsAnchor() {
             this.lastPostOpWasBrokenArgs = false;
-            this.postBrokenArgsAnchor = - 1;
-        }
-
-        public int postBrokenArgsAnchor() {
-            return postBrokenArgsAnchor;
         }
 
         /// Return the column the next dot-method should align to. If the previous
@@ -193,9 +179,6 @@ public final class AlignmentContext {
         /// args, nested chain), the next dot-method continues from body indent;
         /// otherwise it continues from the chain column.
         public int nextDotMethodAnchor(int defaultBodyIndent) {
-            if (postBrokenArgsAnchor >= 0) {
-                return postBrokenArgsAnchor;
-            }
             return lastPostOpSpannedNonLambdaLines
                    ? defaultBodyIndent
                    : chainColumn;

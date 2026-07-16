@@ -2050,13 +2050,13 @@ class CstLinterTest {
     @DisplayName("JBCT-STY-06: Import ordering")
     class ImportOrderingTests {
         @Test
-        void detectsJavaImportBeforePragmatica() {
-            // Rule order: org.pragmatica (0) → java/javax (1) → third-party (2) → project (3)
-            // java before pragmatica is wrong
+        void detectsPragmaticaImportBeforeJava() {
+            // Book order: java/javax (0) → org.pragmatica (1) → third-party (2) → project (3)
+            // pragmatica before java is wrong
             var diagnostics = lint("""
                 package com.example.usecase.test;
-                import java.util.List;
                 import org.pragmatica.lang.Result;
+                import java.util.List;
                 public class Test {
                     public Result<String> process(List<String> input) {
                         return Result.success(input.toString());
@@ -2068,7 +2068,7 @@ class CstLinterTest {
 
         @Test
         void detectsThirdPartyBeforeJava() {
-            // Third-party (2) before java (1) is wrong
+            // Third-party (2) before java (0) is wrong
             var diagnostics = lint("""
                 package com.example.usecase.test;
                 import org.slf4j.Logger;
@@ -2084,6 +2084,7 @@ class CstLinterTest {
 
         @Test
         void detectsThirdPartyAfterProject() {
+            // Project (3) before third-party (2) is wrong
             var diagnostics = lint("""
                 package com.example.usecase.test;
                 import com.example.domain.User;
@@ -2099,13 +2100,13 @@ class CstLinterTest {
 
         @Test
         void allowsCorrectImportOrder() {
-            // Correct order: org.pragmatica (0) → java/javax (1) → third-party (2) → project (3)
+            // Correct order: java/javax (0) → org.pragmatica (1) → third-party (2) → project (3)
             var diagnostics = lint("""
                 package com.example.usecase.test;
-                import org.pragmatica.lang.Result;
                 import java.util.List;
                 import java.util.Map;
                 import javax.annotation.Nonnull;
+                import org.pragmatica.lang.Result;
                 import org.slf4j.Logger;
                 import com.example.domain.User;
                 public class Test {
@@ -2119,13 +2120,13 @@ class CstLinterTest {
 
         @Test
         void allowsCorrectImportOrderWithStaticImports() {
-            // Correct order: org.pragmatica → java → then static: org.pragmatica → java
+            // Correct order: java → org.pragmatica → then static: java → org.pragmatica
             var diagnostics = lint("""
                 package com.example.usecase.test;
-                import org.pragmatica.lang.Result;
                 import java.util.List;
-                import static org.pragmatica.lang.Result.success;
+                import org.pragmatica.lang.Result;
                 import static java.util.Objects.requireNonNull;
+                import static org.pragmatica.lang.Result.success;
                 public class Test {
                     public Result<String> process(List<String> input) {
                         requireNonNull(input);
@@ -2138,13 +2139,13 @@ class CstLinterTest {
 
         @Test
         void detectsOutOfOrderStaticImports() {
-            // Static section: java (1) before org.pragmatica (0) is wrong
+            // Static section: org.pragmatica (5) before java (4) is wrong
             var diagnostics = lint("""
                 package com.example.usecase.test;
-                import org.pragmatica.lang.Result;
                 import java.util.List;
-                import static java.util.Objects.requireNonNull;
+                import org.pragmatica.lang.Result;
                 import static org.pragmatica.lang.Result.success;
+                import static java.util.Objects.requireNonNull;
                 public class Test {
                     public Result<String> process(List<String> input) {
                         requireNonNull(input);

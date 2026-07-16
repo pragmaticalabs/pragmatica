@@ -1,13 +1,5 @@
 package format.examples;
 
-import org.pragmatica.lang.Cause;
-import org.pragmatica.lang.Functions.Fn1;
-import org.pragmatica.lang.Option;
-import org.pragmatica.lang.Promise;
-import org.pragmatica.lang.Result;
-import org.pragmatica.lang.Unit;
-import org.pragmatica.lang.utils.Causes;
-
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -21,6 +13,14 @@ import java.util.function.Function;
 import java.util.function.Predicate;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
+
+import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Functions.Fn1;
+import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.utils.Causes;
 
 import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.option;

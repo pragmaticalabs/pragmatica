@@ -42,7 +42,6 @@ Uses `jbct.toml` for project configuration:
 [format]
 maxLineLength = 120
 indentSize = 4
-alignChainedCalls = true
 
 [lint]
 failOnWarning = false
