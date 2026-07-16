@@ -17,7 +17,16 @@
 package org.pragmatica.http;
 
 import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Tuple.Tuple2;
+
+import java.util.Locale;
+import java.util.Map;
+import java.util.stream.Collectors;
+import java.util.stream.Stream;
+
+import static org.pragmatica.lang.Tuple.tuple;
 
 /// HTTP request methods.
 public enum HttpMethod {
@@ -30,6 +39,25 @@ public enum HttpMethod {
     OPTIONS,
     TRACE,
     CONNECT;
+
+    private static final Map<String, HttpMethod> FROM_NAME;
+
+    static {
+        FROM_NAME = Stream.of(HttpMethod.values())
+                          .map(value -> tuple(value.name().toLowerCase(Locale.ROOT),
+                                              value))
+                          .collect(Collectors.toMap(Tuple2::first,
+                                                    Tuple2::last));
+    }
+
+    /// Parse HTTP method from string, absent for unknown methods.
+    ///
+    /// @param name HTTP method string (case-insensitive)
+    /// @return Option containing the HttpMethod or empty for unknown methods
+    public static Option<HttpMethod> fromString(String name) {
+        return Option.option(FROM_NAME.get(name.toLowerCase(Locale.ROOT)));
+    }
+
     /// Parse HTTP method from string.
     ///
     /// @param method HTTP method string
@@ -48,10 +76,12 @@ public enum HttpMethod {
             default -> new UnknownMethod(method).result();
         };
     }
+
     @Deprecated(forRemoval = true)
     public static Result<HttpMethod> from(String method) {
         return httpMethod(method);
     }
+
     /// Error for unknown HTTP method.
     public record UnknownMethod(String method) implements Cause {
         @Override

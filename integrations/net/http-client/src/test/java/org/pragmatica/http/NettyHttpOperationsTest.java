@@ -189,7 +189,7 @@ class NettyHttpOperationsTest {
             var result = client.sendString(request).await();
 
             result.onSuccess(_ -> assertThat(true).as("Expected failure").isFalse())
-                  .onFailure(cause -> assertThat(cause).isInstanceOf(HttpError.class));
+                  .onFailure(cause -> assertThat(cause).isInstanceOf(HttpClientError.class));
         }
     }
 

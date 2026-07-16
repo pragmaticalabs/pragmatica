@@ -1,5 +1,7 @@
 package org.pragmatica.http.routing;
 
+import org.pragmatica.http.CommonContentType;
+import org.pragmatica.http.ContentType;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Promise;
 
@@ -8,12 +10,12 @@ import java.io.InputStream;
 import java.util.Map;
 import java.util.stream.Stream;
 
-import static org.pragmatica.http.routing.ContentCategory.BINARY;
-import static org.pragmatica.http.routing.ContentCategory.HTML;
-import static org.pragmatica.http.routing.ContentCategory.JSON;
-import static org.pragmatica.http.routing.ContentCategory.PLAIN_TEXT;
-import static org.pragmatica.http.routing.ContentType.contentType;
-import static org.pragmatica.http.routing.HttpMethod.GET;
+import static org.pragmatica.http.ContentCategory.BINARY;
+import static org.pragmatica.http.ContentCategory.HTML;
+import static org.pragmatica.http.ContentCategory.JSON;
+import static org.pragmatica.http.ContentCategory.TEXT;
+import static org.pragmatica.http.ContentType.contentType;
+import static org.pragmatica.http.HttpMethod.GET;
 import static org.pragmatica.http.routing.Route.route;
 
 /// Route source for serving static files from the classpath.
@@ -31,10 +33,10 @@ public interface StaticFileRouteSource extends RouteSource {
                                                            Map.entry(".htm",
                                                                      contentType("text/html; charset=UTF-8", HTML)),
                                                            Map.entry(".css",
-                                                                     contentType("text/css; charset=UTF-8", PLAIN_TEXT)),
+                                                                     contentType("text/css; charset=UTF-8", TEXT)),
                                                            Map.entry(".js",
                                                                      contentType("text/javascript; charset=UTF-8",
-                                                                                 PLAIN_TEXT)),
+                                                                                 TEXT)),
                                                            Map.entry(".json",
                                                                      contentType("application/json; charset=UTF-8", JSON)),
                                                            Map.entry(".png", contentType("image/png", BINARY)),
@@ -50,13 +52,13 @@ public interface StaticFileRouteSource extends RouteSource {
                                                                      contentType("application/vnd.ms-fontobject", BINARY)),
                                                            Map.entry(".xml",
                                                                      contentType("application/xml; charset=UTF-8",
-                                                                                 PLAIN_TEXT)),
+                                                                                 TEXT)),
                                                            Map.entry(".txt",
-                                                                     contentType("text/plain; charset=UTF-8", PLAIN_TEXT)),
+                                                                     contentType("text/plain; charset=UTF-8", TEXT)),
                                                            Map.entry(".map",
                                                                      contentType("application/json; charset=UTF-8", JSON)));
 
-    ContentType DEFAULT_CONTENT_TYPE = CommonContentTypes.APPLICATION_OCTET_STREAM;
+    ContentType DEFAULT_CONTENT_TYPE = CommonContentType.APPLICATION_OCTET_STREAM;
 
     /// Creates a route source for serving static files from the classpath.
     ///

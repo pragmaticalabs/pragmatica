@@ -5,7 +5,7 @@ import org.junit.jupiter.api.Test;
 import org.pragmatica.lang.Promise;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.pragmatica.http.routing.HttpMethod.GET;
+import static org.pragmatica.http.HttpMethod.GET;
 import static org.pragmatica.http.routing.PathParameter.aLong;
 import static org.pragmatica.http.routing.PathParameter.spacer;
 import static org.pragmatica.http.routing.Route.get;

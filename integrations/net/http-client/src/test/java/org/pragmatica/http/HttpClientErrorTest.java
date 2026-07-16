@@ -27,12 +27,12 @@ import java.time.Duration;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
-import static org.pragmatica.http.HttpError.ConnectionFailed.connectionFailed;
-import static org.pragmatica.http.HttpError.Failure.failure;
-import static org.pragmatica.http.HttpError.InvalidResponse.invalidResponse;
-import static org.pragmatica.http.HttpError.Timeout.timeout;
+import static org.pragmatica.http.HttpClientError.ConnectionFailed.connectionFailed;
+import static org.pragmatica.http.HttpClientError.Failure.failure;
+import static org.pragmatica.http.HttpClientError.InvalidResponse.invalidResponse;
+import static org.pragmatica.http.HttpClientError.Timeout.timeout;
 
-class HttpErrorTest {
+class HttpClientErrorTest {
 
     @Test
     void connectionFailed_containsMessage() {
@@ -68,7 +68,7 @@ class HttpErrorTest {
 
     @Test
     void requestFailed_displaysStatusAndReason() {
-        var error = new HttpError.RequestFailed(404, "Not Found");
+        var error = new HttpClientError.RequestFailed(404, "Not Found");
 
         assertThat(error.message()).isEqualTo("HTTP 404: Not Found");
     }
@@ -92,42 +92,42 @@ class HttpErrorTest {
     @Test
     void fromException_mapsTimeoutException() {
         var ex = new HttpTimeoutException("Timed out");
-        var error = HttpError.fromException(ex);
+        var error = HttpClientError.fromException(ex);
 
-        assertInstanceOf(HttpError.Timeout.class, error);
+        assertInstanceOf(HttpClientError.Timeout.class, error);
     }
 
     @Test
     void fromException_mapsConnectException() {
         var ex = new ConnectException("Connection refused");
-        var error = HttpError.fromException(ex);
+        var error = HttpClientError.fromException(ex);
 
-        assertInstanceOf(HttpError.ConnectionFailed.class, error);
+        assertInstanceOf(HttpClientError.ConnectionFailed.class, error);
     }
 
     @Test
     void fromException_mapsUnknownHostException() {
         var ex = new UnknownHostException("example.invalid");
-        var error = HttpError.fromException(ex);
+        var error = HttpClientError.fromException(ex);
 
-        assertInstanceOf(HttpError.ConnectionFailed.class, error);
+        assertInstanceOf(HttpClientError.ConnectionFailed.class, error);
         assertThat(error.message()).contains("Unknown host");
     }
 
     @Test
     void fromException_mapsInterruptedException() {
         var ex = new InterruptedException();
-        var error = HttpError.fromException(ex);
+        var error = HttpClientError.fromException(ex);
 
-        assertInstanceOf(HttpError.Timeout.class, error);
+        assertInstanceOf(HttpClientError.Timeout.class, error);
         assertThat(error.message()).contains("interrupted");
     }
 
     @Test
     void fromException_mapsUnknownToFailure() {
         var ex = new IllegalStateException("Unknown error");
-        var error = HttpError.fromException(ex);
+        var error = HttpClientError.fromException(ex);
 
-        assertInstanceOf(HttpError.Failure.class, error);
+        assertInstanceOf(HttpClientError.Failure.class, error);
     }
 }

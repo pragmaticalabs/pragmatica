@@ -177,7 +177,7 @@ public final class NettyHttpOperations implements HttpOperations, AsyncCloseable
                                                String path,
                                                Promise<HttpResult<T>> promise) {
         if (!future.isSuccess()) {
-            promise.fail(HttpError.fromException(future.cause()));
+            promise.fail(HttpClientError.fromException(future.cause()));
             return;
         }
         var channel = ((io.netty.channel.ChannelFuture) future).channel();
@@ -207,7 +207,7 @@ public final class NettyHttpOperations implements HttpOperations, AsyncCloseable
                                           URI uri,
                                           Promise<HttpResult<T>> promise) {
         quicSslContext.onPresent(ssl -> connectQuic(request, handler, uri, ssl, promise))
-                      .onEmpty(() -> promise.fail(HttpError.ConnectionFailed.connectionFailed("No QUIC SSL context for HTTP/3")));
+                      .onEmpty(() -> promise.fail(HttpClientError.ConnectionFailed.connectionFailed("No QUIC SSL context for HTTP/3")));
     }
 
     @SuppressWarnings("JBCT-PAT-01") // Netty QUIC bootstrap chain
@@ -244,7 +244,7 @@ public final class NettyHttpOperations implements HttpOperations, AsyncCloseable
                                            int port,
                                            Promise<HttpResult<T>> promise) {
         if (!future.isSuccess()) {
-            promise.fail(HttpError.fromException(future.cause()));
+            promise.fail(HttpClientError.fromException(future.cause()));
             return;
         }
         var datagramChannel = ((io.netty.channel.ChannelFuture) future).channel();
@@ -271,7 +271,7 @@ public final class NettyHttpOperations implements HttpOperations, AsyncCloseable
                                               BodyHandler<T> handler,
                                               Promise<HttpResult<T>> promise) {
         if (!future.isSuccess()) {
-            promise.fail(HttpError.fromException(future.cause()));
+            promise.fail(HttpClientError.fromException(future.cause()));
             return;
         }
         var quicChannel = (QuicChannel) future.getNow();
@@ -405,7 +405,7 @@ public final class NettyHttpOperations implements HttpOperations, AsyncCloseable
 
         @Override
         public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) {
-            promise.fail(HttpError.fromException(cause));
+            promise.fail(HttpClientError.fromException(cause));
             ctx.close();
         }
 
@@ -452,7 +452,7 @@ public final class NettyHttpOperations implements HttpOperations, AsyncCloseable
         @Override
         protected void channelInputClosed(ChannelHandlerContext ctx) {
             if (headersFrame == null) {
-                promise.fail(HttpError.InvalidResponse.invalidResponse("No headers received"));
+                promise.fail(HttpClientError.InvalidResponse.invalidResponse("No headers received"));
                 return;
             }
             completeResponse(ctx);
@@ -460,7 +460,7 @@ public final class NettyHttpOperations implements HttpOperations, AsyncCloseable
 
         @Override
         public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) {
-            promise.fail(HttpError.fromException(cause));
+            promise.fail(HttpClientError.fromException(cause));
             ctx.close();
         }
 

@@ -225,8 +225,8 @@ class SwimProtocolWave6Test {
 
             protocol.onMessage(ADDR_A, Ack.ack(NODE_B, seq, List.of()));
             assertThat(protocol.members().get(NODE_A).state())
-                .as("an ack whose from does not match the probed target is not alive-evidence")
-                .isEqualTo(MemberState.SUSPECT);
+                .as("an ack whose from does not match the probed target is not alive-evidence — stays OBSERVED")
+                .isEqualTo(MemberState.OBSERVED);
 
             // The mismatched ack must not consume the pending probe: the genuine ack still verifies.
             protocol.onMessage(ADDR_A, Ack.ack(NODE_A, seq, List.of()));
@@ -240,8 +240,8 @@ class SwimProtocolWave6Test {
             protocol.onMessage(ADDR_A, Ack.ack(NODE_A, 9_999L, List.of()));
 
             assertThat(protocol.members().get(NODE_A).state())
-                .as("an Ack matching no pending probe is not alive-evidence (pre-fix it promoted unconditionally)")
-                .isEqualTo(MemberState.SUSPECT);
+                .as("an Ack matching no pending probe is not alive-evidence — stays OBSERVED (pre-fix it promoted unconditionally)")
+                .isEqualTo(MemberState.OBSERVED);
         }
     }
 
@@ -517,35 +517,86 @@ class SwimProtocolWave6Test {
         }
 
         @Test
-        void joinGraceDeferredFaulty_emitsNeitherWithinGrace_thenBothAfterExpiry() throws InterruptedException {
-            // NORMAL phase, grace 600ms > suspect-window 100ms: the deferred transition
-            // emits nothing within grace; after grace the FAULTY edge fires the pair.
+        void observedMember_noProbeAckBeyondSuspectTimeout_notFaulty() throws InterruptedException {
+            // OBSERVED birth (#336/#241): a freshly-seeded member that never acks is NOT armed for
+            // death within join-grace. Even after far more than a base suspect-timeout of probe
+            // timeouts, it stays OBSERVED (never SUSPECT, never FAULTY) — a slow joiner is never
+            // prematurely killed.
             var config = swimConfig(timeSpan(20).millis(),
                                     timeSpan(20).millis(),
                                     3,
                                     timeSpan(100).millis(),
                                     8,
-                                    timeSpan(20).millis()).withJoinGrace(timeSpan(600).millis());
+                                    timeSpan(20).millis()).withJoinGrace(timeSpan(2).seconds());
             var graced = SwimProtocol.swimProtocol(config, transport, listener, SELF_ID, SELF_ADDR, () -> false)
                                      .unwrap();
             var observations = new RecordingObservationSink();
             graced.addObservationListener(observations);
 
-            graced.onMessage(ADDR_B, Ping.ping(NODE_B, 1L, List.of(updateOf(NODE_A, MemberState.SUSPECT, 0L))));
+            graced.addSeedMember(NODE_A, ADDR_A);
             graced.start();
             try {
-                Thread.sleep(300L);
+                // Sleep well past the suspect-timeout (100ms) but far inside join-grace (2s).
+                Thread.sleep(500L);
+
+                assertThat(graced.members().get(NODE_A).state())
+                    .as("an un-acked OBSERVED member stays OBSERVED within join-grace — never SUSPECT/FAULTY")
+                    .isEqualTo(MemberState.OBSERVED);
                 assertThat(observations.byType(SwimObservation.FaultyObserved.class))
-                    .as("join-grace defer (188e0b522) untouched: no FAULTY edge within grace")
+                    .as("no FAULTY edge for an un-acked OBSERVED member within grace")
                     .isEmpty();
-                assertThat(observations.byType(SwimObservation.DepartedObserved.class))
-                    .as("no death broadcast within grace — Departed simply follows whenever FAULTY fires")
+                assertThat(listener.faulty)
+                    .as("no FAULTY listener callback within grace")
+                    .isEmpty();
+            } finally {
+                graced.stop();
+            }
+        }
+
+        @Test
+        void observedMember_sustainedProbeTimeoutPastJoinGrace_escalatesToSuspectThenFaulty() throws InterruptedException {
+            // NORMAL phase, join-grace 300ms > suspect-window 100ms: an OBSERVED member that never
+            // acks stays OBSERVED within grace, then PAST the join deadline a probe-timeout escalates
+            // it OBSERVED->SUSPECT, and the suspect-window expiry drives SUSPECT->FAULTY, firing the
+            // Faulty+Departed pair (#336/#241). lhmMaxScore=1 keeps the suspect window at base so the
+            // post-deadline timing is deterministic.
+            var config = swimConfig(timeSpan(20).millis(),
+                                    timeSpan(20).millis(),
+                                    3,
+                                    timeSpan(100).millis(),
+                                    8,
+                                    timeSpan(20).millis()).withJoinGrace(timeSpan(300).millis())
+                                                          .withLhmMaxScore(1);
+            var graced = SwimProtocol.swimProtocol(config, transport, listener, SELF_ID, SELF_ADDR, () -> false)
+                                     .unwrap();
+            var observations = new RecordingObservationSink();
+            graced.addObservationListener(observations);
+
+            graced.addSeedMember(NODE_A, ADDR_A);
+            assertThat(graced.members().get(NODE_A).state()).isEqualTo(MemberState.OBSERVED);
+
+            graced.start();
+            try {
+                // WITHIN grace (300ms): probe timeouts never arm death — still OBSERVED, nothing emitted.
+                Thread.sleep(150L);
+                assertThat(graced.members().get(NODE_A).state())
+                    .as("within join-grace a probe-timeout leaves an OBSERVED member OBSERVED")
+                    .isEqualTo(MemberState.OBSERVED);
+                assertThat(observations.byType(SwimObservation.FaultyObserved.class))
+                    .as("no death broadcast within grace")
                     .isEmpty();
 
+                // PAST the join deadline: OBSERVED -> SUSPECT -> FAULTY; the Faulty+Departed pair fires.
                 await().atMost(Duration.ofSeconds(2))
                        .until(() -> !observations.byType(SwimObservation.DepartedObserved.class).isEmpty());
                 assertThat(observations.byType(SwimObservation.FaultyObserved.class)).hasSize(1);
                 assertThat(observations.byType(SwimObservation.DepartedObserved.class)).hasSize(1);
+                assertThat(listener.suspected)
+                    .as("escalation passed through SUSPECT before FAULTY")
+                    .anyMatch(m -> m.nodeId().equals(NODE_A));
+                assertThat(listener.faulty)
+                    .as("the member reached FAULTY")
+                    .anyMatch(m -> m.nodeId().equals(NODE_A));
             } finally {
                 graced.stop();
             }

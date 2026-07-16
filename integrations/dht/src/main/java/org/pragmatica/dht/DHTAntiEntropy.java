@@ -173,9 +173,18 @@ public final class DHTAntiEntropy {
         requestMigrationData(pending.peer(), pending.partitionIndex());
     }
 
-    /// Handle migration data response: merge received entries into local storage.
+    /// Handle migration data response: merge received entries into local storage, then acknowledge
+    /// when the sender requested it (issue #427). The ack is sent only for `ackRequested` responses —
+    /// the departing-node push — so the fire-and-forget anti-entropy pull path is unchanged.
     @Contract
     public void onMigrationDataResponse(DHTMessage.MigrationDataResponse response) {
+        applyMigrationEntries(response);
+        if (response.ackRequested()) {
+            network.send(response.sender(), new DHTMessage.MigrationDataAck(response.requestId(), node.nodeId()));
+        }
+    }
+
+    private void applyMigrationEntries(DHTMessage.MigrationDataResponse response) {
         if (response.entries().isEmpty()) {
             return;
         }

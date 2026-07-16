@@ -51,6 +51,7 @@ import io.netty.util.ReferenceCountUtil;
 import org.pragmatica.http.ContentType;
 import org.pragmatica.http.Headers;
 import org.pragmatica.http.HttpMethod;
+import org.pragmatica.http.HttpRequest;
 import org.pragmatica.http.HttpStatus;
 import org.pragmatica.http.QueryParams;
 import org.pragmatica.lang.Option;
@@ -65,7 +66,7 @@ import static org.pragmatica.lang.Unit.unit;
 /// HTTP/3 server implementation using Netty QUIC transport.
 ///
 /// Binds a UDP socket and handles HTTP/3 requests over QUIC,
-/// converting them to the same [RequestContext]/[ResponseWriter]
+/// converting them to the same [HttpRequest]/[ResponseWriter]
 /// interface used by the HTTP/1.1 server.
 final class Http3Server {
     private static final Logger log = LoggerFactory.getLogger(Http3Server.class);
@@ -113,7 +114,7 @@ final class Http3Server {
     /// Create and start an HTTP/3 server with its own event loop group.
     static Promise<Http3Server> create(HttpServerConfig config,
                                        QuicSslContext quicSslContext,
-                                       BiConsumer<RequestContext, ResponseWriter> handler) {
+                                       BiConsumer<HttpRequest, ResponseWriter> handler) {
         var group = new MultiThreadIoEventLoopGroup(NioIoHandler.newFactory());
         return bind(config, quicSslContext, handler, group, true);
     }
@@ -121,7 +122,7 @@ final class Http3Server {
     /// Create and start an HTTP/3 server using an externally managed event loop group.
     static Promise<Http3Server> createShared(HttpServerConfig config,
                                              QuicSslContext quicSslContext,
-                                             BiConsumer<RequestContext, ResponseWriter> handler,
+                                             BiConsumer<HttpRequest, ResponseWriter> handler,
                                              EventLoopGroup workerGroup) {
         return bind(config, quicSslContext, handler, workerGroup, false);
     }
@@ -129,7 +130,7 @@ final class Http3Server {
     @SuppressWarnings("JBCT-UTIL-01")
     private static Promise<Http3Server> bind(HttpServerConfig config,
                                              QuicSslContext quicSslContext,
-                                             BiConsumer<RequestContext, ResponseWriter> handler,
+                                             BiConsumer<HttpRequest, ResponseWriter> handler,
                                              EventLoopGroup group,
                                              boolean ownsGroup) {
         var maxContentLength = config.maxContentLength();
@@ -179,10 +180,10 @@ final class Http3Server {
     /// Initializer for each new QUIC connection.
     /// Adds [Http3ServerConnectionHandler] which manages HTTP/3 streams.
     private static class QuicConnectionInitializer extends ChannelInitializer<QuicChannel> {
-        private final BiConsumer<RequestContext, ResponseWriter> handler;
+        private final BiConsumer<HttpRequest, ResponseWriter> handler;
         private final int maxContentLength;
 
-        QuicConnectionInitializer(BiConsumer<RequestContext, ResponseWriter> handler,
+        QuicConnectionInitializer(BiConsumer<HttpRequest, ResponseWriter> handler,
                                   int maxContentLength) {
             this.handler = handler;
             this.maxContentLength = maxContentLength;
@@ -198,10 +199,10 @@ final class Http3Server {
     /// Initializer for each new HTTP/3 request stream.
     /// Creates a fresh [Http3RequestHandler] per stream (no shared state).
     private static class Http3StreamInitializer extends ChannelInitializer<QuicStreamChannel> {
-        private final BiConsumer<RequestContext, ResponseWriter> handler;
+        private final BiConsumer<HttpRequest, ResponseWriter> handler;
         private final int maxContentLength;
 
-        Http3StreamInitializer(BiConsumer<RequestContext, ResponseWriter> handler,
+        Http3StreamInitializer(BiConsumer<HttpRequest, ResponseWriter> handler,
                                int maxContentLength) {
             this.handler = handler;
             this.maxContentLength = maxContentLength;
@@ -221,12 +222,12 @@ final class Http3Server {
     private static class Http3RequestHandler extends Http3RequestStreamInboundHandler {
         private static final Logger log = LoggerFactory.getLogger(Http3RequestHandler.class);
 
-        private final BiConsumer<RequestContext, ResponseWriter> handler;
+        private final BiConsumer<HttpRequest, ResponseWriter> handler;
         private final int maxContentLength;
         private Http3HeadersFrame headersFrame;
         private ByteBuf bodyData;
 
-        Http3RequestHandler(BiConsumer<RequestContext, ResponseWriter> handler,
+        Http3RequestHandler(BiConsumer<HttpRequest, ResponseWriter> handler,
                             int maxContentLength) {
             this.handler = handler;
             this.maxContentLength = maxContentLength;
@@ -274,7 +275,7 @@ final class Http3Server {
             }
         }
 
-        private RequestContext buildRequestContext(String requestId) {
+        private HttpRequest buildRequestContext(String requestId) {
             var h3Headers = headersFrame.headers();
             var methodStr = Option.option(h3Headers.method()).map(CharSequence::toString).or("GET");
             var pathStr = Option.option(h3Headers.path()).map(CharSequence::toString).or("/");
@@ -335,7 +336,7 @@ final class Http3Server {
                                        String path,
                                        Headers headers,
                                        QueryParams queryParams,
-                                       byte[] body) implements RequestContext {}
+                                       byte[] body) implements HttpRequest {}
 
     /// HTTP/3 response writer that sends response as HTTP/3 frames.
     private static class Http3ResponseWriter implements ResponseWriter {

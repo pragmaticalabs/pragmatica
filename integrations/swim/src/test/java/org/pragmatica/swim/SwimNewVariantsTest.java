@@ -33,6 +33,8 @@ import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.net.tcp.NodeAddress;
 import org.pragmatica.swim.SwimMessage.Announce;
+import org.pragmatica.swim.SwimMessage.WhoAmI;
+import org.pragmatica.swim.SwimMessage.WhoAmIReply;
 import org.pragmatica.swim.SwimObservation.JoinAnnounced;
 import org.pragmatica.swim.SwimTransport.SwimMessageHandler;
 
@@ -167,9 +169,117 @@ class SwimNewVariantsTest {
                 case SwimMessage.Ack _ -> handled.add("ack");
                 case SwimMessage.PingReq _ -> handled.add("pingreq");
                 case Announce ann -> handled.add("announce:" + ann.clusterName());
+                case WhoAmI _ -> handled.add("whoami");
+                case WhoAmIReply _ -> handled.add("whoamireply");
             }
 
             assertThat(handled).containsExactly("announce:" + CLUSTER);
+        }
+    }
+
+    @Nested
+    class WhoAmIMessageTests {
+
+        @Test
+        void factoryMethod_from_preservesField() {
+            var msg = WhoAmI.whoAmI(NODE_ID);
+
+            assertThat(msg.from()).isEqualTo(NODE_ID);
+        }
+
+        @Test
+        void constructor_from_preservesField() {
+            var msg = new WhoAmI(NODE_ID);
+
+            assertThat(msg.from()).isEqualTo(NODE_ID);
+        }
+
+        @Test
+        void recordEquality_sameField_equal() {
+            var a = WhoAmI.whoAmI(NODE_ID);
+            var b = WhoAmI.whoAmI(NODE_ID);
+
+            assertThat(a).isEqualTo(b);
+            assertThat(a.hashCode()).isEqualTo(b.hashCode());
+        }
+
+        @Test
+        void recordEquality_differentFrom_notEqual() {
+            var a = WhoAmI.whoAmI(NODE_ID);
+            var b = WhoAmI.whoAmI(new NodeId("node-other"));
+
+            assertThat(a).isNotEqualTo(b);
+        }
+
+        @Test
+        void exhaustiveSwitch_whoAmI_handledWithoutDefault() {
+            SwimMessage msg = WhoAmI.whoAmI(NODE_ID);
+            var handled = new ArrayList<String>();
+
+            switch (msg) {
+                case SwimMessage.Ping _ -> handled.add("ping");
+                case SwimMessage.Ack _ -> handled.add("ack");
+                case SwimMessage.PingReq _ -> handled.add("pingreq");
+                case Announce _ -> handled.add("announce");
+                case WhoAmI w -> handled.add("whoami:" + w.from().id());
+                case WhoAmIReply _ -> handled.add("whoamireply");
+            }
+
+            assertThat(handled).containsExactly("whoami:" + NODE_ID.id());
+        }
+    }
+
+    @Nested
+    class WhoAmIReplyMessageTests {
+
+        private static final InetSocketAddress OBSERVED = new InetSocketAddress("203.0.113.7", 7100);
+
+        @Test
+        void factoryMethod_observedAddress_preservesField() {
+            var msg = WhoAmIReply.whoAmIReply(OBSERVED);
+
+            assertThat(msg.observedAddress()).isEqualTo(OBSERVED);
+        }
+
+        @Test
+        void constructor_observedAddress_preservesField() {
+            var msg = new WhoAmIReply(OBSERVED);
+
+            assertThat(msg.observedAddress()).isEqualTo(OBSERVED);
+        }
+
+        @Test
+        void recordEquality_sameAddress_equal() {
+            var a = WhoAmIReply.whoAmIReply(OBSERVED);
+            var b = WhoAmIReply.whoAmIReply(OBSERVED);
+
+            assertThat(a).isEqualTo(b);
+            assertThat(a.hashCode()).isEqualTo(b.hashCode());
+        }
+
+        @Test
+        void recordEquality_differentAddress_notEqual() {
+            var a = WhoAmIReply.whoAmIReply(OBSERVED);
+            var b = WhoAmIReply.whoAmIReply(new InetSocketAddress("203.0.113.8", 7100));
+
+            assertThat(a).isNotEqualTo(b);
+        }
+
+        @Test
+        void exhaustiveSwitch_whoAmIReply_handledWithoutDefault() {
+            SwimMessage msg = WhoAmIReply.whoAmIReply(OBSERVED);
+            var handled = new ArrayList<String>();
+
+            switch (msg) {
+                case SwimMessage.Ping _ -> handled.add("ping");
+                case SwimMessage.Ack _ -> handled.add("ack");
+                case SwimMessage.PingReq _ -> handled.add("pingreq");
+                case Announce _ -> handled.add("announce");
+                case WhoAmI _ -> handled.add("whoami");
+                case WhoAmIReply r -> handled.add("whoamireply:" + r.observedAddress());
+            }
+
+            assertThat(handled).containsExactly("whoamireply:" + OBSERVED);
         }
     }
 

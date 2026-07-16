@@ -62,6 +62,8 @@ class RabiaEngineTest {
     private static final NodeId NODE_1 = nodeId("node-1").unwrap();
     private static final NodeId NODE_2 = nodeId("node-2").unwrap();
     private static final NodeId NODE_3 = nodeId("node-3").unwrap();
+    private static final NodeId NODE_4 = nodeId("node-4").unwrap();
+    private static final NodeId NODE_5 = nodeId("node-5").unwrap();
     private static final int CLUSTER_SIZE = 3;
 
     private TestTopologyManager topologyManager;
@@ -209,6 +211,174 @@ class RabiaEngineTest {
             result.onFailure(cause ->
                 assertThat(cause).isInstanceOf(ConsensusError.QuorumPaused.class)
             );
+        }
+    }
+
+    @Nested
+    class PendingCatchUp {
+
+        @Test
+        void isPendingCatchUp_false_when_caught_up() throws InterruptedException {
+            // A node that activated with no higher cluster phase observed is caught up:
+            // highestObservedClusterPhase == currentPhase == ZERO.
+            activateEngine();
+
+            assertThat(engine.isActive()).as("engine should be active after activation").isTrue();
+            assertThat(engine.isPendingCatchUp())
+                .as("caught-up active node must not report pending catch-up")
+                .isFalse();
+        }
+
+        @Test
+        void isPendingCatchUp_true_when_cluster_phase_exceeds_applied_phase() throws InterruptedException {
+            // Observing a peer message for a phase ahead of the locally-applied currentPhase
+            // (within MAX_PHASE_AHEAD, so no resync) advances the committed frontier above the
+            // applied frontier — the lagging-replacement-leader condition.
+            activateEngine();
+            var batch = Batch.create(SERIALIZER, List.of(new TestCommand("ahead")));
+
+            engine.processPropose(new Propose<>(NODE_2, new Phase(5), batch));
+            Thread.sleep(50);
+
+            assertThat(engine.highestObservedClusterPhaseForTesting())
+                .as("observed cluster phase should track the far-ahead proposal")
+                .isEqualTo(new Phase(5));
+            assertThat(engine.currentPhaseForTesting())
+                .as("applied phase must not have advanced to the unentered future phase")
+                .isEqualTo(Phase.ZERO);
+            assertThat(engine.isPendingCatchUp())
+                .as("a node whose committed frontier exceeds its applied frontier is lagging")
+                .isTrue();
+        }
+
+        @Test
+        void isPendingCatchUp_clears_once_applied_phase_reaches_observed_phase() throws InterruptedException {
+            // Once the engine applies up to the observed frontier, it is caught up again.
+            activateEngine();
+            var batch = Batch.create(SERIALIZER, List.of(new TestCommand("cmd")));
+
+            // Observe phase 1 as the cluster frontier, then drive a full decision for phase 0
+            // which advances currentPhase to 1 — closing the gap.
+            engine.processVoteRound1(new VoteRound1(NODE_2, new Phase(1), StateValue.V1));
+            Thread.sleep(50);
+            assertThat(engine.isPendingCatchUp()).as("gap open while applied < observed").isTrue();
+
+            engine.processPropose(new Propose<>(NODE_1, Phase.ZERO, batch));
+            engine.processPropose(new Propose<>(NODE_2, Phase.ZERO, batch));
+            Thread.sleep(50);
+            engine.processVoteRound1(new VoteRound1(NODE_2, Phase.ZERO, StateValue.V1));
+            engine.processVoteRound1(new VoteRound1(NODE_3, Phase.ZERO, StateValue.V1));
+            Thread.sleep(50);
+            engine.processVoteRound2(new VoteRound2(NODE_2, Phase.ZERO, StateValue.V1));
+            engine.processVoteRound2(new VoteRound2(NODE_3, Phase.ZERO, StateValue.V1));
+            Thread.sleep(100);
+
+            assertThat(engine.currentPhaseForTesting())
+                .as("applied phase should have advanced to phase 1 after the phase-0 decision")
+                .isEqualTo(new Phase(1));
+            assertThat(engine.isPendingCatchUp())
+                .as("once applied frontier reaches observed frontier, node is caught up")
+                .isFalse();
+        }
+    }
+
+    @Nested
+    class StallDetector {
+
+        // 5-node cluster → quorumSize = 3, so 2 collected proposals are short of quorum and the
+        // stall detector's proposal-rebroadcast branch fires. Short stall interval (50ms) so the
+        // periodic check runs quickly under test.
+        private RabiaEngine<TestCommand> stallEngine;
+        private TestClusterNetwork stallNetwork;
+
+        @BeforeEach
+        void setUpStallEngine() throws InterruptedException {
+            var stallTopology = new TestTopologyManager(NODE_1, 5);
+            stallNetwork = new TestClusterNetwork();
+            stallEngine = new RabiaEngine<>(stallTopology,
+                                            stallNetwork,
+                                            new TestStateMachine(),
+                                            ProtocolConfig.testConfig(),
+                                            ConsensusMetrics.noop(),
+                                            false,
+                                            RabiaPersistence.inMemory(),
+                                            timeSpan(50).millis());
+            stallEngine.clusterState(ClusterStateNotification.active());
+            Thread.sleep(150);
+            stallEngine.processSyncResponse(new SyncResponse<>(NODE_2, RabiaPersistence.SavedState.empty()));
+            stallEngine.processSyncResponse(new SyncResponse<>(NODE_3, RabiaPersistence.SavedState.empty()));
+            Thread.sleep(50);
+        }
+
+        @AfterEach
+        void tearDownStallEngine() {
+            stallEngine.stop().await();
+        }
+
+        @Test
+        void stall_detector_rebroadcasts_foreign_proposals_not_just_own() throws InterruptedException {
+            // #258: a phase stalls short of quorum proposals. The node holds its OWN proposal plus
+            // one from a (now-dead) contributor. The stall detector must re-broadcast the FULL
+            // proposal set — including the dead contributor's proposal — so a surviving/fresh voter
+            // can reach hasQuorumProposals. Before the fix only the node's own proposal was resent.
+            var ownBatch = Batch.create(SERIALIZER, List.of(new TestCommand("own")));
+            var foreignBatch = Batch.create(SERIALIZER, List.of(new TestCommand("from-dead-node")));
+
+            // Enter the phase with our own proposal.
+            stallEngine.handleSubmit(new RabiaEngineIO.SubmitCommands<>(List.of(new TestCommand("own"))));
+            Thread.sleep(50);
+            // Receive a proposal from NODE_2 (which then dies — it never re-sends).
+            stallEngine.processPropose(new Propose<>(NODE_2, Phase.ZERO, foreignBatch));
+            Thread.sleep(50);
+
+            stallNetwork.clearMessages();
+            // Let the stall detector tick (interval 50ms) at least twice.
+            Thread.sleep(160);
+
+            var rebroadcastFromDeadNode = stallNetwork.getMessages().stream()
+                .filter(m -> m instanceof Propose<?>)
+                .map(m -> (Propose<?>) m)
+                .filter(p -> p.phase().equals(Phase.ZERO))
+                .anyMatch(p -> p.sender().equals(NODE_2));
+
+            assertThat(rebroadcastFromDeadNode)
+                .as("stall detector must re-broadcast the dead contributor's proposal (sender NODE_2)")
+                .isTrue();
+
+            var rebroadcastOwn = stallNetwork.getMessages().stream()
+                .filter(m -> m instanceof Propose<?>)
+                .map(m -> (Propose<?>) m)
+                .filter(p -> p.phase().equals(Phase.ZERO))
+                .anyMatch(p -> p.sender().equals(NODE_1));
+
+            assertThat(rebroadcastOwn)
+                .as("stall detector must still re-broadcast the node's own proposal")
+                .isTrue();
+        }
+
+        @Test
+        void stall_detector_recovers_phase_when_fresh_voter_collects_rebroadcast_proposals() throws InterruptedException {
+            // End-to-end recovery: NODE_1 holds proposals from NODE_2 and NODE_3 (dead) plus its
+            // own = 3 = quorum. After the original contributors die, the re-broadcast lets the
+            // engine itself re-collect the quorum proposal set and broadcast a Round 1 vote,
+            // proving the phase is no longer deadlocked.
+            var foreign2 = Batch.create(SERIALIZER, List.of(new TestCommand("dead-2")));
+            var foreign3 = Batch.create(SERIALIZER, List.of(new TestCommand("dead-3")));
+
+            stallEngine.handleSubmit(new RabiaEngineIO.SubmitCommands<>(List.of(new TestCommand("own"))));
+            Thread.sleep(50);
+            stallEngine.processPropose(new Propose<>(NODE_2, Phase.ZERO, foreign2));
+            stallEngine.processPropose(new Propose<>(NODE_3, Phase.ZERO, foreign3));
+            Thread.sleep(80);
+
+            // With 3 proposals (self + NODE_2 + NODE_3) at quorumSize=3, the engine broadcasts a
+            // Round 1 vote for the phase — progress beyond the proposal-collection deadlock.
+            var votedRound1 = stallNetwork.getMessages().stream()
+                .anyMatch(m -> m instanceof VoteRound1 v && v.phase().equals(Phase.ZERO) && v.sender().equals(NODE_1));
+
+            assertThat(votedRound1)
+                .as("collecting the quorum proposal set must let the engine vote (phase unblocked)")
+                .isTrue();
         }
     }
 

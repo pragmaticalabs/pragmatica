@@ -9,7 +9,8 @@ import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.pragmatica.http.routing.HttpMethod.*;
+import org.pragmatica.http.CommonContentType;
+import static org.pragmatica.http.HttpMethod.*;
 import static org.pragmatica.http.routing.PathParameter.*;
 import static org.pragmatica.http.routing.QueryParameter.*;
 import static org.pragmatica.http.routing.Route.*;
@@ -32,7 +33,7 @@ class RouteBuilderTest {
 
             assertThat(route.method()).isEqualTo(GET);
             assertThat(route.path()).isEqualTo("/health/");
-            assertThat(route.contentType()).isEqualTo(CommonContentTypes.APPLICATION_JSON);
+            assertThat(route.contentType()).isEqualTo(CommonContentType.APPLICATION_JSON);
         }
 
         @Test
@@ -43,7 +44,7 @@ class RouteBuilderTest {
 
             assertThat(route.method()).isEqualTo(POST);
             assertThat(route.path()).isEqualTo("/action/");
-            assertThat(route.contentType()).isEqualTo(CommonContentTypes.TEXT_PLAIN);
+            assertThat(route.contentType()).isEqualTo(CommonContentType.TEXT_PLAIN);
         }
 
         @Test
@@ -62,7 +63,7 @@ class RouteBuilderTest {
             Route<TestResponse> route = Route.<TestResponse>get("/test")
                 .toJson(_ -> Promise.success(new TestResponse("Value")));
 
-            assertThat(route.contentType()).isEqualTo(CommonContentTypes.APPLICATION_JSON);
+            assertThat(route.contentType()).isEqualTo(CommonContentType.APPLICATION_JSON);
         }
 
         @Test
@@ -70,7 +71,7 @@ class RouteBuilderTest {
             Route<TestResponse> route = Route.<TestResponse>get("/test")
                 .toText(_ -> Promise.success(new TestResponse("Value")));
 
-            assertThat(route.contentType()).isEqualTo(CommonContentTypes.TEXT_PLAIN);
+            assertThat(route.contentType()).isEqualTo(CommonContentType.TEXT_PLAIN);
         }
 
         @Test
@@ -78,7 +79,7 @@ class RouteBuilderTest {
             Route<TestResponse> route = Route.<TestResponse>get("/test")
                 .toJson(() -> new TestResponse("Constant"));
 
-            assertThat(route.contentType()).isEqualTo(CommonContentTypes.APPLICATION_JSON);
+            assertThat(route.contentType()).isEqualTo(CommonContentType.APPLICATION_JSON);
         }
 
         @Test
@@ -86,7 +87,7 @@ class RouteBuilderTest {
             Route<TestResponse> route = Route.<TestResponse>get("/test")
                 .toText(() -> new TestResponse("Constant"));
 
-            assertThat(route.contentType()).isEqualTo(CommonContentTypes.TEXT_PLAIN);
+            assertThat(route.contentType()).isEqualTo(CommonContentType.TEXT_PLAIN);
         }
     }
 
@@ -281,7 +282,7 @@ class RouteBuilderTest {
                 .withBody(TestRequest.class)
                 .toJson(request -> Promise.success(new TestResponse(request.name())));
 
-            assertThat(route.contentType()).isEqualTo(CommonContentTypes.APPLICATION_JSON);
+            assertThat(route.contentType()).isEqualTo(CommonContentType.APPLICATION_JSON);
         }
     }
 
@@ -476,7 +477,7 @@ class RouteBuilderTest {
                 .withBody(TestRequest.class)
                 .toJson((id, body) -> Promise.success(new TestResponse("Updated " + id)));
 
-            assertThat(route.contentType()).isEqualTo(CommonContentTypes.APPLICATION_JSON);
+            assertThat(route.contentType()).isEqualTo(CommonContentType.APPLICATION_JSON);
         }
 
         @Test
@@ -508,7 +509,7 @@ class RouteBuilderTest {
                 .withBody(TestRequest.class)
                 .toJson((userId, orderId, body) -> Promise.success(new TestResponse("Updated order")));
 
-            assertThat(route.contentType()).isEqualTo(CommonContentTypes.APPLICATION_JSON);
+            assertThat(route.contentType()).isEqualTo(CommonContentType.APPLICATION_JSON);
         }
 
         @Test
@@ -540,7 +541,7 @@ class RouteBuilderTest {
                 .withBody(TestRequest.class)
                 .toJson((a, b, c, body) -> Promise.success(new TestResponse("Three path + body")));
 
-            assertThat(route.contentType()).isEqualTo(CommonContentTypes.APPLICATION_JSON);
+            assertThat(route.contentType()).isEqualTo(CommonContentType.APPLICATION_JSON);
         }
 
         @Test
@@ -572,7 +573,7 @@ class RouteBuilderTest {
                 .withBody(TestRequest.class)
                 .toJson((a, b, c, d, body) -> Promise.success(new TestResponse("Four path + body")));
 
-            assertThat(route.contentType()).isEqualTo(CommonContentTypes.APPLICATION_JSON);
+            assertThat(route.contentType()).isEqualTo(CommonContentType.APPLICATION_JSON);
         }
     }
 
@@ -610,7 +611,7 @@ class RouteBuilderTest {
                 .withBody(TestRequest.class)
                 .toJson((filter, body) -> Promise.success(new TestResponse("Filtered")));
 
-            assertThat(route.contentType()).isEqualTo(CommonContentTypes.APPLICATION_JSON);
+            assertThat(route.contentType()).isEqualTo(CommonContentType.APPLICATION_JSON);
         }
 
         @Test
@@ -642,7 +643,7 @@ class RouteBuilderTest {
                 .withBody(TestRequest.class)
                 .toJson((filter, limit, body) -> Promise.success(new TestResponse("Two query + body")));
 
-            assertThat(route.contentType()).isEqualTo(CommonContentTypes.APPLICATION_JSON);
+            assertThat(route.contentType()).isEqualTo(CommonContentType.APPLICATION_JSON);
         }
 
         @Test
@@ -674,7 +675,7 @@ class RouteBuilderTest {
                 .withBody(TestRequest.class)
                 .toJson((q, page, size, body) -> Promise.success(new TestResponse("Three query + body")));
 
-            assertThat(route.contentType()).isEqualTo(CommonContentTypes.APPLICATION_JSON);
+            assertThat(route.contentType()).isEqualTo(CommonContentType.APPLICATION_JSON);
         }
 
         @Test
@@ -706,7 +707,7 @@ class RouteBuilderTest {
                 .withBody(TestRequest.class)
                 .toJson((q, page, size, asc, body) -> Promise.success(new TestResponse("Four query + body")));
 
-            assertThat(route.contentType()).isEqualTo(CommonContentTypes.APPLICATION_JSON);
+            assertThat(route.contentType()).isEqualTo(CommonContentType.APPLICATION_JSON);
         }
     }
 
@@ -1094,7 +1095,7 @@ class RouteBuilderTest {
                 .withBody(TestRequest.class)
                 .toJson((id, notify, body) -> Promise.success(new TestResponse("Complete")));
 
-            assertThat(route.contentType()).isEqualTo(CommonContentTypes.APPLICATION_JSON);
+            assertThat(route.contentType()).isEqualTo(CommonContentType.APPLICATION_JSON);
         }
 
         // 1 path + 2 query + body
@@ -1130,7 +1131,7 @@ class RouteBuilderTest {
                 .withBody(TestRequest.class)
                 .toJson((id, notify, force, body) -> Promise.success(new TestResponse("Complete")));
 
-            assertThat(route.contentType()).isEqualTo(CommonContentTypes.APPLICATION_JSON);
+            assertThat(route.contentType()).isEqualTo(CommonContentType.APPLICATION_JSON);
         }
 
         // 2 path + 1 query + body
@@ -1166,7 +1167,7 @@ class RouteBuilderTest {
                 .withBody(TestRequest.class)
                 .toJson((userId, orderId, notify, body) -> Promise.success(new TestResponse("Complete")));
 
-            assertThat(route.contentType()).isEqualTo(CommonContentTypes.APPLICATION_JSON);
+            assertThat(route.contentType()).isEqualTo(CommonContentType.APPLICATION_JSON);
         }
     }
 

@@ -54,6 +54,8 @@ import org.pragmatica.swim.SwimMessage.Announce;
 import org.pragmatica.swim.SwimMessage.MembershipUpdate;
 import org.pragmatica.swim.SwimMessage.Ping;
 import org.pragmatica.swim.SwimMessage.PingReq;
+import org.pragmatica.swim.SwimMessage.WhoAmI;
+import org.pragmatica.swim.SwimMessage.WhoAmIReply;
 import org.pragmatica.swim.SwimTransport.SwimMessageHandler;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -185,6 +187,19 @@ public final class SwimProtocol implements SwimMessageHandler {
     /// until [#announceJoin] seeds a real incarnation, so a bogus incarnation-0
     /// self is never gossiped.
     private final AtomicLong selfIncarnation = new AtomicLong(0);
+    /// Fix 1 (#336 at-risk self-refutation): epoch-ms of the last evidence that peers can
+    /// reach THIS node — an inbound `Ping` ([#handlePing]) or a verified `Ack` to a probe
+    /// this node sent ([#acceptProbeAckIfFromTarget]). When it goes stale (≥ the at-risk
+    /// window, `suspectTimeout / `[`SwimConfig#AT_RISK_WINDOW_DIVISOR`]) the node is "at risk"
+    /// of a suspicion it will never hear (its inbound link is the same one a suspect-gossip
+    /// would ride), and [#refreshSelfAlive] advances the self-incarnation to out-rank it.
+    /// Seeded to construction time so a fresh node has a full at-risk window of grace before
+    /// its first proactive bump.
+    private final AtomicLong lastInboundReachabilityAt = new AtomicLong(System.currentTimeMillis());
+    /// Fix 1 (#336): epoch-ms of the last at-risk self-incarnation advance, rate-limiting the
+    /// proactive bump to at most once per at-risk window so a silently-isolated node does not
+    /// flood incarnation churn (over-bumping would break anti-oscillation). `0` = never bumped.
+    private final AtomicLong lastAtRiskBumpAt = new AtomicLong(0L);
     private final AtomicReference<Option<ScheduledFuture<?>>> tickFuture = new AtomicReference<>(none());
     /// Per-member last-probe ORDINAL (a strictly-monotonic `probeOrdinal` value), keyed by
     /// `NodeId` so probe scheduling is identity-stable under churn. Stamped in [#probeTarget]
@@ -395,18 +410,20 @@ public final class SwimProtocol implements SwimMessageHandler {
 
     /// Add a seed member to the membership list.
     ///
-    /// Resurrection guard (#231): a channel re-seed is NOT proof of reachability,
-    /// so the member is introduced as SUSPECT (probe-on-arrival) rather than ALIVE,
-    /// mirroring the ANNOUNCE path (`handleAnnounce`). SUSPECT keeps the member
-    /// `isProbable` so the next tick probes it; a real probe-ack or QUIC
-    /// `PeerConnected` promotes it to ALIVE/HEALTHY. SUSPECT does NOT set
-    /// `everSeenHealthy` and does NOT emit `HealthyObserved`, so a previously-dead
-    /// id re-seeded onto the channel is never re-admitted as HEALTHY off a bare add.
+    /// Resurrection guard (#231): a channel re-seed is NOT proof of reachability, so the
+    /// member is introduced in the LOCAL-ONLY `OBSERVED` birth state (#336/#241) — known and
+    /// probe-eligible, but NOT alive and NOT death-timer-armed. No suspicion is armed at birth
+    /// (the prior born-SUSPECT-with-armed-timer evicted live joiners before the leader's probe
+    /// could confirm them), and OBSERVED is never disseminated (no `addMemberUpdate`). The next
+    /// tick probes it ([#isProbable] is true for OBSERVED); a real probe-ack (or a gossiped Alive)
+    /// promotes it to ALIVE/HEALTHY, while a sustained probe-timeout past the join deadline
+    /// escalates it to SUSPECT ([#markSuspect]). OBSERVED does NOT set `everSeenHealthy`
+    /// and does NOT emit `HealthyObserved`, so a previously-dead id re-seeded onto the channel is
+    /// never re-admitted as HEALTHY off a bare add.
     ///
-    /// Cold-start is preserved: `notifyMemberJoined` (and its `MemberDiscovered`
-    /// observation that feeds the QUIC dial set) still fires, and the registered
-    /// suspect timestamp lets the next probe-ack promote a genuine seed to ALIVE
-    /// within one probe period.
+    /// Cold-start is preserved: `notifyMemberJoined` (and its `MemberDiscovered` observation that
+    /// feeds the QUIC dial set) still fires, and the first-sighting stamp lets the join-deadline
+    /// escalation run if the seed never acks.
     @Contract
     public void addSeedMember(NodeId nodeId, InetSocketAddress address) {
         if (selfId.equals(nodeId)) {
@@ -425,18 +442,17 @@ public final class SwimProtocol implements SwimMessageHandler {
         // Tombstone refusal (#231 oscillation): a bare channel re-seed is NOT proof the
         // node is alive — it carries no incarnation, so treat it as incarnation 0. A
         // dead-and-cleaned id that is still tombstoned must not be re-introduced as
-        // SUSPECT (which would restart the SUSPECT<->FAULTY oscillation). A genuine
-        // rejoin arrives via self-ANNOUNCE (`handleAnnounce`), which clears the tombstone.
+        // OBSERVED (which would restart the SUSPECT<->FAULTY oscillation once it escalates).
+        // A genuine rejoin arrives via self-ANNOUNCE (`handleAnnounce`), which clears the
+        // tombstone.
         if (isTombstoned(nodeId, 0L)) {
             return;
         }
 
-        var member = SwimMember.swimMember(nodeId, MemberState.SUSPECT, 0, address);
+        var member = SwimMember.swimMember(nodeId, MemberState.OBSERVED, 0, address);
         members.put(nodeId, member);
-        beginSuspicion(nodeId, selfId);
         memberFirstSeenAt.putIfAbsent(nodeId, System.currentTimeMillis());
         notifyMemberJoined(member);
-        addMemberUpdate(member);
     }
 
     /// Return an unmodifiable snapshot of the current membership.
@@ -536,6 +552,10 @@ public final class SwimProtocol implements SwimMessageHandler {
             case ALIVE -> SwimHealth.HEALTHY;
             case SUSPECT -> SwimHealth.SUSPECTED;
             case FAULTY -> SwimHealth.FAULTY;
+            // OBSERVED is a never-confirmed local birth state — it has not been observed
+            // HEALTHY, so the early return above already classifies it UNKNOWN; this arm
+            // keeps the switch exhaustive.
+            case OBSERVED -> SwimHealth.UNKNOWN;
         };
     }
 
@@ -550,6 +570,8 @@ public final class SwimProtocol implements SwimMessageHandler {
             case Ack ack -> handleAck(ack);
             case PingReq pingReq -> handlePingReq(sender, pingReq);
             case Announce announce -> handleAnnounce(sender, announce);
+            case WhoAmI w -> handleWhoAmI(sender, w);
+            case WhoAmIReply r -> handleWhoAmIReply(r);
         }
     }
 
@@ -582,7 +604,49 @@ public final class SwimProtocol implements SwimMessageHandler {
         if (incarnation == 0) {
             return;
         }
-        addMemberUpdate(MembershipUpdate.membershipUpdate(selfId, MemberState.ALIVE, incarnation, selfAddress));
+        addMemberUpdate(MembershipUpdate.membershipUpdate(selfId, MemberState.ALIVE, refreshedSelfIncarnation(incarnation), selfAddress));
+    }
+
+    /// Fix 1 (#336 PRIMARY): the incarnation this round's proactive self-ALIVE advertises.
+    /// When the node is "at risk" — no inbound-reachability evidence for at least the at-risk
+    /// window AND the previous at-risk bump is at least that old (rate-limit) — it advances
+    /// the durable self-incarnation (atomic +1) so the broadcast `Alive(self, k+1)` STRICTLY
+    /// out-ranks any in-flight `Suspect(self, k)` raised by a prober this node never heard
+    /// from (the canonical-precedence dead-end the failing link created — proactive
+    /// rebroadcast at the UNCHANGED incarnation could never clear it). Otherwise it returns
+    /// the unchanged incarnation (today's rebroadcast behavior).
+    private long refreshedSelfIncarnation(long currentIncarnation) {
+        var now = System.currentTimeMillis();
+        if (!atRiskOfUnheardSuspicion(now) || !atRiskBumpDue(now)) {
+            return currentIncarnation;
+        }
+        lastAtRiskBumpAt.set(now);
+        var bumped = selfIncarnation.incrementAndGet();
+        LOG.info("SWIM at-risk self-refutation (#336): no inbound reachability for >={}ms — advancing self-incarnation "
+                 + "{} -> {} and broadcasting Alive(self, {}) to out-rank any unheard Suspect(self, {})",
+                 atRiskWindowMs(), currentIncarnation, bumped, bumped, currentIncarnation);
+        return bumped;
+    }
+
+    /// Fix 1: true when no evidence that peers can reach this node has arrived within the
+    /// at-risk window (`suspectTimeout / `[`SwimConfig#AT_RISK_WINDOW_DIVISOR`]).
+    private boolean atRiskOfUnheardSuspicion(long now) {
+        return now - lastInboundReachabilityAt.get() >= atRiskWindowMs();
+    }
+
+    /// Fix 1 rate-limit: at most one at-risk incarnation advance per at-risk window.
+    private boolean atRiskBumpDue(long now) {
+        return now - lastAtRiskBumpAt.get() >= atRiskWindowMs();
+    }
+
+    private long atRiskWindowMs() {
+        return config.suspectTimeout().millis() / SwimConfig.AT_RISK_WINDOW_DIVISOR;
+    }
+
+    /// Fix 1: record evidence that peers can currently reach this node (an inbound Ping or a
+    /// verified Ack to a probe we sent), resetting the at-risk clock.
+    private void recordInboundReachability() {
+        lastInboundReachabilityAt.set(System.currentTimeMillis());
     }
 
     private void probeTarget(SwimMember target) {
@@ -796,11 +860,24 @@ public final class SwimProtocol implements SwimMessageHandler {
     /// grace — fail-safe to the pre-grace behavior. Used (together with
     /// `!everSeenHealthy.contains(peer)`) to extend the existing cold-boot FAULTY/tombstone
     /// suppression to a freshly-joined never-HEALTHY member in `NORMAL`/`RECOVERING` phase.
-    private boolean withinJoinGrace(NodeId peer) {
+    /// Also exposed (via `CoreSwimHealthDetector.withinJoinGrace`) to the cluster-sync
+    /// eviction guard so a within-grace peer — transiently SUSPECT during its first
+    /// probe-ack window — is not app-level ping-timeout-evicted before SWIM can probe it.
+    public boolean withinJoinGrace(NodeId peer) {
         var graceMs = config.joinGrace().millis();
         return option(memberFirstSeenAt.get(peer))
             .map(firstSeen -> System.currentTimeMillis() - firstSeen < graceMs)
             .or(false);
+    }
+
+    /// Whether `peer`'s OBSERVED join deadline has passed — the complement of
+    /// [#withinJoinGrace]. Gate for the OBSERVED->SUSPECT escalation in [#markSuspect]: an
+    /// OBSERVED member is only armed for death once at least `config.joinGrace()` has elapsed
+    /// since its first sighting. A member with no first-sighting entry is treated as PAST the
+    /// deadline (fail-safe: an OBSERVED member must never sit in immortal limbo — both birth
+    /// paths stamp the first-sighting, so this is purely defensive).
+    private boolean pastJoinDeadline(NodeId peer) {
+        return !withinJoinGrace(peer);
     }
 
     // -- Wave-6 Lifeguard: suspicion lifecycle, LHM, dogpile --
@@ -857,11 +934,27 @@ public final class SwimProtocol implements SwimMessageHandler {
     }
 
     /// Current effective suspicion window for `nodeId`: the dogpile-shrunk window of its
-    /// active suspicion, or the base timeout when no suspicion state exists (defensive).
+    /// active suspicion (or the base timeout when no suspicion state exists, defensive),
+    /// scaled by the Fix 3 cluster-size term ([#clusterSizeWindowMultiplier]).
     private long suspicionWindowMs(NodeId nodeId, long baseMs) {
-        return option(suspicions.get(nodeId))
+        var dogpileWindow = option(suspicions.get(nodeId))
             .map(SwimProtocol::dogpileWindowMs)
             .or(baseMs);
+        return (long) (dogpileWindow * clusterSizeWindowMultiplier());
+    }
+
+    /// Fix 3 (#336 cluster-size suspect-window scaling): the canonical Lifeguard size term
+    /// `max(1, ln(N + 1))`, N = live member count (ALIVE peers + self), clamped to
+    /// [`SwimConfig#MAX_CLUSTER_SIZE_WINDOW_MULTIPLIER`]. As N grows the round-robin re-probe
+    /// interval lengthens toward the fixed base suspect window; widening the window by this
+    /// term keeps it several re-probe intervals wide, so a transient probe-ack miss on an
+    /// established core no longer ripens to FAULTY as the cluster scales out. Pure function of
+    /// N (and, via the dogpile window it multiplies, the LHM factor).
+    private double clusterSizeWindowMultiplier() {
+        var liveCount = 1 + members.values().stream()
+                                  .filter(member -> member.state() == MemberState.ALIVE)
+                                  .count();
+        return Math.min(Math.max(1.0, Math.log(liveCount + 1.0)), SwimConfig.MAX_CLUSTER_SIZE_WINDOW_MULTIPLIER);
     }
 
     /// Memberlist-style dogpile shrink: `max - (max-min) · log(C+1)/log(K+1)`, clamped
@@ -918,19 +1011,12 @@ public final class SwimProtocol implements SwimMessageHandler {
             return;
         }
 
-        // A never-HEALTHY member still inside its join-grace window is a freshly-joined peer whose
-        // round-robin probe has not yet had a chance to confirm it ALIVE. Expiring it to FAULTY here
-        // flips the member state (join-grace only suppresses the FAULTY *emission*, not the transition),
-        // and the NTT promotion streak samples member health authoritatively — so the reset would stop
-        // the peer ever accruing the consecutive HEALTHY samples it needs to promote, ending in CTM
-        // reaping and re-provisioning it in a loop. Defer the transition: keep it SUSPECT (still
-        // probe-eligible) so a probe-ack can confirm it ALIVE. Normal expiry resumes once grace ends
-        // or once it has ever been healthy.
-        if (withinJoinGrace(nodeId) && !everSeenHealthy.contains(nodeId)) {
-            LOG.debug("Deferring SUSPECT->FAULTY for never-HEALTHY peer {} still within join-grace — keeping it probe-eligible", nodeId.id());
-            return;
-        }
-
+        // No join-grace DEFER here anymore (#336/#241): a freshly seeded/announced never-HEALTHY
+        // member is held in the OBSERVED birth state (no suspect-window, not death-timer-armed)
+        // until its join deadline, so it never reaches this SUSPECT-expiry path within grace. By
+        // the time a member IS SUSPECT, either it was ALIVE (genuine probe-timeout), or its join
+        // deadline already passed (OBSERVED->SUSPECT escalation, [#markSuspect]), or it was gossiped
+        // SUSPECT — all of which correctly proceed to FAULTY here.
         option(members.get(nodeId))
             .filter(member -> member.state() == MemberState.SUSPECT)
             .onPresent(this::transitionToFaulty);
@@ -950,6 +1036,12 @@ public final class SwimProtocol implements SwimMessageHandler {
     }
 
     private void transitionToFaulty(SwimMember member) {
+        // Fix 2 (#336): this node's own suspect-window expiry is it INDEPENDENTLY concluding
+        // the peer is dead — register self as an accuser so a peer suspected ONLY by this one
+        // node (no co-confirming gossip) is recognised as under-confirmed by the kill-gate in
+        // emitFaultyOrUnknown. A self-originated suspicion already holds self (dedup no-op); a
+        // gossip-originated one now reaches two distinct accusers (gossip sender + self).
+        confirmSuspicion(member.nodeId(), selfId);
         var faulty = member.withState(MemberState.FAULTY);
         members.put(member.nodeId(), faulty);
         // Wave-6 H8 fix: the FAULTY residency clock is THIS stamp (authoritative, read by
@@ -962,7 +1054,7 @@ public final class SwimProtocol implements SwimMessageHandler {
         // suspect-window expiry → here). Direct local evidence — the death path proceeds unconditionally.
         listener.onMemberFaulty(faulty, true);
         addMemberUpdate(faulty);
-        emitFaultyOrUnknown(member.nodeId(), faulty.incarnation());
+        emitFaultyOrUnknown(member.nodeId(), faulty.incarnation(), true);
         detectSelfIsolation();
         LOG.warn("Member {} marked FAULTY", member.nodeId().id());
     }
@@ -1007,7 +1099,9 @@ public final class SwimProtocol implements SwimMessageHandler {
     }
 
     private boolean isProbable(SwimMember member) {
-        return member.state() == MemberState.ALIVE || member.state() == MemberState.SUSPECT;
+        return member.state() == MemberState.ALIVE
+               || member.state() == MemberState.SUSPECT
+               || member.state() == MemberState.OBSERVED;
     }
 
     private void scheduleProbeTimeout(long seq) {
@@ -1054,8 +1148,19 @@ public final class SwimProtocol implements SwimMessageHandler {
 
     private void markSuspect(NodeId nodeId) {
         option(members.get(nodeId))
-            .filter(member -> member.state() == MemberState.ALIVE)
+            .filter(this::isSuspectEscalation)
             .onPresent(member -> applySuspect(nodeId, member));
+    }
+
+    /// Whether a probe-cycle timeout should escalate `member` to SUSPECT. An ALIVE member
+    /// always escalates (canonical SWIM probe-timeout). An OBSERVED member (freshly seeded/
+    /// announced, never yet confirmed) escalates ONLY once its join deadline has passed
+    /// ([#pastJoinDeadline]); before the deadline a probe-timeout leaves it OBSERVED so the
+    /// next tick keeps probing — a slow-to-ack joiner is not prematurely armed for death
+    /// (#336/#241). SUSPECT/FAULTY members are not re-escalated (idempotent: no clock restart).
+    private boolean isSuspectEscalation(SwimMember member) {
+        return member.state() == MemberState.ALIVE
+               || (member.state() == MemberState.OBSERVED && pastJoinDeadline(member.nodeId()));
     }
 
     private void applySuspect(NodeId nodeId, SwimMember member) {
@@ -1072,10 +1177,27 @@ public final class SwimProtocol implements SwimMessageHandler {
 
     private void handlePing(InetSocketAddress sender, Ping ping) {
         inboundProbeReceived = true;
+        recordInboundReachability();
         processPiggyback(ping.piggyback(), ping.from());
         var piggyback = piggybackBuffer.peekUpdates(config.maxPiggyback());
         var ack = Ack.ack(selfId, ping.sequence(), piggyback);
         transport.send(sender, ack);
+    }
+
+    /// Reflects the kernel-resolved source address back to a joining node. The seed echoes
+    /// exactly the address it observed `sender` arrive from, so a node behind a container/VM
+    /// hostname can learn the routable address peers actually see.
+    private void handleWhoAmI(InetSocketAddress sender, WhoAmI w) {
+        LOG.trace("SWIM WhoAmI from {}: reflecting observed source address {}", w.from().id(), sender);
+        var reply = WhoAmIReply.whoAmIReply(sender);
+        transport.send(sender, reply);
+    }
+
+    /// Defensive no-op: this SwimProtocol never initiates WhoAmI requests, so a reply has no
+    /// pending request to satisfy. Replies are consumed by a transient client transport (later
+    /// task); the case exists only to keep [#onMessage] exhaustive over the sealed message set.
+    private void handleWhoAmIReply(WhoAmIReply r) {
+        LOG.trace("SWIM unexpected WhoAmIReply (no pending request): {}", r.observedAddress());
     }
 
     private void handleAck(Ack ack) {
@@ -1107,6 +1229,8 @@ public final class SwimProtocol implements SwimMessageHandler {
         }
 
         pendingProbes.remove(ack.sequence());
+        // Fix 1 (#336): a verified Ack round-trip proves peers can reach this node right now.
+        recordInboundReachability();
         lhmDecrement("verified probe ack from " + ack.from().id());
         acceptAliveEvidence(ack.from());
     }
@@ -1184,16 +1308,17 @@ public final class SwimProtocol implements SwimMessageHandler {
         tombstones.remove(announce.nodeInfo().id());
 
         if (!members.containsKey(announce.nodeInfo().id())) {
-            // FIX A — Direct liveness evidence: a self-ANNOUNCE datagram is a node
-            // speaking for ITSELF (canonical SWIM positive liveness), NOT third-party
-            // gossip. Introduce it as ALIVE (no suspect-timer armed at birth) instead of
-            // SUSPECT, so it reaches HEALTHY immediately and enters membership without
-            // racing a later probe-ack. Third-party gossip (`applyUpdate`/`applyNewMember`)
-            // is UNCHANGED — it still introduces unknown gossiped members as SUSPECT,
-            // because there is no direct evidence on that path.
+            // Direct liveness evidence: a self-ANNOUNCE datagram is a node speaking for ITSELF
+            // (canonical SWIM positive liveness), NOT third-party gossip. Introduce it in the
+            // LOCAL-ONLY `OBSERVED` birth state (#336/#241) — no suspect-timer armed at birth, so
+            // it never races a later probe-ack toward FAULTY, yet not counted ALIVE/HEALTHY until a
+            // real probe-ack confirms it (or a gossiped Alive arrives). Third-party gossip
+            // (`applyUpdate`/`applyNewMember`) introduces an unknown ALIVE member ALIVE and an
+            // unknown FAULTY member via its co-confirmation path, but an unknown SUSPECT is hearsay
+            // and is ALSO born OBSERVED ([#applyNewSuspectMember]) — only our own probing escalates it.
             //
-            // #231 invariant preserved: the ALIVE introduction is routed THROUGH the
-            // tombstone gate (`introduceAnnouncedAlive` -> `blockedByTombstone`), never
+            // #231 invariant preserved: the OBSERVED introduction is routed THROUGH the
+            // tombstone gate (`introduceAnnouncedObserved` -> `blockedByTombstone`), never
             // around it. A proven-dead id is therefore NOT revived by a bare ANNOUNCE at
             // an incarnation that does not strictly exceed the tombstone. (The
             // unconditional tombstone-CLEAR above is the partition-heal path and is what a
@@ -1204,7 +1329,7 @@ public final class SwimProtocol implements SwimMessageHandler {
             // through async DNS, falling back to the advertised address when no source IP
             // is available (cold-boot static seeds / NAT). `JoinAnnounced` (below) still
             // fires, so the QUIC reachability probe proceeds — formation is unaffected.
-            introduceAnnouncedAlive(announce, swimProbeAddressFor(sender, announce.nodeInfo()));
+            introduceAnnouncedObserved(announce, swimProbeAddressFor(sender, announce.nodeInfo()));
         } else {
             // Wave 9 Fix C — KNOWN member re-ANNOUNCE: adopt the fresh source-derived probe
             // address if it changed (Docker IP reshuffle on partition-heal). The new-member
@@ -1259,27 +1384,28 @@ public final class SwimProtocol implements SwimMessageHandler {
                      .or(swimAddressFor(nodeInfo));
     }
 
-    /// FIX A — Introduce a self-announced (direct-liveness-evidence) member as ALIVE,
-    /// routed THROUGH the tombstone gate (#231): a proven-dead id whose tombstone the
-    /// preceding unconditional clear did not remove — or one at an incarnation that does
-    /// not strictly exceed the tombstone — is refused here too, never resurrected off a
-    /// bare ANNOUNCE. On admission the member is recorded ALIVE (no suspect-timer armed at
-    /// birth), `notifyMemberJoined` fires (QUIC dial set + listener), and `HealthyObserved`
-    /// is emitted via [#recordHealthyAndEmit]. Distinct from gossip introduction
-    /// ([#applyNewSuspectMember]), which has no direct evidence and stays SUSPECT.
-    private void introduceAnnouncedAlive(Announce announce, InetSocketAddress probeAddress) {
+    /// Introduce a self-announced member in the LOCAL-ONLY `OBSERVED` birth state (#336/#241),
+    /// routed THROUGH the tombstone gate (#231): a proven-dead id whose tombstone the preceding
+    /// unconditional clear did not remove — or one at an incarnation that does not strictly exceed
+    /// the tombstone — is refused here too, never resurrected off a bare ANNOUNCE. On admission the
+    /// member is recorded OBSERVED (no suspect-timer armed at birth), the first-sighting is stamped
+    /// (so the join-deadline escalation runs if it never acks), and `notifyMemberJoined` fires (QUIC
+    /// dial set + listener). Deliberately NOT counted ALIVE/HEALTHY yet: it does NOT set
+    /// `everSeenHealthy`, does NOT emit `HealthyObserved`, and is NOT disseminated (`addMemberUpdate`
+    /// drops OBSERVED) — a real probe-ack ([#markAliveIfNeeded]) or a gossiped Alive promotes it to
+    /// ALIVE. Like the gossip-SUSPECT-of-unknown path ([#applyNewSuspectMember]), an unconfirmed
+    /// member is born OBSERVED; an unknown ALIVE/FAULTY gossip is still honoured in its gossiped state.
+    private void introduceAnnouncedObserved(Announce announce, InetSocketAddress probeAddress) {
         if (blockedByTombstone(announce.nodeInfo().id(), announce.incarnation())) {
             return;
         }
 
-        var member = SwimMember.swimMember(announce.nodeInfo().id(), MemberState.ALIVE,
+        var member = SwimMember.swimMember(announce.nodeInfo().id(), MemberState.OBSERVED,
                                            announce.incarnation(), probeAddress,
                                            announce.nodeInfo().labels());
         members.put(member.nodeId(), member);
-        endSuspicion(member.nodeId());
-        addMemberUpdate(member);
+        memberFirstSeenAt.putIfAbsent(member.nodeId(), System.currentTimeMillis());
         notifyMemberJoined(member);
-        recordHealthyAndEmit(member.nodeId(), member.incarnation());
     }
 
     /// Wave 9 Fix C — refresh a resident member's SWIM probe address when a re-ANNOUNCE carries a
@@ -1447,7 +1573,7 @@ public final class SwimProtocol implements SwimMessageHandler {
             if (isTombstoned(update.nodeId(), update.incarnation())) {
                 return;
             }
-            applyNewMember(update, gossipSender);
+            applyNewMember(update);
         }
     }
 
@@ -1490,19 +1616,38 @@ public final class SwimProtocol implements SwimMessageHandler {
         addMemberUpdate(MembershipUpdate.membershipUpdate(selfId, MemberState.ALIVE, bumped, selfAddress));
     }
 
-    private void applyNewMember(MembershipUpdate update, NodeId accuser) {
+    private void applyNewMember(MembershipUpdate update) {
         var member = SwimMember.swimMember(update.nodeId(), update.state(), update.incarnation(), update.address());
         members.put(update.nodeId(), member);
         memberFirstSeenAt.putIfAbsent(update.nodeId(), System.currentTimeMillis());
-        if (update.state() != MemberState.FAULTY) {
-            addMemberUpdate(update);
-        }
 
         switch (update.state()) {
             case ALIVE -> applyNewAliveMember(member);
-            case SUSPECT -> applyNewSuspectMember(member, accuser);
+            case SUSPECT -> applyNewSuspectMember(member);
             case FAULTY -> applyNewFaultyMember(member);
+            // Defensive: OBSERVED is a LOCAL-ONLY birth state and is never serialized
+            // ([#addMemberUpdate] drops it), so a gossiped OBSERVED update is impossible.
+            // Drop it rather than treat it as a real membership event.
+            case OBSERVED -> LOG.warn("SWIM dropping gossiped OBSERVED update for {} — OBSERVED is a "
+                                      + "local-only birth state and must never arrive on the wire",
+                                      update.nodeId().id());
         }
+
+        // Re-broadcast based on the LOCAL stored state, NOT the raw wire update (#336/#241 wire-leak,
+        // Finding B): a gossiped SUSPECT-of-unknown is birthed OBSERVED ([#applyNewSuspectMember]) and
+        // the guarded [#addMemberUpdate(SwimMember)] overload drops OBSERVED, so an unconfirmed member
+        // is never disseminated. FAULTY is not re-broadcast here (unchanged) — the FAULTY edge owns its
+        // own co-confirmation/dissemination path.
+        if (update.state() != MemberState.FAULTY) {
+            rebroadcastStoredMember(update.nodeId());
+        }
+    }
+
+    /// Re-broadcast a freshly-introduced member by its LOCAL stored state via the guarded
+    /// [#addMemberUpdate(SwimMember)] overload (which drops OBSERVED), so a SUSPECT-wire-update
+    /// birthed OBSERVED is NOT propagated. A no-op if the member is already gone.
+    private void rebroadcastStoredMember(NodeId nodeId) {
+        option(members.get(nodeId)).onPresent(this::addMemberUpdate);
     }
 
     private void applyNewAliveMember(SwimMember member) {
@@ -1510,14 +1655,18 @@ public final class SwimProtocol implements SwimMessageHandler {
         recordHealthyAndEmit(member.nodeId(), member.incarnation());
     }
 
-    private void applyNewSuspectMember(SwimMember member, NodeId accuser) {
-        // First-sight SUSPECT must register a timestamp so the suspect-window
-        // expiry tick eventually transitions the member to FAULTY (or
-        // UnknownObserved under cold-boot suppression). The gossip sender is the
-        // originating accuser of the local suspicion (Wave-6 dogpile).
-        beginSuspicion(member.nodeId(), accuser);
-        listener.onMemberSuspect(member);
-        emitSuspect(member.nodeId(), member.incarnation());
+    /// A gossiped SUSPECT for a member we have NEVER seen is hearsay, not confirmation (#336/#241):
+    /// introduce it in the LOCAL-ONLY OBSERVED birth state — identical lifecycle to a seeded/announced
+    /// OBSERVED member (no `beginSuspicion`, no armed death-timer; the first-sighting was stamped by
+    /// [#applyNewMember], so the join-deadline escalation still runs; probe-eligible). Our OWN
+    /// probe-timeout past the join deadline ([#markSuspect]) decides, so a live-but-slow joiner is
+    /// never killed on third-party hearsay within grace. The member is stored OBSERVED, so the
+    /// re-broadcast in [#applyNewMember] drops it (the wire SUSPECT is NOT propagated). `notifyMemberJoined`
+    /// fires (QUIC dial set + listener), exactly as for an ALIVE first-sight join.
+    private void applyNewSuspectMember(SwimMember member) {
+        var observed = member.withState(MemberState.OBSERVED);
+        members.put(observed.nodeId(), observed);
+        notifyMemberJoined(observed);
     }
 
     /// Wave-6 H8: a member first learned as FAULTY still gets the residency stamp so it
@@ -1535,13 +1684,23 @@ public final class SwimProtocol implements SwimMessageHandler {
         }
         faultyStampedAtMs.put(member.nodeId(), System.currentTimeMillis());
         listener.onMemberFaulty(member, false);
-        emitFaultyOrUnknown(member.nodeId(), member.incarnation());
+        emitFaultyOrUnknown(member.nodeId(), member.incarnation(), false);
     }
 
-    /// Enforce SWIM state priority at same incarnation: FAULTY > SUSPECT > ALIVE.
-    /// At equal incarnation, only allow state progression (ALIVE->SUSPECT->FAULTY), not regression.
+    /// Enforce SWIM state priority at same incarnation: FAULTY > SUSPECT > ALIVE > OBSERVED.
+    /// At equal incarnation, only allow state progression, not regression. A resident OBSERVED
+    /// member is special-cased (see inline): a gossiped `Alive` promotes it, any other gossiped
+    /// state is ignored (our own probe-timeout decides), #336/#241.
     private void applyExistingMember(SwimMember existing, MembershipUpdate update, NodeId accuser) {
         if (update.incarnation() < existing.incarnation()) {
+            return;
+        }
+
+        // OBSERVED is a not-yet-confirmed local placeholder: a gossiped Alive (propagated probe-ack
+        // evidence) promotes it (falls through to the normal merge below); a gossiped SUSPECT/FAULTY is
+        // NOT adopted — our own probe-timeout past the join deadline decides (A1 / #126 co-confirmation),
+        // so a fresh joiner is never killed on third-party hearsay.
+        if (existing.state() == MemberState.OBSERVED && update.state() != MemberState.ALIVE) {
             return;
         }
 
@@ -1594,12 +1753,24 @@ public final class SwimProtocol implements SwimMessageHandler {
         return update.state() == MemberState.ALIVE && existing.state() != MemberState.ALIVE;
     }
 
-    /// State priority for SWIM: FAULTY > SUSPECT > ALIVE.
+    /// State priority for SWIM at EQUAL incarnation: FAULTY(2) > SUSPECT(1) > ALIVE(0) > OBSERVED(-1);
+    /// a same-incarnation update is rejected in [#applyExistingMember] only when it has a strictly
+    /// LOWER priority than the resident state (no regression).
+    ///
+    /// OBSERVED is the WEAKEST/most-easily-superseded state (-1) — a LOCAL not-yet-confirmed
+    /// placeholder, NOT sticky. At equal incarnation a gossiped `Alive`(0) outranks OBSERVED(-1) and
+    /// is NOT rejected, so propagated probe-ack evidence promotes the member out of OBSERVED.
+    /// Conversely a (malformed) gossiped OBSERVED(-1) is rejected against every real resident state,
+    /// so it can never overwrite a healthy ALIVE/SUSPECT/FAULTY. OBSERVED is promoted to ALIVE by a
+    /// real probe-ack ([#markAliveIfNeeded]) OR a gossiped `Alive`, and escalated out of OBSERVED only
+    /// by the local join-deadline path ([#markSuspect]); a gossiped SUSPECT/FAULTY is explicitly
+    /// ignored for an OBSERVED member in [#applyExistingMember] (#336/#241).
     private static int statePriority(MemberState state) {
         return switch (state) {
             case ALIVE -> 0;
             case SUSPECT -> 1;
             case FAULTY -> 2;
+            case OBSERVED -> -1;
         };
     }
 
@@ -1612,6 +1783,9 @@ public final class SwimProtocol implements SwimMessageHandler {
             case ALIVE -> notifyAlive(updated);
             case SUSPECT -> notifySuspect(updated, accuser);
             case FAULTY -> notifyFaulty(updated);
+            // Defensive: OBSERVED never arrives on the wire, so a gossip-driven state change
+            // INTO OBSERVED is impossible; no listener/observation fires for it.
+            case OBSERVED -> { /* no-op: OBSERVED is a local-only birth state, never gossiped */ }
         }
     }
 
@@ -1646,7 +1820,7 @@ public final class SwimProtocol implements SwimMessageHandler {
         faultyStampedAtMs.put(updated.nodeId(), System.currentTimeMillis());
         tombstoneOnFaultyEdge(updated.nodeId(), updated.incarnation());
         listener.onMemberFaulty(updated, false);
-        emitFaultyOrUnknown(updated.nodeId(), updated.incarnation());
+        emitFaultyOrUnknown(updated.nodeId(), updated.incarnation(), false);
     }
 
     /// Live-transport CONTRADICTION of a SECOND-HAND FAULTY verdict (P1, refined). A gossiped
@@ -1692,10 +1866,22 @@ public final class SwimProtocol implements SwimMessageHandler {
     }
 
     private void addMemberUpdate(SwimMember member) {
+        // Wire-leak guard (#336/#241): OBSERVED is a LOCAL-ONLY birth state — a node must never
+        // disseminate an unconfirmed member. BOTH addMemberUpdate overloads guard OBSERVED, so it
+        // can never reach the piggyback-buffer serialization chokepoint regardless of caller.
+        if (member.state() == MemberState.OBSERVED) {
+            return;
+        }
         piggybackBuffer.addUpdate(MembershipUpdate.membershipUpdate(member.nodeId(), member.state(), member.incarnation(), member.address()));
     }
 
     private void addMemberUpdate(MembershipUpdate update) {
+        // Wire-leak guard (#336/#241): the sibling overload of the OBSERVED drop. Today's callers
+        // ([#refreshSelfAlive] / [#handleSelfUpdate]) only ever pass self-ALIVE updates, but guarding
+        // here too makes the pair the single OBSERVED-proof serialization chokepoint (Finding B/C).
+        if (update.state() == MemberState.OBSERVED) {
+            return;
+        }
         piggybackBuffer.addUpdate(update);
     }
 
@@ -1744,34 +1930,95 @@ public final class SwimProtocol implements SwimMessageHandler {
     ///   peer still has a LIVE transport connection (gate RCA fix, 2026-06-11): then the
     ///   verdict is DEFERRED (`UnknownObserved`, re-evaluated on every subsequent FAULTY
     ///   edge — never latched). FAULTY for a never-healthy peer requires co-confirmation:
-    ///   join-grace expired AND no live transport connection — a busy-but-alive joiner
-    ///   whose first probe-ack is starved by the boot deploy-storm must not be
-    ///   false-killed while its transport link is provably up. The `RECOVERING` branch
-    ///   is the critical compose-restart fix: peers were visible-and-Healthy in the
-    ///   prior `NORMAL` period (their `everSeenHealthy` flag is preserved across
-    ///   protocol life), so a post-restart kill must produce a cluster-visible
-    ///   `FaultyObserved`. This drives `HealthReconciler` aggregation, the
-    ///   `DECOMMISSIONED` write, and the downstream `NODE_LEFT` / `NODE_FAILED`
-    ///   event that integration tests depend on.
-    private void emitFaultyOrUnknown(NodeId peer, long incarnation) {
+    ///   no live transport connection — a busy-but-alive joiner whose first probe-ack is
+    ///   starved by the boot deploy-storm must not be false-killed while its transport link
+    ///   is provably up. The `RECOVERING` branch is the critical compose-restart fix: peers
+    ///   were visible-and-Healthy in the prior `NORMAL` period (their `everSeenHealthy` flag
+    ///   is preserved across protocol life), so a post-restart kill must produce a
+    ///   cluster-visible `FaultyObserved`. This drives `HealthReconciler` aggregation, the
+    ///   `DECOMMISSIONED` write, and the downstream `NODE_LEFT` / `NODE_FAILED` event that
+    ///   integration tests depend on.
+    ///
+    /// The NORMAL-phase JOIN-GRACE suppression that previously lived here is GONE (#336/#241):
+    /// a freshly seeded/announced never-HEALTHY member is now held in the OBSERVED birth state
+    /// (no suspect-window, not death-timer-armed) until its join deadline, so by the time it
+    /// reaches a FAULTY edge in NORMAL phase the grace is structurally already past. The
+    /// transport-veto co-confirmation (kept below) remains the sole NORMAL-phase deferral for a
+    /// never-healthy peer.
+    ///
+    /// Fix 2 (#336 reachability-evidence): a NORMAL-phase first-hand FAULTY for an EVER-HEALTHY
+    /// peer is additionally held (`coConfirmedFaulty`) until corroborated by ≥2 distinct accusers
+    /// or a transport-unreachable hint — so a single prober's transient SUSPECT cannot terminally
+    /// depart an established peer.
+    private void emitFaultyOrUnknown(NodeId peer, long incarnation, boolean firstHand) {
         var booting = isBooting.getAsBoolean();
-        if ((booting || withinJoinGrace(peer)) && !everSeenHealthy.contains(peer)) {
-            logFaultySuppression(peer, booting);
+        if (booting && !everSeenHealthy.contains(peer)) {
+            logColdBootSuppression(peer);
             emitObservationOnEdge(peer, SwimHealth.UNKNOWN, () -> new SwimObservation.UnknownObserved(peer, incarnation));
             return;
         }
         if (!everSeenHealthy.contains(peer) && transportConnected.test(peer)) {
-            LOG.info("SWIM transport veto: never-HEALTHY peer {} past join-grace has a LIVE transport connection — deferring FAULTY (emitting UNKNOWN, re-checked on the next FAULTY edge)",
+            LOG.info("SWIM transport veto: never-HEALTHY peer {} has a LIVE transport connection — deferring FAULTY (emitting UNKNOWN, re-checked on the next FAULTY edge)",
                      peer.id());
             emitObservationOnEdge(peer, SwimHealth.UNKNOWN, () -> new SwimObservation.UnknownObserved(peer, incarnation));
             return;
         }
+        // Fix 2 (#336 co-confirmation kill-gate): an ever-HEALTHY peer must not be terminally
+        // departed on this node's lone say-so — hold the death broadcast (emit UNKNOWN) until
+        // the verdict is independently corroborated, letting evidence accumulate / recovery happen.
+        if (everSeenHealthy.contains(peer) && !coConfirmedFaulty(peer, firstHand)) {
+            logUnderConfirmedFaulty(peer);
+            emitObservationOnEdge(peer, SwimHealth.UNKNOWN, () -> new SwimObservation.UnknownObserved(peer, incarnation));
+            return;
+        }
         if (!booting && !everSeenHealthy.contains(peer)) {
-            LOG.warn("SWIM phase=NORMAL_OR_RECOVERING: emitting FaultyObserved for never-HEALTHY peer {} (join-grace expired, no live transport connection, cold-boot suppression bypassed)",
+            LOG.warn("SWIM phase=NORMAL_OR_RECOVERING: emitting FaultyObserved for never-HEALTHY peer {} (no live transport connection, cold-boot suppression bypassed)",
                      peer.id());
         }
         emitFaultyAndDeparted(peer, incarnation);
         emitClusterFaulty(peer);
+    }
+
+    /// Fix 2 (#336 co-confirmation kill-gate): whether an EVER-HEALTHY peer's FAULTY verdict
+    /// carries enough independent corroboration to emit the terminal `DepartedObserved`.
+    /// - A SECOND-HAND (gossiped) FAULTY is authoritative: the gossip sender already ran a full
+    ///   suspicion cycle, and the live-transport contradiction gate ([#notifyFaulty]/
+    ///   [#applyNewFaultyMember]) has already cleared it.
+    /// - A FIRST-HAND FAULTY (this node's own suspect-window expiry) requires either a
+    ///   transport-veto co-confirmation OR at least [`SwimConfig#MIN_FAULTY_CONFIRMERS`] distinct
+    ///   accusers in the active suspicion (self counts as one — registered in [#transitionToFaulty]).
+    /// Otherwise the verdict is this node's lone say-so about a long-established peer (the #336
+    /// false-positive: a transient probe-ack miss at one prober ripening to FAULTY while every
+    /// other peer can still reach the core) and the terminal observation is held.
+    private boolean coConfirmedFaulty(NodeId peer, boolean firstHand) {
+        return !firstHand
+               || transportVetoConfirms(peer)
+               || distinctAccusers(peer) >= SwimConfig.MIN_FAULTY_CONFIRMERS;
+    }
+
+    /// Fix 2: a transport `PeerUnreachable` hint independently corroborates the death (the
+    /// high-confidence transport death signal), so a FAULTY edge is not held even if only this
+    /// node accused via SWIM.
+    private boolean transportVetoConfirms(NodeId peer) {
+        return option(transportHints.get(peer))
+            .map(TransportHintState::unreachable)
+            .or(false);
+    }
+
+    /// Fix 2: distinct independent accusers recorded for `peer`'s active suspicion (the
+    /// originating accuser plus every dogpile confirmer, deduped by NodeId). Zero when no
+    /// suspicion is active (defensive).
+    private int distinctAccusers(NodeId peer) {
+        return option(suspicions.get(peer))
+            .map(suspicion -> suspicion.confirmers().size())
+            .or(0);
+    }
+
+    private void logUnderConfirmedFaulty(NodeId peer) {
+        LOG.warn("SWIM co-confirmation kill-gate (#336): holding terminal DepartedObserved for ever-HEALTHY peer {} — "
+                 + "first-hand FAULTY under-confirmed ({} distinct accuser(s) < {}, no transport veto); emitting UNKNOWN "
+                 + "and letting evidence accumulate / allowing recovery",
+                 peer.id(), distinctAccusers(peer), SwimConfig.MIN_FAULTY_CONFIRMERS);
     }
 
     /// Emit the FAULTY-edge pair: `FaultyObserved` immediately followed by
@@ -1804,24 +2051,13 @@ public final class SwimProtocol implements SwimMessageHandler {
         return SwimHealth.FAULTY;
     }
 
-    /// Distinguish the two suppression triggers in the log so cold-boot formation and
-    /// NORMAL-phase join-grace are diagnosable separately.
-    private void logFaultySuppression(NodeId peer, boolean booting) {
-        if (booting) {
-            LOG.info("SWIM cold-boot suppression (COLD_BOOT phase): peer {} never observed HEALTHY — emitting UNKNOWN instead of FAULTY",
-                     peer.id());
-            return;
-        }
-        LOG.info("SWIM join-grace suppression (NORMAL phase, age={}ms < graceMs={}): never-HEALTHY peer {} — emitting UNKNOWN instead of FAULTY",
-                 memberAgeMs(peer), config.joinGrace().millis(), peer.id());
-    }
-
-    /// Age (epoch millis since first sighting) of `peer`, or `-1` when no first-sighting
-    /// is recorded. Diagnostic only.
-    private long memberAgeMs(NodeId peer) {
-        return option(memberFirstSeenAt.get(peer))
-            .map(firstSeen -> System.currentTimeMillis() - firstSeen)
-            .or(-1L);
+    /// Cold-boot FAULTY-suppression journal line: in COLD_BOOT phase a never-HEALTHY peer
+    /// emits `UnknownObserved` instead of `FaultyObserved` so formation-time churn does not
+    /// flood `HealthReconciler`. (The former NORMAL-phase join-grace suppression branch is gone
+    /// — that case is now handled before the FAULTY edge by the OBSERVED birth state, #336/#241.)
+    private void logColdBootSuppression(NodeId peer) {
+        LOG.info("SWIM cold-boot suppression (COLD_BOOT phase): peer {} never observed HEALTHY — emitting UNKNOWN instead of FAULTY",
+                 peer.id());
     }
 
     /// Forward SWIM's FAULTY edge to the cluster-wide `TransportObservation` stream

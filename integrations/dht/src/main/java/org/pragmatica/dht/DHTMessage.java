@@ -43,7 +43,13 @@ public sealed interface DHTMessage extends ProtocolMessage {
     record GetResponse(String requestId, NodeId sender, Option<byte[]> value) implements DHTMessage {}
 
     /// Request to put a value.
-    record PutRequest(String requestId, NodeId sender, byte[] key, byte[] value, long version) implements DHTMessage {
+    ///
+    /// Carries the writer's current owner epoch as two primitive `long`s (`epochTerm`,
+    /// `epochCounter`) — the fencing token each replica enforces against its per-partition
+    /// high-water (#345 piece 1c). The `Epoch` type that mints these lives in the BSL-1.1
+    /// `aether/slice` module, so only the primitives cross this Apache-2.0 wire.
+    record PutRequest(String requestId, NodeId sender, byte[] key, byte[] value,
+                      long version, long epochTerm, long epochCounter) implements DHTMessage {
         public PutRequest {
             key = key.clone();
             value = value.clone();
@@ -73,8 +79,10 @@ public sealed interface DHTMessage extends ProtocolMessage {
     /// Response to exists request.
     record ExistsResponse(String requestId, NodeId sender, boolean exists) implements DHTMessage {}
 
-    /// A key-value pair with version used in migration data transfers.
-    record KeyValue(byte[] key, byte[] value, long version) {
+    /// A key-value pair with version used in migration data transfers. Carries the owner epoch as
+    /// two primitive `long`s (`epochTerm`, `epochCounter`) so migrated entries preserve their
+    /// fencing token across transfer (#345 piece 1c).
+    record KeyValue(byte[] key, byte[] value, long version, long epochTerm, long epochCounter) {
         public KeyValue {
             key = key.clone();
             value = value.clone();
@@ -84,8 +92,18 @@ public sealed interface DHTMessage extends ProtocolMessage {
     /// Request to transfer migration data for a partition range.
     record MigrationDataRequest(String requestId, NodeId sender, int partitionStart, int partitionEnd) implements DHTMessage {}
 
-    /// Response containing migration data.
-    record MigrationDataResponse(String requestId, NodeId sender, List<KeyValue> entries) implements DHTMessage {}
+    /// Response containing migration data. `ackRequested` (issue #427, D2) asks the receiver to
+    /// reply with a [MigrationDataAck] once the entries are applied, so a departing node can confirm
+    /// its held chunks reached a surviving replica before it halts. The two fire-and-forget senders
+    /// (survivor-side rebalance and anti-entropy pull) leave it `false` — the receiver stays silent
+    /// then, exactly as before; only the graceful-departure push sets it `true`.
+    record MigrationDataResponse(String requestId, NodeId sender, List<KeyValue> entries, boolean ackRequested) implements DHTMessage {}
+
+    /// Acknowledgement that a [MigrationDataResponse] carrying `ackRequested=true` was applied by the
+    /// receiver (issue #427, D2). `requestId` echoes the response's correlation id so the departing
+    /// sender resolves the matching pending push. Additive to the internal cluster protocol
+    /// (rebuilt-together within the rc), mirroring the `PublishForwardResponse.retryable` precedent.
+    record MigrationDataAck(String requestId, NodeId sender) implements DHTMessage {}
 
     /// Request to compute digest of keys in a partition range.
     record DigestRequest(String requestId, NodeId sender, int partitionStart, int partitionEnd) implements DHTMessage {}

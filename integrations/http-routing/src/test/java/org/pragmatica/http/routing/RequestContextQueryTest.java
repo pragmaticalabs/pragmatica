@@ -1,11 +1,13 @@
 package org.pragmatica.http.routing;
 
-import io.netty.buffer.ByteBuf;
-import io.netty.buffer.Unpooled;
 import io.netty.handler.codec.http.DefaultHttpHeaders;
 import io.netty.handler.codec.http.HttpHeaders;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.pragmatica.http.Headers;
+import org.pragmatica.http.HttpMethod;
+import org.pragmatica.http.HttpStatus;
+import org.pragmatica.http.QueryParams;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.type.TypeToken;
@@ -33,7 +35,12 @@ class RequestContextQueryTest {
         }
 
         @Override
-        public String requestPath() {
+        public HttpMethod method() {
+            return HttpMethod.GET;
+        }
+
+        @Override
+        public String path() {
             return "/test/";
         }
 
@@ -43,13 +50,8 @@ class RequestContextQueryTest {
         }
 
         @Override
-        public ByteBuf body() {
-            return Unpooled.EMPTY_BUFFER;
-        }
-
-        @Override
-        public String bodyAsString() {
-            return "";
+        public byte[] body() {
+            return new byte[0];
         }
 
         @Override
@@ -63,13 +65,13 @@ class RequestContextQueryTest {
         }
 
         @Override
-        public Map<String, List<String>> queryParams() {
-            return queryParams;
+        public QueryParams queryParams() {
+            return QueryParams.queryParams(queryParams);
         }
 
         @Override
-        public Map<String, String> requestHeaders() {
-            return Map.of();
+        public Headers headers() {
+            return Headers.empty();
         }
 
         @Override

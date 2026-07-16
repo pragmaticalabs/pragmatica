@@ -17,17 +17,16 @@
 
 package org.pragmatica.http.routing;
 
+import org.pragmatica.http.CodecError;
+import org.pragmatica.http.JsonCodec;
 import org.pragmatica.json.JsonMapper;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.type.TypeToken;
 
 import com.fasterxml.jackson.annotation.JsonInclude;
-import io.netty.buffer.ByteBuf;
-import io.netty.buffer.ByteBufUtil;
-import io.netty.buffer.Unpooled;
 
 /// Adapter that wraps JsonMapper to implement JsonCodec interface.
-/// Bridges between Jackson-based JSON serialization and Netty ByteBuf.
+/// Bridges between Jackson-based JSON serialization and the `byte[]` codec seam.
 public record JsonCodecAdapter(JsonMapper mapper) implements JsonCodec {
     /// Creates a JsonCodec adapter for the given JsonMapper.
     ///
@@ -49,16 +48,10 @@ public record JsonCodecAdapter(JsonMapper mapper) implements JsonCodec {
     }
 
     @Override
-    public Result<ByteBuf> serialize(Object value) {
+    public Result<byte[]> serialize(Object value) {
         return mapper.writeAsBytes(value)
-                     .map(bytes -> Unpooled.wrappedBuffer(bytes))
                      .mapError(cause -> CodecError.serializationFailed(cause.message(),
                                                                        cause));
-    }
-
-    @Override
-    public <T> Result<T> deserialize(ByteBuf entity, TypeToken<T> token) {
-        return deserialize(ByteBufUtil.getBytes(entity), token);
     }
 
     @Override

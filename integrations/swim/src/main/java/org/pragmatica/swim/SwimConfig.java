@@ -94,6 +94,30 @@ public record SwimConfig(TimeSpan period,
     /// Default Wave-6 Lifeguard dogpile expected-confirmer count K.
     public static final int DEFAULT_DOGPILE_EXPECTED_CONFIRMERS = 3;
 
+    /// Fix 1 (#336 at-risk self-refutation): divisor applied to `suspectTimeout` to derive
+    /// the "at-risk" window — the inbound-reachability silence after which a node proactively
+    /// advances its own incarnation and re-broadcasts `Alive(self, k+1)` so it STRICTLY
+    /// out-ranks an in-flight `Suspect(self, k)` it never received (the canonical-precedence
+    /// dead-end the failing link created: `Alive` < `Suspect` at equal incarnation). Half the
+    /// suspect window (divisor 2) gives the bumped `Alive` a full further suspect window to
+    /// propagate before the original suspicion could ripen to FAULTY.
+    public static final long AT_RISK_WINDOW_DIVISOR = 2L;
+
+    /// Fix 2 (#336 co-confirmation kill-gate): the minimum number of DISTINCT independent
+    /// accusers an EVER-HEALTHY peer's first-hand FAULTY edge needs before it emits the
+    /// terminal `DepartedObserved`. A genuinely dead node accrues ≥2 independent accusers
+    /// quickly (each peer's own probe cycle fails); a transient single-prober probe-ack miss
+    /// does not, so an established core is no longer evicted on one node's lone say-so. The
+    /// local first-hand expiry counts as one accuser, so a single co-confirming gossip suffices.
+    public static final int MIN_FAULTY_CONFIRMERS = 2;
+
+    /// Fix 3 (#336 cluster-size suspect-window scaling): upper clamp on the canonical
+    /// Lifeguard `max(1, ln(N + 1))` size term that widens the suspect window as the live
+    /// member count N grows (keeping the window several round-robin re-probe intervals wide
+    /// as N approaches the fixed base suspect timeout). The window never exceeds
+    /// `suspectTimeout × this`, bounding genuine-kill detection latency.
+    public static final double MAX_CLUSTER_SIZE_WINDOW_MULTIPLIER = 3.0;
+
     public static final SwimConfig DEFAULT = swimConfig(
         timeSpan(1).seconds(),
         timeSpan(800).millis(),

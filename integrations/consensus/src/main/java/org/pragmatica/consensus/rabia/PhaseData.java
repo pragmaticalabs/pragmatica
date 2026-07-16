@@ -92,6 +92,16 @@ final class PhaseData<C extends Command> {
         return proposals.get(node);
     }
 
+    /// Returns a snapshot of all proposals collected in this phase, keyed by the originating
+    /// node. Used by the stall detector (#258) to re-broadcast the full proposal SET — not just
+    /// this node's own proposal — so a phase whose original proposal contributors have died can
+    /// still reach `hasQuorumProposals` on surviving/fresh voters that hold the dead nodes'
+    /// proposals. The returned map is an immutable copy; iteration is safe under concurrent
+    /// registration.
+    Map<NodeId, Batch<C>> proposals() {
+        return Map.copyOf(proposals);
+    }
+
     /// Checks if a node has already voted in round 1.
     boolean hasVotedRound1(NodeId node) {
         return round1Votes.containsKey(node);

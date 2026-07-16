@@ -15,10 +15,17 @@
  */
 
 package org.pragmatica.http;
-/// Content type categories for HTTP responses.
-public enum ContentCategory {
-    TEXT,
-    JSON,
-    BINARY,
-    XML
+
+import org.pragmatica.lang.Result;
+import org.pragmatica.lang.type.TypeToken;
+
+/// JSON serialization seam.
+///
+/// Defined over `byte[]` so the base stays free of any transport concern (no `ByteBuf`).
+/// Transport adapters convert request content to `byte[]` before [#deserialize] and write
+/// the `byte[]` produced by [#serialize] directly to their response sink.
+public interface JsonCodec {
+    Result<byte[]> serialize(Object value);
+
+    <T> Result<T> deserialize(byte[] bytes, TypeToken<T> token);
 }

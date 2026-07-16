@@ -38,19 +38,21 @@ public final class DistributedDHTClient implements DHTClient {
     private final DHTNode node;
     private final DHTNetwork network;
     private final DHTConfig config;
+    private final OwnerEpochSource ownerEpochSource;
 
     /// Pending operations indexed by correlation ID.
     private final ConcurrentHashMap<String, PendingOperation<?>> pendingOps = new ConcurrentHashMap<>();
 
     private record PendingOperation<T>(QuorumCollector<T> collector) {}
 
-    private DistributedDHTClient(DHTNode node, DHTNetwork network, DHTConfig config) {
+    private DistributedDHTClient(DHTNode node, DHTNetwork network, DHTConfig config, OwnerEpochSource ownerEpochSource) {
         this.node = node;
         this.network = network;
         this.config = config;
+        this.ownerEpochSource = ownerEpochSource;
     }
 
-    /// Create a distributed DHT client.
+    /// Create a distributed DHT client at the unfenced epoch floor ([OwnerEpochSource#zero]).
     ///
     /// @param node    local DHT node for handling local storage operations
     /// @param network DHT network for inter-node messaging
@@ -58,12 +60,26 @@ public final class DistributedDHTClient implements DHTClient {
     public static DistributedDHTClient distributedDHTClient(DHTNode node,
                                                             DHTNetwork network,
                                                             DHTConfig config) {
-        return new DistributedDHTClient(node, network, config);
+        return new DistributedDHTClient(node, network, config, OwnerEpochSource.zero());
+    }
+
+    /// Create a distributed DHT client that stamps every put with the node's current owner epoch
+    /// from `ownerEpochSource` (#345 piece 1c), so replicas can fence a deposed owner's write.
+    ///
+    /// @param node             local DHT node for handling local storage operations
+    /// @param network          DHT network for inter-node messaging
+    /// @param config           DHT configuration (replication factor, quorum sizes)
+    /// @param ownerEpochSource ambient source of this node's current owner epoch for stamping puts
+    public static DistributedDHTClient distributedDHTClient(DHTNode node,
+                                                            DHTNetwork network,
+                                                            DHTConfig config,
+                                                            OwnerEpochSource ownerEpochSource) {
+        return new DistributedDHTClient(node, network, config, ownerEpochSource);
     }
 
     @Override
     public DHTClient scoped(DHTConfig scopedConfig) {
-        return distributedDHTClient(node, network, scopedConfig);
+        return new DistributedDHTClient(node, network, scopedConfig, ownerEpochSource);
     }
 
     @Override
@@ -106,13 +122,15 @@ public final class DistributedDHTClient implements DHTClient {
             return DHTError.quorumNotReached(quorum, targets.size()).promise();
         }
         var version = node.hlcClock().now().packed();
+        var epochTerm = ownerEpochSource.currentEpochTerm();
+        var epochCounter = ownerEpochSource.currentEpochCounter();
         Promise<Unit> promise = Promise.promise();
         var collector = QuorumCollector.<Unit>quorumCollector(quorum, targets.size(), promise);
         for (var target : targets) {
             if (target.equals(node.nodeId())) {
-                handleLocalPut(key, value, version, collector);
+                handleLocalPut(key, value, version, epochTerm, epochCounter, collector);
             } else {
-                sendRemotePut(target, key, value, version, collector);
+                sendRemotePut(target, key, value, version, epochTerm, epochCounter, collector);
             }
         }
         return promise.timeout(config.operationTimeout());
@@ -282,8 +300,8 @@ public final class DistributedDHTClient implements DHTClient {
                     .onFailure(collector::onFailure);
     }
 
-    private void handleLocalPut(byte[] key, byte[] value, long version, QuorumCollector<Unit> collector) {
-        var _ = node.storage().putVersioned(key, value, version)
+    private void handleLocalPut(byte[] key, byte[] value, long version, long epochTerm, long epochCounter, QuorumCollector<Unit> collector) {
+        var _ = node.storage().putVersioned(key, value, version, epochTerm, epochCounter)
                     .onSuccess(_ -> collector.onSuccess(unit()))
                     .onFailure(collector::onFailure);
     }
@@ -306,10 +324,10 @@ public final class DistributedDHTClient implements DHTClient {
         dispatchTracked(target, new DHTMessage.GetRequest(correlationId, node.nodeId(), key), correlationId, collector);
     }
 
-    private void sendRemotePut(NodeId target, byte[] key, byte[] value, long version, QuorumCollector<Unit> collector) {
+    private void sendRemotePut(NodeId target, byte[] key, byte[] value, long version, long epochTerm, long epochCounter, QuorumCollector<Unit> collector) {
         var correlationId = IdGenerator.generate();
         pendingOps.put(correlationId, new PendingOperation<>(collector));
-        dispatchTracked(target, new DHTMessage.PutRequest(correlationId, node.nodeId(), key, value, version), correlationId, collector);
+        dispatchTracked(target, new DHTMessage.PutRequest(correlationId, node.nodeId(), key, value, version, epochTerm, epochCounter), correlationId, collector);
     }
 
     private void sendRemoteRemove(NodeId target, byte[] key, QuorumCollector<Boolean> collector) {

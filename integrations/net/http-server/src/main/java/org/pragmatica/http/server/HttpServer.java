@@ -18,6 +18,7 @@ package org.pragmatica.http.server;
 
 import io.netty.channel.EventLoopGroup;
 import io.netty.handler.codec.quic.QuicSslContext;
+import org.pragmatica.http.HttpRequest;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 
@@ -36,7 +37,7 @@ public interface HttpServer {
     /// @param config  server configuration
     /// @param handler request handler
     /// @return promise of the running server
-    static Promise<HttpServer> httpServer(HttpServerConfig config, BiConsumer<RequestContext, ResponseWriter> handler) {
+    static Promise<HttpServer> httpServer(HttpServerConfig config, BiConsumer<HttpRequest, ResponseWriter> handler) {
         return NettyHttpServer.create(config, handler);
     }
 
@@ -48,7 +49,7 @@ public interface HttpServer {
     /// @param workerGroup external worker event loop group
     /// @return promise of the running server
     static Promise<HttpServer> httpServer(HttpServerConfig config,
-                                          BiConsumer<RequestContext, ResponseWriter> handler,
+                                          BiConsumer<HttpRequest, ResponseWriter> handler,
                                           EventLoopGroup bossGroup,
                                           EventLoopGroup workerGroup) {
         return NettyHttpServer.createShared(config, handler, bossGroup, workerGroup);
@@ -62,7 +63,7 @@ public interface HttpServer {
     /// @return promise of the running HTTP/3 server
     static Promise<HttpServer> http3Server(HttpServerConfig config,
                                            QuicSslContext quicSslContext,
-                                           BiConsumer<RequestContext, ResponseWriter> handler) {
+                                           BiConsumer<HttpRequest, ResponseWriter> handler) {
         return Http3Server.create(config, quicSslContext, handler)
                           .map(Http3ServerAdapter::new);
     }
@@ -76,7 +77,7 @@ public interface HttpServer {
     /// @return promise of the running HTTP/3 server
     static Promise<HttpServer> http3Server(HttpServerConfig config,
                                            QuicSslContext quicSslContext,
-                                           BiConsumer<RequestContext, ResponseWriter> handler,
+                                           BiConsumer<HttpRequest, ResponseWriter> handler,
                                            EventLoopGroup workerGroup) {
         return Http3Server.createShared(config, quicSslContext, handler, workerGroup)
                           .map(Http3ServerAdapter::new);

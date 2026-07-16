@@ -101,17 +101,19 @@ class SwimProtocolTombstoneTest {
         return coldBoot;
     }
 
-    /// NORMAL-phase protocol with a join-grace (600ms) LONGER than the suspect-window
-    /// (100ms): the SUSPECT->FAULTY expiry of a never-HEALTHY member is DEFERRED for the
-    /// remainder of grace (188e0b522) — no FAULTY edge, no tombstone, member stays SUSPECT
-    /// and probe-eligible — and the FAULTY edge then lands after grace expiry (tombstoned).
+    /// NORMAL-phase protocol with a join-grace (600ms) LONGER than the suspect-window (100ms):
+    /// a freshly-seeded OBSERVED joiner stays OBSERVED (no death timer) within grace and only
+    /// escalates OBSERVED->SUSPECT->FAULTY after the join deadline, when the FAULTY-edge tombstone
+    /// fires (#336/#241). `lhmMaxScore=1` keeps the post-escalation suspect window at base so the
+    /// FAULTY-edge timing is deterministic within the test budget.
     private SwimProtocol longGraceProtocol() {
         var cfg = swimConfig(timeSpan(20).millis(),
                              timeSpan(20).millis(),
                              3,
                              timeSpan(100).millis(),
                              8,
-                             timeSpan(20).millis()).withJoinGrace(timeSpan(600).millis());
+                             timeSpan(20).millis()).withJoinGrace(timeSpan(600).millis())
+                                                   .withLhmMaxScore(1);
         var graced = SwimProtocol.swimProtocol(cfg, transport, listener, SELF_ID, SELF_ADDR, () -> false)
                                  .unwrap();
         graced.addObservationListener(observations);
@@ -119,8 +121,8 @@ class SwimProtocolTombstoneTest {
     }
 
     /// NORMAL-phase protocol with a join-grace (40ms) SHORTER than the suspect-window
-    /// (100ms), so the natural SUSPECT→FAULTY edge fires AFTER grace and the member IS
-    /// tombstoned (06-02 anti-oscillation preserved, only deferred by grace).
+    /// (100ms): a gossip-introduced never-HEALTHY SUSPECT reaches its FAULTY edge at the
+    /// suspect-window (past the short grace) and IS tombstoned (06-02 anti-oscillation preserved).
     private SwimProtocol shortGraceProtocol() {
         var cfg = swimConfig(timeSpan(20).millis(),
                              timeSpan(20).millis(),
@@ -185,15 +187,14 @@ class SwimProtocolTombstoneTest {
     }
 
     @Test
-    void selfAnnounce_ofTombstonedId_isReAdmittedAsAlive_andClearsTombstone() {
+    void selfAnnounce_ofTombstonedId_isReAdmittedAsObserved_andClearsTombstone() {
         try {
             driveProvenHealthyToTombstone();
 
-            // Authoritative self-ANNOUNCE: proof the node is alive again (partition heal).
-            // FIX A: direct liveness evidence => re-admitted as ALIVE (not SUSPECT), with
-            // no suspect-timer armed at birth. The unconditional tombstone-clear in
-            // handleAnnounce removes the tombstone first, so the gated ALIVE introduction
-            // is admitted.
+            // Authoritative self-ANNOUNCE: proof the node is alive again (partition heal). The
+            // unconditional tombstone-clear in handleAnnounce removes the tombstone first, so the
+            // gated introduction is admitted — as OBSERVED (#336/#241): re-admitted and
+            // probe-eligible, but NOT counted ALIVE/HEALTHY until a probe-ack confirms it.
             var nodeInfoA = NodeInfo.nodeInfo(NODE_A, new NodeAddress("127.0.0.1", 9001));
             protocol.onMessage(ADDR_A, new Announce(nodeInfoA, "", 0));
 
@@ -201,14 +202,14 @@ class SwimProtocolTombstoneTest {
                 .as("Self-ANNOUNCE must re-admit a tombstoned id")
                 .isTrue();
             assertThat(protocol.members().get(NODE_A).state())
-                .as("Re-admitted via ANNOUNCE as ALIVE (direct liveness evidence)")
-                .isEqualTo(MemberState.ALIVE);
+                .as("Re-admitted via ANNOUNCE as OBSERVED (not yet confirmed alive)")
+                .isEqualTo(MemberState.OBSERVED);
             assertThat(protocol.tombstonedForTest(NODE_A))
                 .as("Self-ANNOUNCE must clear the tombstone")
                 .isFalse();
             assertThat(protocol.everSeenHealthyForTest(NODE_A))
-                .as("ALIVE re-admit via ANNOUNCE records proven-healthy")
-                .isTrue();
+                .as("OBSERVED re-admit is not yet proven-healthy — a probe-ack sets ever-seen-healthy later")
+                .isFalse();
         } finally {
             protocol.stop();
         }
@@ -313,45 +314,41 @@ class SwimProtocolTombstoneTest {
     }
 
     @Test
-    void neverHealthyId_suspectWithinJoinGrace_deferredNotTombstoned_thenTombstonedAfterGrace() throws InterruptedException {
-        // NORMAL-phase JOIN-GRACE (188e0b522): a freshly-joined replacement that goes
-        // suspect WHILE within its join-grace window has its SUSPECT->FAULTY transition
-        // DEFERRED (expireSuspectIfOverdue) — the member stays SUSPECT and probe-eligible
-        // so the leader's probe cycle still has time to confirm it. No FAULTY edge fires
-        // within grace: no FaultyObserved, no tombstone, no sweep. Once grace (600ms)
-        // expires, normal expiry resumes and the FAULTY edge lands post-grace — the member
-        // IS tombstoned (the 06-02 anti-oscillation contract is deferred, never skipped).
+    void observedJoiner_withinJoinGrace_notTombstoned_thenTombstonedAfterDeadline() throws InterruptedException {
+        // OBSERVED birth (#336/#241): a freshly-seeded never-acking joiner stays OBSERVED within its
+        // join-grace window — never SUSPECT, never FAULTY, never tombstoned — so the leader's probe
+        // cycle still has time to confirm it. Once the join deadline passes, a probe-timeout escalates
+        // it OBSERVED->SUSPECT->FAULTY and the FAULTY-edge tombstone fires (the 06-02 anti-oscillation
+        // contract is deferred to the deadline, never skipped).
         var graced = longGraceProtocol();
         try {
-            graced.start();
-
-            var suspectA = new MembershipUpdate(NODE_A, MemberState.SUSPECT, 0, ADDR_A);
-            graced.onMessage(ADDR_B, new Ping(NODE_B, 1L, List.of(suspectA)));
+            graced.addSeedMember(NODE_A, ADDR_A);
+            assertThat(graced.members().get(NODE_A).state()).isEqualTo(MemberState.OBSERVED);
             assertThat(graced.everSeenHealthyForTest(NODE_A)).isFalse();
 
-            // WITHIN grace: suspect-window (100ms) has elapsed but the transition is
-            // deferred — still SUSPECT, no FAULTY edge, no tombstone.
+            graced.start();
+
+            // WITHIN grace (600ms): probe timeouts never arm death — still OBSERVED, no tombstone, no emission.
             Thread.sleep(300L);
             assertThat(graced.members().get(NODE_A).state())
-                .as("Within join-grace: never-HEALTHY member's SUSPECT->FAULTY must be deferred")
-                .isEqualTo(MemberState.SUSPECT);
+                .as("Within join-grace: an un-acked OBSERVED joiner stays OBSERVED")
+                .isEqualTo(MemberState.OBSERVED);
             assertThat(graced.tombstonedForTest(NODE_A))
-                .as("Within join-grace: never-HEALTHY member must NOT be tombstoned")
+                .as("Within join-grace: an OBSERVED joiner must NOT be tombstoned")
                 .isFalse();
             assertThat(observations.byType(SwimObservation.FaultyObserved.class))
                 .as("Within join-grace: no FAULTY edge, no FaultyObserved")
                 .isEmpty();
             assertThat(observations.byType(SwimObservation.UnknownObserved.class))
-                .as("Within join-grace: the deferred transition emits nothing at all")
+                .as("Within join-grace: nothing is emitted at all")
                 .isEmpty();
 
-            // AFTER grace expiry (600ms): the FAULTY edge fires post-grace in NORMAL
-            // phase => tombstoned + FaultyObserved.
+            // AFTER the join deadline: OBSERVED -> SUSPECT -> FAULTY in NORMAL phase => tombstoned + FaultyObserved.
             await().atMost(Duration.ofSeconds(2))
                    .until(() -> graced.tombstonedForTest(NODE_A)
                                 && !observations.byType(SwimObservation.FaultyObserved.class).isEmpty());
             assertThat(observations.byType(SwimObservation.FaultyObserved.class))
-                .as("After grace expiry: the FAULTY edge emits FaultyObserved (no UNKNOWN suppression)")
+                .as("After the join deadline: the FAULTY edge emits FaultyObserved (no UNKNOWN suppression)")
                 .isNotEmpty();
         } finally {
             graced.stop();
@@ -360,9 +357,10 @@ class SwimProtocolTombstoneTest {
 
     @Test
     void neverHealthyId_faultyAfterJoinGraceExpiry_isTombstoned_reAddRefused() {
-        // Join-grace (40ms) SHORTER than the suspect-window (100ms): the natural FAULTY edge
-        // lands AFTER grace, so the member IS tombstoned exactly as today — the 06-02
-        // anti-oscillation contract holds, grace only DEFERS the tombstone.
+        // Join-grace (40ms) SHORTER than the suspect-window (100ms): a gossip-introduced never-HEALTHY
+        // SUSPECT is born OBSERVED (#336/#241) and, once the short grace expires, the running probe
+        // cycle escalates it OBSERVED->SUSPECT->FAULTY; the FAULTY edge lands well past grace and IS
+        // tombstoned, exactly as today (the 06-02 anti-oscillation contract holds).
         var graced = shortGraceProtocol();
         try {
             graced.start();
@@ -526,30 +524,32 @@ class SwimProtocolTombstoneTest {
 
     @Test
     void neverHealthy_faulty_notTombstoned_coldBootReAddAllowed() {
-        // Cold-boot S04 seed: a never-HEALTHY id goes FAULTY via gossip in COLD_BOOT phase.
-        // It must NOT be tombstoned (cold-boot gate), so a subsequent gossip re-add is
-        // allowed — preserving formation. (In NORMAL phase it WOULD be tombstoned; see
-        // neverHealthyId_faultyInNormalPhase_isTombstoned_reAddRefused.)
+        // Cold-boot S04 seed: a gossip-introduced never-HEALTHY id is born OBSERVED (#336/#241) and,
+        // without start() (no probe cycle), the subsequent gossip FAULTY is hearsay the OBSERVED guard
+        // IGNORES — so the member stays OBSERVED, never reaches a FAULTY edge, and is never tombstoned.
+        // A higher-incarnation gossip ALIVE then promotes it, confirming no tombstone refusal stands in
+        // the way. (The cold-boot FAULTY-edge-not-tombstoned gate itself is exercised by
+        // neverHealthyId_cleanedUp_inColdBoot_isNotTombstoned_gossipReAddAllowed, which start()s the
+        // protocol so the probe cycle drives OBSERVED->SUSPECT->FAULTY.)
         var coldBoot = coldBootProtocol();
         var suspectA = new MembershipUpdate(NODE_A, MemberState.SUSPECT, 0, ADDR_A);
         coldBoot.onMessage(ADDR_B, new Ping(NODE_B, 1L, List.of(suspectA)));
         assertThat(coldBoot.everSeenHealthyForTest(NODE_A)).isFalse();
 
-        // Second-hand (gossip) FAULTY needs local transport-down corroboration to drive
-        // the FAULTY edge (P1 death-path co-confirmation) — without it the verdict would
-        // be downgraded to SUSPECT and the FAULTY-edge tombstone gate would never run.
+        // Transport-down corroboration is set, but the gossiped FAULTY is dropped earlier by the
+        // OBSERVED guard (the member is a not-yet-confirmed OBSERVED placeholder), so no FAULTY edge
+        // and no tombstone-gate evaluation occurs.
         coldBoot.recordTransportHint(NODE_A, new TransportObservation.PeerUnreachable(NODE_A, Causes.cause("test peer down")));
         var faultyA = new MembershipUpdate(NODE_A, MemberState.FAULTY, 1, ADDR_A);
         coldBoot.onMessage(ADDR_B, new Ping(NODE_B, 2L, List.of(faultyA)));
 
         assertThat(coldBoot.tombstonedForTest(NODE_A))
-            .as("COLD_BOOT: never-HEALTHY id reaching FAULTY must NOT be tombstoned")
+            .as("COLD_BOOT: a never-HEALTHY OBSERVED id (ignored gossip FAULTY) must NOT be tombstoned")
             .isFalse();
 
-        // Gossip re-add toward ALIVE at a higher incarnation is allowed (no tombstone
-        // block). A higher incarnation is required because canonical SWIM never lets a
-        // same-incarnation ALIVE override FAULTY — the point here is the ABSENCE of a
-        // tombstone refusal, which a proven-healthy id would suffer at incarnation <= 1.
+        // Gossip re-add toward ALIVE at a higher incarnation promotes the OBSERVED member (no tombstone
+        // block). The point here is the ABSENCE of a tombstone refusal, which a proven-healthy-then-dead
+        // id would suffer at incarnation <= 1.
         var reAliveA = new MembershipUpdate(NODE_A, MemberState.ALIVE, 2, ADDR_A);
         coldBoot.onMessage(ADDR_B, new Ping(NODE_B, 3L, List.of(reAliveA)));
         assertThat(coldBoot.members().get(NODE_A).state())

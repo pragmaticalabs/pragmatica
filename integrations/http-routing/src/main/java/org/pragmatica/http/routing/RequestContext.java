@@ -1,5 +1,8 @@
 package org.pragmatica.http.routing;
 
+import org.pragmatica.http.HttpRequest;
+import org.pragmatica.http.HttpStatus;
+import org.pragmatica.http.JsonCodec;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.type.TypeToken;
@@ -7,33 +10,45 @@ import org.pragmatica.lang.type.TypeToken;
 import java.util.List;
 import java.util.Map;
 
-import io.netty.buffer.ByteBuf;
 import io.netty.handler.codec.http.HttpHeaders;
 
 import static org.pragmatica.lang.Result.all;
 
 /// Request context providing access to HTTP request data and path parameter matching.
+///
+/// Extends the transport-agnostic [HttpRequest] base with the post-routing handler surface:
+/// the matched [Route], JSON body parsing, path-parameter access and path/query matching,
+/// multipart parsing and response-header accumulation.
 @SuppressWarnings("unused")
-public interface RequestContext {
+public interface RequestContext extends HttpRequest {
     Result<String> NOT_FOUND = HttpStatus.NOT_FOUND.with("Unknown request path")
                                         .result();
     Route<?> route();
-    String requestPath();
-    String requestId();
-    ByteBuf body();
-    String bodyAsString();
     <T> Result<T> fromJson(TypeToken<T> literal);
     List<String> pathParams();
-    Map<String, List<String>> queryParams();
-    Map<String, String> requestHeaders();
     HttpHeaders responseHeaders();
+
+    /// Request path (without query string). Retained alias for [#path] to avoid churning callers.
+    default String requestPath() {
+        return path();
+    }
+
+    /// Request headers as a single-valued map (first value per name). Derived from [#headers].
+    default Map<String, String> requestHeaders() {
+        return headers().asMap()
+                        .entrySet()
+                        .stream()
+                        .filter(entry -> !entry.getValue().isEmpty())
+                        .collect(java.util.stream.Collectors.toMap(Map.Entry::getKey,
+                                                                   entry -> entry.getValue().getFirst()));
+    }
 
     /// Parse multipart form data from this request.
     ///
     /// Returns a parsed {@link MultipartRequest} if the Content-Type is multipart/form-data,
     /// or an error otherwise.
     default Result<MultipartRequest> multipartRequest() {
-        return MultipartParser.parse(bodyAsBytes(), resolveContentType(), requestPath());
+        return MultipartParser.parse(body(), resolveContentType().or(""), requestPath());
     }
 
     /// Check if this request is a multipart/form-data request.
@@ -41,18 +56,9 @@ public interface RequestContext {
         return MultipartParser.isMultipart(resolveContentType());
     }
 
-    /// Extract body as byte array (works for all ByteBuf types).
-    private byte[] bodyAsBytes() {
-        var buf = body();
-        var bytes = new byte[buf.readableBytes()];
-        buf.getBytes(buf.readerIndex(), bytes);
-        return bytes;
-    }
-
     /// Resolve Content-Type from request headers (case-insensitive lookup).
-    private String resolveContentType() {
-        var contentType = requestHeaders().get("content-type");
-        return contentType != null ? contentType : requestHeaders().get("Content-Type");
+    private Option<String> resolveContentType() {
+        return headers().get("content-type");
     }
 
     default Result<String> pathParam(int index) {
@@ -62,7 +68,7 @@ public interface RequestContext {
     }
 
     default List<String> queryParam(String name) {
-        return queryParams().getOrDefault(name, List.of());
+        return queryParams().getAll(name);
     }
 
     default <T1> Result.Mapper1<T1> matchPath(PathParameter<T1> p1) {
@@ -156,8 +162,8 @@ public interface RequestContext {
                                                                                  .newHeaders();
 
         private java.util.function.Supplier<List<String>> pathParamsSupplier = Utils.lazy(() -> pathParamsSupplier = Utils.value(initPathParams()));
-        private java.util.function.Supplier<Map<String, List<String>>> queryParamsSupplier = Utils.lazy(() -> queryParamsSupplier = Utils.value(initQueryParams()));
-        private java.util.function.Supplier<Map<String, String>> headersSupplier = Utils.lazy(() -> headersSupplier = Utils.value(initRequestHeaders()));
+        private java.util.function.Supplier<org.pragmatica.http.QueryParams> queryParamsSupplier = Utils.lazy(() -> queryParamsSupplier = Utils.value(initQueryParams()));
+        private java.util.function.Supplier<org.pragmatica.http.Headers> headersSupplier = Utils.lazy(() -> headersSupplier = Utils.value(initHeaders()));
 
         private RequestContextImpl(io.netty.handler.codec.http.FullHttpRequest request,
                                    Route<?> route,
@@ -182,7 +188,13 @@ public interface RequestContext {
         }
 
         @Override
-        public String requestPath() {
+        public org.pragmatica.http.HttpMethod method() {
+            return org.pragmatica.http.HttpMethod.httpMethod(request.method().name())
+                                                 .or(org.pragmatica.http.HttpMethod.GET);
+        }
+
+        @Override
+        public String path() {
             return PathUtils.normalize(request.uri());
         }
 
@@ -192,18 +204,13 @@ public interface RequestContext {
         }
 
         @Override
-        public io.netty.buffer.ByteBuf body() {
-            return request.content();
-        }
-
-        @Override
-        public String bodyAsString() {
-            return body().toString(java.nio.charset.StandardCharsets.UTF_8);
+        public byte[] body() {
+            return io.netty.buffer.ByteBufUtil.getBytes(request.content());
         }
 
         @Override
         public <T> Result<T> fromJson(TypeToken<T> literal) {
-            return jsonCodec.deserialize(request.content(), literal);
+            return jsonCodec.deserialize(io.netty.buffer.ByteBufUtil.getBytes(request.content()), literal);
         }
 
         @Override
@@ -212,12 +219,12 @@ public interface RequestContext {
         }
 
         @Override
-        public Map<String, List<String>> queryParams() {
+        public org.pragmatica.http.QueryParams queryParams() {
             return queryParamsSupplier.get();
         }
 
         @Override
-        public Map<String, String> requestHeaders() {
+        public org.pragmatica.http.Headers headers() {
             return headersSupplier.get();
         }
 
@@ -246,16 +253,16 @@ public interface RequestContext {
             return List.of(elements);
         }
 
-        private Map<String, List<String>> initQueryParams() {
-            return new io.netty.handler.codec.http.QueryStringDecoder(request.uri()).parameters();
+        private org.pragmatica.http.QueryParams initQueryParams() {
+            return org.pragmatica.http.QueryParams.queryParams(new io.netty.handler.codec.http.QueryStringDecoder(request.uri()).parameters());
         }
 
-        private Map<String, String> initRequestHeaders() {
-            var headers = new java.util.HashMap<String, String>();
+        private org.pragmatica.http.Headers initHeaders() {
+            var headers = new java.util.HashMap<String, List<String>>();
             request.headers()
-                   .forEach(entry -> headers.put(entry.getKey(),
-                                                 entry.getValue()));
-            return Map.copyOf(headers);
+                   .forEach(entry -> headers.computeIfAbsent(entry.getKey(), _ -> new java.util.ArrayList<>())
+                                            .add(entry.getValue()));
+            return org.pragmatica.http.Headers.headers(headers);
         }
     }
 }

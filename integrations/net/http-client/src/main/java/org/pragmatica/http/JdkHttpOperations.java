@@ -73,7 +73,7 @@ public final class JdkHttpOperations implements HttpOperations {
         return Promise.promise(promise -> client.sendAsync(request, handler)
                                                 .thenApply(HttpResult::from)
                                                 .whenComplete((result, error) -> Option.option(error)
-                                                                                       .onPresent(e -> promise.fail(HttpError.fromException(e)))
+                                                                                       .onPresent(e -> promise.fail(HttpClientError.fromException(e)))
                                                                                        .onEmpty(() -> promise.succeed(result))));
     }
 

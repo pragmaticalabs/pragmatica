@@ -2,6 +2,9 @@ package org.pragmatica.swim;
 
 import java.nio.ByteBuffer;
 import java.security.SecureRandom;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
 
 import javax.crypto.Cipher;
 import javax.crypto.spec.GCMParameterSpec;
@@ -10,7 +13,13 @@ import javax.crypto.spec.SecretKeySpec;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 
-/// AES-256-GCM gossip encryptor with dual-key support for rotation.
+/// AES-256-GCM gossip encryptor with multi-key accept support for rotation and day-boundary
+/// overlap.
+///
+/// Encrypts alway with the single `current` key; decrypts with any key in the accepted set
+/// (resolved by the wire keyId). The accepted set always contains the current key and may
+/// contain additional keys (previous-day, next-day) so datagrams encrypted under a neighbouring
+/// epoch's key still decrypt — see #256 (UTC-midnight gossip-key rollover lockout).
 ///
 /// Wire format: [4-byte keyId (big-endian)][12-byte nonce][ciphertext + 16-byte GCM tag]
 public final class AesGcmGossipEncryptor implements GossipEncryptor {
@@ -23,33 +32,63 @@ public final class AesGcmGossipEncryptor implements GossipEncryptor {
 
     private final SecretKeySpec currentKey;
     private final int currentKeyId;
-    private final Option<SecretKeySpec> previousKey;
-    private final Option<Integer> previousKeyId;
+    private final Map<Integer, SecretKeySpec> acceptedKeys;
     private final SecureRandom secureRandom;
 
-    private AesGcmGossipEncryptor(SecretKeySpec currentKey, int currentKeyId,
-                                   Option<SecretKeySpec> previousKey, Option<Integer> previousKeyId) {
+    private AesGcmGossipEncryptor(SecretKeySpec currentKey, int currentKeyId, Map<Integer, SecretKeySpec> acceptedKeys) {
         this.currentKey = currentKey;
         this.currentKeyId = currentKeyId;
-        this.previousKey = previousKey;
-        this.previousKeyId = previousKeyId;
+        this.acceptedKeys = acceptedKeys;
         this.secureRandom = new SecureRandom();
     }
 
     /// Factory creating an encryptor with a single key.
     public static Result<GossipEncryptor> aesGcmGossipEncryptor(byte[] currentKey, int currentKeyId) {
-        return validateKey(currentKey)
-            .map(key -> new AesGcmGossipEncryptor(key, currentKeyId, Option.none(), Option.none()));
+        return aesGcmGossipEncryptor(currentKey, currentKeyId, List.of());
     }
 
     /// Factory creating an encryptor with current and previous keys for rotation.
     public static Result<GossipEncryptor> aesGcmGossipEncryptor(byte[] currentKey, int currentKeyId,
                                                                  byte[] previousKey, int previousKeyId) {
-        return Result.all(validateKey(currentKey), validateKey(previousKey))
-                     .map((cur, prev) -> new AesGcmGossipEncryptor(cur, currentKeyId,
-                                                                    Option.some(prev),
-                                                                    Option.some(previousKeyId)));
+        return aesGcmGossipEncryptor(currentKey, currentKeyId, List.of(new AcceptedKey(previousKeyId, previousKey)));
     }
+
+    /// Factory creating an encryptor that encrypts with `current` and accepts `current` plus any
+    /// number of additional keys for decryption. Used to widen the accept window across the
+    /// UTC-midnight day-rollover boundary (#256): supplying the previous-day and next-day keys as
+    /// additional accepted keys lets a node decrypt datagrams from peers booted on the adjacent
+    /// day without changing what it encrypts with (wire-compatible, no rolling-upgrade break).
+    public static Result<GossipEncryptor> aesGcmGossipEncryptor(byte[] currentKey,
+                                                                int currentKeyId,
+                                                                List<AcceptedKey> additionalKeys) {
+        return validateKey(currentKey).flatMap(cur -> buildAcceptedKeys(cur, currentKeyId, additionalKeys)
+            .map(accepted -> new AesGcmGossipEncryptor(cur, currentKeyId, accepted)));
+    }
+
+    /// An additional key accepted for decryption, identified by its wire keyId.
+    public record AcceptedKey(int keyId, byte[] key) {}
+
+    private static Result<Map<Integer, SecretKeySpec>> buildAcceptedKeys(SecretKeySpec current,
+                                                                         int currentKeyId,
+                                                                         List<AcceptedKey> additionalKeys) {
+        return Result.allOf(additionalKeys.stream().map(AesGcmGossipEncryptor::validateAccepted).toList())
+                     .map(validated -> collectAcceptedKeys(current, currentKeyId, validated));
+    }
+
+    private static Map<Integer, SecretKeySpec> collectAcceptedKeys(SecretKeySpec current,
+                                                                   int currentKeyId,
+                                                                   List<AcceptedSpec> additionalKeys) {
+        var map = new LinkedHashMap<Integer, SecretKeySpec>();
+        map.put(currentKeyId, current);
+        additionalKeys.forEach(spec -> map.putIfAbsent(spec.keyId(), spec.key()));
+        return Map.copyOf(map);
+    }
+
+    private static Result<AcceptedSpec> validateAccepted(AcceptedKey accepted) {
+        return validateKey(accepted.key()).map(key -> new AcceptedSpec(accepted.keyId(), key));
+    }
+
+    private record AcceptedSpec(int keyId, SecretKeySpec key) {}
 
     @Override
     public Result<byte[]> encrypt(byte[] plaintext) {
@@ -107,12 +146,8 @@ public final class AesGcmGossipEncryptor implements GossipEncryptor {
     }
 
     private Result<SecretKeySpec> resolveKey(int keyId) {
-        if (keyId == currentKeyId) {
-            return Result.success(currentKey);
-        }
-
-        return previousKey.filter(_ -> previousKeyId.map(id -> id == keyId).or(false))
-                          .toResult(new GossipEncryptionError.UnknownKeyId(keyId));
+        return Option.option(acceptedKeys.get(keyId))
+                     .toResult(new GossipEncryptionError.UnknownKeyId(keyId));
     }
 
     private static Result<SecretKeySpec> validateKey(byte[] key) {

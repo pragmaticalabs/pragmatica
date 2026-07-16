@@ -14,14 +14,17 @@
  *  limitations under the License.
  */
 
-package org.pragmatica.http.server;
+package org.pragmatica.http;
 
-import org.pragmatica.http.Headers;
-import org.pragmatica.http.HttpMethod;
-import org.pragmatica.http.QueryParams;
+import java.nio.charset.StandardCharsets;
 
-/// HTTP request context providing access to request data.
-public interface RequestContext {
+/// Transport-agnostic HTTP request surface.
+///
+/// The common, `Route`-free, Netty-free base shared by every request abstraction: the
+/// transport-edge request (Netty/HTTP3 servers) and the post-routing handler context
+/// ([org.pragmatica.http.routing.RequestContext], which extends this with `route()`, JSON
+/// body parsing and path/query matching).
+public interface HttpRequest {
     /// Unique request ID for tracing and logging.
     /// Format: req_[ulid] (e.g., req_01hq4x2abc...)
     String requestId();
@@ -46,7 +49,7 @@ public interface RequestContext {
         var bytes = body();
         return bytes.length == 0
                ? ""
-               : new String(bytes, java.nio.charset.StandardCharsets.UTF_8);
+               : new String(bytes, StandardCharsets.UTF_8);
     }
 
     /// Check if request has a body.

@@ -100,7 +100,7 @@ class HttpResultTest {
         result.toResult()
             .onSuccess(_ -> org.junit.jupiter.api.Assertions.fail("Expected failure"))
             .onFailure(cause -> {
-                assertThat(cause).isInstanceOf(HttpError.RequestFailed.class);
+                assertThat(cause).isInstanceOf(HttpClientError.RequestFailed.class);
                 assertThat(cause.message()).contains("404");
             });
     }
