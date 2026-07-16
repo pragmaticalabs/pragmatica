@@ -49,10 +49,11 @@ test_config_visible_on_all_nodes() {
     local i
     for i in $(seq 0 $((NODE_COUNT - 1))); do
         local node_name="node-$((i + 1))"
-        local port=$((MGMT_PORT + i))
+        local node_ep
+        node_ep=$(node_base_url "$i" 2>/dev/null || echo "node-${i}")
         local overrides
         if ! overrides=$(node_api_get "$i" "/api/config/overrides"); then
-            log_fail "Per-node config probe failed on ${node_name} (port ${port})"
+            log_fail "Per-node config probe failed on ${node_name} (${node_ep})"
             mismatches=$((mismatches + 1))
             continue
         fi

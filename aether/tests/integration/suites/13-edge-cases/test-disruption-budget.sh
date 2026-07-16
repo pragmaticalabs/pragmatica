@@ -196,12 +196,22 @@ test_reactivate_nodes() {
     # Drained nodes (targets 1 and 2; target 3 was 409-rejected and never drained)
     # WILL exit — wait for their containers to leave RUNNING instead of pretending
     # reactivation saved them.
+    #
+    # Cloud: there is no shared docker daemon to `docker ps` against — a drained node
+    # that has exited simply drops out of the cluster's READY membership. Use
+    # cloud_running_cores (mgmt API /api/nodes/lifecycle) as the liveness source there;
+    # the drained ids are runtime node-ids (pick_non_leader returns runtime ids on
+    # cloud), so match them against the membership READY set.
     local drained_1 drained_2 running deadline still_running
     drained_1=$(sed -n '1p' "$DRAIN_NODES_FILE")
     drained_2=$(sed -n '2p' "$DRAIN_NODES_FILE")
     deadline=$((SECONDS + 120))
     while [ "$SECONDS" -lt "$deadline" ]; do
-        running=$(remote_exec "docker ps --format '{{.Names}}'")
+        if [ "${CLOUD_MODE:-false}" = "true" ]; then
+            running=$(cloud_running_cores)
+        else
+            running=$(remote_exec "docker ps --format '{{.Names}}'")
+        fi
         still_running=""
         echo "$running" | grep -qx "$drained_1" && still_running="$drained_1"
         echo "$running" | grep -qx "$drained_2" && still_running="${still_running} ${drained_2}"

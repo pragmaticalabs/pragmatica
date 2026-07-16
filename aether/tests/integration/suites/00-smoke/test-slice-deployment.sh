@@ -10,8 +10,11 @@ BLUEPRINT_COORDS="${TEST_BLUEPRINT_COORDS:-org.pragmatica.aether.test:test-echo:
 BLUEPRINT_NAME="${TEST_BLUEPRINT:-test-echo}"
 
 test_push_artifacts() {
-    push_blueprint "$BLUEPRINT_COORDS"
-    log_pass "Blueprint artifacts pushed"
+    if push_blueprint "$BLUEPRINT_COORDS" >/dev/null; then
+        log_pass "Blueprint artifacts pushed"
+    else
+        log_fail "Blueprint artifacts pushed"
+    fi
 }
 
 test_deploy_blueprint() {

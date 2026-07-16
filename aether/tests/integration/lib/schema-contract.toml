@@ -1,0 +1,37 @@
+# schema-contract.toml — frozen Management API status fields (harness-resilience spec A3)
+#
+# These are the response fields that the integration-test harness lib functions parse with
+# field-path extraction and grep. They are FROZEN: renaming one (or changing its JSON type)
+# without a major version bump and a corresponding harness update is a regression. Adding new
+# fields alongside them is always allowed.
+#
+# This file is the single source of truth read by lib/contract-test.sh, which:
+#   1. Reads the frozen-field list below.
+#   2. Grep-scans lib/common.sh, lib/cluster.sh, lib/topology.sh for each frozen field name.
+#   3. Cross-references each frozen field against the documented response shape in
+#      aether/docs/reference/management-api.md ("Schema stability contract" subsection).
+#   4. Fails if a frozen field is absent from the documented shape (the product renamed it), or
+#      if a harness lib references a frozen field's known former name (a rename leaked in).
+#
+# Keep this in lockstep with the "Schema stability contract" table in management-api.md.
+#
+# The `id` -> `nodeId` rename (cli-gap-audit Phase A) is the regression this contract prevents:
+# `former_names` records pre-freeze names so the contract test can flag a harness lib that still
+# greps the old name.
+
+[endpoint."GET /api/cluster/status"]
+frozen_fields = ["leaderId", "coreCount", "clusterPhase"]
+
+[endpoint."GET /api/nodes/status"]
+frozen_fields = ["nodeId", "lifecycleState", "isLeader"]
+
+[endpoint."GET /api/nodes/lifecycle"]
+frozen_fields = ["nodeId", "derivedStatus"]
+
+[endpoint."GET /api/nodes/live"]
+frozen_fields = ["nodeId", "swimAlive", "reportedState"]
+
+# Pre-freeze field names that MUST NOT reappear in harness lib grep patterns. A match means a
+# product rename was reverted in the harness, or a stale parser survived the rename.
+[former_names]
+nodeId = "id"

@@ -26,6 +26,10 @@ test_initial_state() {
     # Wait for phase=NORMAL to bypass SWIM cold-boot suppression of NODE_FAILED events.
     wait_for_phase "NORMAL" 180 || log_warn "Cluster phase still COLD_BOOT; chaos kill may produce UnknownObserved (no NODE_FAILED event)"
     wait_for_leader 60
+    # Poll-with-settle (up to 60s): the prior suite's restore gates on leader
+    # deficit=0 which can precede generation snapshot convergence by up to one
+    # reconciler tick while a CTM replacement finalises admission.
+    wait_for "Initial: at least 5 nodes" '[ "$(cluster_member_count)" -ge 5 ]' 60 || true
     local count
     count=$(cluster_member_count)
     assert_ge "$count" "5" "Initial: at least 5 nodes (${count})"
@@ -38,13 +42,16 @@ test_kill_during_load() {
     # chaos actually affects during a kill. Management /health/live is a
     # node-local synthetic and doesn't traverse the routing table that
     # gets republished on every cluster generation change.
-    # Point APP_ENDPOINT at the node hosting the ACTIVE echo slice (cluster B base app
-    # port 8080), probing /api/echo/health until routed. Mirrors 08-resources; without
-    # it the load hits the dead LB port 9090 and every request fails.
-    retarget_app_endpoint_to_active_slice "$ECHO_BLUEPRINT" 8080 "/api/echo/health" 90 \
-        || log_warn "kill-under-load: could not retarget APP_ENDPOINT to echo owner; load will probe ${APP_ENDPOINT}"
+    # Point APP_ENDPOINT at the node hosting the ACTIVE echo slice (app port is
+    # resolved from APP_PORT inside the helper), probing /api/echo/health until
+    # routed. Mirrors 08-resources; without it the load hits the dead LB port 9090
+    # and every request fails.
+    retarget_app_endpoint_to_active_slice "$ECHO_BLUEPRINT" "/api/echo/health" 90 || {
+        log_fail "kill-under-load: no ACTIVE owner resolved for ${ECHO_BLUEPRINT} within 90s — cannot measure error rate against a dead endpoint; aborting"
+        return 1
+    }
 
-    start_load "$LOAD_RPS" "$LOAD_DURATION" GET "/api/echo/health"
+    start_load "$LOAD_RPS" "$LOAD_DURATION" GET "/api/echo/health" "" "$ECHO_BLUEPRINT"
 
     # Load establishment is genuinely time-based (load.sh ramps RPS via sleep);
     # this is not a chaos-timing sleep, so it stays.
@@ -104,7 +111,12 @@ test_cluster_survives() {
 
 test_auto_heal() {
     log_info "Waiting for CTM auto-heal to quiesce at the post-replacement generation..."
-    wait_for_node_count 5 180 || {
+    # Sustained pattern (#441 item 4), mirroring test-kill-node.sh's
+    # test_auto_heal: the bare exact-eq wait_for_node_count let a transient
+    # flap-to-5 during convergence read as "done" (false pass), and — combined
+    # with the item-3 honest-read fix — a transport hiccup mid-poll now pauses
+    # rather than resetting or hard-failing the wait.
+    wait_for_sustained_node_count 5 "$(autoheal_default_timeout)" "$(autoheal_default_sustain)" || {
         log_fail "Cluster did not quiesce after auto-heal"
         return 1
     }

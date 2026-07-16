@@ -55,50 +55,36 @@ NODE_COUNT="${NODE_COUNT:-5}"
 # so forwarding bugs still surface on the happy path.
 aether_failover() {
     local timeout="${AETHER_CLI_TIMEOUT:-30}"
-    local host_port="${MGMT_ENTRY_POINT#http://}"
+    local host_port="${MGMT_ENTRY_POINT#*://}"
     if ! curl -sfk -m 2 -H "X-API-Key: ${API_KEY}" "${MGMT_ENTRY_POINT}/health/live" >/dev/null 2>&1; then
-        # Failover: probe alternate live core endpoints.
-        # docker/remote: nodes share TARGET_HOST with sequential mgmt ports (MGMT_PORT+0..N-1).
-        # cloud: each node has its own VM public IP; resolve via cloud_public_ip per node-id.
-        if [ "${ENV_TYPE:-docker}" = "cloud" ] && command -v cloud_public_ip >/dev/null 2>&1; then
-            for n in $(seq 0 $((NODE_COUNT - 1))); do
-                local node_ip
-                node_ip=$(cloud_public_ip "node-$((n+1))" 2>/dev/null || echo "")
-                [ -z "$node_ip" ] && continue
-                if curl -sfk -m 2 -H "X-API-Key: ${API_KEY}" "${MGMT_SCHEME}://${node_ip}:${MGMT_PORT}/health/live" >/dev/null 2>&1; then
-                    host_port="${node_ip}:${MGMT_PORT}"
-                    break
-                fi
-            done
-        else
-            local base_port="${MGMT_PORT}"
-            local found_port=""
-            for i in $(seq 0 $((NODE_COUNT - 1))); do
-                local port=$((base_port + i))
-                if curl -sfk -m 2 -H "X-API-Key: ${API_KEY}" "http://${TARGET_HOST}:${port}/health/live" >/dev/null 2>&1; then
-                    host_port="${TARGET_HOST}:${port}"
-                    found_port="yes"
-                    break
-                fi
-            done
-            # Seed range exhausted — the seeds may all have been replaced by CTM
-            # KSUID containers on ephemeral host ports (destructive suites). Discover
-            # a live one via the Docker label index so the CLI keeps working through
-            # full seed replacement. _discover_endpoint_by_label prints an http:// URL;
-            # strip the scheme for the `aether -c host:port` form below.
-            if [ -z "$found_port" ]; then
-                local discovered
-                if discovered=$(_discover_endpoint_by_label); then
-                    host_port="${discovered#http://}"
-                fi
-            fi
+        # Pinned endpoint is dead (e.g. a chaos test killed it). Delegate the live-node
+        # scan to the SINGLE resolver rather than re-implementing it here. _resolve_live_endpoint
+        # is the one place cloud (per-VM <publicIp>:CLOUD_MGMT_PORT), docker seed-port, and
+        # label-discovery resolution lives, so the CLOUD_MGMT_PORT and #33 fixes apply
+        # automatically. This removes the latent bug where the old inline cloud scan used
+        # MGMT_PORT (the docker host-mapped range, always wrong on cloud) instead of
+        # CLOUD_MGMT_PORT. Per-call override only: MGMT_ENTRY_POINT stays pinned for the
+        # next invocation, so forwarding bugs still surface on the happy path.
+        local live
+        if live=$(_resolve_live_endpoint); then
+            host_port="${live#*://}"
         fi
     fi
     local cli_tls_flag=""
     if [ "${MGMT_SCHEME}" = "https" ]; then
         cli_tls_flag="--tls-skip-verify"
     fi
-    aether -c "${MGMT_SCHEME}://${host_port}" --api-key "${API_KEY}" "--request-timeout=${timeout}" ${cli_tls_flag} "$@"
+    # Hard outer bound (#441 read-fragility class): --request-timeout caps the HTTP request
+    # once it is in flight, but the CLI (a JVM) can still hang in connect/DNS/TLS phases
+    # against a dead-but-routable endpoint — the 2026-07-15 cloud-jvm run hung 3.5h inside
+    # a fully-silenced `cluster_leader → aether_failover → aether` chain after the whole
+    # cluster-B fleet died. coreutils `timeout` closes that class for EVERY CLI call site;
+    # when it is not installed the invocation runs unbounded exactly as before.
+    if command -v timeout >/dev/null 2>&1; then
+        timeout "$((timeout + 30))s" aether -c "${MGMT_SCHEME}://${host_port}" --api-key "${API_KEY}" "--request-timeout=${timeout}" ${cli_tls_flag} "$@"
+    else
+        aether -c "${MGMT_SCHEME}://${host_port}" --api-key "${API_KEY}" "--request-timeout=${timeout}" ${cli_tls_flag} "$@"
+    fi
 }
 
 # Query a CLI command and extract a single field (--format value --field)
@@ -235,20 +221,179 @@ _discover_endpoint_by_label() {
     return 1
 }
 
+# Run a command with a hard wall-clock bound (#441 item 1). macOS ships no
+# `timeout` by default (only via `brew install coreutils`, as `gtimeout`);
+# Linux/remote hosts have GNU `timeout`. Falls back to a background-process +
+# polled-wait + kill construct when neither exists, so callers always get a
+# bounded wait regardless of platform. lib/suite.sh:106 calls bare `timeout`
+# with no such fallback — safe there only because it's wrapped in
+# `if timeout ...; then` (a missing binary just evaluates false); this helper
+# is for callers like _cloud_running_vm_ips that must also cap wall-clock time
+# on macOS dev boxes and turn "took too long" into an honest non-zero rc.
+_run_with_timeout() {
+    local secs="$1"
+    shift
+    if command -v timeout >/dev/null 2>&1; then
+        timeout "$secs" "$@"
+        return $?
+    fi
+    if command -v gtimeout >/dev/null 2>&1; then
+        gtimeout "$secs" "$@"
+        return $?
+    fi
+    local outfile errfile rc pid waited=0
+    outfile=$(mktemp)
+    errfile=$(mktemp)
+    "$@" >"$outfile" 2>"$errfile" &
+    pid=$!
+    while kill -0 "$pid" 2>/dev/null; do
+        if [ "$waited" -ge "$secs" ]; then
+            kill -9 "$pid" 2>/dev/null || true
+            wait "$pid" 2>/dev/null || true
+            cat "$outfile"
+            cat "$errfile" >&2
+            rm -f "$outfile" "$errfile"
+            return 124
+        fi
+        sleep 1
+        waited=$((waited + 1))
+    done
+    wait "$pid"
+    rc=$?
+    cat "$outfile"
+    cat "$errfile" >&2
+    rm -f "$outfile" "$errfile"
+    return "$rc"
+}
+
 # Resolve an endpoint that actually responds to /health/live. Preserves the pinned
 # CLUSTER_ENDPOINT when it's up; rotates once to any live core node when the pinned
 # endpoint is dead (e.g., during chaos-suite recovery where the pinned node was killed).
 #
 # Resolution order:
 #   1. pinned CLUSTER_ENDPOINT (happy path — preserves forwarding-bug detection)
-#   2. fixed seed host-port range MGMT_PORT..MGMT_PORT+N-1 (surviving compose seeds)
-#   3. Docker label discovery (CTM KSUID replacements with ephemeral host ports) —
-#      the only path that survives full seed replacement; see
+#   2a. cloud: per-VM public-IP scan (each node is <publicIp>:CLOUD_MGMT_PORT,
+#       resolved via cloud_public_ip; there is NO local docker to inspect and no
+#       fixed host-port range on TARGET_HOST — see the cloud branch below)
+#   2b. docker/remote: fixed seed host-port range MGMT_PORT..MGMT_PORT+N-1
+#       (surviving compose seeds)
+#   3. docker/remote: label discovery (CTM KSUID replacements with ephemeral host
+#      ports) — the only path that survives full seed replacement; see
 #      _discover_endpoint_by_label.
 _resolve_live_endpoint() {
     if curl -sfk -m 2 -H "X-API-Key: ${API_KEY}" "${CLUSTER_ENDPOINT}/health/live" >/dev/null 2>&1; then
         echo "${CLUSTER_ENDPOINT}"
         return 0
+    fi
+    # Cloud: the pinned endpoint is dead. Each node lives on its OWN VM public IP at
+    # the uniform CLOUD_MGMT_PORT (8080) — there is no shared TARGET_HOST port range
+    # and no local/remote docker daemon to label-discover against. Resolve a live
+    # node by walking the provisioned VM IPs (cloud_public_ip reads bootstrap-state.json).
+    # Without this branch the resolver falls through to the docker-only TARGET_HOST
+    # port scan (which on cloud probes the cluster-B docker ports 5161..5165 — all
+    # dead) and then _discover_endpoint_by_label (which returns 1 immediately on
+    # cloud), so every read after the pinned node dies returns '' and the whole
+    # suite cascades into false failures.
+    if [ "${ENV_TYPE:-docker}" = "cloud" ] && command -v cloud_public_ip >/dev/null 2>&1; then
+        # Cloud per-node mgmt port is uniform 8080 (operations.ports.management in
+        # cloud-hetzner*.toml; bootstrap emits mgmt=<publicIp>:8080). Do NOT fall back
+        # to MGMT_PORT — it is ALWAYS set to the docker host-mapped range (5151/5161)
+        # even on cloud (run-tests.sh exports it), so `${CLOUD_MGMT_PORT:-${MGMT_PORT:-8080}}`
+        # never reached the 8080 default and scanned the dead docker port → false
+        # "cluster appears down" after a chaos kill. run-tests.sh now exports
+        # CLOUD_MGMT_PORT=8080 in the cloud env case; this `:-8080` is the safety net.
+        local mgmt_port="${CLOUD_MGMT_PORT:-8080}"
+        # Sticky re-pin (#441 item 2): this whole function runs inside `$(...)`
+        # at every call site (api_get et al.), so any `export CLUSTER_ENDPOINT=`
+        # made here is scoped to that subshell and discarded the instant this
+        # function returns — the NEXT call starts back at the (dead) pinned
+        # CLUSTER_ENDPOINT and re-pays the full seed-scan + anchor-free hcloud
+        # scan below. Worse, `run-tests.sh` runs each suites/**/test-*.sh as its
+        # OWN `bash test_file` subprocess (run_suite's `for test_file in ...; do
+        # bash "$test_file"; done`), so even a plain (non-subshelled) export
+        # wouldn't survive from one test file to the next. Only a FILE-based
+        # cache — the same idiom test-self-drain-quorum-loss.sh uses for its
+        # SURVIVOR_IPS_FILE — persists across both boundaries. Scoped by
+        # CLUSTER_ID so concurrent cluster-A/B runs never share an endpoint.
+        # Re-probed with the same cheap `-m 2` curl before trust (mirrors the
+        # _LABEL_DISCOVERED_ENDPOINT TTL+reprobe idiom below), so a stale/dead
+        # cached IP degrades to the normal scan rather than being trusted blindly.
+        local sticky_file="${TMPDIR:-/tmp}/aether-live-endpoint-${CLUSTER_ID:-default}"
+        if [ -f "$sticky_file" ]; then
+            local sticky_ep
+            sticky_ep=$(cat "$sticky_file" 2>/dev/null || true)
+            if [ -n "$sticky_ep" ] && curl -sfk -m 2 -H "X-API-Key: ${API_KEY}" "${sticky_ep}/health/live" >/dev/null 2>&1; then
+                echo "${sticky_ep}"
+                return 0
+            fi
+        fi
+        local n node_id node_ip endpoint
+        for n in $(seq 0 $((NODE_COUNT - 1))); do
+            node_id=$(to_node_id "node-$((n + 1))" 2>/dev/null || true)
+            [ -z "$node_id" ] && continue
+            node_ip=$(cloud_public_ip "$node_id" 2>/dev/null || true)
+            [ -z "$node_ip" ] && continue
+            endpoint="${MGMT_SCHEME:-http}://${node_ip}:${mgmt_port}"
+            if curl -sfk -m 2 -H "X-API-Key: ${API_KEY}" "${endpoint}/health/live" >/dev/null 2>&1; then
+                printf '%s' "${endpoint}" > "$sticky_file" 2>/dev/null || true
+                echo "${endpoint}"
+                return 0
+            fi
+        done
+        # Seed IPs (bootstrap-state.json) are all dead/replaced. Enumerate the CURRENT
+        # cluster VMs straight from the cloud provider — CTM auto-heal REPLACEMENT VMs
+        # are NOT recorded in bootstrap-state.json, so the fixed seed loop above can
+        # never find them. This is the anchor-free discovery that makes resolution
+        # survive full owner replacement under chaos.
+        # #441 Defect B follow-up: this used to run its own
+        # `hcloud server list --selector "aether-cluster=${BOOTSTRAP_CLUSTER_NAME}"`
+        # query directly — the SAME selector fixed in lib/cluster.sh's
+        # _cloud_running_vm_ips, and broken for the same reason: provisioned VMs
+        # (seed AND CTM replacement alike) are only ever reliably stamped
+        # `aether-node-id`, not `aether-cluster` (product-side gap, #442 v2b).
+        # Here that meant this anchor-free discovery step silently enumerated
+        # ZERO candidate IPs even against a live cluster — masked because this
+        # is only a PROBE loop (not a drain/reap decision): an empty/exhausted
+        # result already fell through correctly to the loud dead-endpoint
+        # log_error a few lines below. The defect was "misses real candidates,
+        # degrades resolution quality" here rather than cluster.sh's false-reap,
+        # but the root cause and fix are identical — reuse the canonical,
+        # cluster-unambiguous enumeration instead of re-deriving the (broken)
+        # selector a second time.
+        #
+        # `command -v` guard, not a hard dependency: lib/cluster.sh is sourced
+        # alongside lib/common.sh by every real test entry point (run-tests.sh
+        # and every suites/**/*.sh), but two common.sh-only scripts exist
+        # (scripts/cleanup.sh, test/test-cloud-helpers.sh) that never reach this
+        # cloud fallback branch in practice — keep that true structurally
+        # instead of assuming it holds.
+        if [ -n "${BOOTSTRAP_CLUSTER_NAME:-}" ] && command -v _cloud_running_vm_ips >/dev/null 2>&1; then
+            local cur_ip cur_ips
+            # `|| true`: _cloud_running_vm_ips returns 1 when hcloud itself is
+            # missing/fails — this bare assignment must not abort the whole
+            # script under `set -e` (run-tests.sh and every suite file that
+            # reaches here run with `set -euo pipefail`); an empty result
+            # degrades gracefully into the loud dead-endpoint fallback below,
+            # exactly like a genuinely empty enumeration would.
+            cur_ips=$(_cloud_running_vm_ips "${BOOTSTRAP_CLUSTER_NAME}" || true)
+            for cur_ip in $cur_ips; do
+                [ -z "$cur_ip" ] && continue
+                endpoint="${MGMT_SCHEME:-http}://${cur_ip}:${mgmt_port}"
+                if curl -sfk -m 2 -H "X-API-Key: ${API_KEY}" "${endpoint}/health/live" >/dev/null 2>&1; then
+                    printf '%s' "${endpoint}" > "$sticky_file" 2>/dev/null || true
+                    echo "${endpoint}"
+                    return 0
+                fi
+            done
+        fi
+        # No surviving VM responded; fall back so the caller surfaces a curl failure.
+        # #426 item 4: this was a silent fallback (comment-only) — a dead pinned
+        # endpoint returned here reads downstream as an ordinary empty/absent API
+        # response, indistinguishable from a genuine 404. Log it loud so a reader
+        # of the run's output can tell "no VM answered" from "the API said so".
+        log_error "_resolve_live_endpoint: no surviving cloud VM answered /health/live (seed IPs + live hcloud enumeration both exhausted) — falling back to the dead pinned endpoint ${CLUSTER_ENDPOINT}; callers will see a transport failure" >&2
+        echo "${CLUSTER_ENDPOINT}"
+        return 1
     fi
     # Fast-path: a previously label-discovered replacement endpoint that is still
     # fresh and still answers. Skips the fixed-seed port scan (which costs ~2s/dead
@@ -279,11 +424,29 @@ _resolve_live_endpoint() {
     # still reachable for management. This is the robust last resort: it returns a
     # usable host:port whenever ANY live aether-${CLUSTER_ID} container exists (seed
     # OR replacement), even when every fixed seed port is dead (#33).
-    local discovered
-    if discovered=$(_discover_endpoint_by_label); then
-        echo "$discovered"
-        return 0
-    fi
+    #
+    # Retry (#426 item 4): a single SSH round-trip (remote_exec inside
+    # _discover_endpoint_by_label) has no bound on remote COMMAND execution time —
+    # ssh's ConnectTimeout=10 only guards connection setup, not a hung `docker ps`/
+    # `docker port` on a contended daemon. On a fully-ULID cluster (every seed
+    # replaced) that single call is the ONLY discovery path, so one transient
+    # SSH/Docker hiccup used to cause total resolution failure for the whole call —
+    # cascading into every downstream api_get reading a false "0"/"empty" state.
+    # Retry a few times with a short pause before declaring the cluster unreachable.
+    local discover_attempts="${ENDPOINT_DISCOVERY_ATTEMPTS:-3}"
+    local discovered attempt=1
+    while [ "$attempt" -le "$discover_attempts" ]; do
+        if discovered=$(_discover_endpoint_by_label); then
+            echo "$discovered"
+            return 0
+        fi
+        [ "$attempt" -lt "$discover_attempts" ] && sleep 1
+        attempt=$((attempt + 1))
+    done
+    # #426 item 4: was a silent fallback (comment-only, no logged diagnostic) — a
+    # dead pinned endpoint returned here reads downstream as an ordinary
+    # empty/absent API response, indistinguishable from a genuine 404.
+    log_error "_resolve_live_endpoint: pinned endpoint dead, seed port range ${MGMT_PORT}-$((MGMT_PORT + NODE_COUNT - 1)) exhausted, and label discovery failed after ${discover_attempts} attempt(s) — falling back to the dead pinned endpoint ${CLUSTER_ENDPOINT}; callers will see a transport failure" >&2
     echo "${CLUSTER_ENDPOINT}"  # fall back; caller will see curl failure
     return 1
 }
@@ -314,6 +477,19 @@ api_get() {
     _api_call GET "${endpoint}${path}"
 }
 
+# Like api_get, but the LAST line of stdout is a `__API_HTTP_STATUS:NNN__`
+# marker carrying the raw HTTP status ("000" when curl never got a response —
+# a transport failure, not a server-issued status). Callers that must
+# distinguish a genuine 4xx/5xx response from an unreachable endpoint (rather
+# than collapsing both to "empty body") should parse this instead of using
+# api_get — see kv_lifecycle_state in lib/topology.sh (#426 item 2).
+api_get_with_status() {
+    local path="$1"
+    local endpoint
+    endpoint=$(_resolve_live_endpoint)
+    _api_call GET "${endpoint}${path}" "" "1"
+}
+
 api_post() {
     local path="$1"
     local body="${2:-"{}"}"
@@ -332,22 +508,42 @@ api_put() {
 # diagnostic logging. The original `curl -sf` was silently dropping HTTP error bodies,
 # which made cloud failures (e.g. "NotLeader", "TaskGroupInactive") invisible.
 _api_call() {
-    local method="$1" url="$2" body="${3:-}"
+    local method="$1" url="$2" body="${3:-}" want_status="${4:-}"
     local response status body_only
+    # Cloud poll-loop hygiene: a just-killed node's pinned endpoint is a DEAD
+    # public IP. With the default `-m 30` (no connect cap), each call to a dead
+    # host stalls the full 30s before failing, so a single wedged subtest's
+    # poll loop (wait_for / wait_for_node_count) burns ~30s/iteration and starves
+    # the rest of cluster-B. On cloud, fast-fail the connect so a dead endpoint
+    # surfaces as a curl failure in ~3s and the caller can rotate to a live node
+    # on the next poll (it re-refreshes MGMT_ENTRY_POINT). docker/local/remote keep
+    # the original `-m 30` with no connect cap — byte-identical behaviour there.
+    local conn_opts=()
+    if [ "${CLOUD_MODE:-false}" = "true" ]; then
+        conn_opts=(--connect-timeout "${CLOUD_API_CONNECT_TIMEOUT:-3}" -m "${CLOUD_API_MAX_TIME:-15}")
+    else
+        conn_opts=(-m 30)
+    fi
     if [ -n "$body" ]; then
-        response=$(curl -sk -m 30 -X "$method" -H "X-API-Key: ${API_KEY}" -H "Content-Type: application/json" \
+        response=$(curl -sk "${conn_opts[@]}" -X "$method" -H "X-API-Key: ${API_KEY}" -H "Content-Type: application/json" \
             -d "$body" -w "\n__API_HTTP_STATUS:%{http_code}__" "$url" 2>&1)
     else
-        response=$(curl -sk -m 30 -X "$method" -H "X-API-Key: ${API_KEY}" \
+        response=$(curl -sk "${conn_opts[@]}" -X "$method" -H "X-API-Key: ${API_KEY}" \
             -w "\n__API_HTTP_STATUS:%{http_code}__" "$url" 2>&1)
     fi
     status=$(printf '%s' "$response" | grep -oE '__API_HTTP_STATUS:[0-9]+__' | sed 's/__API_HTTP_STATUS://;s/__//')
     body_only=$(printf '%s' "$response" | sed '$d')
     if [ -n "$status" ] && [ "$status" -ge 200 ] && [ "$status" -lt 400 ] 2>/dev/null; then
         printf '%s' "$body_only"
+        # want_status: append the raw HTTP status as a trailing marker line so a
+        # single command-substitution capture can recover it (printf -v inside a
+        # $(...) caller would set the variable in the subshell, not the caller —
+        # see api_get_with_status). "000" means curl never got a response at all.
+        [ -n "$want_status" ] && printf '\n__API_HTTP_STATUS:%s__' "${status:-000}"
         return 0
     fi
     log_warn "api ${method} ${url#http://*/} status=${status:-000}: $(printf '%s' "$body_only" | head -c 300)" >&2
+    [ -n "$want_status" ] && printf '%s\n__API_HTTP_STATUS:%s__' "$body_only" "${status:-000}"
     return 1
 }
 
@@ -356,21 +552,157 @@ api_delete() {
     _api_call DELETE "${CLUSTER_ENDPOINT}${path}"
 }
 
+# ---------------------------------------------------------------------------
+# Connectivity preflight (C7) — diagnose CLI-vs-curl reachability
+# ---------------------------------------------------------------------------
+# Probe the SAME management endpoint two independent ways — raw HTTP (curl, the
+# api_get transport) and the `aether` CLI (which execs `java`) — and emit a
+# diagnostic verdict BEFORE any suite runs. This converts the multi-hour
+# misdiagnosis observed 2026-06-15 (macOS Local Network Privacy / TCC silently
+# blocked the Homebrew java binary from the 192.168.x LAN cluster, so the CLI
+# failed with `java.net.ConnectException: No route to host` while curl and the
+# cluster were completely healthy — 00-smoke then failed and the aborted-all gate
+# misattributed it to a dead cluster) into a one-line preflight verdict. See
+# aether/docs/specs/harness-resilience-spec.md §6 C7.
+#
+# The four outcomes (curl × CLI):
+#   curl OK  + CLI OK   → both transports reach the cluster → proceed (rc 0).
+#   curl FAIL+ CLI FAIL → cluster genuinely unreachable both ways → let the
+#                         existing flow surface the real failure; do NOT mask it
+#                         (rc 0 — proceed so 00-smoke/the gate reports it normally).
+#   curl OK  + CLI FAIL → THIS operator machine's CLI cannot reach the cluster
+#                         while raw HTTP can (macOS Local Network Privacy for a LAN
+#                         cluster, an HTTP proxy honoured only by curl, or IPv6
+#                         preference in the JVM). Emit an actionable message and
+#                         STOP (rc 1) so the suites are not run and the cascade is
+#                         not misattributed.
+#   curl FAIL+ CLI OK   → unusual (curl-only proxy/cert quirk, or a transient curl
+#                         failure). Surface for investigation but do NOT stop
+#                         (rc 0) — the CLI proves the cluster is reachable.
+#
+# Args: $1 = management endpoint (http[s]://host:port). $2 = human label (e.g. "Cluster A").
+# Robustness: every probe is fully guarded so neither a curl failure nor a CLI
+# failure (nor a missing `aether` binary) can abort this function under
+# `set -euo pipefail` and hide its own verdict. Returns 1 ONLY for the
+# curl-OK/CLI-fail operator-machine case; 0 otherwise.
+connectivity_preflight() {
+    local endpoint="${1:-${CLUSTER_ENDPOINT}}"
+    local label="${2:-cluster}"
+    local timeout="${PREFLIGHT_TIMEOUT:-10}"
+
+    # --- Probe 1: raw HTTP via curl (the api_get transport). ---
+    # `/api/nodes/status` is a genuine management read (same endpoint cluster_leader_http
+    # uses), not a bare /health/live that a half-booted node answers — so a curl OK here
+    # means the management API is genuinely serving over plain HTTP from this machine.
+    local curl_ok=false
+    if curl -sfk -m "$timeout" -H "X-API-Key: ${API_KEY}" "${endpoint}/api/nodes/status" >/dev/null 2>&1; then
+        curl_ok=true
+    fi
+
+    # --- Probe 2: the `aether` CLI against the SAME endpoint. ---
+    # Mirrors aether_failover's invocation (scheme, --api-key, --request-timeout,
+    # optional --tls-skip-verify) so the comparison is apples-to-apples. The CLI execs
+    # `java`; if Local Network Privacy / a proxy / IPv6 blocks java from the cluster LAN,
+    # this fails while curl above succeeds — exactly the signal we want to surface.
+    local cli_ok=false
+    if command -v aether >/dev/null 2>&1; then
+        # Strip any scheme the caller passed, then re-attach MGMT_SCHEME so the CLI form
+        # matches the rest of the harness (aether -c <scheme>://host:port).
+        local host_port="${endpoint#http://}"
+        host_port="${host_port#https://}"
+        local cli_tls_flag=""
+        if [ "${MGMT_SCHEME}" = "https" ]; then
+            cli_tls_flag="--tls-skip-verify"
+        fi
+        # shellcheck disable=SC2086
+        if aether -c "${MGMT_SCHEME}://${host_port}" --api-key "${API_KEY}" \
+                "--request-timeout=${timeout}" ${cli_tls_flag} status >/dev/null 2>&1; then
+            cli_ok=true
+        fi
+    else
+        # No CLI on PATH — cannot make the CLI-vs-curl distinction. Treat as a
+        # non-blocking note rather than a verdict; the suites that need the CLI
+        # will fail loudly on their own.
+        log_warn "preflight [${label}]: 'aether' CLI not found on PATH — skipping CLI reachability probe"
+        return 0
+    fi
+
+    # --- Verdict ---
+    if [ "$curl_ok" = true ] && [ "$cli_ok" = true ]; then
+        log_info "preflight [${label}]: OK — curl and CLI both reach ${endpoint}"
+        return 0
+    fi
+
+    if [ "$curl_ok" = false ] && [ "$cli_ok" = false ]; then
+        # Both transports failed → genuinely unreachable. Do NOT mask: let the
+        # existing readiness/gate flow report it (00-smoke / the aborted-all gate).
+        log_warn "preflight [${label}]: curl AND CLI both fail to reach ${endpoint} — cluster appears genuinely unreachable; deferring to the normal failure path"
+        return 0
+    fi
+
+    if [ "$curl_ok" = true ] && [ "$cli_ok" = false ]; then
+        # The actionable case: raw HTTP reaches the cluster but the CLI (java) cannot.
+        log_error "preflight [${label}]: raw HTTP (curl) reaches ${endpoint} but the 'aether' CLI cannot."
+        log_error "  This is THIS machine's CLI, not the cluster: curl/api_get and the cluster are healthy,"
+        log_error "  but the java binary the CLI execs is being blocked from the cluster network."
+        log_error "  Common causes and fixes:"
+        log_error "    - macOS Local Network Privacy (TCC) blocking java on a LAN (192.168.x/10.x) cluster:"
+        log_error "      grant Local Network access to your terminal app (System Settings > Privacy & Security >"
+        log_error "      Local Network) and to the java binary the CLI runs."
+        log_error "    - run the CLI from inside the cluster network (e.g. on the docker/remote host itself)."
+        log_error "    - use public-IP / loopback-tunnelled endpoints the JVM is allowed to reach."
+        log_error "  Stopping before suites run so this is NOT misattributed to a dead cluster."
+        return 1
+    fi
+
+    # Remaining case: curl FAIL + CLI OK — unusual. The CLI proves the cluster is
+    # reachable, so do not stop; surface it for investigation.
+    log_warn "preflight [${label}]: the 'aether' CLI reaches ${endpoint} but raw HTTP (curl) does not — unusual (curl-only proxy/cert quirk or transient curl failure); proceeding, but investigate if suites that use api_get/curl fail"
+    return 0
+}
+
 # Per-node HTTP helpers — for legitimate per-node state queries.
 # Example: "is METRICS task group ACTIVE on node-2 specifically?"
 # NOT a client-side failover mechanism. Management calls go through api_get/api_post → MGMT_ENTRY_POINT.
 #
-# Caller supplies the 0-based offset of the target core node (0 → MGMT_PORT, 1 → MGMT_PORT+1, ...).
+# Caller supplies the 0-based offset of the target core node (0 → first node, 1 → second, ...).
+
+# Resolve the management base URL for the core node at 0-based $offset.
+# docker/remote: nodes are collocated on TARGET_HOST with a host-mapped per-node
+#   port range, so node K is TARGET_HOST:(MGMT_PORT + K).
+# cloud: each node is its own VM with mgmt on the uniform CLOUD_MGMT_PORT; resolve
+#   the VM's public IP via to_node_id (offset → node-(K+1) → runtime id) → cloud_public_ip.
+# Prints the base URL (e.g. http://1.2.3.4:8080) on stdout; rc 1 if the cloud IP
+# lookup fails. Scheme honours MGMT_SCHEME (https on cloud-B with TLS auto-gen).
+node_base_url() {
+    local offset="$1"
+    if [ "${ENV_TYPE:-docker}" = "cloud" ] && command -v cloud_public_ip >/dev/null 2>&1; then
+        # Uniform cloud mgmt port 8080; never fall back to MGMT_PORT (always the
+        # docker host-mapped range even on cloud — see _resolve_live_endpoint).
+        local mgmt_port="${CLOUD_MGMT_PORT:-8080}"
+        local node_id node_ip
+        node_id=$(to_node_id "node-$((offset + 1))" 2>/dev/null || true)
+        [ -z "$node_id" ] && return 1
+        node_ip=$(cloud_public_ip "$node_id" 2>/dev/null || true)
+        [ -z "$node_ip" ] && return 1
+        printf '%s://%s:%s\n' "${MGMT_SCHEME:-http}" "$node_ip" "$mgmt_port"
+        return 0
+    fi
+    printf 'http://%s:%s\n' "${TARGET_HOST}" "$((MGMT_PORT + offset))"
+}
+
 node_api_get() {
     local offset="$1" path="$2"
-    local port=$((MGMT_PORT + offset))
-    _api_call GET "http://${TARGET_HOST}:${port}${path}"
+    local base
+    base=$(node_base_url "$offset") || return 1
+    _api_call GET "${base}${path}"
 }
 
 node_api_post() {
     local offset="$1" path="$2" body="${3:-"{}"}"
-    local port=$((MGMT_PORT + offset))
-    _api_call POST "http://${TARGET_HOST}:${port}${path}" "$body"
+    local base
+    base=$(node_base_url "$offset") || return 1
+    _api_call POST "${base}${path}" "$body"
 }
 
 # Back-compat shims — forward to the MGMT_ENTRY_POINT, no client-side failover.
@@ -439,10 +771,43 @@ wait_for() {
     # Scale timeouts on slower environments (cloud VMs have higher inter-node latency than
     # docker-localhost). TIMEOUT_SCALE=3 default for cloud, 1 elsewhere — set in run-tests.sh.
     timeout=$((timeout * ${TIMEOUT_SCALE:-1}))
-    local elapsed=0 rc errfile
+    local rc errfile
     errfile=$(mktemp)
     log_info "Waiting for: ${description} (timeout: ${timeout}s)"
-    while [ "$elapsed" -lt "$timeout" ]; do
+    # Cloud poll-loop hygiene: predicates round-trip through _resolve_live_endpoint
+    # → _api_call against the PINNED CLUSTER_ENDPOINT. When that endpoint is a
+    # just-killed VM (a dead public IP), every poll re-scans/re-curls it; combined
+    # with connect stalls this stretched a nominal 720s budget to 40+ min wall-clock
+    # and starved the rest of cluster-B. On cloud we (1) resolve+export a live mgmt
+    # endpoint ONCE up front so the per-poll _resolve_live_endpoint hits its
+    # fast happy-path probe (CLUSTER_ENDPOINT live → one `-m 2` curl, no VM scan),
+    # and (2) re-refresh ONLY when a poll's predicate fails — so a dead endpoint is
+    # rotated to a live node on the next iteration rather than retried at full
+    # timeout every poll. The overall scaled deadline is unchanged. _api_call's
+    # cloud connect-timeout (see CLOUD_API_CONNECT_TIMEOUT) bounds the single
+    # straggling call between a refresh and the next predicate. docker/local/remote
+    # take neither branch — byte-identical behaviour there.
+    #
+    # #441 run 7 (2026-07-12): the mitigation above assumes a refresh is cheap
+    # ("happy path" -m 2 probe) except right after a kill. That assumption breaks
+    # when the WHOLE cluster is down (self-drain): every refresh takes the full
+    # slow VM-scan/enumerate path, so a single iteration can cost far more than
+    # `interval`. The previous deadline check compared a NOMINAL counter
+    # (`elapsed += interval`, once per iteration) against `timeout`, silently
+    # assuming each iteration costs exactly `interval` seconds — so a configured
+    # 360s budget took a real wall-clock 1h50m to actually expire against a fully
+    # dead cluster. Track the deadline against bash's `$SECONDS` (real elapsed
+    # time regardless of how long a single predicate/refresh call takes) instead —
+    # matching the wall-clock-ceiling pattern already used by
+    # wait_for_node_removed/wait_for_container_exit elsewhere in this codebase.
+    local start_seconds=$SECONDS
+    local deadline=$((start_seconds + timeout))
+    local cloud_poll="false"
+    if [ "${CLOUD_MODE:-false}" = "true" ]; then
+        cloud_poll="true"
+        _refresh_mgmt_entry_point >/dev/null 2>&1 || true
+    fi
+    while [ "$SECONDS" -lt "$deadline" ]; do
         # Capture rc without tripping `set -e` from the caller — `eval` as a standalone
         # command would propagate its non-zero exit and abort the entire script when
         # the predicate is simply false. The `&& rc=0 || rc=$?` idiom swallows the exit
@@ -451,7 +816,7 @@ wait_for() {
         eval "$check_cmd" > /dev/null 2>"$errfile" && rc=0 || rc=$?
         case "$rc" in
             0)
-                log_pass "${description} (${elapsed}s)"
+                log_pass "${description} ($((SECONDS - start_seconds))s)"
                 rm -f "$errfile"
                 return 0
                 ;;
@@ -461,10 +826,19 @@ wait_for() {
                 log_warn "wait_for predicate emitted shell error (rc=${rc}): $(head -c 300 < "$errfile")"
                 ;;
         esac
-        sleep "$interval"
-        elapsed=$((elapsed + interval))
+        # On cloud, a non-zero predicate may mean the pinned endpoint just died
+        # (the node it pointed at was killed). Rotate to a live node BEFORE the
+        # next poll so the dead endpoint isn't re-probed at full cost every
+        # iteration. Cheap: succeeds via the `-m 2` happy-path probe when the
+        # current endpoint is still live, scans VMs only when it genuinely died.
+        if [ "$cloud_poll" = "true" ]; then
+            _refresh_mgmt_entry_point >/dev/null 2>&1 || true
+        fi
+        # Skip the final sleep once the deadline has already passed — avoids
+        # overshooting the wall-clock ceiling by an extra `interval` for no reason.
+        [ "$SECONDS" -lt "$deadline" ] && sleep "$interval"
     done
-    log_fail "${description} (timed out after ${timeout}s)"
+    log_fail "${description} (timed out after $((SECONDS - start_seconds))s, budget ${timeout}s)"
     rm -f "$errfile"
     return 1
 }
@@ -604,6 +978,29 @@ CLOUD_TIMEOUT_MULTIPLIER="${CLOUD_TIMEOUT_MULTIPLIER:-1}"
 # to the bootstrap form via this prefix when looking up public IPs.
 CLOUD_SOURCE_NAME="${CLOUD_SOURCE_NAME:-hetzner-eu}"
 
+# Cloud provider seam. Selects the compute/firewall backend the chaos primitives
+# (cloud_kill_vm / cloud_partition_node / cloud_server_id, lib/cluster.sh) dispatch
+# on. Only `hetzner` (via the `hcloud` CLI + Hetzner API) is implemented today;
+# a future `aws` / `gcloud` branch slots into the same `case "$CLOUD_PROVIDER"`
+# without touching call sites. Inferred from CLOUD_SOURCE_NAME when unset
+# (`hetzner-*` → hetzner) so existing cloud configs keep working unchanged.
+case "${CLOUD_PROVIDER:-}" in
+    "" )
+        case "$CLOUD_SOURCE_NAME" in
+            hetzner-*|hetzner) CLOUD_PROVIDER="hetzner" ;;
+            aws-*|aws)         CLOUD_PROVIDER="aws" ;;
+            gcp-*|gcloud-*|gcp|gcloud) CLOUD_PROVIDER="gcp" ;;
+            *)                 CLOUD_PROVIDER="hetzner" ;;
+        esac
+        ;;
+esac
+export CLOUD_PROVIDER
+
+# Hetzner Cloud REST API base. Overridable for testing. No longer consumed by the
+# cloud resolver helpers (cloud_server_id maps IP->id via the `hcloud` CLI, which
+# talks to the API itself); retained as a single knob for any future raw-API probe.
+HCLOUD_API="${HCLOUD_API:-https://api.hetzner.cloud/v1}"
+
 # Management API URL scheme. Defaults to http; switched to https by run-tests.sh
 # when the cluster's bootstrap config has [operations.tls] auto_generate = true
 # (cluster B in cloud mode).
@@ -646,7 +1043,84 @@ to_node_id() {
     echo "$node_id"
 }
 
-# cloud_public_ip <node-id> — print the public IP of <node-id> by reading the
+# Map a node's runtime id (as reported by the management API, e.g. in
+# scheduled-tasks `registeredBy` or a SliceNotLocal retry hint) to the 0-based core
+# offset that node_api_get/node_api_post / node_base_url expect.
+#
+#   docker/remote: `aether-{a|b}-node-N` or bare `node-N` (N is 1-based) → offset N-1
+#   cloud:         `<source>-core-K`     (K is already 0-based)          → offset K
+#
+# Prints the offset on stdout, rc 0 on success; rc 1 if the id matches no known form.
+_registered_by_to_offset() {
+    local id="$1"
+    if [[ "$id" =~ ^(aether-[ab]-)?node-([0-9]+)$ ]]; then
+        echo "$(( ${BASH_REMATCH[2]} - 1 ))"
+        return 0
+    fi
+    if [[ "$id" =~ ^[A-Za-z0-9-]+-core-([0-9]+)$ ]]; then
+        echo "${BASH_REMATCH[1]}"
+        return 0
+    fi
+    return 1
+}
+
+
+# Return the Hetzner server ID (numeric) for a cluster node id — seed OR CTM
+# replacement. IP-based and cluster-correct: resolve the node to its routable
+# public IP via cloud_public_ip (cluster-scoped — bootstrap-state for seeds,
+# this cluster's mgmt API for replacements), then map that IP to a server id with
+# the `hcloud` CLI. Needed by the provider chaos primitives (poweroff / firewall
+# apply) which address servers by id, not IP. Prints the id on stdout + rc 0;
+# logs and returns non-zero on failure.
+#
+# Robustness: NEVER parse Hetzner's multi-line pretty-printed JSON with line-based
+# grep (the old _hcloud_resolve_server bug — `"ipv4"`/`"ip"` land on separate
+# lines so the regex never matched, the ip came back empty, and resolution bailed
+# even for bootstrap seeds). `hcloud server list -o columns=id,ipv4 -o noheader`
+# emits one `id<WS>ipv4` row per server with the JSON parsed internally; awk does
+# an exact field match. Cluster disambiguation comes from cloud_public_ip (the IP
+# is unique per VM), not from a global `aether-node-id` label scan (which matched
+# the same seed id across BOTH clusters' VMs — the A/B ambiguity bug).
+#
+# Provider-agnostic shell: dispatches on CLOUD_PROVIDER so an aws/gcp branch slots
+# in later. Hetzner is the only implemented backend today.
+cloud_server_id() {
+    local node_id="${1:-}"
+    if [ -z "$node_id" ]; then
+        log_fail "cloud_server_id: node id argument is required"
+        return 2
+    fi
+    case "${CLOUD_PROVIDER:-hetzner}" in
+        hetzner)
+            if ! command -v hcloud >/dev/null 2>&1; then
+                log_fail "cloud_server_id: hcloud CLI not found (required for provider 'hetzner')"
+                return 2
+            fi
+            local ip
+            ip=$(cloud_public_ip "$node_id") || {
+                log_fail "cloud_server_id: could not resolve a public IP for '${node_id}' (cluster-scoped lookup failed)"
+                return 1
+            }
+            # Map IP -> numeric server id. `hcloud -o columns -o noheader` prints
+            # `id<WS>ipv4` per server; awk exact-matches column 2 and prints the id.
+            # No manual JSON parsing — hcloud handles the (multi-line) API body.
+            local sid
+            sid=$(hcloud server list -o columns=id,ipv4 -o noheader 2>/dev/null \
+                    | awk -v ip="$ip" '$2==ip{print $1; exit}')
+            if [ -z "$sid" ]; then
+                log_fail "cloud_server_id: no Hetzner server has public IP '${ip}' (node '${node_id}')"
+                return 1
+            fi
+            printf '%s\n' "$sid"
+            return 0
+            ;;
+        *)
+            log_fail "cloud_server_id: provider '${CLOUD_PROVIDER}' not implemented (only 'hetzner')"
+            return 2
+            ;;
+    esac
+}
+
 # bootstrap-state.json that `aether cluster bootstrap` writes under
 # ~/.aether/clusters/<BOOTSTRAP_CLUSTER_NAME>/.
 #
@@ -712,7 +1186,36 @@ cloud_public_ip() {
         fi
     done <<< "$ids"
     if [ -z "$ip" ]; then
-        log_fail "cloud_public_ip: no entry for '${target}' (input='${node_id}') in ${state_file}"
+        # bootstrap-state.json only records the nodes provisioned at bootstrap. A
+        # CTM-provisioned REPLACEMENT VM (cloud auto-heal) is NOT in that file — its
+        # node-id reaches us from /api/nodes/status, not from bootstrap. Ask THIS
+        # cluster's own management API for the node's advertised transport address.
+        #
+        # `GET /api/nodes/endpoint/<id>` (harness-resilience spec A1) returns
+        # {"nodeId":..,"address":"host:port","reachable":bool} where `address` is the
+        # node's own view of its cluster-transport endpoint. The advertise-host fix
+        # makes `host` a routable public IP on cloud, so we take the host portion.
+        #
+        # CLUSTER-SCOPED + UNAMBIGUOUS: api_get resolves via _resolve_live_endpoint,
+        # which addresses THIS cluster's live mgmt endpoint — so an A-vs-B
+        # node-id collision (the seed `aether-node-id` label ambiguity) cannot occur:
+        # the answer comes from the cluster that actually owns the node-id. This
+        # replaces the old raw-curl + grep-the-label provider fallback, which (a)
+        # could not parse Hetzner's multi-line pretty-printed JSON and (b) matched a
+        # bare `aether-node-id=<seed-id>` label across BOTH clusters' VMs.
+        #
+        # Resolve by the ORIGINAL node_id (CTM ids do not carry `<source>-core-N`).
+        local ep_body ep_addr
+        ep_body=$(api_get "/api/nodes/endpoint/${node_id}" 2>/dev/null || true)
+        if [ -n "$ep_body" ]; then
+            ep_addr=$(json_value "$ep_body" "address")
+            ip="${ep_addr%%:*}"   # strip ":port"; leave a bare host/IP
+        fi
+        if [ -n "$ip" ]; then
+            printf '%s\n' "$ip"
+            return 0
+        fi
+        log_fail "cloud_public_ip: no entry for '${target}' (input='${node_id}') in ${state_file} and this cluster's /api/nodes/endpoint/${node_id} returned no address"
         return 1
     fi
     printf '%s\n' "$ip"
