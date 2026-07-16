@@ -4,12 +4,12 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.message;
 
-import org.pragmatica.messaging.Message;
-import org.pragmatica.messaging.MessageRouter;
-
 import java.util.ArrayList;
 import java.util.List;
 import java.util.function.Consumer;
+
+import org.pragmatica.messaging.Message;
+import org.pragmatica.messaging.MessageRouter;
 
 
 public record RouteGroup(String name, List<MessageRouter.Entry<?>> entries) {

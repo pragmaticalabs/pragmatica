@@ -275,7 +275,11 @@ class ClusterDeploymentManagerTest {
 
             cdm.onMembershipDecision(MembershipDecision.nodeJoined(NEW_NODE, List.of(NODE_1, NODE_2, NODE_3, NEW_NODE)));
 
-            assertThat(directivesFor(NEW_NODE)).containsExactly(AetherValue.ActivationDirectiveValue.worker());
+            // #241: a WORKER assignment now mints/joins the joiner's source community and the directive
+            // carries that community id. With no source seam wired here the source defaults to "default"
+            // (D2), so the directive targets the "default-w-0" community (empty governor hint: FORMING).
+            assertThat(directivesFor(NEW_NODE)).containsExactly(AetherValue.ActivationDirectiveValue.worker("default-w-0",
+                                                                                                            ""));
         }
 
         /// The W3 regression shape: 2 cores + 2 workers in a role-BLIND count (4 ≥ coreMax 3)
@@ -378,7 +382,10 @@ class ClusterDeploymentManagerTest {
             cdm.onMembershipDecision(MembershipDecision.nodeJoined(REPLACEMENT,
                                                                    List.of(NODE_1, NODE_2, NODE_3, NODE_4, NODE_5, REPLACEMENT)));
 
-            assertThat(directivesFor(REPLACEMENT)).containsExactly(AetherValue.ActivationDirectiveValue.worker());
+            // #241: the 6th node is WORKER, and the directive now carries the joiner's source community
+            // (source-absent → "default" → "default-w-0", FORMING ⇒ empty governor hint).
+            assertThat(directivesFor(REPLACEMENT)).containsExactly(AetherValue.ActivationDirectiveValue.worker("default-w-0",
+                                                                                                              ""));
         }
 
         /// Double-kill heal (the only shape that got a CORE promotion live, because the count

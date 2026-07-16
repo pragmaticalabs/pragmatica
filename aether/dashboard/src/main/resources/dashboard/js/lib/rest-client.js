@@ -28,15 +28,12 @@ window.Notifications = {
 };
 
 window.RestClient = {
-    // Issue 19: Read API key from same source as WS auth
+    // #293/G7: API key is read from sessionStorage (set by the auth overlay) or a cookie — never the
+    // URL, since keys in URLs leak into access logs, proxies and browser history. Always sent as the
+    // X-API-Key header.
     getHeaders: function(extra) {
         var headers = extra || {};
         var apiKey = sessionStorage.getItem('aether-api-key');
-        if (!apiKey) {
-            var params = new URLSearchParams(window.location.search);
-            apiKey = params.get('apiKey');
-            if (apiKey) sessionStorage.setItem('aether-api-key', apiKey);
-        }
         if (!apiKey) {
             var match = document.cookie.match(/(?:^|;\s*)aether-api-key=([^;]*)/);
             if (match) apiKey = decodeURIComponent(match[1]);

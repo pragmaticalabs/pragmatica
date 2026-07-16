@@ -95,7 +95,19 @@ class StreamForwardClientTest {
 
             var result = promise.await();
             assertThat(result.isSuccess()).isFalse();
-            result.onFailure(cause -> assertThat(cause.message()).contains("stream not found"));
+            result.onFailure(cause -> assertThat(cause).isInstanceOf(StreamForwardError.RemotePublishFailed.class));
+        }
+
+        @Test
+        void onPublishForwardResponse_retryable_resolvesPromiseWithRetryableError() {
+            var promise = client.publishRemote(GOVERNOR, STREAM, PARTITION, PAYLOAD, TIMESTAMP);
+            var correlationId = ((PublishForward) sentMessages.getFirst().message()).correlationId();
+
+            client.onPublishForwardResponse(PublishForwardResponse.retryableResponse(GOVERNOR, correlationId, "config not yet visible"));
+
+            var result = promise.await();
+            assertThat(result.isSuccess()).isFalse();
+            result.onFailure(cause -> assertThat(cause).isInstanceOf(StreamForwardError.RemotePublishRetryable.class));
         }
 
         @Test

@@ -4,12 +4,14 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.cli.cluster;
 
-import org.pragmatica.aether.cli.ExitCode;
-import org.pragmatica.json.JsonMapper;
-import org.pragmatica.lang.Cause;
-
 import java.util.List;
 import java.util.concurrent.Callable;
+
+import org.pragmatica.aether.cli.DestructiveAction;
+import org.pragmatica.aether.cli.ExitCode;
+import org.pragmatica.aether.cli.OutputFormatter;
+import org.pragmatica.json.JsonMapper;
+import org.pragmatica.lang.Cause;
 
 import picocli.CommandLine;
 import picocli.CommandLine.Command;
@@ -38,6 +40,9 @@ class ClusterDrainCommand implements Callable<Integer> {
     @Option(names = "--timeout", description = "Timeout in seconds when waiting (default: 120)")
     private int timeoutSeconds = DEFAULT_TIMEOUT_SECONDS;
 
+    @Option(names = {"--yes", "--force"}, description = "Skip interactive confirmation")
+    private boolean skipConfirmation;
+
     @CommandLine.ParentCommand
     private ClusterCommand parent;
 
@@ -46,12 +51,20 @@ class ClusterDrainCommand implements Callable<Integer> {
 
     @Override
     public Integer call() {
+        if (!DestructiveAction.destructiveAction().confirm(skipConfirmation,
+                                                           "This will drain node " + nodeId
+                                                          + " (evacuate all its slices).")) {
+            System.out.println("Aborted.");
+
+            return ExitCode.SUCCESS;
+        }
+
         return clusterTarget.applyOverrides()
                             .flatMap(_ -> ClusterHttpClient.post(NODE_DRAIN,
                                                                  List.of(nodeId),
                                                                  "{}"))
                             .flatMap(MAPPER::readTree)
-                            .fold(ClusterDrainCommand::onFailure, this::onDrainInitiated);
+                            .fold(this::onFailure, this::onDrainInitiated);
     }
 
     private int onDrainInitiated(JsonNode root) {
@@ -108,9 +121,10 @@ class ClusterDrainCommand implements Callable<Integer> {
 
     private String queryNodeLifecycleState() {
         return ClusterHttpClient.fetch(NODE_LIFECYCLE_GET,
-                                       List.of(nodeId)).flatMap(MAPPER::readTree)
-                                      .map(ClusterDrainCommand::extractState)
-                                      .or("UNKNOWN");
+                                       List.of(nodeId))
+                                .flatMap(MAPPER::readTree)
+                                .map(ClusterDrainCommand::extractState)
+                                .or("UNKNOWN");
     }
 
     private static String extractState(JsonNode node) {
@@ -127,9 +141,7 @@ class ClusterDrainCommand implements Callable<Integer> {
         }
     }
 
-    private static int onFailure(Cause cause) {
-        System.err.println("Error: " + cause.message());
-
-        return ExitCode.ERROR;
+    private int onFailure(Cause cause) {
+        return OutputFormatter.printError(cause, parent.outputOptions());
     }
 }

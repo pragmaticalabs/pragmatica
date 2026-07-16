@@ -4,185 +4,90 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.worker.metrics;
 
-import org.pragmatica.cluster.node.passive.PassiveNode;
+import java.util.List;
+import java.util.function.Consumer;
+import java.util.function.Supplier;
+
+import org.pragmatica.aether.metrics.invocation.InvocationMetricsCollector;
 import org.pragmatica.consensus.NodeId;
-import org.pragmatica.consensus.net.NetworkServiceMessage;
-import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.SharedScheduler;
-import org.pragmatica.messaging.MessageRouter.DelegateRouter;
 import org.pragmatica.lang.concurrent.CancellableTask;
-
-import java.lang.management.ManagementFactory;
-import java.lang.management.MemoryMXBean;
-import java.lang.management.OperatingSystemMXBean;
-import java.util.ArrayList;
-import java.util.List;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.function.Supplier;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 
-@SuppressWarnings({"JBCT-RET-01", "JBCT-ZONE-02", "JBCT-ZONE-03"})
+/// Per-node per-slice metrics broadcaster (#423). Each node periodically publishes a
+/// [CommunityMetricsSnapshot] carrying the real per-artifact invocation metrics read from its own
+/// [InvocationMetricsCollector]. The leader ingests these typed snapshots into per-artifact scaling
+/// windows — the community-snapshot path is THE feed for autoscaling, replacing the retired
+/// cluster-CPU trigger and raw `method.*` gossip-string parsing. This is also the
+/// multi-community-ready shape (#367).
 public interface WorkerMetricsAggregator {
     Logger LOG = LoggerFactory.getLogger(WorkerMetricsAggregator.class);
+
+    @Contract
     void start();
+
+    @Contract
     void stop();
-    void onMetricsPong(WorkerMetricsPong pong);
-    void onSnapshotRequest(CommunityMetricsSnapshotRequest request);
-    ConcurrentHashMap<NodeId, WorkerMetricsPong> pongStore();
-    CommunityScalingEvaluator evaluator();
+
+    List<PerSliceMetrics> collectOwnMetrics();
+    CommunityMetricsSnapshot buildSnapshot();
 
     static WorkerMetricsAggregator workerMetricsAggregator(NodeId self,
-                                                           DelegateRouter delegateRouter,
-                                                           PassiveNode<?, ?> passiveNode,
                                                            Supplier<String> communityIdSupplier,
-                                                           Supplier<List<NodeId>> followerSupplier,
+                                                           InvocationMetricsCollector invocationMetrics,
+                                                           Consumer<CommunityMetricsSnapshot> broadcaster,
                                                            long aggregationIntervalMs) {
-        @SuppressWarnings({"JBCT-STY-05", "JBCT-RET-01", "JBCT-ZONE-02", "JBCT-ZONE-03", "JBCT-EX-01"})
         record workerMetricsAggregator(NodeId self,
-                                       DelegateRouter delegateRouter,
-                                       PassiveNode<?, ?> passiveNode,
                                        Supplier<String> communityIdSupplier,
-                                       Supplier<List<NodeId>> followerSupplier,
+                                       InvocationMetricsCollector invocationMetrics,
+                                       Consumer<CommunityMetricsSnapshot> broadcaster,
                                        long aggregationIntervalMs,
-                                       ConcurrentHashMap<NodeId, WorkerMetricsPong> pongStore,
-                                       CommunityScalingEvaluator evaluator,
                                        CancellableTask task) implements WorkerMetricsAggregator {
-            private static final int STALE_MULTIPLIER = 2;
-
             @Override
+            @Contract
             public void start() {
                 stop();
                 task.set(SharedScheduler.scheduleAtFixedRate(this::runCycle,
                                                              TimeSpan.timeSpan(aggregationIntervalMs).millis()));
-                LOG.info("Started metrics aggregator for governor {}", self.id());
+                LOG.debug("Started per-slice metrics broadcaster for node {}", self.id());
             }
 
             @Override
+            @Contract
             public void stop() {
                 task.cancel();
-                pongStore.clear();
-                evaluator.reset();
-                LOG.debug("Stopped metrics aggregator for governor {}", self.id());
+                LOG.debug("Stopped per-slice metrics broadcaster for node {}", self.id());
             }
 
             @Override
-            public void onMetricsPong(WorkerMetricsPong pong) {
-                pongStore.put(pong.sender(), pong);
+            public List<PerSliceMetrics> collectOwnMetrics() {
+                return invocationMetrics.collectPerSliceMetrics();
             }
 
             @Override
-            public void onSnapshotRequest(CommunityMetricsSnapshotRequest request) {
-                var communityId = communityIdSupplier.get();
-
-                if (!communityId.equals(request.communityId())) {
-                    return;
-                }
-
-                var snapshot = buildSnapshot(communityId, request.requestId());
-
-                passiveNode.delegateRouter().route(new NetworkServiceMessage.Broadcast(snapshot));
-            }
-
-            private void runCycle() {
-                try {
-                    sendPingToFollowers();
-                    var ownMetrics = collectOwnMetrics();
-
-                    cleanupStalePongs();
-                    var sample = aggregateMetrics(ownMetrics);
-
-                    evaluateAndScale(sample);
-                } catch (Exception e) {
-                    LOG.error("Metrics aggregation cycle error: {}", e.getMessage(), e);
-                }
-            }
-
-            private void sendPingToFollowers() {
-                var ping = WorkerMetricsPing.workerMetricsPing(self);
-
-                followerSupplier.get().forEach(followerId -> delegateRouter.route(new NetworkServiceMessage.Send(followerId,
-                                                                                                                 ping)));
-            }
-
-            private WorkerMetricsPong collectOwnMetrics() {
-                OperatingSystemMXBean osBean = ManagementFactory.getOperatingSystemMXBean();
-                MemoryMXBean memBean = ManagementFactory.getMemoryMXBean();
-                var cpuLoad = Math.max(0.0,
-                                       osBean.getSystemLoadAverage() / Runtime.getRuntime().availableProcessors());
-                var heapUsed = memBean.getHeapMemoryUsage().getUsed();
-                var heapMax = memBean.getHeapMemoryUsage().getMax();
-                var heapUsage = heapMax > 0
-                                ? (double) heapUsed / heapMax
-                                : 0.0;
-
-                return WorkerMetricsPong.workerMetricsPong(self, cpuLoad, heapUsage, 0L, 0.0, 0.0);
-            }
-
-            private void cleanupStalePongs() {
-                var cutoff = System.currentTimeMillis() - (STALE_MULTIPLIER * aggregationIntervalMs);
-
-                pongStore.entrySet().removeIf(entry -> entry.getValue()
-                                                            .timestampMs() < cutoff);
-            }
-
-            private WindowSample aggregateMetrics(WorkerMetricsPong ownMetrics) {
-                var allPongs = new ArrayList<>(pongStore.values());
-
-                allPongs.add(ownMetrics);
-
-                return WindowSample.windowSample(allPongs.stream()
-                                                         .mapToDouble(WorkerMetricsPong::cpuUsage)
-                                                         .average()
-                                                         .orElse(0.0),
-                                                 allPongs.stream()
-                                                         .mapToDouble(WorkerMetricsPong::heapUsage)
-                                                         .average()
-                                                         .orElse(0.0),
-                                                 allPongs.stream().mapToLong(WorkerMetricsPong::activeInvocations).sum(),
-                                                 allPongs.stream()
-                                                         .mapToDouble(WorkerMetricsPong::p95LatencyMs)
-                                                         .average()
-                                                         .orElse(0.0),
-                                                 allPongs.stream()
-                                                         .mapToDouble(WorkerMetricsPong::errorRate)
-                                                         .average()
-                                                         .orElse(0.0));
-            }
-
-            private void evaluateAndScale(WindowSample sample) {
-                var communityId = communityIdSupplier.get();
-                var memberCount = followerSupplier.get().size() + 1;
-
-                evaluator.evaluate(communityId, self, memberCount, sample).onPresent(this::sendScalingRequest);
-            }
-
-            private void sendScalingRequest(CommunityScalingRequest request) {
-                LOG.info("Sending {} scaling request for community '{}'", request.direction(), request.communityId());
-                passiveNode.delegateRouter().route(new NetworkServiceMessage.Broadcast(request));
-            }
-
-            private CommunityMetricsSnapshot buildSnapshot(String communityId, long requestId) {
-                return CommunityMetricsSnapshot.communityMetricsSnapshot(communityId,
+            public CommunityMetricsSnapshot buildSnapshot() {
+                return CommunityMetricsSnapshot.communityMetricsSnapshot(communityIdSupplier.get(),
                                                                          self,
-                                                                         requestId,
-                                                                         followerSupplier.get().size() + 1,
-                                                                         List.of(),
-                                                                         evaluator.slidingWindow());
+                                                                         1,
+                                                                         collectOwnMetrics());
+            }
+
+            @Contract
+            private void runCycle() {
+                broadcaster.accept(buildSnapshot());
             }
         }
 
         return new workerMetricsAggregator(self,
-                                           delegateRouter,
-                                           passiveNode,
                                            communityIdSupplier,
-                                           followerSupplier,
+                                           invocationMetrics,
+                                           broadcaster,
                                            aggregationIntervalMs,
-                                           new ConcurrentHashMap<>(),
-                                           CommunityScalingEvaluator.communityScalingEvaluator(),
                                            CancellableTask.cancellableTask());
     }
 }

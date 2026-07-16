@@ -4,11 +4,11 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.pg.schema.event;
 
+import java.util.List;
+
 import org.pragmatica.aether.pg.schema.model.*;
 import org.pragmatica.lang.Option;
 import org.pragmatica.aether.pg.parser.PostgresParser.SourceSpan;
-
-import java.util.List;
 
 
 public sealed interface SchemaEvent {

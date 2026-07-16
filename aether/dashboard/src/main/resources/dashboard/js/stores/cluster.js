@@ -119,7 +119,7 @@ document.addEventListener('alpine:init', function() {
 
         async saveConfig() {
             if (this.controllerConfig) {
-                await RestClient.put('/api/controller/config', this.controllerConfig);
+                await RestClient.post('/api/controller/config', this.controllerConfig);
             }
         },
 
@@ -135,12 +135,12 @@ document.addEventListener('alpine:init', function() {
         },
 
         async refreshLogLevels() {
-            var data = await RestClient.get('/api/log-levels');
+            var data = await RestClient.get('/api/logging/levels');
             if (data) this.logLevels = data;
         },
 
         async setLogLevel(logger, level) {
-            await RestClient.put('/api/log-levels/' + encodeURIComponent(logger), { level: level });
+            await RestClient.post('/api/logging/levels', { logger: logger, level: level });
         }
     });
 });

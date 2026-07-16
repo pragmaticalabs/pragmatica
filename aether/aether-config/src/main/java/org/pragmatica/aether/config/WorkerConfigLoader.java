@@ -4,13 +4,13 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.config;
 
+import java.nio.file.Path;
+import java.util.List;
+
 import org.pragmatica.config.toml.TomlDocument;
 import org.pragmatica.config.toml.TomlParser;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.io.TimeSpan;
-
-import java.nio.file.Path;
-import java.util.List;
 
 import static org.pragmatica.aether.config.WorkerConfig.SwimSettings;
 import static org.pragmatica.lang.Result.success;
@@ -134,8 +134,10 @@ public final class WorkerConfigLoader {
                                               String stringKey,
                                               String msKey,
                                               TimeSpan defaultValue) {
-        var fromString = doc.getString(section, stringKey).flatMap(v -> org.pragmatica.lang.parse.TimeSpan.timeSpan(v)
-                                                                                                          .option()).map(ts -> TimeSpan.fromDuration(ts.duration()));
+        var fromString = doc.getString(section, stringKey)
+                            .flatMap(v -> org.pragmatica.lang.parse.TimeSpan.timeSpan(v)
+                                                                            .option())
+                            .map(ts -> TimeSpan.fromDuration(ts.duration()));
 
         if (fromString.isPresent()) {
             return fromString.unwrap();

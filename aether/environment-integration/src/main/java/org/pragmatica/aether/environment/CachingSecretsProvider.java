@@ -4,12 +4,12 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.environment;
 
+import java.util.concurrent.ConcurrentHashMap;
+
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.io.TimeSpan;
-
-import java.util.concurrent.ConcurrentHashMap;
 
 import static org.pragmatica.lang.Option.option;
 

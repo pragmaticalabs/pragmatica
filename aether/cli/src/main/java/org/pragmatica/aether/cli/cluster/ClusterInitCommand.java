@@ -4,6 +4,13 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.cli.cluster;
 
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.Arrays;
+import java.util.List;
+import java.util.concurrent.Callable;
+
 import org.pragmatica.aether.cli.ExitCode;
 import org.pragmatica.aether.cli.Prompt;
 import org.pragmatica.aether.cli.cluster.init.ClusterConfigAnswers;
@@ -24,13 +31,6 @@ import org.pragmatica.aether.config.cluster.CloudProviderName;
 import org.pragmatica.aether.config.cluster.SourceType;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Result;
-
-import java.io.IOException;
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.util.Arrays;
-import java.util.List;
-import java.util.concurrent.Callable;
 
 import picocli.CommandLine;
 import picocli.CommandLine.Command;
@@ -395,10 +395,13 @@ class ClusterInitCommand implements Callable<Integer> {
 
         try {
             var toml = ClusterConfigGenerator.generate(answers);
-
+            // #287: aether.toml carries cluster_secret — write it owner-only (0600), not 0644.
             Files.writeString(output, toml);
 
-            return Result.success(output);
+            return SecureFiles.restrictToOwner(output)
+                              .map(_ -> output)
+                              .mapError(cause -> new ClusterInitError.IoFailure(output.toString(),
+                                                                                cause.message()));
         } catch (IOException e) {
             return new ClusterInitError.IoFailure(output.toString(), e.getMessage()).result();
         }

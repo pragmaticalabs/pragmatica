@@ -4,12 +4,12 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.http;
 
+import java.util.List;
+
 import org.pragmatica.aether.http.handler.HttpRouteDefinition;
 import org.pragmatica.aether.http.handler.security.SecurityPolicy;
 import org.pragmatica.aether.slice.blueprint.SecurityOverridePolicy;
 import org.pragmatica.aether.slice.blueprint.SecurityOverrides;
-
-import java.util.List;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -31,11 +31,12 @@ public interface SecurityOverrideApplier {
 
     private static HttpRouteDefinition applyOverrideToRoute(HttpRouteDefinition route, SecurityOverrides overrides) {
         return overrides.findMatch(route.httpMethod(),
-                                   route.pathPrefix()).map(SecurityPolicy::fromBlueprintString)
-                                  .map(newPolicy -> applyWithPolicy(route,
-                                                                    newPolicy,
-                                                                    overrides.policy()))
-                                  .or(route);
+                                   route.pathPrefix())
+                        .map(SecurityPolicy::fromBlueprintString)
+                        .map(newPolicy -> applyWithPolicy(route,
+                                                          newPolicy,
+                                                          overrides.policy()))
+                        .or(route);
     }
 
     private static HttpRouteDefinition applyWithPolicy(HttpRouteDefinition route,

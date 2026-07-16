@@ -4,19 +4,19 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.slice.dependency;
 
-import org.pragmatica.lang.Cause;
-import org.pragmatica.lang.Functions.Fn1;
-import org.pragmatica.lang.Option;
-import org.pragmatica.lang.Result;
-import org.pragmatica.lang.io.StreamOps;
-import org.pragmatica.lang.utils.Causes;
-
 import java.io.InputStream;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
+
+import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Functions.Fn1;
+import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Result;
+import org.pragmatica.lang.io.StreamOps;
+import org.pragmatica.lang.utils.Causes;
 
 import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.some;
@@ -73,18 +73,19 @@ public record DependencyFile(List<ArtifactDependency> shared,
             var skipFlag = new AtomicBoolean(false);
 
             parseResult.onSuccess(dependency -> {
-                switch (sectionRef) {
-                    case SHARED -> shared.add(dependency);
-                    case INFRA -> infra.add(dependency);
-                    case SLICES, NONE -> slices.add(dependency);
-                }
-            }).onFailure(cause -> {
-                if (cause == ArtifactDependency.EMPTY_LINE || cause == ArtifactDependency.COMMENT_LINE || cause == ArtifactDependency.SECTION_HEADER) {
-                    skipFlag.set(true);
-                } else {
-                    errorHolder.set(cause);
-                }
-            });
+                                      switch (sectionRef) {
+                case SHARED -> shared.add(dependency);
+                case INFRA -> infra.add(dependency);
+                case SLICES, NONE -> slices.add(dependency);
+            }
+                                  })
+                       .onFailure(cause -> {
+                                      if (cause == ArtifactDependency.EMPTY_LINE || cause == ArtifactDependency.COMMENT_LINE || cause == ArtifactDependency.SECTION_HEADER) {
+                                      skipFlag.set(true);
+                                  } else {
+                                      errorHolder.set(cause);
+                                  }
+                                  });
             if (skipFlag.get()) {
                 continue;
             }

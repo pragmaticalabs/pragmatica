@@ -40,6 +40,39 @@ test_seed_config() {
 }
 
 test_seed_marker() {
+    # #426 item 6 / #420 disposition: gate the seed write on generation
+    # quiescence before pushing — writing the no-data-loss marker while the
+    # cluster is still converging (mid re-election, mid CTM churn from the
+    # prior suite) seeds into an in-flux ring, which would make a later
+    # resolve failure ambiguous (real data loss vs a routing table that moved
+    # before the write ever committed). Poll-with-settle + loud-abort, mirroring
+    # 71a4aa599: retry across transient misses (await_generation_quiesced
+    # returns 1 on a genuine timeout, 2 when the endpoint was merely
+    # unreachable — see lib/generation.sh — neither means "give up
+    # immediately"), then hard-fail rather than seed against an unsettled
+    # cluster.
+    #
+    # #426 review follow-up (item 5): pass "" (not the pinned CLUSTER_ENDPOINT)
+    # so await_generation_quiesced re-resolves a live endpoint via
+    # _resolve_live_endpoint on EVERY attempt (its own `${1:-$(_resolve_live_endpoint)}`
+    # default). Re-polling a persistently dead pinned endpoint for all 5
+    # attempts would surface as "did not quiesce" — the same misdiagnosis class
+    # as #126 (an unreachable-endpoint read misreported as a quiescence
+    # failure), even though a live core might have quiesced the whole time.
+    local quiesce_attempts=5 quiesce_ok=false i
+    for i in $(seq 1 "$quiesce_attempts"); do
+        if await_generation_quiesced "" "current" 30; then
+            quiesce_ok=true
+            break
+        fi
+        log_warn "test_seed_marker: generation not quiesced yet (attempt ${i}/${quiesce_attempts}) — retrying before seeding the no-data-loss marker"
+        sleep 2
+    done
+    if [ "$quiesce_ok" != "true" ]; then
+        log_fail "test_seed_marker: cluster did not quiesce after ${quiesce_attempts} attempts — refusing to seed the no-data-loss marker into an in-flux ring"
+        return 1
+    fi
+
     # Push a unique random artifact through the management API before any
     # scaling happens. The repository path is unique per test process so reruns
     # never collide. Persisting the SHA-256 + path to disk (rather than env
@@ -59,6 +92,9 @@ test_seed_marker() {
     printf '%s' "$marker_path" > "$MARKER_PATH_FILE"
 
     local status
+    # Rotate to a live core before the write — the pinned CLUSTER_ENDPOINT may be a
+    # node killed/scaled by a prior step (mirrors the read path in No_data_loss).
+    _refresh_mgmt_entry_point || true
     status=$(curl -sk -o /dev/null -w "%{http_code}" \
         -X PUT \
         -H "X-API-Key: ${API_KEY}" \
@@ -97,10 +133,10 @@ test_scale_down_under_load() {
     # 02-chaos/test-kill-under-load.sh. The 7->5 scale-down removes the two
     # CTM-provisioned nodes (6,7), so a retarget to any surviving seed stays valid
     # throughout the load window.
-    retarget_app_endpoint_to_active_slice "$ECHO_BLUEPRINT" 8080 "/api/echo/health" 90 \
+    retarget_app_endpoint_to_active_slice "$ECHO_BLUEPRINT" "/api/echo/health" 90 \
         || log_warn "scale-down-under-load: could not retarget APP_ENDPOINT to echo owner; load will probe ${APP_ENDPOINT}"
 
-    start_load "$LOAD_RPS" "$LOAD_DURATION" "GET" "/api/echo/health"
+    start_load "$LOAD_RPS" "$LOAD_DURATION" "GET" "/api/echo/health" "" "$ECHO_BLUEPRINT"
     sleep 5
 
     # Scale down to 5

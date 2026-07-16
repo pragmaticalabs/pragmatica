@@ -4,15 +4,15 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.ttm;
 
+import java.util.ArrayList;
+import java.util.List;
+
 import org.pragmatica.aether.controller.ClusterController;
 import org.pragmatica.aether.controller.ControllerConfig;
 import org.pragmatica.aether.controller.DecisionTreeController;
 import org.pragmatica.aether.ttm.model.ScalingRecommendation;
 import org.pragmatica.aether.ttm.model.TTMForecast;
 import org.pragmatica.lang.Promise;
-
-import java.util.ArrayList;
-import java.util.List;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -40,8 +40,10 @@ public interface AdaptiveDecisionTree extends ClusterController {
 
             @Override
             public Promise<ControlDecisions> evaluate(ControlContext context) {
-                var preemptiveChanges = ttmManager.currentForecast().filter(this::meetsConfidenceThreshold).map(forecast -> getPreemptiveChanges(forecast,
-                                                                                                                                                 context)).or(List.of());
+                var preemptiveChanges = ttmManager.currentForecast()
+                                                  .filter(this::meetsConfidenceThreshold)
+                                                  .map(forecast -> getPreemptiveChanges(forecast, context))
+                                                  .or(List.of());
 
                 return baseController.evaluate(context)
                                      .map(decisions -> mergeDecisions(preemptiveChanges, decisions));

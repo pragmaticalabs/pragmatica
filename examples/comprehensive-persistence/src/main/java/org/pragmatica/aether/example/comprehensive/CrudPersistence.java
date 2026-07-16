@@ -1,13 +1,13 @@
 package org.pragmatica.aether.example.comprehensive;
 
+import java.time.Instant;
+import java.util.List;
+
 import org.pragmatica.aether.pg.codegen.annotation.Table;
 import org.pragmatica.aether.resource.db.PgSql;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
-
-import java.time.Instant;
-import java.util.List;
 
 
 @PgSql

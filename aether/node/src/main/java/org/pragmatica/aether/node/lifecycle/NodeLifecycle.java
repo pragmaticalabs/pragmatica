@@ -4,11 +4,11 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.node.lifecycle;
 
+import java.util.function.Consumer;
+
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
-
-import java.util.function.Consumer;
 
 
 public interface NodeLifecycle {

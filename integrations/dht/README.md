@@ -46,6 +46,19 @@ DHTConfig full = DHTConfig.FULL;                   // All nodes store everything
 DHTConfig single = DHTConfig.SINGLE_NODE;          // For testing
 ```
 
+## API surface & compatibility
+
+The supported public API of this module is the client-facing surface: `DHTClient`,
+`DHTNode`, `DHTConfig`, `ConsistentHashRing`, and the storage SPI (`StorageEngine`).
+Source/binary compatibility promises apply to these types only.
+
+Wire-protocol types (`DHTMessage` and its variants, and any type exchanged between
+nodes) are **internal**, public only for transport wiring. They may gain variants or
+fields in any release without notice; exhaustive switches or direct constructions in
+external code are unsupported. All nodes of a cluster must run the same release —
+mixed-version clusters are not supported (no protocol version negotiation yet; see
+the protocol-versioning tracking issue for GA plans).
+
 ## Dependencies
 
 - `pragmatica-lite-messaging`

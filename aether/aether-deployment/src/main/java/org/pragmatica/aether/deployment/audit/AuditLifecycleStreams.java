@@ -34,6 +34,7 @@ public sealed interface AuditLifecycleStreams {
                                                                       "latest",
                                                                       AUDIT_MAX_EVENT_SIZE_BYTES,
                                                                       ConsistencyMode.EVENTUAL,
+                                                                      1,
                                                                       0,
                                                                       StreamCompression.NONE,
                                                                       Option.none());

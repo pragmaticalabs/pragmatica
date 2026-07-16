@@ -1,8 +1,8 @@
 # Suite 02-chaos Charter
 
-**Test-ID convention:** `TC-02-NNN` where `NNN` is a zero-padded 3-digit index assigned in `run_test` invocation order across all scripts in the suite. Scripts run alphabetically (`test-*.sh` glob): `test-joining-window-kill.sh` → `test-kill-leader.sh` → `test-kill-multiple.sh` → `test-kill-node.sh` → `test-kill-under-load.sh` → `test-self-drain-quorum-loss.sh`. Numbers are stable across reorganisations; do not reuse retired IDs.
+**Test-ID convention:** `TC-02-NNN` where `NNN` is a zero-padded 3-digit index assigned in `run_test` invocation order across all scripts in the suite. Scripts run alphabetically (`test-*.sh` glob): `test-joining-window-kill.sh` → `test-kill-leader.sh` → `test-kill-multiple.sh` → `test-kill-node.sh` → `test-kill-under-load.sh` → `test-self-drain-quorum-loss.sh` → `test-stream-replica-failover.sh`. Numbers are stable across reorganisations; do not reuse retired IDs.
 
-**Charter purpose:** Destructive failure-injection coverage on cluster B. Exercises SWIM failure detection, TransportUnreachable detection (`membership-architecture-v2-spec.md §16` row S01), CTM auto-heal, leader re-election, multi-kill quorum boundaries, in-flight load resilience, and self-drain on quorum loss (`membership-architecture-v2-spec.md §16` rows S19+S20).
+**Charter purpose:** Destructive failure-injection coverage on cluster B. Exercises SWIM failure detection, TransportUnreachable detection (`membership-architecture-v2-spec.md §16` row S01), CTM auto-heal, leader re-election, multi-kill quorum boundaries, in-flight load resilience, self-drain on quorum loss (`membership-architecture-v2-spec.md §16` rows S19+S20), and stream-partition replica failover — complete-history survival of an HRW owner kill (#260/#261/#333).
 
 ---
 
@@ -26,6 +26,10 @@
 | C14 | `SELF_DRAIN_INITIATED` event published from survivor at `ACTIVE → DRAINING` CAS (soft signal — Rabia publish may lose race vs `Runtime.halt(2)`) | `aether/docs/specs/membership-architecture-v2-spec.md §16 (S19 row)`; T3.1 of `aether/docs/specs/test-readiness-contract.md §6 (resolved)` |
 | C15 | No KV/consensus writes from survivor after drain trigger (negative assertion; compile-time guard is the canonical contract) | `aether/docs/specs/membership-architecture-v2-spec.md §16.1 (Key invariants — no KV/consensus writes during self-drain)`; self-drain spec proper `[CONTRACT-GAP]` (asserted via `SelfDrainCoordinatorTest.noConsensusOrKvImports` unit test) |
 | C16 | Post-self-drain restart → cluster recovers to N ON_DUTY healthy cores within 60s | `aether/docs/specs/membership-architecture-v2-spec.md §16 (S20 row — ON_DUTY within ≤60s)` |
+| C17 | A stream partition has a resolvable HRW owner AND at least one CAUGHT_UP non-owner replica before the owner is killed (replication is established, not just metadata-present) | `streaming-spec.md` (replication factor / replica state) + `GET /api/streams/replicas/{name}/{partition}` (`hrwOwner`, `servedByOwner`, `replicas[].state`) |
+| C18 | Hard-kill of the partition's HRW owner → the partition re-resolves to a NEW owner (`hrwOwner != killed`) that serves an owner-authoritative view (`servedByOwner=true`) within budget | #260/#261/#333 (stream-replication failover); `membership-architecture-v2-spec.md §16` (owner departure via SWIM) |
+| C19 | After failover the promoted owner serves the COMPLETE pre-kill partition history — **all N** published markers, in publish order (count == N, not >=1), and accepts further live batches served in contiguous order (offsets N..N+K-1) | #260/#261/#333 (the acceptance the 04-streaming `event_count >= 1` read deliberately does not check) |
+| C20 | Post-failover the partition converges to a CAUGHT_UP owner whose replica set has **no CAUGHT_UP replica lagging** `ownerHeadOffset` (the #333 write-idle residual sensor) | #333 (CAUGHT_UP replica whose `confirmedOffset` lags the owner tail); `GET /api/streams/replicas/{name}/{partition}` |
 
 ---
 
@@ -93,6 +97,20 @@
 | TC-02-031 | `test_no_kv_writes_after_drain_trigger` | `test-self-drain-quorum-loss.sh:422` | C15 | regression-net | WARN-ONLY (cannot fail): match → `log_warn`; no match → `log_pass`. Real guard is the compile-time `noConsensusOrKvImports` unit test |
 | TC-02-032 | `test_cluster_recovers_to_five_on_duty` | `test-self-drain-quorum-loss.sh:449` | C16 | core | `restart_all_nodes` strict + `wait_for "5 ON_DUTY healthy cores" 60` strict + `assert_cluster_healthy` |
 
+### test-stream-replica-failover.sh (#260/#261/#333 — stream-replication failover)
+
+| TC ID | Test function | File:line | Contract(s) | Severity | Notes |
+|---|---|---|---|---|---|
+| TC-02-033 | `test_initial_state` | `test-stream-replica-failover.sh` | C1, C2 | smoke | `wait_for_cluster_ready` + `wait_for_phase NORMAL 180` warn-then-continue (DEMOTION) + `assert_ge count 5` |
+| TC-02-034 | `test_deploy_repl_stream_blueprint` | `test-stream-replica-failover.sh` | C17 (setup) | smoke | Deploy `test-stream-repl` blueprint (stream `repl-failover-events`, partitions=1, **min-sync-replicas=2 → RF=2**); `wait_for` all-instances ACTIVE before first publish (the RF=2 `StreamConfig` must commit before publish, else `ensureStreamExists` mints RF=1). Replaces the prior `POST /api/streams` create, which is structurally RF=1 (owner-only) and cannot satisfy C17 |
+| TC-02-035 | `test_publish_initial_history` | `test-stream-replica-failover.sh` | C19 (setup) | core | Publish N=20 distinct raw markers via `stream_publish`; strict `assert_eq ok N` |
+| TC-02-036 | `test_full_history_present_before_kill` | `test-stream-replica-failover.sh` | C19 (baseline) | core | Strict `assert_eq present N` — establishes publish→read at strength N (vs suite-04 >=1) so a post-kill shortfall is attributable to failover. Markers counted by Base64 (read path b64-encodes `data`) |
+| TC-02-037 | `test_identify_owner_and_caught_up_replica` | `test-stream-replica-failover.sh` | C17 | core | `GET /api/streams/replicas/{name}/0` retried until `servedByOwner=true`; `assert_ne hrwOwner ""`; **fails** if no CAUGHT_UP non-owner replica (replication not established) |
+| TC-02-038 | `test_kill_owner_and_failover` | `test-stream-replica-failover.sh` | C18 | core | `kill_node "$hrwOwner"` (docker kill, authoritative under `restart:"no"`); `rotate_mgmt_entry_point`; `wait_for_node_removed 90`; `wait_for` new owner-authoritative view (`hrwOwner != killed`) 180s |
+| TC-02-039 | `test_complete_history_after_failover` | `test-stream-replica-failover.sh` | C19 | **core (the headline assertion)** | Strict `assert_eq present N` — promoted owner serves ALL N pre-kill markers (count == N, the completeness the existing suite lacks). 120s settle budget |
+| TC-02-040 | `test_post_repair_liveness` | `test-stream-replica-failover.sh` | C19 | core | Publish K=5 live markers post-repair (`assert_eq ok K`); strict full-tail presence `assert_eq present N+K`; **in-order** proof `count_inorder_offsets` (offset O carries marker_for(O)) strict `assert_eq inorder N+K` |
+| TC-02-041 | `test_replica_set_converged` | `test-stream-replica-failover.sh` | C20 | core | `wait_for` no CAUGHT_UP replica `confirmedOffset < ownerHeadOffset-1` (120s); `assert_eq owner_state CAUGHT_UP` — #333 write-idle residual sensor |
+
 ---
 
 ## Suite-level invariants
@@ -119,6 +137,8 @@
 | TC-02-030 | Warn-then-pass demotion — missing `SELF_DRAIN_INITIATED` event downgrades to `log_warn`. Justified by Rabia publish race vs `Runtime.halt(2)`; hard contract remains exit-code-2 (TC-02-029) | Audit §1.5 (WARN-THEN-PASS, severity LOW) |
 | TC-02-031 | WARN-ONLY (cannot fail): positive match on post-drain KV/consensus-write log lines downgrades to `log_warn`. A real KV-write leak would never fail this test. Compile-time `noConsensusOrKvImports` unit test is the canonical guard | Audit §1.5 (WARN-ONLY cannot fail, severity MEDIUM) |
 | TC-02-027, TC-02-028, TC-02-029 | **RESOLVED** — victim/survivor selection no longer assumes static compose ordinals. `test_pick_victims_and_kill_three_simultaneously` enumerates the REAL running core containers (ordinal AND KSUID-named CTM replacements) via `docker ps --filter status=running` (test-self-drain-quorum-loss.sh:113-133, :279-292), so a cluster whose slots rotated to KSUID-named replacements is selected correctly. Precedent: `test-readiness-contract.md §1.1` Property-4 retirement (per-port/ordinal probing breaks under CTM auto-heal) | RESOLVED 2026-05-27 (membership-based enumeration) |
+| TC-02-037, TC-02-039, TC-02-041 | `/api/streams/replicas/{name}/{partition}` is owner-AWARE, not owner-FORWARDED (per-partition-owner forwarding is not a management `RouteTarget`). The harness reaches the owner-authoritative view by re-querying through the round-robin `aether-b-mgmt-gateway` until a response carries `servedByOwner=true` (`replicas_snapshot_owner_view`, 8–10 attempts). If a deployment lacks the gateway (single pinned node) and that node is never the owner, the view stays `servedByOwner=false`; the wait predicate then fails LOUDLY within budget (not a silent skip) | Endpoint design (docs/reference/feature-catalog.md row 141a — owner-aware not owner-forwarded) |
+| TC-02-035, TC-02-036, TC-02-039, TC-02-040 | Completeness is counted by the markers' **Base64** form, because the read path b64-encodes `data` (`EventRecord.fromRawEvent`) while publish stores it raw. Markers are fixed-width zero-padded with a terminator so no marker's Base64 is a substring of another's (verified). A future change to the read encoding would require updating `marker_b64_for` | Read-path encoding (`StreamRoutes.EventRecord.fromRawEvent`) |
 
 ---
 
@@ -128,4 +148,5 @@
 |---|---|---|
 | 2026-05-21 | charter author | Initial charter from audit §1.5 |
 | 2026-05-27 | charter author | Citations repointed to existing specs: S-rows (C3/C7/C9/C10/C12/C13/C14/C16) → `membership-architecture-v2-spec.md §16` + `§16.1`; C2 → `membership-architecture-v2-spec.md §I5`; C11 → `§I2`; C5 → `§6.4`; C4 → S18 + `§4.6`. C6 de-gapped → `membership-architecture-v2-spec.md §2` (exactly-S invariant). Removed dead anchors (`self-drain-spec.md`, `cluster-deployment-manager-spec.md`, `leader-election-spec.md`, internal `architecture/*.md`). Recorded C9 budget drift (spec 25s vs live 90s, #231). S19/S20 ordinal-enumeration limitation (TC-02-027/028/029) marked RESOLVED — suite now enumerates running cores via `docker ps`. |
+| 2026-06-22 | charter author | Added `test-stream-replica-failover.sh` (TC-02-033..041) — destructive stream-replication acceptance for #260/#261/#333. New contracts C17 (replication established pre-kill), C18 (owner re-resolution after kill), C19 (COMPLETE history after failover + in-order live batches — the count==N assertion the non-destructive 04-streaming suite lacks), C20 (no CAUGHT_UP replica lags `ownerHeadOffset`, the #333 sensor). Uses the `GET /api/streams/replicas/{name}/{partition}` regression-sensor endpoint to identify owner+replica and to assert convergence. |
 

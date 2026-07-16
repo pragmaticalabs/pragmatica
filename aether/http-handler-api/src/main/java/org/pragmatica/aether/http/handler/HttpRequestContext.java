@@ -4,14 +4,14 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.http.handler;
 
+import java.util.List;
+import java.util.Map;
+import java.util.Objects;
+
 import org.pragmatica.aether.http.handler.security.Role;
 import org.pragmatica.aether.http.handler.security.SecurityContext;
 import org.pragmatica.lang.Result;
 import org.pragmatica.serialization.Codec;
-
-import java.util.List;
-import java.util.Map;
-import java.util.Objects;
 
 import static org.pragmatica.lang.Result.success;
 
@@ -84,8 +84,9 @@ public record HttpRequestContext(String path,
                           success(headers),
                           success(body),
                           success(requestId),
-                          success(security)).map(HttpRequestContext::new)
-                         .unwrap();
+                          success(security))
+                     .map(HttpRequestContext::new)
+                     .unwrap();
     }
 
     public HttpRequestContext withSecurity(SecurityContext newSecurity) {

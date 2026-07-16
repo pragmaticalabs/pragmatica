@@ -4,11 +4,6 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.cli.cluster;
 
-import org.pragmatica.aether.cli.ExitCode;
-import org.pragmatica.aether.cli.OutputFormatter;
-import org.pragmatica.lang.Cause;
-import org.pragmatica.lang.Result;
-
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -16,6 +11,11 @@ import java.security.SecureRandom;
 import java.util.Base64;
 import java.util.List;
 import java.util.concurrent.Callable;
+
+import org.pragmatica.aether.cli.ExitCode;
+import org.pragmatica.aether.cli.OutputFormatter;
+import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Result;
 
 import picocli.CommandLine;
 import picocli.CommandLine.Command;
@@ -64,7 +64,8 @@ class ClusterRotateKeyCommand implements Callable<Integer> {
                                                                          newKeyHash,
                                                                          gracePeriodMs,
                                                                          normalizedRole).flatMap(_ -> revokeOldKey(oldKeyId,
-                                                                                                                   gracePeriodMs)).flatMap(_ -> persistLocalKey(newKey))
+                                                                                                                   gracePeriodMs))
+                                                                        .flatMap(_ -> persistLocalKey(newKey))
                                                                         .map(_ -> buildSuccessJson(newKeyId,
                                                                                                    oldKeyId,
                                                                                                    gracePeriodMs)));
@@ -125,9 +126,11 @@ class ClusterRotateKeyCommand implements Callable<Integer> {
 
         try {
             Files.createDirectories(keyFile.getParent());
-            Files.writeString(keyFile, newKey);
-
-            return Result.success("ok");
+            // #287: rotated admin api-key file must be owner-only (0600).
+            return SecureFiles.writeSecure(keyFile, newKey)
+                              .map(_ -> "ok")
+                              .mapError(cause -> new RotateKeyError.FilePersistFailed(keyFile.toString(),
+                                                                                      cause.message()));
         } catch (IOException e) {
             return new RotateKeyError.FilePersistFailed(keyFile.toString(), e.getMessage()).result();
         }

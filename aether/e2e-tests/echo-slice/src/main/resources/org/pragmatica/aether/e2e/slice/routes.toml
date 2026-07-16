@@ -3,6 +3,8 @@ echo = "GET /echo/{message:String}"
 ping = "GET /ping"
 transform = "GET /transform/{operation:String}/{value:String}"
 fail = "GET /fail/{code:Integer}"
+csv = { route = "GET /csv/{label:String}", produces = "text/csv" }
+binary = { route = "GET /binary/{seed:Integer}", produces = "application/octet-stream" }
 
 [errors]
 default = 500

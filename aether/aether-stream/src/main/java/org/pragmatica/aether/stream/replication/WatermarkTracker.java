@@ -4,12 +4,12 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.stream.replication;
 
-import org.pragmatica.lang.Contract;
-import org.pragmatica.lang.Option;
-
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.stream.Collectors;
+
+import org.pragmatica.lang.Contract;
+import org.pragmatica.lang.Option;
 
 import static org.pragmatica.aether.stream.replication.PartitionKey.partitionKey;
 import static org.pragmatica.lang.Option.option;

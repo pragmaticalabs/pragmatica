@@ -4,16 +4,6 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.resource.http;
 
-import org.pragmatica.http.HttpOperations;
-import org.pragmatica.http.HttpResult;
-import org.pragmatica.http.JdkHttpOperations;
-import org.pragmatica.json.JsonMapper;
-import org.pragmatica.lang.Option;
-import org.pragmatica.lang.Promise;
-import org.pragmatica.lang.Unit;
-import org.pragmatica.lang.parse.Network;
-import org.pragmatica.lang.type.TypeToken;
-
 import java.net.URI;
 import java.net.http.HttpRequest;
 import java.net.http.HttpRequest.BodyPublishers;
@@ -21,7 +11,19 @@ import java.time.Duration;
 import java.util.Map;
 import java.util.function.BiFunction;
 
+import org.pragmatica.http.HttpOperations;
+import org.pragmatica.http.HttpResult;
+import org.pragmatica.http.JdkHttpOperations;
+import org.pragmatica.http.NettyHttpOperations;
+import org.pragmatica.json.JsonMapper;
+import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.parse.Network;
+import org.pragmatica.lang.type.TypeToken;
+
 import com.fasterxml.jackson.annotation.JsonInclude;
+
 import tools.jackson.databind.DeserializationFeature;
 import tools.jackson.databind.PropertyNamingStrategies;
 
@@ -49,7 +51,17 @@ final class JdkHttpClient implements HttpClient {
         return new JdkHttpClient(config, createOperations(config));
     }
 
-    private static HttpOperations createOperations(HttpClientConfig config) {
+    // NOTE: despite the name, this type now also produces a Netty-backed HttpOperations when
+    //       HttpClientConfig.backend() selects NETTY. Renaming JdkHttpClient is out of scope.
+    static HttpOperations createOperations(HttpClientConfig config) {
+        return switch (config.backend()
+                             .or(HttpClientConfig.HttpBackend.JDK)) {
+            case JDK -> jdkOperations(config);
+            case NETTY -> NettyHttpOperations.nettyHttpOperations();
+        };
+    }
+
+    private static HttpOperations jdkOperations(HttpClientConfig config) {
         var timeout = Duration.ofMillis(config.connectTimeout().millis());
 
         return JdkHttpOperations.jdkHttpOperations(timeout, config.followRedirects(), none());
@@ -81,8 +93,11 @@ final class JdkHttpClient implements HttpClient {
 
     @Override
     public Promise<HttpResult<String>> post(String path, String body, Map<String, String> headers) {
-        var builder = HttpRequest.newBuilder().uri(buildUri(path)).POST(BodyPublishers.ofString(body)).header("Content-Type",
-                                                                                                              "application/json").timeout(requestTimeout());
+        var builder = HttpRequest.newBuilder()
+                                 .uri(buildUri(path))
+                                 .POST(BodyPublishers.ofString(body))
+                                 .header("Content-Type", "application/json")
+                                 .timeout(requestTimeout());
 
         applyHeaders(builder, headers);
 
@@ -96,8 +111,11 @@ final class JdkHttpClient implements HttpClient {
 
     @Override
     public Promise<HttpResult<String>> put(String path, String body, Map<String, String> headers) {
-        var builder = HttpRequest.newBuilder().uri(buildUri(path)).PUT(BodyPublishers.ofString(body)).header("Content-Type",
-                                                                                                             "application/json").timeout(requestTimeout());
+        var builder = HttpRequest.newBuilder()
+                                 .uri(buildUri(path))
+                                 .PUT(BodyPublishers.ofString(body))
+                                 .header("Content-Type", "application/json")
+                                 .timeout(requestTimeout());
 
         applyHeaders(builder, headers);
 
@@ -125,8 +143,12 @@ final class JdkHttpClient implements HttpClient {
 
     @Override
     public Promise<HttpResult<String>> patch(String path, String body, Map<String, String> headers) {
-        var builder = HttpRequest.newBuilder().uri(buildUri(path)).method("PATCH", BodyPublishers.ofString(body)).header("Content-Type",
-                                                                                                                         "application/json").timeout(requestTimeout());
+        var builder = HttpRequest.newBuilder()
+                                 .uri(buildUri(path))
+                                 .method("PATCH",
+                                         BodyPublishers.ofString(body))
+                                 .header("Content-Type", "application/json")
+                                 .timeout(requestTimeout());
 
         applyHeaders(builder, headers);
 

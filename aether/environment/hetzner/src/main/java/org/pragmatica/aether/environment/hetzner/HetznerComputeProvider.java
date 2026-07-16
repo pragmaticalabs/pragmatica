@@ -4,6 +4,14 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.environment.hetzner;
 
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.UUID;
+import java.util.regex.Pattern;
+import java.util.stream.Collectors;
+import java.util.stream.Stream;
+
 import org.pragmatica.aether.environment.ComputeProvider;
 import org.pragmatica.aether.environment.EnvironmentError;
 import org.pragmatica.aether.environment.InstanceId;
@@ -15,22 +23,18 @@ import org.pragmatica.aether.environment.ProvisionContext;
 import org.pragmatica.aether.environment.ProvisionSpec;
 import org.pragmatica.aether.environment.ReadinessPolicy;
 import org.pragmatica.cloud.hetzner.HetznerClient;
+import org.pragmatica.cloud.hetzner.HetznerError;
 import org.pragmatica.cloud.hetzner.api.Server;
 import org.pragmatica.cloud.hetzner.api.Server.CreateServerRequest;
+import org.pragmatica.cloud.hetzner.api.SshKey;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.parse.Number;
+import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.utility.IdGenerator;
-
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
-import java.util.UUID;
-import java.util.stream.Collectors;
-import java.util.stream.Stream;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -50,18 +54,12 @@ public record HetznerComputeProvider(HetznerClient client, HetznerEnvironmentCon
     @Override
     public Promise<InstanceInfo> provision(InstanceType instanceType) {
         var cluster = config.clusterName().or("unknown");
-        var defaultLabels = buildLabels(cluster, "core", "");
+        var labels = buildLabels(cluster, "core", "");
 
-        defaultLabels.put(NODE_ID_LABEL,
-                          IdGenerator.generate(ProvisionContext.coreNodeNamePrefix(cluster)));
+        labels.put(NODE_ID_LABEL,
+                   IdGenerator.generate(ProvisionContext.coreNodeNamePrefix(cluster)));
 
-        return client.createServer(buildCreateRequest(config.region(),
-                                                      defaultLabels,
-                                                      config.userData())).map(HetznerComputeProvider::toInstanceInfo)
-                                  .flatMap(info -> confirmRunning(info,
-                                                                  ReadinessPolicy.cloudDefault()))
-                                  .onFailure(HetznerComputeProvider::logProvisionFailureRollbackGap)
-                                  .mapError(HetznerComputeProvider::toProvisionError);
+        return provisionServer(config.region(), "", labels, config.userData());
     }
 
     @Override
@@ -70,12 +68,51 @@ public record HetznerComputeProvider(HetznerClient client, HetznerEnvironmentCon
         var userData = spec.userData().or(config.userData());
         var labels = labelsFor(spec.context());
 
-        return client.createServer(buildCreateRequest(location, labels, userData))
-                     .map(HetznerComputeProvider::toInstanceInfo)
-                     .flatMap(info -> confirmRunning(info,
-                                                     ReadinessPolicy.cloudDefault()))
-                     .onFailure(HetznerComputeProvider::logProvisionFailureRollbackGap)
-                     .mapError(HetznerComputeProvider::toProvisionError);
+        return provisionServer(location, spec.instanceSize(), labels, userData);
+    }
+
+    /// Provisions a server, resolving the two params that historically diverged between the CLI
+    /// bootstrap and the CTM auto-heal paths (#442): the server type and the SSH key ids.
+    ///
+    /// Server type honors the caller's [ProvisionSpec#instanceSize] when it is a concrete type
+    /// (the per-role `instance_type` bootstrap threads through), otherwise falls back to the
+    /// provider's [HetznerEnvironmentConfig#serverType] (the leader's runtime `[cloud.compute]
+    /// server_type`, which auto-heal relies on). When NEITHER resolves the provision fails loud —
+    /// there is no hardcoded instance-type default.
+    private Promise<InstanceInfo> provisionServer(String location,
+                                                  String serverTypeHint,
+                                                  Map<String, String> labels,
+                                                  String userData) {
+        return resolveServerType(serverTypeHint).async()
+                                .flatMap(serverType -> createAndConfirm(location, serverType, labels, userData))
+                                .mapError(cause -> toProvisionError(location, cause));
+    }
+
+    private Promise<InstanceInfo> createAndConfirm(String location,
+                                                   String serverType,
+                                                   Map<String, String> labels,
+                                                   String userData) {
+        return resolveSshKeyIds().map(sshKeyIds -> buildCreateRequest(location, serverType, sshKeyIds, labels, userData))
+                               .onSuccess(HetznerComputeProvider::logCreateRequest)
+                               .flatMap(client::createServer)
+                               .map(HetznerComputeProvider::toInstanceInfo)
+                               .flatMap(info -> confirmRunning(info,
+                                                               ReadinessPolicy.cloudDefault()))
+                               .onFailure(HetznerComputeProvider::logProvisionFailureRollbackGap);
+    }
+
+    /// #442 v2b — operator-visible record of the EXACT labels sent to Hetzner at create time. The
+    /// server is created with whatever this map holds, so this line is the ground truth for
+    /// "did the VM get aether-cluster/aether-role?" — it distinguishes a provider that stamped them
+    /// (any absence is then Hetzner-side) from a caller that supplied an unlabeled context (a wiring
+    /// gap). Fires once per provisioned VM (bootstrap seed, CTM replacement, scale) — all
+    /// infrequent, so INFO is not hot-path noise.
+    private static void logCreateRequest(CreateServerRequest request) {
+        log.info("Hetzner provision: creating server '{}' (serverType={}) with {} ssh key(s) and labels {}",
+                 request.name(),
+                 request.serverType(),
+                 request.sshKeys().size(),
+                 request.labels());
     }
 
     /// Rollback acknowledgment for Hetzner provisions. `createServer` is atomic from
@@ -118,7 +155,7 @@ public record HetznerComputeProvider(HetznerClient client, HetznerEnvironmentCon
     @Override
     public Promise<Unit> applyTags(InstanceId id, Map<String, String> tags) {
         return parseServerId(id).async()
-                            .flatMap(serverId -> updateLabels(serverId, tags));
+                            .flatMap(serverId -> mergeLabels(serverId, tags));
     }
 
     @Override
@@ -135,7 +172,7 @@ public record HetznerComputeProvider(HetznerClient client, HetznerEnvironmentCon
         return serverId.async()
                        .flatMap(this::serverById)
                        .map(HetznerComputeProvider::toInstanceInfo)
-                       .mapError(HetznerComputeProvider::toProvisionError);
+                       .mapError(cause -> toProvisionError("", cause));
     }
 
     private Promise<Unit> destroyServer(long serverId) {
@@ -146,8 +183,27 @@ public record HetznerComputeProvider(HetznerClient client, HetznerEnvironmentCon
         return client.rebootServer(serverId);
     }
 
-    private Promise<Unit> updateLabels(long serverId, Map<String, String> tags) {
-        return client.updateServerLabels(serverId, tags);
+    /// #442 v2b — Hetzner's label update REPLACES the server's whole label map, so a partial
+    /// `applyTags` (the node self-stamps only `aether-node-id` at join, `AetherNode.tagMatchingInstance`)
+    /// would wipe the `aether-cluster` / `aether-role` / `aether-source` labels the create stamped —
+    /// leaving a VM the harness's label-scoped enumeration can no longer find. Read-modify-write: fetch
+    /// the server's current labels, overlay the new tags (new keys win), and write the union back. The
+    /// VM's existing labels are the source of truth for the base set, so this is config-independent and
+    /// correct across replacement-of-replacement chains (each generation's create already stamped the
+    /// right base labels). The self-tag / self-register calls run once at join and are serialized on the
+    /// node, so the read-modify-write lost-update window is negligible here.
+    private Promise<Unit> mergeLabels(long serverId, Map<String, String> tags) {
+        return client.getServer(serverId)
+                     .map(server -> mergedLabels(server, tags))
+                     .flatMap(merged -> client.updateServerLabels(serverId, merged));
+    }
+
+    private static Map<String, String> mergedLabels(Server server, Map<String, String> tags) {
+        var merged = new HashMap<>(safeLabels(server));
+
+        merged.putAll(tags);
+
+        return Map.copyOf(merged);
     }
 
     private Promise<Server> serverById(long serverId) {
@@ -156,11 +212,100 @@ public record HetznerComputeProvider(HetznerClient client, HetznerEnvironmentCon
 
     private static final CreateServerRequest.PublicNetSpec IPV4_ONLY = new CreateServerRequest.PublicNetSpec(true, false);
 
-    private CreateServerRequest buildCreateRequest(String location, Map<String, String> labels, String userData) {
+    /// Sentinel the upper layers pass in [ProvisionSpec#instanceSize] when they carry no concrete
+    /// type (CTM auto-heal always passes it; bootstrap passes it for roles with no `instance_type`).
+    /// Treated as "unset" so resolution falls through to the provider config.
+    static final String DEFAULT_INSTANCE_SIZE_SENTINEL = "default";
+    /// Bootstrap uploads operator SSH keys to Hetzner named with this prefix and passes their ids at
+    /// create time, so bootstrap VMs never get a root password. The ids live only in the bootstrap
+    /// CLI process — so a leader provisioning an auto-heal replacement re-derives them here by listing
+    /// the account's keys and matching this prefix (#442, option 3B: no persisted state, self-healing
+    /// against deleted/recreated keys). Mirrors `BootstrapPhaseSshKey.HETZNER_KEY_NAME_PREFIX` — the
+    /// `aether-cli` constant cannot be imported from this provider module.
+    static final String BOOTSTRAP_KEY_NAME_PREFIX = "aether-bootstrap";
+
+    private static final Cause NO_SERVER_TYPE = Causes.cause("No Hetzner server type resolved: neither the provision spec instance type nor the provider's "
+                                                            + "[cloud.compute] server_type is set. Set instance_type on the source's core role (bootstrap) or "
+                                                            + "server_type in the node cloud config so auto-heal replacements inherit the cluster's type.");
+
+    private Result<String> resolveServerType(String specHint) {
+        if (isConcreteType(specHint)) {
+            return success(specHint);
+        }
+
+        var configured = config.serverType();
+
+        return isConcreteType(configured)
+               ? success(configured)
+               : NO_SERVER_TYPE.result();
+    }
+
+    private static boolean isConcreteType(String value) {
+        return value != null
+               && !value.isBlank()
+               && !DEFAULT_INSTANCE_SIZE_SENTINEL.equals(value);
+    }
+
+    private Promise<List<Long>> resolveSshKeyIds() {
+        if (!config.sshKeyIds().isEmpty()) {
+            log.info("Hetzner provision: SSH key ids resolved from node config (branch=config, count={}) — replacement inherits the cluster's keys",
+                     config.sshKeyIds().size());
+
+            return Promise.success(config.sshKeyIds());
+        }
+
+        return client.listSshKeys()
+                     .map(HetznerComputeProvider::bootstrapKeyIds)
+                     .onSuccess(HetznerComputeProvider::logPrefixBranch)
+                     .recover(HetznerComputeProvider::sshKeyLookupUnavailable);
+    }
+
+    private static List<Long> bootstrapKeyIds(List<SshKey> keys) {
+        return keys.stream()
+                   .filter(HetznerComputeProvider::isBootstrapKey)
+                   .map(SshKey::id)
+                   .toList();
+    }
+
+    private static boolean isBootstrapKey(SshKey key) {
+        return key.name() != null && key.name()
+                                        .startsWith(BOOTSTRAP_KEY_NAME_PREFIX);
+    }
+
+    /// #442 — one operator-diagnosable line naming which branch resolved the ssh-key ids the
+    /// replacement was created with. `branch=prefix` when the account carries `aether-bootstrap*`
+    /// keys (the fresh-upload environment), `branch=none` when it carries none — the exact signal
+    /// missing from the field run where a keyless replacement hit the PAM wall and the cause could
+    /// not be told apart from a lookup failure ([#sshKeyLookupUnavailable], `branch=failed`).
+    private static void logPrefixBranch(List<Long> ids) {
+        if (ids.isEmpty()) {
+            log.warn("Hetzner provision: no SSH keys named '{}*' on the account (branch=none); replacement created without an "
+                    + "ssh_keys param (Hetzner sets a root password; key auth via cloud-init still works)",
+                     BOOTSTRAP_KEY_NAME_PREFIX);
+
+            return;
+        }
+
+        log.warn("Hetzner provision: SSH key ids resolved by '{}*' name-prefix match (branch=prefix, count={})",
+                 BOOTSTRAP_KEY_NAME_PREFIX,
+                 ids.size());
+    }
+
+    private static List<Long> sshKeyLookupUnavailable(Cause cause) {
+        log.warn("Hetzner provision: SSH-key lookup failed (branch=failed: {}); creating the replacement without an ssh_keys param "
+                + "(key auth via cloud-init still works, but a root password will be set)",
+                 cause.message());
+
+        return List.of();
+    }
+
+    private CreateServerRequest buildCreateRequest(String location,
+                                                   String serverType,
+                                                   List<Long> sshKeyIds,
+                                                   Map<String, String> labels,
+                                                   String userData) {
         var name = generateServerName();
-        var serverType = config.serverType();
         var image = config.image();
-        var sshKeyIds = config.sshKeyIds();
         var networkIds = config.networkIds();
         var firewallIds = config.firewallIds();
 
@@ -239,13 +384,35 @@ public record HetznerComputeProvider(HetznerClient client, HetznerEnvironmentCon
     private static Map<String, String> buildLabels(String clusterLabel, String role, String sourceName) {
         var labels = new HashMap<String, String>();
 
-        labels.put("aether-cluster", clusterLabel);
-        labels.put("aether-role", role);
+        labels.put("aether-cluster", sanitizeLabelValue(clusterLabel));
+        labels.put("aether-role", sanitizeLabelValue(role));
         if (!sourceName.isEmpty()) {
-            labels.put("aether-source", sourceName);
+            labels.put("aether-source", sanitizeLabelValue(sourceName));
         }
 
         return labels;
+    }
+
+    private static final Pattern LABEL_VALUE_DISALLOWED = Pattern.compile("[^a-zA-Z0-9._-]");
+    private static final Pattern LABEL_VALUE_EDGE_TRIM = Pattern.compile("^[._-]+|[._-]+$");
+    private static final int HETZNER_LABEL_VALUE_MAX = 63;
+
+    /// #442 v2b — coerce a metadata label VALUE into Hetzner's constraint (max 63 chars,
+    /// `[a-zA-Z0-9._-]`, start AND end alphanumeric when non-empty). Disallowed characters collapse
+    /// to `-`, the value is truncated to 63 keeping the PREFIX (the harness matches `aether-cluster`
+    /// by prefix), then leading/trailing separators are trimmed to satisfy the start/end rule.
+    /// Applied to the cluster/role/source labels — which previously bypassed the [#appendCompatible]
+    /// check that only guards caller extras — so a cluster name with a stray character can never make
+    /// Hetzner reject the whole create (a keyless-looking VM) or drop the label. NOT applied to
+    /// `aether-node-id`: that value is the node identity terminate-by-tag matches on and must stay
+    /// byte-exact. An empty value passes through unchanged (Hetzner accepts and drops an empty label).
+    private static String sanitizeLabelValue(String raw) {
+        var mapped = LABEL_VALUE_DISALLOWED.matcher(raw).replaceAll("-");
+        var capped = mapped.length() > HETZNER_LABEL_VALUE_MAX
+                     ? mapped.substring(0, HETZNER_LABEL_VALUE_MAX)
+                     : mapped;
+
+        return LABEL_VALUE_EDGE_TRIM.matcher(capped).replaceAll("");
     }
 
     private static final java.util.regex.Pattern HETZNER_LABEL_KEY_RX = java.util.regex.Pattern.compile("^[a-zA-Z]([a-zA-Z0-9_.-]*[a-zA-Z0-9])?(/[a-zA-Z0-9_.-]+)?$");
@@ -376,8 +543,14 @@ public record HetznerComputeProvider(HetznerClient client, HetznerEnvironmentCon
                    .toList();
     }
 
-    private static EnvironmentError toProvisionError(Cause cause) {
-        return EnvironmentError.provisionFailed(new RuntimeException(cause.message()));
+    private static final String CAPACITY_UNAVAILABLE_CODE = "resource_unavailable";
+
+    private static EnvironmentError toProvisionError(String attemptedLocation, Cause cause) {
+        return switch (cause) {
+            case HetznerError.ApiError apiError when CAPACITY_UNAVAILABLE_CODE.equals(apiError.code()) -> EnvironmentError.capacityUnavailable(attemptedLocation,
+                                                                                                                                               new RuntimeException(cause.message()));
+            default -> EnvironmentError.provisionFailed(new RuntimeException(cause.message()));
+        };
     }
 
     private static EnvironmentError toTerminateError(InstanceId instanceId, Cause cause) {

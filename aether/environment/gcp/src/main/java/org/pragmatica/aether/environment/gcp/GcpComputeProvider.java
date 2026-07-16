@@ -4,6 +4,10 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.environment.gcp;
 
+import java.util.List;
+import java.util.Map;
+import java.util.UUID;
+
 import org.pragmatica.aether.environment.ComputeProvider;
 import org.pragmatica.aether.environment.EnvironmentError;
 import org.pragmatica.aether.environment.InstanceId;
@@ -31,10 +35,6 @@ import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.utility.IdGenerator;
 
-import java.util.List;
-import java.util.Map;
-import java.util.UUID;
-
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -56,11 +56,12 @@ public record GcpComputeProvider(GcpClient client, GcpEnvironmentConfig config) 
     public Promise<InstanceInfo> provision(InstanceType instanceType) {
         return client.insertInstance(buildInsertRequest(Option.empty(),
                                                         config.userData(),
-                                                        defaultLabels())).map(GcpComputeProvider::toInstanceInfo)
-                                    .flatMap(info -> confirmRunning(info,
-                                                                    ReadinessPolicy.cloudDefault()))
-                                    .onFailure(GcpComputeProvider::logProvisionFailureRollbackGap)
-                                    .mapError(GcpComputeProvider::toProvisionError);
+                                                        defaultLabels()))
+                     .map(GcpComputeProvider::toInstanceInfo)
+                     .flatMap(info -> confirmRunning(info,
+                                                     ReadinessPolicy.cloudDefault()))
+                     .onFailure(GcpComputeProvider::logProvisionFailureRollbackGap)
+                     .mapError(GcpComputeProvider::toProvisionError);
     }
 
     @Override

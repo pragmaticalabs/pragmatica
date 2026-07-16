@@ -4,6 +4,9 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.deployment.schema;
 
+import java.util.List;
+import java.util.concurrent.ConcurrentHashMap;
+
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.deployment.AuditLog;
 import org.pragmatica.aether.deployment.schema.SchemaEvent.ManualRetryRequested;
@@ -39,9 +42,6 @@ import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.lang.utils.SharedScheduler;
 import org.pragmatica.messaging.MessageRouter;
-
-import java.util.List;
-import java.util.concurrent.ConcurrentHashMap;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -450,10 +450,11 @@ class SchemaOrchestratorServiceInstance implements SchemaOrchestratorService {
         return provisionConnector(datasourceName).flatMap(connector -> schemaManager.migrate(datasourceName,
                                                                                              scripts,
                                                                                              connector,
-                                                                                             self.id()).onSuccess(result -> logMigrationSuccess(datasourceName,
-                                                                                                                                                result))
-                                                                                            .mapToUnit()
-                                                                                            .onResultRun(() -> releaseConnectorSilently(datasourceName)));
+                                                                                             self.id())
+                                                                                    .onSuccess(result -> logMigrationSuccess(datasourceName,
+                                                                                                                             result))
+                                                                                    .mapToUnit()
+                                                                                    .onResultRun(() -> releaseConnectorSilently(datasourceName)));
     }
 
     private Promise<SqlConnector> provisionConnector(String datasourceName) {
@@ -471,9 +472,10 @@ class SchemaOrchestratorServiceInstance implements SchemaOrchestratorService {
     }
 
     private void releaseConnectorSilently(String datasourceName) {
-        connectionProvider.release(datasourceName).onFailure(c -> log.warn("Failed to release connector for '{}': {}",
-                                                                           datasourceName,
-                                                                           c.message()));
+        connectionProvider.release(datasourceName)
+                          .onFailure(c -> log.warn("Failed to release connector for '{}': {}",
+                                                   datasourceName,
+                                                   c.message()));
     }
 
     private static Promise<Unit> logNoMigrationsInArtifact(String datasourceName) {

@@ -4,15 +4,15 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.pg.parser.transform;
 
+import java.util.ArrayList;
+import java.util.List;
+
 import org.pragmatica.aether.pg.parser.ast.common.DataTypeName;
 import org.pragmatica.aether.pg.parser.ast.common.Identifier;
 import org.pragmatica.aether.pg.parser.ast.common.QualifiedName;
 import org.pragmatica.lang.Option;
 import org.pragmatica.aether.pg.parser.PostgresParser.CstNode;
 import org.pragmatica.aether.pg.parser.PostgresParser.SourceSpan;
-
-import java.util.ArrayList;
-import java.util.List;
 
 
 public final class CstExtractor {

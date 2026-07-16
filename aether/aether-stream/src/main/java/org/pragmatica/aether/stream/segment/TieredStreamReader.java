@@ -4,14 +4,14 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.stream.segment;
 
+import java.util.List;
+
 import org.pragmatica.aether.stream.OffHeapRingBuffer.RawEvent;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.storage.BlockEncryptor;
 import org.pragmatica.storage.StorageInstance;
-
-import java.util.List;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -72,9 +72,9 @@ final class TieredReader implements TieredStreamReader {
 
         var lastReadOffset = events.getLast().offset();
 
-        index.findSegment(streamName, partition, lastReadOffset).filter(ref -> isNearSegmentEnd(lastReadOffset, ref)).onPresent(ref -> prefetchNextSegment(streamName,
-                                                                                                                                                           partition,
-                                                                                                                                                           ref));
+        index.findSegment(streamName, partition, lastReadOffset)
+             .filter(ref -> isNearSegmentEnd(lastReadOffset, ref))
+             .onPresent(ref -> prefetchNextSegment(streamName, partition, ref));
     }
 
     private static boolean isNearSegmentEnd(long currentOffset, SegmentIndex.SegmentRef ref) {
@@ -87,9 +87,8 @@ final class TieredReader implements TieredStreamReader {
     private void prefetchNextSegment(String streamName, int partition, SegmentIndex.SegmentRef currentRef) {
         var nextOffset = currentRef.endOffset() + 1;
 
-        index.findSegment(streamName, partition, nextOffset).onPresent(nextRef -> firePrefetch(streamName,
-                                                                                               partition,
-                                                                                               nextRef));
+        index.findSegment(streamName, partition, nextOffset)
+             .onPresent(nextRef -> firePrefetch(streamName, partition, nextRef));
     }
 
     private void firePrefetch(String streamName, int partition, SegmentIndex.SegmentRef ref) {

@@ -4,9 +4,6 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.metrics.gc;
 
-import org.pragmatica.lang.Result;
-import org.pragmatica.lang.Unit;
-
 import javax.management.Notification;
 import javax.management.NotificationEmitter;
 import javax.management.NotificationListener;
@@ -18,6 +15,9 @@ import java.util.Arrays;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.LongAdder;
+
+import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Unit;
 
 import com.sun.management.GarbageCollectionNotificationInfo;
 import org.slf4j.Logger;

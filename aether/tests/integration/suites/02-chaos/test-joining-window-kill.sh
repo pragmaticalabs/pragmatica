@@ -72,11 +72,35 @@ source "${SCRIPT_DIR}/../../lib/generation.sh"
 # the smoking-gun reason assertion below pins which one fired.
 DECOMMISSION_BUDGET_S=90
 
-# Maximum time we'll wait for CTM to provision a replacement container after
-# the priming kill. CTM circuit breaker, slot deadlines, leader-forwarding, and
-# remote SSH latency dominate this number — generous to keep the test focused
-# on the JOINING-window assertion, not on CTM provisioning speed.
-REPLACEMENT_DISCOVERY_TIMEOUT_S=90
+# Maximum time we'll wait for CTM to provision a replacement AND for it to surface
+# in membership reporting SYNCING/READY (the JOINING window we must catch the kill
+# in). CTM circuit breaker, slot deadlines, leader-forwarding, and remote SSH
+# latency dominate this number.
+#
+# docker/remote: a replacement is a container spin-up (DockerComputeProvider) that
+#   joins in seconds-to-tens-of-seconds, so the historical 90s base is generous.
+# cloud (`--env cloud`): a replacement is a BRAND-NEW Hetzner VM — provision +
+#   cloud-init + image pull + cluster join measured at ~3-5 min end-to-end. The 90s
+#   base timed out before the VM ever surfaced, so test_catch_replacement_in_joining_window
+#   returned early WITHOUT landing the kill or writing the kill timestamp, which then
+#   cascaded into the "S01 kill timestamp missing" failure in the next test. The
+#   cloud base is raised to 300s to cover real VM boot. Both bases are still scaled
+#   by TIMEOUT_SCALE at the call sites (1 docker, 2 remote, 3 cloud), matching every
+#   other cloud-aware wait in the harness (cf. autoheal_default_timeout in lib/cluster.sh).
+#
+# Override with AETHER_REPLACEMENT_DISCOVERY_TIMEOUT to pin an explicit base.
+replacement_discovery_base_timeout() {
+    if [ -n "${AETHER_REPLACEMENT_DISCOVERY_TIMEOUT:-}" ]; then
+        printf '%s\n' "$AETHER_REPLACEMENT_DISCOVERY_TIMEOUT"
+        return 0
+    fi
+    if [ "${CLOUD_MODE:-false}" = "true" ]; then
+        printf '%s\n' 300
+    else
+        printf '%s\n' 90
+    fi
+}
+REPLACEMENT_DISCOVERY_TIMEOUT_S="$(replacement_discovery_base_timeout)"
 
 # Files we use to ferry state between test functions (each test function runs
 # in its own shell context via run_test, so we cannot rely on environment vars
@@ -90,9 +114,26 @@ PRIMING_VICTIM_FILE="/tmp/s01-priming-victim.$$"
 # accepts both the pre-READY and raced-to-READY paths; see test_decommission_within_budget.)
 RACE_TO_READY_FILE="/tmp/s01-race-to-ready.$$"
 
-# Snapshot of `aether.node-id` labels on TARGET_HOST scoped to this cluster.
+# Snapshot of the cluster's current node-id set, scoped to this cluster.
 # Returns one node-id per line, sorted. Empty string on transport failure.
+#
+# docker/remote: read the `aether.node-id` container label via `docker ps` — the
+#   label is set by DockerComputeProvider before the replacement R has any SWIM /
+#   topology presence, which wins ~2-5s of catch window for the JOINING-window kill.
+# cloud: there is NO local/remote docker daemon and per-node container labels do
+#   not exist (each node is a separate Hetzner VM). Identity comes from the
+#   cluster's own membership projection: /api/nodes/status cluster.nodes[].nodeId
+#   (status_node_ids, lib/topology.sh). The trade-off: a replacement appears in the
+#   API only once it has surfaced in membership (JOINING), slightly later than the
+#   docker label — but it is the only cloud-reliable identity source, and the
+#   downstream SYNCING/READY gate + 90s budget already absorb that lag. Output
+#   format (sorted unique node-ids, one per line) is identical to the docker path
+#   so the `comm -13` set-diff in wait_for_new_node_id_label works unchanged.
 snapshot_node_id_labels() {
+    if [ "${CLOUD_MODE:-false}" = "true" ]; then
+        status_node_ids
+        return $?
+    fi
     local cluster_filter=""
     if [ -n "${CLUSTER_ID:-}" ]; then
         cluster_filter="--filter label=aether.cluster=${CLUSTER_ID} --filter network=aether-${CLUSTER_ID}-network"
@@ -136,14 +177,17 @@ wait_for_replacement_in_kv() {
 }
 
 
-# Wait until a new aether.node-id label appears on TARGET_HOST that was NOT
+# Wait until a new node-id appears in the cluster's node-id set that was NOT
 # present in $baseline_file. Returns 0 + prints the new node-id on stdout;
 # returns 1 on timeout.
 #
-# We poll the label set rather than /api/cluster/topology because the label is
-# set by DockerComputeProvider before R has any SWIM/topology presence — the
-# label-based discovery wins us 2-5 seconds, which is the difference between
-# "kill R in JOINING window" and "kill R after it transitioned to ON_DUTY".
+# Identity source is snapshot_node_id_labels, which is env-aware:
+#   docker/remote — the `aether.node-id` container label, set by
+#     DockerComputeProvider BEFORE R has any SWIM/topology presence; this label
+#     wins us 2-5s, the difference between "kill R in the JOINING window" and
+#     "kill R after it transitioned to ON_DUTY".
+#   cloud — /api/nodes/status cluster.nodes[].nodeId (no container labels on a
+#     fresh VM); R surfaces here once it enters membership (JOINING).
 wait_for_new_node_id_label() {
     local baseline_file="$1" timeout="${2:-60}"
     local deadline=$((SECONDS + timeout))
@@ -163,11 +207,22 @@ wait_for_new_node_id_label() {
     return 1
 }
 
-# Kill a container by its aether.node-id label. Stderr captured (silent stderr
-# is a trap per project memory). The kill must be authoritative — cluster B
-# uses `restart: "no"` so docker kill is final.
+# Kill a node by its runtime node-id. The kill must be authoritative — cluster B
+# uses `restart: "no"` (docker) so docker kill is final; kill_node disables the
+# restart policy on cloud-container nodes before killing for the same reason.
+#
+# docker/remote: resolve the container NAME from the `aether.node-id` label and
+#   `docker kill` it directly (stderr captured — silent stderr is a trap).
+# cloud: there is no local container to look up by label; delegate to the
+#   env-aware kill_node (lib/cluster.sh), which SSHes to the node's VM and kills
+#   the container (or JVM, per CLOUD_RUNTIME). The node-id discovered on cloud is
+#   the runtime NodeId (from /api/nodes/status), which kill_node accepts directly.
 kill_by_node_id_label() {
     local node_id="$1"
+    if [ "${CLOUD_MODE:-false}" = "true" ]; then
+        kill_node "$node_id"
+        return $?
+    fi
     local cluster_filter=""
     if [ -n "${CLUSTER_ID:-}" ]; then
         cluster_filter="--filter label=aether.cluster=${CLUSTER_ID} --filter network=aether-${CLUSTER_ID}-network"
@@ -203,6 +258,10 @@ test_initial_state() {
     # only holds once NORMAL is reached.
     wait_for_phase "NORMAL" 180 || log_warn "Cluster phase still COLD_BOOT; the JOINING-window assertion may absorb a SWIM-path success and not exercise S01"
     wait_for_leader 60
+    # Poll-with-settle (up to 60s): the prior suite's restore gates on leader
+    # deficit=0 which can precede generation snapshot convergence by up to one
+    # reconciler tick while a CTM replacement finalises admission.
+    wait_for "Initial: at least 5 nodes" '[ "$(cluster_member_count)" -ge 5 ]' 60 || true
     local count
     count=$(cluster_member_count)
     assert_ge "$count" "5" "Initial: at least 5 nodes (${count})"
@@ -257,9 +316,16 @@ test_catch_replacement_in_joining_window() {
     # The endpoint `/api/nodes/lifecycle/<R>` reports the node's own reported state
     # (leader-forwarded). A just-provisioned replacement reports SYNCING first, then
     # READY once it has caught up on consensus.
+    #
+    # Window is cloud-aware: on docker/remote the replacement is a container that
+    # surfaces in seconds (90s base is generous); on cloud it is a brand-new Hetzner
+    # VM whose cloud-init + image pull + join take ~3-5 min, so the same
+    # replacement_discovery_base_timeout() base (300s cloud / 90s otherwise) is used
+    # here. A 90s gate on cloud timed out before R ever reported SYNCING/READY, so the
+    # kill never landed and the next test failed with "S01 kill timestamp missing".
     local pre_kill_state
-    if ! pre_kill_state=$(wait_for_replacement_in_kv "$replacement" 90); then
-        log_fail "Replacement ${replacement} never reported SYNCING/READY in /api/nodes/lifecycle/${replacement} within 90s — CTM provisioned the container but the node never surfaced in membership (consensus stuck? leader churn? node failed to start?). Cannot exercise S01."
+    if ! pre_kill_state=$(wait_for_replacement_in_kv "$replacement" "$(replacement_discovery_base_timeout)"); then
+        log_fail "Replacement ${replacement} never reported SYNCING/READY in /api/nodes/lifecycle/${replacement} within $(replacement_discovery_base_timeout)s — CTM provisioned the container but the node never surfaced in membership (consensus stuck? leader churn? node failed to start?). Cannot exercise S01."
         return 1
     fi
     case "$pre_kill_state" in
@@ -321,7 +387,14 @@ test_decommission_within_budget() {
 
     now=$(date +%s)
     elapsed=$((now - kill_ts))
-    assert_ge "$DECOMMISSION_BUDGET_S" "$elapsed" "Replacement ${replacement} removed from membership within ${DECOMMISSION_BUDGET_S}s budget (actual=${elapsed}s)"
+    # #426 item 3: assert_ge's rc was previously discarded — `set -e` is masked
+    # once run_test invokes this function via `if "$fn"; then` (see run_test's
+    # design comment in lib/common.sh), so a failing assert_ge did NOT abort the
+    # script and the unconditional log_pass below ran anyway, producing a
+    # contradictory FAIL-then-PASS pair for the same check. Propagate the rc.
+    if ! assert_ge "$DECOMMISSION_BUDGET_S" "$elapsed" "Replacement ${replacement} removed from membership within ${DECOMMISSION_BUDGET_S}s budget (actual=${elapsed}s)"; then
+        return 1
+    fi
     log_pass "S01 timing budget met: ${replacement} left the cluster (404 from /api/nodes/lifecycle OR absent from /api/nodes/status) in ${elapsed}s (within ${DECOMMISSION_BUDGET_S}s budget)"
 }
 

@@ -4,6 +4,11 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.http.security;
 
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.stream.Collectors;
+
 import org.pragmatica.aether.config.JwtConfig;
 import org.pragmatica.aether.http.handler.HttpRequestContext;
 import org.pragmatica.aether.http.handler.security.AuthorizationRole;
@@ -12,11 +17,6 @@ import org.pragmatica.aether.http.handler.security.SecurityPolicy;
 import org.pragmatica.aether.http.handler.security.SecurityContext;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
-
-import java.util.List;
-import java.util.Map;
-import java.util.Set;
-import java.util.stream.Collectors;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -214,14 +214,22 @@ class JwtSecurityValidator implements SecurityValidator {
     }
 
     private static Option<String> extractAuthHeaderCaseInsensitive(Map<String, List<String>> headers) {
-        var value = headers.entrySet().stream().filter(e -> "authorization".equalsIgnoreCase(e.getKey())).map(Map.Entry::getValue).flatMap(values -> Option.option(values)
-                                                                                                                                                           .filter(v -> !v.isEmpty())
-                                                                                                                                                           .stream()).map(List::getFirst).filter(v -> v.regionMatches(true,
-                                                                                                                                                                                                                      0,
-                                                                                                                                                                                                                      BEARER_PREFIX,
-                                                                                                                                                                                                                      0,
-                                                                                                                                                                                                                      BEARER_PREFIX.length())).map(v -> v.substring(BEARER_PREFIX.length())
-                                                                                                                                                                                                                                                         .trim()).findFirst();
+        var value = headers.entrySet()
+                           .stream()
+                           .filter(e -> "authorization".equalsIgnoreCase(e.getKey()))
+                           .map(Map.Entry::getValue)
+                           .flatMap(values -> Option.option(values)
+                                                    .filter(v -> !v.isEmpty())
+                                                    .stream())
+                           .map(List::getFirst)
+                           .filter(v -> v.regionMatches(true,
+                                                        0,
+                                                        BEARER_PREFIX,
+                                                        0,
+                                                        BEARER_PREFIX.length()))
+                           .map(v -> v.substring(BEARER_PREFIX.length())
+                                      .trim())
+                           .findFirst();
 
         return Option.from(value);
     }

@@ -4,6 +4,12 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.invoke;
 
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ScheduledFuture;
+
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.artifact.ArtifactBase;
 import org.pragmatica.aether.endpoint.EndpointRegistry;
@@ -32,12 +38,6 @@ import org.pragmatica.messaging.MessageReceiver;
 import org.pragmatica.serialization.Deserializer;
 import org.pragmatica.serialization.Serializer;
 import org.pragmatica.utility.IdGenerator;
-
-import java.util.List;
-import java.util.Map;
-import java.util.Set;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ScheduledFuture;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -161,8 +161,7 @@ public interface SliceInvoker extends SliceInvokerFacade {
                                      InvocationHandler invocationHandler,
                                      Serializer serializer,
                                      Deserializer deserializer,
-                                     DeploymentManager deploymentManager,
-                                     ObservabilityInterceptor observabilityInterceptor) {
+                                     DeploymentManager deploymentManager) {
         return sliceInvoker(self,
                             network,
                             endpointRegistry,
@@ -171,8 +170,7 @@ public interface SliceInvoker extends SliceInvokerFacade {
                             deserializer,
                             DEFAULT_TIMEOUT_MS,
                             SliceInvokerImpl.DEFAULT_CLEANUP_INTERVAL_MS,
-                            deploymentManager,
-                            observabilityInterceptor);
+                            deploymentManager);
     }
 
     static SliceInvoker sliceInvoker(NodeId self,
@@ -183,8 +181,7 @@ public interface SliceInvoker extends SliceInvokerFacade {
                                      Deserializer deserializer,
                                      long timeoutMs,
                                      long cleanupIntervalMs,
-                                     DeploymentManager deploymentManager,
-                                     ObservabilityInterceptor observabilityInterceptor) {
+                                     DeploymentManager deploymentManager) {
         return new SliceInvokerImpl(self,
                                     network,
                                     endpointRegistry,
@@ -193,8 +190,7 @@ public interface SliceInvoker extends SliceInvokerFacade {
                                     deserializer,
                                     timeoutMs,
                                     cleanupIntervalMs,
-                                    deploymentManager,
-                                    observabilityInterceptor);
+                                    deploymentManager);
     }
 }
 
@@ -219,7 +215,6 @@ class SliceInvokerImpl implements SliceInvoker {
     private final long timeoutMs;
     private volatile ScheduledFuture<?> cleanupTask;
     private final DeploymentManager deploymentManager;
-    private final ObservabilityInterceptor observabilityInterceptor;
     private final ConcurrentHashMap<String, PendingInvocation> pendingInvocations = new ConcurrentHashMap<>();
     private final Map<NodeId, Set<String>> pendingInvocationsByNode = new ConcurrentHashMap<>();
     private final Map<String, CacheAffinityResolver> affinityResolvers = new ConcurrentHashMap<>();
@@ -242,8 +237,7 @@ class SliceInvokerImpl implements SliceInvoker {
                      Deserializer deserializer,
                      long timeoutMs,
                      long cleanupIntervalMs,
-                     DeploymentManager deploymentManager,
-                     ObservabilityInterceptor observabilityInterceptor) {
+                     DeploymentManager deploymentManager) {
         this.self = self;
         this.network = network;
         this.endpointRegistry = endpointRegistry;
@@ -252,7 +246,6 @@ class SliceInvokerImpl implements SliceInvoker {
         this.deserializer = deserializer;
         this.timeoutMs = timeoutMs;
         this.deploymentManager = deploymentManager;
-        this.observabilityInterceptor = observabilityInterceptor;
         this.cleanupTask = SharedScheduler.scheduleAtFixedRate(this::cleanupStaleInvocations,
                                                                timeSpan(cleanupIntervalMs).millis());
     }
@@ -331,14 +324,11 @@ class SliceInvokerImpl implements SliceInvoker {
     private Promise<Unit> invokeLocalFireAndForget(Artifact slice, MethodName method, Object request) {
         return invocationHandler.localSlice(slice)
                                 .async(SLICE_NOT_FOUND)
-                                .flatMap(bridge -> observabilityInterceptor.intercept(slice,
-                                                                                      method,
-                                                                                      InvocationContext.getOrGenerateRequestId(),
-                                                                                      InvocationContext.currentDepth() + 1,
-                                                                                      true,
-                                                                                      () -> invokeViaBridge(bridge,
-                                                                                                            method,
-                                                                                                            request)))
+                                .flatMap(bridge -> ObservabilityCells.around(bridge,
+                                                                             method.name(),
+                                                                             () -> invokeViaBridge(bridge,
+                                                                                                   method,
+                                                                                                   request)))
                                 .mapToUnit();
     }
 
@@ -439,8 +429,8 @@ class SliceInvokerImpl implements SliceInvoker {
 
         pendingInvocations.put(correlationId, pending);
         pendingInvocationsByNode.computeIfAbsent(targetNode, _ -> ConcurrentHashMap.newKeySet()).add(correlationId);
-        pendingPromise.timeout(timeSpan(timeoutMs).millis()).onResult(_ -> removePendingInvocation(correlationId,
-                                                                                                   targetNode));
+        pendingPromise.timeout(timeSpan(timeoutMs).millis())
+                      .onResult(_ -> removePendingInvocation(correlationId, targetNode));
         var invokeRequest = InvokeRequest.invokeRequest(self,
                                                         correlationId,
                                                         requestId,
@@ -522,9 +512,8 @@ class SliceInvokerImpl implements SliceInvoker {
 
     private <R> void executeWithFailover(Promise<R> promise, FailoverContext<R> ctx) {
         selectEndpointWithFailover(ctx.slice, ctx.method, ctx.failedNodes).onEmpty(() -> handleAllEndpointsFailed(promise,
-                                                                                                                  ctx)).onPresent(endpoint -> invokeEndpointWithFailover(promise,
-                                                                                                                                                                         ctx,
-                                                                                                                                                                         endpoint));
+                                                                                                                  ctx))
+                                  .onPresent(endpoint -> invokeEndpointWithFailover(promise, ctx, endpoint));
     }
 
     private Option<Endpoint> selectEndpointWithFailover(Artifact slice,
@@ -532,11 +521,12 @@ class SliceInvokerImpl implements SliceInvoker {
                                                         java.util.Set<NodeId> exclude) {
         if (exclude.isEmpty()) {
             var artifactBase = ArtifactBase.artifactBase(slice.groupId(), slice.artifactId());
-            var strategyEndpoint = deploymentManager.activeRouting(artifactBase).flatMap(routing -> endpointRegistry.selectEndpointWithRouting(artifactBase,
-                                                                                                                                               method,
-                                                                                                                                               routing.routing(),
-                                                                                                                                               routing.oldVersion(),
-                                                                                                                                               routing.newVersion()));
+            var strategyEndpoint = deploymentManager.activeRouting(artifactBase)
+                                                    .flatMap(routing -> endpointRegistry.selectEndpointWithRouting(artifactBase,
+                                                                                                                   method,
+                                                                                                                   routing.routing(),
+                                                                                                                   routing.oldVersion(),
+                                                                                                                   routing.newVersion()));
 
             if (strategyEndpoint.isPresent()) {
                 return strategyEndpoint;
@@ -562,33 +552,34 @@ class SliceInvokerImpl implements SliceInvoker {
 
     @SuppressWarnings("unchecked")
     private <R> void invokeLocalForFailover(Promise<R> promise, FailoverContext<R> ctx) {
-        invocationHandler.localSlice(ctx.slice).async(SLICE_NOT_FOUND).flatMap(bridge -> observabilityInterceptor.intercept(ctx.slice,
-                                                                                                                            ctx.method,
-                                                                                                                            ctx.requestId,
-                                                                                                                            InvocationContext.currentDepth() + 1,
-                                                                                                                            true,
-                                                                                                                            () -> invokeViaBridge(bridge,
-                                                                                                                                                  ctx.method,
-                                                                                                                                                  ctx.request))).onSuccess(result -> promise.succeed((R) result)).onFailure(cause -> handleFailoverFailure(promise,
-                                                                                                                                                                                                                                                           ctx,
-                                                                                                                                                                                                                                                           self,
-                                                                                                                                                                                                                                                           cause));
+        invocationHandler.localSlice(ctx.slice)
+                         .async(SLICE_NOT_FOUND)
+                         .flatMap(bridge -> InvocationContext.runWithRequestId(ctx.requestId,
+                                                                               () -> ObservabilityCells.around(bridge,
+                                                                                                               ctx.method.name(),
+                                                                                                               () -> invokeViaBridge(bridge,
+                                                                                                                                     ctx.method,
+                                                                                                                                     ctx.request))))
+                         .onSuccess(result -> promise.succeed((R) result))
+                         .onFailure(cause -> handleFailoverFailure(promise, ctx, self, cause));
     }
 
     private <R> void invokeRemoteForFailover(Promise<R> promise, FailoverContext<R> ctx, NodeId targetNode) {
-        findSenderBridge(ctx.slice(), ctx.request).onEmpty(() -> handleFailoverFailure(promise,
-                                                                                       ctx,
-                                                                                       targetNode,
-                                                                                       SENDER_BRIDGE_NOT_FOUND)).onPresent(senderBridge -> senderBridge.encode(ctx.request)
-                                                                                                                                                       .onSuccess(payload -> sendFailoverPayload(promise,
-                                                                                                                                                                                                 ctx,
-                                                                                                                                                                                                 targetNode,
-                                                                                                                                                                                                 payload,
-                                                                                                                                                                                                 senderBridge))
-                                                                                                                                                       .onFailure(cause -> handleFailoverFailure(promise,
-                                                                                                                                                                                                 ctx,
-                                                                                                                                                                                                 targetNode,
-                                                                                                                                                                                                 cause)));
+        findSenderBridge(ctx.slice(),
+                         ctx.request).onEmpty(() -> handleFailoverFailure(promise,
+                                                                          ctx,
+                                                                          targetNode,
+                                                                          SENDER_BRIDGE_NOT_FOUND))
+                        .onPresent(senderBridge -> senderBridge.encode(ctx.request)
+                                                               .onSuccess(payload -> sendFailoverPayload(promise,
+                                                                                                         ctx,
+                                                                                                         targetNode,
+                                                                                                         payload,
+                                                                                                         senderBridge))
+                                                               .onFailure(cause -> handleFailoverFailure(promise,
+                                                                                                         ctx,
+                                                                                                         targetNode,
+                                                                                                         cause)));
     }
 
     @SuppressWarnings("unchecked")
@@ -607,8 +598,8 @@ class SliceInvokerImpl implements SliceInvoker {
 
         pendingInvocations.put(correlationId, pending);
         pendingInvocationsByNode.computeIfAbsent(targetNode, _ -> ConcurrentHashMap.newKeySet()).add(correlationId);
-        pendingPromise.timeout(timeSpan(timeoutMs).millis()).onResult(_ -> removePendingInvocation(correlationId,
-                                                                                                   targetNode));
+        pendingPromise.timeout(timeSpan(timeoutMs).millis())
+                      .onResult(_ -> removePendingInvocation(correlationId, targetNode));
         var invokeRequest = InvokeRequest.invokeRequest(self,
                                                         correlationId,
                                                         ctx.requestId,
@@ -631,10 +622,8 @@ class SliceInvokerImpl implements SliceInvoker {
                       ctx.attemptCount() + 1);
         }
 
-        pendingPromise.onSuccess(result -> promise.succeed((R) result)).onFailure(cause -> handleFailoverFailure(promise,
-                                                                                                                 ctx,
-                                                                                                                 targetNode,
-                                                                                                                 cause));
+        pendingPromise.onSuccess(result -> promise.succeed((R) result))
+                      .onFailure(cause -> handleFailoverFailure(promise, ctx, targetNode, cause));
     }
 
     private <R> void handleFailoverFailure(Promise<R> promise, FailoverContext<R> ctx, NodeId failedNode, Cause cause) {
@@ -755,14 +744,11 @@ class SliceInvokerImpl implements SliceInvoker {
     public <R> Promise<R> invokeLocal(Artifact slice, MethodName method, Object request, TypeToken<R> responseType) {
         return invocationHandler.localSlice(slice)
                                 .async(SLICE_NOT_FOUND)
-                                .flatMap(bridge -> observabilityInterceptor.intercept(slice,
-                                                                                      method,
-                                                                                      InvocationContext.getOrGenerateRequestId(),
-                                                                                      InvocationContext.currentDepth() + 1,
-                                                                                      true,
-                                                                                      () -> invokeViaBridge(bridge,
-                                                                                                            method,
-                                                                                                            request)));
+                                .flatMap(bridge -> ObservabilityCells.around(bridge,
+                                                                             method.name(),
+                                                                             () -> invokeViaBridge(bridge,
+                                                                                                   method,
+                                                                                                   request)));
     }
 
     @SuppressWarnings("unchecked")
@@ -795,10 +781,11 @@ class SliceInvokerImpl implements SliceInvoker {
     @Override
     @SuppressWarnings({"JBCT-RET-01"})
     public void onInvokeResponse(InvokeResponse response) {
-        Option.option(pendingInvocations.remove(response.correlationId())).onEmpty(() -> log.warn("[requestId={}] Received response for unknown correlationId: {}",
-                                                                                                  response.requestId(),
-                                                                                                  response.correlationId())).onPresent(pending -> processReceivedResponse(pending,
-                                                                                                                                                                          response));
+        Option.option(pendingInvocations.remove(response.correlationId()))
+              .onEmpty(() -> log.warn("[requestId={}] Received response for unknown correlationId: {}",
+                                      response.requestId(),
+                                      response.correlationId()))
+              .onPresent(pending -> processReceivedResponse(pending, response));
     }
 
     private void processReceivedResponse(PendingInvocation pending, InvokeResponse response) {
@@ -826,12 +813,18 @@ class SliceInvokerImpl implements SliceInvoker {
     }
 
     private void handleNodeDeparture(NodeId departedNode) {
-        Option.option(pendingInvocationsByNode.remove(departedNode)).filter(ids -> !ids.isEmpty()).onPresent(correlationIds -> retryPendingForDepartedNode(departedNode,
-                                                                                                                                                           correlationIds));
+        Option.option(pendingInvocationsByNode.remove(departedNode))
+              .filter(ids -> !ids.isEmpty())
+              .onPresent(correlationIds -> retryPendingForDepartedNode(departedNode, correlationIds));
     }
 
     private void retryPendingForDepartedNode(NodeId departedNode, Set<String> correlationIds) {
-        var affectedRequestIds = correlationIds.stream().map(pendingInvocations::get).flatMap(p -> Option.option(p).stream()).map(PendingInvocation::requestId).limit(5).toList();
+        var affectedRequestIds = correlationIds.stream()
+                                               .map(pendingInvocations::get)
+                                               .flatMap(p -> Option.option(p).stream())
+                                               .map(PendingInvocation::requestId)
+                                               .limit(5)
+                                               .toList();
 
         log.debug("Node {} departed, triggering immediate retry for {} pending invocations, requestIds={}",
                   departedNode,
@@ -867,13 +860,16 @@ class SliceInvokerImpl implements SliceInvoker {
         var requestId = pending.requestId();
 
         if (response.success()) {
-            pending.senderBridge().decode(response.payload()).onSuccess(result -> handleDecodeSuccess(promise,
-                                                                                                      result,
-                                                                                                      requestId,
-                                                                                                      response.correlationId())).onFailure(cause -> handleDecodeFailure(promise,
-                                                                                                                                                                        cause,
-                                                                                                                                                                        requestId,
-                                                                                                                                                                        response.correlationId()));
+            pending.senderBridge()
+                   .decode(response.payload())
+                   .onSuccess(result -> handleDecodeSuccess(promise,
+                                                            result,
+                                                            requestId,
+                                                            response.correlationId()))
+                   .onFailure(cause -> handleDecodeFailure(promise,
+                                                           cause,
+                                                           requestId,
+                                                           response.correlationId()));
         } else {
             var errorMessage = new String(response.payload());
 
@@ -910,9 +906,8 @@ class SliceInvokerImpl implements SliceInvoker {
 
     private Promise<Endpoint> selectEndpointWithAffinity(Artifact slice, MethodName method, Object request) {
         var resolver = Option.option(affinityResolvers.get(affinityLookupKey(slice, method)));
-        var affinityEndpoint = resolver.flatMap(r -> r.resolveAffinityNode(request)).flatMap(node -> endpointRegistry.selectEndpointByAffinity(slice,
-                                                                                                                                               method,
-                                                                                                                                               node));
+        var affinityEndpoint = resolver.flatMap(r -> r.resolveAffinityNode(request))
+                                       .flatMap(node -> endpointRegistry.selectEndpointByAffinity(slice, method, node));
 
         if (affinityEndpoint.isPresent()) {
             return affinityEndpoint.async(NO_ENDPOINT_FOUND);

@@ -4,9 +4,9 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.http.forward;
 
-import org.pragmatica.consensus.NodeId;
-
 import java.util.List;
+
+import org.pragmatica.consensus.NodeId;
 
 
 /// Data-path forwarder accessibility gate (silent-death fix). Narrows a candidate target list

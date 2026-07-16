@@ -4,15 +4,15 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.resource.db;
 
-import org.pragmatica.lang.Option;
-import org.pragmatica.lang.Result;
-import org.pragmatica.lang.Unit;
-import org.pragmatica.lang.parse.Number;
-
 import java.util.Map;
 import java.util.Properties;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+
+import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.parse.Number;
 
 import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.option;
@@ -292,7 +292,9 @@ public record DatabaseConnectorConfig(Option<String> name,
     private static Result<Unit> validateUrlBased(Option<String> jdbcUrl,
                                                  Option<String> r2dbcUrl,
                                                  Option<String> asyncUrl) {
-        var anyValid = jdbcUrl.filter(u -> !u.isBlank()).orElse(() -> r2dbcUrl.filter(u -> !u.isBlank())).orElse(() -> asyncUrl.filter(u -> !u.isBlank()));
+        var anyValid = jdbcUrl.filter(u -> !u.isBlank())
+                              .orElse(() -> r2dbcUrl.filter(u -> !u.isBlank()))
+                              .orElse(() -> asyncUrl.filter(u -> !u.isBlank()));
 
         return anyValid.toResult(cause("At least one non-blank URL is required"))
                        .map(_ -> Unit.unit());
@@ -319,8 +321,9 @@ public record DatabaseConnectorConfig(Option<String> name,
     private static Result<Unit> ensureRequired(DatabaseType type, String host, String database) {
         return ensureOptionPresent(option(type),
                                    "Database type is required").flatMap(_ -> ensureOptionNonBlank(option(host),
-                                                                                                  "Database host is required")).flatMap(_ -> ensureOptionNonBlank(option(database),
-                                                                                                                                                                  "Database name is required"))
+                                                                                                  "Database host is required"))
+                                  .flatMap(_ -> ensureOptionNonBlank(option(database),
+                                                                     "Database name is required"))
                                   .map(_ -> Unit.unit());
     }
 

@@ -4,6 +4,13 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.cli.cluster;
 
+import java.io.IOException;
+import java.net.InetSocketAddress;
+import java.net.Socket;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.stream.Collectors;
+
 import org.pragmatica.aether.config.cluster.ClusterBootstrapConfig;
 import org.pragmatica.aether.config.cluster.LoadBalancerMode;
 import org.pragmatica.aether.config.cluster.SourceProfile;
@@ -11,13 +18,6 @@ import org.pragmatica.aether.config.cluster.SourceType;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Result;
-
-import java.io.IOException;
-import java.net.InetSocketAddress;
-import java.net.Socket;
-import java.util.ArrayList;
-import java.util.List;
-import java.util.stream.Collectors;
 
 import static org.pragmatica.lang.Result.success;
 
@@ -67,24 +67,25 @@ sealed interface PreflightChecker {
 
     @Contract
     private static void runCloudChecks(String name, SourceProfile source, List<PreflightResult> results) {
-        ProviderResolver.resolveCloudCompute(source).onSuccess(compute -> results.add(preflightResult(name,
-                                                                                                      "PF-03",
-                                                                                                      CheckStatus.PASS,
-                                                                                                      "Cloud provider resolved successfully"))).onFailure(cause -> results.add(preflightResult(name,
-                                                                                                                                                                                               "PF-03",
-                                                                                                                                                                                               CheckStatus.FAIL,
-                                                                                                                                                                                               "Cloud provider resolution failed: " + cause.message())));
+        ProviderResolver.resolveCloudCompute(source)
+                        .onSuccess(compute -> results.add(preflightResult(name,
+                                                                          "PF-03",
+                                                                          CheckStatus.PASS,
+                                                                          "Cloud provider resolved successfully")))
+                        .onFailure(cause -> results.add(preflightResult(name,
+                                                                        "PF-03",
+                                                                        CheckStatus.FAIL,
+                                                                        "Cloud provider resolution failed: " + cause.message())));
     }
 
     @Contract
     private static void runSshChecks(String name, SourceProfile source, List<PreflightResult> results) {
         var port = source.sshPort().or(DEFAULT_SSH_PORT);
 
-        source.roles().values().forEach(sub -> sub.hosts()
-                                                  .onPresent(hosts -> hosts.forEach(host -> checkSshHost(name,
-                                                                                                         host,
-                                                                                                         port,
-                                                                                                         results))));
+        source.roles()
+              .values()
+              .forEach(sub -> sub.hosts()
+                                 .onPresent(hosts -> hosts.forEach(host -> checkSshHost(name, host, port, results))));
     }
 
     @Contract
@@ -121,13 +122,15 @@ sealed interface PreflightChecker {
             return;
         }
 
-        ProviderResolver.resolveFloatingIpProvider(source).onSuccess(fip -> results.add(preflightResult(name,
-                                                                                                        "PF-12",
-                                                                                                        CheckStatus.PASS,
-                                                                                                        "Floating IP provider resolved"))).onFailure(cause -> results.add(preflightResult(name,
-                                                                                                                                                                                          "PF-12",
-                                                                                                                                                                                          CheckStatus.WARN,
-                                                                                                                                                                                          "Floating IP provider not available: " + cause.message())));
+        ProviderResolver.resolveFloatingIpProvider(source)
+                        .onSuccess(fip -> results.add(preflightResult(name,
+                                                                      "PF-12",
+                                                                      CheckStatus.PASS,
+                                                                      "Floating IP provider resolved")))
+                        .onFailure(cause -> results.add(preflightResult(name,
+                                                                        "PF-12",
+                                                                        CheckStatus.WARN,
+                                                                        "Floating IP provider not available: " + cause.message())));
     }
 
     @SuppressWarnings("JBCT-EX-01")

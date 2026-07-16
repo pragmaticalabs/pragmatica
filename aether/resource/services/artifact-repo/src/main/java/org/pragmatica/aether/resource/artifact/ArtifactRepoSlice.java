@@ -4,13 +4,13 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.resource.artifact;
 
+import java.util.List;
+
 import org.pragmatica.aether.slice.MethodName;
 import org.pragmatica.aether.slice.Slice;
 import org.pragmatica.aether.slice.SliceMethod;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.type.TypeToken;
-
-import java.util.List;
 
 
 public record ArtifactRepoSlice(MavenProtocolHandler mavenHandler) implements Slice {

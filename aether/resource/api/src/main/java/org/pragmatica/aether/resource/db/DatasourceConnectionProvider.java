@@ -4,6 +4,12 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.resource.db;
 
+import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.List;
+import java.util.ServiceLoader;
+import java.util.concurrent.ConcurrentHashMap;
+
 import org.pragmatica.aether.resource.ResourceFactory;
 import org.pragmatica.aether.resource.ResourceProvisioningError;
 import org.pragmatica.config.ConfigService;
@@ -13,12 +19,6 @@ import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.utils.Causes;
-
-import java.util.ArrayList;
-import java.util.Comparator;
-import java.util.List;
-import java.util.ServiceLoader;
-import java.util.concurrent.ConcurrentHashMap;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -62,7 +62,12 @@ class DatasourceConnectionProviderInstance implements DatasourceConnectionProvid
         this.configLoader = configLoader;
         var loaded = new ArrayList<ResourceFactory<SqlConnector, DatabaseConnectorConfig>>();
 
-        ServiceLoader.load(ResourceFactory.class).stream().map(ServiceLoader.Provider::get).filter(f -> f.resourceType() == SqlConnector.class).map(f -> (ResourceFactory<SqlConnector, DatabaseConnectorConfig>) f).forEach(loaded::add);
+        ServiceLoader.load(ResourceFactory.class)
+                     .stream()
+                     .map(ServiceLoader.Provider::get)
+                     .filter(f -> f.resourceType() == SqlConnector.class)
+                     .map(f -> (ResourceFactory<SqlConnector, DatabaseConnectorConfig>) f)
+                     .forEach(loaded::add);
         loaded.sort(Comparator.<ResourceFactory<SqlConnector, DatabaseConnectorConfig>> comparingInt(ResourceFactory::priority).reversed());
         this.factories = List.copyOf(loaded);
     }
@@ -100,7 +105,8 @@ class DatasourceConnectionProviderInstance implements DatasourceConnectionProvid
     }
 
     private Promise<DatabaseConnectorConfig> loadConfig(String configSection) {
-        var result = configLoader.apply(configSection, DatabaseConnectorConfig.class).map(DatabaseConnectorConfig.class::cast);
+        var result = configLoader.apply(configSection, DatabaseConnectorConfig.class)
+                                 .map(DatabaseConnectorConfig.class::cast);
 
         result.onSuccess(config -> log.info("Loaded config for '{}': type={}, jdbcUrl={}, asyncUrl={}, r2dbcUrl={}",
                                             configSection,
@@ -113,9 +119,10 @@ class DatasourceConnectionProviderInstance implements DatasourceConnectionProvid
                                             : "absent",
                                             config.r2dbcUrl().isPresent()
                                             ? "present"
-                                            : "absent")).onFailure(cause -> log.error("Failed to load config for section '{}': {}",
-                                                                                      configSection,
-                                                                                      cause.message()));
+                                            : "absent"))
+              .onFailure(cause -> log.error("Failed to load config for section '{}': {}",
+                                            configSection,
+                                            cause.message()));
 
         return result.async();
     }

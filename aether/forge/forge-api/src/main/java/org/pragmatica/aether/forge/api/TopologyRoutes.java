@@ -4,6 +4,9 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.forge.api;
 
+import java.util.HashSet;
+import java.util.stream.Stream;
+
 import org.pragmatica.aether.ember.EmberCluster;
 import org.pragmatica.aether.forge.api.ForgeApiResponses.TopologyEdgeInfo;
 import org.pragmatica.aether.forge.api.ForgeApiResponses.TopologyNodeInfo;
@@ -12,9 +15,6 @@ import org.pragmatica.aether.slice.topology.TopologyGraph;
 import org.pragmatica.aether.slice.topology.TopologyParser;
 import org.pragmatica.http.routing.Route;
 import org.pragmatica.http.routing.RouteSource;
-
-import java.util.HashSet;
-import java.util.stream.Stream;
 
 
 public final class TopologyRoutes implements RouteSource {
@@ -36,22 +36,31 @@ public final class TopologyRoutes implements RouteSource {
     @SuppressWarnings("JBCT-PAT-01")
     private TopologyResponse buildTopology() {
         var seen = new HashSet<String>();
-        var sliceTopologies = cluster.allNodes().stream().flatMap(node -> node.sliceStore()
-                                                                              .loaded()
-                                                                              .stream()).filter(ls -> seen.add(ls.artifact()
-                                                                                                                 .asString())).flatMap(ls -> TopologyParser.parse(ls.slice(),
-                                                                                                                                                                  ls.artifact()
-                                                                                                                                                                    .asString())
-                                                                                                                                                           .stream()).toList();
+        var sliceTopologies = cluster.allNodes()
+                                     .stream()
+                                     .flatMap(node -> node.sliceStore()
+                                                          .loaded()
+                                                          .stream())
+                                     .filter(ls -> seen.add(ls.artifact().asString()))
+                                     .flatMap(ls -> TopologyParser.parse(ls.slice(),
+                                                                         ls.artifact().asString())
+                                                                  .stream())
+                                     .toList();
         var graph = TopologyGraph.build(sliceTopologies);
-        var nodes = graph.nodes().stream().map(n -> new TopologyNodeInfo(n.id(),
-                                                                         n.type().name(),
-                                                                         n.label(),
-                                                                         n.sliceArtifact())).toList();
-        var edges = graph.edges().stream().map(e -> new TopologyEdgeInfo(e.from(),
-                                                                         e.to(),
-                                                                         e.style().name(),
-                                                                         e.topicConfig())).toList();
+        var nodes = graph.nodes()
+                         .stream()
+                         .map(n -> new TopologyNodeInfo(n.id(),
+                                                        n.type().name(),
+                                                        n.label(),
+                                                        n.sliceArtifact()))
+                         .toList();
+        var edges = graph.edges()
+                         .stream()
+                         .map(e -> new TopologyEdgeInfo(e.from(),
+                                                        e.to(),
+                                                        e.style().name(),
+                                                        e.topicConfig()))
+                         .toList();
 
         return new TopologyResponse(nodes, edges);
     }

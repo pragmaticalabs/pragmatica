@@ -4,24 +4,40 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.http.adapter;
 
+import java.nio.charset.StandardCharsets;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.stream.Collectors;
+
 import org.pragmatica.aether.http.adapter.impl.SliceRequestContext;
 import org.pragmatica.aether.http.handler.HttpRequestContext;
 import org.pragmatica.aether.http.handler.HttpResponseData;
-import org.pragmatica.http.routing.ContentType;
-import org.pragmatica.http.routing.HttpMethod;
-import org.pragmatica.http.routing.HttpStatus;
-import org.pragmatica.http.routing.ProblemDetail;
+import org.pragmatica.http.ContentType;
+import org.pragmatica.http.HttpError;
+import org.pragmatica.http.HttpMethod;
+import org.pragmatica.http.HttpStatus;
+import org.pragmatica.http.JsonCodec;
+import org.pragmatica.http.ProblemDetail;
+import org.pragmatica.http.ResponseSerializer;
+import org.pragmatica.http.routing.JsonCodecAdapter;
 import org.pragmatica.http.routing.RequestRouter;
 import org.pragmatica.http.routing.Route;
+import org.pragmatica.http.routing.RouteMountMode;
+import org.pragmatica.http.routing.RouteMounting;
 import org.pragmatica.http.routing.RouteSource;
+import org.pragmatica.http.routing.SliceVersionRegistry;
+import org.pragmatica.http.routing.VersionResponseHeaders;
+import org.pragmatica.http.routing.VersionSelectionError;
+import org.pragmatica.http.routing.VersionSelector;
+import org.pragmatica.http.routing.VersioningMetricsSink;
 import org.pragmatica.json.JsonMapper;
 import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
-
-import java.nio.charset.StandardCharsets;
-import java.util.Map;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -31,12 +47,92 @@ public interface SliceRouter {
     Logger log = LoggerFactory.getLogger(SliceRouter.class);
     Promise<HttpResponseData> handle(HttpRequestContext request);
 
+    /// The slice's API version registry (#198 §6.4), exposed for runtime introspection
+    /// (`GET /api/versions`) and for the deprecation/sunset/successor header policy (§8.2).
+    SliceVersionRegistry versionRegistry();
+
+    /// Return a router that emits #198 §11.1 versioning metrics under `sliceName` to `sink`, sharing
+    /// this router's composed routes and registry. The publisher calls this once per deployed slice
+    /// so the metrics backend (Micrometer) stays out of the generated factory; the default no-op sink
+    /// keeps unobserved routers (tests, unversioned wiring) zero-cost.
+    ///
+    /// @param sliceName the slice's identity used as the `slice` metric tag
+    /// @param sink      the versioning metrics sink
+    /// @return an observability-wired router
+    SliceRouter withObservability(String sliceName, VersioningMetricsSink sink);
+
+    /// Return a router whose every route handler is wrapped once with its per-injection-point
+    /// observability cell (#277 increment 2). The publisher supplies a `RouteDecorator` that mints,
+    /// registers, and closes each route's handler over its cell; applying it here rebuilds the dispatch
+    /// routers over the rewrapped routes so the per-call path stays a plain route lookup with no per-call
+    /// cell resolution. `RouteDecorator.IDENTITY` leaves the router untouched.
+    ///
+    /// @param decorator the per-route handler rewrap to apply once
+    /// @return a router dispatching over the decorated routes
+    SliceRouter withInvocationCells(RouteDecorator decorator);
+
     static SliceRouter sliceRouter(RouteSource routes, ErrorMapper errorMapper, JsonMapper jsonMapper) {
-        record sliceRouter(RequestRouter requestRouter, ErrorMapper errorMapper, JsonMapper jsonMapper) implements SliceRouter {
+        return sliceRouter(routes, errorMapper, jsonMapper, RouteMountMode.pathMode());
+    }
+
+    static SliceRouter sliceRouter(RouteSource routes,
+                                   ErrorMapper errorMapper,
+                                   JsonMapper jsonMapper,
+                                   RouteMountMode mountMode) {
+        var composed = RouteMounting.compose(routes, mountMode);
+
+        record sliceRouter(RequestRouter requestRouter,
+                           Map<Integer, RequestRouter> versionedRouters,
+                           SliceVersionRegistry versionRegistry,
+                           RouteMountMode mountMode,
+                           ErrorMapper errorMapper,
+                           JsonMapper jsonMapper,
+                           JsonCodec jsonCodec,
+                           String sliceName,
+                           VersioningMetricsSink metricsSink,
+                           List<Route<?>> composedRoutes) implements SliceRouter {
             private static final Map<String, String> JSON_HEADERS = Map.of("Content-Type",
                                                                            "application/json; charset=UTF-8");
 
             private static final Map<String, String> TEXT_HEADERS = Map.of("Content-Type", "text/plain; charset=UTF-8");
+
+            @Override
+            public SliceRouter withObservability(String sliceName, VersioningMetricsSink sink) {
+                return new sliceRouter(requestRouter,
+                                       versionedRouters,
+                                       versionRegistry,
+                                       mountMode,
+                                       errorMapper,
+                                       jsonMapper,
+                                       jsonCodec,
+                                       sliceName,
+                                       sink,
+                                       composedRoutes);
+            }
+
+            /// Rebuild the dispatch routers over the decorator-rewrapped routes (#277 increment 2). Each
+            /// route keeps its method/path/spacers/arity/version/security identity — only the handler is
+            /// wrapped — so routing behaviour is unchanged while every invocation now flows through its
+            /// cell. Both the path-mode router and any per-version routers are rebuilt from the SAME
+            /// decorated list so every dispatch shape is covered.
+            @Override
+            public SliceRouter withInvocationCells(RouteDecorator decorator) {
+                var decorated = composedRoutes.stream().map(decorator::decorate).toList();
+                var newVersioned = mountMode.isHeaderMode() && versionRegistry.isVersioned()
+                                   ? perVersionRouters(decorated)
+                                   : Map.<Integer, RequestRouter> of();
+
+                return new sliceRouter(RequestRouter.with(routeSourceOf(decorated)),
+                                       newVersioned,
+                                       versionRegistry,
+                                       mountMode,
+                                       errorMapper,
+                                       jsonMapper,
+                                       jsonCodec,
+                                       sliceName,
+                                       metricsSink,
+                                       decorated);
+            }
 
             @Override
             public Promise<HttpResponseData> handle(HttpRequestContext request) {
@@ -45,9 +141,143 @@ public interface SliceRouter {
             }
 
             private Promise<HttpResponseData> findAndHandleRoute(HttpMethod method, HttpRequestContext request) {
+                return mountMode.isHeaderMode()
+                       ? handleHeaderMode(method, request)
+                       : handlePathMode(method, request);
+            }
+
+            private Promise<HttpResponseData> handlePathMode(HttpMethod method, HttpRequestContext request) {
                 return requestRouter.findRoute(method,
-                                               request.path()).map(route -> handleRoute(route, request))
-                                              .or(() -> Promise.success(notFound(request)));
+                                               request.path())
+                                    .map(route -> handleVersionedRoute(route, request))
+                                    .or(() -> Promise.success(notFound(request)));
+            }
+
+            private Promise<HttpResponseData> handleHeaderMode(HttpMethod method, HttpRequestContext request) {
+                // Unversioned slices are unaffected by header mode — route them with the full
+                // spacer-aware path matcher, exactly as in path mode.
+                if (!versionRegistry.isVersioned()) {
+                    return handlePathMode(method, request);
+                }
+
+                return dispatchHeaderMode(method, request);
+            }
+
+            /// Header-mode dispatch (#198 §7), with version factored OUT of route matching: each
+            /// declared version owns a dedicated [RequestRouter] built from that version's routes at
+            /// their bare paths. The version is selected by [VersionSelector] from the set of versions
+            /// that actually have a matching route for `(method, barePath)`; the chosen version's
+            /// router then performs the SAME arity+spacer-aware selection used in path mode. This keeps
+            /// path-shape selection (collection vs get vs nested spacer) independent of version
+            /// selection, so every shape of every version is reachable.
+            private Promise<HttpResponseData> dispatchHeaderMode(HttpMethod method, HttpRequestContext request) {
+                var barePath = request.path();
+                var available = availableVersions(method, barePath);
+
+                if (available.isEmpty()) {
+                    return Promise.success(notFound(request));
+                }
+                // #198 §11.1: a header-mode request to a routable bare path that omitted the version
+                // header is observable here (the absent-header branch) whether the registry resolves
+                // it via fallback or rejects it — emit the missing-header counter, mirroring the prior
+                // dispatcher which fired it only after a matching route for the path was found.
+                if (headerValue(request).isEmpty()) {
+                    metricsSink.missingVersionHeader(sliceName);
+                }
+
+                return VersionSelector.select(versionRegistry,
+                                              available,
+                                              mountMode.headerName(),
+                                              headerValue(request))
+                                      .fold(cause -> Promise.success(versionError(cause, request)),
+                                            version -> dispatchToVersion(version, method, request));
+            }
+
+            /// The versions whose dedicated router has a matching route for `(method, barePath)`.
+            private Set<Integer> availableVersions(HttpMethod method, String barePath) {
+                return versionedRouters.entrySet()
+                                       .stream()
+                                       .filter(entry -> entry.getValue()
+                                                             .findRoute(method, barePath)
+                                                             .isPresent())
+                                       .map(Map.Entry::getKey)
+                                       .collect(Collectors.toUnmodifiableSet());
+            }
+
+            /// Delegate to the chosen version's router for the final arity+spacer-aware route match.
+            private Promise<HttpResponseData> dispatchToVersion(int version,
+                                                                HttpMethod method,
+                                                                HttpRequestContext request) {
+                return Option.option(versionedRouters.get(version))
+                             .flatMap(router -> router.findRoute(method,
+                                                                 request.path()))
+                             .map(route -> handleVersionedRoute(route, request))
+                             .or(() -> Promise.success(notFound(request)));
+            }
+
+            private Option<String> headerValue(HttpRequestContext request) {
+                return Option.option(request.headers().get(mountMode.headerName().toLowerCase()))
+                             .filter(values -> !values.isEmpty())
+                             .map(List::getFirst);
+            }
+
+            private HttpResponseData versionError(Cause cause, HttpRequestContext request) {
+                var status = cause instanceof VersionSelectionError.MissingVersionHeader
+                             ? HttpStatus.BAD_REQUEST
+                             : HttpStatus.NOT_FOUND;
+
+                return problemResponse(status, cause.message(), request);
+            }
+
+            private Promise<HttpResponseData> handleVersionedRoute(Route<?> route, HttpRequestContext request) {
+                return handleRoute(route, request).map(response -> decorateVersioned(route, request, response));
+            }
+
+            /// #198 §8.2 + §11.1: enrich a versioned route's response with deprecation/sunset/successor
+            /// headers and emit the versioned + (when applicable) deprecated request counters. Bypassed
+            /// for unversioned routes (`version == 0`) so unversioned slices are untouched.
+            private HttpResponseData decorateVersioned(Route<?> route,
+                                                       HttpRequestContext request,
+                                                       HttpResponseData response) {
+                if (route.version() == 0) {
+                    return response;
+                }
+
+                emitVersionMetrics(route.version(), request.method(), response.statusCode());
+
+                return withLifecycleHeaders(route.version(), request.path(), response);
+            }
+
+            @Contract
+            private void emitVersionMetrics(int version, String method, int status) {
+                metricsSink.versionedRequest(sliceName, version, method, status);
+                if (isDeprecated(version)) {
+                    metricsSink.deprecatedRequest(sliceName, version);
+                }
+            }
+
+            private boolean isDeprecated(int version) {
+                return versionRegistry.versions()
+                                      .stream()
+                                      .anyMatch(info -> info.version() == version && info.deprecated());
+            }
+
+            private HttpResponseData withLifecycleHeaders(int version, String requestPath, HttpResponseData response) {
+                var lifecycleHeaders = VersionResponseHeaders.headers(versionRegistry, version, requestPath);
+
+                return lifecycleHeaders.isEmpty()
+                       ? response
+                       : new HttpResponseData(response.statusCode(),
+                                              mergeHeaders(response.headers(), lifecycleHeaders),
+                                              response.body());
+            }
+
+            private static Map<String, String> mergeHeaders(Map<String, String> base, Map<String, String> extra) {
+                var merged = new HashMap<>(base);
+
+                merged.putAll(extra);
+
+                return Map.copyOf(merged);
             }
 
             private Promise<HttpResponseData> handleRoute(Route<?> route, HttpRequestContext request) {
@@ -81,19 +311,15 @@ public interface SliceRouter {
 
                 var headers = headersForContentType(contentType);
 
-                if (isTextContent(contentType)) {
-                    var body = value.toString().getBytes(StandardCharsets.UTF_8);
-
-                    return HttpResponseData.httpResponseData(200, headers, body);
-                }
-
-                return jsonMapper.writeAsBytes(value)
-                                 .fold(_ -> HttpResponseData.httpResponseData(500, "Serialization failed"),
-                                       body -> HttpResponseData.httpResponseData(200, headers, body));
+                return ResponseSerializer.serialize(value, contentType, jsonCodec).fold(_ -> HttpResponseData.httpResponseData(500,
+                                                                                                                               "Serialization failed"),
+                                                                                        body -> HttpResponseData.httpResponseData(200,
+                                                                                                                                  headers,
+                                                                                                                                  body));
             }
 
             private HttpResponseData errorToResponse(Cause cause, HttpRequestContext request) {
-                var httpError = errorMapper.map(cause);
+                var httpError = resolveHttpError(cause);
 
                 log.warn("[requestId={}] SliceRouter error: {} {} -> {} {}",
                          request.requestId(),
@@ -111,27 +337,40 @@ public interface SliceRouter {
                                                                                  body));
             }
 
-            private HttpResponseData notFound(HttpRequestContext request) {
-                var problemDetail = ProblemDetail.problemDetail(HttpStatus.NOT_FOUND,
-                                                                "No route found for " + request.method()
-                                                               + " " + request.path(),
-                                                                request.path(),
-                                                                request.requestId());
+            /// Resolve the HTTP error for a failure. A boundary parse failure — e.g. a value-object
+            /// path/query segment the framework could not lift (#397) — is a typed [HttpError] that
+            /// `matchPath`/`matchQuery` wrap in a `Causes.CompositeCause` via `Result.all`. Unwrap that
+            /// (a direct [HttpError], or one carried as a composite member) so its typed status (400) is
+            /// honored instead of collapsing to the slice mapper's 500 default. Any other cause falls
+            /// through to the slice error mapper unchanged.
+            private HttpError resolveHttpError(Cause cause) {
+                return Option.from(cause.stream()
+                                        .filter(HttpError.class::isInstance)
+                                        .map(HttpError.class::cast)
+                                        .findFirst()).or(() -> errorMapper.map(cause));
+            }
 
-                return jsonMapper.writeAsBytes(problemDetail)
-                                 .fold(_ -> plainErrorResponse(HttpStatus.NOT_FOUND, "Not Found"),
-                                       body -> HttpResponseData.httpResponseData(404, JSON_HEADERS, body));
+            private HttpResponseData notFound(HttpRequestContext request) {
+                return problemResponse(HttpStatus.NOT_FOUND,
+                                       "No route found for " + request.method() + " " + request.path(),
+                                       request);
             }
 
             private HttpResponseData methodNotAllowed(HttpRequestContext request) {
-                var problemDetail = ProblemDetail.problemDetail(HttpStatus.METHOD_NOT_ALLOWED,
-                                                                "Invalid HTTP method: " + request.method(),
-                                                                request.path(),
-                                                                request.requestId());
+                return problemResponse(HttpStatus.METHOD_NOT_ALLOWED,
+                                       "Invalid HTTP method: " + request.method(),
+                                       request);
+            }
+
+            private HttpResponseData problemResponse(HttpStatus status, String detail, HttpRequestContext request) {
+                var problemDetail = ProblemDetail.problemDetail(status, detail, request.path(), request.requestId());
 
                 return jsonMapper.writeAsBytes(problemDetail)
-                                 .fold(_ -> plainErrorResponse(HttpStatus.METHOD_NOT_ALLOWED, "Method Not Allowed"),
-                                       body -> HttpResponseData.httpResponseData(405, JSON_HEADERS, body));
+                                 .fold(_ -> plainErrorResponse(status,
+                                                               status.reasonPhrase()),
+                                       body -> HttpResponseData.httpResponseData(status.code(),
+                                                                                 JSON_HEADERS,
+                                                                                 body));
             }
 
             private HttpResponseData plainErrorResponse(HttpStatus status, String message) {
@@ -147,14 +386,42 @@ public interface SliceRouter {
             private static Map<String, String> headersForContentType(ContentType contentType) {
                 return Map.of("Content-Type", contentType.headerText());
             }
-
-            private static boolean isTextContent(ContentType contentType) {
-                var headerText = contentType.headerText().toLowerCase();
-
-                return headerText.startsWith("text/") || headerText.contains("plain");
-            }
         }
+        var composedRoutes = composed.routes().toList();
+        var versionRegistry = composed.versionRegistry();
+        var versionedRouters = mountMode.isHeaderMode() && versionRegistry.isVersioned()
+                               ? perVersionRouters(composedRoutes)
+                               : Map.<Integer, RequestRouter> of();
 
-        return new sliceRouter(RequestRouter.with(routes), errorMapper, jsonMapper);
+        return new sliceRouter(RequestRouter.with(routeSourceOf(composedRoutes)),
+                               versionedRouters,
+                               versionRegistry,
+                               mountMode,
+                               errorMapper,
+                               jsonMapper,
+                               JsonCodecAdapter.forMapper(jsonMapper),
+                               "",
+                               VersioningMetricsSink.noop(),
+                               composedRoutes);
+    }
+
+    /// Partition a slice's composed (bare-path, header-mode) routes by [Route#version()] into one
+    /// [RequestRouter] per version (#198 §7). Each version's router owns only that version's routes,
+    /// so version selection and path-shape (arity/spacer) selection are fully independent: the
+    /// dispatcher first picks a version, then asks that version's router to match the path with the
+    /// same deterministic logic used in path mode.
+    private static Map<Integer, RequestRouter> perVersionRouters(List<Route<?>> routes) {
+        return routes.stream()
+                     .collect(Collectors.groupingBy(Route::version))
+                     .entrySet()
+                     .stream()
+                     .collect(Collectors.toUnmodifiableMap(Map.Entry::getKey,
+                                                           entry -> RequestRouter.with(routeSourceOf(entry.getValue()))));
+    }
+
+    /// Wrap an already-composed route list as a [RouteSource] for [RequestRouter#with], so a
+    /// materialized partition can be fed to the router without re-running composition.
+    private static RouteSource routeSourceOf(List<Route<?>> routes) {
+        return routes::stream;
     }
 }

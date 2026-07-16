@@ -4,14 +4,14 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.pg.parser.transform;
 
-import org.pragmatica.aether.pg.parser.PostgresParser.CstNode;
-import org.pragmatica.aether.pg.parser.PostgresParser.SourceSpan;
-import org.pragmatica.lang.Option;
-
 import java.util.ArrayList;
 import java.util.List;
 import java.util.function.Function;
 import java.util.stream.Stream;
+
+import org.pragmatica.aether.pg.parser.PostgresParser.CstNode;
+import org.pragmatica.aether.pg.parser.PostgresParser.SourceSpan;
+import org.pragmatica.lang.Option;
 
 
 public record CstNavigator(CstNode.NonTerminal node) {

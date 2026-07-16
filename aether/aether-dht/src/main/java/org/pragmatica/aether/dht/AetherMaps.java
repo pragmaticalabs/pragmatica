@@ -4,6 +4,8 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.dht;
 
+import java.nio.charset.StandardCharsets;
+
 import org.pragmatica.aether.slice.SliceState;
 import org.pragmatica.aether.slice.kvstore.AetherKey.EndpointKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.HttpNodeRouteKey;
@@ -14,8 +16,6 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.SliceNodeValue;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.dht.DHTClient;
 import org.pragmatica.lang.Option;
-
-import java.nio.charset.StandardCharsets;
 
 
 public interface AetherMaps {

@@ -4,13 +4,13 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.node;
 
+import java.util.Base64;
+
 import org.pragmatica.aether.slice.kvstore.AetherKey.GossipKeyRotationKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.GossipKeyRotationValue;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.swim.AesGcmGossipEncryptor;
 import org.pragmatica.swim.RotatingGossipEncryptor;
-
-import java.util.Base64;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -47,8 +47,10 @@ public final class GossipKeyRotationHandler {
                      ? buildDualKeyEncryptor(currentKey, value.currentKeyId(), value)
                      : AesGcmGossipEncryptor.aesGcmGossipEncryptor(currentKey, value.currentKeyId());
 
-        result.onSuccess(newEncryptor -> rotateAndLog(newEncryptor, value.currentKeyId())).onFailure(cause -> log.error("Failed to apply gossip key rotation: {}",
-                                                                                                                        cause.message()));
+        result.onSuccess(newEncryptor -> rotateAndLog(newEncryptor,
+                                                      value.currentKeyId()))
+              .onFailure(cause -> log.error("Failed to apply gossip key rotation: {}",
+                                            cause.message()));
     }
 
     private void rotateAndLog(org.pragmatica.swim.GossipEncryptor newEncryptor, int keyId) {

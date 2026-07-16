@@ -4,6 +4,14 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.cli.cluster;
 
+import java.io.PrintStream;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.List;
+import java.util.concurrent.Callable;
+import java.util.function.Function;
+import java.util.regex.Pattern;
+
 import org.pragmatica.aether.cli.ExitCode;
 import org.pragmatica.aether.config.cluster.ClusterBootstrapConfig;
 import org.pragmatica.aether.config.cluster.ClusterBootstrapConfigParser;
@@ -15,14 +23,6 @@ import org.pragmatica.aether.management.route.ManagementRoute;
 import org.pragmatica.json.JsonMapper;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Result;
-
-import java.io.PrintStream;
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.util.List;
-import java.util.concurrent.Callable;
-import java.util.function.Function;
-import java.util.regex.Pattern;
 
 import picocli.CommandLine;
 import picocli.CommandLine.Command;

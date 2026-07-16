@@ -1,6 +1,11 @@
 # Cluster B -- Hetzner Cloud (destructive test suites)
 #
-# 5-node cluster on Hetzner cx33 instances (4 vCPU, 8 GB RAM).
+# 5-node cluster on Hetzner cpx32 instances (4 vCPU, 8 GB RAM).
+# Type notes (2026-07-12): dedicated ccx is NOT viable for chaos suites — the
+# account's dedicated-core limit cannot hold 5 nodes + in-flight churn
+# replacements (Hetzner 403 resource_limit_exceeded; see #442). Shared lines
+# (cx/cpx/cax) can be capacity-exhausted at EU peak — if provisioning fails all
+# zones, retry off-peak rather than switching to ccx.
 # Requires HCLOUD_TOKEN and PG_URL environment variables.
 
 config_version = "1.0.0"
@@ -17,15 +22,21 @@ max_unavailable = 1
 [source.hetzner-eu]
 type = "cloud"
 provider = "hetzner"
-zone = "fsn1"             # Hetzner location code (Hetzner's API distinguishes `location` (fsn1) from `datacenter` (fsn1-dc14); the cloud-provider integration uses the location form). When CloudProviderSupport adds a ZoneHint, this value is sent as the `location` field to Hetzner.
-region = "fsn1"           # Same value as zone for now; aether's HetznerComputeProvider uses config.region() as the location fallback when no placement hint is set.
+# `zones` is an ordered fallback list of Hetzner location codes. The bootstrap provisions
+# each node into the first zone with capacity, rotating to the next on a 412
+# `resource_unavailable` ("error during placement") response — so a single full zone no
+# longer aborts the whole cluster bootstrap. Different nodes may land in different zones
+# (cross-zone is desirable). A single `zone = "<loc>"` still works (treated as a 1-element
+# list); when neither `zone` nor `zones` is set the provider falls back to `region`.
+zones = ["fsn1", "nbg1", "hel1"]
+region = "nbg1"           # Default location used when no zone placement hint is set (single-attempt fallback).
 credentials = "${env:HCLOUD_TOKEN}"
 load_balancer = "none"
 databases.forge = "${env:PG_URL}"
 
 [source.hetzner-eu.core]
 count = 5
-instance_type = "cx33"
+instance_type = "cpx32"
 image = "ubuntu-22.04"
 
 [infrastructure.networking]
@@ -76,6 +87,28 @@ name = "integration-test"
 roles = ["service"]
 authorization_role = "ADMIN"
 
+# Per-key RBAC roles for 05-security's viewer/operator coverage. The section-header
+# suffix after `api-keys.` IS the literal key value the harness sends as X-API-Key
+# (AETHER_VIEWER_API_KEY / AETHER_OPERATOR_API_KEY in run-tests.sh). authorization_role
+# drives enforcement (ADMIN > OPERATOR > VIEWER); without these blocks VIEWER_API_KEY /
+# OPERATOR_API_KEY are empty and the viewer tests skip + the operator test is vacuous.
+[source.hetzner-eu.node_config.app-http.api-keys.aether-integration-viewer-key]
+name = "integration-viewer"
+roles = ["service"]
+authorization_role = "VIEWER"
+
+[source.hetzner-eu.node_config.app-http.api-keys.aether-integration-operator-key]
+name = "integration-operator"
+roles = ["service"]
+authorization_role = "OPERATOR"
+
+# @PgSql slices read the FLAT [database] datasource (config="database"). databases.X
+# produces nested [database.X] the connector ignores; inject flat [database] via node_config.
+[source.hetzner-eu.node_config.database]
+username = "${env:PG_USER}"
+password = "${env:PG_PASSWORD}"
+async_url = "postgresql://${env:PG_HOST}:5432/${env:PG_DB}"
+
 [runtime.default]
 type = "container"
-image = "ghcr.io/pragmaticalabs/aether-node:1.0.0-rc1-candidate"
+image = "ghcr.io/pragmaticalabs/aether-node:1.0.0-rc2-candidate"

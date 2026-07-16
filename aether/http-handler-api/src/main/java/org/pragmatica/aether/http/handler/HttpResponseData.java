@@ -4,12 +4,12 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.http.handler;
 
-import org.pragmatica.lang.Result;
-import org.pragmatica.serialization.Codec;
-
 import java.nio.charset.StandardCharsets;
 import java.util.Map;
 import java.util.Objects;
+
+import org.pragmatica.lang.Result;
+import org.pragmatica.serialization.Codec;
 
 import static org.pragmatica.lang.Result.success;
 
@@ -50,7 +50,8 @@ public record HttpResponseData(int statusCode, Map<String, String> headers, byte
     public static HttpResponseData httpResponseData(int statusCode, Map<String, String> headers, byte[] body) {
         return Result.all(success(statusCode),
                           success(headers),
-                          success(body)).map(HttpResponseData::new)
-                         .unwrap();
+                          success(body))
+                     .map(HttpResponseData::new)
+                     .unwrap();
     }
 }

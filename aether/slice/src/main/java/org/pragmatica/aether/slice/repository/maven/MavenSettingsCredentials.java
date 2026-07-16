@@ -4,16 +4,16 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.slice.repository.maven;
 
-import org.pragmatica.lang.Option;
-
 import javax.xml.parsers.DocumentBuilderFactory;
 import java.io.File;
 import java.util.Base64;
 
-import org.w3c.dom.Node;
-import org.w3c.dom.NodeList;
+import org.pragmatica.lang.Option;
+
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.w3c.dom.Node;
+import org.w3c.dom.NodeList;
 
 import static org.pragmatica.lang.Option.option;
 

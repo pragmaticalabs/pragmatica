@@ -4,10 +4,10 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.pg.schema.model;
 
-import org.pragmatica.lang.Option;
-
 import java.util.ArrayList;
 import java.util.List;
+
+import org.pragmatica.lang.Option;
 
 
 public sealed interface PgType {

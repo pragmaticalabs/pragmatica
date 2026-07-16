@@ -69,8 +69,34 @@ public final class ProcessorError {
         return PREFIX + "Failed to load schema from '" + path + "': " + detail;
     }
 
+    public static String unlistedMigration(String fileName, String schemaPath) {
+        return PREFIX
+             + "Migration '" + fileName
+             + "' in '" + schemaPath
+             + "' is not listed in migrations.list (kept via auto-discovery)";
+    }
+
     public static String returnFieldNotInSelect(String field, String recordType) {
         return PREFIX + "Field '" + field + "' in return type " + recordType + " has no matching SELECT column";
+    }
+
+    public static String missingValueMappingForParam(String param, String type) {
+        return PREFIX
+             + "Parameter '" + param
+             + "' has type '" + type
+             + "' which is neither a supported column type nor a value object exposing "
+             + "'static ValueMapping<" + type
+             + ", P> valueMapping()'. Add a ValueMapping or use a raw column type.";
+    }
+
+    public static String missingValueMappingForField(String field, String type, String recordType) {
+        return PREFIX
+             + "Field '" + field
+             + "' of return type " + recordType
+             + " has type '" + type
+             + "' which is neither a supported column type nor a value object exposing "
+             + "'static ValueMapping<" + type
+             + ", P> valueMapping()'. Add a ValueMapping or use a raw column type.";
     }
 
     public static String sqlConnectorWithQueryAnnotation(String interfaceName) {
@@ -82,6 +108,14 @@ public final class ProcessorError {
 
     public static String sqlParseFailed(String methodName, String detail) {
         return PREFIX + "SQL parse failed in '" + methodName + "': " + detail;
+    }
+
+    public static String dataModifyingCteNotSupported(String methodName) {
+        return PREFIX
+             + "Data-modifying CTEs are not supported in '" + methodName
+             + "': a WITH clause whose body is INSERT/UPDATE/DELETE (e.g. "
+             + "WITH x AS (INSERT ... RETURNING ...) SELECT ...) cannot be validated or generated. "
+             + "Split the write and the read into separate methods.";
     }
 
     public static String columnNotFoundInQuery(String column, String table, int line, int col) {

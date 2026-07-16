@@ -55,7 +55,30 @@ public interface StorageEngine {
 
     /// Store a value only if the given version is newer than the current stored version.
     /// Returns true if written (version is newer), false if superseded (stale version).
+    ///
+    /// Convenience overload at the unfenced epoch floor (`Epoch.ZERO` → `0:0`): used by migration,
+    /// anti-entropy and non-cluster paths where there is no owner-epoch fence to apply.
     default Promise<Boolean> putVersioned(byte[] key, byte[] value, long version) {
+        return putVersioned(key, value, version, 0L, 0L);
+    }
+
+    /// Store a value subject to the owner-epoch fence then the within-epoch HLC-version LWW
+    /// (#345 piece 1c). The presented owner epoch is carried as its two primitive `long`s
+    /// (`epochTerm`, `epochCounter`) so this Apache-2.0 module stays independent of the BSL-1.1
+    /// `Epoch` type that mints it.
+    ///
+    /// Decision order, applied identically on every replica:
+    ///
+    ///   - first write for the key → accept;
+    ///   - presented epoch STRICTLY older than the partition high-water → reject with a
+    ///     [org.pragmatica.dht.DHTError.StaleEpochWrite] failure (a deposed owner; spec §8: the
+    ///     reject is RETURNED, not silent);
+    ///   - same-or-newer epoch → existing HLC-version LWW: a `version` not newer than the stored
+    ///     one is superseded, reported as a successful `false` written-flag (behavior unchanged).
+    ///
+    /// @return `true` if written, `false` if superseded within the epoch, or a failed promise if
+    ///         rejected by the epoch fence.
+    default Promise<Boolean> putVersioned(byte[] key, byte[] value, long version, long epochTerm, long epochCounter) {
         return put(key, value).map(_ -> true);
     }
 

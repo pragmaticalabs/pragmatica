@@ -6,13 +6,13 @@
 package org.pragmatica.aether.management.route;
 
 import org.junit.jupiter.api.Test;
-import org.pragmatica.http.routing.HttpMethod;
+import org.pragmatica.http.HttpMethod;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.pragmatica.http.routing.HttpMethod.DELETE;
-import static org.pragmatica.http.routing.HttpMethod.GET;
-import static org.pragmatica.http.routing.HttpMethod.POST;
-import static org.pragmatica.http.routing.HttpMethod.PUT;
+import static org.pragmatica.http.HttpMethod.DELETE;
+import static org.pragmatica.http.HttpMethod.GET;
+import static org.pragmatica.http.HttpMethod.POST;
+import static org.pragmatica.http.HttpMethod.PUT;
 
 
 class RouteMatcherTest {

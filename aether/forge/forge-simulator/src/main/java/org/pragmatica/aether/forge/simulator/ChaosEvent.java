@@ -4,14 +4,14 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.forge.simulator;
 
+import java.time.Duration;
+import java.util.Set;
+
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Verify;
 import org.pragmatica.lang.utils.Causes;
-
-import java.time.Duration;
-import java.util.Set;
 
 import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.some;

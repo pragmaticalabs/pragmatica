@@ -4,12 +4,12 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.api;
 
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicReference;
+
 import org.pragmatica.http.websocket.WebSocketHandler;
 import org.pragmatica.http.websocket.WebSocketMessage;
 import org.pragmatica.http.websocket.WebSocketSession;
-
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.atomic.AtomicReference;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -49,7 +49,11 @@ public class DashboardWebSocketHandler implements WebSocketHandler {
     }
 
     private void onText(WebSocketSession session, String message) {
-        if (authenticator.onMessage(session, message)) {
+        // #293: on a secured cluster onOpen does NOT push INITIAL_STATE (the session is pending auth);
+        // deliver it on the authenticated path instead, so panels populate after a successful login.
+        if (authenticator.onMessage(session,
+                                    message,
+                                    () -> session.send(metricsPublisher.buildInitialState()))) {
             return;
         }
 

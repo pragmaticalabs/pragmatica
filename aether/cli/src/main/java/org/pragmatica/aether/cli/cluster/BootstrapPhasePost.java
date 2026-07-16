@@ -44,12 +44,11 @@ sealed interface BootstrapPhasePost {
     @SuppressWarnings("JBCT-EX-01")
     @Contract
     private static void attachFloatingIp(String sourceName, SourceProfile source, BootstrapContext ctx) {
-        var _ = ProviderResolver.resolveFloatingIpProvider(source).onSuccess(fip -> attachFirstCoreNode(fip,
-                                                                                                        sourceName,
-                                                                                                        source,
-                                                                                                        ctx)).onFailure(cause -> System.out.printf("  WARN: %s: floating IP provider not available: %s%n",
-                                                                                                                                                   sourceName,
-                                                                                                                                                   cause.message()));
+        var _ = ProviderResolver.resolveFloatingIpProvider(source)
+                                .onSuccess(fip -> attachFirstCoreNode(fip, sourceName, source, ctx))
+                                .onFailure(cause -> System.out.printf("  WARN: %s: floating IP provider not available: %s%n",
+                                                                      sourceName,
+                                                                      cause.message()));
     }
 
     @Contract
@@ -66,9 +65,10 @@ sealed interface BootstrapPhasePost {
     @Contract
     private static void attachLoadBalancerIps(FloatingIpProvider fip, SourceProfile source, String nodeId) {
         for (var ip : source.loadBalancerIps()) {
-            var _ = fip.attach(ip, nodeId).await().onSuccess(_ -> System.out.printf("  Floating IP %s attached to %s%n",
-                                                                                    ip,
-                                                                                    nodeId)).onFailure(c -> System.err.println("  Warning: floating IP attach failed: " + c.message()));
+            var _ = fip.attach(ip, nodeId)
+                       .await()
+                       .onSuccess(_ -> System.out.printf("  Floating IP %s attached to %s%n", ip, nodeId))
+                       .onFailure(c -> System.err.println("  Warning: floating IP attach failed: " + c.message()));
         }
     }
 
@@ -76,11 +76,29 @@ sealed interface BootstrapPhasePost {
     private static void registerClusterLocally(BootstrapContext ctx) {
         var clusterName = ctx.config().cluster().name();
         var apiKeyEnvName = ClusterBootstrapOrchestrator.deriveApiKeyEnvName(clusterName);
+        // #209: register the endpoint with the scheme the cluster actually serves. When TLS is
+        // auto-generated the management plane is HTTPS, so the persisted endpoint (the single source of
+        // truth operational commands read) must be `https://`, not a hardcoded `http://`.
+        var scheme = managementScheme(ctx);
         var endpoint = ctx.addresses().isEmpty()
-                       ? "http://localhost:9090"
-                       : "http://" + ctx.addresses().getFirst().publicIp();
+                       ? scheme + "://localhost:9090"
+                       : scheme + "://" + ctx.addresses().getFirst().publicIp();
 
-        ClusterRegistry.load().map(registry -> registry.add(clusterName, endpoint, Option.some(apiKeyEnvName))).flatMap(ClusterRegistry::save).onFailure(cause -> System.err.println("Warning: failed to register cluster locally: " + cause.message()));
+        ClusterRegistry.load()
+                       .map(registry -> registry.add(clusterName,
+                                                     endpoint,
+                                                     Option.some(apiKeyEnvName)))
+                       .flatMap(ClusterRegistry::save)
+                       .onFailure(cause -> System.err.println("Warning: failed to register cluster locally: " + cause.message()));
+    }
+
+    private static String managementScheme(BootstrapContext ctx) {
+        return ctx.config()
+                  .operations()
+                  .tls()
+                  .autoGenerate()
+               ? "https"
+               : "http";
     }
 
     @Contract
@@ -91,16 +109,19 @@ sealed interface BootstrapPhasePost {
         System.out.printf("Cluster \"%s\" bootstrapped successfully.%n", clusterName);
         System.out.printf("Nodes: %d address(es) collected%n",
                           ctx.addresses().size());
-        ctx.apiKey().onPresent(key -> System.out.printf("API Key Env: %s%n",
-                                                        ClusterBootstrapOrchestrator.deriveApiKeyEnvName(clusterName)));
+        ctx.apiKey()
+           .onPresent(key -> System.out.printf("API Key Env: %s%n",
+                                               ClusterBootstrapOrchestrator.deriveApiKeyEnvName(clusterName)));
     }
 
     private static BootstrapResult buildResult(BootstrapContext ctx) {
         var clusterName = ctx.config().cluster().name();
         var mgmtPort = ctx.config().operations().ports().management();
+        // #209: surface the actual scheme (HTTPS under auto-generated TLS) in the result endpoint too.
+        var scheme = managementScheme(ctx);
         var endpoint = ctx.addresses().isEmpty()
-                       ? "http://localhost:" + mgmtPort
-                       : "http://" + ctx.addresses().getFirst().publicIp() + ":" + mgmtPort;
+                       ? scheme + "://localhost:" + mgmtPort
+                       : scheme + "://" + ctx.addresses().getFirst().publicIp() + ":" + mgmtPort;
         var apiKey = ctx.apiKey().or("");
         var apiKeyEnvName = ClusterBootstrapOrchestrator.deriveApiKeyEnvName(clusterName);
 

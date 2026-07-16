@@ -50,7 +50,12 @@ public final class R2dbcSqlConnectorFactory implements ResourceFactory<SqlConnec
         config.effectiveUsername().onPresent(u -> optionsBuilder.option(ConnectionFactoryOptions.USER, u));
         config.effectivePassword().onPresent(p -> optionsBuilder.option(ConnectionFactoryOptions.PASSWORD, p));
         var connectionFactory = ConnectionFactories.get(optionsBuilder.build());
-        var poolConfig = ConnectionPoolConfiguration.builder(connectionFactory).maxSize(config.poolConfig().maxConnections()).initialSize(config.poolConfig().minConnections()).maxIdleTime(config.poolConfig().idleTimeout().duration()).maxLifeTime(config.poolConfig().maxLifetime().duration()).build();
+        var poolConfig = ConnectionPoolConfiguration.builder(connectionFactory)
+                                                    .maxSize(config.poolConfig().maxConnections())
+                                                    .initialSize(config.poolConfig().minConnections())
+                                                    .maxIdleTime(config.poolConfig().idleTimeout().duration())
+                                                    .maxLifeTime(config.poolConfig().maxLifetime().duration())
+                                                    .build();
         var pool = new ConnectionPool(poolConfig);
 
         return R2dbcSqlConnector.r2dbcSqlConnector(config, pool);

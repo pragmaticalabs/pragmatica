@@ -4,6 +4,14 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.stream;
 
+import java.util.List;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.LongConsumer;
+
 import org.pragmatica.aether.slice.ConsumerConfig;
 import org.pragmatica.aether.slice.ConsumerConfig.ErrorStrategy;
 import org.pragmatica.aether.stream.consumer.TransactionalCursorCommit;
@@ -16,14 +24,6 @@ import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.JitterUtil;
 import org.pragmatica.lang.utils.SharedScheduler;
-
-import java.util.List;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ScheduledFuture;
-import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.atomic.AtomicInteger;
-import java.util.concurrent.atomic.AtomicLong;
-import java.util.function.LongConsumer;
 
 import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.option;
@@ -162,8 +162,8 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
                                     String streamName,
                                     int partition) {
         cursorStore.onPresent(store -> store.fetch(groupId, streamName, partition)
-                                            .onResult(result -> applyCursorAndStart(result, key, state))).onEmpty(() -> startConsumer(key,
-                                                                                                                                      state));
+                                            .onResult(result -> applyCursorAndStart(result, key, state)))
+                   .onEmpty(() -> startConsumer(key, state));
     }
 
     private void applyCursorAndStart(Result<Option<Long>> result, ConsumerKey key, ConsumerState state) {
@@ -189,10 +189,10 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
     }
 
     private void subscribePushOrPoll(ConsumerKey key, ConsumerState state) {
-        partitionManager.partitionBuffer(key.streamName(), key.partition()).onPresent(buffer -> registerPushListener(buffer,
-                                                                                                                     key,
-                                                                                                                     state)).onEmpty(() -> scheduleNextPoll(key,
-                                                                                                                                                            state));
+        partitionManager.partitionBuffer(key.streamName(),
+                                         key.partition())
+                        .onPresent(buffer -> registerPushListener(buffer, key, state))
+                        .onEmpty(() -> scheduleNextPoll(key, state));
     }
 
     private void registerPushListener(OffHeapRingBuffer buffer, ConsumerKey key, ConsumerState state) {
@@ -203,9 +203,10 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
     }
 
     private void removePushListener(ConsumerKey key, ConsumerState state) {
-        state.pushListener().onPresent(listener -> partitionManager.partitionBuffer(key.streamName(),
-                                                                                    key.partition())
-                                                                   .onPresent(buffer -> buffer.removeAppendListener(listener)));
+        state.pushListener()
+             .onPresent(listener -> partitionManager.partitionBuffer(key.streamName(),
+                                                                     key.partition())
+                                                    .onPresent(buffer -> buffer.removeAppendListener(listener)));
     }
 
     private void checkpointIfNeeded(ConsumerKey key, ConsumerState state) {
@@ -239,10 +240,12 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
         state.touchLastPollTime();
         var fromOffset = state.cursor();
 
-        partitionManager.readLocal(key.streamName(), key.partition(), fromOffset, MAX_POLL_BATCH).onSuccess(events -> handlePollSuccess(key,
-                                                                                                                                        state,
-                                                                                                                                        events)).onFailure(cause -> logPollFailure(key,
-                                                                                                                                                                                   cause));
+        partitionManager.readLocal(key.streamName(),
+                                   key.partition(),
+                                   fromOffset,
+                                   MAX_POLL_BATCH)
+                        .onSuccess(events -> handlePollSuccess(key, state, events))
+                        .onFailure(cause -> logPollFailure(key, cause));
     }
 
     private void handlePollSuccess(ConsumerKey key, ConsumerState state, List<OffHeapRingBuffer.RawEvent> events) {
@@ -321,12 +324,17 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
             return;
         }
 
-        state.callback().onEvent(event.offset(), event.data(), event.timestamp()).onSuccess(_ -> advanceCursor(key,
-                                                                                                               state,
-                                                                                                               event.offset())).onFailure(cause -> handleRetryFailureAgain(key,
-                                                                                                                                                                           state,
-                                                                                                                                                                           event,
-                                                                                                                                                                           cause.message()));
+        state.callback()
+             .onEvent(event.offset(),
+                      event.data(),
+                      event.timestamp())
+             .onSuccess(_ -> advanceCursor(key,
+                                           state,
+                                           event.offset()))
+             .onFailure(cause -> handleRetryFailureAgain(key,
+                                                         state,
+                                                         event,
+                                                         cause.message()));
     }
 
     private void handleRetryFailureAgain(ConsumerKey key,

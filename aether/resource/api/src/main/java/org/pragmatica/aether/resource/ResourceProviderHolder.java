@@ -4,11 +4,11 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.resource;
 
+import java.util.concurrent.atomic.AtomicReference;
+
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
-
-import java.util.concurrent.atomic.AtomicReference;
 
 import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Result.unitResult;

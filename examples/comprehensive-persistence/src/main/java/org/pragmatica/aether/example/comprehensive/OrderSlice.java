@@ -1,5 +1,9 @@
 package org.pragmatica.aether.example.comprehensive;
 
+import java.math.BigDecimal;
+import java.time.Instant;
+import java.util.List;
+
 import org.pragmatica.aether.example.comprehensive.BasePersistence.CustomerOrder;
 import org.pragmatica.aether.example.comprehensive.BasePersistence.CustomerRevenue;
 import org.pragmatica.aether.example.comprehensive.BasePersistence.ProductWithTags;
@@ -7,10 +11,6 @@ import org.pragmatica.aether.example.comprehensive.CrudPersistence.CustomerRow;
 import org.pragmatica.aether.slice.annotation.Slice;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
-
-import java.math.BigDecimal;
-import java.time.Instant;
-import java.util.List;
 
 
 @Slice

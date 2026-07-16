@@ -4,6 +4,15 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.slice.kvstore;
 
+import java.time.Instant;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.stream.Collectors;
+
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.artifact.ArtifactBase;
 import org.pragmatica.aether.artifact.Version;
@@ -27,15 +36,6 @@ import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.utils.Causes;
-
-import java.time.Instant;
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.LinkedHashMap;
-import java.util.List;
-import java.util.Map;
-import java.util.Set;
-import java.util.stream.Collectors;
 
 import static org.pragmatica.lang.Result.success;
 
@@ -132,7 +132,11 @@ public final class KVStoreSerializer {
     private static void appendEntry(StringBuilder sb, String section, AetherKey key, AetherValue value) {
         var identity = extractIdentity(section, key);
 
-        sb.append('"').append(escapeTomlString(identity)).append("\" = \"").append(escapeTomlString(serializeValue(value))).append("\"\n");
+        sb.append('"')
+          .append(escapeTomlString(identity))
+          .append("\" = \"")
+          .append(escapeTomlString(serializeValue(value)))
+          .append("\"\n");
     }
 
     private static String sectionForKey(AetherKey key) {
@@ -146,7 +150,7 @@ public final class KVStoreSerializer {
             case PreviousVersionKey _ -> "previous-version";
             case HttpNodeRouteKey _ -> "http-node-routes";
             case LogLevelKey _ -> "log-level";
-            case ObservabilityDepthKey _ -> "obs-depth";
+            case ObservabilityConfigKey _ -> "obs-config";
             case AlertThresholdKey _ -> "alert-threshold";
             case TopicSubscriptionKey _ -> "topic-sub";
             case ScheduledTaskKey _ -> "scheduled-task";
@@ -158,6 +162,7 @@ public final class KVStoreSerializer {
             case ActivationDirectiveKey _ -> "activation";
             case GossipKeyRotationKey _ -> "gossip-key-rotation";
             case GovernorAnnouncementKey _ -> "governor-announcement";
+            case CommunityKey _ -> "community";
             case NodeArtifactKey _ -> "node-artifact";
             case NodeRoutesKey _ -> "node-routes";
             case SchemaVersionKey _ -> "schema-version";
@@ -178,6 +183,7 @@ public final class KVStoreSerializer {
             case ApiKeyKey _ -> "api-key";
             case ApiKeyAuditKey _ -> "api-key-audit";
             case DhtPartitionOwnershipKey _ -> "dht-partition-ownership";
+            case StreamPartitionOwnershipKey _ -> "stream-partition-ownership";
             case SpokesmanKey _ -> "spokesman";
             case ProvisioningSlotKey _ -> "provisioning-slot";
             case ClusterPhaseKey _ -> "cluster-phase";
@@ -219,14 +225,15 @@ public final class KVStoreSerializer {
             case HttpNodeRouteValue v -> serializeHttpNodeRoute(v);
             case AlertThresholdValue v -> serializeAlertThreshold(v);
             case LogLevelValue v -> serializeLogLevel(v);
-            case ObservabilityDepthValue v -> serializeObservabilityDepth(v);
+            case ObservabilityConfigValue v -> serializeObsConfig(v);
             case ConfigValue v -> serializeConfig(v);
             case WorkerSliceDirectiveValue v -> serializeWorkerDirective(v);
-            case ActivationDirectiveValue v -> v.role();
+            case ActivationDirectiveValue v -> serializeActivationDirective(v);
             case GossipKeyRotationValue v -> serializeGossipKeyRotation(v);
             case JoinDeadlineValue v -> v.deadlineMs() + PIPE + v.setAt();
             case DrainDeadlineValue v -> v.deadlineMs() + PIPE + v.setAt();
             case GovernorAnnouncementValue v -> serializeGovernorAnnouncement(v);
+            case CommunityValue v -> serializeCommunity(v);
             case NodeArtifactValue v -> serializeNodeArtifact(v);
             case NodeRoutesValue v -> serializeNodeRoutes(v);
             case AppBlueprintValue _ -> "";
@@ -248,6 +255,7 @@ public final class KVStoreSerializer {
             case ApiKeyValue v -> serializeApiKey(v);
             case ApiKeyAuditValue v -> serializeApiKeyAudit(v);
             case DhtPartitionOwnershipValue v -> serializeDhtPartitionOwnership(v);
+            case StreamPartitionOwnershipValue v -> serializeStreamPartitionOwnership(v);
             case SpokesmanValue v -> serializeSpokesman(v);
             case ProvisioningSlotValue v -> serializeProvisioningSlot(v);
             case ClusterPhaseValue v -> v.phase().name();
@@ -303,6 +311,15 @@ public final class KVStoreSerializer {
                                                                                                                                                               .nodeId();
     }
 
+    private static String serializeStreamPartitionOwnership(StreamPartitionOwnershipValue v) {
+        return v.owner()
+                .id() + PIPE + v.ownerEpoch()
+                                .rabiaTerm() + PIPE + v.ownerEpoch()
+                                                       .localCounter() + PIPE + v.ownershipTerm() + PIPE + v.transferredAt()
+                                                                                                            .packed() + PIPE + v.transferredAt()
+                                                                                                                                .nodeId();
+    }
+
     private static String serializeSpokesman(SpokesmanValue v) {
         return String.join(",", v.communities()) + PIPE + v.assignedEpoch()
                                                            .rabiaTerm() + PIPE + v.assignedEpoch()
@@ -316,7 +333,13 @@ public final class KVStoreSerializer {
         return v.currentVersion()
                 .withQualifier() + PIPE + v.targetInstances() + PIPE + v.minInstances() + PIPE + v.owningBlueprint()
                                                                                                   .map(BlueprintId::asString)
-                                                                                                  .or("") + PIPE + v.updatedAt() + PIPE + v.effectivePlacement();
+                                                                                                  .or("") + PIPE + v.updatedAt() + PIPE + v.effectivePlacement() + PIPE + v.maxInstances()
+                                                                                                                                                                           .map(String::valueOf)
+                                                                                                                                                                           .or("") + PIPE + v.scaleUpThreshold()
+                                                                                                                                                                                             .map(String::valueOf)
+                                                                                                                                                                                             .or("") + PIPE + v.scaleDownThreshold()
+                                                                                                                                                                                                               .map(String::valueOf)
+                                                                                                                                                                                                               .or("");
     }
 
     private static String serializeSliceNode(SliceNodeValue v) {
@@ -364,8 +387,8 @@ public final class KVStoreSerializer {
         return v.loggerName() + PIPE + v.level() + PIPE + v.updatedAt();
     }
 
-    private static String serializeObservabilityDepth(ObservabilityDepthValue v) {
-        return v.artifactBase() + PIPE + v.methodName() + PIPE + v.depthThreshold() + PIPE + v.updatedAt();
+    private static String serializeObsConfig(ObservabilityConfigValue v) {
+        return v.artifactBase() + PIPE + v.methodName() + PIPE + v.logging() + PIPE + v.metrics() + PIPE + v.spans() + PIPE + v.tracing() + PIPE + v.depth() + PIPE + v.updatedAt();
     }
 
     private static String serializeConfig(ConfigValue v) {
@@ -412,6 +435,26 @@ public final class KVStoreSerializer {
 
         return v.governorId()
                 .id() + PIPE + v.memberCount() + PIPE + memberIds + PIPE + v.tcpAddress() + PIPE + v.announcedAt();
+    }
+
+    /// Pipe-delimited community wire form `(sourceName|role|targetSize|state|createdAt|dissolvedAt)`.
+    /// Mirrors [#serializeDhtPartitionOwnership]'s empty-field canonicalization: the optional
+    /// `dissolvedAt` renders as the empty string when absent (`none()`), symmetric with
+    /// [#parseCommunityEntry].
+    private static String serializeCommunity(CommunityValue v) {
+        return v.sourceName() + PIPE + v.role() + PIPE + v.targetSize() + PIPE + v.state()
+                                                                                  .name() + PIPE + v.createdAt() + PIPE + v.dissolvedAt()
+                                                                                                                           .map(String::valueOf)
+                                                                                                                           .or("");
+    }
+
+    /// Pipe-delimited activation wire form `(role|communityId|governorHint)`. Replaces the prior
+    /// bare-`role()` form so the additive community fields round-trip symmetrically with
+    /// [#parseActivationEntry]. Empty community fields canonicalize to empty strings, mirroring
+    /// [#serializeDhtPartitionOwnership]'s empty-field idiom. Package-visible for direct round-trip
+    /// testing (the `activation` section is ephemeral, so it never flows through `toToml`).
+    static String serializeActivationDirective(ActivationDirectiveValue v) {
+        return v.role() + PIPE + v.communityId() + PIPE + v.governorHint();
     }
 
     private static String serializeClusterConfig(ClusterConfigValue v) {
@@ -463,7 +506,7 @@ public final class KVStoreSerializer {
             case "previous-version" -> parsePreviousVersionEntry(identity, rawValue);
             case "http-node-routes" -> parseHttpNodeRouteEntry(identity, rawValue);
             case "log-level" -> parseLogLevelEntry(identity, rawValue);
-            case "obs-depth" -> parseObsDepthEntry(identity, rawValue);
+            case "obs-config" -> parseObsConfigEntry(identity, rawValue);
             case "alert-threshold" -> parseAlertThresholdEntry(identity, rawValue);
             case "topic-sub" -> parseTopicSubEntry(identity, rawValue);
             case "scheduled-task" -> parseScheduledTaskEntry(identity, rawValue);
@@ -474,6 +517,7 @@ public final class KVStoreSerializer {
             case "activation" -> parseActivationEntry(identity, rawValue);
             case "gossip-key-rotation" -> parseGossipKeyRotationEntry(identity, rawValue);
             case "governor-announcement" -> parseGovernorAnnouncementEntry(identity, rawValue);
+            case "community" -> parseCommunityEntry(identity, rawValue);
             case "node-artifact" -> parseNodeArtifactEntry(identity, rawValue);
             case "node-routes" -> parseNodeRoutesEntry(identity, rawValue);
             case "schema-version" -> parseSchemaVersionEntry(identity, rawValue);
@@ -498,8 +542,8 @@ public final class KVStoreSerializer {
     private static Result<Map.Entry<AetherKey, AetherValue>> parseSliceTargetEntry(String identity, String raw) {
         var parts = raw.split("\\|", -1);
 
-        if (parts.length != 5 && parts.length != 6) {
-            return parseFailure("slice-target value requires 5 or 6 fields, got " + parts.length);
+        if (parts.length < 5 || parts.length > 9) {
+            return parseFailure("slice-target value requires 5 to 9 fields, got " + parts.length);
         }
 
         return SliceTargetKey.sliceTargetKey("slice-target/" + identity).flatMap(key -> buildSliceTargetValue(parts).map(val -> entry(key,
@@ -510,13 +554,25 @@ public final class KVStoreSerializer {
         var placement = parts.length >= 6 && !parts[5].isEmpty()
                         ? parts[5]
                         : "CORE_ONLY";
+        var maxInstances = parts.length >= 7 && !parts[6].isEmpty()
+                           ? Option.some(Integer.parseInt(parts[6]))
+                           : Option.<Integer> none();
+        var scaleUpThreshold = parts.length >= 8 && !parts[7].isEmpty()
+                               ? Option.some(Double.parseDouble(parts[7]))
+                               : Option.<Double> none();
+        var scaleDownThreshold = parts.length >= 9 && !parts[8].isEmpty()
+                                 ? Option.some(Double.parseDouble(parts[8]))
+                                 : Option.<Double> none();
 
         return Version.version(parts[0]).flatMap(ver -> parseOptionalBlueprintId(parts[3]).map(bp -> new SliceTargetValue(ver,
                                                                                                                           Integer.parseInt(parts[1]),
                                                                                                                           Integer.parseInt(parts[2]),
                                                                                                                           bp,
                                                                                                                           placement,
-                                                                                                                          Long.parseLong(parts[4]))));
+                                                                                                                          Long.parseLong(parts[4]),
+                                                                                                                          maxInstances,
+                                                                                                                          scaleUpThreshold,
+                                                                                                                          scaleDownThreshold)));
     }
 
     private static Result<Option<BlueprintId>> parseOptionalBlueprintId(String raw) {
@@ -655,18 +711,22 @@ public final class KVStoreSerializer {
                                                                                                    Long.parseLong(parts[2]))));
     }
 
-    private static Result<Map.Entry<AetherKey, AetherValue>> parseObsDepthEntry(String identity, String raw) {
+    private static Result<Map.Entry<AetherKey, AetherValue>> parseObsConfigEntry(String identity, String raw) {
         var parts = raw.split("\\|", -1);
 
-        if (parts.length != 4) {
-            return parseFailure("obs-depth value requires 4 fields, got " + parts.length);
+        if (parts.length != 8) {
+            return parseFailure("obs-config value requires 8 fields, got " + parts.length);
         }
 
-        return ObservabilityDepthKey.observabilityDepthKey("obs-depth/" + identity).map(key -> entry(key,
-                                                                                                     new ObservabilityDepthValue(parts[0],
-                                                                                                                                 parts[1],
-                                                                                                                                 Integer.parseInt(parts[2]),
-                                                                                                                                 Long.parseLong(parts[3]))));
+        return ObservabilityConfigKey.observabilityConfigKey("obs-config/" + identity).map(key -> entry(key,
+                                                                                                        new ObservabilityConfigValue(parts[0],
+                                                                                                                                     parts[1],
+                                                                                                                                     Boolean.parseBoolean(parts[2]),
+                                                                                                                                     Boolean.parseBoolean(parts[3]),
+                                                                                                                                     Boolean.parseBoolean(parts[4]),
+                                                                                                                                     Boolean.parseBoolean(parts[5]),
+                                                                                                                                     Integer.parseInt(parts[6]),
+                                                                                                                                     Long.parseLong(parts[7]))));
     }
 
     private static Result<Map.Entry<AetherKey, AetherValue>> parseAlertThresholdEntry(String identity, String raw) {
@@ -812,9 +872,28 @@ public final class KVStoreSerializer {
                                                                                                                                         val)));
     }
 
-    private static Result<Map.Entry<AetherKey, AetherValue>> parseActivationEntry(String identity, String raw) {
+    /// Inverse of [#serializeActivationDirective]. Tolerates TWO wire forms by field count
+    /// (standard trailing-field backward-compat, spec §7): the 3-field CURRENT form
+    /// `(role|communityId|governorHint)`, and the legacy 1-field bare-`role` form written before
+    /// the community fields existed (community fields default empty via the role-only constructor).
+    /// Package-visible for direct round-trip testing (the `activation` section is ephemeral).
+    static Result<Map.Entry<AetherKey, AetherValue>> parseActivationEntry(String identity, String raw) {
+        var parts = raw.split("\\|", -1);
+
+        if (parts.length != 1 && parts.length != 3) {
+            return parseFailure("activation value requires 1 or 3 fields, got " + parts.length);
+        }
+
         return ActivationDirectiveKey.activationDirectiveKey("activation/" + identity).map(key -> entry(key,
-                                                                                                        new ActivationDirectiveValue(raw)));
+                                                                                                        buildActivationDirectiveValue(parts)));
+    }
+
+    private static ActivationDirectiveValue buildActivationDirectiveValue(String[] parts) {
+        if (parts.length == 1) {
+            return new ActivationDirectiveValue(parts[0]);
+        }
+
+        return new ActivationDirectiveValue(parts[0], parts[1], parts[2]);
     }
 
     private static Result<Map.Entry<AetherKey, AetherValue>> parseGovernorAnnouncementEntry(String identity,
@@ -850,6 +929,33 @@ public final class KVStoreSerializer {
                                                                    members,
                                                                    parts[3],
                                                                    Long.parseLong(parts[4]));
+    }
+
+    /// Inverse of [#serializeCommunity]. Wire form (6 fields, pipe-delimited):
+    /// `sourceName|role|targetSize|state|createdAt|dissolvedAt`. The optional `dissolvedAt` field
+    /// is reconstructed as `none()` when empty, mirroring the empty-Option idiom used across the
+    /// serializer (e.g. provisioning-slot's `assignedNodeId`).
+    private static Result<Map.Entry<AetherKey, AetherValue>> parseCommunityEntry(String identity, String raw) {
+        var parts = raw.split("\\|", -1);
+
+        if (parts.length != 6) {
+            return parseFailure("community value requires 6 fields, got " + parts.length);
+        }
+
+        return CommunityKey.parseCommunityKey("community/" + identity).map(key -> entry(key, buildCommunityValue(parts)));
+    }
+
+    private static CommunityValue buildCommunityValue(String[] parts) {
+        var dissolvedAt = parts[5].isEmpty()
+                          ? Option.<Long> none()
+                          : Option.some(Long.parseLong(parts[5]));
+
+        return new CommunityValue(parts[0],
+                                  parts[1],
+                                  Integer.parseInt(parts[2]),
+                                  CommunityState.valueOf(parts[3]),
+                                  Long.parseLong(parts[4]),
+                                  dissolvedAt);
     }
 
     private static Result<Map.Entry<AetherKey, AetherValue>> parseNodeArtifactEntry(String identity, String raw) {
@@ -1183,16 +1289,16 @@ public final class KVStoreSerializer {
         var encryptionKeyId = config.encryptionKeyId().or("");
 
         return config.partitions() + PIPE + config.autoOffsetReset() + PIPE + config.maxEventSizeBytes() + PIPE + config.consistencyMode()
-                                                                                                                        .name() + PIPE + config.minSyncReplicas() + PIPE + config.compression()
-                                                                                                                                                                                 .name() + PIPE + encryptionKeyId + PIPE + retention.maxCount() + PIPE + retention.maxBytes() + PIPE + retention.maxAgeMs() + PIPE + retention.mode()
-                                                                                                                                                                                                                                                                                                                              .name() + PIPE + v.createdAt();
+                                                                                                                        .name() + PIPE + config.replicas() + PIPE + config.minSyncReplicas() + PIPE + config.compression()
+                                                                                                                                                                                                            .name() + PIPE + encryptionKeyId + PIPE + retention.maxCount() + PIPE + retention.maxBytes() + PIPE + retention.maxAgeMs() + PIPE + retention.mode()
+                                                                                                                                                                                                                                                                                                                                                         .name() + PIPE + v.createdAt();
     }
 
     private static Result<Map.Entry<AetherKey, AetherValue>> parseStreamConfigEntry(String identity, String raw) {
         var parts = raw.split("(?<!\\\\)\\|", -1);
 
-        if (parts.length != 12) {
-            return parseFailure("stream-config value requires 12 fields, got " + parts.length);
+        if (parts.length != 13) {
+            return parseFailure("stream-config value requires 13 fields, got " + parts.length);
         }
 
         return StreamConfigKey.streamConfigKey("stream-config/" + identity, true).flatMap(key -> buildStreamConfigValue(identity,
@@ -1209,23 +1315,25 @@ public final class KVStoreSerializer {
         var autoOffsetReset = parts[1];
         var maxEventSizeBytes = Long.parseLong(parts[2]);
         var consistencyMode = ConsistencyMode.valueOf(parts[3]);
-        var minSyncReplicas = Integer.parseInt(parts[4]);
-        var compression = StreamCompression.valueOf(parts[5]);
-        var encryptionKeyId = parts[6].isEmpty()
+        var replicas = Integer.parseInt(parts[4]);
+        var minSyncReplicas = Integer.parseInt(parts[5]);
+        var compression = StreamCompression.valueOf(parts[6]);
+        var encryptionKeyId = parts[7].isEmpty()
                               ? Option.<String> none()
-                              : Option.some(parts[6]);
-        var retention = new RetentionPolicy(Long.parseLong(parts[7]),
-                                            Long.parseLong(parts[8]),
+                              : Option.some(parts[7]);
+        var retention = new RetentionPolicy(Long.parseLong(parts[8]),
                                             Long.parseLong(parts[9]),
-                                            RetentionMode.valueOf(parts[10]),
+                                            Long.parseLong(parts[10]),
+                                            RetentionMode.valueOf(parts[11]),
                                             Option.none());
-        var createdAt = Long.parseLong(parts[11]);
+        var createdAt = Long.parseLong(parts[12]);
         var config = StreamConfig.streamConfig(streamName,
                                                partitions,
                                                retention,
                                                autoOffsetReset,
                                                maxEventSizeBytes,
                                                consistencyMode,
+                                               replicas,
                                                minSyncReplicas,
                                                compression,
                                                encryptionKeyId);

@@ -4,16 +4,16 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.cli.cluster;
 
+import java.util.ArrayList;
+import java.util.LinkedHashSet;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+
 import org.pragmatica.aether.config.cluster.ClusterConfigError;
 import org.pragmatica.aether.environment.SecretsProvider;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
-
-import java.util.ArrayList;
-import java.util.LinkedHashSet;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
 
 import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Result.success;
@@ -89,9 +89,8 @@ sealed interface ConfigReferenceResolver {
                                                                      fullRef,
                                                                      envVarName,
                                                                      unresolved,
-                                                                     resolved)).onEmpty(() -> unresolved.add(fullRef
-                                                                                                            + " -> env var " + envVarName
-                                                                                                            + " not set"));
+                                                                     resolved))
+                       .onEmpty(() -> unresolved.add(fullRef + " -> env var " + envVarName + " not set"));
     }
 
     @Contract
@@ -101,9 +100,10 @@ sealed interface ConfigReferenceResolver {
                                                String envVarName,
                                                LinkedHashSet<String> unresolved,
                                                ArrayList<ResolvedMatch> resolved) {
-        provider.resolveSecret(name).await().onSuccess(value -> resolved.add(new ResolvedMatch(fullRef, value))).onFailure(_ -> unresolved.add(fullRef
-                                                                                                                                              + " -> env var " + envVarName
-                                                                                                                                              + " not set"));
+        provider.resolveSecret(name)
+                .await()
+                .onSuccess(value -> resolved.add(new ResolvedMatch(fullRef, value)))
+                .onFailure(_ -> unresolved.add(fullRef + " -> env var " + envVarName + " not set"));
     }
 
     private static String resolveEnvVarName(String type, String name) {

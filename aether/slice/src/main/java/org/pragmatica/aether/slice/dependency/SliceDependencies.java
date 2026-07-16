@@ -4,11 +4,11 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.slice.dependency;
 
-import org.pragmatica.lang.Result;
-import org.pragmatica.lang.io.StreamOps;
-
 import java.util.Arrays;
 import java.util.List;
+
+import org.pragmatica.lang.Result;
+import org.pragmatica.lang.io.StreamOps;
 
 
 @SuppressWarnings({"JBCT-RET-05", "JBCT-PAT-01"})

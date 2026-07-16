@@ -4,6 +4,9 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.metrics.deployment;
 
+import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
+
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.metrics.deployment.DeploymentEvent.*;
 import org.pragmatica.lang.Contract;
@@ -17,9 +20,6 @@ import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.topology.MembershipDecision;
 import org.pragmatica.lang.Option;
 import org.pragmatica.messaging.MessageReceiver;
-
-import java.util.*;
-import java.util.concurrent.ConcurrentHashMap;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -302,8 +302,12 @@ class DeploymentMetricsCollectorImpl implements DeploymentMetricsCollector {
     }
 
     private void storeFilteredMetrics(Artifact artifact, List<DeploymentMetricsEntry> entryList) {
-        var filteredList = entryList.stream().map(DeploymentMetrics::fromEntry).flatMap(Option::stream).filter(m -> !m.nodeId()
-                                                                                                                      .equals(self)).toList();
+        var filteredList = entryList.stream()
+                                    .map(DeploymentMetrics::fromEntry)
+                                    .flatMap(Option::stream)
+                                    .filter(m -> !m.nodeId()
+                                                   .equals(self))
+                                    .toList();
 
         if (!filteredList.isEmpty()) {
             remoteMetrics.put(artifact, filteredList);

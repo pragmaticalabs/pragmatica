@@ -4,9 +4,9 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.config.cluster;
 
-import org.pragmatica.lang.Option;
-
 import java.util.List;
+
+import org.pragmatica.lang.Option;
 
 
 public record RoleSubTable(NodeRole role,

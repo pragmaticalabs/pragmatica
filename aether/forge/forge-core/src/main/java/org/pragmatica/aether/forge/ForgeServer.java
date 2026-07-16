@@ -4,8 +4,21 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.forge;
 
+import java.awt.Desktop;
+import java.net.URI;
+import java.net.http.HttpRequest;
+import java.nio.file.Path;
+import java.util.List;
+import java.util.function.Supplier;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
+
 import org.pragmatica.aether.ember.EmberCluster;
 import org.pragmatica.aether.ember.EmberConfig;
+import org.pragmatica.aether.config.AetherConfig;
+import org.pragmatica.aether.config.AppHttpConfig;
+import org.pragmatica.aether.config.ConfigLoader;
 import org.pragmatica.config.ConfigurationProvider;
 import org.pragmatica.aether.dashboard.StaticFileHandler;
 import org.pragmatica.aether.forge.load.ConfigurableLoadRunner;
@@ -16,7 +29,7 @@ import org.pragmatica.aether.api.StatusWebSocketPublisher;
 import org.pragmatica.aether.api.WebSocketAuthenticator;
 import org.pragmatica.aether.http.security.SecurityValidator;
 import org.pragmatica.aether.forge.api.StatusRoutes;
-import org.pragmatica.http.routing.JsonCodec;
+import org.pragmatica.http.JsonCodec;
 import org.pragmatica.http.routing.JsonCodecAdapter;
 import org.pragmatica.http.server.HttpServer;
 import org.pragmatica.http.server.HttpServerConfig;
@@ -25,17 +38,8 @@ import org.pragmatica.http.HttpOperations;
 import org.pragmatica.http.JdkHttpOperations;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Result;
 import org.pragmatica.lang.io.TimeSpan;
-
-import java.awt.Desktop;
-import java.net.URI;
-import java.net.http.HttpRequest;
-import java.nio.file.Path;
-import java.util.List;
-import java.util.function.Supplier;
-import java.util.concurrent.Executors;
-import java.util.concurrent.ScheduledExecutorService;
-import java.util.concurrent.TimeUnit;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -76,7 +80,16 @@ public final class ForgeServer {
         this.forgeConfig = forgeConfig;
     }
 
-    private static final String VERSION = "Aether Forge 0.20.0";
+    private static final String VERSION = "Aether Forge " + resolveVersion();
+
+    /// Resolves the running version from the shaded jar's `Implementation-Version` manifest entry
+    /// (set by the shade plugin's ManifestResourceTransformer to `${project.version}`), falling back
+    /// to `(dev)` when run outside a packaged jar (IDE / tests, where that manifest is absent).
+    private static String resolveVersion() {
+        return Option.option(ForgeServer.class.getPackage())
+                     .flatMap(pkg -> Option.option(pkg.getImplementationVersion()))
+                     .or("(dev)");
+    }
 
     public static void main(String[] args) {
         if (hasFlag(args, "--help", "-h")) {
@@ -217,6 +230,8 @@ public final class ForgeServer {
                                                         configProvider,
                                                         forgeConfig.observability(),
                                                         forgeConfig.coreMax());
+
+        applyApiVersioning(clusterInstance);
         var entryPointMetrics = EntryPointMetrics.entryPointMetrics();
         Supplier<List<Integer>> portSupplier = forgeConfig.lbEnabled()
                                                ? () -> List.of(forgeConfig.lbPort())
@@ -242,6 +257,25 @@ public final class ForgeServer {
         wsPublisher = Option.some(wsPublisherInstance);
     }
 
+    /// #198 §7 — make `forge run` honor `[app-http] api_versioning_detection` (+ `api_version_header`)
+    /// from the sibling `aether.toml` (the same file [#buildConfigurationProvider] layers in). The
+    /// detection mode is a cluster-level [EmberCluster] seam that defaults to PATH; production nodes
+    /// already read it via [ConfigLoader], so here we reuse the very same parser for identical
+    /// semantics. When no `aether.toml` is present (or it fails to parse) the cluster keeps its PATH
+    /// + [AppHttpConfig#DEFAULT_API_VERSION_HEADER] defaults — existing path-mode forge runs are
+    /// byte-for-byte unchanged.
+    private void applyApiVersioning(EmberCluster clusterInstance) {
+        startupConfig.forgeConfig()
+                     .map(path -> path.resolveSibling("aether.toml"))
+                     .filter(path -> path.toFile()
+                                         .exists())
+                     .map(ConfigLoader::load)
+                     .flatMap(Result::option)
+                     .map(AetherConfig::appHttp)
+                     .onPresent(appHttp -> clusterInstance.withApiVersioningDetection(appHttp.apiVersioningDetection(),
+                                                                                      appHttp.apiVersionHeaderName()));
+    }
+
     private static String serializeStatus(EmberCluster cluster,
                                           ForgeMetrics metrics,
                                           long startTime,
@@ -249,17 +283,7 @@ public final class ForgeServer {
         var status = StatusRoutes.buildFullStatus(cluster, metrics, startTime, loadRunner);
 
         return CODEC.serialize(status)
-                    .map(byteBuf -> {
-                             try {
-                             var bytes = new byte[byteBuf.readableBytes()];
-
-                             byteBuf.readBytes(bytes);
-
-                             return new String(bytes, java.nio.charset.StandardCharsets.UTF_8);
-                         } finally {
-                             byteBuf.release();
-                         }
-                         })
+                    .map(bytes -> new String(bytes, java.nio.charset.StandardCharsets.UTF_8))
                     .or("{}");
     }
 
@@ -293,9 +317,16 @@ public final class ForgeServer {
                                                                  java.nio.charset.StandardCharsets.UTF_8);
             }
 
-            var request = HttpRequest.newBuilder().uri(URI.create(uriStr)).GET().timeout(java.time.Duration.ofSeconds(2)).build();
+            var request = HttpRequest.newBuilder()
+                                     .uri(URI.create(uriStr))
+                                     .GET()
+                                     .timeout(java.time.Duration.ofSeconds(2))
+                                     .build();
 
-            http.sendString(request).await(TimeSpan.timeSpan(3).seconds()).flatMap(org.pragmatica.http.HttpResult::toResult).onSuccess(this::parseAndMergeEvents);
+            http.sendString(request)
+                .await(TimeSpan.timeSpan(3).seconds())
+                .flatMap(org.pragmatica.http.HttpResult::toResult)
+                .onSuccess(this::parseAndMergeEvents);
         } catch (Exception e) {
             log.trace("Event polling failed: {}", e.getMessage());
         }
@@ -395,14 +426,18 @@ public final class ForgeServer {
         log.info("Deploying blueprint artifact: {}...", artifactCoords);
         var leaderPort = cluster.flatMap(EmberCluster::getLeaderManagementPort).or(forgeConfig.managementPort());
         var body = "{\"artifact\":\"" + artifactCoords + "\"}";
-        var request = HttpRequest.newBuilder().uri(URI.create("http://localhost:" + leaderPort
-                                                             + "/api/blueprints/deploy")).header("Content-Type",
-                                                                                                 "application/json").POST(HttpRequest.BodyPublishers.ofString(body)).build();
+        var request = HttpRequest.newBuilder()
+                                 .uri(URI.create("http://localhost:" + leaderPort + "/api/blueprints/deploy"))
+                                 .header("Content-Type", "application/json")
+                                 .POST(HttpRequest.BodyPublishers.ofString(body))
+                                 .build();
 
         log.info("Deploying blueprint by coordinates: POST /api/blueprints/deploy — {}", artifactCoords);
-        http.sendString(request).await(TimeSpan.timeSpan(10).seconds()).onSuccess(result -> handleDeployResponse(result,
-                                                                                                                 artifactCoords)).onFailure(cause -> log.error("Failed to deploy blueprint: {}",
-                                                                                                                                                               cause.message()));
+        http.sendString(request)
+            .await(TimeSpan.timeSpan(10).seconds())
+            .onSuccess(result -> handleDeployResponse(result, artifactCoords))
+            .onFailure(cause -> log.error("Failed to deploy blueprint: {}",
+                                          cause.message()));
     }
 
     private void handleDeployResponse(org.pragmatica.http.HttpResult<String> result, String artifactCoords) {
@@ -418,15 +453,18 @@ public final class ForgeServer {
 
     private void loadLoadConfig(Path loadConfigPath) {
         log.info("Loading load configuration from {}...", loadConfigPath);
-        LoadConfigLoader.load(loadConfigPath).onSuccess(config -> {
-            configurableLoadRunner.onPresent(r -> r.applyConfig(config));
-            log.info("Load configuration loaded: {} targets",
-                     config.targets().size());
-            apiHandler.onPresent(h -> h.addEvent("LOAD_CONFIG_LOADED",
-                                                 "Loaded " + config.targets()
-                                                                   .size()
-                                                + " targets from " + loadConfigPath.getFileName()));
-        }).onFailure(cause -> log.error("Failed to load configuration: {}", cause.message()));
+        LoadConfigLoader.load(loadConfigPath)
+                        .onSuccess(config -> {
+                                       configurableLoadRunner.onPresent(r -> r.applyConfig(config));
+                                       log.info("Load configuration loaded: {} targets",
+                                                config.targets().size());
+                                       apiHandler.onPresent(h -> h.addEvent("LOAD_CONFIG_LOADED",
+                                                                            "Loaded " + config.targets()
+                                                                                              .size()
+                                                                           + " targets from " + loadConfigPath.getFileName()));
+                                   })
+                        .onFailure(cause -> log.error("Failed to load configuration: {}",
+                                                      cause.message()));
     }
 
     public void stop() {
@@ -447,8 +485,11 @@ public final class ForgeServer {
     private Option<ConfigurationProvider> buildConfigurationProvider() {
         var builder = ConfigurationProvider.builder();
 
-        startupConfig.forgeConfig().map(path -> path.resolveSibling("aether.toml")).filter(path -> path.toFile()
-                                                                                                       .exists()).onPresent(builder::withTomlFile);
+        startupConfig.forgeConfig()
+                     .map(path -> path.resolveSibling("aether.toml"))
+                     .filter(path -> path.toFile()
+                                         .exists())
+                     .onPresent(builder::withTomlFile);
         startupConfig.forgeConfig().onPresent(builder::withTomlFile);
         builder.withSystemProperties("aether.").withEnvironment("AETHER_");
 
@@ -456,21 +497,33 @@ public final class ForgeServer {
     }
 
     private void startHttpServer() {
-        Option.all(apiHandler, staticHandler).map(ForgeRequestHandler::forgeRequestHandler).onPresent(this::launchHttpServer);
+        Option.all(apiHandler, staticHandler)
+              .map(ForgeRequestHandler::forgeRequestHandler)
+              .onPresent(this::launchHttpServer);
     }
 
     private void launchHttpServer(ForgeRequestHandler requestHandler) {
         var wsEndpoint = WebSocketEndpoint.webSocketEndpoint("/ws/status", wsHandler);
         var dashboardWsEndpoint = WebSocketEndpoint.webSocketEndpoint("/ws/dashboard", dashboardWsHandler);
         var eventWsEndpoint = WebSocketEndpoint.webSocketEndpoint("/ws/events", eventWsHandler);
-        var config = HttpServerConfig.httpServerConfig("forge-dashboard", forgeConfig.dashboardPort()).withMaxContentLength(MAX_CONTENT_LENGTH).withChunkedWrite().withWebSocket(wsEndpoint).withWebSocket(dashboardWsEndpoint).withWebSocket(eventWsEndpoint);
+        var config = HttpServerConfig.httpServerConfig("forge-dashboard",
+                                                       forgeConfig.dashboardPort())
+                                     .withMaxContentLength(MAX_CONTENT_LENGTH)
+                                     .withChunkedWrite()
+                                     .withWebSocket(wsEndpoint)
+                                     .withWebSocket(dashboardWsEndpoint)
+                                     .withWebSocket(eventWsEndpoint);
 
-        HttpServer.httpServer(config, requestHandler::handle).await(TimeSpan.timeSpan(10).seconds()).onSuccess(server -> {
-            httpServer = Option.some(server);
-            log.info("HTTP server started on port {}", server.port());
-        }).onFailure(cause -> {
-            throw new IllegalStateException("Failed to start HTTP server: " + cause.message());
-        });
+        HttpServer.httpServer(config, requestHandler::handle)
+                  .await(TimeSpan.timeSpan(10).seconds())
+                  .onSuccess(server -> {
+                                 httpServer = Option.some(server);
+                                 log.info("HTTP server started on port {}",
+                                          server.port());
+                             })
+                  .onFailure(cause -> {
+                                 throw new IllegalStateException("Failed to start HTTP server: " + cause.message());
+                             });
     }
 
     private void openBrowser(String url) {

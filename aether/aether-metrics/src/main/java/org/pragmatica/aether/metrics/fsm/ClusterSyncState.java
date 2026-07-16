@@ -4,6 +4,11 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.metrics.fsm;
 
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.concurrent.ScheduledFuture;
+
 import org.pragmatica.aether.metrics.fsm.ClusterSyncEvents.PingTick;
 import org.pragmatica.aether.metrics.fsm.ClusterSyncEvents.PongReceived;
 import org.pragmatica.aether.slice.generation.Epoch;
@@ -16,11 +21,6 @@ import org.pragmatica.consensus.fsm.ClusterFsmEvent.Shutdown;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.statemachine.FsmState;
 import org.pragmatica.statemachine.TransitionRequest;
-
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
-import java.util.concurrent.ScheduledFuture;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;

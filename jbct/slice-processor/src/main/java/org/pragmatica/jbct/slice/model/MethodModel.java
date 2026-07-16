@@ -145,12 +145,17 @@ public record MethodModel(String name,
 
     /// Returns the business parameter type for single-business-param methods.
     /// Used by RouteSourceGenerator when security params are present.
+    /// The exactly-one-business-parameter rule is enforced at model-build time by
+    /// [#validateBusinessParamCount] with a located diagnostic, so reaching this guard
+    /// with a different count indicates an internal invariant breach.
     public TypeMirror businessParameterType() {
         var biz = businessParameters();
         if (biz.size() == 1) {
             return biz.getFirst().type();
         }
-        throw new IllegalStateException("businessParameterType() called on method with " + biz.size() + " business params: " + name);
+        throw new IllegalStateException("businessParameterType() requires exactly one business parameter on '" + name
+                                        + "' but found " + biz.size()
+                                        + " (a security-injecting slice method must take a single request record)");
     }
 
     /// Returns true if the method parameter is List<T> (batch stream consumer).
@@ -309,7 +314,8 @@ public record MethodModel(String name,
             return configUpdateValidation.flatMap(_ -> Result.success(null)); // propagate error
         }
 
-        return validateKeyAnnotations(paramInfos, name)
+        return validateBusinessParamCount(method, paramInfos, name)
+        .flatMap(_ -> validateKeyAnnotations(paramInfos, name))
         .flatMap(_ -> resolveKeyInfo(paramInfos, env, methodInterceptors, name))
         .map(keyResult -> new MethodModel(name,
                                            returnType,
@@ -340,6 +346,33 @@ public record MethodModel(String name,
         return param.getAnnotationMirrors()
                     .stream()
                     .anyMatch(mirror -> isAnnotationType(mirror, KEY_ANNOTATION));
+    }
+
+    /// Enforces the exactly-one-request-record rule for security-injecting methods.
+    /// A method that injects Principal/SecurityContext may carry at most one business
+    /// parameter (the request record) so the route generator can bind a single value.
+    /// Non-security methods keep full multi-parameter support (a request record is
+    /// synthesized for them). Attributed to the owning slice + method for a located
+    /// compile diagnostic rather than a later `businessParameterType()` crash.
+    private static Result<Unit> validateBusinessParamCount(ExecutableElement method,
+                                                           List<MethodParameterInfo> paramInfos,
+                                                           String methodName) {
+        var securityCount = paramInfos.stream().filter(MethodModel::isSecurityParam).count();
+        if (securityCount == 0) {
+            return Result.unitResult();
+        }
+        var businessCount = paramInfos.stream().filter(p -> !isSecurityParam(p)).count();
+        if (businessCount <= 1) {
+            return Result.unitResult();
+        }
+        var sliceName = method.getEnclosingElement()
+                              .getSimpleName()
+                              .toString();
+        return Causes.cause("A slice method takes exactly one request record; found " + businessCount
+                            + " business parameters on " + sliceName + "." + methodName
+                            + " (which also injects Principal/SecurityContext). Group the business parameters"
+                            + " into a single request record.")
+                     .result();
     }
 
     private static Result<Unit> validateKeyAnnotations(List<MethodParameterInfo> paramInfos, String methodName) {

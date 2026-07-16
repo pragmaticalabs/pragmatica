@@ -4,10 +4,10 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.environment;
 
+import java.util.ServiceLoader;
+
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
-
-import java.util.ServiceLoader;
 
 
 public interface EnvironmentIntegrationFactory {

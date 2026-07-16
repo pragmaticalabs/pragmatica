@@ -76,6 +76,7 @@ class SystemStreamFactoriesTest {
                                                                           replicaRegistry,
                                                                           Option.some(forwardClient),
                                                                           SELF,
+                                                                          Option.none(),
                                                                           StreamReadForwardMetrics.NOOP)
                                             .onFailure(_ -> org.junit.jupiter.api.Assertions.fail("Expected consumer wiring success"))
                                             .unwrap();
@@ -91,8 +92,8 @@ class SystemStreamFactoriesTest {
 
     @Test
     void systemStreamConsumer_forwardCapable_bootstrapWindowFailsSoftToLocal() {
-        // No caught-up replica visible yet (bootstrap window): the read must fail soft to the local
-        // partition rather than fail/forward. SELF owns a local partition with one event.
+        // No caught-up replica visible yet AND no owner resolvable (bootstrap window): the read must fail
+        // soft to the local partition rather than fail/forward. SELF owns a local partition with one event.
         partitionManager.createStream(clusterEventsConfig());
         partitionManager.publishLocal(STREAM, 0, "local".getBytes(), 1_000L);
 
@@ -104,6 +105,7 @@ class SystemStreamFactoriesTest {
                                                                           replicaRegistry,
                                                                           Option.some(forwardClient),
                                                                           SELF,
+                                                                          Option.none(),
                                                                           StreamReadForwardMetrics.NOOP)
                                             .unwrap();
 
@@ -116,19 +118,21 @@ class SystemStreamFactoriesTest {
         assertThat(events.getFirst().payload()).isEqualTo("local".getBytes());
     }
 
-    /// stream-offheap-budget-spec §5.4 / reconciliation #17: system-stream bootstrap stays FAIL-SOFT —
-    /// `systemStreamPublisher` still returns a wired publisher even when the underlying floor create
-    /// cannot be admitted (SystemStreamRegistrar owns the leader-pinned retry; the node must boot) —
-    /// but the failure is no longer silently swallowed: the manager's exhaustion sink fires a
-    /// CREATE_FLOOR `Exhaustion`, which `AetherNode` routes into a `StreamMemoryExceeded` cluster event.
+    /// #265 increment 5 / owner decision 2026-07-05: a `system:*` stream over budget no longer fails
+    /// soft-empty — it OVERSUBSCRIBES (bypasses the budget reject so a cluster-critical stream is never
+    /// starved behind app-stream pressure), still returning a wired publisher AND materializing the partition,
+    /// and surfaces the oversubscription through the exhaustion sink as a named SYSTEM_OVERSUBSCRIBE event
+    /// (distinct from the app-stream CREATE_FLOOR deferral). App streams still defer; the exemption is
+    /// system-only. (`SystemStreamRegistrar` still owns the leader-pinned retry; the node must boot.)
     @Test
-    void ensureLocalPartition_memoryExceeded_failsSoft_butEmits() {
+    void ensureLocalPartition_overBudget_oversubscribesForSystemStream_andEmits() {
         var capturedExhaustions = new ArrayList<StreamPartitionManager.Exhaustion>();
         var tinyManager = StreamPartitionManager.streamPartitionManager(1L);
         tinyManager.exhaustionSink(capturedExhaustions::add);
 
         try {
-            // 4 partitions, EVENTUAL: the per-partition floor cannot fit a 1-byte budget.
+            // 4 partitions, EVENTUAL: the per-partition floor cannot fit a 1-byte budget — a system stream
+            // oversubscribes rather than reject.
             var retention = RetentionPolicy.retentionPolicy(10_000, 4 * 1024 * 1024L, 60_000L);
             var config = StreamConfig.streamConfig(STREAM, 4, retention, "earliest", 1024 * 1024L,
                                                    ConsistencyMode.EVENTUAL, 1);
@@ -140,10 +144,12 @@ class SystemStreamFactoriesTest {
                                                  .onFailure(_ -> org.junit.jupiter.api.Assertions.fail("System-stream publisher wiring must stay fail-soft"))
                                                  .unwrap();
 
-            assertThat(publisher).as("fail-soft: a wired publisher is still returned").isNotNull();
-            assertThat(capturedExhaustions).as("the soft create failure is visible via the exhaustion sink").hasSize(1);
-            assertThat(capturedExhaustions.getFirst().phase()).isEqualTo(StreamPartitionManager.Exhaustion.Phase.CREATE_FLOOR);
-            assertThat(capturedExhaustions.getFirst().streamName()).isEqualTo(STREAM);
+            assertThat(publisher).as("a wired publisher is still returned").isNotNull();
+            assertThat(tinyManager.streamInfo(STREAM).isPresent()).as("the system stream is materialized past budget").isTrue();
+            assertThat(tinyManager.totalAllocatedBytes()).as("budget is oversubscribed past the 1-byte cap").isGreaterThan(1L);
+            assertThat(capturedExhaustions).as("the oversubscription is visible via the exhaustion sink")
+                                           .anyMatch(e -> e.phase() == StreamPartitionManager.Exhaustion.Phase.SYSTEM_OVERSUBSCRIBE
+                                                       && e.streamName().equals(STREAM));
         } finally {
             tinyManager.close();
         }

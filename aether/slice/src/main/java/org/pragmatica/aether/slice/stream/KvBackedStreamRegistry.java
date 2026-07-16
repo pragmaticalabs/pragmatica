@@ -4,6 +4,10 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.slice.stream;
 
+import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.List;
+
 import org.pragmatica.aether.slice.resource.ResourceAddress;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.StreamRegistryKey;
@@ -15,10 +19,6 @@ import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
-
-import java.util.ArrayList;
-import java.util.Comparator;
-import java.util.List;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -105,9 +105,10 @@ public final class KvBackedStreamRegistry implements StreamRegistry {
             return StreamRegistryError.General.ALREADY_REGISTERED.result();
         }
 
-        cluster.apply(List.of(registerCommand(entry))).onFailure(cause -> log.warn("Stream registry register({}) consensus apply failed: {}",
-                                                                                   entry.address().asString(),
-                                                                                   cause.message()));
+        cluster.apply(List.of(registerCommand(entry)))
+               .onFailure(cause -> log.warn("Stream registry register({}) consensus apply failed: {}",
+                                            entry.address().asString(),
+                                            cause.message()));
 
         return Result.success(entry);
     }

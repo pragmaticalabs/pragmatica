@@ -26,7 +26,11 @@ public final class RateLimitInterceptorFactory implements ResourceFactory<RateLi
     }
 
     private static RateLimitMethodInterceptor interceptor(RateLimitConfig config) {
-        var limiter = RateLimiter.builder().rate(config.maxRequests()).period(config.window()).burst(config.burst()).withDefaultTimeSource();
+        var limiter = RateLimiter.builder()
+                                 .rate(config.maxRequests())
+                                 .period(config.window())
+                                 .burst(config.burst())
+                                 .withDefaultTimeSource();
 
         return new RateLimitMethodInterceptor(limiter);
     }

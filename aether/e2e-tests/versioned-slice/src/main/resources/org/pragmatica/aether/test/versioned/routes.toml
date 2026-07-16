@@ -1,0 +1,19 @@
+[api]
+prefix = "/api/orders"
+requireVersionHeader = false
+
+[v1.routes]
+get = "GET /{id:Long}"
+
+[v1]
+deprecated = true
+sunset = "2026-12-31"
+
+[v2.routes]
+get = "GET /{id:Long}"
+
+[v2]
+defaultIfMissing = true
+
+[errors]
+default = 500

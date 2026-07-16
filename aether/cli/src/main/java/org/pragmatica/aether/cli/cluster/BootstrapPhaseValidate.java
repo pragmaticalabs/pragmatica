@@ -4,14 +4,14 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.cli.cluster;
 
+import java.time.Instant;
+import java.util.List;
+
 import org.pragmatica.aether.cli.cluster.ClusterBootstrapOrchestrator.BootstrapContext;
 import org.pragmatica.aether.config.cluster.ClusterBootstrapConfig;
 import org.pragmatica.aether.config.cluster.ClusterBootstrapConfigValidator;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Result;
-
-import java.time.Instant;
-import java.util.List;
 
 import static org.pragmatica.aether.cli.cluster.BootstrapPhase.VALIDATE;
 
@@ -58,7 +58,8 @@ sealed interface BootstrapPhaseValidate {
         var clusterSecret = ClusterBootstrapOrchestrator.generateClusterSecret();
         var state = BootstrapState.initialState(clusterName,
                                                 configHash,
-                                                Instant.now().toString()).withClusterSecret(clusterSecret);
+                                                Instant.now().toString())
+                                  .withClusterSecret(clusterSecret);
 
         return BootstrapContext.bootstrapContext(validated,
                                                  state,

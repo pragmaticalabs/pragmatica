@@ -4,11 +4,11 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.slice.blueprint;
 
-import org.pragmatica.lang.Option;
-import org.pragmatica.serialization.Codec;
-
 import java.util.List;
 import java.util.Map;
+
+import org.pragmatica.lang.Option;
+import org.pragmatica.serialization.Codec;
 
 import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.some;

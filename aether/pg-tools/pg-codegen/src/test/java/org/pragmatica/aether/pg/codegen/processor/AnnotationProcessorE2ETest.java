@@ -901,6 +901,113 @@ class AnnotationProcessorE2ETest {
         }
     }
 
+    @Nested
+    class AutoDiscovery {
+        /// A migration with a name that no hardcoded dictionary ever knew (`V900__eventmanagement.sql`)
+        /// and which the committed `migrations.list` does not mention must still be discovered by
+        /// globbing — and its table must resolve at compile time. The absence-from-manifest must
+        /// surface as a WARNING, not a silent skip.
+        @Test
+        void arbitrarilyNamedMigration_discoveredAndResolves_whenAbsentFromManifest() throws Exception {
+            writeSchemaFile("schema", "V900__eventmanagement.sql",
+                "CREATE TABLE event_management (id BIGINT PRIMARY KEY, title TEXT NOT NULL)");
+
+            var source = """
+                package test;
+
+                import org.pragmatica.aether.pg.codegen.annotation.Query;
+                import org.pragmatica.aether.resource.db.PgSql;
+                import org.pragmatica.lang.Option;
+                import org.pragmatica.lang.Promise;
+
+                @PgSql
+                public interface EventRepo {
+
+                    record EventRow(long id, String title) {}
+
+                    @Query("SELECT id, title FROM event_management WHERE id = :id")
+                    Promise<Option<EventRow>> findById(long id);
+                }
+                """;
+
+            var result = compileWithProcessor(source, "test/EventRepo.java");
+
+            assertThat(result.success()).as("Compilation should succeed: " + result.diagnostics()).isTrue();
+
+            var generated = result.generatedSource("test.EventRepoFactory");
+            assertThat(generated).isNotNull();
+            assertThat(generated).contains("findById");
+            // V900 is on disk but absent from the committed migrations.list -> must WARN, not skip.
+            assertThat(result.diagnostics()).contains("migrations.list");
+        }
+
+        /// The issue's acceptance: with NO `migrations.list` anywhere on the path, all migrations are
+        /// still discovered via the glob. Uses a named datasource so the schema directory is isolated
+        /// from the shared default test schema (which does carry a manifest).
+        @Test
+        void migrationWithoutAnyManifest_discoveredViaGlob() throws Exception {
+            writeSchemaFile("schema/widgets", "V003__widgets.sql",
+                "CREATE TABLE widgets (id BIGINT PRIMARY KEY, label TEXT NOT NULL)");
+
+            var qualifier = """
+                package test;
+
+                import org.pragmatica.aether.resource.db.PgSqlConnector;
+                import org.pragmatica.aether.slice.annotation.ResourceQualifier;
+
+                import java.lang.annotation.ElementType;
+                import java.lang.annotation.Retention;
+                import java.lang.annotation.RetentionPolicy;
+                import java.lang.annotation.Target;
+
+                @ResourceQualifier(type = PgSqlConnector.class, config = "database.widgets")
+                @Retention(RetentionPolicy.RUNTIME)
+                @Target({ElementType.PARAMETER, ElementType.TYPE})
+                public @interface WidgetsPgSql {}
+                """;
+
+            var repo = """
+                package test;
+
+                import org.pragmatica.aether.pg.codegen.annotation.Query;
+                import org.pragmatica.lang.Option;
+                import org.pragmatica.lang.Promise;
+
+                @WidgetsPgSql
+                public interface WidgetRepo {
+
+                    record WidgetRow(long id, String label) {}
+
+                    @Query("SELECT id, label FROM widgets WHERE id = :id")
+                    Promise<Option<WidgetRow>> findById(long id);
+                }
+                """;
+
+            var result = TestCompilationHelper.compileWithProcessor(
+                java.util.List.of(
+                    new TestCompilationHelper.SourceEntry("test/WidgetsPgSql.java", qualifier),
+                    new TestCompilationHelper.SourceEntry("test/WidgetRepo.java", repo)
+                ),
+                tempDir
+            );
+
+            assertThat(result.success()).as("Compilation should succeed: " + result.diagnostics()).isTrue();
+
+            var generated = result.generatedSource("test.WidgetRepoFactory");
+            assertThat(generated).isNotNull();
+            assertThat(generated).contains("findById");
+        }
+
+        /// Writes a migration into the compiler output directory under the given schema-relative
+        /// directory, so the processor discovers it via the CLASS_OUTPUT anchor exactly as it would
+        /// find Maven-copied `src/main/resources/schema` resources in a real build.
+        private void writeSchemaFile(String relativeDir, String fileName, String sql) throws Exception {
+            var dir = tempDir.resolve("classes").resolve(relativeDir);
+            java.nio.file.Files.createDirectories(dir);
+            java.nio.file.Files.writeString(dir.resolve(fileName), sql);
+        }
+    }
+
     // --- Delegate to shared helper ---
 
     private TestCompilationHelper.CompilationResult compileWithProcessor(String sourceCode, String fileName) throws Exception {

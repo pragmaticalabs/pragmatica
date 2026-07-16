@@ -4,6 +4,8 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.node.health.fsm;
 
+import java.net.InetSocketAddress;
+
 import org.pragmatica.aether.node.health.fsm.SwimHealthEvents.LeaderChanged;
 import org.pragmatica.aether.node.health.fsm.SwimHealthEvents.PeerConnected;
 import org.pragmatica.aether.node.health.fsm.SwimHealthEvents.PeerFaulty;
@@ -26,8 +28,6 @@ import org.pragmatica.swim.GossipEncryptor;
 import org.pragmatica.swim.SwimMember;
 import org.pragmatica.swim.SwimProtocol;
 import org.pragmatica.swim.SwimTransport;
-
-import java.net.InetSocketAddress;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -171,7 +171,10 @@ public sealed interface SwimHealthState extends FsmState<SwimHealthState, SwimHe
                 return;
             }
 
-            event.info().onPresent(info -> addSeedAndLog(peer, addressOf(info))).onEmpty(() -> readdUnknownFromTopology(peer));
+            event.info()
+                 .onPresent(info -> addSeedAndLog(peer,
+                                                  addressOf(info)))
+                 .onEmpty(() -> readdUnknownFromTopology(peer));
         }
 
         private void clearStaleHintForKnownMember(NodeId peer) {

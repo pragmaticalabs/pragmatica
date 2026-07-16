@@ -4,22 +4,26 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.worker.metrics;
 
+import java.util.List;
+
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.messaging.Message;
 import org.pragmatica.messaging.StreamType;
 import org.pragmatica.serialization.Codec;
 
-import java.util.List;
-
 
 @Codec
 public record CommunityMetricsSnapshot(String communityId,
                                        NodeId governorId,
-                                       long requestId,
                                        int memberCount,
                                        List<PerSliceMetrics> sliceMetrics,
-                                       List<WindowSample> slidingWindow,
                                        long timestampMs) implements Message.Wired {
+    public CommunityMetricsSnapshot {
+        sliceMetrics = sliceMetrics == null
+                       ? List.of()
+                       : List.copyOf(sliceMetrics);
+    }
+
     @Override
     public StreamType streamType() {
         return StreamType.METRICS;
@@ -27,32 +31,16 @@ public record CommunityMetricsSnapshot(String communityId,
 
     public static CommunityMetricsSnapshot communityMetricsSnapshot(String communityId,
                                                                     NodeId governorId,
-                                                                    long requestId,
                                                                     int memberCount,
                                                                     List<PerSliceMetrics> sliceMetrics,
-                                                                    List<WindowSample> slidingWindow,
                                                                     long timestampMs) {
-        return new CommunityMetricsSnapshot(communityId,
-                                            governorId,
-                                            requestId,
-                                            memberCount,
-                                            List.copyOf(sliceMetrics),
-                                            List.copyOf(slidingWindow),
-                                            timestampMs);
+        return new CommunityMetricsSnapshot(communityId, governorId, memberCount, sliceMetrics, timestampMs);
     }
 
     public static CommunityMetricsSnapshot communityMetricsSnapshot(String communityId,
                                                                     NodeId governorId,
-                                                                    long requestId,
                                                                     int memberCount,
-                                                                    List<PerSliceMetrics> sliceMetrics,
-                                                                    List<WindowSample> slidingWindow) {
-        return communityMetricsSnapshot(communityId,
-                                        governorId,
-                                        requestId,
-                                        memberCount,
-                                        sliceMetrics,
-                                        slidingWindow,
-                                        System.currentTimeMillis());
+                                                                    List<PerSliceMetrics> sliceMetrics) {
+        return communityMetricsSnapshot(communityId, governorId, memberCount, sliceMetrics, System.currentTimeMillis());
     }
 }

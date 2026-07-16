@@ -128,6 +128,32 @@ class HetznerDiscoveryProviderTest {
         }
 
         @Test
+        void registerSelf_mergesWithExistingLabels_preservingNodeIdAndSource() {
+            // #442 v2b — Hetzner label update REPLACES the whole map; registration must MERGE
+            // (read-modify-write) so it does NOT wipe the aether-node-id / aether-source the create
+            // stamped. The base set is read back from the VM's existing labels, then the discovery
+            // labels (cluster/port/role) are overlaid.
+            testClient.getServerResponse = Promise.success(
+                serverWithPrivateIpAndLabels(100, "10.0.0.1",
+                                             Map.of("aether-node-id", "node-x",
+                                                    "aether-source", "hetzner-eu",
+                                                    "aether-cluster", "test-cluster")));
+            var self = new PeerInfo("10.0.0.1", 9100, Map.of("role", "core"));
+
+            provider.registerSelf(self)
+                    .await()
+                    .onFailure(cause -> assertThat(cause).isNull());
+
+            assertThat(testClient.lastUpdateLabels)
+                    .as("registration MERGES: create-stamped node-id + source survive, discovery labels added")
+                    .containsEntry("aether-node-id", "node-x")
+                    .containsEntry("aether-source", "hetzner-eu")
+                    .containsEntry("aether-cluster", "test-cluster")
+                    .containsEntry("aether-port", "9100")
+                    .containsEntry("aether-role", "core");
+        }
+
+        @Test
         void registerSelf_failsWhenNoSelfServerId() {
             var configNoSelf = BASE_CONFIG.withDiscovery("test-cluster");
             var providerNoSelf = HetznerDiscoveryProvider.hetznerDiscoveryProvider(testClient, configNoSelf);

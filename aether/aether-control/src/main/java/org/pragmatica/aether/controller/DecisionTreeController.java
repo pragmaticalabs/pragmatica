@@ -4,18 +4,13 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.controller;
 
+import java.util.List;
+
 import org.pragmatica.aether.artifact.Artifact;
-import org.pragmatica.aether.metrics.ClusterSyncCollector;
-import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
-
-import java.util.List;
-import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.atomic.AtomicLong;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -23,6 +18,9 @@ import org.slf4j.LoggerFactory;
 import static org.pragmatica.lang.Unit.unit;
 
 
+/// Per-slice scaling controller (#423). Each blueprint's decision is driven solely by that
+/// artifact's own composite load — no cluster-wide CPU average, no cross-artifact call-rate gossip
+/// (the #422 mis-attribution class). A high error rate on the artifact gates both directions.
 public interface DecisionTreeController extends ClusterController {
     static DecisionTreeController decisionTreeController() {
         return decisionTreeController(ControllerConfig.DEFAULT);
@@ -38,7 +36,7 @@ public interface DecisionTreeController extends ClusterController {
     }
 
     static DecisionTreeController decisionTreeController(ControllerConfig config) {
-        return new ControllerState(config, new ConcurrentHashMap<>(), System.currentTimeMillis());
+        return new ControllerState(config);
     }
 
     ControllerConfig configuration();
@@ -48,13 +46,9 @@ public interface DecisionTreeController extends ClusterController {
         private static final Logger log = LoggerFactory.getLogger(DecisionTreeController.class);
 
         private volatile ControllerConfig config;
-        private final Map<String, Double> previousCallCounts;
-        private final AtomicLong lastEvaluationTime;
 
-        ControllerState(ControllerConfig config, Map<String, Double> previousCallCounts, long lastEvaluationTime) {
+        ControllerState(ControllerConfig config) {
             this.config = config;
-            this.previousCallCounts = previousCallCounts;
-            this.lastEvaluationTime = new AtomicLong(lastEvaluationTime);
         }
 
         @Override
@@ -72,120 +66,61 @@ public interface DecisionTreeController extends ClusterController {
 
         @Override
         public Promise<ControlDecisions> evaluate(ControlContext context) {
-            var currentConfig = this.config;
-            var avgCpu = context.avgMetric(ClusterSyncCollector.CPU_USAGE);
-
-            log.debug("Evaluating: avgCpu={}, blueprints={}",
-                      avgCpu,
-                      context.blueprints().size());
-            var currentTime = System.currentTimeMillis();
-            long previousTime;
-            long expected;
-
-            do {
-                expected = lastEvaluationTime.get();
-                previousTime = expected;
-            } while (!lastEvaluationTime.compareAndSet(expected, currentTime));
-
-            var elapsedSeconds = Math.max(1.0, (currentTime - previousTime) / 1000.0);
-            var currentMetricKeys = context.metrics().values().stream().flatMap(nodeMetrics -> nodeMetrics.keySet()
-                                                                                                          .stream()).filter(this::isCallMetric).collect(java.util.stream.Collectors.toSet());
-
-            previousCallCounts.keySet().retainAll(currentMetricKeys);
-            var changes = context.blueprints().entrySet().stream().map(entry -> evaluateBlueprint(entry.getKey(),
-                                                                                                  entry.getValue(),
-                                                                                                  avgCpu,
-                                                                                                  context.metrics(),
-                                                                                                  currentConfig,
-                                                                                                  elapsedSeconds)).flatMap(List::stream).toList();
+            var scalingConfig = config.scalingConfig();
+            var changes = context.blueprints()
+                                 .entrySet()
+                                 .stream()
+                                 .flatMap(entry -> evaluateBlueprint(entry.getKey(),
+                                                                     entry.getValue(),
+                                                                     context.loadFor(entry.getKey()),
+                                                                     scalingConfig).stream())
+                                 .toList();
 
             return Promise.success(new ControlDecisions(changes));
         }
 
         private List<BlueprintChange> evaluateBlueprint(Artifact artifact,
                                                         Blueprint blueprint,
-                                                        double avgCpu,
-                                                        Map<NodeId, Map<String, Double>> metrics,
-                                                        ControllerConfig currentConfig,
-                                                        double elapsedSeconds) {
-            return evaluateCpuRules(artifact, blueprint, avgCpu, currentConfig).orElse(() -> evaluateCallRateRule(artifact,
-                                                                                                                  metrics,
-                                                                                                                  currentConfig,
-                                                                                                                  elapsedSeconds))
-                                   .or(List::of);
+                                                        Option<ArtifactLoad> load,
+                                                        ScalingConfig scalingConfig) {
+            return load.filter(ArtifactLoad::canScale)
+                       .flatMap(current -> decideForArtifact(artifact, blueprint, current, scalingConfig))
+                       .map(change -> List.<BlueprintChange> of(change))
+                       .or(List.of());
         }
 
-        private Option<List<BlueprintChange>> evaluateCpuRules(Artifact artifact,
-                                                               Blueprint blueprint,
-                                                               double avgCpu,
-                                                               ControllerConfig currentConfig) {
-            if (currentConfig.scalingConfig().weights().getOrDefault(ScalingMetric.CPU, 0.0) == 0.0) {
+        private Option<BlueprintChange> decideForArtifact(Artifact artifact,
+                                                          Blueprint blueprint,
+                                                          ArtifactLoad load,
+                                                          ScalingConfig scalingConfig) {
+            if (load.errorRateHigh()) {
+                log.debug("Scaling for {} gated by high error rate", artifact);
+
                 return Option.none();
             }
 
-            if (avgCpu > currentConfig.cpuScaleUpThreshold()) {
-                log.info("Rule triggered: High CPU ({} > {}), scaling up {}",
-                         avgCpu,
-                         currentConfig.cpuScaleUpThreshold(),
+            double scaleUpThreshold = blueprint.scaleUpThreshold().or(scalingConfig.scaleUpThreshold());
+            double scaleDownThreshold = blueprint.scaleDownThreshold().or(scalingConfig.scaleDownThreshold());
+
+            if (load.compositeScore() >= scaleUpThreshold) {
+                log.info("Rule triggered: high load ({} >= {}), scaling up {}",
+                         load.compositeScore(),
+                         scaleUpThreshold,
                          artifact);
 
-                return Option.some(List.of(new BlueprintChange.ScaleUp(artifact, 1)));
+                return Option.some(new BlueprintChange.ScaleUp(artifact, 1));
             }
 
-            if (avgCpu < currentConfig.cpuScaleDownThreshold() && blueprint.instances() > blueprint.minInstances()) {
-                log.debug("Rule triggered: Low CPU ({} < {}), scaling down {}",
-                          avgCpu,
-                          currentConfig.cpuScaleDownThreshold(),
+            if (load.compositeScore() <= scaleDownThreshold && blueprint.instances() > blueprint.minInstances()) {
+                log.debug("Rule triggered: low load ({} <= {}), scaling down {}",
+                          load.compositeScore(),
+                          scaleDownThreshold,
                           artifact);
 
-                return Option.some(List.of(new BlueprintChange.ScaleDown(artifact, 1)));
+                return Option.some(new BlueprintChange.ScaleDown(artifact, 1));
             }
 
             return Option.none();
-        }
-
-        private Option<List<BlueprintChange>> evaluateCallRateRule(Artifact artifact,
-                                                                   Map<NodeId, Map<String, Double>> metrics,
-                                                                   ControllerConfig currentConfig,
-                                                                   double elapsedSeconds) {
-            var callMetricEntries = metrics.values().stream().flatMap(nodeMetrics -> nodeMetrics.entrySet()
-                                                                                                .stream()).filter(entry -> isCallMetric(entry.getKey())).toList();
-            var hasHighCallRate = checkAndUpdateCallRates(callMetricEntries, elapsedSeconds, currentConfig);
-
-            if (hasHighCallRate) {
-                log.info("Rule triggered: High call rate, scaling up {}", artifact);
-
-                return Option.some(List.of(new BlueprintChange.ScaleUp(artifact, 1)));
-            }
-
-            return Option.none();
-        }
-
-        private boolean checkAndUpdateCallRates(List<Map.Entry<String, Double>> callMetricEntries,
-                                                double elapsedSeconds,
-                                                ControllerConfig currentConfig) {
-            var hasHighRate = false;
-
-            for (var entry : callMetricEntries) {
-                var metricName = entry.getKey();
-                var currentCount = entry.getValue();
-                var previous = previousCallCounts.put(metricName, currentCount);
-                var previousCount = previous != null
-                                    ? previous
-                                    : 0.0;
-                var delta = currentCount - previousCount;
-                var callsPerSecond = delta / elapsedSeconds;
-
-                if (callsPerSecond > currentConfig.callRateScaleUpThreshold()) {
-                    hasHighRate = true;
-                }
-            }
-
-            return hasHighRate;
-        }
-
-        private boolean isCallMetric(String metricName) {
-            return metricName.startsWith("method.") && metricName.endsWith(".calls");
         }
     }
 }

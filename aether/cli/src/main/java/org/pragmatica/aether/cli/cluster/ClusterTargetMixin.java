@@ -4,16 +4,16 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.cli.cluster;
 
-import org.pragmatica.lang.Cause;
-import org.pragmatica.lang.Contract;
-import org.pragmatica.lang.Result;
-import org.pragmatica.lang.Unit;
-
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.function.Function;
 import java.util.function.Supplier;
 import java.util.regex.Pattern;
+
+import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Contract;
+import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Unit;
 
 import picocli.CommandLine.Option;
 

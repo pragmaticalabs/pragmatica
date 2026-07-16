@@ -4,11 +4,6 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.forge.simulator;
 
-import org.pragmatica.lang.Contract;
-import org.pragmatica.lang.Result;
-import org.pragmatica.lang.Unit;
-import org.pragmatica.lang.Verify;
-
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
@@ -17,6 +12,11 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.stream.IntStream;
+
+import org.pragmatica.lang.Contract;
+import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.Verify;
 
 import static org.pragmatica.lang.Result.success;
 import static org.pragmatica.lang.Result.unitResult;
@@ -94,7 +94,9 @@ public final class EntryPointMetrics {
                                    AtomicLong windowLatencyNanos,
                                    AtomicLong[] histogram) {
         static Result<EntryPointStats> entryPointStats() {
-            var hist = IntStream.range(0, BUCKET_BOUNDARIES_MS.length + 1).mapToObj(_ -> new AtomicLong()).toArray(AtomicLong[]::new);
+            var hist = IntStream.range(0, BUCKET_BOUNDARIES_MS.length + 1)
+                                .mapToObj(_ -> new AtomicLong())
+                                .toArray(AtomicLong[]::new);
 
             return success(new EntryPointStats(new AtomicLong(),
                                                new AtomicLong(),
@@ -220,7 +222,9 @@ public final class EntryPointMetrics {
 
         private double findBucketForPercentile(long targetCount) {
             var cumulative = new AtomicLong(0);
-            var matchingBucket = IntStream.range(0, histogram.length).filter(i -> cumulative.addAndGet(histogram[i].get()) >= targetCount).findFirst();
+            var matchingBucket = IntStream.range(0, histogram.length)
+                                          .filter(i -> cumulative.addAndGet(histogram[i].get()) >= targetCount)
+                                          .findFirst();
 
             return matchingBucket.isPresent()
                    ? bucketBoundary(matchingBucket.getAsInt())

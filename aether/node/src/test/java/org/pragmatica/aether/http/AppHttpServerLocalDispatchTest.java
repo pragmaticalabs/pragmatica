@@ -9,13 +9,19 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.artifact.Artifact;
+import org.pragmatica.http.routing.SliceVersionRegistry;
+import org.pragmatica.http.routing.VersioningMetricsSink;
+
 import org.pragmatica.aether.config.AppHttpConfig;
 import org.pragmatica.aether.http.HttpRoutePublisher.LocalRouteInfo;
+import org.pragmatica.aether.http.adapter.RouteDecorator;
 import org.pragmatica.aether.http.adapter.SliceRouter;
+import org.pragmatica.aether.http.handler.HttpRequestContext;
 import org.pragmatica.aether.http.handler.HttpRequestHandler;
 import org.pragmatica.aether.http.handler.HttpResponseData;
 import org.pragmatica.aether.http.handler.security.SecurityPolicy;
 import org.pragmatica.aether.config.TimeoutsConfig.ForwardingTimeouts;
+import org.pragmatica.aether.slice.ObservabilityCellRegistrar;
 import org.pragmatica.aether.slice.SliceInvokerFacade;
 import org.pragmatica.aether.slice.blueprint.SecurityOverrides;
 import org.pragmatica.aether.slice.kvstore.AetherKey.HttpNodeRouteKey;
@@ -36,6 +42,7 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.time.Duration;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -165,10 +172,7 @@ class AppHttpServerLocalDispatchTest {
     private record StubRoutePublisher(String httpMethod, String pathPrefix, NodeId nodeId, SliceRouter router)
         implements HttpRoutePublisher {
         static StubRoutePublisher hosting(String httpMethod, String pathPrefix, NodeId nodeId) {
-            SliceRouter router = request -> Promise.success(HttpResponseData.httpResponseData(200,
-                                                                                              "{\"result\":\"served-locally\"}"));
-
-            return new StubRoutePublisher(httpMethod, pathPrefix, nodeId, router);
+            return new StubRoutePublisher(httpMethod, pathPrefix, nodeId, new StubSliceRouter());
         }
 
         private boolean matches(String method, String path) {
@@ -234,6 +238,44 @@ class AppHttpServerLocalDispatchTest {
         @Override
         public Unit updateSecurityOverrides(SecurityOverrides overrides) {
             return unit();
+        }
+
+        @Override
+        public Unit setVersioningMetricsSink(VersioningMetricsSink sink) {
+            return unit();
+        }
+
+        @Override
+        public Map<Artifact, SliceVersionRegistry> versionRegistries() {
+            return Map.of();
+        }
+
+        @Override
+        public Unit setObservabilityCellRegistrar(ObservabilityCellRegistrar registrar) {
+            return unit();
+        }
+    }
+
+    /// Minimal SliceRouter stub returning a fixed 200; unversioned registry, identity observability.
+    private static final class StubSliceRouter implements SliceRouter {
+        @Override
+        public Promise<HttpResponseData> handle(HttpRequestContext request) {
+            return Promise.success(HttpResponseData.httpResponseData(200, "{\"result\":\"served-locally\"}"));
+        }
+
+        @Override
+        public SliceVersionRegistry versionRegistry() {
+            return SliceVersionRegistry.UNVERSIONED;
+        }
+
+        @Override
+        public SliceRouter withObservability(String sliceName, VersioningMetricsSink sink) {
+            return this;
+        }
+
+        @Override
+        public SliceRouter withInvocationCells(RouteDecorator decorator) {
+            return this;
         }
     }
 }

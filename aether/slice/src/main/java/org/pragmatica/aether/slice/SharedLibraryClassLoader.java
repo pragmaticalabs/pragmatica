@@ -4,6 +4,12 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.slice;
 
+import java.io.IOException;
+import java.net.URL;
+import java.net.URLClassLoader;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+
 import org.pragmatica.aether.artifact.Version;
 import org.pragmatica.aether.slice.dependency.ArtifactDependency;
 import org.pragmatica.aether.slice.dependency.CompatibilityResult;
@@ -11,12 +17,6 @@ import org.pragmatica.aether.slice.dependency.VersionPattern;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
-
-import java.io.IOException;
-import java.net.URL;
-import java.net.URLClassLoader;
-import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;

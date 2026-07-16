@@ -4,6 +4,15 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.api.routes;
 
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+import java.util.Set;
+import java.util.function.Consumer;
+import java.util.function.Supplier;
+import java.util.stream.Stream;
+
 import org.pragmatica.aether.api.ManagementApiResponses.PromoteNodeRequest;
 import org.pragmatica.aether.api.ManagementApiResponses.PromoteNodeResponse;
 import org.pragmatica.aether.api.OperationalEvent;
@@ -16,8 +25,8 @@ import org.pragmatica.aether.slice.kvstore.AetherKey.ActivationDirectiveKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ActivationDirectiveValue;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.consensus.NodeId;
-import org.pragmatica.http.routing.HttpError;
-import org.pragmatica.http.routing.HttpStatus;
+import org.pragmatica.http.HttpError;
+import org.pragmatica.http.HttpStatus;
 import org.pragmatica.http.routing.QueryParameter;
 import org.pragmatica.http.routing.Route;
 import org.pragmatica.http.routing.RouteSource;
@@ -26,15 +35,6 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.utils.Causes;
-
-import java.util.ArrayList;
-import java.util.List;
-import java.util.Locale;
-import java.util.Map;
-import java.util.Set;
-import java.util.function.Consumer;
-import java.util.function.Supplier;
-import java.util.stream.Stream;
 
 import static org.pragmatica.http.routing.PathParameter.aString;
 
@@ -416,9 +416,10 @@ public final class NodeLifecycleRoutes implements RouteSource {
                                          "ROLE:" + plan.targetRole(),
                                          true,
                                          "Promoted from " + plan.previousRole() + " to " + plan.targetRole());
-        nodeSupplier.get().route(OperationalEvent.NodeLifecycleChanged.nodeLifecycleChanged(nodeIdStr,
-                                                                                            "ROLE:" + plan.targetRole(),
-                                                                                            "api.promote"));
+        nodeSupplier.get()
+                    .route(OperationalEvent.NodeLifecycleChanged.nodeLifecycleChanged(nodeIdStr,
+                                                                                      "ROLE:" + plan.targetRole(),
+                                                                                      "api.promote"));
     }
 
     private record PromotePlan(NodeId nodeId, String previousRole, String targetRole) {}
@@ -455,8 +456,9 @@ public final class NodeLifecycleRoutes implements RouteSource {
 
     private void auditAndEmitLifecycleTransition(TransitionResult result, String newState) {
         AuditLog.nodeLifecycleTransition(result.nodeId(), result.state(), result.success(), result.message());
-        nodeSupplier.get().route(OperationalEvent.NodeLifecycleChanged.nodeLifecycleChanged(result.nodeId(),
-                                                                                            newState,
-                                                                                            "api"));
+        nodeSupplier.get()
+                    .route(OperationalEvent.NodeLifecycleChanged.nodeLifecycleChanged(result.nodeId(),
+                                                                                      newState,
+                                                                                      "api"));
     }
 }

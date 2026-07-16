@@ -4,17 +4,17 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.api;
 
-import org.pragmatica.lang.Option;
-import org.pragmatica.lang.Promise;
-import org.pragmatica.lang.io.TimeSpan;
-import org.pragmatica.lang.utils.SharedScheduler;
-
 import java.time.Instant;
 import java.util.List;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Function;
+
+import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.io.TimeSpan;
+import org.pragmatica.lang.utils.SharedScheduler;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -83,8 +83,10 @@ public class EventWebSocketPublisher {
 
         var since = lastBroadcast.get();
         var now = Instant.now();
-        Promise<?> ignored = eventsSinceProvider.apply(since).onSuccess(events -> broadcastIfPresent(events, now)).onFailure(cause -> log.error("Error publishing events via WebSocket: {}",
-                                                                                                                                                cause.message()));
+        Promise<?> ignored = eventsSinceProvider.apply(since)
+                                                .onSuccess(events -> broadcastIfPresent(events, now))
+                                                .onFailure(cause -> log.error("Error publishing events via WebSocket: {}",
+                                                                              cause.message()));
     }
 
     private void broadcastIfPresent(List<ClusterEvent> newEvents, Instant now) {

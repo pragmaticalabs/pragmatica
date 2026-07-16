@@ -1,14 +1,14 @@
 package org.pragmatica.aether.example.shared;
 
+import java.math.BigDecimal;
+import java.math.RoundingMode;
+import java.util.Currency;
+
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Verify;
 import org.pragmatica.lang.utils.Causes;
-
-import java.math.BigDecimal;
-import java.math.RoundingMode;
-import java.util.Currency;
 
 
 public record Money(BigDecimal amount, Currency currency) {

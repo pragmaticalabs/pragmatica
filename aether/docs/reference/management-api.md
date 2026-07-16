@@ -51,6 +51,7 @@ Roles are hierarchical: ADMIN has all OPERATOR permissions, and OPERATOR has all
 | Backup restore | ADMIN | `POST /api/backups/restore/{id}` |
 | Log level changes | ADMIN | `PUT /api/logging/levels` |
 | Observability depth | ADMIN | `PUT /api/observability/depth` |
+| Observability config (write) | ADMIN | `POST`/`DELETE /api/observability/config` |
 | Blueprint deploy (from artifact) | OPERATOR | `POST /api/blueprints/deploy` |
 | Blueprint validate | VIEWER | `POST /api/blueprints/validate` |
 | Node drain | OPERATOR | `POST /api/nodes/drain/{id}` |
@@ -122,6 +123,26 @@ A management request may land on any core node, but where it is ultimately serve
 
 ## Cluster Status
 
+### Schema stability contract
+
+A small set of response fields are consumed by automated tooling (the integration-test harness
+parses them with field-path extraction and grep). These fields are **frozen**: they MUST NOT be
+renamed or have their JSON type changed without a major version bump and a corresponding update to
+every consumer. Adding new fields alongside them is always allowed. The contract test
+`aether/tests/integration/lib/contract-test.sh` (driven by `lib/schema-contract.toml`) enforces
+this at push time: it fails if a harness lib references a status field outside the frozen list, or
+if a frozen field disappears from this document.
+
+| Endpoint | Frozen fields |
+|----------|--------------|
+| `GET /api/cluster/status` | `leaderId`, `coreCount`, `clusterPhase` |
+| `GET /api/nodes/status` | `nodeId`, `lifecycleState`, `isLeader` |
+| `GET /api/nodes/lifecycle` | array element `nodeId`, `derivedStatus` |
+| `GET /api/nodes/live` | `nodeId`, `swimAlive`, `reportedState` |
+
+The historical `id` vs `nodeId` rename — which silently broke harness field extraction until a
+cloud run failed — is the regression this contract exists to prevent.
+
 ### GET /api/nodes/status
 
 Get overall cluster status including uptime, cluster info, slice count, and metrics summary.
@@ -157,6 +178,58 @@ Get overall cluster status including uptime, cluster info, slice count, and metr
 `runtimeState` carries the JVM/process state machine (`NodeState`: `STARTING` / `JOINING` / `ACTIVE` / `DRAINING` / `STOPPED`) — "is the process up and serving".
 
 `lifecycleState` carries the node's heartbeat-reported readiness (`SYNCING` / `READY` / `DRAINING`) as cached by the leader from the leader↔node heartbeat. This state is node-authoritative and is **never** stored in or committed to the KV-Store. Empty string when the leader has not yet received a heartbeat from the node (cold-start transient). See `aether/docs/specs/membership-architecture-v2-spec.md`.
+
+### GET /api/nodes/endpoint/{id}
+
+Resolve a single node to its cluster-transport `host:port` and a best-effort reachability flag.
+The request lands on any node and is forwarded to the node identified by `{id}` (via the standard
+`nodeIdParam(0)` forwarding pattern shared with `/api/nodes/status/{id}`, `/health/live/{id}`,
+etc.), so the address returned is the target node's own view of its transport endpoint.
+
+**Response:**
+```json
+{
+  "nodeId": "node-1",
+  "address": "10.0.0.7:7100",
+  "reachable": true
+}
+```
+
+- `address`: the node's cluster-transport `host:port` (no scheme). Falls back to the node's own
+  advertised address during the cold-start window before it registers itself in its topology view.
+- `reachable`: result of a best-effort TCP connect probe (2 s timeout) against `address`. A connect
+  failure yields `false` without failing the request — the address is always reported so the caller
+  learns where to dial. Equivalent to the harness `_resolve_live_endpoint` connect check.
+
+### GET /api/nodes/live
+
+Unified live-node document served from **any** core node. Joins three sources into one view:
+consensus topology (`address` + `role`), the SWIM-derived membership view (`swimAlive`), and the
+node-reported work-state map (`reportedState`). The node universe is the union of topology and
+reported-state keys. A **zombie** — a node still present in the reported-state map but absent from
+both the topology and the SWIM membership view — surfaces with `swimAlive=false` and
+`address=null`, and is counted in `zombieCount`.
+
+**Response:**
+```json
+{
+  "nodes": [
+    {"nodeId": "node-1", "address": "10.0.0.7:7100", "role": "CORE", "swimAlive": true, "reportedState": "READY"},
+    {"nodeId": "node-2", "address": "10.0.0.8:7100", "role": "CORE", "swimAlive": true, "reportedState": "READY"},
+    {"nodeId": "node-3", "address": null, "role": "CORE", "swimAlive": false, "reportedState": "READY"}
+  ],
+  "liveCount": 2,
+  "zombieCount": 1
+}
+```
+
+- `swimAlive`: SWIM membership presence — the single source of truth for "is this node alive".
+- `address`: `null` for a node not present in the consensus topology (e.g. a zombie known only via a
+  stale reported-state entry).
+- `role`: `"CORE"` / `"WORKER"` / `"SPOT"` from the node's `role` label, defaulting to `"CORE"`.
+- `reportedState`: node-reported work-state (`SYNCING` / `READY` / `DRAINING`) from the metrics pong;
+  empty string when no pong has been observed.
+- `liveCount`: number of entries with `swimAlive=true`. `zombieCount`: the remainder.
 
 ### GET /api/health
 
@@ -276,7 +349,9 @@ Route is `LOCAL` (no forwarding) — the answer is per-request, not per-cluster.
 
 Get cluster events from the event aggregator. Returns structured events including topology changes, leader elections, deployments, slice failures, and network events.
 
-**Routing:** LEADER — the event aggregator is part of the leader-only control plane, so a request received by a follower is forwarded to the current leader.
+**Routing:** ANY — served from any core node, not leader-bound (#267). cluster-events is a replicated single-partition stream; a node that is not a cluster-events replica read-forwards to a CAUGHT_UP replica, so the endpoint stays available during leader churn/election (it previously returned 503 when no leader was present — exactly when operators most need events).
+
+**Staleness:** a read served from a replica reflects that replica's CAUGHT_UP watermark, which may trail the owner by the in-flight replication window (typically sub-second under steady load). This is acceptable for observability and is preferable to a 503 during re-election. Reads are not linearizable across the partition.
 
 **Query Parameters:**
 - `sinceEpoch` (optional) -- Rabia term epoch for cursor-based pagination (default: 0).
@@ -318,11 +393,47 @@ curl "http://localhost:8080/api/events?sinceEpoch=3&sinceSeq=42"
 ]
 ```
 
-**Event Types:** `NODE_JOINED`, `NODE_LEFT`, `NODE_FAILED`, `LEADER_ELECTED`, `LEADER_LOST`, `QUORUM_ESTABLISHED`, `QUORUM_LOST`, `DEPLOYMENT_STARTED`, `DEPLOYMENT_COMPLETED`, `DEPLOYMENT_FAILED`, `SLICE_FAILURE`, `CONNECTION_ESTABLISHED`, `CONNECTION_FAILED`, `GENERATION_CHANGED`, `SELF_DRAIN_INITIATED`
+**Event Types** (the 32 closed-set `ClusterEvent` variants; the `type` discriminator is the SCREAMING_SNAKE_CASE of the record name):
+
+- `NODE_JOINED` -- a node joined the cluster (sourced from the transport `PeerJoined` handshake; leader-gated). Severity INFO.
+- `NODE_LEFT` -- a node gracefully departed (consensus-committed decommission/drain decision; leader-gated). Severity WARNING.
+- `NODE_FAILED` -- a node departure was confirmed via the FSM DEAD edge (the signal that also drives auto-heal; leader-gated). Severity CRITICAL.
+- `LEADER_ELECTED` -- a node was elected cluster leader (leader-gated). Severity INFO.
+- `LEADER_LOST` -- leadership was lost and an election is in progress (leader-gated). Severity WARNING.
+- `QUORUM_ESTABLISHED` -- cluster quorum was (re-)established (leader-gated). Severity INFO.
+- `QUORUM_LOST` -- cluster quorum was lost (leader-gated). Severity CRITICAL.
+- `DEPLOYMENT_STARTED` -- an artifact began deploying to a node. Severity INFO.
+- `DEPLOYMENT_COMPLETED` -- an artifact finished deploying on a node (`details` may carry `durationMs`). Severity INFO.
+- `DEPLOYMENT_FAILED` -- an artifact deployment failed on a node (`details` carries `reason`). Severity WARNING.
+- `SCALE_UP` -- an artifact was scaled up to more instances. Severity INFO.
+- `SCALE_DOWN` -- an artifact was scaled down to fewer instances. Severity INFO.
+- `SLICE_FAILURE` -- all instances of a slice method failed. Severity CRITICAL.
+- `CONNECTION_ESTABLISHED` -- a transport connection to a peer was established. Severity INFO.
+- `CONNECTION_FAILED` -- a transport connection to a peer failed. Severity WARNING.
+- `COMMUNITY_SCALE_REQUEST` -- a community-tier scale request was recorded. Severity INFO.
+- `COMMUNITY_METRICS_SNAPSHOT` -- a community-tier metrics snapshot was recorded. Severity INFO.
+- `ACCESS_DENIED` -- an operation was denied by RBAC (`details` carries `principal`, `method`, `path`, `requiredRole`, `actualRole`). Severity WARNING.
+- `NODE_LIFECYCLE_CHANGED` -- a node lifecycle transition was requested/applied (leader-gated). Severity INFO.
+- `CONFIG_CHANGED` -- dynamic config was added, updated, or removed. Severity INFO.
+- `BACKUP_CREATED` -- a KV backup/commit was created. Severity INFO.
+- `BACKUP_RESTORED` -- a KV backup was restored. Severity WARNING.
+- `BLUEPRINT_DEPLOYED` -- a blueprint was deployed. Severity INFO.
+- `BLUEPRINT_DELETED` -- a blueprint was deleted. Severity INFO.
+- `GENERATION_CHANGED` -- the cluster generation epoch advanced (leader-gated; see below). Severity INFO.
+- `STREAM_REGISTERED` -- a stream was registered (carries the stream `ResourceAddress`). Severity INFO.
+- `STREAM_DELETED` -- a stream was deleted (carries the stream `ResourceAddress`). Severity INFO.
+- `ALERT_INJECTED` -- an operator-injected synthetic alert, replicated cluster-wide so every node serves it on `/api/alerts`. Severity per inject.
+- `TRACE_INJECTED` -- an operator-injected synthetic invocation trace, replicated cluster-wide so every node serves it on `/api/traces`.
+- `SELF_DRAIN_INITIATED` -- the draining node reports its own drain start (per-node fact, NOT leader-gated; see below). Severity WARNING.
+- `STREAM_MEMORY_EXCEEDED` -- a node's off-heap stream budget was exhausted at stream create or growth (per-node fact, NOT leader-gated; throttled per `(stream, phase)`). Severity WARNING.
+- `DEPARTURE_PUSH_INCOMPLETE` -- a gracefully-departing node could not confirm, within the drain grace window, that every locally-held DHT chunk reached a surviving replica (per-node fact, NOT leader-gated; see below). Severity WARNING.
+- `SCALE_CAPPED` -- the leader autoscaler's requested instance count for an artifact was reduced by a cap before being applied (leader-side; emitted only on a real reduction). Severity WARNING.
 
 `GENERATION_CHANGED` events are emitted by the leader's `HealthReconciler` whenever the cluster generation epoch advances. `details` carries `oldEpoch`, `newEpoch`, and `reason` (a `GenerationReason` enum name). See [`cluster-generation-spec.md`](../specs/cluster-generation-spec.md) §14.4.
 
 `SELF_DRAIN_INITIATED` (severity `WARNING`) is emitted by the draining node itself when its `SelfDrainCoordinator` flips from `ACTIVE` to `DRAINING` (see `aether/docs/specs/membership-architecture-v2-spec.md`). Unlike most other events, this one is NOT leader-gated — a partition victim is the only authoritative source for "I'm self-draining" and may not be able to reach the leader at all. `details` carries `nodeId` (the draining node), `reason` (one of `sustained-below-quorum`, `quorum-disappeared`, `rabia-paused`), and `graceMs` (the configured in-flight grace before forced halt). Best-effort: if the publish does not reach a quorum before `Runtime.halt(2)` lands, the event is lost.
+
+`DEPARTURE_PUSH_INCOMPLETE` (severity `WARNING`, issue #427) is emitted by a gracefully-departing node when its bounded departure-push (which forwards every locally-held DHT chunk to its new replicas before the node halts) could not confirm all chunks reached a surviving replica within the drain grace window. Like `SELF_DRAIN_INITIATED` it is NOT leader-gated — the leaving node is the only source of truth for its own unpushed chunks. `details` carries `nodeId`, `keysAtRisk` (count of unconfirmed chunks), and `sampleKeys` (a bounded, comma-joined hex sample of the at-risk keys, for operator follow-up). Best-effort: the keys are named rather than silently lost, but if the publish does not land before `Runtime.halt(2)`, the event is lost.
 
 **Severity Levels:** `INFO`, `WARNING`, `CRITICAL`
 
@@ -524,6 +635,39 @@ List HTTP routes across the cluster.
       "path": "/orders",
       "nodes": ["node-1", "node-2"],
       "security": "none"
+    }
+  ]
+}
+```
+
+### GET /api/versions
+
+List the versioned slices deployed on this node and their API version registries (#198 §11.3).
+Route target is `LOCAL` — the response reflects the versioned slices the queried node hosts, read
+from its in-memory route publisher. A node hosting no versioned slice returns `{"slices":[]}`.
+
+Per slice the response carries the version-agnostic `apiPrefix`, the header-mode detection knobs
+(`requireVersionHeader`, and `defaultVersion` — the version served when the version header is
+absent; omitted when no version declares `defaultIfMissing`), and per-version lifecycle metadata:
+`version`, `deprecated`, `sunset` (RFC 3339 date; omitted when none), and `defaultIfMissing` (`true`
+for the version equal to `defaultVersion`).
+
+These are the same lifecycle facts surfaced as response headers on a served request — see the
+`Deprecation`, `Sunset`, and `Link: …; rel="successor-version"` headers (#198 §8.2).
+
+**Response:**
+```json
+{
+  "slices": [
+    {
+      "slice": "org.example:orders:1.0.0",
+      "apiPrefix": "/api/orders",
+      "requireVersionHeader": false,
+      "defaultVersion": 2,
+      "versions": [
+        { "version": 1, "deprecated": true, "sunset": "2026-12-31", "defaultIfMissing": false },
+        { "version": 2, "deprecated": false, "defaultIfMissing": true }
+      ]
     }
   ]
 }
@@ -1167,6 +1311,39 @@ Trigger immediate controller evaluation.
 }
 ```
 
+### GET /api/controller/decisions
+
+Get the leader control loop's per-slice scaling decision snapshot (#425). Returns the latest
+decision recorded for each registered artifact during the most recent evaluation cycle, plus the
+cluster-average CPU usage surfaced as honest node-capacity context (`clusterCpuContext` is never
+acted on by the autoscaler — the per-artifact composite load is the sole scaling driver). Snapshot
+read only, no hot-path cost. LEADER-bound (the control loop runs on the leader).
+
+Each decision carries an `outcome` (one of `SCALED_UP`, `SCALED_DOWN`, `HELD`, `BLOCKED`, `CAPPED`)
+and the `guard` that shaped it (one of `NONE`, `WINDOW_NOT_FULL`, `SLICE_IN_PROGRESS`, `COOLDOWN`,
+`MAX_INSTANCES`, `CLUSTER_CAP`, `ERROR_BLOCK`), together with the driving `loadFactor` and the
+instance arithmetic (`currentInstances`, `requestedInstances`, `cappedInstances`) and the `atMs`
+timestamp.
+
+**Response:**
+```json
+{
+  "clusterCpuContext": 0.42,
+  "decisions": [
+    {
+      "artifact": "org.example:orders:1.0.0",
+      "outcome": "CAPPED",
+      "guard": "MAX_INSTANCES",
+      "loadFactor": 1.8,
+      "currentInstances": 2,
+      "requestedInstances": 5,
+      "cappedInstances": 3,
+      "atMs": 1720512000000
+    }
+  ]
+}
+```
+
 ---
 
 ## TTM (Time-series Trend Model)
@@ -1602,7 +1779,162 @@ as the newest version, `false` when a stale-version write was suppressed.
 
 ---
 
+## Storage (Hierarchical Storage Engine)
+
+Operator-facing inspection and snapshot control for the node's Hierarchical Storage
+Engine instances (#207) — the content-addressed block stores that back content,
+artifact, and stream storage. Each instance exposes its tier topology
+(`MEMORY` / `LOCAL_DISK` / `REMOTE`), per-tier capacity utilisation, a
+`ReadinessState` (`LOADING_SNAPSHOT` / `SNAPSHOT_LOADED` / `READY`), and metadata
+snapshot epoch/timestamp.
+
+The `/api/storage*` routes are **per-node diagnostics** served node-locally (the
+receiving node's own instances). The `/api/cluster/storage*` routes are
+**leader-aggregated**: the leader publishes every node's storage status into the
+KV-Store and returns the cluster-wide rollup.
+
+### GET /api/storage
+
+List the storage instances on the connected node with their tier utilisation and
+readiness.
+
+**Routing:** LOCAL (node-local; not forwarded). **RBAC:** VIEWER.
+
+**Response:**
+```json
+{
+  "instances": [
+    {
+      "name": "content",
+      "tiers": [
+        {"level": "MEMORY",     "usedBytes": 1048576,  "maxBytes": 134217728,   "utilizationPct": 0.8},
+        {"level": "LOCAL_DISK", "usedBytes": 52428800, "maxBytes": 10737418240, "utilizationPct": 0.5}
+      ],
+      "readiness": {"state": "READY", "isReadReady": true, "isWriteReady": true}
+    }
+  ]
+}
+```
+
+- `utilizationPct`: `usedBytes / maxBytes` as a percentage rounded to one decimal (`0.0` when `maxBytes` is 0).
+- `readiness.isReadReady` / `isWriteReady`: whether the instance's `StorageReadinessGate` currently admits reads / writes.
+
+### GET /api/storage/{name}
+
+Detail for a single named storage instance on the connected node, including the
+latest metadata-snapshot marker. Returns a failure when no instance with that name
+exists on the node.
+
+**Routing:** LOCAL. **RBAC:** VIEWER.
+
+**Response:**
+```json
+{
+  "name": "content",
+  "tiers": [
+    {"level": "MEMORY",     "usedBytes": 1048576,  "maxBytes": 134217728,   "utilizationPct": 0.8},
+    {"level": "LOCAL_DISK", "usedBytes": 52428800, "maxBytes": 10737418240, "utilizationPct": 0.5}
+  ],
+  "snapshot": {"lastEpoch": 42, "lastTimestampMs": 1716280000000},
+  "readiness": {"state": "READY", "isReadReady": true, "isWriteReady": true}
+}
+```
+
+- `snapshot.lastEpoch` / `lastTimestampMs`: epoch and epoch-millis of the most recent metadata snapshot taken by the instance's `SnapshotManager` (`0` when none has been taken yet).
+
+### POST /api/storage/snapshot/{name}
+
+Force an immediate metadata snapshot of the named storage instance (calls the
+instance's `SnapshotManager.forceSnapshot()`). Returns the epoch and timestamp of
+the snapshot just taken.
+
+**Routing:** routed to the `STORAGE` task-group owner. **RBAC:** ADMIN (default for unlisted mutations).
+
+**Request:** empty body (`{}`).
+
+**Response:**
+```json
+{
+  "name": "content",
+  "epoch": 43,
+  "timestampMs": 1716280001234
+}
+```
+
+### GET /api/cluster/storage
+
+Cluster-wide rollup of every node's storage instances. The leader first publishes
+each node's current storage status into the KV-Store, then groups the statuses by
+instance name and reports per-instance totals plus a per-node breakdown.
+
+**Routing:** LEADER (forwarded to the current leader). **RBAC:** VIEWER.
+
+**Response:**
+```json
+{
+  "instances": [
+    {
+      "name": "content",
+      "nodeCount": 3,
+      "totalUsedBytes": 157286400,
+      "totalMaxBytes": 32212254720,
+      "nodes": [
+        {
+          "nodeId": "node-1",
+          "tiers": [
+            {"level": "MEMORY",     "usedBytes": 1048576,  "maxBytes": 134217728,   "utilizationPct": 0.8},
+            {"level": "LOCAL_DISK", "usedBytes": 52428800, "maxBytes": 10737418240, "utilizationPct": 0.5}
+          ],
+          "readiness": {"state": "READY", "isReadReady": true, "isWriteReady": true}
+        }
+      ]
+    }
+  ]
+}
+```
+
+- `totalUsedBytes` / `totalMaxBytes`: sums across every tier of every node hosting the instance.
+
+### GET /api/cluster/storage/{name}
+
+Cluster-wide detail for a single named instance — the per-node breakdown including
+each node's snapshot marker. Returns a failure when no node reports an instance with
+that name.
+
+**Routing:** LEADER. **RBAC:** VIEWER.
+
+**Response:**
+```json
+{
+  "name": "content",
+  "nodeCount": 3,
+  "totalUsedBytes": 157286400,
+  "totalMaxBytes": 32212254720,
+  "nodes": [
+    {
+      "nodeId": "node-1",
+      "tiers": [
+        {"level": "MEMORY",     "usedBytes": 1048576,  "maxBytes": 134217728,   "utilizationPct": 0.8},
+        {"level": "LOCAL_DISK", "usedBytes": 52428800, "maxBytes": 10737418240, "utilizationPct": 0.5}
+      ],
+      "snapshot": {"lastEpoch": 42, "lastTimestampMs": 1716280000000},
+      "readiness": {"state": "READY", "isReadReady": true, "isWriteReady": true}
+    }
+  ]
+}
+```
+
+---
+
 ## Observability Depth
+
+Per-method logging-ladder depth thresholds. Since #277 these routes are backed by the unified
+observability config store (see [Observability Config](#observability-config) below), not a
+separate depth registry. `POST /api/observability/depth` **materializes** a method-scope config:
+on an unconfigured method it pins the baseline-equivalent toggles (logging + metrics + tracing on,
+spans off) with the requested depth — so setting a depth never darkens an injection point, it only
+changes the logging-ladder threshold. `DELETE` removes the method-scope config, falling back to the
+next-broader scope (else the baseline default depth).
 
 ### GET /api/observability/depth
 
@@ -1658,6 +1990,106 @@ curl -X DELETE http://localhost:8080/api/observability/depth/org.example:my-slic
 {
   "status": "depth_removed",
   "artifact": "org.example:my-slice:1.0.0",
+  "method": "processOrder"
+}
+```
+
+---
+
+## Observability Config
+
+Per-injection-point runtime observability facet control (#277). An injection point is one
+`artifactBase/methodName` dispatch seam; each resolves to one of three **effective states**:
+
+- **`baseline`** — no config at any scope. The ambient facets run (depth-leveled logging, sampled
+  tracing, invocation counting), spans off. "Off means baseline, not blind."
+- **`configured`** — an explicit non-off config. Only the facets its toggles select run
+  (`logging`, `metrics`, `tracing`; `spans` is reserved, no body yet — #304), at the config's own
+  `depth`. Logging and tracing share one sampling decision, so a logging-only config logs sampled
+  successes plus all failures.
+- **`darkened`** — an explicit all-off config. Identity: the call runs untouched (one volatile
+  read), the operator's deliberate opt-out.
+
+**Scope hierarchy** (nearest wins, whole-snapshot — never a per-field merge): method scope
+(`artifactBase` + `methodName`) → artifact scope (`artifactBase` + `*`) → global scope (`*` + `*`)
+→ baseline. Pass `*` in the artifact and/or method segment to address the artifact or global scope.
+
+> Reads are leader-forwarded. The replicated config fields (`state`, toggles, `depth`) are
+> cluster-consistent; the per-node live field `invocationCount` (and baseline cells that have no
+> config key) reflect the responding leader node.
+
+### GET /api/observability/config
+
+List the effective observability state of every known injection point and config scope.
+
+**Response:**
+```json
+[
+  {
+    "artifactBase": "org.example:my-slice",
+    "methodName": "processOrder",
+    "state": "configured",
+    "logging": true,
+    "metrics": true,
+    "spans": false,
+    "tracing": true,
+    "depth": 2,
+    "invocationCount": 1421
+  }
+]
+```
+
+`invocationCount` is `null` when no live cell is registered for the key (e.g. a wildcard scope).
+For a `baseline` entry the toggle fields show the baseline-equivalent set (what actually runs).
+
+### GET /api/observability/config/{artifactBase}/{methodName}
+
+Effective state for a single injection point or scope. `*` is accepted for the artifact (`base/*`)
+and global (`*/*`) scopes.
+
+### POST /api/observability/config
+
+Set a whole config snapshot at a scope (ADMIN). Absent boolean fields are `false` (facet off).
+
+**Request:**
+```json
+{
+  "artifact": "org.example:my-slice",
+  "method": "processOrder",
+  "logging": true,
+  "metrics": true,
+  "spans": false,
+  "tracing": true,
+  "depth": 2
+}
+```
+
+**Response:**
+```json
+{
+  "status": "config_set",
+  "artifact": "org.example:my-slice",
+  "method": "processOrder",
+  "logging": true,
+  "metrics": true,
+  "spans": false,
+  "tracing": true,
+  "depth": 2
+}
+```
+
+Use `*` for `artifact` and/or `method` to set the artifact or global scope.
+
+### DELETE /api/observability/config/{artifactBase}/{methodName}
+
+Remove the config at a scope (ADMIN); resolution falls back to the next-broader scope (else the
+baseline).
+
+**Response:**
+```json
+{
+  "status": "config_removed",
+  "artifact": "org.example:my-slice",
   "method": "processOrder"
 }
 ```
@@ -1960,6 +2392,8 @@ When a cluster generation snapshot is available the `coreCount` field is derived
 
 The `fsmMembers` array (Wave-1 diagnostic extension, cluster-topology-overhaul spec item 6) exposes the queried node's authoritative per-member `MembershipFsm` truth: lifecycle state (`Observed` / `Member` / `Suspect` / `Departing` / `Dead`), the SWIM incarnation high-water mark, and the last-known descriptor `role` / `source` labels. DEAD members are included (retained for incarnation-fenced rejoin), so a remote run reads membership truth without `docker logs`.
 
+Each `nodeDetails` and `fsmMembers` entry carries BOTH `role` (the self-asserted descriptor role from `AETHER_ROLE`) and `assignedRole` (#259 — the CDM-assigned role from the KV-Store `ActivationDirective`, or `UNASSIGNED` when none). The two diverge for worker-demoted nodes: a node still reporting descriptor `role: "core"` but `assignedRole: "WORKER"` is running in observer mode under a CDM demotion. The CLI `cluster topology` table surfaces this as the `ASSIGNED` column.
+
 **Response:**
 ```json
 {
@@ -1974,6 +2408,7 @@ The `fsmMembers` array (Wave-1 diagnostic extension, cluster-topology-overhaul s
     {
       "nodeId": "node-1",
       "role": "ACTIVE",
+      "assignedRole": "CORE",
       "health": "HEALTHY",
       "hostname": "aether-node-1",
       "zone": "",
@@ -1982,6 +2417,7 @@ The `fsmMembers` array (Wave-1 diagnostic extension, cluster-topology-overhaul s
     {
       "nodeId": "lb-passive",
       "role": "PASSIVE",
+      "assignedRole": "UNASSIGNED",
       "health": "HEALTHY",
       "hostname": "aether-lb",
       "zone": "",
@@ -1995,6 +2431,7 @@ The `fsmMembers` array (Wave-1 diagnostic extension, cluster-topology-overhaul s
       "fsmState": "Member",
       "incarnation": 3,
       "role": "core",
+      "assignedRole": "CORE",
       "source": "docker"
     },
     {
@@ -2002,6 +2439,7 @@ The `fsmMembers` array (Wave-1 diagnostic extension, cluster-topology-overhaul s
       "fsmState": "Dead",
       "incarnation": 1,
       "role": "core",
+      "assignedRole": "WORKER",
       "source": "docker"
     }
   ]
@@ -2051,6 +2489,75 @@ Dump the queried node's transition journal (cluster-topology-overhaul spec, Wave
 ```
 
 Errors: `layer` values other than `fsm` / `peer` are rejected.
+
+### GET /api/cluster/membership
+
+Membership diagnostics — the responding node's authoritative `MembershipFsm` lifecycle view plus its quorum-loss self-drain readiness. Purpose: diagnose SWIM-under-concurrent-loss situations without log-scraping — per survivor, which peers are SUSPECT/DEAD and whether this node's quorum-loss self-drain window is armed and below threshold. **Per-node local view** (each node serves its own membership state); read-only; **not leader-forwarded** — query an individual node to read *that* node's view (e.g. each survivor's view during a multi-core-loss window).
+
+`requiredThreshold` is the simple-majority quorum threshold `coreCount / 2 + 1` (`0` while the core count is still unknown at bootstrap). `armed` is a cold-start latch: a node that has never observed a quorate count never self-drains. DEAD members are retained in `members[]` for incarnation-fenced rejoin.
+
+**RBAC:** VIEWER · **Routing:** LOCAL
+
+**Response:**
+```json
+{
+  "nodeId": "core-1",
+  "strictCoreMemberCount": 2,
+  "countedCoreMemberCount": 5,
+  "requiredThreshold": 3,
+  "belowThreshold": true,
+  "armed": true,
+  "members": [
+    {"nodeId": "core-1", "state": "Member",  "incarnation": 1, "role": "core", "strictCore": true,  "countsTowardEffective": true},
+    {"nodeId": "core-3", "state": "Suspect", "incarnation": 2, "role": "core", "strictCore": false, "countsTowardEffective": true},
+    {"nodeId": "core-4", "state": "Dead",    "incarnation": 2, "role": "core", "strictCore": false, "countsTowardEffective": false}
+  ]
+}
+```
+
+| Field | Description |
+|-------|-------------|
+| `nodeId` | The node answering — whose local view this is |
+| `strictCoreMemberCount` | Core members in FSM state exactly `Member` — the quorum-loss numerator |
+| `countedCoreMemberCount` | Core members counting toward effective membership (`Member` + `Suspect`) |
+| `requiredThreshold` | Simple-majority quorum threshold `coreCount / 2 + 1` (`0` while core count unknown at bootstrap) |
+| `belowThreshold` | Whether the strict count is currently below threshold |
+| `armed` | Whether this node has ever observed a quorate count (cold-start latch; a never-quorate node never self-drains) |
+| `members[]` | Every tracked peer (DEAD retained for incarnation-fenced rejoin) |
+| `members[].state` | FSM lifecycle state (`Observed` / `Member` / `Suspect` / `Departing` / `Dead`) |
+| `members[].incarnation` | Member incarnation |
+| `members[].role` | `core` / `worker` / `unknown` |
+| `members[].strictCore` | In the strict `Member`-only quorum set |
+| `members[].countsTowardEffective` | In the `Member` + `Suspect` counted set |
+
+### GET /api/ownership/{domain}
+
+Committed ownership + fence diagnostics (#345 item 1f) — for every partition/key in the requested domain: the owner `NodeId`, the committed fence `Epoch`, the responding node's LOCAL per-domain epoch high-water, and a `fenced` flag. Purpose: let an operator (or the cloud handover test) verify that the ownership fence engaged after a takeover — the committed `epoch` is the live fencing token the Rabia applier compares to reject a deposed owner's strictly-older epoch, and `fenced` pinpoints the node/arc that has already observed a newer epoch than the still-committed owner (the deposed-owner window). **Per-node local view** (each node serves its own committed state and its own high-water table); read-only; **not leader/owner-forwarded**. The committed ownership atoms are Rabia-replicated, so a read off any caught-up node reflects the fenced owner; the high-water is per-node, so `fenced` is answered from THIS node's fence table.
+
+`{domain}` is one of `community` (governor ownership of a community — identity is the community id, owner is the governor), `dht` (DHT partition ownership — identity is the partition id), or `stream` (stream-partition ownership — identity is `{stream}:{partition}`). Entries are sorted by `identity`; an empty `entries[]` means no ownership of that domain is committed yet. Any other `{domain}` value is rejected with a `400` (`Unknown ownership domain '<value>' …`).
+
+**RBAC:** VIEWER · **Routing:** LOCAL
+
+**Response (`GET /api/ownership/stream`):**
+```json
+{
+  "domain": "stream",
+  "entries": [
+    {"identity": "orders:0", "owner": "core-1", "epoch": {"rabiaTerm": 7, "localCounter": 3}, "highWater": {"rabiaTerm": 7, "localCounter": 3}, "fenced": false},
+    {"identity": "orders:1", "owner": "core-2", "epoch": {"rabiaTerm": 7, "localCounter": 1}, "highWater": {"rabiaTerm": 8, "localCounter": 0}, "fenced": true}
+  ]
+}
+```
+
+| Field | Description |
+|-------|-------------|
+| `domain` | The requested domain (`community` / `dht` / `stream`) |
+| `entries[]` | One row per committed ownership atom, sorted by `identity` |
+| `entries[].identity` | Domain-specific partition/key: community id (`community`), partition id (`dht`), or `{stream}:{partition}` (`stream`) |
+| `entries[].owner` | Committed owner `NodeId` (governor id for `community`) |
+| `entries[].epoch` | Committed fence `Epoch` (`fenceEpoch`) as `{rabiaTerm, localCounter}` — the fencing token |
+| `entries[].highWater` | This node's LOCAL per-domain monotonic epoch high-water as `{rabiaTerm, localCounter}`; equals `epoch` in steady state, floors to `epoch` when the arc has not been observed |
+| `entries[].fenced` | `true` when `highWater` is strictly after `epoch` — the deposed-owner window in which this node has observed a newer epoch than the committed owner record shows, so the committed owner would be rejected as stale here (`false` in steady state) |
 
 ### GET /api/cluster/generation
 
@@ -2184,6 +2691,56 @@ Get the current cluster configuration from the KV-Store.
   "deploymentType": "local",
   "configVersion": 7,
   "updatedAt": 1711468800000
+}
+```
+
+### GET /api/cluster/provisioning
+
+Provisioning diagnostics — answers "why is a core-membership deficit being or not being filled?" without log-scraping. Combines the leader's end-of-pass reconcile decision snapshot, the provisioning circuit-breaker state, and the most recent provisioning failure. Surfaced only on the leader that owns a Cluster Topology Manager; on any other node a `leader: false` body with zeroed counters and an explanatory `lastReason` is returned (the numeric fields are not meaningful in that case).
+
+`deficit` is `configuredCoreCount - effective`, clamped to `>= 0`. `lastTrigger` is the reconcile trigger that produced the snapshot (`NONE` when not leader). `lastProvisionFailure` is `null` when no provisioning failure has been recorded.
+
+**RBAC:** VIEWER · **Routing:** LEADER
+
+**Response (leader):**
+```json
+{
+  "leader": true,
+  "configuredCoreCount": 5,
+  "countedCoreMembers": 4,
+  "effective": 4,
+  "deficit": 1,
+  "armedForProvisioning": true,
+  "reachedFullMembership": true,
+  "quorumSafe": true,
+  "lastTrigger": "DEFICIT_FOLLOW_UP",
+  "lastReason": "deficit 1; provisioning replacement",
+  "deficitAgeMs": 4200,
+  "circuitBreaker": {
+    "consecutiveFailures": 0,
+    "tripped": false,
+    "nextAllowedMs": 0
+  },
+  "lastProvisionFailure": null
+}
+```
+
+**Response (non-leader / no topology manager):**
+```json
+{
+  "leader": false,
+  "configuredCoreCount": 0,
+  "countedCoreMembers": 0,
+  "effective": 0,
+  "deficit": 0,
+  "armedForProvisioning": false,
+  "reachedFullMembership": false,
+  "quorumSafe": false,
+  "lastTrigger": "NONE",
+  "lastReason": "Provisioning diagnostics available only on the leader that owns a cluster topology manager",
+  "deficitAgeMs": 0,
+  "circuitBreaker": {"consecutiveFailures": 0, "tripped": false, "nextAllowedMs": 0},
+  "lastProvisionFailure": null
 }
 ```
 
@@ -2954,6 +3511,7 @@ Conclude the A/B test and promote the winning variant. Requires leader node.
 | GET | `/api/controller/config` | Controller |
 | POST | `/api/controller/config` | Controller |
 | GET | `/api/controller/status` | Controller |
+| GET | `/api/controller/decisions` | Controller |
 | POST | `/api/controller/evaluate` | Controller |
 | GET | `/api/ttm/status` | TTM |
 | GET | `/api/ttm/training-data` | TTM |
@@ -2973,8 +3531,17 @@ Conclude the A/B test and promote the winning variant. Requires leader node.
 | GET | `/api/observability/depth` | Observability Depth |
 | POST | `/api/observability/depth` | Observability Depth |
 | DELETE | `/api/observability/depth/{artifact}/{method}` | Observability Depth |
+| GET | `/api/observability/config` | Observability Config |
+| GET | `/api/observability/config/{artifactBase}/{methodName}` | Observability Config |
+| POST | `/api/observability/config` | Observability Config |
+| DELETE | `/api/observability/config/{artifactBase}/{methodName}` | Observability Config |
 | GET | `/api/dht/replication-map` | DHT |
 | POST | `/api/dht/inject` | DHT (dev-mode only) |
+| GET | `/api/storage` | Storage (per-node) |
+| GET | `/api/storage/{name}` | Storage (per-node) |
+| POST | `/api/storage/snapshot/{name}` | Storage |
+| GET | `/api/cluster/storage` | Storage (cluster-wide) |
+| GET | `/api/cluster/storage/{name}` | Storage (cluster-wide) |
 | GET | `/api/logging/levels` | Log Level Management |
 | POST | `/api/logging/levels` | Log Level Management |
 | DELETE | `/api/logging/levels/{logger}` | Log Level Management |
@@ -3410,6 +3977,31 @@ Restore from a specific backup.
 
 ## Error Responses
 
+All management-plane failures share one wire shape: an RFC 9457 `application/problem+json`
+envelope with the standard `type` / `title` / `status` / `detail` / `instance` members plus a
+`requestId` extension for tracing.
+
+```json
+{
+  "type": "about:blank",
+  "title": "Internal Server Error",
+  "status": 500,
+  "detail": "<cause message>",
+  "instance": "/api/cluster/topology",
+  "requestId": "a1b2c3d4"
+}
+```
+
+Cause → status resolution: a cause implementing `HttpStatusAware` surfaces its `httpStatus()`
+(e.g. `ClusterConfigError.VersionConflict` → 409, `ClusterNotFound` → 404). Any other cause —
+including serialization failures and unmapped domain causes (#308) — falls back to HTTP `500`
+but STILL returns the structured `problem+json` body above, never a bare/empty 500. A scripted
+client can therefore always parse `status` and `detail`.
+
+The `aether` CLI honors `--format json` on error paths: with `--format json` a failure is
+emitted to stderr as a structured `{"error":"<message>"}` object; otherwise the human-readable
+`Error: <message>` form is used.
+
 ## Schema Management
 
 Manage datasource schema migrations across the cluster.
@@ -3584,6 +4176,110 @@ GET /api/streams/{name}/{partition}
   "eventCount": 256
 }
 ```
+
+### Partition Replica State
+
+```
+GET /api/streams/replicas/{name}/{partition}
+```
+
+**Auth:** ALL_AUTHENTICATED · **Routing:** STREAMING task group
+
+Replication/backfill-health sensor for the stream-replication class (#260/#261/#333). Returns the partition's replica set as seen by the answering node's `ReplicaRegistry`, with the deterministic HRW owner resolved via the read path's owner resolver. Each replica entry carries its replication `state` (`SYNCING` / `CAUGHT_UP` / `LAGGING`), its acked `confirmedOffset`, and whether it `isHrwOwner`. To detect the #333 write-idle residual, compare a `CAUGHT_UP` replica's `confirmedOffset` against the response's `ownerHeadOffset`.
+
+**Owner authority (read this):** the per-peer confirmed-watermark view is advanced by the owner's `DefaultReplicationManager.handleAck`, so the `ReplicaRegistry` is **authoritative only on the partition's HRW owner** — a non-owner mostly knows only itself. The response is therefore **owner-aware, not owner-forwarded**: per-partition-owner forwarding is not a management `RouteTarget` variant (the owner is computed from `name`+`partition`, not a path param), and the stream forward transport carries only event reads. `servedByOwner` is `true` when the answering node IS the resolved owner (then `replicas` is the complete, authoritative set); when `false`, `hrwOwner` names the node to re-query. `name` is the partition manager's local stream name (e.g. `system:cluster-events:1.0.0`).
+
+**Response (served by the owner — authoritative):**
+```json
+{
+  "stream": "system:cluster-events:1.0.0",
+  "partition": 0,
+  "hrwOwner": "core-1",
+  "servedByOwner": true,
+  "ownerHeadOffset": 256,
+  "earliestRetainedOffset": 0,
+  "replicas": [
+    {"nodeId": "core-1", "state": "CAUGHT_UP", "confirmedOffset": 255, "isHrwOwner": true},
+    {"nodeId": "core-3", "state": "CAUGHT_UP", "confirmedOffset": 255, "isHrwOwner": false},
+    {"nodeId": "core-4", "state": "SYNCING",   "confirmedOffset": 240, "isHrwOwner": false}
+  ]
+}
+```
+
+| Field | Description |
+|-------|-------------|
+| `stream` | Partition manager's local stream name |
+| `partition` | Partition number queried |
+| `hrwOwner` | Resolved deterministic HRW owner node id (`""` during the bootstrap window before placement is known) |
+| `servedByOwner` | Whether the answering node is itself the HRW owner — i.e. whether `replicas` is the complete authoritative view |
+| `ownerHeadOffset` | The answering node's local next-expected offset (head + 1); on the owner this is the true tail used to spot a lagging `CAUGHT_UP` replica (#333) |
+| `earliestRetainedOffset` | Earliest offset still retained locally (`-1` when the partition is absent/empty) |
+| `replicas[]` | Every registered replica for the partition, sorted by node id |
+| `replicas[].state` | Replication state: `SYNCING` / `CAUGHT_UP` / `LAGGING` |
+| `replicas[].confirmedOffset` | The replica's acked confirmed watermark |
+| `replicas[].isHrwOwner` | Whether this replica is the resolved HRW owner |
+
+### Stream Hydration Snapshot
+
+```
+GET /api/streams/hydration
+```
+
+**Auth:** ALL_AUTHENTICATED · **Routing:** STREAMING task group
+
+Per-node hydration observability for the placement-aware-stream-hydration work (#265) — the §6 regression sensor. Assembled ON REQUEST from the answering node's `StreamPartitionManager` (the live `streams` map plus the off-heap budget counters; no hot-path accounting is added). PER-NODE: `totalAllocatedBytes` / `maxTotalBytes` are that node's off-heap budget, `overBudget` its follower over-subscribe condition (`totalAllocatedBytes > maxTotalBytes` — false in steady state since increment 3 removed over-subscription), and `deferredPartitions` the node-wide count of held-but-not-yet-materialized partitions (the budget-defer sensor). Each `streams[]` row reports `partitionsDeclared` (configured partition count), `ringsMaterialized` (rings actually built on this node), `partitionsDeferred` (held partitions not yet materialized — budget-deferred per §6 or pre-membership), `floorBytesAllocated` (per-partition floor × materialized ring count), and the placement-role tally `ownerPartitions` / `replicaPartitions` / `nonePartitions` for this node.
+
+Materialization is placement-gated (increment 2): `ringsMaterialized` drops below `partitionsDeclared` on non-replicas, and `replicaPartitions` / `nonePartitions` are non-zero on a node that is not OWNER of every partition. Per §6 (increment 3) a follower that cannot admit a held partition's floor NO LONGER over-subscribes — it holds the partition metadata-only and reports it under `partitionsDeferred` until budget frees, at which point the deferred-retry hook materializes it. This surface is how that memory win and any budget pressure are observed.
+
+**Partition caps (increment 4, §7).** The response root also carries the derived partition-cap values: `perStreamCeiling` (the absolute per-stream partition ceiling, `1024`, enforced at create/build and re-checked pre-commit), `clusterAggregateGuard` (`100 × nodes × maxDeclaredReplicas` — the Kafka-style guard bounding aggregate ring memory, `-1` when the cluster size is unknown on a non-cluster manager), `currentAggregatePartitionSlots` (the current cluster ring-slot total `Σ partitions × replicas`), `aggregateHeadroom` (`guard − current`, `-1` when unenforced), and `configOverCeilingStreams` (count of streams whose committed config declares more partitions than the ceiling). Each `streams[].overCeiling` flags that per stream. A create breaching the ceiling or the aggregate guard is rejected PRE-COMMIT on the committing node; a follower observing an over-ceiling committed config never rejects it — it emits a `CommittedConfigOverCeiling` event and sets these flags, and materialization proceeds under the budget backstop.
+
+**Reshuffle lifecycle (increment 5, §5/§14.2).** The response root also carries the reshuffle-lifecycle sensors: `releaseCandidates` (materialized partitions currently DEBOUNCING toward release because their placement role went NONE — a role regained within the ~10s / 2-tick window cancels the candidacy at zero cost), `releasedPartitionsSinceBoot` (running count of partition rings released on confirmed role loss, freeing ring memory + budget while KEEPING the WAL on disk), and `materializeQueueDepth` (partitions queued behind the `reshuffle_concurrency = 2` slot limit, system streams first). A release fires only once the local replica view shows ≥ the effective (clamped) RF other replicas CAUGHT_UP AND the committed ownership record names a different owner. `system:*` streams bypass the budget reject (they oversubscribe with a named event and drain first) — cluster-critical streams are never starved behind app-stream pressure.
+
+**Response:**
+```json
+{
+  "totalAllocatedBytes": 10641408,
+  "maxTotalBytes": 134217728,
+  "overBudget": false,
+  "deferredPartitions": 0,
+  "perStreamCeiling": 1024,
+  "clusterAggregateGuard": 500,
+  "currentAggregatePartitionSlots": 5,
+  "aggregateHeadroom": 495,
+  "configOverCeilingStreams": 0,
+  "releaseCandidates": 0,
+  "releasedPartitionsSinceBoot": 0,
+  "materializeQueueDepth": 0,
+  "streams": [
+    {"stream": "orders", "partitionsDeclared": 4, "ringsMaterialized": 4, "partitionsDeferred": 0, "floorBytesAllocated": 5320704, "overCeiling": false, "ownerPartitions": 4, "replicaPartitions": 0, "nonePartitions": 0},
+    {"stream": "system:cluster-events:1.0.0", "partitionsDeclared": 1, "ringsMaterialized": 1, "partitionsDeferred": 0, "floorBytesAllocated": 2660352, "overCeiling": false, "ownerPartitions": 1, "replicaPartitions": 0, "nonePartitions": 0}
+  ]
+}
+```
+
+| Field | Description |
+|-------|-------------|
+| `totalAllocatedBytes` | This node's live off-heap bytes reserved across all streams |
+| `maxTotalBytes` | This node's off-heap budget ceiling |
+| `overBudget` | Whether `totalAllocatedBytes > maxTotalBytes` (false in steady state since increment 3 removed over-subscription, §6) |
+| `deferredPartitions` | Node-wide count of held partitions not yet materialized — the budget-defer sensor (§6) |
+| `perStreamCeiling` | Absolute per-stream partition ceiling (§7) — a create/commit over this is rejected pre-commit (`1024`) |
+| `clusterAggregateGuard` | Aggregate partition guard `100 × nodes × maxDeclaredReplicas` (`-1` when cluster size unknown) (§7) |
+| `currentAggregatePartitionSlots` | Current cluster ring-slot total `Σ partitions × replicas` across known streams (§7) |
+| `aggregateHeadroom` | Remaining aggregate slots `guard − current` (`-1` when the guard is unenforced) (§7) |
+| `configOverCeilingStreams` | Count of streams whose committed config declares more partitions than the ceiling (§7) |
+| `releaseCandidates` | Materialized partitions currently debouncing toward release (placement role went NONE) (§5, increment 5) |
+| `releasedPartitionsSinceBoot` | Running count of partition rings released on role loss (ring + budget freed, WAL kept) (§5) |
+| `materializeQueueDepth` | Partitions queued behind the `reshuffle_concurrency = 2` slot limit (system first) (§14.2) |
+| `streams[].stream` | Partition manager's local stream name |
+| `streams[].partitionsDeclared` | Configured partition count for the stream |
+| `streams[].ringsMaterialized` | Partition rings actually built on this node (below declared on non-replicas) |
+| `streams[].partitionsDeferred` | Held partitions not yet materialized — budget-deferred (§6) or pre-membership |
+| `streams[].floorBytesAllocated` | Per-partition floor × materialized ring count |
+| `streams[].overCeiling` | Whether this committed config declares more partitions than the per-stream ceiling (§7) |
+| `streams[].ownerPartitions` | Partitions this node OWNS under the current placement supplier |
+| `streams[].replicaPartitions` | Partitions this node is a non-owner REPLICA of |
+| `streams[].nonePartitions` | Partitions this node neither owns nor replicates |
 
 ### Create Stream
 

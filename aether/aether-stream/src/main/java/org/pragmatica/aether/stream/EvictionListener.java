@@ -4,9 +4,9 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.stream;
 
-import org.pragmatica.lang.Contract;
-
 import java.util.List;
+
+import org.pragmatica.lang.Contract;
 
 
 @FunctionalInterface

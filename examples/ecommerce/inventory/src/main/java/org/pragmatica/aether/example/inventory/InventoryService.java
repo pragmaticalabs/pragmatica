@@ -1,5 +1,10 @@
 package org.pragmatica.aether.example.inventory;
 
+import java.time.Instant;
+import java.util.List;
+import java.util.Map;
+import java.util.stream.Collectors;
+
 import org.pragmatica.aether.example.shared.LineItem;
 import org.pragmatica.aether.example.shared.OrderId;
 import org.pragmatica.aether.example.shared.ProductId;
@@ -12,11 +17,6 @@ import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.utility.IdGenerator;
-
-import java.time.Instant;
-import java.util.List;
-import java.util.Map;
-import java.util.stream.Collectors;
 
 
 @Slice
@@ -160,10 +160,13 @@ public interface InventoryService {
 
             private static StockAvailability buildAvailability(List<LineItem> items,
                                                                Map<ProductId, Quantity> stockMap) {
-                var unavailable = items.stream().filter(item -> stockMap.getOrDefault(item.productId(),
-                                                                                      Quantity.ZERO)
-                                                                        .value() < item.quantity()
-                                                                                       .value()).map(LineItem::productId).toList();
+                var unavailable = items.stream()
+                                       .filter(item -> stockMap.getOrDefault(item.productId(),
+                                                                             Quantity.ZERO)
+                                                               .value() < item.quantity()
+                                                                              .value())
+                                       .map(LineItem::productId)
+                                       .toList();
 
                 return unavailable.isEmpty()
                        ? StockAvailability.fullyAvailable(stockMap)
@@ -182,18 +185,21 @@ public interface InventoryService {
                 return conn.update(INSERT_RESERVATION,
                                    reservation.reservationId(),
                                    reservation.orderId().value(),
-                                   reservation.expiresAt()).flatMap(_ -> decrementAllStock(conn, items))
-                                  .flatMap(_ -> insertAllReservationItems(conn,
-                                                                          reservation.reservationId(),
-                                                                          items))
-                                  .map(_ -> reservation);
+                                   reservation.expiresAt())
+                           .flatMap(_ -> decrementAllStock(conn, items))
+                           .flatMap(_ -> insertAllReservationItems(conn,
+                                                                   reservation.reservationId(),
+                                                                   items))
+                           .map(_ -> reservation);
             }
 
             private Promise<Integer> decrementAllStock(SqlConnector conn, List<LineItem> items) {
-                var updates = items.stream().map(item -> conn.update(UPDATE_STOCK,
-                                                                     item.quantity().value(),
-                                                                     item.productId().value(),
-                                                                     item.quantity().value())).toList();
+                var updates = items.stream()
+                                   .map(item -> conn.update(UPDATE_STOCK,
+                                                            item.quantity().value(),
+                                                            item.productId().value(),
+                                                            item.quantity().value()))
+                                   .toList();
 
                 return Promise.allOf(updates)
                               .flatMap(results -> Result.allOf(results).async())
@@ -205,10 +211,12 @@ public interface InventoryService {
             private Promise<Integer> insertAllReservationItems(SqlConnector conn,
                                                                String reservationId,
                                                                List<LineItem> items) {
-                var inserts = items.stream().map(item -> conn.update(INSERT_RESERVATION_ITEM,
-                                                                     reservationId,
-                                                                     item.productId().value(),
-                                                                     item.quantity().value())).toList();
+                var inserts = items.stream()
+                                   .map(item -> conn.update(INSERT_RESERVATION_ITEM,
+                                                            reservationId,
+                                                            item.productId().value(),
+                                                            item.quantity().value()))
+                                   .toList();
 
                 return Promise.allOf(inserts)
                               .flatMap(results -> Result.allOf(results).async())
@@ -230,7 +238,11 @@ public interface InventoryService {
             }
 
             private Promise<Integer> restoreAllStock(SqlConnector conn, List<ReservationItem> items) {
-                var updates = items.stream().map(item -> conn.update(RESTORE_STOCK, item.quantity(), item.productId())).toList();
+                var updates = items.stream()
+                                   .map(item -> conn.update(RESTORE_STOCK,
+                                                            item.quantity(),
+                                                            item.productId()))
+                                   .toList();
 
                 return Promise.allOf(updates)
                               .flatMap(results -> Result.allOf(results).async())

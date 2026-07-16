@@ -4,6 +4,12 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.api.routes;
 
+import java.util.ArrayList;
+import java.util.List;
+import java.util.concurrent.ScheduledFuture;
+import java.util.function.Supplier;
+import java.util.stream.Stream;
+
 import org.pragmatica.aether.management.route.ManagementRoute;
 import org.pragmatica.aether.node.ManageableNode;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
@@ -19,12 +25,6 @@ import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.SharedScheduler;
-
-import java.util.ArrayList;
-import java.util.List;
-import java.util.concurrent.ScheduledFuture;
-import java.util.function.Supplier;
-import java.util.stream.Stream;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -93,15 +93,16 @@ public final class ApiKeyRoutes implements RouteSource {
         var node = nodeSupplier.get();
         var keys = new ArrayList<KeyInfo>();
 
-        node.kvStore().forEach(ApiKeyKey.class,
-                               ApiKeyValue.class,
-                               (_, v) -> keys.add(new KeyInfo(v.keyId(),
-                                                              v.status(),
-                                                              v.createdAt(),
-                                                              v.expiresAt(),
-                                                              v.revokedAt(),
-                                                              v.gracePeriodMs(),
-                                                              v.authorizationRole())));
+        node.kvStore()
+            .forEach(ApiKeyKey.class,
+                     ApiKeyValue.class,
+                     (_, v) -> keys.add(new KeyInfo(v.keyId(),
+                                                    v.status(),
+                                                    v.createdAt(),
+                                                    v.expiresAt(),
+                                                    v.revokedAt(),
+                                                    v.gracePeriodMs(),
+                                                    v.authorizationRole())));
 
         return Promise.success(List.copyOf(keys));
     }
@@ -139,12 +140,13 @@ public final class ApiKeyRoutes implements RouteSource {
         var node = nodeSupplier.get();
         var audits = new ArrayList<AuditEntry>();
 
-        node.kvStore().forEach(ApiKeyAuditKey.class,
-                               ApiKeyAuditValue.class,
-                               (_, v) -> audits.add(new AuditEntry(v.keyId(),
-                                                                   v.action(),
-                                                                   v.timestamp(),
-                                                                   v.operatorHint())));
+        node.kvStore()
+            .forEach(ApiKeyAuditKey.class,
+                     ApiKeyAuditValue.class,
+                     (_, v) -> audits.add(new AuditEntry(v.keyId(),
+                                                         v.action(),
+                                                         v.timestamp(),
+                                                         v.operatorHint())));
         audits.sort((a, b) -> Long.compare(b.timestamp(), a.timestamp()));
 
         return Promise.success(List.copyOf(audits));
@@ -163,30 +165,31 @@ public final class ApiKeyRoutes implements RouteSource {
             var now = System.currentTimeMillis();
             var commands = new ArrayList<KVCommand<AetherKey>>();
 
-            node.kvStore().forEach(ApiKeyKey.class,
-                                   ApiKeyValue.class,
-                                   (key, v) -> {
-                                       if (!v.isActive()) {
-                                       return;
-                                   }
+            node.kvStore()
+                .forEach(ApiKeyKey.class,
+                         ApiKeyValue.class,
+                         (key, v) -> {
+                             if (!v.isActive()) {
+                             return;
+                         }
 
-                                       if (v.expiresAt() <= 0 || v.expiresAt() > now) {
-                                       return;
-                                   }
+                             if (v.expiresAt() <= 0 || v.expiresAt() > now) {
+                             return;
+                         }
 
-                                       var expired = v.withExpired();
+                             var expired = v.withExpired();
 
-                                       commands.add((KVCommand<AetherKey>)(KVCommand<?>) new KVCommand.Put<>(key,
-                                                                                                             expired));
-                                       var auditId = v.keyId() + "-expired-" + now;
-                                       var auditValue = ApiKeyAuditValue.apiKeyAuditValue(v.keyId(),
-                                                                                          ApiKeyAuditValue.ACTION_EXPIRED,
-                                                                                          "expiration-sweep");
+                             commands.add((KVCommand<AetherKey>)(KVCommand<?>) new KVCommand.Put<>(key, expired));
+                             var auditId = v.keyId() + "-expired-" + now;
+                             var auditValue = ApiKeyAuditValue.apiKeyAuditValue(v.keyId(),
+                                                                                ApiKeyAuditValue.ACTION_EXPIRED,
+                                                                                "expiration-sweep");
 
-                                       commands.add((KVCommand<AetherKey>)(KVCommand<?>) new KVCommand.Put<>(ApiKeyAuditKey.apiKeyAuditKey(auditId),
-                                                                                                             auditValue));
-                                       log.info("API key expired: keyId={}", v.keyId());
-                                   });
+                             commands.add((KVCommand<AetherKey>)(KVCommand<?>) new KVCommand.Put<>(ApiKeyAuditKey.apiKeyAuditKey(auditId),
+                                                                                                   auditValue));
+                             log.info("API key expired: keyId={}",
+                                      v.keyId());
+                         });
             if (!commands.isEmpty()) {
                 node.apply(commands);
             }

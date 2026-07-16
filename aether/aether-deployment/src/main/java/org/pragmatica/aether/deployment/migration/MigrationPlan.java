@@ -4,9 +4,9 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.deployment.migration;
 
-import org.pragmatica.lang.Result;
-
 import java.util.List;
+
+import org.pragmatica.lang.Result;
 
 import static org.pragmatica.lang.Result.success;
 

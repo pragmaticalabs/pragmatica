@@ -4,6 +4,10 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.worker.bootstrap;
 
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
+
 import org.pragmatica.aether.worker.WorkerError;
 import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.consensus.NodeId;
@@ -12,10 +16,6 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.messaging.MessageRouter.DelegateRouter;
-
-import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.atomic.AtomicInteger;
-import java.util.concurrent.atomic.AtomicLong;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -46,7 +46,8 @@ public interface WorkerBootstrap {
 
             @Override
             public void requestSnapshot(Option<NodeId> source) {
-                source.onPresent(this::sendSnapshotRequest).onEmpty(() -> LOG.warn("No snapshot source available for bootstrap"));
+                source.onPresent(this::sendSnapshotRequest)
+                      .onEmpty(() -> LOG.warn("No snapshot source available for bootstrap"));
             }
 
             @Override
@@ -90,8 +91,9 @@ public interface WorkerBootstrap {
                 LOG.info("Applying snapshot at sequence {}, size={} bytes",
                          response.sequenceNumber(),
                          response.kvState().length);
-                kvStore.restoreSnapshot(response.kvState()).onSuccess(_ -> markSnapshotApplied(response.sequenceNumber())).onFailure(cause -> LOG.error("Failed to apply snapshot: {}",
-                                                                                                                                                        cause));
+                kvStore.restoreSnapshot(response.kvState())
+                       .onSuccess(_ -> markSnapshotApplied(response.sequenceNumber()))
+                       .onFailure(cause -> LOG.error("Failed to apply snapshot: {}", cause));
             }
 
             private void markSnapshotApplied(long sequenceNumber) {

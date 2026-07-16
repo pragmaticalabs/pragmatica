@@ -1,5 +1,6 @@
 package org.pragmatica.http.routing;
 
+import org.pragmatica.http.HttpMethod;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 
@@ -76,16 +77,22 @@ public final class RequestRouter {
     }
 
     /// Select the best matching route from a list of routes with the same base path.
-    /// This handles routes that differ only in their spacer parameters.
+    /// This handles routes that differ only in their path arity or spacer parameters.
+    ///
+    /// Selection is arity-aware: the number of trailing path segments in the request (after the
+    /// candidates' shared base path) is matched against each candidate's declared
+    /// [Route#pathParamCount()]. A spacer-bearing route is preferred when its spacers are all
+    /// present (the more specific match); otherwise the candidate whose arity equals the trailing
+    /// segment count wins. This prevents a sibling parameter route from shadowing an exact
+    /// collection route (and vice versa) merely because of registration order.
     private Option<Route<?>> selectBestRoute(List<Route<?>> candidates, String inputPath) {
         if (candidates.size() == 1) {
             return Option.some(candidates.getFirst());
         }
-        // First try routes with spacers (more specific), then fallback
         var spacerMatch = findMatchingSpacerRoute(candidates, inputPath);
         return spacerMatch.isPresent()
                ? spacerMatch
-               : findFallbackRoute(candidates);
+               : findArityMatchingRoute(candidates, inputPath);
     }
 
     private Option<Route<?>> findMatchingSpacerRoute(List<Route<?>> candidates, String inputPath) {
@@ -96,12 +103,50 @@ public final class RequestRouter {
                                      .findFirst());
     }
 
+    /// Select the spacer-free candidate whose declared path arity equals the request's trailing
+    /// segment count. Falls back to a no-arity (collection) route, then to the first candidate, so
+    /// a match is always returned for a path that reached this point.
+    private Option<Route<?>> findArityMatchingRoute(List<Route<?>> candidates, String inputPath) {
+        var trailingSegments = trailingSegmentCount(candidates.getFirst()
+                                                              .path(), inputPath);
+        return Option.from(candidates.stream()
+                                     .filter(route -> route.spacers()
+                                                          .isEmpty())
+                                     .filter(route -> route.pathParamCount() == trailingSegments)
+                                     .findFirst())
+                     .orElse(() -> findFallbackRoute(candidates));
+    }
+
     private Option<Route<?>> findFallbackRoute(List<Route<?>> candidates) {
         var noSpacerRoute = candidates.stream()
                                       .filter(route -> route.spacers()
                                                             .isEmpty())
                                       .findFirst();
         return Option.some(noSpacerRoute.orElse(candidates.getFirst()));
+    }
+
+    /// Count the trailing path segments of `inputPath` beyond the candidates' shared `basePath`.
+    /// `basePath` always carries a trailing slash; `inputPath` may or may not. An empty remainder
+    /// (the request is exactly the base path) yields `0`.
+    private static int trailingSegmentCount(String basePath, String inputPath) {
+        var normalizedInput = inputPath.endsWith("/")
+                              ? inputPath
+                              : inputPath + "/";
+        if (normalizedInput.length() <= basePath.length()) {
+            return 0;
+        }
+        var remainder = normalizedInput.substring(basePath.length());
+        var trimmed = remainder.startsWith("/")
+                      ? remainder.substring(1)
+                      : remainder;
+        var stripped = trimmed.endsWith("/")
+                       ? trimmed.substring(0, trimmed.length() - 1)
+                       : trimmed;
+        return stripped.isEmpty()
+               ? 0
+               : (int) stripped.chars()
+                               .filter(c -> c == '/')
+                               .count() + 1;
     }
 
     /// Check if a route matches the input path by verifying all spacers are present.

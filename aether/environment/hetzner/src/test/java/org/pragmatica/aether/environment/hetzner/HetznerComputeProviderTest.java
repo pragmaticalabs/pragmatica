@@ -8,10 +8,13 @@ package org.pragmatica.aether.environment.hetzner;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.pragmatica.aether.environment.CloudProviderSupport;
 import org.pragmatica.aether.environment.EnvironmentError;
 import org.pragmatica.aether.environment.InstanceId;
 import org.pragmatica.aether.environment.InstanceStatus;
 import org.pragmatica.aether.environment.InstanceType;
+import org.pragmatica.aether.environment.NodeGroupConfig;
+import org.pragmatica.aether.environment.PlacementHint;
 import org.pragmatica.aether.environment.ProvisionContext;
 import org.pragmatica.aether.environment.ProvisionSpec;
 import org.pragmatica.cloud.hetzner.HetznerClient;
@@ -23,6 +26,7 @@ import org.pragmatica.cloud.hetzner.api.Network;
 import org.pragmatica.cloud.hetzner.api.Server;
 import org.pragmatica.cloud.hetzner.api.Server.CreateServerRequest;
 import org.pragmatica.cloud.hetzner.api.SshKey;
+import org.pragmatica.json.JsonMapper;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
@@ -40,6 +44,14 @@ class HetznerComputeProviderTest {
         "cx22", "ubuntu-24.04", "fsn1",
         List.of(1L, 2L), List.of(10L), List.of(5L),
         "#!/bin/bash\necho hello").unwrap();
+
+    private static HetznerEnvironmentConfig configWith(String serverType, List<Long> sshKeyIds) {
+        return HetznerEnvironmentConfig.hetznerEnvironmentConfig(
+            hetznerConfig("test-token"),
+            serverType, "ubuntu-24.04", "fsn1",
+            sshKeyIds, List.of(10L), List.of(5L),
+            "#!/bin/bash\necho hello").unwrap();
+    }
 
     private TestHetznerClient testClient;
     private HetznerComputeProvider provider;
@@ -66,6 +78,40 @@ class HetznerComputeProviderTest {
         @Test
         void provision_failure_mapsToEnvironmentError() {
             testClient.createServerResponse = new HetznerError.ApiError(500, "server_error", "Internal error").promise();
+
+            provider.provision(InstanceType.ON_DEMAND)
+                    .await()
+                    .onSuccess(info -> assertThat(info).isNull())
+                    .onFailure(HetznerComputeProviderTest::assertProvisionFailedError);
+        }
+
+        @Test
+        void provision_capacityUnavailable_mapsToCapacityUnavailableWithAttemptedZone() {
+            // Hetzner placement-capacity signal: 412 with code "resource_unavailable"
+            // ("error during placement"). Must surface as the RETRYABLE CapacityUnavailable
+            // carrying the attempted zone so the bootstrap can rotate to the next zone.
+            testClient.createServerResponse =
+                new HetznerError.ApiError(412, "resource_unavailable", "error during placement").promise();
+            var context = ProvisionContext.provisionContext("cluster-x",
+                                                             "core",
+                                                             "eu-1",
+                                                             ProvisionContext.PROVISIONED_BY_BOOTSTRAP);
+            var spec = ProvisionSpec.provisionSpec(InstanceType.ON_DEMAND, "cx22", "core", context)
+                                    .unwrap()
+                                    .withPlacement(PlacementHint.zoneHint("nbg1"));
+
+            provider.provision(spec)
+                    .await()
+                    .onSuccess(info -> assertThat(info).isNull())
+                    .onFailure(HetznerComputeProviderTest::assertCapacityUnavailableInNbg1);
+        }
+
+        @Test
+        void provision_nonCapacityApiError_mapsToProvisionFailed() {
+            // A 412 with a DIFFERENT code (or any other status) is NOT a capacity signal —
+            // it must stay ProvisionFailed (non-retryable), so rotation does not waste attempts.
+            testClient.createServerResponse =
+                new HetznerError.ApiError(412, "uniqueness_error", "server name taken").promise();
 
             provider.provision(InstanceType.ON_DEMAND)
                     .await()
@@ -106,6 +152,193 @@ class HetznerComputeProviderTest {
             assertThat(testClient.lastLabelSelector)
                     .as("upper-layer dotted aether.node-id translated to native hyphenated form")
                     .isEqualTo("aether-node-id=aether-core-node-x");
+        }
+    }
+
+    @Nested
+    class ProfileInheritanceTests {
+
+        @Test
+        void provision_specConcreteInstanceType_usedAsServerType() {
+            testClient.createServerResponse = Promise.success(runningServer(42, "aether-test"));
+
+            provider.provision(ctmSpec("ccx23")).await().onFailure(cause -> assertThat(cause).isNull());
+
+            assertThat(testClient.lastCreateServerRequest.serverType()).isEqualTo("ccx23");
+        }
+
+        @Test
+        void provision_specDefaultSentinel_fallsBackToConfigServerType() {
+            testClient.createServerResponse = Promise.success(runningServer(42, "aether-test"));
+
+            provider.provision(ctmSpec("default")).await().onFailure(cause -> assertThat(cause).isNull());
+
+            assertThat(testClient.lastCreateServerRequest.serverType()).isEqualTo("cx22");
+        }
+
+        @Test
+        void provision_noServerTypeResolvable_failsLoudWithoutHardcodedDefault() {
+            var typelessProvider = HetznerComputeProvider.hetznerComputeProvider(testClient,
+                                                                                configWith("", List.of(1L, 2L))).unwrap();
+
+            typelessProvider.provision(ctmSpec("default"))
+                            .await()
+                            .onSuccess(info -> assertThat(info).isNull())
+                            .onFailure(HetznerComputeProviderTest::assertProvisionFailedError);
+
+            assertThat(testClient.lastCreateServerRequest)
+                    .as("provision must fail before createServer — no cx33 fallback")
+                    .isNull();
+        }
+
+        @Test
+        void provision_configHasSshKeyIds_usedWithoutLookup() {
+            testClient.createServerResponse = Promise.success(runningServer(42, "aether-test"));
+
+            provider.provision(ctmSpec("cx22")).await().onFailure(cause -> assertThat(cause).isNull());
+
+            assertThat(testClient.lastCreateServerRequest.sshKeys()).containsExactly(1L, 2L);
+            assertThat(testClient.listSshKeysCalled)
+                    .as("config already carries ssh_key_ids — no provider-side lookup")
+                    .isFalse();
+        }
+
+        @Test
+        void provision_emptyConfigSshKeyIds_looksUpBootstrapPrefixedKeys() {
+            var keylessProvider = HetznerComputeProvider.hetznerComputeProvider(testClient,
+                                                                               configWith("cx22", List.of())).unwrap();
+            testClient.createServerResponse = Promise.success(runningServer(42, "aether-test"));
+            testClient.listSshKeysResponse = Promise.success(List.of(
+                new SshKey(7, "aether-bootstrap-op", "aa:bb", "ssh-ed25519 AAAA"),
+                new SshKey(9, "someones-laptop", "cc:dd", "ssh-ed25519 BBBB")));
+
+            keylessProvider.provision(ctmSpec("cx22")).await().onFailure(cause -> assertThat(cause).isNull());
+
+            assertThat(testClient.listSshKeysCalled).isTrue();
+            assertThat(testClient.lastCreateServerRequest.sshKeys())
+                    .as("only aether-bootstrap-prefixed keys are attached")
+                    .containsExactly(7L);
+        }
+
+        @Test
+        void provision_emptyConfigSshKeyIdsAndNoBootstrapKeys_createsWithoutSshKeys() {
+            var keylessProvider = HetznerComputeProvider.hetznerComputeProvider(testClient,
+                                                                               configWith("cx22", List.of())).unwrap();
+            testClient.createServerResponse = Promise.success(runningServer(42, "aether-test"));
+            testClient.listSshKeysResponse = Promise.success(List.of(
+                new SshKey(9, "someones-laptop", "cc:dd", "ssh-ed25519 BBBB")));
+
+            keylessProvider.provision(ctmSpec("cx22")).await().onFailure(cause -> assertThat(cause).isNull());
+
+            assertThat(testClient.lastCreateServerRequest.sshKeys()).isEmpty();
+        }
+
+        @Test
+        void createServerPayload_serializesServerTypeSshKeysAndLabels() {
+            testClient.createServerResponse = Promise.success(runningServer(42, "aether-test"));
+
+            provider.provision(ctmSpec("ccx23")).await().onFailure(cause -> assertThat(cause).isNull());
+
+            var json = JsonMapper.defaultJsonMapper().writeAsString(testClient.lastCreateServerRequest).unwrap();
+
+            assertThat(json)
+                    .contains("\"server_type\":\"ccx23\"")
+                    .contains("\"ssh_keys\":[1,2]")
+                    .contains("\"labels\":")
+                    .contains("aether-cluster")
+                    .contains("aether-node-id");
+        }
+
+        private ProvisionSpec ctmSpec(String instanceSize) {
+            var context = ProvisionContext.provisionContext("cluster-x",
+                                                            "core",
+                                                            "eu-1",
+                                                            ProvisionContext.PROVISIONED_BY_CTM)
+                                          .withNodeId("aether-core-node-test123");
+
+            return ProvisionSpec.provisionSpec(InstanceType.ON_DEMAND, instanceSize, "core", context).unwrap();
+        }
+    }
+
+    @Nested
+    class LabelWiringTests {
+
+        @Test
+        void bootstrapContext_stampsRealClusterAndRole() {
+            testClient.createServerResponse = Promise.success(runningServer(42, "aether-test"));
+            var context = ProvisionContext.forBootstrap("prod-cluster", "core", "eu-1", "eu-1-core-0");
+            var spec = ProvisionSpec.provisionSpec(InstanceType.ON_DEMAND, "cx22", "core", context).unwrap();
+
+            provider.provision(spec).await().onFailure(cause -> assertThat(cause).isNull());
+
+            assertThat(testClient.lastCreateServerRequest.labels())
+                    .containsEntry("aether-cluster", "prod-cluster")
+                    .containsEntry("aether-role", "core")
+                    .containsEntry(HetznerComputeProvider.NODE_ID_LABEL, "eu-1-core-0");
+        }
+
+        @Test
+        void replacementContext_stampsRealClusterAndRole() {
+            testClient.createServerResponse = Promise.success(runningServer(42, "aether-test"));
+            var context = ProvisionContext.forReplacement("prod-cluster", "core", "node-abc", "peers", 5);
+            var spec = ProvisionSpec.provisionSpec(InstanceType.ON_DEMAND, "cx22", "core", context).unwrap();
+
+            provider.provision(spec).await().onFailure(cause -> assertThat(cause).isNull());
+
+            assertThat(testClient.lastCreateServerRequest.labels())
+                    .containsEntry("aether-cluster", "prod-cluster")
+                    .containsEntry("aether-role", "core")
+                    .containsEntry(HetznerComputeProvider.NODE_ID_LABEL, "node-abc");
+        }
+
+        @Test
+        void waveNodeGroupWithClusterTag_stampsRealCluster() {
+            // #442 v2b — WaveExecutor now threads the real cluster name into the group tags; this
+            // proves that input reaches the VM label via CloudProviderSupport.toContext → provider.
+            testClient.createServerResponse = Promise.success(runningServer(42, "aether-test"));
+            var group = NodeGroupConfig.nodeGroupConfig("eu-1", "core", 1, "cx22", "fsn1",
+                                                        Map.of("aether-cluster", "prod-cluster",
+                                                               "aether-source", "eu-1",
+                                                               "aether-role", "core"));
+
+            CloudProviderSupport.provisionVia(provider, group).await().onFailure(cause -> assertThat(cause).isNull());
+
+            assertThat(testClient.lastCreateServerRequest.labels())
+                    .containsEntry("aether-cluster", "prod-cluster")
+                    .containsEntry("aether-role", "core");
+        }
+
+        @Test
+        void emptyClusterContext_fallsBackToConfigDiscoveryName() {
+            // On a RUNNING node the provider config carries the cluster name (from [cloud.discovery]
+            // cluster_name), so even an empty-tag context resolves a real name rather than "unknown".
+            // This is why the wave gap is latent in production and surfaces only when the config name
+            // is also absent (e.g. an older jar) — the label is never left blank.
+            var configWithName = CONFIG.withDiscovery("prod-cluster");
+            var providerWithName = HetznerComputeProvider.hetznerComputeProvider(testClient, configWithName).unwrap();
+            testClient.createServerResponse = Promise.success(runningServer(42, "aether-test"));
+            var group = NodeGroupConfig.nodeGroupConfig("eu-1", "core", 1, "cx22", "fsn1", Map.of());
+
+            CloudProviderSupport.provisionVia(providerWithName, group).await().onFailure(cause -> assertThat(cause).isNull());
+
+            assertThat(testClient.lastCreateServerRequest.labels().get("aether-cluster"))
+                    .as("empty context resolves the config discovery name, never left as 'unknown'")
+                    .isNotEqualTo("unknown");
+        }
+
+        @Test
+        void invalidClusterName_sanitizedToHetznerConstraints() {
+            // A cluster name with characters outside Hetzner's label-value alphabet must be coerced
+            // deterministically (prefix-preserved) rather than sent raw — a raw invalid value makes
+            // Hetzner reject the whole create.
+            testClient.createServerResponse = Promise.success(runningServer(42, "aether-test"));
+            var context = ProvisionContext.forBootstrap("my cluster!", "core", "eu-1", "eu-1-core-0");
+            var spec = ProvisionSpec.provisionSpec(InstanceType.ON_DEMAND, "cx22", "core", context).unwrap();
+
+            provider.provision(spec).await().onFailure(cause -> assertThat(cause).isNull());
+
+            assertThat(testClient.lastCreateServerRequest.labels())
+                    .containsEntry("aether-cluster", "my-cluster");
         }
     }
 
@@ -215,6 +448,32 @@ class HetznerComputeProviderTest {
 
             assertThat(testClient.lastUpdateLabelsServerId).isEqualTo(42L);
             assertThat(testClient.lastUpdateLabels).isEqualTo(tags);
+        }
+
+        @Test
+        void applyTags_mergesWithExistingLabels_preservingClusterRoleSource() {
+            // #442 v2b — the node self-stamps ONLY aether-node-id at join
+            // (AetherNode.tagMatchingInstance). Hetzner replaces the whole label map, so applyTags
+            // MUST merge (read-modify-write) or it wipes the create-stamped cluster/role/source down
+            // to just node-id — the exact field symptom. Config-independent: the base set is read
+            // from the VM's existing labels, so this also proves the replacement-of-replacement chain.
+            testClient.getServerResponse = Promise.success(serverWithLabels(42, "n",
+                Map.of("aether-cluster", "cloud-test-b",
+                       "aether-role", "core",
+                       "aether-source", "hetzner-eu",
+                       "aether-node-id", "old-id")));
+            testClient.updateLabelsResponse = Promise.success(Unit.unit());
+
+            provider.applyTags(new InstanceId("42"), Map.of("aether-node-id", "new-id"))
+                    .await()
+                    .onFailure(cause -> assertThat(cause).isNull());
+
+            assertThat(testClient.lastUpdateLabels)
+                    .as("applyTags MERGES: all four labels survive; node-id is updated, not sole")
+                    .containsEntry("aether-cluster", "cloud-test-b")
+                    .containsEntry("aether-role", "core")
+                    .containsEntry("aether-source", "hetzner-eu")
+                    .containsEntry("aether-node-id", "new-id");
         }
     }
 
@@ -397,6 +656,11 @@ class HetznerComputeProviderTest {
         assertThat(cause).isInstanceOf(EnvironmentError.ProvisionFailed.class);
     }
 
+    private static void assertCapacityUnavailableInNbg1(Cause cause) {
+        assertThat(cause).isInstanceOf(EnvironmentError.CapacityUnavailable.class);
+        assertThat(((EnvironmentError.CapacityUnavailable) cause).zone()).isEqualTo("nbg1");
+    }
+
     private static void assertTerminateFailedError(Cause cause) {
         assertThat(cause).isInstanceOf(EnvironmentError.TerminateFailed.class);
     }
@@ -458,6 +722,7 @@ class HetznerComputeProviderTest {
         Promise<List<Server>> listServersResponse = Promise.success(List.of());
         Promise<Unit> rebootServerResponse = Promise.success(Unit.unit());
         Promise<Unit> updateLabelsResponse = Promise.success(Unit.unit());
+        Promise<List<SshKey>> listSshKeysResponse = Promise.success(List.of());
 
         long lastDeletedServerId;
         long lastGetServerId;
@@ -466,6 +731,7 @@ class HetznerComputeProviderTest {
         Map<String, String> lastUpdateLabels;
         String lastLabelSelector;
         CreateServerRequest lastCreateServerRequest;
+        boolean listSshKeysCalled;
 
         @Override
         public Promise<Server> createServer(CreateServerRequest request) {
@@ -521,7 +787,8 @@ class HetznerComputeProviderTest {
 
         @Override
         public Promise<List<SshKey>> listSshKeys() {
-            return Promise.success(List.of());
+            listSshKeysCalled = true;
+            return listSshKeysResponse;
         }
 
         @Override

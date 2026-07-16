@@ -59,6 +59,13 @@ public final class SliceAdder {
         return slicePackage;
     }
 
+    /// Render the standard `slices/<Name>.toml` configuration content for the given
+    /// slice name. Exposed so add-only config fixers (e.g. `fix-slice`) reuse the
+    /// exact template written by [#addSlice()].
+    public static String sliceConfigContent(String sliceName) {
+        return SLICE_CONFIG_TEMPLATE.replace("{{sliceName}}", sliceName);
+    }
+
     private Result<Unit> createDirectories() {
         try {
             var packagePath = slicePackage.replace(".", "/");

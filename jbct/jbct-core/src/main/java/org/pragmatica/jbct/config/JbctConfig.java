@@ -58,12 +58,6 @@ public record JbctConfig(FormatterConfig formatter,
                                                                  .or(4))
                                              .withUseTabs(toml.getBoolean("format", "useTabs")
                                                               .or(false))
-                                             .withAlignChainedCalls(toml.getBoolean("format", "alignChainedCalls")
-                                                                        .or(true))
-                                             .withAlignArguments(toml.getBoolean("format", "alignArguments")
-                                                                     .or(true))
-                                             .withAlignParameters(toml.getBoolean("format", "alignParameters")
-                                                                      .or(true))
                                              .withOrganizeImports(toml.getBoolean("format", "organizeImports")
                                                                       .or(true));
         // Lint section
@@ -163,15 +157,6 @@ public record JbctConfig(FormatterConfig formatter,
           .append("\n");
         sb.append("useTabs = ")
           .append(formatter.useTabs())
-          .append("\n");
-        sb.append("alignChainedCalls = ")
-          .append(formatter.alignChainedCalls())
-          .append("\n");
-        sb.append("alignArguments = ")
-          .append(formatter.alignArguments())
-          .append("\n");
-        sb.append("alignParameters = ")
-          .append(formatter.alignParameters())
           .append("\n");
         sb.append("organizeImports = ")
           .append(formatter.organizeImports())

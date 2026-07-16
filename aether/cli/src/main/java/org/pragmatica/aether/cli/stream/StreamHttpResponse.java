@@ -4,11 +4,11 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.cli.stream;
 
-import org.pragmatica.aether.cli.OutputFormatter;
-import org.pragmatica.lang.Option;
-
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+
+import org.pragmatica.aether.cli.OutputFormatter;
+import org.pragmatica.lang.Option;
 
 
 /// Helpers that map the JSON envelopes returned by [org.pragmatica.aether.cli.AetherCli] HTTP

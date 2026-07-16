@@ -4,9 +4,6 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.config.cluster;
 
-import org.pragmatica.lang.Option;
-import org.pragmatica.lang.Result;
-
 import java.util.ArrayList;
 import java.util.EnumSet;
 import java.util.HashSet;
@@ -14,6 +11,9 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.regex.Pattern;
+
+import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Result;
 
 import static org.pragmatica.lang.Result.success;
 
@@ -109,13 +109,14 @@ public final class ClusterBootstrapConfigValidator {
     private static void validateRuntimeReferences(ClusterBootstrapConfig config, List<String> errors) {
         var runtimes = config.runtimes();
 
-        config.sources().forEach((sourceName, source) -> source.roles()
-                                                               .forEach((role, sub) -> checkRuntimeRef(sourceName,
-                                                                                                       role,
-                                                                                                       sub.runtimeRef(),
-                                                                                                       source.type(),
-                                                                                                       runtimes,
-                                                                                                       errors)));
+        config.sources()
+              .forEach((sourceName, source) -> source.roles()
+                                                     .forEach((role, sub) -> checkRuntimeRef(sourceName,
+                                                                                             role,
+                                                                                             sub.runtimeRef(),
+                                                                                             source.type(),
+                                                                                             runtimes,
+                                                                                             errors)));
     }
 
     private static void checkRuntimeRef(String sourceName,
@@ -260,8 +261,10 @@ public final class ClusterBootstrapConfigValidator {
     }
 
     private static void checkSpotProviderSupport(String name, SourceProfile source, List<String> errors) {
-        source.provider().filter(provider -> provider == CloudProviderName.HETZNER).onPresent(provider -> errors.add("PF-16: Provider 'hetzner' does not support spot/preemptible on source '" + name
-                                                                                                                    + "'"));
+        source.provider()
+              .filter(provider -> provider == CloudProviderName.HETZNER)
+              .onPresent(provider -> errors.add("PF-16: Provider 'hetzner' does not support spot/preemptible on source '" + name
+                                               + "'"));
     }
 
     private static void validateElectedLbRestriction(String name, SourceProfile source, List<String> errors) {
@@ -308,12 +311,13 @@ public final class ClusterBootstrapConfigValidator {
                                                          SourceProfile source,
                                                          Map<String, RuntimeProfile> runtimes,
                                                          List<String> errors) {
-        source.roles().forEach((role, sub) -> checkRoleRuntimeType(name,
-                                                                   role,
-                                                                   sub.runtimeRef(),
-                                                                   source.type(),
-                                                                   runtimes,
-                                                                   errors));
+        source.roles()
+              .forEach((role, sub) -> checkRoleRuntimeType(name,
+                                                           role,
+                                                           sub.runtimeRef(),
+                                                           source.type(),
+                                                           runtimes,
+                                                           errors));
     }
 
     private static void checkRoleRuntimeType(String sourceName,
@@ -430,8 +434,10 @@ public final class ClusterBootstrapConfigValidator {
         var hostsSeen = new HashSet<String>();
         var duplicates = new HashSet<String>();
 
-        source.roles().values().forEach(sub -> sub.hosts()
-                                                  .onPresent(hosts -> collectDuplicateHosts(hosts, hostsSeen, duplicates)));
+        source.roles()
+              .values()
+              .forEach(sub -> sub.hosts()
+                                 .onPresent(hosts -> collectDuplicateHosts(hosts, hostsSeen, duplicates)));
         duplicates.forEach(host -> errors.add("PF-09: SSH source '" + name
                                              + "' has host '" + host
                                              + "' in multiple role sub-tables (port conflict risk)"));
@@ -471,7 +477,8 @@ public final class ClusterBootstrapConfigValidator {
 
         var majority = totalCores / 2;
 
-        config.sources().forEach((name, source) -> checkSourceCoreMajority(name, source, majority, totalCores, warnings));
+        config.sources()
+              .forEach((name, source) -> checkSourceCoreMajority(name, source, majority, totalCores, warnings));
     }
 
     private static void checkSourceCoreMajority(String name,
@@ -516,10 +523,12 @@ public final class ClusterBootstrapConfigValidator {
         var half = totalCapacity / 2;
         var finalTotal = totalCapacity;
 
-        perSource.stream().filter(entry -> entry.getValue() > half).forEach(entry -> warnings.add("CL-14: Source '" + entry.getKey()
-                                                                                                 + "' holds " + entry.getValue()
-                                                                                                 + " of " + finalTotal
-                                                                                                 + " non-spot nodes (capacity concentration risk)"));
+        perSource.stream()
+                 .filter(entry -> entry.getValue() > half)
+                 .forEach(entry -> warnings.add("CL-14: Source '" + entry.getKey()
+                                               + "' holds " + entry.getValue()
+                                               + " of " + finalTotal
+                                               + " non-spot nodes (capacity concentration risk)"));
     }
 
     private static int countNonSpotCapacity(SourceProfile source) {

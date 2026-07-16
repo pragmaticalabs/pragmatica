@@ -1,0 +1,26 @@
+[api]
+prefix = "/api/catalog"
+requireVersionHeader = false
+
+[v1.routes]
+list = "GET /items"
+get = "GET /items/{id:Long}"
+
+[v1]
+deprecated = true
+sunset = "2026-12-31"
+
+[v2.routes]
+list = "GET /items"
+get = "GET /items/{id:Long}"
+exportCsv = { route = "GET /items.csv", produces = "text/csv" }
+image = { route = "GET /items/{id:Long}/image", produces = "application/octet-stream" }
+importCsv = { route = "POST /import", consumes = "text/csv" }
+
+[v2]
+defaultIfMissing = true
+
+[errors]
+default = 500
+HTTP_404 = ["*NotFound*"]
+HTTP_400 = ["*Invalid*"]

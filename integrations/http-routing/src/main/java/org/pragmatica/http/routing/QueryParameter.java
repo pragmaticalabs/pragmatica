@@ -1,5 +1,7 @@
 package org.pragmatica.http.routing;
 
+import org.pragmatica.http.HttpStatus;
+import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 
@@ -7,6 +9,7 @@ import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.List;
+import java.util.UUID;
 
 import static org.pragmatica.http.routing.ParameterError.InvalidParameter;
 
@@ -41,6 +44,27 @@ public interface QueryParameter<T> {
             @Override
             public Result<Option<String>> parse(List<String> values) {
                 return Result.success(firstValue(values));
+            }
+        };
+    }
+
+    /// UUID query parameter - parses a canonical RFC-4122 textual UUID.
+    ///
+    /// @param name the parameter name
+    static QueryParameter<UUID> aUuid(String name) {
+        return new QueryParameter<>() {
+            @Override
+            public String name() {
+                return name;
+            }
+
+            @Override
+            public Result<Option<UUID>> parse(List<String> values) {
+                return firstValue(values).map(value -> Result.lift(_ -> new InvalidParameter("Invalid UUID query param '" + name
+                                                                                             + "': " + value),
+                                                                   () -> UUID.fromString(value)))
+                                 .fold(() -> Result.success(Option.none()),
+                                       result -> result.map(Option::some));
             }
         };
     }
@@ -202,6 +226,35 @@ public interface QueryParameter<T> {
                                        result -> result.map(Option::some));
             }
         };
+    }
+
+    /// Compose this framework-owned `String -> P` parser with a value object's fallible `lift`
+    /// (`P -> Result<T>`) so a query segment is parsed to its primitive representation, then lifted
+    /// into the value object. A missing optional parameter stays `Option.none()`; a present value
+    /// that fails to parse or fails the `lift` surfaces as a typed [org.pragmatica.http.HttpError]
+    /// 400, never a 500 and never a silent raw value. The value object declares only its `P`
+    /// mapping; it never mentions `String`, `QueryParameter`, or HTTP status.
+    default <R> QueryParameter<R> mapped(Fn1<Result<R>, T> lift) {
+        return new QueryParameter<>() {
+            @Override
+            public String name() {
+                return QueryParameter.this.name();
+            }
+
+            @Override
+            public Result<Option<R>> parse(List<String> values) {
+                return QueryParameter.this.parse(values)
+                                          .flatMap(opt -> liftOption(opt, lift))
+                                          .mapError(cause -> HttpStatus.BAD_REQUEST.with(cause));
+            }
+        };
+    }
+
+    /// Lift a present primitive through the value object's `lift`, preserving optionality: a missing
+    /// value stays `Option.none()`; a present value is lifted and re-wrapped as `Option.some(...)`.
+    private static <R, T> Result<Option<R>> liftOption(Option<T> primitive, Fn1<Result<R>, T> lift) {
+        return primitive.map(lift)
+                        .fold(() -> Result.success(Option.none()), result -> result.map(Option::some));
     }
 
     /// Extract first value from parameter list, if present.

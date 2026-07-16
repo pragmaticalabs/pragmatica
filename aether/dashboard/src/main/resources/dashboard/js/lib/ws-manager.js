@@ -100,19 +100,13 @@ window.WsManager = {
         }
     },
 
-    // Issue 18: Read API key from sessionStorage, cookie, or URL param
+    // #293/G7: Read API key from sessionStorage (set by the auth overlay) or cookie — never the URL,
+    // since keys in URLs leak into logs/proxies/history. Sent in the WS AUTH message after open.
     getApiKey: function() {
         // 1. sessionStorage
         var key = sessionStorage.getItem('aether-api-key');
         if (key) return key;
-        // 2. URL param
-        var params = new URLSearchParams(window.location.search);
-        key = params.get('apiKey');
-        if (key) {
-            sessionStorage.setItem('aether-api-key', key);
-            return key;
-        }
-        // 3. Cookie
+        // 2. Cookie
         var match = document.cookie.match(/(?:^|;\s*)aether-api-key=([^;]*)/);
         if (match) return decodeURIComponent(match[1]);
         return null;

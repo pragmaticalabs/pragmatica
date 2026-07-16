@@ -4,6 +4,10 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.storage;
 
+import java.nio.ByteBuffer;
+import java.util.Collection;
+import java.util.List;
+
 import org.pragmatica.consensus.Command;
 import org.pragmatica.consensus.StateMachine;
 import org.pragmatica.consensus.StateMachine.Batch;
@@ -13,10 +17,6 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.storage.ContentStore;
-
-import java.nio.ByteBuffer;
-import java.util.Collection;
-import java.util.List;
 
 import static org.pragmatica.consensus.rabia.RabiaPersistence.SavedState.savedState;
 

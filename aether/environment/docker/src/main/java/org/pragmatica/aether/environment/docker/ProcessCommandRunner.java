@@ -4,10 +4,10 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.environment.docker;
 
+import java.util.List;
+
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Promise;
-
-import java.util.List;
 
 import static org.pragmatica.aether.environment.docker.DockerError.COMMAND_EXECUTION_FAILED;
 

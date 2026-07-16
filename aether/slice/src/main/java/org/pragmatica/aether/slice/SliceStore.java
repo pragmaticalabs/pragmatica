@@ -4,6 +4,16 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.slice;
 
+import java.io.IOException;
+import java.net.URL;
+import java.nio.charset.StandardCharsets;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.stream.Stream;
+
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.slice.dependency.DependencyResolver;
 import org.pragmatica.aether.slice.dependency.SliceRegistry;
@@ -21,16 +31,6 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.utils.Causes;
-
-import java.io.IOException;
-import java.net.URL;
-import java.nio.charset.StandardCharsets;
-import java.util.LinkedHashMap;
-import java.util.List;
-import java.util.Map;
-import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.stream.Stream;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -232,13 +232,23 @@ public interface SliceStore {
                                                                                                                                                                composite)));
         }
 
-        private static ConfigurationProvider assembleSliceComposite(Artifact artifact,
-                                                                    ConfigurationProvider intrinsic,
-                                                                    ConfigurationProvider composite) {
+        // Package-private (not private) so SliceStoreTest can pin the override precedence
+        // directly — this ordering is load-bearing and was previously inverted.
+        static ConfigurationProvider assembleSliceComposite(Artifact artifact,
+                                                            ConfigurationProvider intrinsic,
+                                                            ConfigurationProvider composite) {
             logShadowedKeys(artifact, intrinsic, composite);
             var labelledIntrinsic = NamedConfigProvider.namedConfigProvider("slice.toml", intrinsic);
-
-            return LayeredConfigProvider.layered(List.of(labelledIntrinsic, composite));
+            // Override precedence: the node-composite (operator KV-overlay ⊕ node.toml) WINS over
+            // the slice's intrinsic resources.toml. The slice ships LOCAL defaults that each
+            // deployment overrides with environment-specific values (see the resources.toml header
+            // and logShadowedKeys above — "intrinsic shadowed by operator override"). Since
+            // LayeredConfigProvider is first-wins (index 0 = top priority), the composite must come
+            // FIRST; slice.toml is the fallback only for keys the deployment does not override.
+            // (Identical local/deployment values — e.g. docker's node aether.toml matching the
+            // slice — make the order moot, which is why this was latent until a divergent cloud
+            // deployment exercised it.)
+            return LayeredConfigProvider.layered(List.of(composite, labelledIntrinsic));
         }
 
         /// Emit one INFO log entry per intrinsic key whose value is shadowed by an existing
@@ -251,7 +261,8 @@ public interface SliceStore {
                 var intrinsicValue = intrinsic.getString(key);
                 var overrideValue = composite.getString(key);
 
-                if (intrinsicValue.isPresent() && overrideValue.isPresent() && !intrinsicValue.unwrap().equals(overrideValue.unwrap())) {
+                if (intrinsicValue.isPresent() && overrideValue.isPresent() && !intrinsicValue.unwrap()
+                                                                                              .equals(overrideValue.unwrap())) {
                     log.info("slice {} intrinsic key {} shadowed by operator override (intrinsic={}, override={})",
                              artifact.asString(),
                              key,
@@ -302,8 +313,8 @@ public interface SliceStore {
                                              Slice slice,
                                              SliceClassLoader classLoader,
                                              SliceLoadingContext loadingContext) {
-            var sliceConfig = loadingContext.sliceComposite().orElse(() -> buildSliceCompositeFromClassLoader(artifact,
-                                                                                                              classLoader));
+            var sliceConfig = loadingContext.sliceComposite()
+                                            .orElse(() -> buildSliceCompositeFromClassLoader(artifact, classLoader));
             var entry = new LoadedSliceEntry(artifact,
                                              slice,
                                              classLoader,

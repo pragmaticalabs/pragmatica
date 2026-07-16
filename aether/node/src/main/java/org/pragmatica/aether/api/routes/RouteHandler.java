@@ -4,13 +4,13 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.api.routes;
 
-import org.pragmatica.http.server.RequestContext;
+import org.pragmatica.http.HttpRequest;
 import org.pragmatica.http.server.ResponseWriter;
 import org.pragmatica.lang.Option;
 
 
 public interface RouteHandler {
-    boolean handle(RequestContext ctx, ResponseWriter response);
+    boolean handle(HttpRequest ctx, ResponseWriter response);
 
     default String extractPath(String uri) {
         var queryIndex = uri.indexOf('?');

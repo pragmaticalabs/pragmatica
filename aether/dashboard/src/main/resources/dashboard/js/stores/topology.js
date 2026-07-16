@@ -25,7 +25,7 @@ document.addEventListener('alpine:init', function() {
         },
 
         async refresh() {
-            var data = await RestClient.get('/api/topology');
+            var data = await RestClient.get('/api/slices/topology');
             if (data) {
                 this.nodes = data.nodes || [];
                 this.edges = data.edges || [];

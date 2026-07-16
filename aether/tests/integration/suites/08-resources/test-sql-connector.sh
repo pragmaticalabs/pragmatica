@@ -31,7 +31,7 @@ test_deploy_sql_app() {
     # under cluster A+B concurrent load. Earlier 30s + GET-probe passed spuriously
     # (404 from missing route reads same as 404 from missing key); PUT-probe surfaces
     # the real readiness window.
-    retarget_app_endpoint_to_active_slice "$BLUEPRINT" 8070 "/api/kv/route-probe" 90 || true
+    retarget_app_endpoint_to_active_slice "$BLUEPRINT" "/api/kv/route-probe" 90 || true
     log_pass "SQL-backed app deployed"
 }
 

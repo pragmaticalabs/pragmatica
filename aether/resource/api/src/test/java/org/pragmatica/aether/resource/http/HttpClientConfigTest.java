@@ -116,4 +116,30 @@ class HttpClientConfigTest {
         }
     }
 
+    @Nested
+    class BackendSelection {
+
+        @Test
+        void httpClientConfig_defaultsBackendToNone_whenUnset() {
+            var config = httpClientConfig().unwrap();
+
+            assertThat(config.backend().isEmpty()).isTrue();
+        }
+
+        @Test
+        void httpClientConfig_setsNettyBackend_whenProvided() {
+            var config = httpClientConfig(none(),
+                                           DEFAULT_CONNECT_TIMEOUT,
+                                           DEFAULT_REQUEST_TIMEOUT,
+                                           Redirect.NORMAL,
+                                           none(),
+                                           Map.of(),
+                                           some(HttpClientConfig.HttpBackend.NETTY))
+                .unwrap();
+
+            assertThat(config.backend().isPresent()).isTrue();
+            config.backend().onPresent(backend -> assertThat(backend).isEqualTo(HttpClientConfig.HttpBackend.NETTY));
+        }
+    }
+
 }

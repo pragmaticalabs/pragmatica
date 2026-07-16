@@ -4,6 +4,13 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.stream;
 
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.Function;
+
 import org.pragmatica.aether.slice.ConsistencyMode;
 import org.pragmatica.aether.slice.StreamPublisher;
 import org.pragmatica.aether.stream.consensus.ConsensusPublishPath;
@@ -16,11 +23,6 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.serialization.Serializer;
-
-import java.util.Arrays;
-import java.util.List;
-import java.util.concurrent.atomic.AtomicLong;
-import java.util.function.Function;
 
 
 public final class DefaultStreamPublisher<T> implements StreamPublisher<T> {
@@ -166,19 +168,42 @@ public final class DefaultStreamPublisher<T> implements StreamPublisher<T> {
         return Promise.allOf(events.stream().map(this::publish).toList()).mapToUnit();
     }
 
+    /// #266: an EVENTUAL batch is grouped by each event's COMPUTED partition (not routed wholesale to
+    /// the first event's partition) and each group is routed through the SAME per-event path as single
+    /// {@link #publish} — local owner publish + replicate + min-sync await, or write-forward to the
+    /// remote owner. This preserves key→partition affinity and gives the batch identical replication
+    /// semantics to single publish (composes with #262), instead of the prior whole-batch misroute that
+    /// also bypassed replication and failed `PARTITION_NOT_LOCAL` for any non-local partition.
     private Promise<Unit> publishBatchEventual(List<T> events) {
-        var payloads = events.stream().map(serializer::encode).toList();
-        var timestamps = new long[events.size()];
         var now = System.currentTimeMillis();
+        var byPartition = groupByPartition(events);
 
-        Arrays.fill(timestamps, now);
-        var partition = resolvePartition(events.getFirst());
+        return Promise.allOf(byPartition.values().stream().map(group -> publishGroupInOrder(group, now)).toList()).mapToUnit();
+    }
 
-        return partitionManager.partitionBuffer(streamName, partition)
-                               .toResult(StreamError.General.PARTITION_NOT_LOCAL)
-                               .flatMap(buffer -> buffer.appendBatch(payloads, timestamps))
-                               .mapToUnit()
-                               .async();
+    /// Group events by computed partition, preserving encounter order within each partition group so
+    /// per-key ordering is maintained. A `LinkedHashMap` keeps group iteration deterministic.
+    private Map<Integer, List<T>> groupByPartition(List<T> events) {
+        var groups = new LinkedHashMap<Integer, List<T>>();
+
+        events.forEach(event -> groups.computeIfAbsent(resolvePartition(event),
+                                                       _ -> new ArrayList<>())
+                                      .add(event));
+
+        return groups;
+    }
+
+    /// Publish one partition's events strictly in order: each event awaits the previous so the
+    /// partition's append/forward sequence preserves per-key ordering. Different partition groups run
+    /// concurrently (the caller's `allOf`).
+    private Promise<Unit> publishGroupInOrder(List<T> group, long timestamp) {
+        var chain = Promise.<Unit> unitPromise();
+
+        for (var event : group) {
+            chain = chain.flatMap(_ -> publishEventual(resolvePartition(event), serializer.encode(event), timestamp));
+        }
+
+        return chain;
     }
 
     private Promise<Unit> publishEventual(int partition, byte[] bytes, long timestamp) {
@@ -190,7 +215,7 @@ public final class DefaultStreamPublisher<T> implements StreamPublisher<T> {
     }
 
     private Promise<Unit> publishLocalEventual(int partition, byte[] bytes, long timestamp) {
-        if (minSyncReplicas <= 0) {
+        if (minSyncReplicas <= 1) {
             return partitionManager.publishLocal(streamName, partition, bytes, timestamp)
                                    .mapToUnit()
                                    .async();
@@ -201,7 +226,7 @@ public final class DefaultStreamPublisher<T> implements StreamPublisher<T> {
                                .flatMap(offset -> partitionManager.awaitReplication(streamName,
                                                                                     partition,
                                                                                     offset,
-                                                                                    minSyncReplicas));
+                                                                                    minSyncReplicas - 1));
     }
 
     private Promise<Unit> publishRemote(int partition, byte[] bytes, long timestamp) {

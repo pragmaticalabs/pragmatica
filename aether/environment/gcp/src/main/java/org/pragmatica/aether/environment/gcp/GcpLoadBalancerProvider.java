@@ -4,6 +4,13 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.environment.gcp;
 
+import java.util.Collection;
+import java.util.List;
+import java.util.Set;
+import java.util.function.Predicate;
+import java.util.stream.Collectors;
+import java.util.stream.Stream;
+
 import org.pragmatica.aether.environment.LoadBalancerInfo;
 import org.pragmatica.aether.environment.LoadBalancerProvider;
 import org.pragmatica.aether.environment.LoadBalancerState;
@@ -13,13 +20,6 @@ import org.pragmatica.cloud.gcp.api.NetworkEndpoint;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
-
-import java.util.Collection;
-import java.util.List;
-import java.util.Set;
-import java.util.function.Predicate;
-import java.util.stream.Collectors;
-import java.util.stream.Stream;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -63,7 +63,11 @@ public record GcpLoadBalancerProvider(GcpClient client, String negName, int dest
     }
 
     private LoadBalancerInfo toLoadBalancerInfo(List<NetworkEndpoint> endpoints) {
-        var targetInfos = endpoints.stream().map(ep -> new LoadBalancerInfo.TargetInfo(ep.ipAddress(), "healthy", 1)).toList();
+        var targetInfos = endpoints.stream()
+                                   .map(ep -> new LoadBalancerInfo.TargetInfo(ep.ipAddress(),
+                                                                              "healthy",
+                                                                              1))
+                                   .toList();
 
         return new LoadBalancerInfo(negName, negName, "", "active", targetInfos);
     }

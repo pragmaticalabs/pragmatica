@@ -4,6 +4,15 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.resource;
 
+import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.List;
+import java.util.Map;
+import java.util.ServiceLoader;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.Function;
+
 import org.pragmatica.config.ConfigService;
 import org.pragmatica.config.ConfigurationProvider;
 import org.pragmatica.config.ProviderBasedConfigService;
@@ -15,15 +24,6 @@ import org.pragmatica.lang.Functions.Fn2;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
-
-import java.util.ArrayList;
-import java.util.Comparator;
-import java.util.List;
-import java.util.Map;
-import java.util.ServiceLoader;
-import java.util.Set;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.function.Function;
 
 import static org.pragmatica.lang.Option.option;
 
@@ -42,9 +42,12 @@ public final class SpiResourceProvider implements ResourceProvider {
         this.runtimeExtensions = new ConcurrentHashMap<>();
         Map<Class<?>, List<ResourceFactory<?, ?>>> factoryMap = new ConcurrentHashMap<>();
 
-        ServiceLoader.load(ResourceFactory.class).stream().map(ServiceLoader.Provider::get).forEach(factory -> factoryMap.computeIfAbsent(factory.resourceType(),
-                                                                                                                                          _ -> new ArrayList<>())
-                                                                                                                         .add(factory));
+        ServiceLoader.load(ResourceFactory.class)
+                     .stream()
+                     .map(ServiceLoader.Provider::get)
+                     .forEach(factory -> factoryMap.computeIfAbsent(factory.resourceType(),
+                                                                    _ -> new ArrayList<>())
+                                                   .add(factory));
         factoryMap.replaceAll((_, list) -> sortByPriorityDescending(list));
         this.factories = Map.copyOf(factoryMap);
     }
@@ -90,9 +93,10 @@ public final class SpiResourceProvider implements ResourceProvider {
     public <T> Promise<T> provide(Class<T> resourceType, String configSection, ProvisioningContext context) {
         var key = new CacheKey(resourceType, configSection);
 
-        context.extension(String.class).onSuccess(sliceId -> consumers.computeIfAbsent(key,
-                                                                                       _ -> ConcurrentHashMap.newKeySet())
-                                                                      .add(sliceId));
+        context.extension(String.class)
+               .onSuccess(sliceId -> consumers.computeIfAbsent(key,
+                                                               _ -> ConcurrentHashMap.newKeySet())
+                                              .add(sliceId));
 
         return createResourceWithContext(resourceType, configSection, context);
     }
@@ -250,10 +254,23 @@ public final class SpiResourceProvider implements ResourceProvider {
     private <C> Promise<C> loadConfig(String section,
                                       Class<C> configType,
                                       org.pragmatica.lang.Option<ProvisioningContext> contextOpt) {
-        return resolveConfigLoader(contextOpt).apply(section, configType)
-                                  .mapError(cause -> new SliceLoadingFailure.Fatal.ConfigurationFailed(section, cause))
-                                  .map(obj -> (C) obj)
-                                  .async();
+        var loaded = (Result<Object>) resolveConfigLoader(contextOpt).apply(section, configType);
+
+        return topicNameFallback(section, configType, loaded).mapError(cause -> new SliceLoadingFailure.Fatal.ConfigurationFailed(section,
+                                                                                                                                  cause))
+                                .map(obj -> (C) obj)
+                                .async();
+    }
+
+    /// Route a typed-topic publisher's address off the manifest-derived topic name (#396): the
+    /// `section` passed for a [TopicConfig] resource is the topic name resolved from the single-source
+    /// `Topic<T>` constant (the generated factory provisions the publisher by that name), so a missing
+    /// resources.toml `[section]` — the author no longer writes `topic_name` — defaults to a topic
+    /// named after the section instead of failing slice activation. Non-topic resources are unaffected.
+    private static Result<Object> topicNameFallback(String section, Class<?> configType, Result<Object> loaded) {
+        return configType.equals(TopicConfig.class)
+               ? loaded.recover(_ -> new TopicConfig(section))
+               : loaded;
     }
 
     /// Resolve the configuration loader for this provisioning call.

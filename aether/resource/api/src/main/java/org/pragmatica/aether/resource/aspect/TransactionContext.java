@@ -4,13 +4,13 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.resource.aspect;
 
-import org.pragmatica.lang.Option;
-import org.pragmatica.lang.Result;
-import org.pragmatica.lang.io.TimeSpan;
-
 import java.time.Duration;
 import java.time.Instant;
 import java.util.UUID;
+
+import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Result;
+import org.pragmatica.lang.io.TimeSpan;
 
 import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.option;

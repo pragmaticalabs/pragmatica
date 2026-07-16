@@ -5,6 +5,7 @@
 
 package org.pragmatica.jbct.slice.routing;
 
+import org.pragmatica.jbct.slice.BuildInfo;
 import org.pragmatica.jbct.slice.model.MethodModel;
 import org.pragmatica.jbct.slice.model.SliceModel;
 import org.pragmatica.lang.Option;
@@ -15,6 +16,7 @@ import org.pragmatica.lang.utils.Causes;
 import javax.annotation.processing.Filer;
 import javax.annotation.processing.Messager;
 import javax.lang.model.element.TypeElement;
+import javax.lang.model.type.TypeMirror;
 import javax.lang.model.util.Elements;
 import javax.tools.Diagnostic;
 import javax.tools.JavaFileObject;
@@ -22,9 +24,12 @@ import java.io.IOException;
 import java.io.PrintWriter;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 /// Generates RouteSource and SliceRouterFactory implementation class for a slice.
 ///
@@ -138,6 +143,25 @@ public class RouteSourceGenerator {
 
     private static final int MAX_PARAMS = 5;
 
+    /// Framework-owned `P -> String parser` table for value-object HTTP binding (#397 §5): the set of
+    /// domain primitives `P` for which a value object exposing `static ValueMapping<Self, P>
+    /// valueMapping()` can bind a path/query segment. Each entry maps `P`'s type name to the
+    /// `PathParameter`/`QueryParameter` factory that parses `String -> P`; the value object's `lift`
+    /// then composes on top via `.mapped(Vo.valueMapping().lift())`. Restricted to primitives both
+    /// `PathParameter` and `QueryParameter` support, so a value-object segment binds identically on
+    /// either. A value object whose `P` is outside this set is a compile error (§5), not a silent
+    /// fallback.
+    private static final Map<String, String> VO_PRIMITIVE_PARSER = Map.ofEntries(Map.entry("java.lang.String", "aString"),
+                                                                                 Map.entry("java.lang.Integer", "aInteger"),
+                                                                                 Map.entry("java.lang.Long", "aLong"),
+                                                                                 Map.entry("java.lang.Boolean", "aBoolean"),
+                                                                                 Map.entry("java.lang.Double", "aDouble"),
+                                                                                 Map.entry("java.math.BigDecimal", "aDecimal"),
+                                                                                 Map.entry("java.time.LocalDate", "aLocalDate"),
+                                                                                 Map.entry("java.time.LocalDateTime",
+                                                                                           "aLocalDateTime"),
+                                                                                 Map.entry("java.util.UUID", "aUuid"));
+
     private final Filer filer;
     private final Messager messager;
     private final Elements elements;
@@ -158,6 +182,7 @@ public class RouteSourceGenerator {
         if (!routeConfig.hasRoutes()) {
             return Result.success(Option.none());
         }
+        validateVersionMethodBindings(routeConfig, model, sliceElement);
         try{
             var routesName = model.simpleName() + "Routes";
             var qualifiedName = model.packageName() + "." + routesName;
@@ -174,6 +199,28 @@ public class RouteSourceGenerator {
         }
     }
 
+    /// Decision D8 (#198 §5): for a versioned slice, verify every `(vN, bindKey)` resolves to an
+    /// existing slice method (`getV{N}` or an explicit `method = "..."` override). Reports a
+    /// precise error via the messager; delegates the pure check to [VersionSchemaValidator].
+    private void validateVersionMethodBindings(RouteConfig routeConfig, SliceModel model, TypeElement sliceElement) {
+        if (!routeConfig.isVersioned()) {
+            return;
+        }
+        var methodNames = model.methods()
+                               .stream()
+                               .map(MethodModel::name)
+                               .collect(Collectors.toSet());
+        for (var version : routeConfig.versions().values()) {
+            for (var binding : version.bindKeyToMethod().entrySet()) {
+                VersionSchemaValidator.checkMethodResolved(version.version(),
+                                                           binding.getKey(),
+                                                           binding.getValue(),
+                                                           methodNames.contains(binding.getValue()))
+                                      .onPresent(msg -> messager.printMessage(Diagnostic.Kind.ERROR, msg, sliceElement));
+            }
+        }
+    }
+
     private void generateRoutesClass(PrintWriter out,
                                      SliceModel model,
                                      RouteConfig routeConfig,
@@ -186,12 +233,13 @@ public class RouteSourceGenerator {
         out.println("package " + basePackage + ";");
         out.println();
         // Imports
-        generateImports(out, sliceName, errorMappings, model.methods());
+        generateImports(out, sliceName, errorMappings, model.methods(), routeConfig);
         out.println();
         // Class
         out.println("/**");
         out.println(" * RouteSource and SliceRouterFactory implementation for " + sliceName + " slice.");
-        out.println(" * Generated by slice-processor - do not edit manually.");
+        out.println(" * Generated by slice-processor " + BuildInfo.VERSION + " from @Slice " + model.qualifiedName() + " - do not edit manually.");
+        out.println(" * A compile error in this file originates from the shape of that slice; fix the slice, not this file.");
         out.println(" */");
         out.println("public final class " + routesName + " implements RouteSource, SliceRouterFactory<" + sliceName
                     + "> {");
@@ -227,28 +275,57 @@ public class RouteSourceGenerator {
         out.println("        return SliceRouter.sliceRouter(routes, routes.errorMapper(), jsonMapper);");
         out.println("    }");
         out.println();
+        // SliceRouterFactory: create(slice, jsonMapper, mountMode) — #198 deploy-either-way (§7).
+        // routes() returns un-mounted routes; the mount mode composes path mode (default) or header
+        // mode at registration time, so the SAME compiled slice serves either mode.
+        out.println("    @Override");
+        out.println("    public SliceRouter create(" + sliceName
+                    + " slice, JsonMapper jsonMapper, RouteMountMode mountMode) {");
+        out.println("        var routes = new " + routesName + "(slice);");
+        out.println("        return SliceRouter.sliceRouter(routes, routes.errorMapper(), jsonMapper, mountMode);");
+        out.println("    }");
+        out.println();
         // routes() method
         generateRoutesMethod(out, model, routeConfig, sliceElement);
         out.println();
+        // versionRegistry() method (only for versioned slices; unversioned inherits the default)
+        if (routeConfig.isVersioned()) {
+            generateVersionRegistryMethod(out, routeConfig);
+            out.println();
+        }
         // errorMapper() method
         generateErrorMapperMethod(out, errorMappings);
         out.println("}");
     }
 
-    private void generateImports(PrintWriter out, String sliceName, List<ErrorTypeMapping> errorMappings, List<MethodModel> methods) {
+    private void generateImports(PrintWriter out, String sliceName, List<ErrorTypeMapping> errorMappings, List<MethodModel> methods, RouteConfig routeConfig) {
         out.println("import org.pragmatica.aether.http.adapter.ErrorMapper;");
         out.println("import org.pragmatica.aether.http.adapter.SliceRouter;");
         out.println("import org.pragmatica.aether.http.adapter.SliceRouterFactory;");
-        out.println("import org.pragmatica.http.routing.HttpError;");
-        out.println("import org.pragmatica.http.routing.HttpStatus;");
+        out.println("import org.pragmatica.http.HttpError;");
+        out.println("import org.pragmatica.http.HttpStatus;");
         out.println("import org.pragmatica.http.routing.PathParameter;");
         out.println("import org.pragmatica.http.routing.QueryParameter;");
         out.println("import org.pragmatica.http.routing.Route;");
+        out.println("import org.pragmatica.http.routing.RouteMountMode;");
         out.println("import org.pragmatica.http.routing.RouteSource;");
+        if (routeConfig.isVersioned()) {
+            out.println("import org.pragmatica.http.routing.SliceVersionRegistry;");
+        }
         out.println("import org.pragmatica.aether.http.handler.security.SecurityPolicy;");
         if (anyMethodHasSecurityParams(methods)) {
             out.println("import org.pragmatica.aether.http.handler.security.SecurityContext;");
             out.println("import org.pragmatica.aether.http.handler.security.SecurityContextHolder;");
+        }
+        if (usesCommonContentType(routeConfig)) {
+            out.println("import org.pragmatica.http.CommonContentType;");
+        }
+        if (usesContentTypeEscapeHatch(routeConfig)) {
+            out.println("import org.pragmatica.http.ContentType;");
+            out.println("import org.pragmatica.http.ContentCategory;");
+        }
+        if (usesMultipartBinding(routeConfig)) {
+            out.println("import org.pragmatica.http.routing.MultipartRequest;");
         }
         out.println("import org.pragmatica.lang.Cause;");
         out.println("import org.pragmatica.lang.Option;");
@@ -256,10 +333,44 @@ public class RouteSourceGenerator {
         out.println("import org.pragmatica.json.JsonMapper;");
         out.println();
         out.println("import java.util.stream.Stream;");
-        // Import error types
+        if (routeConfig.isVersioned()) {
+            out.println("import java.util.List;");
+        }
+        // Import error types -- skip simple-name collisions. When two error types share a simple
+        // name, the error switch (generateErrorMapperMethod) references them by fully-qualified
+        // name, so two single-type imports of the same simple name would only fail to compile.
+        var errorSimpleNameCounts = errorMappings.stream()
+                                                 .collect(Collectors.groupingBy(ErrorTypeMapping::simpleName,
+                                                                                Collectors.counting()));
         for (var mapping : errorMappings) {
+            if (errorSimpleNameCounts.get(mapping.simpleName()) > 1) {
+                continue;
+            }
             out.println("import " + mapping.qualifiedName() + ";");
         }
+    }
+
+    /// True when any route declares a non-JSON `produces`/`consumes` that resolves to a
+    /// [org.pragmatica.http.CommonContentType] constant (its emit expression starts with that type).
+    private boolean usesCommonContentType(RouteConfig routeConfig) {
+        return routeConfig.routes().values().stream()
+                          .flatMap(dsl -> Stream.of(dsl.produces(), dsl.consumes()))
+                          .anyMatch(mt -> !mt.isJson() && mt.emitExpression().startsWith("CommonContentType."));
+    }
+
+    /// True when any route's non-JSON `produces` falls back to the
+    /// [org.pragmatica.http.ContentType#contentType(String, org.pragmatica.http.ContentCategory)] escape hatch.
+    private boolean usesContentTypeEscapeHatch(RouteConfig routeConfig) {
+        return routeConfig.routes().values().stream()
+                          .flatMap(dsl -> Stream.of(dsl.produces(), dsl.consumes()))
+                          .anyMatch(mt -> mt.emitExpression().startsWith("ContentType.contentType"));
+    }
+
+    /// True when any body route consumes MULTIPART, requiring the MultipartRequest import.
+    private boolean usesMultipartBinding(RouteConfig routeConfig) {
+        return routeConfig.routes().values().stream()
+                          .filter(dsl -> isBodyMethod(dsl.method()))
+                          .anyMatch(dsl -> "MULTIPART".equals(dsl.consumes().category()));
     }
 
     private void generateRoutesMethod(PrintWriter out,
@@ -268,7 +379,12 @@ public class RouteSourceGenerator {
                                       TypeElement sliceElement) {
         out.println("    @Override");
         out.println("    public Stream<Route<?>> routes() {");
-        out.println("        return Stream.of(");
+        // Versioned slices need an explicit type witness so the trailing .map(...) mount step types
+        // cleanly; unversioned slices keep the original Stream.of(...) form (byte-identical output).
+        var streamOpen = routeConfig.isVersioned()
+                         ? "        return Stream.<Route<?>>of("
+                         : "        return Stream.of(";
+        out.println(streamOpen);
         var methodMap = buildMethodMap(model.methods());
         var routeEntries = routeConfig.routes()
                                       .entrySet()
@@ -292,9 +408,26 @@ public class RouteSourceGenerator {
                                       sliceElement);
                 continue;
             }
-            var paramCount = routeDsl.pathParams()
-                                     .size() + routeDsl.queryParams()
-                                                      .size() + (isBodyMethod(routeDsl.method())
+            // withPath elements = real path params + interleaved static spacers; the runtime
+            // withPath overloads top out at MAX_PARAMS elements. Count spacers here so an
+            // interleaved/trailing static segment cannot silently overflow the builder arity.
+            var withPathElements = (int) routeDsl.pathSegments()
+                                                 .stream()
+                                                 .filter(s -> s instanceof RouteDsl.PathSegment.Param
+                                                              || s instanceof RouteDsl.PathSegment.Static)
+                                                 .count();
+            if (withPathElements > MAX_PARAMS) {
+                var routesToml = model.packageName().replace('.', '/') + "/routes.toml";
+                messager.printMessage(Diagnostic.Kind.ERROR,
+                                      "Route '" + handlerName + "' in slice '" + model.simpleName()
+                                      + "' declares " + withPathElements + " path segments (parameters + static"
+                                      + " spacers), but withPath supports at most " + MAX_PARAMS
+                                      + " (check routes.toml: " + routesToml + ")",
+                                      sliceElement);
+                continue;
+            }
+            var paramCount = withPathElements + routeDsl.queryParams()
+                                                        .size() + (isBodyMethod(routeDsl.method())
                                                                  ? 1
                                                                  : 0);
             if (paramCount > MAX_PARAMS) {
@@ -321,10 +454,59 @@ public class RouteSourceGenerator {
                                                      method,
                                                      hasMore,
                                                      routeConfig,
-                                                     handlerName));
+                                                     handlerName,
+                                                     sliceElement));
         }
+        // #198 deploy-either-way (§7): routes() returns UN-mounted routes (bare path + version
+        // metadata via .versioned(N)). The {apiPrefix}/v{N}/ (path mode) or bare {apiPrefix}/ (header
+        // mode) composition is applied by the registration consumer (SliceRouter / RouteMounting) at
+        // deploy time, so the same compiled slice serves either mode. Unversioned slices are unaffected.
         out.println("        );");
         out.println("    }");
+    }
+
+    /// Generate the `versionRegistry()` override (#198 §6.4) carrying the version-agnostic
+    /// `apiPrefix`, the `requireVersionHeader` flag, the `defaultIfMissing` version (if any), and
+    /// per-version `deprecated`/`sunset` metadata. The runtime uses this to compose the mounted path
+    /// (path mode, the default) or select the version from a header (header mode, a later step).
+    private void generateVersionRegistryMethod(PrintWriter out, RouteConfig routeConfig) {
+        var versions = new ArrayList<>(routeConfig.versions().values());
+        var defaultVersion = Option.from(versions.stream()
+                                                      .filter(VersionConfig::defaultIfMissing)
+                                                      .map(VersionConfig::version)
+                                                      .findFirst());
+        out.println("    @Override");
+        out.println("    public SliceVersionRegistry versionRegistry() {");
+        out.println("        return SliceVersionRegistry.sliceVersionRegistry(\""
+                    + escapeJavaString(routeConfig.apiPrefix()) + "\",");
+        out.println("                                                        " + routeConfig.requireVersionHeader()
+                    + ",");
+        out.println("                                                        " + defaultVersionExpr(defaultVersion)
+                    + ",");
+        out.println("                                                        List.of(" + versionInfoList(versions)
+                    + "));");
+        out.println("    }");
+    }
+
+    private String defaultVersionExpr(Option<Integer> defaultVersion) {
+        return defaultVersion.map(v -> "Option.some(" + v + ")")
+                             .or("Option.none()");
+    }
+
+    private String versionInfoList(List<VersionConfig> versions) {
+        return versions.stream()
+                       .map(this::versionInfoExpr)
+                       .collect(Collectors.joining(", "));
+    }
+
+    private String versionInfoExpr(VersionConfig version) {
+        return "SliceVersionRegistry.VersionInfo.versionInfo(" + version.version() + ", " + version.deprecated()
+               + ", " + sunsetExpr(version.sunset()) + ")";
+    }
+
+    private String sunsetExpr(Option<String> sunset) {
+        return sunset.map(s -> "Option.some(\"" + escapeJavaString(s) + "\")")
+                     .or("Option.<String>none()");
     }
 
     private void warnOnDuplicateRoutes(RouteConfig routeConfig, SliceModel model, TypeElement sliceElement) {
@@ -332,9 +514,7 @@ public class RouteSourceGenerator {
         for (var entry : routeConfig.routes().entrySet()) {
             var handlerName = entry.getKey();
             var routeDsl = entry.getValue();
-            var fullPath = routeConfig.prefix().isEmpty()
-                           ? routeDsl.pathTemplate()
-                           : routeConfig.prefix() + routeDsl.pathTemplate();
+            var fullPath = duplicateCheckPath(routeConfig, handlerName, routeDsl);
             var identity = routeDsl.method() + " " + fullPath;
             routesByIdentity.computeIfAbsent(identity, _ -> new ArrayList<>()).add(handlerName);
         }
@@ -349,6 +529,19 @@ public class RouteSourceGenerator {
         }
     }
 
+    /// The effective mounted path used for overlap detection. Versioned routes compose the same
+    /// `{apiPrefix}/v{N}/{path}` they get at registration time, so distinct versions of the same
+    /// bind key do not falsely register as overlapping; unversioned routes use `{prefix}/{path}`.
+    private String duplicateCheckPath(RouteConfig routeConfig, String handlerName, RouteDsl routeDsl) {
+        var version = routeConfig.routeVersion(handlerName);
+        if (version > 0) {
+            return routeConfig.apiPrefix() + "/v" + version + routeDsl.pathTemplate();
+        }
+        return routeConfig.prefix().isEmpty()
+               ? routeDsl.pathTemplate()
+               : routeConfig.prefix() + routeDsl.pathTemplate();
+    }
+
     private Map<String, MethodModel> buildMethodMap(List<MethodModel> methods) {
         return methods.stream()
                       .collect(Collectors.toMap(MethodModel::name, m -> m));
@@ -360,11 +553,16 @@ public class RouteSourceGenerator {
                                MethodModel method,
                                boolean hasMore,
                                RouteConfig routeConfig,
-                               String handlerName) {
+                               String handlerName,
+                               TypeElement sliceElement) {
+        validateMediaTypes(routeDsl, method, sliceElement);
         var routePath = routeDsl.hasPathParams()
                        ? routeDsl.basePath()
                        : routeDsl.cleanPath();
-        var rawPath = prefix.isEmpty()
+        var version = routeConfig.routeVersion(handlerName);
+        // Versioned routes keep the un-versioned path; the {apiPrefix}/v{N}/ mount is composed at
+        // registration time in routes(). Unversioned routes bake the prefix into the path as before.
+        var rawPath = version > 0 || prefix.isEmpty()
                       ? routePath
                       : prefix + routePath;
         var fullPath = escapeJavaString(rawPath);
@@ -379,26 +577,101 @@ public class RouteSourceGenerator {
                     ? ","
                     : "";
         var security = securityExpression(routeConfig, handlerName);
+        var trailer = versionedTrailer(version) + outputCall(routeDsl) + comma;
         var hasPath = routeDsl.hasPathParams();
         var hasQuery = routeDsl.hasQueryParams();
         var hasBody = isBodyMethod(routeDsl.method());
+        // #397 §4.2: value-object path/query segments (a component whose type exposes
+        // `valueMapping()`) compose the framework String->P parser with the VO's `lift`; keyed by
+        // request-record component name so path/query arg emission can look each one up.
+        var voBindings = voBindings(method, routeDsl, sliceElement);
         if (hasPath && hasQuery && hasBody) {
-            generatePathQueryBodyRoute(out, fullPath, httpMethod, responseType, parameterType, routeDsl, method, comma, security);
+            generatePathQueryBodyRoute(out, fullPath, httpMethod, responseType, parameterType, routeDsl, method, trailer, security, voBindings);
         } else if (hasPath && hasBody) {
-            generatePathBodyRoute(out, fullPath, httpMethod, responseType, parameterType, routeDsl, method, comma, security);
+            generatePathBodyRoute(out, fullPath, httpMethod, responseType, parameterType, routeDsl, method, trailer, security, voBindings);
         } else if (hasQuery && hasBody) {
-            generateQueryBodyRoute(out, fullPath, httpMethod, responseType, parameterType, routeDsl, method, comma, security);
+            generateQueryBodyRoute(out, fullPath, httpMethod, responseType, parameterType, routeDsl, method, trailer, security, voBindings);
         } else if (hasPath && hasQuery) {
-            generatePathQueryRoute(out, fullPath, httpMethod, responseType, routeDsl, method, comma, security);
+            generatePathQueryRoute(out, fullPath, httpMethod, responseType, routeDsl, method, trailer, security, voBindings);
         } else if (hasPath) {
-            generatePathRoute(out, fullPath, httpMethod, responseType, routeDsl, method, comma, security);
+            generatePathRoute(out, fullPath, httpMethod, responseType, routeDsl, method, trailer, security, voBindings);
         } else if (hasQuery) {
-            generateQueryRoute(out, fullPath, httpMethod, responseType, routeDsl, method, comma, security);
+            generateQueryRoute(out, fullPath, httpMethod, responseType, routeDsl, method, trailer, security, voBindings);
         } else if (hasBody) {
-            generateBodyRoute(out, fullPath, httpMethod, responseType, parameterType, method, comma, security);
+            generateBodyRoute(out, fullPath, httpMethod, responseType, parameterType, routeDsl, method, trailer, security);
         } else {
-            generateNoParamsRoute(out, fullPath, httpMethod, responseType, method, comma, security);
+            generateNoParamsRoute(out, fullPath, httpMethod, responseType, routeDsl, method, trailer, security);
         }
+    }
+
+    /// Resolve the value-object bindings for a route method's path/query parameters (#397 §4.2):
+    /// parameter name -> its `ValueMapping` binding, for path/query params whose request-record
+    /// component type declares `valueMapping()` and whose primitive `P` is HTTP-bindable. Only path
+    /// and query parameter names are considered — body-bound value-object fields are handled by the
+    /// JSON layer and are never validated here. A value-object path/query param whose `P` is not in
+    /// [#VO_PRIMITIVE_PARSER] is reported as a compile error and excluded (§5).
+    private Map<String, ValueMappingResolver.Binding> voBindings(MethodModel method,
+                                                                 RouteDsl routeDsl,
+                                                                 TypeElement sliceElement) {
+        var pathQueryNames = pathQueryParamNames(routeDsl);
+        if (pathQueryNames.isEmpty()) {
+            return Map.of();
+        }
+        var components = requestRecordType(method).map(ValueMappingResolver::resolveRecordComponents)
+                                                  .or(Map.of());
+        var supported = new HashMap<String, ValueMappingResolver.Binding>();
+        for (var entry : components.entrySet()) {
+            if (pathQueryNames.contains(entry.getKey())) {
+                classifyVoBinding(entry.getKey(), entry.getValue(), supported, method, sliceElement);
+            }
+        }
+        return supported;
+    }
+
+    /// The union of path and query parameter names declared by a route.
+    private Set<String> pathQueryParamNames(RouteDsl routeDsl) {
+        var names = new HashSet<String>();
+        routeDsl.pathParams().forEach(p -> names.add(p.name()));
+        routeDsl.queryParams().forEach(q -> names.add(q.name()));
+        return names;
+    }
+
+    private void classifyVoBinding(String componentName,
+                                   ValueMappingResolver.Binding binding,
+                                   Map<String, ValueMappingResolver.Binding> supported,
+                                   MethodModel method,
+                                   TypeElement sliceElement) {
+        if (VO_PRIMITIVE_PARSER.containsKey(binding.pTypeName())) {
+            supported.put(componentName, binding);
+        } else {
+            messager.printMessage(Diagnostic.Kind.ERROR,
+                                  "Value object '" + binding.voQualifiedName() + "' bound to path/query parameter '"
+                                  + componentName + "' of slice method '" + method.name() + "' maps to primitive '"
+                                  + binding.pTypeName() + "', which has no HTTP path/query parser. Supported primitives: "
+                                  + VO_PRIMITIVE_PARSER.keySet() + ". Use a supported primitive or bind a raw type.",
+                                  sliceElement);
+        }
+    }
+
+    /// The single request-record parameter type of a route method (the business parameter when
+    /// security params are present), or empty for methods that carry no single request record.
+    private Option<TypeMirror> requestRecordType(MethodModel method) {
+        if (method.hasSecurityParams()) {
+            return method.businessParameters().size() == 1
+                   ? Option.some(method.businessParameterType())
+                   : Option.none();
+        }
+        return method.hasSingleParam()
+               ? Option.some(method.parameterType())
+               : Option.none();
+    }
+
+    /// The `.versioned(N)` call to tag a versioned route, or empty string for an unversioned route
+    /// (keeps unversioned generated output byte-identical).
+    private String versionedTrailer(int version) {
+        return version > 0
+               ? ".versioned(" + version + ")"
+               : "";
     }
 
     private String securityExpression(RouteConfig routeConfig, String handlerName) {
@@ -407,6 +680,52 @@ public class RouteSourceGenerator {
             case RouteSecurityLevel.Public _ -> "SecurityPolicy.publicRoute()";
             case RouteSecurityLevel.Authenticated _ -> "SecurityPolicy.authenticated()";
             case RouteSecurityLevel.Role(var name) -> "SecurityPolicy.roleRequired(\"" + escapeJavaString(name) + "\")";
+        };
+    }
+
+    /// Decision D3: strict compile-time validation of declared `produces`/`consumes` media types
+    /// against the method's Java response/parameter types. Reports hard errors via the messager.
+    /// Delegates the type rules to [MediaTypeTypeChecker] (pure + unit-tested).
+    private void validateMediaTypes(RouteDsl routeDsl, MethodModel method, TypeElement sliceElement) {
+        MediaTypeTypeChecker.checkProduces(routeDsl.produces().category(),
+                                           method.responseType().toString(),
+                                           method.name())
+                            .onPresent(msg -> messager.printMessage(Diagnostic.Kind.ERROR, msg, sliceElement));
+        if (isBodyMethod(routeDsl.method())) {
+            MediaTypeTypeChecker.checkConsumes(routeDsl.consumes().category(),
+                                               consumesParameterType(method),
+                                               method.name())
+                                .onPresent(msg -> messager.printMessage(Diagnostic.Kind.ERROR, msg, sliceElement));
+        }
+    }
+
+    /// Resolve the parameter type used for `consumes` validation, preferring the business
+    /// parameter type when security params are present.
+    private String consumesParameterType(MethodModel method) {
+        if (method.hasSecurityParams()) {
+            var biz = method.businessParameters();
+            return biz.size() == 1 ? biz.getFirst().type().toString() : "";
+        }
+        return method.parameters().isEmpty() ? "" : method.parameterType().toString();
+    }
+
+    /// The output media-type call to emit: `.asJson()` for JSON (byte-identical back-compat),
+    /// otherwise `.as(<producesExpression>)`.
+    private String outputCall(RouteDsl routeDsl) {
+        return routeDsl.produces().isJson()
+               ? ".asJson()"
+               : ".as(" + routeDsl.produces().emitExpression() + ")";
+    }
+
+    /// The request-body binding line to emit for body methods, selected by the `consumes` category.
+    /// JSON keeps `.withBody(new TypeToken<...>(){})`; TEXT/HTML/XML → `.withStringBody()`;
+    /// BINARY → `.withByteBody()`; MULTIPART → `.withMultipartBody()`.
+    private String bodyBindingCall(RouteDsl routeDsl, String parameterType) {
+        return switch (routeDsl.consumes().category()) {
+            case "TEXT", "HTML", "XML" -> ".withStringBody()";
+            case "BINARY" -> ".withByteBody()";
+            case "MULTIPART" -> ".withMultipartBody()";
+            default -> ".withBody(new TypeToken<" + parameterType + ">() {})";
         };
     }
 
@@ -473,8 +792,9 @@ public class RouteSourceGenerator {
                                        String path,
                                        String httpMethod,
                                        String responseType,
+                                       RouteDsl routeDsl,
                                        MethodModel method,
-                                       String comma,
+                                       String trailer,
                                        String security) {
         out.println("            Route.<" + responseType + ">" + httpMethod + "(\"" + path + "\")");
         out.println("                 .withoutParameters()");
@@ -486,7 +806,7 @@ public class RouteSourceGenerator {
         } else {
             out.println("                 .to(_ -> delegate." + method.name() + "(new " + method.parameterType() + "()))");
         }
-        out.println("                 .named(\"" + method.name() + "\").withSecurity(" + security + ").asJson()" + comma);
+        out.println("                 .named(\"" + method.name() + "\").withSecurity(" + security + ")" + trailer);
     }
 
     private void generatePathRoute(PrintWriter out,
@@ -495,32 +815,34 @@ public class RouteSourceGenerator {
                                    String responseType,
                                    RouteDsl routeDsl,
                                    MethodModel method,
-                                   String comma,
-                                   String security) {
+                                   String trailer,
+                                   String security,
+                                   Map<String, ValueMappingResolver.Binding> voBindings) {
         var pathParams = routeDsl.pathParams();
         var parameterType = method.hasSecurityParams()
                             ? method.businessParameterType().toString()
                             : method.parameterType().toString();
         out.print("            Route.<" + responseType + ">" + httpMethod + "(\"" + path + "\")");
         out.println();
-        out.println("                 .withPath(" + pathParamList(pathParams) + ")");
-        var paramNames = pathParams.stream()
-                                   .map(PathParam::name)
-                                   .toList();
-        var paramList = String.join(", ", paramNames);
-        var handler = pathParams.size() == 1
-                      ? paramList + " -> "
-                      : "(" + paramList + ") -> ";
+        out.println("                 .withPath(" + withPathArgs(routeDsl, voBindings) + ")");
+        // Lambda binds every withPath element (spacers -> `_`); the constructor binds real params only.
+        var lambdaNames = withPathLambdaNames(routeDsl);
+        var constructorArgs = pathParams.stream()
+                                        .map(PathParam::name)
+                                        .collect(Collectors.joining(", "));
+        var handler = lambdaNames.size() == 1
+                      ? String.join(", ", lambdaNames) + " -> "
+                      : "(" + String.join(", ", lambdaNames) + ") -> ";
         if (method.hasSecurityParams()) {
-            var constructorExpr = "new " + parameterType + "(" + paramList + ")";
+            var constructorExpr = "new " + parameterType + "(" + constructorArgs + ")";
             var bizParam = method.businessParameters().getFirst();
             var delegateCall = delegateCallWithSecurity(method, Map.of(bizParam.name(), constructorExpr));
             generateSecurityLambda(out, handler, delegateCall);
         } else {
-            out.println("                 .to(" + handler + "delegate." + method.name() + "(new " + parameterType + "(" + paramList
+            out.println("                 .to(" + handler + "delegate." + method.name() + "(new " + parameterType + "(" + constructorArgs
                         + ")))");
         }
-        out.println("                 .named(\"" + method.name() + "\").withSecurity(" + security + ").asJson()" + comma);
+        out.println("                 .named(\"" + method.name() + "\").withSecurity(" + security + ")" + trailer);
     }
 
     private void generateQueryRoute(PrintWriter out,
@@ -529,15 +851,16 @@ public class RouteSourceGenerator {
                                     String responseType,
                                     RouteDsl routeDsl,
                                     MethodModel method,
-                                    String comma,
-                                    String security) {
+                                    String trailer,
+                                    String security,
+                                    Map<String, ValueMappingResolver.Binding> voBindings) {
         var queryParams = routeDsl.queryParams();
         var parameterType = method.hasSecurityParams()
                             ? method.businessParameterType().toString()
                             : method.parameterType().toString();
         out.print("            Route.<" + responseType + ">" + httpMethod + "(\"" + path + "\")");
         out.println();
-        out.println("                 .withQuery(" + queryParamList(queryParams) + ")");
+        out.println("                 .withQuery(" + queryParamList(queryParams, voBindings) + ")");
         var paramNames = queryParams.stream()
                                     .map(QueryParam::name)
                                     .toList();
@@ -557,7 +880,7 @@ public class RouteSourceGenerator {
             out.println("                 .to(" + handler + "delegate." + method.name() + "(new " + parameterType
                         + "(" + constructorArgs + ")))");
         }
-        out.println("                 .named(\"" + method.name() + "\").withSecurity(" + security + ").asJson()" + comma);
+        out.println("                 .named(\"" + method.name() + "\").withSecurity(" + security + ")" + trailer);
     }
 
     private void generateBodyRoute(PrintWriter out,
@@ -565,11 +888,12 @@ public class RouteSourceGenerator {
                                    String httpMethod,
                                    String responseType,
                                    String parameterType,
+                                   RouteDsl routeDsl,
                                    MethodModel method,
-                                   String comma,
+                                   String trailer,
                                    String security) {
         out.println("            Route.<" + responseType + ">" + httpMethod + "(\"" + path + "\")");
-        out.println("                 .withBody(new TypeToken<" + parameterType + ">() {})");
+        out.println("                 " + bodyBindingCall(routeDsl, parameterType));
         if (method.hasSecurityParams()) {
             var bizParam = method.businessParameters().getFirst();
             var delegateCall = delegateCallWithSecurity(method, Map.of(bizParam.name(), "request"));
@@ -577,7 +901,7 @@ public class RouteSourceGenerator {
         } else {
             out.println("                 .to(request -> delegate." + method.name() + "(request))");
         }
-        out.println("                 .named(\"" + method.name() + "\").withSecurity(" + security + ").asJson()" + comma);
+        out.println("                 .named(\"" + method.name() + "\").withSecurity(" + security + ")" + trailer);
     }
 
     private void generatePathBodyRoute(PrintWriter out,
@@ -587,19 +911,21 @@ public class RouteSourceGenerator {
                                        String parameterType,
                                        RouteDsl routeDsl,
                                        MethodModel method,
-                                       String comma,
-                                       String security) {
+                                       String trailer,
+                                       String security,
+                                       Map<String, ValueMappingResolver.Binding> voBindings) {
         var pathParams = routeDsl.pathParams();
         out.print("            Route.<" + responseType + ">" + httpMethod + "(\"" + path + "\")");
         out.println();
-        out.println("                 .withPath(" + pathParamList(pathParams) + ")");
-        out.println("                 .withBody(new TypeToken<" + parameterType + ">() {})");
+        out.println("                 .withPath(" + withPathArgs(routeDsl, voBindings) + ")");
+        out.println("                 " + bodyBindingCall(routeDsl, parameterType));
         var pathParamNames = pathParams.stream()
                                        .map(PathParam::name)
                                        .toList();
-        var allParams = new ArrayList<>(pathParamNames);
-        allParams.add("body");
-        var handlerParams = String.join(", ", allParams);
+        // Lambda interleaves spacer slots (`_`); only real path params feed the merged constructor.
+        var lambdaArgs = new ArrayList<>(withPathLambdaNames(routeDsl));
+        lambdaArgs.add("body");
+        var handlerParams = String.join(", ", lambdaArgs);
         var constructorExpr = buildMergedConstructorExpr(parameterType, method, pathParamNames, List.of());
         if (method.hasSecurityParams()) {
             var bizParam = method.businessParameters().getFirst();
@@ -608,7 +934,7 @@ public class RouteSourceGenerator {
         } else {
             out.println("                 .to((" + handlerParams + ") -> delegate." + method.name() + "(" + constructorExpr + "))");
         }
-        out.println("                 .named(\"" + method.name() + "\").withSecurity(" + security + ").asJson()" + comma);
+        out.println("                 .named(\"" + method.name() + "\").withSecurity(" + security + ")" + trailer);
     }
 
     private void generateQueryBodyRoute(PrintWriter out,
@@ -618,13 +944,14 @@ public class RouteSourceGenerator {
                                         String parameterType,
                                         RouteDsl routeDsl,
                                         MethodModel method,
-                                        String comma,
-                                        String security) {
+                                        String trailer,
+                                        String security,
+                                        Map<String, ValueMappingResolver.Binding> voBindings) {
         var queryParams = routeDsl.queryParams();
         out.print("            Route.<" + responseType + ">" + httpMethod + "(\"" + path + "\")");
         out.println();
-        out.println("                 .withQuery(" + queryParamList(queryParams) + ")");
-        out.println("                 .withBody(new TypeToken<" + parameterType + ">() {})");
+        out.println("                 .withQuery(" + queryParamList(queryParams, voBindings) + ")");
+        out.println("                 " + bodyBindingCall(routeDsl, parameterType));
         var queryParamNames = queryParams.stream()
                                          .map(QueryParam::name)
                                          .toList();
@@ -639,7 +966,7 @@ public class RouteSourceGenerator {
         } else {
             out.println("                 .to((" + handlerParams + ") -> delegate." + method.name() + "(" + constructorExpr + "))");
         }
-        out.println("                 .named(\"" + method.name() + "\").withSecurity(" + security + ").asJson()" + comma);
+        out.println("                 .named(\"" + method.name() + "\").withSecurity(" + security + ")" + trailer);
     }
 
     private void generatePathQueryRoute(PrintWriter out,
@@ -648,8 +975,9 @@ public class RouteSourceGenerator {
                                         String responseType,
                                         RouteDsl routeDsl,
                                         MethodModel method,
-                                        String comma,
-                                        String security) {
+                                        String trailer,
+                                        String security,
+                                        Map<String, ValueMappingResolver.Binding> voBindings) {
         var pathParams = routeDsl.pathParams();
         var queryParams = routeDsl.queryParams();
         var parameterType = method.hasSecurityParams()
@@ -657,18 +985,22 @@ public class RouteSourceGenerator {
                             : method.parameterType().toString();
         out.print("            Route.<" + responseType + ">" + httpMethod + "(\"" + path + "\")");
         out.println();
-        out.println("                 .withPath(" + pathParamList(pathParams) + ")");
-        out.println("                 .withQuery(" + queryParamList(queryParams) + ")");
+        out.println("                 .withPath(" + withPathArgs(routeDsl, voBindings) + ")");
+        out.println("                 .withQuery(" + queryParamList(queryParams, voBindings) + ")");
         var pathParamNames = pathParams.stream()
                                        .map(PathParam::name)
                                        .toList();
         var queryParamNames = queryParams.stream()
                                          .map(QueryParam::name)
                                          .toList();
-        var allParams = new ArrayList<>(pathParamNames);
-        allParams.addAll(queryParamNames);
-        var handlerParams = String.join(", ", allParams);
-        var constructorArgs = String.join(", ", allParams);
+        // Lambda interleaves spacer slots (`_`) among path elements, then appends query params.
+        var lambdaArgs = new ArrayList<>(withPathLambdaNames(routeDsl));
+        lambdaArgs.addAll(queryParamNames);
+        var handlerParams = String.join(", ", lambdaArgs);
+        // Constructor binds real path params + query params only (no spacer slots).
+        var constructorBindings = new ArrayList<>(pathParamNames);
+        constructorBindings.addAll(queryParamNames);
+        var constructorArgs = String.join(", ", constructorBindings);
         if (method.hasSecurityParams()) {
             var constructorExpr = "new " + parameterType + "(" + constructorArgs + ")";
             var bizParam = method.businessParameters().getFirst();
@@ -678,7 +1010,7 @@ public class RouteSourceGenerator {
             out.println("                 .to((" + handlerParams + ") -> delegate." + method.name() + "(new " + parameterType
                         + "(" + constructorArgs + ")))");
         }
-        out.println("                 .named(\"" + method.name() + "\").withSecurity(" + security + ").asJson()" + comma);
+        out.println("                 .named(\"" + method.name() + "\").withSecurity(" + security + ")" + trailer);
     }
 
     private void generatePathQueryBodyRoute(PrintWriter out,
@@ -688,25 +1020,27 @@ public class RouteSourceGenerator {
                                             String parameterType,
                                             RouteDsl routeDsl,
                                             MethodModel method,
-                                            String comma,
-                                            String security) {
+                                            String trailer,
+                                            String security,
+                                            Map<String, ValueMappingResolver.Binding> voBindings) {
         var pathParams = routeDsl.pathParams();
         var queryParams = routeDsl.queryParams();
         out.print("            Route.<" + responseType + ">" + httpMethod + "(\"" + path + "\")");
         out.println();
-        out.println("                 .withPath(" + pathParamList(pathParams) + ")");
-        out.println("                 .withQuery(" + queryParamList(queryParams) + ")");
-        out.println("                 .withBody(new TypeToken<" + parameterType + ">() {})");
+        out.println("                 .withPath(" + withPathArgs(routeDsl, voBindings) + ")");
+        out.println("                 .withQuery(" + queryParamList(queryParams, voBindings) + ")");
+        out.println("                 " + bodyBindingCall(routeDsl, parameterType));
         var pathParamNames = pathParams.stream()
                                        .map(PathParam::name)
                                        .toList();
         var queryParamNames = queryParams.stream()
                                          .map(QueryParam::name)
                                          .toList();
-        var allParams = new ArrayList<>(pathParamNames);
-        allParams.addAll(queryParamNames);
-        allParams.add("body");
-        var handlerParams = String.join(", ", allParams);
+        // Lambda interleaves spacer slots (`_`) among path elements, then query params, then body.
+        var lambdaArgs = new ArrayList<>(withPathLambdaNames(routeDsl));
+        lambdaArgs.addAll(queryParamNames);
+        lambdaArgs.add("body");
+        var handlerParams = String.join(", ", lambdaArgs);
         var constructorExpr = buildMergedConstructorExpr(parameterType, method, pathParamNames, queryParamNames);
         if (method.hasSecurityParams()) {
             var bizParam = method.businessParameters().getFirst();
@@ -715,7 +1049,7 @@ public class RouteSourceGenerator {
         } else {
             out.println("                 .to((" + handlerParams + ") -> delegate." + method.name() + "(" + constructorExpr + "))");
         }
-        out.println("                 .named(\"" + method.name() + "\").withSecurity(" + security + ").asJson()" + comma);
+        out.println("                 .named(\"" + method.name() + "\").withSecurity(" + security + ")" + trailer);
     }
 
     /// Build a constructor expression that merges path/query lambda args with body record fields.
@@ -767,17 +1101,71 @@ public class RouteSourceGenerator {
         return "new " + parameterType + "(" + args + ")";
     }
 
-    private String pathParamList(List<PathParam> pathParams) {
-        return pathParams.stream()
-                         .map(p -> "PathParameter." + typeToPathParameter(p.type()) + "()")
-                         .collect(Collectors.joining(", "));
+    /// Emit the `.withPath(...)` argument list interleaving real path parameters with static
+    /// segments in path order. Real params become typed `PathParameter.aXxx()` calls; static
+    /// segments become `PathParameter.spacer("seg")`. This is the full interleaved path — nothing
+    /// after the first parameter is dropped.
+    private String withPathArgs(RouteDsl routeDsl, Map<String, ValueMappingResolver.Binding> voBindings) {
+        return routeDsl.pathSegments()
+                       .stream()
+                       .map(segment -> segmentArg(segment, voBindings))
+                       .collect(Collectors.joining(", "));
     }
 
-    private String queryParamList(List<QueryParam> queryParams) {
+    private String segmentArg(RouteDsl.PathSegment segment, Map<String, ValueMappingResolver.Binding> voBindings) {
+        return switch (segment) {
+            case RouteDsl.PathSegment.Param(var param) -> pathParamArg(param, voBindings);
+            case RouteDsl.PathSegment.Static(var text) ->
+                    "PathParameter.spacer(\"" + escapeJavaString(text) + "\")";
+        };
+    }
+
+    /// The `PathParameter` factory call for a single path parameter. A value-object parameter (its
+    /// request-record component declares `valueMapping()`) composes the framework `String -> P`
+    /// parser with the value object's `lift` (#397 §4.2); a raw parameter keeps the JDK-type factory.
+    private String pathParamArg(PathParam param, Map<String, ValueMappingResolver.Binding> voBindings) {
+        var binding = voBindings.get(param.name());
+        if (binding == null) {
+            return "PathParameter." + typeToPathParameter(param.type()) + "()";
+        }
+        return "PathParameter." + VO_PRIMITIVE_PARSER.get(binding.pTypeName()) + "().mapped("
+               + binding.voQualifiedName() + ".valueMapping().lift())";
+    }
+
+    /// The lambda parameter names matching the `.withPath(...)` arity, in path order: each real path
+    /// parameter binds to its name; each static spacer occupies a positional slot bound to `_`
+    /// (consumed by the router, never passed to the handler).
+    private List<String> withPathLambdaNames(RouteDsl routeDsl) {
+        return routeDsl.pathSegments()
+                       .stream()
+                       .map(this::segmentLambdaName)
+                       .toList();
+    }
+
+    private String segmentLambdaName(RouteDsl.PathSegment segment) {
+        return switch (segment) {
+            case RouteDsl.PathSegment.Param(var param) -> param.name();
+            case RouteDsl.PathSegment.Static _ -> "_";
+        };
+    }
+
+    private String queryParamList(List<QueryParam> queryParams, Map<String, ValueMappingResolver.Binding> voBindings) {
         return queryParams.stream()
-                          .map(q -> "QueryParameter." + typeToQueryParameter(q.type()) + "(\"" + escapeJavaString(q.name())
-                                    + "\")")
+                          .map(q -> queryParamArg(q, voBindings))
                           .collect(Collectors.joining(", "));
+    }
+
+    /// The `QueryParameter` factory call for a single query parameter. A value-object parameter (its
+    /// request-record component declares `valueMapping()`) composes the framework `String -> P`
+    /// parser with the value object's `lift` (#397 §4.2); a raw parameter keeps the JDK-type factory.
+    private String queryParamArg(QueryParam q, Map<String, ValueMappingResolver.Binding> voBindings) {
+        var binding = voBindings.get(q.name());
+        var name = "\"" + escapeJavaString(q.name()) + "\"";
+        if (binding == null) {
+            return "QueryParameter." + typeToQueryParameter(q.type()) + "(" + name + ")";
+        }
+        return "QueryParameter." + VO_PRIMITIVE_PARSER.get(binding.pTypeName()) + "(" + name + ").mapped("
+               + binding.voQualifiedName() + ".valueMapping().lift())";
     }
 
     private void generateErrorMapperMethod(PrintWriter out, List<ErrorTypeMapping> errorMappings) {

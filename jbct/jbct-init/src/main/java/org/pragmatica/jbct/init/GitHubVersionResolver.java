@@ -3,6 +3,8 @@ package org.pragmatica.jbct.init;
 import org.pragmatica.http.HttpOperations;
 import org.pragmatica.http.HttpResult;
 import org.pragmatica.jbct.shared.HttpClients;
+import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.parse.Number;
@@ -20,9 +22,17 @@ import java.util.regex.Pattern;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-/// Resolves latest version from the pragmatica monorepo GitHub Releases.
-/// All components (pragmatica-lite, aether, jbct) share the same version.
-/// Caches results for 24 hours to avoid excessive API calls.
+/// Resolves the platform version used to scaffold new projects.
+/// All components (pragmatica-lite, aether, jbct) share the same monorepo version.
+///
+/// Resolution order: latest GitHub release -> the resolver's own embedded build version
+/// (self-derived) -> a fail-loud [Result] failure carrying an actionable message. Successful
+/// GitHub lookups are cached for 24 hours to avoid excessive API calls.
+///
+/// The embedded version is injected at build time into `jbct-init-build.properties` via Maven
+/// resource filtering, mirroring the slice-processor #403 staleness guard ([org.pragmatica.jbct.slice.BuildInfo]).
+/// Self-derivation replaces a hand-maintained default constant, so the offline fallback can never
+/// silently go stale: it is always the version of the running binary itself.
 public final class GitHubVersionResolver {
     private static final Logger log = LoggerFactory.getLogger(GitHubVersionResolver.class);
     private static final Path CACHE_FILE = Path.of(System.getProperty("user.home"),
@@ -35,39 +45,50 @@ public final class GitHubVersionResolver {
     private static final Pattern TAG_PATTERN = Pattern.compile("\"tag_name\"\\s*:\\s*\"v?([^\"]+)\"");
     private static final Duration API_TIMEOUT = Duration.ofSeconds(10);
 
-    // All components share the same version from the pragmatica monorepo
-    private static final String REPO_OWNER = "siy";
+    // All components share the same version from the pragmatica monorepo.
+    private static final String REPO_OWNER = "pragmaticalabs";
     private static final String REPO_NAME = "pragmatica";
-    private static final String DEFAULT_VERSION = "0.20.0";
+    private static final String CACHE_KEY = REPO_OWNER + "/" + REPO_NAME;
+    private static final String TIMESTAMP_KEY = CACHE_KEY + ".timestamp";
 
-    // Running binary version (loaded from jbct-version.properties)
-    private static final String RUNNING_JBCT_VERSION = loadRunningVersion();
+    // Reported by the String accessors when even the embedded version is unavailable (mirrors
+    // slice-processor BuildInfo#UNKNOWN). Real builds always carry a filtered embedded version;
+    // the fail-loud path lives in resolveMonorepoVersion().
+    private static final String UNKNOWN = "unknown";
+    private static final String BUILD_RESOURCE = "/jbct-init-build.properties";
+
+    // Own build version, injected via the filtered build resource. Absent only when the resource is
+    // missing or its placeholder was not filtered (an unpackaged/corrupt classpath).
+    private static final Option<String> EMBEDDED_VERSION = loadEmbeddedVersion();
+
+    // Actionable failure for the both-lookups-failed case: never guess a version, tell the user
+    // which flag to pass (see InitCommand). Carries no version literal, so version-sweep ignores it.
+    private static final Cause UNRESOLVABLE_VERSION = Causes.cause(
+        "Unable to resolve the platform version: the GitHub release lookup failed and no embedded "
+        + "build version is available. Re-run with an explicit version, e.g. "
+        + "`jbct init --version <X.Y.Z>` (or --pragmatica-version / --aether-version / --jbct-version).");
 
     private final HttpOperations http;
     private final Properties cache;
-    private volatile String resolvedVersion;
+    private final Option<String> selfVersion;
+    private volatile Option<String> resolvedVersion = Option.none();
 
-    private static String loadRunningVersion() {
-        var props = new Properties();
-        try (var is = GitHubVersionResolver.class.getResourceAsStream("/jbct-version.properties")) {
-            if (is != null) {
-                props.load(is);
-                return props.getProperty("version", DEFAULT_VERSION);
-            }
-        } catch (IOException e) {
-            log.debug("Failed to load jbct-version.properties: {}", e.getMessage());
-        }
-        return DEFAULT_VERSION;
-    }
-
-    private GitHubVersionResolver(HttpOperations http) {
+    private GitHubVersionResolver(HttpOperations http, Properties cache, Option<String> selfVersion) {
         this.http = http;
-        this.cache = loadCache();
+        this.cache = cache;
+        this.selfVersion = selfVersion;
     }
 
-    /// Create a new version resolver.
+    /// Create a new version resolver backed by the shared HTTP client and the embedded build version.
     public static GitHubVersionResolver gitHubVersionResolver() {
-        return new GitHubVersionResolver(HttpClients.httpOperations());
+        return new GitHubVersionResolver(HttpClients.httpOperations(), loadCache(), EMBEDDED_VERSION);
+    }
+
+    // Test seam: inject the HTTP client, cache, and self-derived version.
+    static GitHubVersionResolver gitHubVersionResolver(HttpOperations http,
+                                                       Properties cache,
+                                                       Option<String> selfVersion) {
+        return new GitHubVersionResolver(http, cache, selfVersion);
     }
 
     /// Get latest pragmatica-lite version.
@@ -81,33 +102,44 @@ public final class GitHubVersionResolver {
     }
 
     /// Get latest jbct-cli version.
-    /// Uses the newer of: running binary version or latest GitHub release.
-    /// Running version is only considered if it is a stable release (no "-" suffix like -SNAPSHOT or -candidate).
+    /// Uses the newer of: own build version or latest GitHub release.
+    /// The own version is only considered when it is a stable release (no "-" suffix like -SNAPSHOT or -candidate).
     public String jbctVersion() {
-        if (RUNNING_JBCT_VERSION.contains("-")) {
-            return monorepoVersion();
-        }
-        return maxVersion(RUNNING_JBCT_VERSION, monorepoVersion());
+        return selfVersion.filter(version -> !version.contains("-"))
+                          .map(this::maxWithMonorepo)
+                          .or(this::monorepoVersion);
     }
 
-    /// Get default pragmatica-lite version (used as fallback).
+    /// The resolver's own build version, self-derived from the filtered build resource,
+    /// or [Option#none] when the resource is missing or was not filtered.
+    public Option<String> selfDerivedVersion() {
+        return selfVersion;
+    }
+
+    /// Resolve the monorepo version, failing loud when it cannot be determined.
+    /// Resolution order: latest GitHub release -> self-derived build version -> actionable failure.
+    public Result<String> resolveMonorepoVersion() {
+        return fetchVersionWithCache().orElse(this::selfDerivedFallback);
+    }
+
+    /// Get default pragmatica-lite version (self-derived fallback, used when offline).
     public static String defaultPragmaticaVersion() {
-        return DEFAULT_VERSION;
+        return EMBEDDED_VERSION.or(UNKNOWN);
     }
 
-    /// Get default aether version (used as fallback).
+    /// Get default aether version (self-derived fallback, used when offline).
     public static String defaultAetherVersion() {
-        return DEFAULT_VERSION;
+        return EMBEDDED_VERSION.or(UNKNOWN);
     }
 
-    /// Get default jbct version (used as fallback).
+    /// Get default jbct version (self-derived fallback, used when offline).
     public static String defaultJbctVersion() {
-        return DEFAULT_VERSION;
+        return EMBEDDED_VERSION.or(UNKNOWN);
     }
 
     /// Clear the version cache.
     public Result<Unit> clearCache() {
-        resolvedVersion = null;
+        resolvedVersion = Option.none();
         cache.clear();
         return Result.lift(Causes::fromThrowable,
                            () -> {
@@ -116,31 +148,54 @@ public final class GitHubVersionResolver {
     }
 
     // --- Private ---
-    private String monorepoVersion() {
-        if (resolvedVersion != null) {
-            return resolvedVersion;
-        }
-        resolvedVersion = fetchVersionWithCache();
-        return resolvedVersion;
+    private String maxWithMonorepo(String stableSelfVersion) {
+        return maxVersion(stableSelfVersion, monorepoVersion());
     }
 
-    private String fetchVersionWithCache() {
-        var cacheKey = REPO_OWNER + "/" + REPO_NAME;
-        var timestampKey = cacheKey + ".timestamp";
-        var cachedVersion = cache.getProperty(cacheKey);
-        var timestampStr = cache.getProperty(timestampKey);
-        if (cachedVersion != null && timestampStr != null) {
-            try{
-                var timestamp = Long.parseLong(timestampStr);
-                if (System.currentTimeMillis() - timestamp < CACHE_TTL_MS) {
-                    return cachedVersion;
-                }
-            } catch (NumberFormatException e) {
-                log.debug("Invalid timestamp in version cache for {}: {}", cacheKey, timestampStr);
-            }
-        }
-        return fetchLatestVersion().onSuccess(version -> updateCache(cacheKey, timestampKey, version))
-                                 .or(DEFAULT_VERSION);
+    private String monorepoVersion() {
+        return resolvedVersion.or(this::resolveAndCache);
+    }
+
+    private String resolveAndCache() {
+        return resolveMonorepoVersion().onSuccess(this::memoize)
+                                       .or(selfVersion.or(UNKNOWN));
+    }
+
+    private void memoize(String version) {
+        resolvedVersion = Option.some(version);
+    }
+
+    private Result<String> selfDerivedFallback() {
+        return selfVersion.toResult(UNRESOLVABLE_VERSION);
+    }
+
+    private Result<String> fetchVersionWithCache() {
+        return freshCachedVersion().map(Result::success)
+                                   .or(this::fetchAndCache);
+    }
+
+    private Result<String> fetchAndCache() {
+        return fetchLatestVersion().onSuccess(this::cacheVersion);
+    }
+
+    private Option<String> freshCachedVersion() {
+        return Option.option(cache.getProperty(CACHE_KEY))
+                     .filter(_ -> isCacheFresh());
+    }
+
+    private boolean isCacheFresh() {
+        return cacheTimestamp().filter(timestamp -> System.currentTimeMillis() - timestamp < CACHE_TTL_MS)
+                               .isPresent();
+    }
+
+    private Option<Long> cacheTimestamp() {
+        return Option.option(cache.getProperty(TIMESTAMP_KEY))
+                     .flatMap(this::parseTimestamp);
+    }
+
+    private Option<Long> parseTimestamp(String raw) {
+        return Number.parseLong(raw)
+                     .option();
     }
 
     private Result<String> fetchLatestVersion() {
@@ -166,14 +221,14 @@ public final class GitHubVersionResolver {
                        .result();
     }
 
-    private void updateCache(String cacheKey, String timestampKey, String version) {
-        cache.setProperty(cacheKey, version);
-        cache.setProperty(timestampKey,
+    private void cacheVersion(String version) {
+        cache.setProperty(CACHE_KEY, version);
+        cache.setProperty(TIMESTAMP_KEY,
                           String.valueOf(System.currentTimeMillis()));
-        saveCache();
+        saveCache().onFailure(cause -> log.debug("Failed to persist version cache: {}", cause.message()));
     }
 
-    private Properties loadCache() {
+    private static Properties loadCache() {
         var props = new Properties();
         if (Files.exists(CACHE_FILE)) {
             try (var reader = Files.newBufferedReader(CACHE_FILE)) {
@@ -193,6 +248,24 @@ public final class GitHubVersionResolver {
                                    cache.store(writer, "JBCT version cache");
                                }
                            });
+    }
+
+    // Self-derived build version, read once from the filtered build resource on this jar's own
+    // classpath. Mirrors slice-processor BuildInfo: degrades gracefully to absent when the resource
+    // is missing or its ${...} placeholder was not filtered.
+    private static Option<String> loadEmbeddedVersion() {
+        var props = new Properties();
+        try (var in = GitHubVersionResolver.class.getResourceAsStream(BUILD_RESOURCE)) {
+            if (in != null) {
+                props.load(in);
+            }
+        } catch (IOException e) {
+            log.debug("Failed to load {}: {}", BUILD_RESOURCE, e.getMessage());
+        }
+        return Option.option(props.getProperty("version"))
+                     .map(String::trim)
+                     .filter(version -> !version.isBlank())
+                     .filter(version -> !version.startsWith("${"));
     }
 
     /// Compare two semantic versions and return the newer one.

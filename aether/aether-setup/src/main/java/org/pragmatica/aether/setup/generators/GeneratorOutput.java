@@ -4,10 +4,10 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.setup.generators;
 
-import org.pragmatica.lang.Option;
-
 import java.nio.file.Path;
 import java.util.List;
+
+import org.pragmatica.lang.Option;
 
 import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.some;

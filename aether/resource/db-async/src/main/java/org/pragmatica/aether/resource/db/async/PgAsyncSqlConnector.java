@@ -4,6 +4,10 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.resource.db.async;
 
+import java.util.ArrayList;
+import java.util.List;
+import java.util.function.Consumer;
+
 import org.pragmatica.aether.resource.db.DatabaseConnectorConfig;
 import org.pragmatica.aether.resource.db.DatabaseConnectorError;
 import org.pragmatica.aether.resource.db.RowMapper;
@@ -19,10 +23,6 @@ import org.pragmatica.postgres.net.Connectible;
 import org.pragmatica.postgres.net.Connection;
 import org.pragmatica.postgres.net.Listening;
 import org.pragmatica.postgres.net.Transaction;
-
-import java.util.ArrayList;
-import java.util.List;
-import java.util.function.Consumer;
 
 import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.some;
@@ -169,9 +169,10 @@ final class PgAsyncSqlConnector implements AsyncSqlConnector {
         }
 
         return tx.completeQuery(sql,
-                                paramsList.get(index)).map(rs -> recordAffectedRows(counts, index, rs))
-                               .flatMap(_ -> executeBatchInTransaction(tx, sql, paramsList, counts, index + 1))
-                               .fold(result -> rollbackOnFailure(tx, result));
+                                paramsList.get(index))
+                 .map(rs -> recordAffectedRows(counts, index, rs))
+                 .flatMap(_ -> executeBatchInTransaction(tx, sql, paramsList, counts, index + 1))
+                 .fold(result -> rollbackOnFailure(tx, result));
     }
 
     private static int recordAffectedRows(int[] counts, int index, PgResultSet rs) {
@@ -278,8 +279,9 @@ final class PgAsyncSqlConnector implements AsyncSqlConnector {
             }
 
             return transaction.completeQuery(sql,
-                                             paramsList.get(index)).map(rs -> recordAffectedRows(counts, index, rs))
-                                            .flatMap(_ -> executeBatchInline(sql, paramsList, counts, index + 1));
+                                             paramsList.get(index))
+                              .map(rs -> recordAffectedRows(counts, index, rs))
+                              .flatMap(_ -> executeBatchInline(sql, paramsList, counts, index + 1));
         }
 
         @Override

@@ -1,12 +1,12 @@
 package org.pragmatica.aether.example.shared;
 
+import java.util.regex.Pattern;
+
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Verify;
 import org.pragmatica.lang.utils.Causes;
-
-import java.util.regex.Pattern;
 
 
 public record Email(String value) {

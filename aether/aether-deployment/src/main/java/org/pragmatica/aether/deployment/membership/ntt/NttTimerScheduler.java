@@ -4,9 +4,9 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.deployment.membership.ntt;
 
-import org.pragmatica.lang.io.TimeSpan;
-
 import java.util.concurrent.ScheduledFuture;
+
+import org.pragmatica.lang.io.TimeSpan;
 
 
 /// Scheduler indirection for [`PresenceSampler`]. Production wiring binds this to

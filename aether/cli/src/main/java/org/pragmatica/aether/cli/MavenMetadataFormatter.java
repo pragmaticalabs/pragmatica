@@ -66,7 +66,11 @@ public sealed interface MavenMetadataFormatter {
     private static String buildJson(String groupId, String artifactId, List<String> versions) {
         var sb = new StringBuilder();
 
-        sb.append("{\"groupId\":\"").append(escapeJson(groupId)).append("\",\"artifactId\":\"").append(escapeJson(artifactId)).append("\",\"versions\":[");
+        sb.append("{\"groupId\":\"")
+          .append(escapeJson(groupId))
+          .append("\",\"artifactId\":\"")
+          .append(escapeJson(artifactId))
+          .append("\",\"versions\":[");
         for (var i = 0; i < versions.size(); i++) {
             if (i > 0) {
                 sb.append(',');

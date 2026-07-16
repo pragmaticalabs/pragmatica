@@ -25,7 +25,13 @@ sealed interface SystemdUnitTemplate {
         sb.append("Type=simple\n");
         sb.append("User=").append(user).append('\n');
         sb.append("Group=").append(group).append('\n');
-        sb.append("ExecStart=/usr/bin/java ").append(javaOpts).append(" -jar ").append(jarPath).append(" --config=").append(configPath).append('\n');
+        sb.append("ExecStart=/usr/bin/java ")
+          .append(javaOpts)
+          .append(" -jar ")
+          .append(jarPath)
+          .append(" --config=")
+          .append(configPath)
+          .append('\n');
         // TERMINAL-REMOVAL membership model: a dead NodeId NEVER returns under the same id.
         // Recovery is always a brand-new node with a new ULID NodeId, minted by cluster
         // auto-heal. systemd restarting the crashed node under the SAME identity would

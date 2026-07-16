@@ -4,17 +4,17 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.pg.maven;
 
-import org.pragmatica.aether.pg.codegen.jooq.JooqXmlConfig;
-import org.pragmatica.aether.pg.codegen.jooq.JooqXmlExporter;
-import org.pragmatica.aether.pg.schema.builder.MigrationProcessor;
-import org.pragmatica.lang.Contract;
-
 import java.io.File;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.util.Arrays;
 import java.util.Comparator;
 import java.util.Set;
+
+import org.pragmatica.aether.pg.codegen.jooq.JooqXmlConfig;
+import org.pragmatica.aether.pg.codegen.jooq.JooqXmlExporter;
+import org.pragmatica.aether.pg.schema.builder.MigrationProcessor;
+import org.pragmatica.lang.Contract;
 
 import org.apache.maven.plugin.AbstractMojo;
 import org.apache.maven.plugin.MojoExecutionException;

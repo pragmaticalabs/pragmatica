@@ -4,6 +4,9 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.slice;
 
+import java.nio.file.Path;
+import java.util.List;
+
 import org.pragmatica.aether.slice.repository.Repository;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Functions.Fn1;
@@ -11,9 +14,6 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.Causes;
-
-import java.nio.file.Path;
-import java.util.List;
 
 import static org.pragmatica.aether.slice.repository.maven.LocalRepository.localRepository;
 import static org.pragmatica.lang.Option.option;

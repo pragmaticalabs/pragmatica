@@ -4,12 +4,12 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.deployment.generation;
 
-import org.pragmatica.consensus.NodeId;
-import org.pragmatica.consensus.topology.MembershipView;
-
 import java.util.Set;
 import java.util.function.IntSupplier;
 import java.util.function.Supplier;
+
+import org.pragmatica.consensus.NodeId;
+import org.pragmatica.consensus.topology.MembershipView;
 
 
 /// Presence-derived `MembershipView`. Derives membership directly from

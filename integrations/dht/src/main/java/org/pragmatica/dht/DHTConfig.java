@@ -106,8 +106,15 @@ public record DHTConfig(int replicationFactor,
     /// Cache configuration: single replica for ephemeral cache data.
     public static final DHTConfig CACHE_DEFAULT = new DHTConfig(1, 1, 1, DEFAULT_TIMEOUT, DEFAULT_RETRY_POLICY);
 
-    /// Full replication configuration - all nodes store all data.
-    /// Read/write quorum of 1 since any node has all data.
+    /// Full replication configuration - every node stores all data (replicationFactor sentinel 0 → clusterSize).
+    ///
+    /// Consistency: **eventually consistent, NOT linearizable.** A write acks after `writeQuorum`=1 node and
+    /// replicates to the rest asynchronously (fire-and-forget; see `DistributedDHTClient.put`); a read returns
+    /// the first of `readQuorum`=1 response with no version reconciliation and no read-repair (see
+    /// `QuorumCollector.selectBest`). A read may therefore observe a stale replica until async replication
+    /// lands, and — because FULL also disables background anti-entropy (`DHTAntiEntropy`) and rebalancing — a
+    /// dropped replication is not self-healed. Suitable for ephemeral / cache-like data, not for state that
+    /// requires read-your-writes across nodes.
     public static final DHTConfig FULL = new DHTConfig(FULL_REPLICATION, 1, 1, DEFAULT_TIMEOUT, DEFAULT_RETRY_POLICY);
 
     /// Create a DHT configuration with validation.
@@ -159,11 +166,17 @@ public record DHTConfig(int replicationFactor,
         return replicationFactor == FULL_REPLICATION;
     }
 
-    /// Check if reads and writes overlap (strong consistency guarantee).
-    /// R + W > N ensures that any read will see the most recent write.
-    /// Full replication is always strongly consistent.
-    public boolean isStronglyConsistent() {
-        return isFullReplication() || readQuorum + writeQuorum > replicationFactor;
+    /// Whether the configured read and write quorums overlap (`R + W > N`).
+    ///
+    /// Quorum overlap guarantees the read set intersects the last quorum-acked write set, so at least one
+    /// responding replica HOLDS the most recent write. It is **necessary but NOT sufficient for linearizable
+    /// reads** in this implementation: the read path (`QuorumCollector.selectBest`) returns first-response-wins
+    /// with no version reconciliation, and there is no read-repair, so a stale replica in the read set may
+    /// still be returned. FULL replication (replicationFactor sentinel 0) is excluded — it is eventually
+    /// consistent regardless (see the `FULL` constant). Configuration introspection only; no runtime path
+    /// consumes this.
+    public boolean hasQuorumOverlap() {
+        return !isFullReplication() && readQuorum + writeQuorum > replicationFactor;
     }
 
     /// Get effective replication factor for a given cluster size.

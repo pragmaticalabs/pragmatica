@@ -4,6 +4,16 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.node.health;
 
+import java.net.InetSocketAddress;
+import java.util.List;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.BooleanSupplier;
+import java.util.function.Consumer;
+import java.util.function.Function;
+import java.util.function.Predicate;
+import java.util.function.Supplier;
+
 import org.pragmatica.aether.metrics.observation.PeerObservationStore;
 import org.pragmatica.aether.node.health.fsm.SwimHealthContext;
 import org.pragmatica.aether.node.health.fsm.SwimHealthEvents;
@@ -34,16 +44,6 @@ import org.pragmatica.swim.SwimObservation;
 import org.pragmatica.swim.SwimProtocol;
 import org.pragmatica.swim.SwimTransport;
 import org.pragmatica.swim.TransportObservation;
-
-import java.net.InetSocketAddress;
-import java.util.List;
-import java.util.concurrent.CopyOnWriteArrayList;
-import java.util.concurrent.atomic.AtomicReference;
-import java.util.function.BooleanSupplier;
-import java.util.function.Consumer;
-import java.util.function.Function;
-import java.util.function.Predicate;
-import java.util.function.Supplier;
 
 import io.netty.channel.EventLoopGroup;
 import org.slf4j.Logger;
@@ -416,6 +416,19 @@ public final class CoreSwimHealthDetector implements SwimMembershipListener {
         return protocol().map(SwimProtocol::currentHealth);
     }
 
+    /// Read-only snapshot of the currently ALIVE SWIM members. Additive, hot-path-free
+    /// projection over the underlying [`SwimProtocol`] membership map — returns an empty
+    /// list before the protocol is running. Feeds the worker-side governor announcer, whose
+    /// `onMembershipChange` re-reads this set on every SWIM observation edge.
+    public List<SwimMember> aliveMembers() {
+        return protocol().map(SwimProtocol::members)
+                       .map(members -> members.values()
+                                              .stream()
+                                              .filter(member -> member.state() == SwimMember.MemberState.ALIVE)
+                                              .toList())
+                       .or(List.of());
+    }
+
     private Option<SwimProtocol> protocol() {
         return switch (context.fsm()
                               .current()) {
@@ -478,9 +491,12 @@ public final class CoreSwimHealthDetector implements SwimMembershipListener {
     }
 
     private void seedMembers(SwimProtocol protocol) {
-        context.topologyConfig().coreNodes().stream().filter(node -> !node.id()
-                                                                          .equals(context.topologyConfig().self())).forEach(node -> addSeedMember(protocol,
-                                                                                                                                                  node));
+        context.topologyConfig()
+               .coreNodes()
+               .stream()
+               .filter(node -> !node.id()
+                                    .equals(context.topologyConfig().self()))
+               .forEach(node -> addSeedMember(protocol, node));
     }
 
     private static void addSeedMember(SwimProtocol protocol, NodeInfo node) {

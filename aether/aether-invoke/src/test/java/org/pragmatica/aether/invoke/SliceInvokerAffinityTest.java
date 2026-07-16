@@ -2,12 +2,8 @@
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
 // Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
 // See LICENSE in the repository root for full terms.
-
 package org.pragmatica.aether.invoke;
 
-import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Nested;
-import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.endpoint.EndpointRegistry;
 import org.pragmatica.aether.endpoint.EndpointRegistry.Endpoint;
@@ -22,9 +18,14 @@ import org.pragmatica.lang.Unit;
 import org.pragmatica.serialization.Deserializer;
 import org.pragmatica.serialization.Serializer;
 
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Nested;
+import org.junit.jupiter.api.Test;
+
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.pragmatica.lang.Unit.unit;
+
 
 class SliceInvokerAffinityTest {
     private SliceInvoker invoker;
@@ -43,7 +44,6 @@ class SliceInvokerAffinityTest {
         registry = EndpointRegistry.endpointRegistry();
         artifact = Artifact.artifact("org.example:my-slice:1.0.0").unwrap();
         method = MethodName.methodName("processRequest").unwrap();
-
         // Minimal stubs — only affinity resolver registration is tested, not actual invocation
         ClusterNetwork stubNetwork = new StubClusterNetwork();
         InvocationHandler stubHandler = InvocationHandler.invocationHandler(self, stubNetwork);
@@ -52,18 +52,18 @@ class SliceInvokerAffinityTest {
         DeploymentManager stubDeploymentManager = new StubDeploymentManager();
 
         invoker = SliceInvoker.sliceInvoker(self,
-                                             stubNetwork,
-                                             registry,
-                                             stubHandler,
-                                             stubSerializer,
-                                             stubDeserializer,
-                                             stubDeploymentManager,
-                                             ObservabilityInterceptor.noOp());
+                                            stubNetwork,
+                                            registry,
+                                            stubHandler,
+                                            stubSerializer,
+                                            stubDeserializer,
+                                            stubDeploymentManager);
     }
 
     private void registerEndpoint(Artifact artifact, MethodName method, int instance, NodeId nodeId) {
         var key = new EndpointKey(artifact, method, instance);
         var value = EndpointValue.endpointValue(nodeId);
+
         registry.registerEndpoint(key, value);
     }
 
@@ -72,7 +72,6 @@ class SliceInvokerAffinityTest {
         @Test
         void registerAffinityResolver_registered_returnsUnit() {
             SliceInvoker.CacheAffinityResolver resolver = _ -> Option.some(nodeA);
-
             var result = invoker.registerAffinityResolver(artifact, method, resolver);
 
             assertEquals(unit(), result);
@@ -81,8 +80,8 @@ class SliceInvokerAffinityTest {
         @Test
         void unregisterAffinityResolver_removed_returnsUnit() {
             SliceInvoker.CacheAffinityResolver resolver = _ -> Option.some(nodeA);
-            invoker.registerAffinityResolver(artifact, method, resolver);
 
+            invoker.registerAffinityResolver(artifact, method, resolver);
             var result = invoker.unregisterAffinityResolver(artifact, method);
 
             assertEquals(unit(), result);
@@ -91,10 +90,9 @@ class SliceInvokerAffinityTest {
         @Test
         void stop_clearsAffinityResolvers_succeeds() {
             SliceInvoker.CacheAffinityResolver resolver = _ -> Option.some(nodeA);
+
             invoker.registerAffinityResolver(artifact, method, resolver);
-
             invoker.stop().await();
-
             // After stop, re-registering should work (proves clear happened and state is clean)
             // The invoker is stopped but the internal map is cleared
             assertEquals(unit(), invoker.unregisterAffinityResolver(artifact, method));
@@ -107,24 +105,24 @@ class SliceInvokerAffinityTest {
         void selectEndpointByAffinity_withResolver_prefersAffinityNode() {
             registerEndpoint(artifact, method, 0, nodeA);
             registerEndpoint(artifact, method, 1, nodeB);
-
             // Verify the registry correctly selects the affinity node
             var result = registry.selectEndpointByAffinity(artifact, method, nodeB);
 
             assertTrue(result.isPresent());
-            assertEquals(nodeB, result.unwrap().nodeId());
+            assertEquals(nodeB,
+                         result.unwrap().nodeId());
         }
 
         @Test
         void selectEndpointByAffinity_affinityNodeMissing_fallsBackToRoundRobin() {
             registerEndpoint(artifact, method, 0, nodeA);
             registerEndpoint(artifact, method, 1, nodeB);
-
             var unknownNode = new NodeId("node-unknown");
             var result = registry.selectEndpointByAffinity(artifact, method, unknownNode);
 
             assertTrue(result.isPresent());
             var selected = result.unwrap().nodeId();
+
             assertTrue(selected.equals(nodeA) || selected.equals(nodeB));
         }
     }

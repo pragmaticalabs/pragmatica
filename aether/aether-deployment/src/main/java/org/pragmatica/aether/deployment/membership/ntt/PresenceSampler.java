@@ -4,16 +4,6 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.deployment.membership.ntt;
 
-import org.pragmatica.aether.deployment.membership.MembershipConfig;
-import org.pragmatica.consensus.NodeId;
-import org.pragmatica.lang.Contract;
-import org.pragmatica.lang.Option;
-import org.pragmatica.lang.io.TimeSpan;
-import org.pragmatica.lang.utils.SharedScheduler;
-import org.pragmatica.swim.HealthSnapshot;
-import org.pragmatica.swim.SwimHealth;
-import org.pragmatica.swim.SwimObservation;
-
 import java.util.HashSet;
 import java.util.Map;
 import java.util.Set;
@@ -23,6 +13,16 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 import java.util.function.LongSupplier;
 import java.util.function.Supplier;
+
+import org.pragmatica.aether.deployment.membership.MembershipConfig;
+import org.pragmatica.consensus.NodeId;
+import org.pragmatica.lang.Contract;
+import org.pragmatica.lang.Option;
+import org.pragmatica.lang.io.TimeSpan;
+import org.pragmatica.lang.utils.SharedScheduler;
+import org.pragmatica.swim.HealthSnapshot;
+import org.pragmatica.swim.SwimHealth;
+import org.pragmatica.swim.SwimObservation;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;

@@ -4,14 +4,14 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.deployment.generation;
 
+import java.util.ArrayList;
+import java.util.Collection;
+
 import org.pragmatica.aether.slice.generation.ClusterQuiescence;
 import org.pragmatica.aether.slice.generation.CommunityQuiescence;
 import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.slice.generation.HealthHint;
 import org.pragmatica.aether.slice.kvstore.AetherValue.GovernorAnnouncementValue;
-
-import java.util.ArrayList;
-import java.util.Collection;
 
 
 /// Pure cluster- and community-quiescence verdict logic. Reads the minimal inputs the verdict

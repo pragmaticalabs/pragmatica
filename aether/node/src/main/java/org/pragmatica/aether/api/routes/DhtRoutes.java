@@ -4,6 +4,12 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.api.routes;
 
+import java.nio.charset.StandardCharsets;
+import java.util.List;
+import java.util.function.BooleanSupplier;
+import java.util.function.Supplier;
+import java.util.stream.Stream;
+
 import org.pragmatica.aether.api.ManagementApiResponses.DhtInjectRequest;
 import org.pragmatica.aether.api.ManagementApiResponses.DhtInjectResponse;
 import org.pragmatica.aether.api.ManagementApiResponses.DhtReplicationEntry;
@@ -20,12 +26,6 @@ import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
-
-import java.nio.charset.StandardCharsets;
-import java.util.List;
-import java.util.function.BooleanSupplier;
-import java.util.function.Supplier;
-import java.util.stream.Stream;
 
 
 /// Management routes for the DHT subsystem. Two endpoints:
@@ -191,7 +191,10 @@ public final class DhtRoutes implements RouteSource {
         var replicationFactor = node.config().effectiveReplicationFactor(node.ring().nodeCount());
         var prefixBytes = prefix.getBytes(StandardCharsets.UTF_8);
         var matched = keys.stream().filter(key -> matchesPrefix(key, prefixBytes)).toList();
-        var entries = matched.stream().limit(limit).map(key -> toReplicationEntry(node, key, replicationFactor)).toList();
+        var entries = matched.stream()
+                             .limit(limit)
+                             .map(key -> toReplicationEntry(node, key, replicationFactor))
+                             .toList();
 
         return new DhtReplicationMapResponse(replicationFactor, matched.size(), entries.size(), entries);
     }
@@ -215,7 +218,11 @@ public final class DhtRoutes implements RouteSource {
     }
 
     private static DhtReplicationEntry toReplicationEntry(DHTNode node, byte[] key, int replicationFactor) {
-        var nodeIds = node.ring().nodesFor(key, replicationFactor).stream().map(org.pragmatica.consensus.NodeId::id).toList();
+        var nodeIds = node.ring()
+                          .nodesFor(key, replicationFactor)
+                          .stream()
+                          .map(org.pragmatica.consensus.NodeId::id)
+                          .toList();
 
         return new DhtReplicationEntry(new String(key, StandardCharsets.UTF_8), nodeIds);
     }

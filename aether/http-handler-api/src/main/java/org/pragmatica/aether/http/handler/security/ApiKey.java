@@ -4,11 +4,11 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.http.handler.security;
 
+import java.util.regex.Pattern;
+
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Verify;
-
-import java.util.regex.Pattern;
 
 import static org.pragmatica.lang.Option.option;
 

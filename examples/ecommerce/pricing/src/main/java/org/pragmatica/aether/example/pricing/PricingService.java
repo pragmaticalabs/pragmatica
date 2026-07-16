@@ -1,5 +1,12 @@
 package org.pragmatica.aether.example.pricing;
 
+import java.math.BigDecimal;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.stream.Collectors;
+
 import org.pragmatica.aether.example.shared.Address;
 import org.pragmatica.aether.example.shared.CustomerId;
 import org.pragmatica.aether.example.shared.LineItem;
@@ -10,13 +17,6 @@ import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
-
-import java.math.BigDecimal;
-import java.util.List;
-import java.util.Map;
-import java.util.Set;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.stream.Collectors;
 
 
 @Slice
@@ -329,8 +329,10 @@ public interface PricingService {
     }
 
     private static void addPrice(Map<ProductId, Money> productPrices, String productId, String price) {
-        ProductId.productId(productId).flatMap(id -> Money.usd(price).map(p -> Map.entry(id, p))).onSuccess(entry -> productPrices.put(entry.getKey(),
-                                                                                                                                       entry.getValue()));
+        ProductId.productId(productId)
+                 .flatMap(id -> Money.usd(price).map(p -> Map.entry(id, p)))
+                 .onSuccess(entry -> productPrices.put(entry.getKey(),
+                                                       entry.getValue()));
     }
 
     private static void initializeDiscountCodes(Map<String, DiscountCode> discountCodes) {

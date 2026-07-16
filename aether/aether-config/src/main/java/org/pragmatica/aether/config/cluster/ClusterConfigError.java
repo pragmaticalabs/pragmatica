@@ -4,8 +4,8 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.config.cluster;
 
-import org.pragmatica.http.routing.HttpStatus;
-import org.pragmatica.http.routing.HttpStatusAware;
+import org.pragmatica.http.HttpStatus;
+import org.pragmatica.http.HttpStatusAware;
 import org.pragmatica.lang.Cause;
 
 
@@ -143,6 +143,25 @@ public sealed interface ClusterConfigError extends Cause, HttpStatusAware {
         @Override
         public String message() {
             return "Config version conflict: expected " + expected + ", actual " + actual;
+        }
+
+        @Override
+        public HttpStatus httpStatus() {
+            return HttpStatus.CONFLICT;
+        }
+    }
+
+    /// #289: a config push carrying `expectedVersion=0` (the "I expect a fresh cluster" sentinel) was
+    /// rejected because a populated config already exists. Without this fence an `expectedVersion=0`
+    /// push skips the CAS check and blind-overwrites mutable cluster config — e.g. a re-run of
+    /// `aether cluster bootstrap` against a live cluster, or two concurrent bootstraps. The caller must
+    /// read the current `configVersion` and resubmit with it (proper optimistic concurrency).
+    record UnfencedOverwrite(long actual) implements ClusterConfigError {
+        @Override
+        public String message() {
+            return "Refusing to overwrite existing cluster config (version " + actual
+                 + ") with an unfenced push (expectedVersion=0). Read the current configVersion and "
+                 + "resubmit with it, or destroy the cluster first.";
         }
 
         @Override

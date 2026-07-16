@@ -8,6 +8,7 @@ package org.pragmatica.aether.stream.replication;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.io.TimeSpan;
 
@@ -48,11 +49,11 @@ class ReplicationBatcherTest {
         void add_flushesWhenMaxEventsReached() {
             batcher = replicationBatcher(capturingTransport(), registry, GOVERNOR, 3, TimeSpan.timeSpan(10).seconds());
 
-            batcher.add(STREAM, PARTITION, 0L, PAYLOAD, TIMESTAMP);
-            batcher.add(STREAM, PARTITION, 1L, "second".getBytes(), TIMESTAMP + 1);
+            batcher.add(STREAM, PARTITION, 0L, PAYLOAD, TIMESTAMP, Epoch.ZERO);
+            batcher.add(STREAM, PARTITION, 1L, "second".getBytes(), TIMESTAMP + 1, Epoch.ZERO);
             assertThat(sentMessages).isEmpty();
 
-            batcher.add(STREAM, PARTITION, 2L, "third".getBytes(), TIMESTAMP + 2);
+            batcher.add(STREAM, PARTITION, 2L, "third".getBytes(), TIMESTAMP + 2, Epoch.ZERO);
             assertThat(sentMessages).hasSize(1);
 
             var message = (ReplicationMessage.ReplicateEvents) sentMessages.getFirst().message();
@@ -67,8 +68,8 @@ class ReplicationBatcherTest {
         void add_preservesPayloadOrder() {
             batcher = replicationBatcher(capturingTransport(), registry, GOVERNOR, 2, TimeSpan.timeSpan(10).seconds());
 
-            batcher.add(STREAM, PARTITION, 5L, "first".getBytes(), 100L);
-            batcher.add(STREAM, PARTITION, 6L, "second".getBytes(), 200L);
+            batcher.add(STREAM, PARTITION, 5L, "first".getBytes(), 100L, Epoch.ZERO);
+            batcher.add(STREAM, PARTITION, 6L, "second".getBytes(), 200L, Epoch.ZERO);
 
             var message = (ReplicationMessage.ReplicateEvents) sentMessages.getFirst().message();
             assertThat(message.fromOffset()).isEqualTo(5L);
@@ -86,8 +87,8 @@ class ReplicationBatcherTest {
         void flushAll_sendsAccumulatedEvents() {
             batcher = replicationBatcher(capturingTransport(), registry, GOVERNOR, 100, TimeSpan.timeSpan(10).seconds());
 
-            batcher.add(STREAM, PARTITION, 0L, PAYLOAD, TIMESTAMP);
-            batcher.add(STREAM, PARTITION, 1L, "second".getBytes(), TIMESTAMP + 1);
+            batcher.add(STREAM, PARTITION, 0L, PAYLOAD, TIMESTAMP, Epoch.ZERO);
+            batcher.add(STREAM, PARTITION, 1L, "second".getBytes(), TIMESTAMP + 1, Epoch.ZERO);
             assertThat(sentMessages).isEmpty();
 
             batcher.flushAll();
@@ -117,7 +118,7 @@ class ReplicationBatcherTest {
         void close_flushesRemainingEvents() {
             batcher = replicationBatcher(capturingTransport(), registry, GOVERNOR, 100, TimeSpan.timeSpan(10).seconds());
 
-            batcher.add(STREAM, PARTITION, 0L, PAYLOAD, TIMESTAMP);
+            batcher.add(STREAM, PARTITION, 0L, PAYLOAD, TIMESTAMP, Epoch.ZERO);
             assertThat(sentMessages).isEmpty();
 
             batcher.close();
@@ -134,14 +135,14 @@ class ReplicationBatcherTest {
 
             registry.registerReplica(STREAM, 1, REPLICA_A);
 
-            batcher.add(STREAM, 0, 0L, "p0-first".getBytes(), TIMESTAMP);
-            batcher.add(STREAM, 1, 0L, "p1-first".getBytes(), TIMESTAMP);
+            batcher.add(STREAM, 0, 0L, "p0-first".getBytes(), TIMESTAMP, Epoch.ZERO);
+            batcher.add(STREAM, 1, 0L, "p1-first".getBytes(), TIMESTAMP, Epoch.ZERO);
 
             // Neither partition has reached threshold
             assertThat(sentMessages).isEmpty();
 
             // Partition 0 reaches threshold
-            batcher.add(STREAM, 0, 1L, "p0-second".getBytes(), TIMESTAMP + 1);
+            batcher.add(STREAM, 0, 1L, "p0-second".getBytes(), TIMESTAMP + 1, Epoch.ZERO);
             assertThat(sentMessages).hasSize(1);
 
             var message = (ReplicationMessage.ReplicateEvents) sentMessages.getFirst().message();
@@ -166,8 +167,8 @@ class ReplicationBatcherTest {
             var emptyRegistry = replicaRegistry();
             batcher = replicationBatcher(capturingTransport(), emptyRegistry, GOVERNOR, 2, TimeSpan.timeSpan(10).seconds());
 
-            batcher.add(STREAM, PARTITION, 0L, PAYLOAD, TIMESTAMP);
-            batcher.add(STREAM, PARTITION, 1L, PAYLOAD, TIMESTAMP + 1);
+            batcher.add(STREAM, PARTITION, 0L, PAYLOAD, TIMESTAMP, Epoch.ZERO);
+            batcher.add(STREAM, PARTITION, 1L, PAYLOAD, TIMESTAMP + 1, Epoch.ZERO);
 
             // Size threshold hit, but no replicas — nothing sent
             assertThat(sentMessages).isEmpty();
@@ -189,7 +190,7 @@ class ReplicationBatcherTest {
 
             batcher = replicationBatcher(latchingTransport, registry, GOVERNOR, 1000, TimeSpan.timeSpan(50).millis());
 
-            batcher.add(STREAM, PARTITION, 0L, PAYLOAD, TIMESTAMP);
+            batcher.add(STREAM, PARTITION, 0L, PAYLOAD, TIMESTAMP, Epoch.ZERO);
 
             // Wait for time-based flush (50ms interval + margin)
             assertThat(latch.await(500, TimeUnit.MILLISECONDS)).isTrue();
@@ -207,10 +208,10 @@ class ReplicationBatcherTest {
             var manager = ReplicationManager.batchingReplicationManager(GOVERNOR, registry, capturingTransport(),
                                                                        2, TimeSpan.timeSpan(10).seconds());
 
-            manager.replicateEvent(STREAM, PARTITION, 0L, PAYLOAD, TIMESTAMP);
+            manager.replicateEvent(STREAM, PARTITION, 0L, PAYLOAD, TIMESTAMP, Epoch.ZERO);
             assertThat(sentMessages).isEmpty();
 
-            manager.replicateEvent(STREAM, PARTITION, 1L, "second".getBytes(), TIMESTAMP + 1);
+            manager.replicateEvent(STREAM, PARTITION, 1L, "second".getBytes(), TIMESTAMP + 1, Epoch.ZERO);
             assertThat(sentMessages).hasSize(1);
 
             var message = (ReplicationMessage.ReplicateEvents) sentMessages.getFirst().message();
@@ -224,7 +225,7 @@ class ReplicationBatcherTest {
             var manager = ReplicationManager.batchingReplicationManager(GOVERNOR, registry, capturingTransport(),
                                                                        100, TimeSpan.timeSpan(10).seconds());
 
-            manager.replicateEvent(STREAM, PARTITION, 0L, PAYLOAD, TIMESTAMP);
+            manager.replicateEvent(STREAM, PARTITION, 0L, PAYLOAD, TIMESTAMP, Epoch.ZERO);
             assertThat(sentMessages).isEmpty();
 
             manager.close();

@@ -4,6 +4,11 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.api.routes;
 
+import java.util.List;
+import java.util.Map;
+import java.util.function.Supplier;
+import java.util.stream.Stream;
+
 import org.pragmatica.aether.artifact.Version;
 import org.pragmatica.aether.node.ManageableNode;
 import org.pragmatica.aether.update.CanaryAnalysisConfig;
@@ -23,11 +28,6 @@ import org.pragmatica.http.routing.RouteSource;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.utils.Causes;
-
-import java.util.List;
-import java.util.Map;
-import java.util.function.Supplier;
-import java.util.stream.Stream;
 
 import static org.pragmatica.http.routing.PathParameter.aString;
 import static org.pragmatica.lang.Option.option;

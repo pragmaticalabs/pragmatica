@@ -4,6 +4,9 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.controller.fsm;
 
+import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.atomic.AtomicReference;
+
 import org.pragmatica.aether.controller.fsm.ControlLoopEvents.ActivationTimeReached;
 import org.pragmatica.aether.controller.fsm.ControlLoopEvents.Activate;
 import org.pragmatica.aether.controller.fsm.ControlLoopEvents.CooldownExpired;
@@ -15,9 +18,6 @@ import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.SharedScheduler;
 import org.pragmatica.statemachine.FsmState;
 import org.pragmatica.statemachine.TransitionRequest;
-
-import java.util.concurrent.ScheduledFuture;
-import java.util.concurrent.atomic.AtomicReference;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -54,7 +54,6 @@ public sealed interface ControlLoopState extends FsmState<ControlLoopState, Clus
         @Contract
         public void onEntry() {
             ctx.resetSliceProtectionState();
-            ctx.restoreCooldownsFromKvStore();
             log.info("Control loop Warmup: activation={}, warmup-period={}ms",
                      activationTimeMs,
                      ctx.config().warmUpPeriod().millis());

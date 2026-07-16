@@ -4,6 +4,11 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.node;
 
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.function.Supplier;
+
 import org.pragmatica.aether.api.ClusterEventAggregator;
 import org.pragmatica.aether.backup.BackupService;
 import org.pragmatica.aether.controller.ControlLoop;
@@ -12,9 +17,11 @@ import org.pragmatica.aether.deployment.cluster.BlueprintService;
 import org.pragmatica.aether.deployment.cluster.ClusterTopologyManager;
 import org.pragmatica.aether.deployment.drain.InFlightRequestTracker;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipFsm;
+import org.pragmatica.aether.deployment.membership.ntt.QuorumLossSnapshot;
 import org.pragmatica.aether.node.journal.TransitionJournal;
 import org.pragmatica.aether.node.lifecycle.NodeLifecycle;
 import org.pragmatica.aether.slice.delegation.TaskGroup;
+import org.pragmatica.aether.slice.fence.OwnershipEpochHighWater;
 import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Result;
 import org.pragmatica.aether.http.AppHttpServer;
@@ -34,6 +41,7 @@ import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.stream.StreamPartitionManager;
 import org.pragmatica.aether.stream.StreamReadRouter;
+import org.pragmatica.aether.stream.StreamWriteRouter;
 import org.pragmatica.aether.stream.consumer.ConsumerGroupCoordinator;
 import org.pragmatica.aether.stream.consumer.ConsumerGroupRegistry;
 import org.pragmatica.aether.ttm.TTMManager;
@@ -51,11 +59,6 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.messaging.Message;
 import org.pragmatica.net.tcp.security.CertificateRenewalScheduler;
-
-import java.util.List;
-import java.util.Map;
-import java.util.Set;
-import java.util.function.Supplier;
 
 
 public interface ManageableNode {
@@ -100,14 +103,63 @@ public interface ManageableNode {
     BackupService backupService();
     StreamPartitionManager streamPartitionManager();
     StreamReadRouter streamReadRouter();
+
+    /// Owner-routed publish path — the write-side mirror of [#streamReadRouter]. Since #265 made
+    /// non-owner nodes metadata-only, a management publish landing on an arbitrary node must reach the
+    /// partition owner rather than fail `PARTITION_NOT_LOCAL` on a local append. The production node
+    /// record supplies the fully-wired router (forward client + HRW owner resolver); the default keeps
+    /// `ManageableNode` test proxies compiling with a local-only writer.
+    default StreamWriteRouter streamWriteRouter() {
+        return StreamWriteRouter.localOnly(streamPartitionManager());
+    }
+
     ConsumerGroupCoordinator consumerGroupCoordinator();
     ConsumerGroupRegistry consumerGroupRegistry();
     org.pragmatica.aether.slice.stream.StreamNamespacesService streamNamespacesService();
     Fn1<Result<NodeId>, TaskGroup> taskGroupOwnerResolver();
     Map<String, StorageFactory.StorageSetup> storageSetups();
     Option<ClusterTopologyManager> clusterTopologyManager();
-    Option<CertificateRenewalScheduler> certRenewalScheduler();
-    /// Runtime TLS posture. `true` when the node's app-HTTP server is bound with TLS
+    /// Diagnostic/test observable — the leader `PresenceSampler` peak (monotonic high-water mark
+    /// of the debounced stable member-set size ever observed). The NTT `LeaderReconciler` latches
+    /// its `reachedFullMembership` cold-start guard off THIS value (`peak >= configuredCoreCount`),
+    /// NOT off the faster-latching `MembershipFsm.coreCountedMembers()` count — a probe that must
+    /// wait until provisioning is armed should gate on this reaching the cluster size before
+    /// inducing a deficit. 1 (self) until peers are admitted (K_UP consecutive healthy samples).
+    int observedPeakMembership();
+
+    /// #336 observability — assembled provisioning diagnostics (the leader reconcile decision
+    /// snapshot + the provisioning circuit-breaker state + the last provisioning failure), or
+    /// empty when this node is not the leader or owns no `ClusterTopologyManager`. Lets the
+    /// management API answer "why is this deficit not being filled?" without log-scraping.
+    /// Default `Option.none()` keeps `ManageableNode` test proxies compiling; the production node
+    /// record supplies the live view.
+    default Option<ProvisioningDiagnostics> provisioningDiagnostics() {
+        return Option.none();
+    }
+
+    /// SWIM-under-concurrent-loss observability — this node's LOCAL quorum-loss drain-readiness
+    /// view (strict member count, simple-majority threshold, below-threshold flag, armed latch),
+    /// or empty before the per-node `QuorumLossDetector` is wired. PER-NODE local state, never
+    /// leader-forwarded: querying a specific survivor returns THAT node's own detector view, so
+    /// `GET /api/cluster/membership` can answer "is this survivor's self-drain window armed and
+    /// below quorum?" without log-scraping. Default `Option.none()` keeps `ManageableNode` test
+    /// proxies compiling; the production node record supplies the live view.
+    default Option<QuorumLossSnapshot> quorumLossSnapshot() {
+        return Option.none();
+    }
+
+    /// #345 item 1f — the node's live per-ownership-domain epoch high-water table (the DATA-plane
+    /// mirror of the committed ownership records). `GET /api/ownership/{domain}` reads its
+    /// [OwnershipEpochHighWater#snapshot] to surface each entry's LOCAL `highWater` epoch and the
+    /// `fenced` deposed-owner-window flag (local high-water strictly after the committed owner
+    /// epoch). PER-NODE local state, never leader/owner-forwarded — each node answers from its own
+    /// table. Default `Option.none()` keeps `ManageableNode` test proxies compiling; the production
+    /// node record supplies the live table.
+    default Option<OwnershipEpochHighWater> ownershipEpochHighWater() {
+        return Option.none();
+    }
+
+    Option<CertificateRenewalScheduler> certRenewalScheduler();  /// Runtime TLS posture. `true` when the node's app-HTTP server is bound with TLS
     /// (equivalent to `AetherNodeConfig.tls().isPresent()` — i.e. `AetherConfig.tlsEnabled()`
     /// was true at startup and a `CertificateProvider` resolved). Surfaced through
     /// `GET /api/certificates` so integration tooling can assert active TLS without

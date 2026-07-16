@@ -4,6 +4,9 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.http.fsm;
 
+import java.util.function.BooleanSupplier;
+import java.util.function.Supplier;
+
 import org.pragmatica.aether.http.RouteTable;
 import org.pragmatica.consensus.fsm.ClusterFsmEvent;
 import org.pragmatica.http.server.HttpServer;
@@ -12,9 +15,6 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.statemachine.Fsm;
-
-import java.util.function.BooleanSupplier;
-import java.util.function.Supplier;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;

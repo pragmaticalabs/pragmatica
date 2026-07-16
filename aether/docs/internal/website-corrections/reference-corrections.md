@@ -31,7 +31,7 @@ Generated: 2026-04-05
 |-----------|--------|---------|
 | `@Slice` | Interface (TYPE) | Marks a service interface for annotation processing |
 | `@ResourceQualifier` | Annotation (ANNOTATION_TYPE) | Meta-annotation for defining custom resource qualifiers |
-| `@PgSql` | Parameter, Interface (PARAMETER, TYPE) | PostgreSQL type-safe persistence (Aether Store) |
+| `@PgSql` | Parameter, Interface (PARAMETER, TYPE) | PostgreSQL type-safe persistence (AEP) |
 | `@Sql` | Parameter (PARAMETER) | Generic SQL connector (default config: "database") |
 | `@Http` | Parameter (PARAMETER) | HTTP client (default config: "http") |
 | `@Notify` | Parameter (PARAMETER) | Notification sender — email/SMS (default config: "notification") |

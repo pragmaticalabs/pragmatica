@@ -4,6 +4,9 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.environment.azure;
 
+import java.util.ArrayList;
+import java.util.Map;
+
 import org.pragmatica.aether.environment.CloudConfig;
 import org.pragmatica.aether.environment.EnvironmentError;
 import org.pragmatica.aether.environment.EnvironmentIntegration;
@@ -11,9 +14,6 @@ import org.pragmatica.aether.environment.EnvironmentIntegrationFactory;
 import org.pragmatica.cloud.azure.AzureConfig;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
-
-import java.util.ArrayList;
-import java.util.Map;
 
 import static org.pragmatica.aether.environment.azure.AzureEnvironmentConfig.AzureLbConfig.azureLbConfig;
 import static org.pragmatica.aether.environment.azure.AzureEnvironmentConfig.azureEnvironmentConfig;
@@ -89,8 +89,9 @@ public record AzureEnvironmentIntegrationFactory() implements EnvironmentIntegra
                                       compute.getOrDefault("ssh_public_key", ""),
                                       compute.getOrDefault("vnet_subnet_id", ""),
                                       compute.getOrDefault("user_data", "")).map(envConfig -> applyLoadBalancer(envConfig,
-                                                                                                                config.loadBalancer())).map(envConfig -> applyDiscovery(envConfig,
-                                                                                                                                                                        config.discovery()))
+                                                                                                                config.loadBalancer()))
+                                     .map(envConfig -> applyDiscovery(envConfig,
+                                                                      config.discovery()))
                                      .map(envConfig -> applyCertificatePrefix(envConfig,
                                                                               config.security()));
     }

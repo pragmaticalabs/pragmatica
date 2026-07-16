@@ -4,17 +4,17 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.config.cluster;
 
-import org.pragmatica.config.toml.TomlDocument;
-import org.pragmatica.config.toml.TomlParser;
-import org.pragmatica.lang.Option;
-import org.pragmatica.lang.Result;
-
 import java.nio.file.Path;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+
+import org.pragmatica.config.toml.TomlDocument;
+import org.pragmatica.config.toml.TomlParser;
+import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Result;
 
 import static org.pragmatica.lang.Result.success;
 

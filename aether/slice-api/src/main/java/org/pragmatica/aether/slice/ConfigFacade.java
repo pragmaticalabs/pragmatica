@@ -4,10 +4,10 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.slice;
 
+import java.util.List;
+
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
-
-import java.util.List;
 
 
 public interface ConfigFacade {

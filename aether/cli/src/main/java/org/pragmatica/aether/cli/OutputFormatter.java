@@ -4,13 +4,13 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.cli;
 
-import org.pragmatica.json.JsonMapper;
-import org.pragmatica.lang.Cause;
-
 import java.io.PrintStream;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.StringJoiner;
+
+import org.pragmatica.json.JsonMapper;
+import org.pragmatica.lang.Cause;
 
 import tools.jackson.databind.JsonNode;
 
@@ -302,6 +302,14 @@ public sealed interface OutputFormatter {
         }
 
         return ExitCode.ERROR;
+    }
+
+    /// #308: render a transport/command failure honoring `--format`. With `--format json` the
+    /// error is emitted as a structured `{"error":"..."}` object on stderr so a scripted client
+    /// can parse it; otherwise the human-readable `Error: <message>` form is used. Returns
+    /// `ExitCode.ERROR` so command `onFailure` handlers can return it directly.
+    static int printError(Cause cause, OutputOptions options) {
+        return printError(cause.message(), options);
     }
 
     static int printNotFound(String message, OutputOptions options) {

@@ -4,6 +4,14 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.api;
 
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.LinkedBlockingDeque;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.Supplier;
+
 import org.pragmatica.aether.api.ClusterEvent.AlertInjected;
 import org.pragmatica.aether.api.ClusterEvent.Severity;
 import org.pragmatica.aether.api.ManagementApiResponses.AlertInjectResponse;
@@ -28,14 +36,6 @@ import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.messaging.MessageReceiver;
-
-import java.util.LinkedHashMap;
-import java.util.List;
-import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.LinkedBlockingDeque;
-import java.util.concurrent.atomic.AtomicLong;
-import java.util.function.Supplier;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -650,9 +650,11 @@ public class AlertManager {
             sb.append("\"name\":\"").append(escapeJson(injection.name())).append("\",");
             sb.append("\"severity\":\"").append(escapeJson(injection.severity())).append("\",");
             sb.append("\"message\":\"").append(escapeJson(injection.message())).append("\",");
-            sb.append("\"metric\":\"").append(escapeJson(injection.metric() == null
-                                                         ? ""
-                                                         : injection.metric())).append("\",");
+            sb.append("\"metric\":\"")
+              .append(escapeJson(injection.metric() == null
+                                 ? ""
+                                 : injection.metric()))
+              .append("\",");
             sb.append("\"value\":").append(injection.value() == null
                                            ? 0.0
                                            : injection.value()).append(",");
@@ -777,7 +779,9 @@ public class AlertManager {
             }
 
             sb.append("],");
-            sb.append("\"lastError\":\"").append(escapeJson(alert.lastError.map(Cause::message).or("unknown"))).append("\",");
+            sb.append("\"lastError\":\"")
+              .append(escapeJson(alert.lastError.map(Cause::message).or("unknown")))
+              .append("\",");
             sb.append("\"timestamp\":").append(alert.triggeredAt);
             sb.append("}");
             first = false;

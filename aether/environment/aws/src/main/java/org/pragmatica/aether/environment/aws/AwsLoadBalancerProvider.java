@@ -4,6 +4,13 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.environment.aws;
 
+import java.util.Collection;
+import java.util.List;
+import java.util.Set;
+import java.util.function.Predicate;
+import java.util.stream.Collectors;
+import java.util.stream.Stream;
+
 import org.pragmatica.aether.environment.LoadBalancerInfo;
 import org.pragmatica.aether.environment.LoadBalancerProvider;
 import org.pragmatica.aether.environment.LoadBalancerState;
@@ -14,13 +21,6 @@ import org.pragmatica.cloud.aws.api.TargetHealth;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
-
-import java.util.Collection;
-import java.util.List;
-import java.util.Set;
-import java.util.function.Predicate;
-import java.util.stream.Collectors;
-import java.util.stream.Stream;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -60,7 +60,11 @@ public record AwsLoadBalancerProvider(AwsClient client, String targetGroupArn) i
     }
 
     private LoadBalancerInfo toLoadBalancerInfo(List<TargetHealth> targets) {
-        var targetInfos = targets.stream().map(t -> new LoadBalancerInfo.TargetInfo(t.targetId(), t.state(), 1)).toList();
+        var targetInfos = targets.stream()
+                                 .map(t -> new LoadBalancerInfo.TargetInfo(t.targetId(),
+                                                                           t.state(),
+                                                                           1))
+                                 .toList();
 
         return new LoadBalancerInfo(targetGroupArn, targetGroupArn, "", "active", targetInfos);
     }

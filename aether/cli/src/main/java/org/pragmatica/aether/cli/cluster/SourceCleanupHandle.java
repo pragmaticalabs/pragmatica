@@ -4,9 +4,9 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.cli.cluster;
 
-import org.pragmatica.lang.Option;
-
 import java.util.Map;
+
+import org.pragmatica.lang.Option;
 
 
 /// Persisted cleanup handle for a source profile.

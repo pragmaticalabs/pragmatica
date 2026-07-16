@@ -4,8 +4,6 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.api;
 
-import io.netty.buffer.ByteBuf;
-import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.api.ClusterEvent.AccessDenied;
 import org.pragmatica.aether.api.ClusterEvent.AlertInjected;
 import org.pragmatica.aether.api.ClusterEvent.BackupCreated;
@@ -17,6 +15,7 @@ import org.pragmatica.aether.api.ClusterEvent.CommunityScaleRequest;
 import org.pragmatica.aether.api.ClusterEvent.ConfigChanged;
 import org.pragmatica.aether.api.ClusterEvent.ConnectionEstablished;
 import org.pragmatica.aether.api.ClusterEvent.ConnectionFailed;
+import org.pragmatica.aether.api.ClusterEvent.DeparturePushIncomplete;
 import org.pragmatica.aether.api.ClusterEvent.DeploymentCompleted;
 import org.pragmatica.aether.api.ClusterEvent.DeploymentFailed;
 import org.pragmatica.aether.api.ClusterEvent.DeploymentStarted;
@@ -29,6 +28,7 @@ import org.pragmatica.aether.api.ClusterEvent.NodeLeft;
 import org.pragmatica.aether.api.ClusterEvent.NodeLifecycleChanged;
 import org.pragmatica.aether.api.ClusterEvent.QuorumEstablished;
 import org.pragmatica.aether.api.ClusterEvent.QuorumLost;
+import org.pragmatica.aether.api.ClusterEvent.ScaleCapped;
 import org.pragmatica.aether.api.ClusterEvent.ScaleDown;
 import org.pragmatica.aether.api.ClusterEvent.ScaleUp;
 import org.pragmatica.aether.api.ClusterEvent.SelfDrainInitiated;
@@ -51,7 +51,11 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
+import io.netty.buffer.ByteBuf;
+import org.junit.jupiter.api.Test;
+
 import static org.assertj.core.api.Assertions.assertThat;
+
 
 /// Round-trip coverage for the sealed [ClusterEvent] hierarchy through the project's
 /// `@Codec`-generated codec framework (increment B5a). Encodes via the polymorphic
@@ -87,7 +91,7 @@ class ClusterEventCodecTest {
     /// dispatch (concrete-class -> tag), decoding reads the tag back to the concrete variant.
     @SuppressWarnings("unchecked")
     private static <T extends ClusterEvent> T roundTrip(T event) {
-        return (T) (ClusterEvent) CODEC.decode(CODEC.encode(event));
+        return (T)(ClusterEvent) CODEC.decode(CODEC.encode(event));
     }
 
     @Test
@@ -99,7 +103,9 @@ class ClusterEventCodecTest {
 
     @Test
     void nodeFailed_roundTrips() {
-        var original = new NodeFailed(at(2_000L, 7, "n2"), Severity.CRITICAL, "node failed",
+        var original = new NodeFailed(at(2_000L, 7, "n2"),
+                                      Severity.CRITICAL,
+                                      "node failed",
                                       details("nodeId", "n2", "reason", "timeout"));
         var decoded = roundTrip(original);
 
@@ -111,7 +117,9 @@ class ClusterEventCodecTest {
 
     @Test
     void leaderElected_roundTrips() {
-        var original = new LeaderElected(at(3_000L, 0, "leader"), Severity.INFO, "leader elected",
+        var original = new LeaderElected(at(3_000L, 0, "leader"),
+                                         Severity.INFO,
+                                         "leader elected",
                                          details("leader", "leader"));
 
         assertThat(roundTrip(original)).isEqualTo(original);
@@ -119,7 +127,9 @@ class ClusterEventCodecTest {
 
     @Test
     void selfDrainInitiated_roundTrips() {
-        var original = new SelfDrainInitiated(at(4_000L, 3, "n3"), Severity.WARNING, "self drain",
+        var original = new SelfDrainInitiated(at(4_000L, 3, "n3"),
+                                              Severity.WARNING,
+                                              "self drain",
                                               details("nodeId", "n3", "reason", "quorum-disappeared", "graceMs", "5000"));
 
         assertThat(roundTrip(original)).isEqualTo(original);
@@ -127,30 +137,41 @@ class ClusterEventCodecTest {
 
     @Test
     void streamMemoryExceeded_codecRoundTrip() {
-        var original = new StreamMemoryExceeded(at(4_500L, 8, "n3"), Severity.WARNING,
+        var original = new StreamMemoryExceeded(at(4_500L, 8, "n3"),
+                                                Severity.WARNING,
                                                 "Off-heap budget exhausted (create-floor) for stream 'orders' (4 parts): need 2097152 bytes, 1153433 available of 134217728",
-                                                details("streamName", "orders",
-                                                        "partitions", "4",
-                                                        "phase", "create-floor",
-                                                        "requestedBytes", "2097152",
-                                                        "availableBytes", "1153433",
-                                                        "maxTotalBytes", "134217728",
-                                                        "consistencyMode", "EVENTUAL",
-                                                        "nodeId", "n3"));
+                                                details("streamName",
+                                                        "orders",
+                                                        "partitions",
+                                                        "4",
+                                                        "phase",
+                                                        "create-floor",
+                                                        "requestedBytes",
+                                                        "2097152",
+                                                        "availableBytes",
+                                                        "1153433",
+                                                        "maxTotalBytes",
+                                                        "134217728",
+                                                        "consistencyMode",
+                                                        "EVENTUAL",
+                                                        "nodeId",
+                                                        "n3"));
         var decoded = roundTrip(original);
 
         assertThat(decoded).isEqualTo(original);
         assertThat(decoded.severity()).isEqualTo(Severity.WARNING);
-        assertThat(decoded.details()).containsEntry("phase", "create-floor")
-                                     .containsEntry("streamName", "orders")
-                                     .containsEntry("nodeId", "n3");
+        assertThat(decoded.details()).containsEntry("phase", "create-floor").containsEntry("streamName", "orders").containsEntry("nodeId",
+                                                                                                                                 "n3");
     }
 
     @Test
     void streamRegistered_roundTrips_withAddress() {
         var addr = resourceAddress();
-        var original = new StreamRegistered(at(5_000L, 2, "n4"), Severity.INFO, "stream registered",
-                                            details("stream", "ns:events:1.2.3"), addr);
+        var original = new StreamRegistered(at(5_000L, 2, "n4"),
+                                            Severity.INFO,
+                                            "stream registered",
+                                            details("stream", "ns:events:1.2.3"),
+                                            addr);
         var decoded = roundTrip(original);
 
         assertThat(decoded).isEqualTo(original);
@@ -160,8 +181,11 @@ class ClusterEventCodecTest {
     @Test
     void streamDeleted_roundTrips_withAddress() {
         var addr = resourceAddress();
-        var original = new StreamDeleted(at(6_000L, 9, "n5"), Severity.WARNING, "stream deleted",
-                                         details("stream", "ns:events:1.2.3"), addr);
+        var original = new StreamDeleted(at(6_000L, 9, "n5"),
+                                         Severity.WARNING,
+                                         "stream deleted",
+                                         details("stream", "ns:events:1.2.3"),
+                                         addr);
         var decoded = roundTrip(original);
 
         assertThat(decoded).isEqualTo(original);
@@ -170,7 +194,9 @@ class ClusterEventCodecTest {
 
     @Test
     void alertInjected_roundTrips() {
-        var original = new AlertInjected(at(7_000L, 1, "n6"), Severity.CRITICAL, "alert",
+        var original = new AlertInjected(at(7_000L, 1, "n6"),
+                                         Severity.CRITICAL,
+                                         "alert",
                                          details("alertId", "injected-7000-1", "metric", "cpu", "value", "0.99"));
 
         assertThat(roundTrip(original)).isEqualTo(original);
@@ -178,11 +204,41 @@ class ClusterEventCodecTest {
 
     @Test
     void traceInjected_roundTrips() {
-        var original = new TraceInjected(at(8_000L, 4, "n7"), Severity.INFO, "trace",
-                                         details("requestId", "r1", "traceId", "t1", "operation", "op",
-                                                 "durationMs", "12", "depth", "3"));
+        var original = new TraceInjected(at(8_000L, 4, "n7"),
+                                         Severity.INFO,
+                                         "trace",
+                                         details("requestId",
+                                                 "r1",
+                                                 "traceId",
+                                                 "t1",
+                                                 "operation",
+                                                 "op",
+                                                 "durationMs",
+                                                 "12",
+                                                 "depth",
+                                                 "3"));
 
         assertThat(roundTrip(original)).isEqualTo(original);
+    }
+
+    @Test
+    void scaleCapped_roundTrips() {
+        var original = new ScaleCapped(at(8_500L, 2, "leader"),
+                                       Severity.WARNING,
+                                       "org.test:hot:1.0.0 scaling capped at 3 instances (requested 5, reason: max-instances)",
+                                       details("artifact",
+                                               "org.test:hot:1.0.0",
+                                               "requestedInstances",
+                                               "5",
+                                               "cappedAtInstances",
+                                               "3",
+                                               "reason",
+                                               "max-instances"));
+        var decoded = roundTrip(original);
+
+        assertThat(decoded).isEqualTo(original);
+        assertThat(decoded.severity()).isEqualTo(Severity.WARNING);
+        assertThat(decoded.details()).containsEntry("reason", "max-instances").containsEntry("cappedAtInstances", "3");
     }
 
     @Test
@@ -196,7 +252,9 @@ class ClusterEventCodecTest {
 
     @Test
     void multiEntryDetailsMap_roundTrips() {
-        var original = new ConfigChanged(at(10_000L, 5, "n9"), Severity.WARNING, "config changed",
+        var original = new ConfigChanged(at(10_000L, 5, "n9"),
+                                         Severity.WARNING,
+                                         "config changed",
                                          details("a", "1", "b", "2", "c", "3", "d", "4", "e", "5"));
         var decoded = roundTrip(original);
 
@@ -206,7 +264,8 @@ class ClusterEventCodecTest {
 
     @Test
     void unicodeSummary_roundTrips() {
-        var original = new BackupCreated(at(11_000L, 1, "n10"), Severity.INFO,
+        var original = new BackupCreated(at(11_000L, 1, "n10"),
+                                         Severity.INFO,
                                          "привіт 🌍 backup",
                                          details("emoji", "🚀"));
         var decoded = roundTrip(original);
@@ -218,13 +277,15 @@ class ClusterEventCodecTest {
 
     @Test
     void encodingIsDeterministic() {
-        var original = new QuorumEstablished(at(12_000L, 6, "n11"), Severity.INFO, "quorum",
+        var original = new QuorumEstablished(at(12_000L, 6, "n11"),
+                                             Severity.INFO,
+                                             "quorum",
                                              details("size", "3", "term", "7"));
 
         assertThat(CODEC.encode(original)).isEqualTo(CODEC.encode(original));
     }
 
-    /// Encode all 30 closed-set variants into a single buffer (a list), decode them back, and
+    /// Encode all 33 closed-set variants into a single buffer (a list), decode them back, and
     /// assert order and concrete type are preserved through the polymorphic tag dispatch.
     @Test
     void allClosedVariants_listRoundTrip_preservesOrderAndType() {
@@ -233,7 +294,6 @@ class ClusterEventCodecTest {
 
         try {
             SliceCodec.writeCompact(buf, events.size());
-
             for (var event : events) {
                 CODEC.write(buf, event);
             }
@@ -247,7 +307,6 @@ class ClusterEventCodecTest {
 
             assertThat(decoded).hasSize(events.size());
             assertThat(decoded).isEqualTo(events);
-
             for (int i = 0; i < events.size(); i++) {
                 assertThat(decoded.get(i).getClass()).isEqualTo(events.get(i).getClass());
             }
@@ -262,39 +321,39 @@ class ClusterEventCodecTest {
         var d = details("k", "v");
         var addr = resourceAddress();
 
-        return List.of(
-            new NodeJoined(ts, sev, "NodeJoined", d),
-            new NodeLeft(ts, sev, "NodeLeft", d),
-            new NodeFailed(ts, sev, "NodeFailed", d),
-            new LeaderElected(ts, sev, "LeaderElected", d),
-            new LeaderLost(ts, sev, "LeaderLost", d),
-            new QuorumEstablished(ts, sev, "QuorumEstablished", d),
-            new QuorumLost(ts, sev, "QuorumLost", d),
-            new DeploymentStarted(ts, sev, "DeploymentStarted", d),
-            new DeploymentCompleted(ts, sev, "DeploymentCompleted", d),
-            new DeploymentFailed(ts, sev, "DeploymentFailed", d),
-            new ScaleUp(ts, sev, "ScaleUp", d),
-            new ScaleDown(ts, sev, "ScaleDown", d),
-            new SliceFailure(ts, sev, "SliceFailure", d),
-            new ConnectionEstablished(ts, sev, "ConnectionEstablished", d),
-            new ConnectionFailed(ts, sev, "ConnectionFailed", d),
-            new CommunityScaleRequest(ts, sev, "CommunityScaleRequest", d),
-            new CommunityMetricsSnapshot(ts, sev, "CommunityMetricsSnapshot", d),
-            new AccessDenied(ts, sev, "AccessDenied", d),
-            new NodeLifecycleChanged(ts, sev, "NodeLifecycleChanged", d),
-            new ConfigChanged(ts, sev, "ConfigChanged", d),
-            new BackupCreated(ts, sev, "BackupCreated", d),
-            new BackupRestored(ts, sev, "BackupRestored", d),
-            new BlueprintDeployed(ts, sev, "BlueprintDeployed", d),
-            new BlueprintDeleted(ts, sev, "BlueprintDeleted", d),
-            new GenerationChanged(ts, sev, "GenerationChanged", d),
-            new StreamRegistered(ts, sev, "StreamRegistered", d, addr),
-            new StreamDeleted(ts, sev, "StreamDeleted", d, addr),
-            new AlertInjected(ts, sev, "AlertInjected", d),
-            new TraceInjected(ts, sev, "TraceInjected", d),
-            new SelfDrainInitiated(ts, sev, "SelfDrainInitiated", d),
-            new StreamMemoryExceeded(ts, sev, "StreamMemoryExceeded", d)
-        );
+        return List.of(new NodeJoined(ts, sev, "NodeJoined", d),
+                       new NodeLeft(ts, sev, "NodeLeft", d),
+                       new NodeFailed(ts, sev, "NodeFailed", d),
+                       new LeaderElected(ts, sev, "LeaderElected", d),
+                       new LeaderLost(ts, sev, "LeaderLost", d),
+                       new QuorumEstablished(ts, sev, "QuorumEstablished", d),
+                       new QuorumLost(ts, sev, "QuorumLost", d),
+                       new DeploymentStarted(ts, sev, "DeploymentStarted", d),
+                       new DeploymentCompleted(ts, sev, "DeploymentCompleted", d),
+                       new DeploymentFailed(ts, sev, "DeploymentFailed", d),
+                       new ScaleUp(ts, sev, "ScaleUp", d),
+                       new ScaleDown(ts, sev, "ScaleDown", d),
+                       new SliceFailure(ts, sev, "SliceFailure", d),
+                       new ConnectionEstablished(ts, sev, "ConnectionEstablished", d),
+                       new ConnectionFailed(ts, sev, "ConnectionFailed", d),
+                       new CommunityScaleRequest(ts, sev, "CommunityScaleRequest", d),
+                       new CommunityMetricsSnapshot(ts, sev, "CommunityMetricsSnapshot", d),
+                       new AccessDenied(ts, sev, "AccessDenied", d),
+                       new NodeLifecycleChanged(ts, sev, "NodeLifecycleChanged", d),
+                       new ConfigChanged(ts, sev, "ConfigChanged", d),
+                       new BackupCreated(ts, sev, "BackupCreated", d),
+                       new BackupRestored(ts, sev, "BackupRestored", d),
+                       new BlueprintDeployed(ts, sev, "BlueprintDeployed", d),
+                       new BlueprintDeleted(ts, sev, "BlueprintDeleted", d),
+                       new GenerationChanged(ts, sev, "GenerationChanged", d),
+                       new StreamRegistered(ts, sev, "StreamRegistered", d, addr),
+                       new StreamDeleted(ts, sev, "StreamDeleted", d, addr),
+                       new AlertInjected(ts, sev, "AlertInjected", d),
+                       new TraceInjected(ts, sev, "TraceInjected", d),
+                       new SelfDrainInitiated(ts, sev, "SelfDrainInitiated", d),
+                       new StreamMemoryExceeded(ts, sev, "StreamMemoryExceeded", d),
+                       new DeparturePushIncomplete(ts, sev, "DeparturePushIncomplete", d),
+                       new ScaleCapped(ts, sev, "ScaleCapped", d));
     }
 
     /// `ExtendedEvent` is the non-sealed extension hatch: it gets NO parent-level codec (the
@@ -304,9 +363,11 @@ class ClusterEventCodecTest {
     @Test
     void extendedEvent_roundTrips_viaOwnCodec() {
         var registry = SliceCodec.sliceCodec(CODEC, List.of(TestExtendedEvent.CODEC));
-        var original = new TestExtendedEvent(at(13_000L, 2, "ext"), Severity.WARNING, "extended",
-                                             details("plugin", "demo"), "com.example:custom");
-
+        var original = new TestExtendedEvent(at(13_000L, 2, "ext"),
+                                             Severity.WARNING,
+                                             "extended",
+                                             details("plugin", "demo"),
+                                             "com.example:custom");
         ClusterEvent decoded = registry.decode(registry.encode(original));
 
         assertThat(decoded).isEqualTo(original);
@@ -316,28 +377,38 @@ class ClusterEventCodecTest {
 
     /// Test-local concrete `ExtendedEvent`. Hand-written `TypeCodec` (the manual-codec pattern the
     /// framework uses for non-generatable types) since extension events are app-owned.
-    record TestExtendedEvent(HlcTimestamp at, Severity severity, String summary, Map<String, String> details,
+    record TestExtendedEvent(HlcTimestamp at,
+                             Severity severity,
+                             String summary,
+                             Map<String, String> details,
                              String discriminator) implements ExtendedEvent {
         static final int TAG = SliceCodec.deterministicTag("org.pragmatica.aether.api.ClusterEventCodecTest.TestExtendedEvent");
 
-        static final TypeCodec<TestExtendedEvent> CODEC = new TypeCodec<>(
-            TestExtendedEvent.class, TAG,
-            (codec, buf, value) -> {
-                SliceCodec.writeCompact(buf, org.pragmatica.hlc.HlcTimestampCodec.TAG);
-                org.pragmatica.hlc.HlcTimestampCodec.writeBody(codec, buf, value.at());
-                SliceCodec.writeCompact(buf, value.severity().ordinal());
-                SliceCodec.writeString(buf, value.summary());
-                codec.write(buf, value.details());
-                SliceCodec.writeString(buf, value.discriminator());
-            },
-            ClusterEventCodecTest::readExtended);
+        static final TypeCodec<TestExtendedEvent> CODEC = new TypeCodec<>(TestExtendedEvent.class,
+                                                                          TAG,
+                                                                          (codec, buf, value) -> {
+                                                                              SliceCodec.writeCompact(buf,
+                                                                                                      org.pragmatica.hlc.HlcTimestampCodec.TAG);
+                                                                              org.pragmatica.hlc.HlcTimestampCodec.writeBody(codec,
+                                                                                                                             buf,
+                                                                                                                             value.at());
+                                                                              SliceCodec.writeCompact(buf,
+                                                                                                      value.severity()
+                                                                                                           .ordinal());
+                                                                              SliceCodec.writeString(buf,
+                                                                                                     value.summary());
+                                                                              codec.write(buf, value.details());
+                                                                              SliceCodec.writeString(buf,
+                                                                                                     value.discriminator());
+                                                                          },
+                                                                          ClusterEventCodecTest::readExtended);
     }
 
     @SuppressWarnings("unchecked")
     private static TestExtendedEvent readExtended(SliceCodec codec, ByteBuf buf) {
         SliceCodec.readCompact(buf);
         var at = org.pragmatica.hlc.HlcTimestampCodec.readBody(codec, buf);
-        var severity = Severity.values()[SliceCodec.readCompact(buf)];
+        var severity = Severity.values() [SliceCodec.readCompact(buf)];
         var summary = SliceCodec.readString(buf);
         var detailsMap = (Map<String, String>) codec.read(buf);
         var discriminator = SliceCodec.readString(buf);

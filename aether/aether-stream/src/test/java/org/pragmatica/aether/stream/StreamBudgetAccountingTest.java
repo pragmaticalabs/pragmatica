@@ -293,30 +293,90 @@ class StreamBudgetAccountingTest {
         }
 
         @Test
-        void hydrateEntry_cannotAdmitFloor_stillCreatesEntry() {
+        void hydrateEntry_cannotAdmitFloor_defersMetadataOnly() {
             var sink = new RecordingSink();
-            // 1 KiB budget — floor can't be admitted, but a follower must not diverge from committed config.
+            // 1 KiB budget — the held floor can't be admitted. Per spec §6 (increment 3) the follower NO
+            // LONGER over-subscribes: the stream is created METADATA-ONLY (no divergence from committed
+            // config), ZERO bytes are reserved past the cap, a named budget event fires, and the held
+            // partitions are DEFERRED until budget frees.
             var manager = streamPartitionManager(1024);
             manager.exhaustionSink(sink);
             try {
                 manager.onStreamConfigPut(streamConfigPut(mgmtDefault("committed")));
 
-                // Entry exists despite the floor not fitting (no cluster divergence).
+                // Entry exists despite the floor not fitting (no cluster divergence) — but metadata-only.
                 assertThat(manager.streamInfo("committed").isPresent()).isTrue();
-                // The floor is over-subscribed (added past max) to keep reserve/release symmetric, so
-                // the pool reflects the floor even though it exceeds maxTotalBytes.
-                var floor = perPartitionFloor(10_000, 4L * 1024 * 1024) * 4;
-                assertThat(manager.totalAllocatedBytes()).isEqualTo(floor);
-                assertThat(manager.totalAllocatedBytes()).isGreaterThan(manager.maxTotalBytes());
+                // NO over-subscription: nothing reserved past the cap.
+                assertThat(manager.totalAllocatedBytes()).isEqualTo(0L);
+                assertThat(manager.totalAllocatedBytes()).isLessThanOrEqualTo(manager.maxTotalBytes());
+                // The named budget-exhausted event still fires (CREATE_FLOOR phase).
                 assertThat(sink.events).hasSize(1);
                 assertThat(sink.events.getFirst().phase()).isEqualTo(Exhaustion.Phase.CREATE_FLOOR);
 
-                // And destroy returns it cleanly to zero (the leak detector applies on the degraded path too).
+                // Snapshot shows the deferral: 0 rings materialized, all 4 held partitions deferred, not over budget.
+                var snapshot = manager.hydrationSnapshot();
+                assertThat(snapshot.overBudget()).isFalse();
+                assertThat(snapshot.deferredPartitions()).isEqualTo(4L);
+                var view = snapshot.streams().getFirst();
+                assertThat(view.ringsMaterialized()).isEqualTo(0);
+                assertThat(view.partitionsDeferred()).isEqualTo(4);
+
+                // And destroy returns it cleanly to zero (the leak detector applies on the deferred path too).
                 manager.destroyStream("committed").onFailure(_ -> fail("Expected success"));
                 assertThat(manager.totalAllocatedBytes()).isEqualTo(0L);
             } finally {
                 manager.close();
             }
+        }
+
+        @Test
+        void hydrateDeferred_thenBudgetFrees_materializesViaRetryHook() {
+            // Budget sized for exactly ONE mgmt-default stream's 4-partition floor. Hydrate "first" (fills
+            // the budget), then hydrate "second" (deferred metadata-only). A deferred partition can't
+            // materialize yet — it fails with the NAMED budget cause (distinct from PARTITION_NOT_LOCAL).
+            // Destroying "first" frees the budget; the deferred-retry hook then materializes "second".
+            var floor4 = perPartitionFloor(10_000, 4L * 1024 * 1024) * 4;
+            var manager = streamPartitionManager(floor4);
+            try {
+                manager.onStreamConfigPut(streamConfigPut(mgmtDefault("first")));
+                manager.onStreamConfigPut(streamConfigPut(mgmtDefault("second")));
+
+                // First fully materialized; second deferred metadata-only (budget full, no over-subscribe).
+                assertThat(manager.totalAllocatedBytes()).isEqualTo(floor4);
+                assertThat(manager.hydrationSnapshot().overBudget()).isFalse();
+                var before = deferredView(manager, "second");
+                assertThat(before.ringsMaterialized()).isEqualTo(0);
+                assertThat(before.partitionsDeferred()).isEqualTo(4);
+
+                // A deferred partition cannot materialize under a full budget — NAMED as budget-exceeded,
+                // NOT partition-not-local (this node IS the holder; the caller retries, never forwards).
+                manager.materializePartition("second", 0)
+                       .onSuccess(_ -> fail("no budget headroom: materialize must defer"))
+                       .onFailure(cause -> assertThat(cause).isInstanceOf(StreamError.MaterializeBudgetExceeded.class));
+
+                // Budget frees.
+                manager.destroyStream("first").onFailure(_ -> fail("destroy first"));
+
+                // The deferred-retry hook now succeeds; partition 0's floor is reserved.
+                manager.materializePartition("second", 0).onFailure(_ -> fail("budget freed: retry hook should materialize"));
+
+                var perPartition = perPartitionFloor(10_000, 4L * 1024 * 1024);
+                assertThat(manager.totalAllocatedBytes()).isEqualTo(perPartition);
+                var after = deferredView(manager, "second");
+                assertThat(after.ringsMaterialized()).isEqualTo(1);
+                assertThat(after.partitionsDeferred()).isEqualTo(3);
+            } finally {
+                manager.close();
+            }
+        }
+
+        private static StreamPartitionManager.StreamHydration deferredView(StreamPartitionManager manager, String name) {
+            return manager.hydrationSnapshot()
+                          .streams()
+                          .stream()
+                          .filter(s -> s.name().equals(name))
+                          .findFirst()
+                          .orElseThrow(() -> new AssertionError("stream not in snapshot: " + name));
         }
     }
 

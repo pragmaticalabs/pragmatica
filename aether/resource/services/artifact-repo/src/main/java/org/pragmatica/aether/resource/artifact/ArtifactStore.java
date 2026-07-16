@@ -4,6 +4,16 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.resource.artifact;
 
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.HexFormat;
+import java.util.List;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Function;
+import java.util.stream.Collectors;
+
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.artifact.ArtifactId;
 import org.pragmatica.aether.artifact.GroupId;
@@ -22,16 +32,6 @@ import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.SharedScheduler;
-
-import java.nio.charset.StandardCharsets;
-import java.security.MessageDigest;
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.HexFormat;
-import java.util.List;
-import java.util.concurrent.atomic.AtomicInteger;
-import java.util.function.Function;
-import java.util.stream.Collectors;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -511,8 +511,9 @@ class ArtifactStoreImpl implements ArtifactStore {
     private Promise<Unit> dhtPutWithRetry(byte[] key, byte[] value, int attempt) {
         var result = Promise.<Unit> promise();
 
-        dht.put(key, value).onResult(r -> r.onSuccess(_ -> result.resolve(r))
-                                           .onFailure(cause -> handlePutFailure(key, value, attempt, cause, result)));
+        dht.put(key, value)
+           .onResult(r -> r.onSuccess(_ -> result.resolve(r))
+                           .onFailure(cause -> handlePutFailure(key, value, attempt, cause, result)));
 
         return result;
     }
@@ -553,8 +554,9 @@ class ArtifactStoreImpl implements ArtifactStore {
     private Promise<Option<byte[]>> dhtGetWithRetry(byte[] key, int attempt) {
         var result = Promise.<Option<byte[]>> promise();
 
-        dht.get(key).onResult(r -> r.onSuccess(_ -> result.resolve(r))
-                                    .onFailure(cause -> handleGetFailure(key, attempt, cause, result)));
+        dht.get(key)
+           .onResult(r -> r.onSuccess(_ -> result.resolve(r))
+                           .onFailure(cause -> handleGetFailure(key, attempt, cause, result)));
 
         return result;
     }
@@ -590,8 +592,9 @@ class ArtifactStoreImpl implements ArtifactStore {
     private Promise<Option<byte[]>> storageGetWithRetry(BlockId id, int attempt) {
         var result = Promise.<Option<byte[]>> promise();
 
-        storage.get(id).onResult(r -> r.onSuccess(_ -> result.resolve(r))
-                                       .onFailure(cause -> handleStorageGetFailure(id, attempt, cause, result)));
+        storage.get(id)
+               .onResult(r -> r.onSuccess(_ -> result.resolve(r))
+                               .onFailure(cause -> handleStorageGetFailure(id, attempt, cause, result)));
 
         return result;
     }
@@ -627,8 +630,9 @@ class ArtifactStoreImpl implements ArtifactStore {
     private Promise<BlockId> storagePutWithRetry(byte[] chunk, int attempt) {
         var result = Promise.<BlockId> promise();
 
-        storage.put(chunk).onResult(r -> r.onSuccess(_ -> result.resolve(r))
-                                          .onFailure(cause -> handleStoragePutFailure(chunk, attempt, cause, result)));
+        storage.put(chunk)
+               .onResult(r -> r.onSuccess(_ -> result.resolve(r))
+                               .onFailure(cause -> handleStoragePutFailure(chunk, attempt, cause, result)));
 
         return result;
     }

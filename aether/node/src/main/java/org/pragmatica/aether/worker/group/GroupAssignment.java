@@ -4,14 +4,14 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.worker.group;
 
-import org.pragmatica.consensus.NodeId;
-
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
 import java.util.TreeMap;
 import java.util.stream.Collectors;
+
+import org.pragmatica.consensus.NodeId;
 
 import static org.pragmatica.aether.worker.group.WorkerGroupId.workerGroupId;
 

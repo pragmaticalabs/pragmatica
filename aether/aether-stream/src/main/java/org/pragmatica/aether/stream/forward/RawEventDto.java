@@ -4,10 +4,10 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.stream.forward;
 
+import java.util.Arrays;
+
 import org.pragmatica.aether.stream.OffHeapRingBuffer;
 import org.pragmatica.serialization.Codec;
-
-import java.util.Arrays;
 
 
 @Codec

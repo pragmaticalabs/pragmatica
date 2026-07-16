@@ -4,12 +4,12 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.http;
 
+import java.util.List;
+
 import org.pragmatica.aether.http.handler.HttpRouteDefinition;
 import org.pragmatica.aether.http.handler.security.SecurityPolicy;
 import org.pragmatica.http.routing.Route;
 import org.pragmatica.http.routing.RouteSource;
-
-import java.util.List;
 
 import static org.pragmatica.aether.http.handler.HttpRouteDefinition.httpRouteDefinition;
 

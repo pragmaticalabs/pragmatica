@@ -25,6 +25,9 @@ even with large per-method offsets (e.g., ManagementApiTest has offsets up to 38
 | GracefulShutdownTest          | 11000     | 11100          | 60         | 3 nodes |
 | ForgeClusterIntegrationTest   | 11500     | 11600          | 15         | 3 nodes |
 | InvocationMetricsTest         | 12000     | 12100          | 0          | 5 nodes (shared cluster, `@BeforeAll`) |
+| SliceVersionLifecycleTest     | 12500     | 12600          | 0          | 3 nodes (shared cluster, app-http 12700; #198 §8.2/§11.3) |
+| StreamFanoutConsumerTest      | 13000     | 13100          | 0          | 5 nodes (shared cluster, app-http 13200; #265 STEP 0 streaming baseline) |
+| StreamCrashDurabilityTest     | 13500     | 13600          | 0          | 5 nodes (shared cluster, app-http 13700; streaming-persistence A6 WAL crash-durability) |
 
 ## Per-Method Offset Pattern
 
@@ -66,4 +69,7 @@ When adding a new test class:
 
 ## Reserved Ranges
 
-- 12500+ / 12600+: Reserved for future tests
+- 12500+ / 12600+: Allocated to SliceVersionLifecycleTest (app-http 12700)
+- 13000+ / 13100+: Allocated to StreamFanoutConsumerTest (app-http 13200)
+- 13500+ / 13600+: Allocated to StreamCrashDurabilityTest (app-http 13700)
+- 14000+ / 14100+: Reserved for future tests

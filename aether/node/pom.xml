@@ -6,7 +6,7 @@
     <parent>
         <groupId>org.pragmatica-lite.aether</groupId>
         <artifactId>aether</artifactId>
-        <version>1.0.0-rc1</version>
+        <version>1.0.0-rc2</version>
     </parent>
 
     <artifactId>node</artifactId>
@@ -103,6 +103,28 @@
         <dependency>
             <groupId>org.pragmatica-lite.aether</groupId>
             <artifactId>resource-api</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <!--
+            Resource-provider impl modules are bundled into the runtime image so deployed
+            slices can resolve their `@Http`/`@Notify` providers. Each ships a
+            META-INF/services entry for `ResourceFactory`; the shaded jar's
+            `ServicesResourceTransformer` merges them at package time and `SpiResourceProvider`
+            discovers them via ServiceLoader at provision time. Without these dependencies the
+            `@Notify` types (`NotificationSender`/`NotificationConfig`, which live in
+            resource-notification) are absent from the classpath and slices using them fail to
+            load opaquely, while `@Http` slices fail with `ResourceFactoryNotFound`. forge-core
+            inherits these transitively via `ember -> node` plus its own
+            `ServicesResourceTransformer`.
+        -->
+        <dependency>
+            <groupId>org.pragmatica-lite.aether</groupId>
+            <artifactId>resource-http</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>org.pragmatica-lite.aether</groupId>
+            <artifactId>resource-notification</artifactId>
             <version>${project.version}</version>
         </dependency>
         <dependency>

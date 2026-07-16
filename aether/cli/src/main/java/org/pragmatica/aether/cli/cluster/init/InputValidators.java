@@ -4,9 +4,9 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.cli.cluster.init;
 
-import org.pragmatica.lang.Result;
-
 import java.util.regex.Pattern;
+
+import org.pragmatica.lang.Result;
 
 
 public sealed interface InputValidators {

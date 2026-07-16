@@ -8,6 +8,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.artifact.Artifact;
+import org.pragmatica.aether.deployment.node.NodeDeploymentManager;
 import org.pragmatica.aether.slice.SliceActionConfig;
 import org.pragmatica.aether.slice.SliceState;
 import org.pragmatica.aether.slice.SliceStore;
@@ -163,6 +164,60 @@ class NodeDeploymentStateSeedEpochAckTest {
         }
     }
 
+    /// #325 — the node-local ROUTING-timeout remediation arm. A slice that has published its
+    /// routes locally and is wedged in ROUTING (cross-node epoch-acks never arrived on a freshly
+    /// reformed cluster) is force-progressed to ACTIVE by [`NodeDeploymentState.Active#
+    /// remediateStuckRouting`] when its routing timeout fires, instead of wedging indefinitely
+    /// (the 2/3-active signature). The remediation contract is verified directly (the production
+    /// arm schedules it at [`SliceState#ROUTING`]'s timeout, exercised here without the real wait).
+    @Nested
+    class RoutingRemediation {
+        @Test
+        void remediateStuckRouting_sliceStillRouting_clearsAckExpectation() {
+            seedNodeArtifact(OTHER, ARTIFACT, SliceState.ACTIVE);
+            seedNodeRoutes(SELF, ARTIFACT, SEED_EPOCH, routeEntry());
+            harness.dispatch(new QuorumEstablished());
+            var key = sliceKey(SELF, ARTIFACT);
+            seedDeploymentState(key, SliceState.ROUTING);
+
+            activeState().remediateStuckRouting(key);
+
+            // The expectation is gone: an ack that previously would have met the single-target
+            // threshold now finds no pending expectation (cleared by the remediation).
+            assertThat(activeState().routingEpochAckTracker().observeAck(key, OTHER, SEED_EPOCH).isPresent())
+                    .as("remediation of a still-ROUTING slice clears the now-moot ack expectation")
+                    .isFalse();
+        }
+
+        @Test
+        void remediateStuckRouting_sliceNotRouting_isNoOp() {
+            seedNodeArtifact(OTHER, ARTIFACT, SliceState.ACTIVE);
+            seedNodeRoutes(SELF, ARTIFACT, SEED_EPOCH, routeEntry());
+            harness.dispatch(new QuorumEstablished());
+            var key = sliceKey(SELF, ARTIFACT);
+            // Slice is already ACTIVE — remediation must not touch the (still-live) ack expectation.
+            seedDeploymentState(key, SliceState.ACTIVE);
+
+            activeState().remediateStuckRouting(key);
+
+            assertThat(activeState().routingEpochAckTracker().observeAck(key, OTHER, SEED_EPOCH).isPresent())
+                    .as("remediation no-ops for a slice that is no longer ROUTING — the expectation survives")
+                    .isTrue();
+        }
+
+        @Test
+        void remediateStuckRouting_unknownSlice_isNoOp() {
+            harness.dispatch(new QuorumEstablished());
+            var key = sliceKey(SELF, ARTIFACT);
+
+            activeState().remediateStuckRouting(key);
+
+            assertThat(activeState().routingEpochAckTracker().observeAck(key, OTHER, SEED_EPOCH).isPresent())
+                    .as("remediation no-ops for a slice absent from the deployment map")
+                    .isFalse();
+        }
+    }
+
     private NodeDeploymentState.Active activeState() {
         assertThat(harness.state()).isInstanceOf(NodeDeploymentState.Active.class);
 
@@ -197,6 +252,14 @@ class NodeDeploymentStateSeedEpochAckTest {
 
     private void applyToKvStore(KVCommand<AetherKey> command) {
         kvStore.process(kvStore.createBatch(List.of(command)));
+    }
+
+    /// Seed the live `Active.deployments` map with a deployment in `state` so the remediation
+    /// arm observes the slice in the desired (e.g. ROUTING) state without driving the full
+    /// load/activate chain (the stub SliceStore fails those by design).
+    private void seedDeploymentState(SliceNodeKey key, SliceState state) {
+        activeState().deployments()
+                     .put(key, NodeDeploymentManager.SliceDeployment.sliceDeployment(key, state, 0L));
     }
 
     private NodeDeploymentState buildContext(Fsm<NodeDeploymentState, ClusterFsmEvent> fsm,

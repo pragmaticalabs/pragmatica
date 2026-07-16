@@ -4,13 +4,13 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.forge.load.pattern;
 
+import java.util.concurrent.ThreadLocalRandom;
+import java.util.stream.IntStream;
+
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Verify;
 import org.pragmatica.lang.utils.Causes;
-
-import java.util.concurrent.ThreadLocalRandom;
-import java.util.stream.IntStream;
 
 import static org.pragmatica.lang.Result.success;
 
@@ -33,9 +33,11 @@ public record RandomGenerator(String template) implements PatternGenerator {
     @Override
     public String generate() {
         var random = ThreadLocalRandom.current();
-        var chars = IntStream.range(0, template.length()).mapToObj(i -> generateChar(template.charAt(i), random)).collect(StringBuilder::new,
-                                                                                                                          StringBuilder::append,
-                                                                                                                          StringBuilder::append);
+        var chars = IntStream.range(0,
+                                    template.length())
+                             .mapToObj(i -> generateChar(template.charAt(i),
+                                                         random))
+                             .collect(StringBuilder::new, StringBuilder::append, StringBuilder::append);
 
         return chars.toString();
     }

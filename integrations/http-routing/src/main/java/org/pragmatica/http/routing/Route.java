@@ -1,5 +1,8 @@
 package org.pragmatica.http.routing;
 
+import org.pragmatica.http.CommonContentType;
+import org.pragmatica.http.ContentType;
+import org.pragmatica.http.HttpMethod;
 import org.pragmatica.http.routing.security.RouteSecurityPolicy;
 import org.pragmatica.lang.Functions.*;
 import org.pragmatica.lang.Option;
@@ -12,7 +15,7 @@ import java.util.List;
 import java.util.function.Supplier;
 import java.util.stream.Stream;
 
-import static org.pragmatica.http.routing.HttpMethod.*;
+import static org.pragmatica.http.HttpMethod.*;
 
 /// Type-safe HTTP route definition with support for path parameters, query parameters, and request body.
 ///
@@ -67,12 +70,38 @@ public interface Route<T> extends RouteSource {
         return List.of();
     }
 
+    /// Returns the declared path arity of this route: the number of trailing path segments the
+    /// route consumes after its registered base [#path()], counting both real path parameters and
+    /// spacer (literal) segments.
+    ///
+    /// A no-parameter route (e.g. `get("/items").withoutParameters()`) has arity `0`; a single
+    /// path-parameter route (`get("/items/").withPath(aLong())`) has arity `1`; an interleaved
+    /// route (`withPath(aLong(), spacer("items"), aLong())`) has arity `3`. The router uses this to
+    /// disambiguate sibling routes that normalize to the same registration key, preferring the
+    /// candidate whose arity equals the request's trailing-segment count (see [RequestRouter]).
+    ///
+    /// @return the number of trailing path segments declared by this route
+    default int pathParamCount() {
+        return 0;
+    }
+
     /// Returns the optional name/identifier for this route.
     /// Used for service discovery and remote invocation.
     ///
     /// @return the route name, or empty string if not specified
     default String name() {
         return "";
+    }
+
+    /// Returns the API version this route belongs to (#198 §6.4).
+    /// `0` means the route is unversioned; a positive value `N` means the route was declared
+    /// under a `[vN.routes]` block. The version is carried as metadata so the same compiled
+    /// route can be mounted either in path mode (`{apiPrefix}/v{N}/{path}`, the default) or in
+    /// header mode at deploy time, rather than baking `/v{N}/` into the path at codegen.
+    ///
+    /// @return the API version, or `0` for an unversioned route
+    default int version() {
+        return 0;
     }
 
     /// Returns the security policy for this route.
@@ -117,16 +146,54 @@ public interface Route<T> extends RouteSource {
                               List<String> spacers,
                               String name,
                               RouteSecurityPolicy security) {
+        return route(method, path, handler, contentType, spacers, name, security, 0);
+    }
+
+    static <T> Route<T> route(HttpMethod method,
+                              String path,
+                              Handler<T> handler,
+                              ContentType contentType,
+                              List<String> spacers,
+                              String name,
+                              RouteSecurityPolicy security,
+                              int version) {
+        return route(method, path, handler, contentType, spacers, name, security, version, spacers.size());
+    }
+
+    static <T> Route<T> route(HttpMethod method,
+                              String path,
+                              Handler<T> handler,
+                              ContentType contentType,
+                              List<String> spacers,
+                              String name,
+                              RouteSecurityPolicy security,
+                              int version,
+                              int pathArity) {
         record route<T>(HttpMethod method,
                         String path,
                         Handler<T> handler,
                         ContentType contentType,
                         List<String> spacers,
                         String name,
-                        RouteSecurityPolicy security) implements Route<T> {
+                        RouteSecurityPolicy security,
+                        int version,
+                        int pathArity) implements Route<T> {
+            @Override
+            public int pathParamCount() {
+                return pathArity;
+            }
+
             @Override
             public RouteSource withPrefix(String prefix) {
-                return new route<>(method, PathUtils.normalize(prefix + path), handler, contentType, spacers, name, security);
+                return route(method,
+                             PathUtils.normalize(prefix + path),
+                             handler,
+                             contentType,
+                             spacers,
+                             name,
+                             security,
+                             version,
+                             pathArity);
             }
 
             @Override
@@ -137,10 +204,60 @@ public interface Route<T> extends RouteSource {
                 var nameStr = name.isEmpty()
                               ? ""
                               : " [name: " + name + "]";
-                return "Route: " + method + " " + path + spacerStr + nameStr + ", " + contentType;
+                var versionStr = version == 0
+                                 ? ""
+                                 : " [version: v" + version + "]";
+                return "Route: " + method + " " + path + spacerStr + nameStr + versionStr + ", " + contentType;
             }
         }
-        return new route<>(method, PathUtils.normalize(path), handler, contentType, spacers, name, security);
+        return new route<>(method, PathUtils.normalize(path), handler, contentType, spacers, name, security, version, pathArity);
+    }
+
+    /// Mount a route in path mode (#198 §6.4, the default detection mode). For a versioned route
+    /// (`version > 0`) the un-versioned compiled path is composed into `{apiPrefix}/v{version}/{path}`;
+    /// an unversioned route (`version == 0`) is returned unchanged. Applying this at route-registration
+    /// time keeps the same compiled slice deployable in either path mode or header mode (header mode is
+    /// a separate step), and makes path-mode behavior identical to baking `/v{N}/` at codegen.
+    ///
+    /// @param route     the compiled (un-versioned-path) route
+    /// @param apiPrefix the version-agnostic API prefix (e.g. `/api/orders`)
+    /// @return a route whose [#path()] is the path-mode mounted path
+    static Route<?> mountInPathMode(Route<?> route, String apiPrefix) {
+        return route.version() == 0
+               ? route
+               : route(route.method(),
+                       PathUtils.normalize(apiPrefix + "/v" + route.version() + route.path()),
+                       route.handler(),
+                       route.contentType(),
+                       route.spacers(),
+                       route.name(),
+                       route.security(),
+                       route.version(),
+                       route.pathParamCount());
+    }
+
+    /// Mount a route in header mode (#198 §7). For a versioned route (`version > 0`) the un-versioned
+    /// compiled path is composed into the bare `{apiPrefix}/{path}` (no `/v{N}/` segment), so every
+    /// declared version of a bind key shares one path and the version is selected from a request
+    /// header at dispatch time (see [VersionSelector]); an unversioned route (`version == 0`) is
+    /// returned unchanged. The version metadata is preserved so the dispatcher can index candidates
+    /// by version.
+    ///
+    /// @param route     the compiled (un-versioned-path) route
+    /// @param apiPrefix the version-agnostic API prefix (e.g. `/api/orders`)
+    /// @return a route whose [#path()] is the header-mode (bare) mounted path
+    static Route<?> mountInHeaderMode(Route<?> route, String apiPrefix) {
+        return route.version() == 0
+               ? route
+               : route(route.method(),
+                       PathUtils.normalize(apiPrefix + route.path()),
+                       route.handler(),
+                       route.contentType(),
+                       route.spacers(),
+                       route.name(),
+                       route.security(),
+                       route.version(),
+                       route.pathParamCount());
     }
 
     static Subroutes in(String path) {
@@ -253,6 +370,18 @@ public interface Route<T> extends RouteSource {
         default <B> BodyBuilder<R, B> withBody(Class<B> type) {
             return withBody(TypeToken.typeToken(type));
         }
+
+        /// Bind the raw request body as a `String` (for routes that `consume` a text media type).
+        /// Used by slice-processor codegen when `consumes` is TEXT/HTML/XML.
+        BodyBuilder<R, String> withStringBody();
+
+        /// Bind the raw request body as a `byte[]` (for routes that `consume` a binary media type).
+        /// Used by slice-processor codegen when `consumes` is BINARY.
+        BodyBuilder<R, byte[]> withByteBody();
+
+        /// Bind the request body as a parsed [MultipartRequest] (for `multipart/form-data` routes).
+        /// Used by slice-processor codegen when `consumes` is MULTIPART.
+        BodyBuilder<R, MultipartRequest> withMultipartBody();
 
         // Query parameters only (1-5)
         <Q1> QueryBuilder1<R, Q1> withQuery(QueryParameter<Q1> q1);
@@ -828,12 +957,21 @@ public interface Route<T> extends RouteSource {
         /// @return a new builder with the security policy set
         ContentTypeBuilder<T> withSecurity(RouteSecurityPolicy security);
 
+        /// Tags this route with the API version it belongs to (#198 §6.4).
+        /// `0` (the default) leaves the route unversioned; a positive `N` records that the route
+        /// was declared under `[vN.routes]`, so it can later be mounted in path mode
+        /// (`{apiPrefix}/v{N}/{path}`) or header mode at registration time.
+        ///
+        /// @param version the API version (`0` for unversioned)
+        /// @return a new builder with the version set
+        ContentTypeBuilder<T> versioned(int version);
+
         default Route<T> asText() {
-            return as(CommonContentTypes.TEXT_PLAIN);
+            return as(CommonContentType.TEXT_PLAIN);
         }
 
         default Route<T> asJson() {
-            return as(CommonContentTypes.APPLICATION_JSON);
+            return as(CommonContentType.APPLICATION_JSON);
         }
     }
 
@@ -845,48 +983,78 @@ public interface Route<T> extends RouteSource {
                                      Handler<T> handler,
                                      List<String> spacers,
                                      String name,
-                                     RouteSecurityPolicy security) implements ContentTypeBuilder<T> {
+                                     RouteSecurityPolicy security,
+                                     int version,
+                                     int pathArity) implements ContentTypeBuilder<T> {
+        ContentTypeBuilderImpl(HttpMethod method,
+                               String path,
+                               Handler<T> handler,
+                               List<String> spacers,
+                               String name,
+                               RouteSecurityPolicy security) {
+            this(method, path, handler, spacers, name, security, 0, spacers.size());
+        }
+
+        ContentTypeBuilderImpl(HttpMethod method,
+                               String path,
+                               Handler<T> handler,
+                               List<String> spacers,
+                               String name,
+                               RouteSecurityPolicy security,
+                               int pathArity) {
+            this(method, path, handler, spacers, name, security, 0, pathArity);
+        }
+
         @Override
         public Route<T> as(ContentType contentType) {
-            return route(method, path, handler, contentType, spacers, name, security);
+            return route(method, path, handler, contentType, spacers, name, security, version, pathArity);
         }
 
         @Override
         public ContentTypeBuilder<T> named(String name) {
-            return new ContentTypeBuilderImpl<>(method, path, handler, spacers, name, security);
+            return new ContentTypeBuilderImpl<>(method, path, handler, spacers, name, security, version, pathArity);
         }
 
         @Override
         public ContentTypeBuilder<T> withSecurity(RouteSecurityPolicy security) {
-            return new ContentTypeBuilderImpl<>(method, path, handler, spacers, name, security);
+            return new ContentTypeBuilderImpl<>(method, path, handler, spacers, name, security, version, pathArity);
+        }
+
+        @Override
+        public ContentTypeBuilder<T> versioned(int version) {
+            return new ContentTypeBuilderImpl<>(method, path, handler, spacers, name, security, version, pathArity);
         }
     }
 
-    record ParameterBuilderImpl<R>(HttpMethod method, String path, List<String> spacers, String defaultName) implements ParameterBuilder<R> {
+    record ParameterBuilderImpl<R>(HttpMethod method, String path, List<String> spacers, String defaultName, int pathArity) implements ParameterBuilder<R> {
         ParameterBuilderImpl(HttpMethod method, String path) {
-            this(method, path, List.of(), "");
+            this(method, path, List.of(), "", 0);
         }
 
         ParameterBuilderImpl(HttpMethod method, String path, List<String> spacers) {
-            this(method, path, spacers, "");
+            this(method, path, spacers, "", 0);
+        }
+
+        ParameterBuilderImpl(HttpMethod method, String path, List<String> spacers, String defaultName) {
+            this(method, path, spacers, defaultName, 0);
         }
 
         @Override
         public ContentTypeBuilder<R> to(Handler<R> handler) {
-            return new ContentTypeBuilderImpl<>(method, path, handler, spacers, defaultName, new RouteSecurityPolicy() {});
+            return new ContentTypeBuilderImpl<>(method, path, handler, spacers, defaultName, new RouteSecurityPolicy() {}, pathArity);
         }
 
         // Path parameters - collect spacers from path parameter definitions
         @Override
         public <P1> PathBuilder1<R, P1> withPath(PathParameter<P1> p1) {
             var collected = collectSpacers(p1);
-            return new PathBuilder1Impl<>(new ParameterBuilderImpl<>(method, path, collected, defaultName), p1);
+            return new PathBuilder1Impl<>(new ParameterBuilderImpl<>(method, path, collected, defaultName, 1), p1);
         }
 
         @Override
         public <P1, P2> PathBuilder2<R, P1, P2> withPath(PathParameter<P1> p1, PathParameter<P2> p2) {
             var collected = collectSpacers(p1, p2);
-            return new PathBuilder2Impl<>(new ParameterBuilderImpl<>(method, path, collected, defaultName), p1, p2);
+            return new PathBuilder2Impl<>(new ParameterBuilderImpl<>(method, path, collected, defaultName, 2), p1, p2);
         }
 
         @Override
@@ -894,7 +1062,7 @@ public interface Route<T> extends RouteSource {
                                                                  PathParameter<P2> p2,
                                                                  PathParameter<P3> p3) {
             var collected = collectSpacers(p1, p2, p3);
-            return new PathBuilder3Impl<>(new ParameterBuilderImpl<>(method, path, collected, defaultName), p1, p2, p3);
+            return new PathBuilder3Impl<>(new ParameterBuilderImpl<>(method, path, collected, defaultName, 3), p1, p2, p3);
         }
 
         @Override
@@ -903,7 +1071,7 @@ public interface Route<T> extends RouteSource {
                                                                          PathParameter<P3> p3,
                                                                          PathParameter<P4> p4) {
             var collected = collectSpacers(p1, p2, p3, p4);
-            return new PathBuilder4Impl<>(new ParameterBuilderImpl<>(method, path, collected, defaultName), p1, p2, p3, p4);
+            return new PathBuilder4Impl<>(new ParameterBuilderImpl<>(method, path, collected, defaultName, 4), p1, p2, p3, p4);
         }
 
         @Override
@@ -913,7 +1081,7 @@ public interface Route<T> extends RouteSource {
                                                                                  PathParameter<P4> p4,
                                                                                  PathParameter<P5> p5) {
             var collected = collectSpacers(p1, p2, p3, p4, p5);
-            return new PathBuilder5Impl<>(new ParameterBuilderImpl<>(method, path, collected, defaultName), p1, p2, p3, p4, p5);
+            return new PathBuilder5Impl<>(new ParameterBuilderImpl<>(method, path, collected, defaultName, 5), p1, p2, p3, p4, p5);
         }
 
         // Helper to collect spacer text from path parameters
@@ -932,6 +1100,23 @@ public interface Route<T> extends RouteSource {
         @Override
         public <B> BodyBuilder<R, B> withBody(TypeToken<B> type) {
             return fn -> to(ctx -> ctx.fromJson(type)
+                                      .async()
+                                      .flatMap(fn));
+        }
+
+        @Override
+        public BodyBuilder<R, String> withStringBody() {
+            return fn -> to(ctx -> fn.apply(ctx.bodyAsString()));
+        }
+
+        @Override
+        public BodyBuilder<R, byte[]> withByteBody() {
+            return fn -> to(ctx -> fn.apply(ctx.body()));
+        }
+
+        @Override
+        public BodyBuilder<R, MultipartRequest> withMultipartBody() {
+            return fn -> to(ctx -> ctx.multipartRequest()
                                       .async()
                                       .flatMap(fn));
         }

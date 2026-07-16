@@ -157,10 +157,19 @@ class ReplicaPlacementTest {
     }
 
     @Test
-    void appReplicationFactorClamps() {
-        assertThat(ReplicaPlacement.replicationFactor(3, 5)).isEqualTo(3);
+    void replicationFactor_appReplicasKnob_clampedToClusterSize() {
+        // Two-knob (#262): APP RF = the `replicas` knob (total copies incl owner) clamped to
+        // [1, clusterSize]. The separate min-sync-replicas knob governs only the write-ack floor and
+        // NEVER changes RF.
+        assertThat(ReplicaPlacement.replicationFactor(0, 5)).isEqualTo(1);  // clamp up to 1
+        assertThat(ReplicaPlacement.replicationFactor(1, 5)).isEqualTo(1);  // single copy (owner only)
+        assertThat(ReplicaPlacement.replicationFactor(2, 5)).isEqualTo(2);  // owner + 1 peer
+        assertThat(ReplicaPlacement.replicationFactor(3, 5)).isEqualTo(3);  // owner + 2 peers
+        assertThat(ReplicaPlacement.replicationFactor(5, 5)).isEqualTo(5);  // owner + 4 peers == N
+        // replicas > N -> clamp down to N.
+        assertThat(ReplicaPlacement.replicationFactor(4, 3)).isEqualTo(3);
         assertThat(ReplicaPlacement.replicationFactor(10, 5)).isEqualTo(5);
-        assertThat(ReplicaPlacement.replicationFactor(0, 5)).isEqualTo(1);
+        // empty cluster -> 0
         assertThat(ReplicaPlacement.replicationFactor(3, 0)).isEqualTo(0);
     }
 
@@ -168,16 +177,18 @@ class ReplicaPlacementTest {
     void systemReplicationFactorFormula() {
         assertThat(ReplicaPlacement.systemReplicationFactor(1)).isEqualTo(1);
         assertThat(ReplicaPlacement.systemReplicationFactor(3)).isEqualTo(3);
-        assertThat(ReplicaPlacement.systemReplicationFactor(5)).isEqualTo(3);
-        assertThat(ReplicaPlacement.systemReplicationFactor(7)).isEqualTo(5);
-        assertThat(ReplicaPlacement.systemReplicationFactor(10)).isEqualTo(8);
+        assertThat(ReplicaPlacement.systemReplicationFactor(5)).isEqualTo(5);
+        assertThat(ReplicaPlacement.systemReplicationFactor(7)).isEqualTo(7);
+        assertThat(ReplicaPlacement.systemReplicationFactor(10)).isEqualTo(10);
         assertThat(ReplicaPlacement.systemReplicationFactor(0)).isEqualTo(0);
     }
 
     @Test
-    void streamClassDispatch() {
+    void replicationFactor_streamClassDispatch_appHonoursReplicasSystemFullCluster() {
+        // Two-knob (#262): APP dispatch honours the `replicas` knob (clamped); SYSTEM ignores it in
+        // favour of the full cluster.
         assertThat(ReplicaPlacement.replicationFactor(StreamClass.APP, 2, 5)).isEqualTo(2);
-        assertThat(ReplicaPlacement.replicationFactor(StreamClass.SYSTEM, 2, 5)).isEqualTo(3);
+        assertThat(ReplicaPlacement.replicationFactor(StreamClass.SYSTEM, 2, 5)).isEqualTo(5);
     }
 
     @Test

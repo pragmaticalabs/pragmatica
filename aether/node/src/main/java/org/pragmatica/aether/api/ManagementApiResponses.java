@@ -4,11 +4,11 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.api;
 
-import org.pragmatica.hlc.HlcTimestamp;
-import org.pragmatica.lang.Option;
-
 import java.util.List;
 import java.util.Map;
+
+import org.pragmatica.hlc.HlcTimestamp;
+import org.pragmatica.lang.Option;
 
 
 public sealed interface ManagementApiResponses {
@@ -41,6 +41,29 @@ public sealed interface ManagementApiResponses {
     record NodesResponse(List<EnrichedNodeInfo> nodes) {}
 
     record EnrichedNodeInfo(String nodeId, String role, boolean isLeader) {}
+
+    /// Wire shape for `GET /api/nodes/{id}/endpoint` (harness-resilience spec A1). Resolves a
+    /// nodeId to its cluster-transport address so the integration harness can dial a node
+    /// without reconstructing addressing from `bootstrap-state.json` or the cloud API. `address`
+    /// is the `host:port` advertised in the consensus `NodeInfo`. `reachable` is a best-effort
+    /// TCP connect probe against that address — the endpoint is useful even when `reachable=false`
+    /// (it tells the caller where to try rather than forcing local reconstruction).
+    record NodeEndpointResponse(String nodeId, String address, boolean reachable) {}
+
+    /// Wire shape for `GET /api/nodes/live` (harness-resilience spec A2). Unifies a node's
+    /// cluster-identity, address, role, SWIM liveness, and node-reported work-state into one
+    /// document so the harness can distinguish "member the cluster knows about" from "node that
+    /// is actually alive" in a single call. Nodes present in the reported-state map but absent
+    /// from the SWIM-derived membership view are the zombie class: `swimAlive=false` and
+    /// `address=null` (`Option.none()`). `liveCount` counts `swimAlive=true` entries;
+    /// `zombieCount` counts the remainder.
+    record LiveNodesResponse(List<LiveNodeEntry> nodes, int liveCount, int zombieCount) {}
+
+    /// Per-node row of [LiveNodesResponse]. `address` is `Option.none()` (JSON `null`) for zombie
+    /// entries with no resolvable consensus address. `reportedState` is the node-authoritative
+    /// `NodeReportedState` (SYNCING / READY / DRAINING), empty when no metrics pong has been
+    /// observed yet.
+    record LiveNodeEntry(String nodeId, Option<String> address, String role, boolean swimAlive, String reportedState) {}
 
     record HealthResponse(String status,
                           boolean ready,
@@ -463,13 +486,27 @@ public sealed interface ManagementApiResponses {
                                          String mode,
                                          List<FsmMemberDetail> fsmMembers) {}
 
-    record TopologyNodeDetail(String nodeId, String role, String health, String hostname, String zone, String address) {}
+    record TopologyNodeDetail(String nodeId,
+                              String role,
+                              String assignedRole,
+                              String health,
+                              String hostname,
+                              String zone,
+                              String address) {}
 
     /// Wave-1 item 6 (cluster-topology-overhaul spec): per-member `MembershipFsm` truth —
     /// lifecycle state name (`Observed`/`Member`/`Suspect`/`Departing`/`Dead`), the SWIM
     /// incarnation high-water mark, and the last-known descriptor role/source labels — so a
     /// remote run reads membership truth from `GET /api/cluster/topology` without `docker logs`.
-    record FsmMemberDetail(String nodeId, String fsmState, long incarnation, String role, String source) {}
+    /// `assignedRole` (#259) is the CDM-assigned role from the KV-Store `ActivationDirective`
+    /// (`UNASSIGNED` when none); it diverges from the self-asserted descriptor `role` for
+    /// worker-demoted nodes, which previously made a demoted node look like a core.
+    record FsmMemberDetail(String nodeId,
+                           String fsmState,
+                           long incarnation,
+                           String role,
+                           String assignedRole,
+                           String source) {}
 
     record ClusterGenerationResponse(Option<EpochInfo> epoch,
                                      long rabiaTerm,
@@ -536,6 +573,147 @@ public sealed interface ManagementApiResponses {
                                  long updatedAt) {}
 
     record LoadBalancerStatusInfo(String type, String nodeId, String appEndpoint, String mgmtEndpoint) {}
+
+    /// #336 observability — flattened provisioning-diagnostics view for `GET /api/cluster/provisioning`.
+    /// Assembled from the leader reconcile decision snapshot, the provisioning circuit-breaker state,
+    /// and the last provisioning failure. `leader` is `true` only when this node is the leader and owns
+    /// a `ClusterTopologyManager` (the only node that can answer "why is this deficit not being
+    /// filled?"); when `false` the numeric fields are zeroed and `lastReason` explains the absence.
+    /// `deficit` is `configuredCoreCount - effective` clamped to `>= 0`. `lastProvisionFailure` is empty
+    /// (serialized as `null`) when no provisioning failure has been recorded.
+    record ProvisioningDiagnosticsResponse(boolean leader,
+                                           int configuredCoreCount,
+                                           int countedCoreMembers,
+                                           int effective,
+                                           int deficit,
+                                           boolean armedForProvisioning,
+                                           boolean reachedFullMembership,
+                                           boolean quorumSafe,
+                                           String lastTrigger,
+                                           String lastReason,
+                                           long deficitAgeMs,
+                                           ProvisioningCircuitBreakerInfo circuitBreaker,
+                                           Option<ProvisionFailureInfo> lastProvisionFailure) {}
+
+    record ProvisioningCircuitBreakerInfo(int consecutiveFailures, boolean tripped, long nextAllowedMs) {}
+
+    record ProvisionFailureInfo(String cause, long atEpochMs) {}
+
+    /// SWIM-under-concurrent-loss observability — this node's LOCAL membership view for
+    /// `GET /api/cluster/membership`. PER-NODE (not leader-forwarded): `nodeId` is the answering
+    /// survivor; the counts and `armed`/`belowThreshold` flags are read from THAT node's own
+    /// `MembershipFsm` + `QuorumLossDetector`, so an operator can see, per survivor, whether its
+    /// self-drain window is armed and below the simple-majority threshold. `members` lists every
+    /// peer the FSM tracks (including DEAD, retained for incarnation-fenced rejoin), sorted by
+    /// `nodeId` for stable output. When the local `QuorumLossDetector` is not yet wired the
+    /// threshold/below/armed fields carry sensible zero/false defaults.
+    record ClusterMembershipResponse(String nodeId,
+                                     int strictCoreMemberCount,
+                                     int countedCoreMemberCount,
+                                     int requiredThreshold,
+                                     boolean belowThreshold,
+                                     boolean armed,
+                                     List<MembershipNodeDetail> members) {}
+
+    /// Per-peer membership detail as seen by the answering node's `MembershipFsm`: the lifecycle
+    /// `state` (Observed/Member/Suspect/Departing/Dead), the incarnation high-water mark, the
+    /// descriptor `role`, whether the peer is in the strict (MEMBER-only) core set, and whether it
+    /// counts toward the effective (MEMBER+SUSPECT) core membership used as the quorum/heal-deficit
+    /// denominator.
+    record MembershipNodeDetail(String nodeId,
+                                String state,
+                                long incarnation,
+                                String role,
+                                boolean strictCore,
+                                boolean countsTowardEffective) {}
+
+    /// #345 item 1f committed-ownership + fence-diagnostic view for `GET /api/ownership/{domain}`.
+    /// PER-NODE (not leader/owner-forwarded): every entry is read from the answering node's committed
+    /// KV-Store and its LOCAL epoch high-water table, so `owner`/`epoch`/`highWater`/`fenced` reflect
+    /// what THIS node has applied. The ownership fence (#345 piece 1a) rejects a deposed owner's
+    /// strictly-older epoch in the Rabia applier, so the committed `epoch` is the live fencing token —
+    /// the diagnostic that lets the cloud handover test verify the fence engaged. `entries` is sorted
+    /// by `identity` for stable output; an empty list means no ownership of that domain is committed
+    /// yet (the operator-meaningful answer, not an error).
+    record OwnershipResponse(String domain, List<OwnershipEntry> entries) {}
+
+    /// Per-partition/key committed-ownership + fence row: `identity` is the domain-specific
+    /// partition/key (community id, DHT partition id, or `{stream}:{partition}`), `owner` the
+    /// committed owner `NodeId`, `epoch` the committed fence `Epoch` (`fenceEpoch`), and `highWater`
+    /// the answering node's LOCAL per-domain monotonic epoch high-water — both carried as the same
+    /// `(rabiaTerm, localCounter)` pair used elsewhere. `fenced` is `true` when `highWater` is
+    /// strictly after `epoch`: the deposed-owner window in which this node has already observed a
+    /// newer epoch than the committed owner record shows, so the committed owner would be rejected as
+    /// stale here. In steady state `highWater` equals `epoch` and `fenced` is `false`; a `true`
+    /// pinpoints the node/arc where a takeover has advanced past the still-visible committed owner.
+    record OwnershipEntry(String identity, String owner, EpochInfo epoch, EpochInfo highWater, boolean fenced) {}
+
+    /// #260/#261/#333 regression-sensor surface — the per-partition replica-set state as seen by the
+    /// answering node's `ReplicaRegistry`, with the deterministic HRW owner resolved via the read
+    /// path's owner resolver. The registry is AUTHORITATIVE only on the HRW owner (only the owner
+    /// receives every replica's ack), so `servedByOwner` tells an operator whether `replicas` is the
+    /// complete view; when false, `hrwOwner` names the node to re-query. `ownerHeadOffset` is the
+    /// answering node's local next-expected offset (head + 1) — on the owner it is the true tail used
+    /// to spot a CAUGHT_UP replica whose `confirmedOffset` lags it (#333 write-idle residual).
+    record StreamReplicasResponse(String stream,
+                                  int partition,
+                                  String hrwOwner,
+                                  boolean servedByOwner,
+                                  long ownerHeadOffset,
+                                  long earliestRetainedOffset,
+                                  List<ReplicaStateDetail> replicas) {}
+
+    /// Per-replica state row: `state` is the `ReplicationState` name (`SYNCING` / `CAUGHT_UP` /
+    /// `LAGGING`), `confirmedOffset` the replica's acked watermark, `isHrwOwner` whether this replica
+    /// is the resolved HRW owner. Compare a `CAUGHT_UP` replica's `confirmedOffset` against the
+    /// response's `ownerHeadOffset` to detect the #333 lag residual.
+    record ReplicaStateDetail(String nodeId, String state, long confirmedOffset, boolean isHrwOwner) {}
+
+    /// #265 increment 0 per-node hydration observability — the §6 regression sensor. Assembled ON
+    /// REQUEST from the answering node's `StreamPartitionManager` snapshot (live `streams` map + budget
+    /// counters, no hot-path accounting). PER-NODE: `totalAllocatedBytes` / `maxTotalBytes` are that
+    /// node's off-heap budget, `overBudget` its follower over-subscribe condition (false in steady state
+    /// since increment 3 removed over-subscription). `deferredPartitions` (#265 increment 3) is the
+    /// node-wide count of held-but-not-yet-materialized partitions — the budget-defer sensor (spec §6).
+    /// `streams` carries one row per live stream. `perStreamCeiling` / `clusterAggregateGuard` /
+    /// `currentAggregatePartitionSlots` / `aggregateHeadroom` / `configOverCeilingStreams` (#265 increment 4,
+    /// spec §7) add the partition-cap observability: the absolute per-stream ceiling, the
+    /// `100 × nodes × maxDeclaredReplicas` aggregate guard (`-1` when the cluster size is unknown), the current
+    /// cluster ring-slot total (Σ `partitions × replicas`), the remaining headroom, and the count of streams
+    /// whose committed config is over the ceiling. A later increment gates materialization on placement, at
+    /// which point `ringsMaterialized` drops below `partitionsDeclared` on non-replicas — this surface is
+    /// how that memory win is observed.
+    record StreamHydrationResponse(long totalAllocatedBytes,
+                                   long maxTotalBytes,
+                                   boolean overBudget,
+                                   long deferredPartitions,
+                                   int perStreamCeiling,
+                                   long clusterAggregateGuard,
+                                   long currentAggregatePartitionSlots,
+                                   long aggregateHeadroom,
+                                   int configOverCeilingStreams,
+                                   long releaseCandidates,
+                                   long releasedPartitionsSinceBoot,
+                                   long materializeQueueDepth,
+                                   List<StreamHydrationDetail> streams) {}
+
+    /// Per-stream hydration row: `partitionsDeclared` the configured partition count,
+    /// `ringsMaterialized` the rings actually built on this node (gated below declared on non-replicas),
+    /// `partitionsDeferred` (#265 increment 3) the held partitions not yet materialized (budget-deferred
+    /// per spec §6 or pre-membership), `floorBytesAllocated` the per-partition floor times the
+    /// materialized ring count, `overCeiling` (#265 increment 4) whether this committed config declares
+    /// more partitions than the per-stream ceiling (the follower-defense flag; materialization still
+    /// proceeds under the budget backstop), and `ownerPartitions` / `replicaPartitions` / `nonePartitions`
+    /// the placement-role tally for this node under the current supplier (default: all OWNER).
+    record StreamHydrationDetail(String stream,
+                                 int partitionsDeclared,
+                                 int ringsMaterialized,
+                                 int partitionsDeferred,
+                                 long floorBytesAllocated,
+                                 boolean overCeiling,
+                                 int ownerPartitions,
+                                 int replicaPartitions,
+                                 int nonePartitions) {}
 
     record ClusterStatusResponse(String clusterName,
                                  String desiredVersion,
@@ -667,4 +845,25 @@ public sealed interface ManagementApiResponses {
     /// written. `nodeId` is the target node. `success=true` is returned only
     /// once the consensus write succeeds.
     record PromoteNodeResponse(boolean success, String nodeId, String previousRole, String newRole, String message) {}
+
+    /// Wire shape for `GET /api/versions` (#198 §11.3) — the version registries of the versioned
+    /// slices THIS node has deployed, read from its local `HttpRoutePublisher`. `slices` is empty when
+    /// the node hosts no versioned slice.
+    record VersionsResponse(List<VersionedSliceView> slices) {}
+
+    /// Per-slice version registry projection in [VersionsResponse]. `slice` is the deployed artifact
+    /// coordinate; `apiPrefix` is the version-agnostic base prefix; `requireVersionHeader` and
+    /// `defaultVersion` are the header-mode detection knobs (`defaultVersion` is `Option.none()` /
+    /// JSON `null` when no version declares `defaultIfMissing`); `versions` lists each declared
+    /// version's lifecycle metadata.
+    record VersionedSliceView(String slice,
+                              String apiPrefix,
+                              boolean requireVersionHeader,
+                              Option<Integer> defaultVersion,
+                              List<VersionView> versions) {}
+
+    /// Per-version lifecycle metadata in [VersionedSliceView]. `sunset` is `Option.none()` (JSON
+    /// `null`) when the version declares no sunset date; `defaultIfMissing` is `true` for the version
+    /// the slice serves when the version header is absent (i.e. it equals the slice's `defaultVersion`).
+    record VersionView(int version, boolean deprecated, Option<String> sunset, boolean defaultIfMissing) {}
 }

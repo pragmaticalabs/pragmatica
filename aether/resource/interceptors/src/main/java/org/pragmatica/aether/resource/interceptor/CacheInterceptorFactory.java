@@ -4,6 +4,9 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.resource.interceptor;
 
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+
 import org.pragmatica.aether.resource.ResourceFactory;
 import org.pragmatica.aether.slice.ProvisioningContext;
 import org.pragmatica.dht.DHTClient;
@@ -12,9 +15,6 @@ import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.serialization.Deserializer;
 import org.pragmatica.serialization.Serializer;
-
-import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
 
 import static org.pragmatica.lang.Result.success;
 

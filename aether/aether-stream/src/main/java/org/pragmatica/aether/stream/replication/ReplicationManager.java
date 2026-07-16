@@ -4,6 +4,7 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.stream.replication;
 
+import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Promise;
@@ -16,8 +17,28 @@ import static org.pragmatica.lang.Unit.unit;
 
 
 public interface ReplicationManager extends AutoCloseable {
+    /// Owner-side view of a partition's earliest retained offset (its local ring tail). The owner's
+    /// live-ack path consults it to promote an acking replica to CAUGHT_UP only when its confirmed
+    /// offset reaches back to the partition's retained history, instead of on any ack (#261). The
+    /// default ({@link #ALWAYS_PROMOTE}) reports `-1`, preserving the promote-on-any-ack behavior where
+    /// no partition view is wired (tests, minimal runtimes).
+    @FunctionalInterface
+    interface EarliestRetainedOffset {
+        long earliestRetainedOffset(String streamName, int partition);
+    }
+
+    EarliestRetainedOffset ALWAYS_PROMOTE = (_, _) -> - 1L;
+
+    /// Replicate one accepted owner-local append to the partition's replica set, carrying the owner's
+    /// `ownerEpoch` fencing token (#345 item 1d-ii) so each replica fences a deposed owner's batch
+    /// against its own partition high-water before landing it.
     @Contract
-    void replicateEvent(String streamName, int partition, long offset, byte[] payload, long timestamp);
+    void replicateEvent(String streamName,
+                        int partition,
+                        long offset,
+                        byte[] payload,
+                        long timestamp,
+                        Epoch ownerEpoch);
 
     @Contract
     void handleAck(ReplicationMessage.ReplicateAck ack);
@@ -35,6 +56,15 @@ public interface ReplicationManager extends AutoCloseable {
                                                  ReplicaRegistry registry,
                                                  ReplicationTransport transport) {
         return new DefaultReplicationManager(governorId, registry, transport);
+    }
+
+    /// Owner-aware factory: `earliestRetained` lets the live-ack path gate the SYNCING→CAUGHT_UP
+    /// promotion on genuine history coverage (#261).
+    static ReplicationManager replicationManager(NodeId governorId,
+                                                 ReplicaRegistry registry,
+                                                 ReplicationTransport transport,
+                                                 EarliestRetainedOffset earliestRetained) {
+        return new DefaultReplicationManager(governorId, registry, transport, earliestRetained);
     }
 
     static ReplicationManager replicationManager(NodeId governorId, ReplicaRegistry registry) {
@@ -65,7 +95,12 @@ public interface ReplicationManager extends AutoCloseable {
         return new ReplicationManager() {
             @Contract
             @Override
-            public void replicateEvent(String streamName, int partition, long offset, byte[] payload, long timestamp) {}
+            public void replicateEvent(String streamName,
+                                       int partition,
+                                       long offset,
+                                       byte[] payload,
+                                       long timestamp,
+                                       Epoch ownerEpoch) {}
 
             @Contract
             @Override

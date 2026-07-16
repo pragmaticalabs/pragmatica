@@ -4,14 +4,7 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.stream.replication;
 
-import org.pragmatica.aether.stream.replication.ReplicaPlacement.Placement;
-import org.pragmatica.aether.stream.replication.ReplicaPlacement.StreamClass;
-import org.pragmatica.consensus.NodeId;
-import org.pragmatica.consensus.topology.ClusterStateNotification;
-import org.pragmatica.consensus.topology.MembershipDecision;
-import org.pragmatica.lang.Contract;
-import org.pragmatica.lang.Option;
-
+import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
@@ -21,8 +14,17 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BiConsumer;
+import java.util.function.Consumer;
 import java.util.function.IntSupplier;
 import java.util.function.Supplier;
+
+import org.pragmatica.aether.stream.replication.ReplicaPlacement.Placement;
+import org.pragmatica.aether.stream.replication.ReplicaPlacement.StreamClass;
+import org.pragmatica.consensus.NodeId;
+import org.pragmatica.consensus.topology.ClusterStateNotification;
+import org.pragmatica.consensus.topology.MembershipDecision;
+import org.pragmatica.lang.Contract;
+import org.pragmatica.lang.Option;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -42,7 +44,8 @@ import static org.pragmatica.lang.Option.some;
 /// On {@link #reconcile()} it snapshots the current core members and cluster size, then for each
 /// stream from the {@link StreamCatalog}:
 ///   1. classifies it APP vs SYSTEM ({@code system:*} namespace ⇒ {@link StreamClass#SYSTEM}),
-///   2. computes the effective replication factor (APP ⇒ configured `minSyncReplicas`;
+///   2. computes the effective replication factor (APP ⇒ the configured `replicas` knob — total
+///      copies including the owner — clamped to cluster size;
 ///      SYSTEM ⇒ {@link ReplicaPlacement#systemReplicationFactor(int)}),
 ///   3. for each partition computes {@link ReplicaPlacement#place} and diffs the desired replica
 ///      set against {@link ReplicaRegistry#replicasFor}, issuing
@@ -65,6 +68,20 @@ import static org.pragmatica.lang.Option.some;
 /// itself (self appears among the to-add set for that partition), so the seam is naturally
 /// idempotent — a steady-state reconcile fires it for nothing.
 ///
+/// ## Owner-reconciled batch driver seam (1d-iii / #265)
+/// The partition loop ACCUMULATES every `(stream, partition)` that has a placement into a
+/// pass-scoped list; at the END of the reconcile pass the controller invokes the injected
+/// `onReconcilePassComplete` callback ONCE with that whole {@link PartitionKey} list. The default is
+/// a no-op; in production AetherNode binds it to the leader-only {@link StreamPartitionOwnershipWriter}
+/// batch driver, which makes the stream ownership fence live: on a genuine HRW owner change the leader
+/// emits a consensus-committed `StreamPartitionOwnershipValue` with an advanced epoch, so a
+/// deposed-but-alive owner's stale-epoch append is fenced. The seam fires on every node's controller,
+/// but the writer self-limits — its `isLeaderSupplier` gate short-circuits to {@link Option#none} on a
+/// follower BEFORE any committed-state read, and its `decide` returns {@link Option#none} for an
+/// unchanged owner — so only the leader, and only for moved partitions, produces a write. Flushing the
+/// whole pass as ONE list lets the bound driver apply the moved-partition ownership Puts as a SINGLE
+/// consensus batch (#265 reshuffle fan-out bound) rather than one apply per moved partition.
+///
 /// ## Concurrency & quorum
 /// All reconciles are serialized on a single-thread executor, so the registry diff is never
 /// interleaved. While the consensus engine is `PASSIVE` (out of quorum) reconciles are suppressed
@@ -74,6 +91,11 @@ import static org.pragmatica.lang.Option.some;
 public final class ReplicaSetController implements AutoCloseable {
     private static final Logger log = LoggerFactory.getLogger(ReplicaSetController.class);
     private static final String SYSTEM_NAMESPACE_PREFIX = "system:";
+
+    /// Explicitly-typed no-op default for the batch driver seam. Needed to disambiguate the factory
+    /// delegation from the sibling `Executor`-tailed overload: a bare `_ -> {}` would match both the
+    /// single-arg `Consumer<List<PartitionKey>>` and `Executor` functional interfaces.
+    private static final Consumer<List<PartitionKey>> NO_OP_PASS_SEAM = _ -> {};
 
     /// Self-role for a single `(stream, partition)` under the current placement.
     public enum Role {
@@ -88,6 +110,7 @@ public final class ReplicaSetController implements AutoCloseable {
     private final IntSupplier clusterSizeSupplier;
     private final StreamCatalog catalog;
     private final BiConsumer<String, Integer> onBecameReplica;
+    private final Consumer<List<PartitionKey>> onReconcilePassComplete;
     private final Executor executor;
     private final boolean ownsExecutor;
     private final AtomicBoolean passive = new AtomicBoolean(false);
@@ -108,6 +131,7 @@ public final class ReplicaSetController implements AutoCloseable {
                                  IntSupplier clusterSizeSupplier,
                                  StreamCatalog catalog,
                                  BiConsumer<String, Integer> onBecameReplica,
+                                 Consumer<List<PartitionKey>> onReconcilePassComplete,
                                  Executor executor,
                                  boolean ownsExecutor) {
         this.registry = registry;
@@ -116,6 +140,7 @@ public final class ReplicaSetController implements AutoCloseable {
         this.clusterSizeSupplier = clusterSizeSupplier;
         this.catalog = catalog;
         this.onBecameReplica = onBecameReplica;
+        this.onReconcilePassComplete = onReconcilePassComplete;
         this.executor = executor;
         this.ownsExecutor = ownsExecutor;
     }
@@ -142,6 +167,29 @@ public final class ReplicaSetController implements AutoCloseable {
                                                             IntSupplier clusterSizeSupplier,
                                                             StreamCatalog catalog,
                                                             BiConsumer<String, Integer> onBecameReplica) {
+        return replicaSetController(registry,
+                                    self,
+                                    membersSupplier,
+                                    clusterSizeSupplier,
+                                    catalog,
+                                    onBecameReplica,
+                                    NO_OP_PASS_SEAM);
+    }
+
+    /// Production factory with an explicit catch-up seam (A4) AND an owner-reconciled batch driver seam
+    /// (1d-iii / #265). Owns a dedicated single-thread executor. The `onReconcilePassComplete` callback
+    /// fires once per reconcile pass, on EVERY node's controller, with the whole {@link PartitionKey}
+    /// list of partitions reconciled that pass; the bound driver (the leader-only
+    /// [StreamPartitionOwnershipWriter] batch driver) self-limits to the leader and to genuinely-moved
+    /// partitions and applies the moved-partition ownership Puts as a SINGLE consensus batch, so a
+    /// follower's pass and unchanged partitions emit nothing.
+    public static ReplicaSetController replicaSetController(ReplicaRegistry registry,
+                                                            NodeId self,
+                                                            Supplier<List<NodeId>> membersSupplier,
+                                                            IntSupplier clusterSizeSupplier,
+                                                            StreamCatalog catalog,
+                                                            BiConsumer<String, Integer> onBecameReplica,
+                                                            Consumer<List<PartitionKey>> onReconcilePassComplete) {
         var executor = Executors.newSingleThreadExecutor(runnable -> {
             var thread = new Thread(runnable, "replica-set-controller");
 
@@ -156,12 +204,14 @@ public final class ReplicaSetController implements AutoCloseable {
                                         clusterSizeSupplier,
                                         catalog,
                                         onBecameReplica,
+                                        onReconcilePassComplete,
                                         executor,
                                         true);
     }
 
     /// Test/advanced factory: caller supplies the executor (e.g. a same-thread executor for
-    /// deterministic unit tests) and is responsible for its lifecycle.
+    /// deterministic unit tests) and is responsible for its lifecycle. Uses a no-op owner-reconciled
+    /// batch driver seam.
     public static ReplicaSetController replicaSetController(ReplicaRegistry registry,
                                                             NodeId self,
                                                             Supplier<List<NodeId>> membersSupplier,
@@ -175,6 +225,29 @@ public final class ReplicaSetController implements AutoCloseable {
                                         clusterSizeSupplier,
                                         catalog,
                                         onBecameReplica,
+                                        NO_OP_PASS_SEAM,
+                                        executor,
+                                        false);
+    }
+
+    /// Test/advanced factory with an explicit owner-reconciled batch driver seam (1d-iii / #265): caller
+    /// supplies the executor (e.g. a same-thread executor for deterministic unit tests) and is
+    /// responsible for its lifecycle.
+    public static ReplicaSetController replicaSetController(ReplicaRegistry registry,
+                                                            NodeId self,
+                                                            Supplier<List<NodeId>> membersSupplier,
+                                                            IntSupplier clusterSizeSupplier,
+                                                            StreamCatalog catalog,
+                                                            BiConsumer<String, Integer> onBecameReplica,
+                                                            Consumer<List<PartitionKey>> onReconcilePassComplete,
+                                                            Executor executor) {
+        return new ReplicaSetController(registry,
+                                        self,
+                                        membersSupplier,
+                                        clusterSizeSupplier,
+                                        catalog,
+                                        onBecameReplica,
+                                        onReconcilePassComplete,
                                         executor,
                                         false);
     }
@@ -229,22 +302,55 @@ public final class ReplicaSetController implements AutoCloseable {
         // emit-gate (roleFor/isOwner) computes ownership from the SAME snapshot the registry is
         // reconciled against — not an independent live read taken at a different instant.
         reconciledView.set(some(new ReconciledView(members, clusterSize)));
+        // #265: accumulate the (stream, partition) pairs reconciled this pass, then flush the WHOLE
+        // list once at the end through onReconcilePassComplete — the bound owner-reconciled driver
+        // applies the moved-partition ownership Puts as a SINGLE consensus batch per pass instead of
+        // one apply per partition. Thread-confined: reconciles are serialized on the controller's
+        // single-thread executor, so this local accumulator is never touched concurrently.
+        var reconciled = new ArrayList<PartitionKey>();
+
         for (var spec : catalog.streams()) {
-            reconcileStream(spec, members, clusterSize);
+            reconcileStream(spec, members, clusterSize, reconciled);
         }
+
+        onReconcilePassComplete.accept(List.copyOf(reconciled));
     }
 
-    private void reconcileStream(StreamCatalog.StreamSpec spec, List<NodeId> members, int clusterSize) {
+    private void reconcileStream(StreamCatalog.StreamSpec spec,
+                                 List<NodeId> members,
+                                 int clusterSize,
+                                 List<PartitionKey> reconciled) {
         var streamClass = classify(spec.name());
-        var rf = ReplicaPlacement.replicationFactor(streamClass, spec.minSyncReplicas(), clusterSize);
+        var rf = ReplicaPlacement.replicationFactor(streamClass, spec.replicas(), clusterSize);
 
         for (var partition = 0; partition < spec.partitions(); partition++) {
             var p = partition;
 
-            ReplicaPlacement.place(spec.name(), partition, members, rf).onPresent(placement -> reconcilePartition(spec.name(),
-                                                                                                                  p,
-                                                                                                                  placement));
+            ReplicaPlacement.place(spec.name(),
+                                   partition,
+                                   members,
+                                   rf)
+                            .onPresent(placement -> reconcilePlacement(spec.name(),
+                                                                       p,
+                                                                       placement,
+                                                                       reconciled));
         }
+    }
+
+    /// Per-partition reconcile: keep the local registry in agreement with the desired replica set, then
+    /// ACCUMULATE this `(stream, partition)` into the pass-scoped list the controller flushes ONCE at the
+    /// end of the pass (1d-iii / #265). Every node runs this (the method runs on every node's controller)
+    /// for EVERY partition with a placement; the bound [StreamPartitionOwnershipWriter] batch driver
+    /// self-limits — it returns nothing on a follower (its internal `isLeaderSupplier` gate short-circuits
+    /// BEFORE any committed-state read) and nothing for an unchanged owner (its `decide` returns
+    /// [Option#none]). So a full reshuffle emits at most one consensus BATCH per pass, holding one Put per
+    /// genuinely-moved partition, only from the leader.
+    private void reconcilePlacement(String streamName,
+                                    int partition,
+                                    Placement placement,
+                                    List<PartitionKey> reconciled) {
+        reconcilePartition(streamName, partition, placement);
+        reconciled.add(PartitionKey.partitionKey(streamName, partition));
     }
 
     private void reconcilePartition(String streamName, int partition, Placement placement) {
@@ -262,8 +368,12 @@ public final class ReplicaSetController implements AutoCloseable {
         for (var node : desired) {
             if (!current.contains(node)) {
                 registry.registerReplica(streamName, partition, node);
-                if (node.equals(self) && catalog.partitionHasData(streamName, partition)) {
-                    // A4 seam: this node newly became a replica for a non-empty partition.
+                if (node.equals(self)) {
+                    // A4 seam: this node newly became a replica. Always attempt backfill — the source
+                    // partition's history is on the OWNER/peers, NOT in this node's (empty) local ring,
+                    // so gating on the LOCAL buffer's eventCount (partitionHasData) inverted the intent
+                    // and skipped backfill for exactly the fresh replicas that need it (#261). Backfill
+                    // is a no-op when the best caught-up source is genuinely empty.
                     onBecameReplica.accept(streamName, partition);
                 }
             }
@@ -329,10 +439,28 @@ public final class ReplicaSetController implements AutoCloseable {
         return ReplicaPlacement.place(streamName, partition, members, rf).map(Placement::owner);
     }
 
+    /// The membership snapshot this controller last reconciled from — the SINGLE placement view (#445).
+    /// {@link #roleFor} / {@link #ownerFor} and the registry reconcile all compute HRW placement from
+    /// THIS snapshot, so exposing it lets the backfill orchestrator ({@link PartitionBackfill}) rank its
+    /// owner/member view from the SAME snapshot instead of an independent LIVE topology read. That closes
+    /// the divergence by construction: a node the owner registers as a replica classifies itself REPLICA
+    /// (and materializes its ring) rather than self-classifying NONE off a differently-aged live view and
+    /// bouncing every apply `PARTITION_NOT_LOCAL`. Before the first reconcile the snapshot is absent and
+    /// this falls back to a fresh member-supplier read (bootstrap window) — the SAME fallback
+    /// {@link #roleFor} uses, so cold-start owner-immediate self-promotion is unaffected.
+    public List<NodeId> reconciledMembers() {
+        return currentMembers();
+    }
+
     private int rfFor(String streamName, StreamClass streamClass) {
         var clusterSize = currentClusterSize();
-        var requested = catalog.streams().stream().filter(spec -> spec.name()
-                                                                      .equals(streamName)).mapToInt(StreamCatalog.StreamSpec::minSyncReplicas).findFirst().orElse(0);
+        var requested = catalog.streams()
+                               .stream()
+                               .filter(spec -> spec.name()
+                                                   .equals(streamName))
+                               .mapToInt(StreamCatalog.StreamSpec::replicas)
+                               .findFirst()
+                               .orElse(0);
 
         return ReplicaPlacement.replicationFactor(streamClass, requested, clusterSize);
     }

@@ -58,6 +58,23 @@ public sealed interface SwimMessage {
         }
     }
 
+    /// Address-reflection request: a joining node asks a seed "what source address did you
+    /// observe my datagram coming from?". The seed replies with [WhoAmIReply] carrying the
+    /// kernel-resolved source address. `from` is the asking node's id (for logging/trace).
+    record WhoAmI(NodeId from) implements SwimMessage {
+        public static WhoAmI whoAmI(NodeId from) {
+            return new WhoAmI(from);
+        }
+    }
+
+    /// Reply to a [WhoAmI] request: `observedAddress` is the source address the seed observed
+    /// on the requester's datagram, echoed back so the requester can advertise a routable address.
+    record WhoAmIReply(InetSocketAddress observedAddress) implements SwimMessage {
+        public static WhoAmIReply whoAmIReply(InetSocketAddress observedAddress) {
+            return new WhoAmIReply(observedAddress);
+        }
+    }
+
     /// A single membership update disseminated via piggyback.
     @Codec
     record MembershipUpdate(NodeId nodeId, MemberState state, long incarnation, InetSocketAddress address) {

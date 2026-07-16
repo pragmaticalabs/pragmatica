@@ -4,11 +4,11 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.pg.parser;
 
-import org.pragmatica.lang.Result;
-import org.pragmatica.lang.utils.Causes;
-
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+
+import org.pragmatica.lang.Result;
+import org.pragmatica.lang.utils.Causes;
 
 
 public final class PostgresGrammar {

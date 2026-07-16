@@ -4,17 +4,6 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.cli.cluster;
 
-import org.pragmatica.aether.management.route.ManagementRoute;
-import org.pragmatica.http.HttpOperations;
-import org.pragmatica.http.HttpResult;
-import org.pragmatica.http.JdkHttpOperations;
-import org.pragmatica.lang.Cause;
-import org.pragmatica.lang.Contract;
-import org.pragmatica.lang.Option;
-import org.pragmatica.lang.Result;
-import org.pragmatica.lang.Unit;
-import org.pragmatica.lang.io.TimeSpan;
-
 import javax.net.ssl.SSLContext;
 import javax.net.ssl.TrustManager;
 import javax.net.ssl.X509TrustManager;
@@ -28,6 +17,17 @@ import java.security.cert.X509Certificate;
 import java.time.Duration;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicReference;
+
+import org.pragmatica.aether.management.route.ManagementRoute;
+import org.pragmatica.http.HttpOperations;
+import org.pragmatica.http.HttpResult;
+import org.pragmatica.http.JdkHttpOperations;
+import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Contract;
+import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.io.TimeSpan;
 
 import static org.pragmatica.lang.Option.option;
 
@@ -51,6 +51,25 @@ public sealed interface ClusterHttpClient {
         } catch (NoSuchAlgorithmException | KeyManagementException e) {
             System.err.println("Warning: failed to enable TLS skip-verify in ClusterHttpClient: " + e.getMessage());
         }
+    }
+
+    /// #209: install a trust store containing ONLY the CA derived from `clusterSecret`, so the HTTPS
+    /// client trusts the cluster's own auto-generated certificates and rejects everything else (MITM
+    /// defense). Replaces the blind [#enableTlsSkipVerify] for the auto-generated-TLS bootstrap path.
+    /// On derivation failure the client is left unchanged (caller logs); it does NOT silently fall back
+    /// to trust-all.
+    @Contract
+    static void enableClusterTrust(String clusterSecret) {
+        ClusterTrust.sslContextFor(clusterSecret)
+                    .onSuccess(ClusterHttpClient::installSslContext)
+                    .onFailure(cause -> System.err.println("Warning: failed to derive cluster CA trust: " + cause.message()));
+    }
+
+    @Contract
+    private static void installSslContext(SSLContext sslContext) {
+        var client = HttpClient.newBuilder().sslContext(sslContext).build();
+
+        HTTP_OPS_REF.set(JdkHttpOperations.jdkHttpOperations(client));
     }
 
     final class TrustAllManager implements X509TrustManager {
@@ -186,7 +205,10 @@ public sealed interface ClusterHttpClient {
     private static Result<String> doPost(String endpoint, String path, String jsonBody) {
         var uri = URI.create(endpoint + path);
         var apiKey = resolveApiKey();
-        var builder = HttpRequest.newBuilder().uri(uri).header("Content-Type", "application/json").POST(HttpRequest.BodyPublishers.ofString(jsonBody));
+        var builder = HttpRequest.newBuilder()
+                                 .uri(uri)
+                                 .header("Content-Type", "application/json")
+                                 .POST(HttpRequest.BodyPublishers.ofString(jsonBody));
 
         apiKey.onPresent(key -> builder.header("X-API-Key", key));
         applyTimeout(builder);
@@ -201,7 +223,10 @@ public sealed interface ClusterHttpClient {
     private static Result<String> doPut(String endpoint, String path, String jsonBody) {
         var uri = URI.create(endpoint + path);
         var apiKey = resolveApiKey();
-        var builder = HttpRequest.newBuilder().uri(uri).header("Content-Type", "application/json").PUT(HttpRequest.BodyPublishers.ofString(jsonBody));
+        var builder = HttpRequest.newBuilder()
+                                 .uri(uri)
+                                 .header("Content-Type", "application/json")
+                                 .PUT(HttpRequest.BodyPublishers.ofString(jsonBody));
 
         apiKey.onPresent(key -> builder.header("X-API-Key", key));
         applyTimeout(builder);
@@ -234,8 +259,14 @@ public sealed interface ClusterHttpClient {
 
     @SuppressWarnings({"JBCT-UTIL-01", "JBCT-SEQ-01"})
     static Result<String> getDirect(String url) {
+        return getDirect(url, Option.empty());
+    }
+
+    @SuppressWarnings({"JBCT-UTIL-01", "JBCT-SEQ-01"})
+    static Result<String> getDirect(String url, Option<String> apiKey) {
         var builder = HttpRequest.newBuilder().uri(URI.create(url)).GET();
 
+        apiKey.onPresent(key -> builder.header("X-API-Key", key));
         applyTimeout(builder);
 
         return HTTP_OPS_REF.get()
@@ -251,7 +282,10 @@ public sealed interface ClusterHttpClient {
 
     @SuppressWarnings({"JBCT-UTIL-01", "JBCT-SEQ-01"})
     static Result<String> postDirect(String url, String jsonBody, Option<String> apiKey) {
-        var builder = HttpRequest.newBuilder().uri(URI.create(url)).header("Content-Type", "application/json").POST(HttpRequest.BodyPublishers.ofString(jsonBody));
+        var builder = HttpRequest.newBuilder()
+                                 .uri(URI.create(url))
+                                 .header("Content-Type", "application/json")
+                                 .POST(HttpRequest.BodyPublishers.ofString(jsonBody));
 
         apiKey.onPresent(key -> builder.header("X-API-Key", key));
         applyTimeout(builder);
@@ -262,14 +296,41 @@ public sealed interface ClusterHttpClient {
                            .flatMap(ClusterHttpClient::extractBody);
     }
 
+    /// #209: infer the management scheme from the single source of truth — the active cluster
+    /// registry entry's endpoint (written with the correct scheme at bootstrap, see
+    /// `BootstrapPhasePost`). Falls back to `http` only when no registry endpoint is resolvable. This
+    /// lets the operational helpers below target a TLS-on cluster without each caller threading a
+    /// scheme parameter.
+    static String registryScheme() {
+        return resolveEndpoint().map(ClusterHttpClient::schemeOf)
+                              .or("http");
+    }
+
+    /// Pure scheme extraction from an endpoint URL — package-visible for unit testing. Anything not
+    /// explicitly `https://` is treated as `http`.
+    static String schemeOf(String endpoint) {
+        return endpoint.startsWith("https://")
+               ? "https"
+               : "http";
+    }
+
     static Result<Unit> drainNode(String address, int managementPort, String nodeId) {
-        var url = "http://" + address + ":" + managementPort + "/api/nodes/drain/" + nodeId;
+        return drainNode(registryScheme(), address, managementPort, nodeId);
+    }
+
+    /// #209: scheme-aware variant — operational commands against a TLS-on cluster must use `https`.
+    static Result<Unit> drainNode(String scheme, String address, int managementPort, String nodeId) {
+        var url = scheme + "://" + address + ":" + managementPort + "/api/nodes/drain/" + nodeId;
 
         return postDirect(url, "{}").mapToUnit();
     }
 
     static Result<Unit> waitForNodeReady(String address, int managementPort, long timeoutMs) {
-        var url = "http://" + address + ":" + managementPort + "/health/ready";
+        return waitForNodeReady(registryScheme(), address, managementPort, timeoutMs);
+    }
+
+    static Result<Unit> waitForNodeReady(String scheme, String address, int managementPort, long timeoutMs) {
+        var url = scheme + "://" + address + ":" + managementPort + "/health/ready";
         var deadline = System.currentTimeMillis() + timeoutMs;
 
         while (System.currentTimeMillis() < deadline) {
@@ -284,13 +345,25 @@ public sealed interface ClusterHttpClient {
     }
 
     static Result<String> checkClusterHealth(String address, int managementPort) {
-        var url = "http://" + address + ":" + managementPort + "/api/health";
+        return checkClusterHealth(registryScheme(), address, managementPort);
+    }
+
+    static Result<String> checkClusterHealth(String scheme, String address, int managementPort) {
+        var url = scheme + "://" + address + ":" + managementPort + "/api/health";
 
         return getDirect(url);
     }
 
     static Result<Unit> waitForDrainComplete(String address, int managementPort, String nodeId, long timeoutMs) {
-        var url = "http://" + address + ":" + managementPort + "/api/nodes/lifecycle/" + nodeId;
+        return waitForDrainComplete(registryScheme(), address, managementPort, nodeId, timeoutMs);
+    }
+
+    static Result<Unit> waitForDrainComplete(String scheme,
+                                             String address,
+                                             int managementPort,
+                                             String nodeId,
+                                             long timeoutMs) {
+        var url = scheme + "://" + address + ":" + managementPort + "/api/nodes/lifecycle/" + nodeId;
         var deadline = System.currentTimeMillis() + timeoutMs;
 
         while (System.currentTimeMillis() < deadline) {

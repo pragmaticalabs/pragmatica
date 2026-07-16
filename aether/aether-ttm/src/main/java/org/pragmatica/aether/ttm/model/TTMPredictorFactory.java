@@ -4,11 +4,11 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.ttm.model;
 
+import java.util.ServiceLoader;
+
 import org.pragmatica.aether.config.TtmConfig;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
-
-import java.util.ServiceLoader;
 
 
 public interface TTMPredictorFactory {

@@ -4,6 +4,10 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.deployment.cluster.fsm;
 
+import java.util.List;
+import java.util.Set;
+import java.util.stream.Collectors;
+
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.config.PlacementPolicy;
 import org.pragmatica.aether.deployment.cluster.AllocationPool;
@@ -14,10 +18,6 @@ import org.pragmatica.aether.slice.kvstore.AetherKey.SliceNodeKey;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
-
-import java.util.List;
-import java.util.Set;
-import java.util.stream.Collectors;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -136,7 +136,11 @@ record SliceAllocationEngine(Active active) {
     }
 
     private Set<NodeId> findTrulyEmptyNodes() {
-        var nodesWithAnySlice = active.sliceStates().keySet().stream().map(SliceNodeKey::nodeId).collect(Collectors.toSet());
+        var nodesWithAnySlice = active.sliceStates()
+                                      .keySet()
+                                      .stream()
+                                      .map(SliceNodeKey::nodeId)
+                                      .collect(Collectors.toSet());
 
         return active.allocatableNodes()
                      .stream()

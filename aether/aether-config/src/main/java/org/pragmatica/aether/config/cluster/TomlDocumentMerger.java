@@ -4,11 +4,11 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.config.cluster;
 
-import org.pragmatica.config.toml.TomlDocument;
-
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+
+import org.pragmatica.config.toml.TomlDocument;
 
 
 @SuppressWarnings("JBCT-UTIL-02")

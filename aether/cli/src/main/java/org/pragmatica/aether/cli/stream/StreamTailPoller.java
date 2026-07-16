@@ -4,14 +4,14 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.cli.stream;
 
+import java.io.PrintStream;
+import java.util.List;
+import java.util.function.BiFunction;
+
 import org.pragmatica.aether.cli.OutputFormatter;
 import org.pragmatica.aether.management.route.ManagementRoute;
 import org.pragmatica.aether.slice.resource.ResourceAddress;
 import org.pragmatica.json.JsonMapper;
-
-import java.io.PrintStream;
-import java.util.List;
-import java.util.function.BiFunction;
 
 import tools.jackson.databind.JsonNode;
 

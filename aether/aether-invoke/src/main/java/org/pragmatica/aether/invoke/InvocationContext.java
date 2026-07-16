@@ -4,10 +4,10 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.invoke;
 
+import java.util.function.Supplier;
+
 import org.pragmatica.lang.Option;
 import org.pragmatica.utility.IdGenerator;
-
-import java.util.function.Supplier;
 
 import org.slf4j.MDC;
 

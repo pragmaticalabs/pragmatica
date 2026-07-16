@@ -4,11 +4,11 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.deployment.drain;
 
-import org.pragmatica.lang.Contract;
-
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
+
+import org.pragmatica.lang.Contract;
 
 
 /// Tracks the number of in-flight management/app-HTTP requests on this node. The

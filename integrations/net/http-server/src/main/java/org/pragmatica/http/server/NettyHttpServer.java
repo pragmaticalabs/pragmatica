@@ -18,6 +18,7 @@ package org.pragmatica.http.server;
 
 import org.pragmatica.http.*;
 import org.pragmatica.http.HttpMethod;
+import org.pragmatica.http.HttpRequest;
 import org.pragmatica.http.websocket.WebSocketEndpoint;
 import org.pragmatica.http.websocket.WebSocketHandler;
 import org.pragmatica.http.websocket.WebSocketMessage;
@@ -107,7 +108,7 @@ final class NettyHttpServer implements HttpServer {
         }
     }
 
-    static Promise<HttpServer> create(HttpServerConfig config, BiConsumer<RequestContext, ResponseWriter> handler) {
+    static Promise<HttpServer> create(HttpServerConfig config, BiConsumer<HttpRequest, ResponseWriter> handler) {
         // Handle TLS
         var sslContext = config.tls()
                                .await()
@@ -134,7 +135,7 @@ final class NettyHttpServer implements HttpServer {
     }
 
     static Promise<HttpServer> createShared(HttpServerConfig config,
-                                            BiConsumer<RequestContext, ResponseWriter> handler,
+                                            BiConsumer<HttpRequest, ResponseWriter> handler,
                                             EventLoopGroup bossGroup,
                                             EventLoopGroup workerGroup) {
         var sslContext = config.tls()
@@ -186,12 +187,12 @@ final class NettyHttpServer implements HttpServer {
 
     private static class HttpServerInitializer extends ChannelInitializer<SocketChannel> {
         private final HttpServerConfig config;
-        private final BiConsumer<RequestContext, ResponseWriter> handler;
+        private final BiConsumer<HttpRequest, ResponseWriter> handler;
         private final Option<SslContext> sslContext;
         private final Map<String, WebSocketEndpoint> wsEndpoints;
 
         HttpServerInitializer(HttpServerConfig config,
-                              BiConsumer<RequestContext, ResponseWriter> handler,
+                              BiConsumer<HttpRequest, ResponseWriter> handler,
                               Option<SslContext> sslContext) {
             this.config = config;
             this.handler = handler;
@@ -226,10 +227,10 @@ final class NettyHttpServer implements HttpServer {
         private static final Logger log = LoggerFactory.getLogger(HttpRequestHandler.class);
         private static final AttributeKey<Option<WebSocketState>> WS_STATE = AttributeKey.valueOf("wsState");
 
-        private final BiConsumer<RequestContext, ResponseWriter> handler;
+        private final BiConsumer<HttpRequest, ResponseWriter> handler;
         private final Map<String, WebSocketEndpoint> wsEndpoints;
 
-        HttpRequestHandler(BiConsumer<RequestContext, ResponseWriter> handler,
+        HttpRequestHandler(BiConsumer<HttpRequest, ResponseWriter> handler,
                            Map<String, WebSocketEndpoint> wsEndpoints) {
             this.handler = handler;
             this.wsEndpoints = wsEndpoints;
@@ -324,7 +325,7 @@ final class NettyHttpServer implements HttpServer {
             ctx.close();
         }
 
-        private RequestContext createRequestContext(String requestId, FullHttpRequest request) {
+        private HttpRequest createRequestContext(String requestId, FullHttpRequest request) {
             var decoder = new QueryStringDecoder(request.uri());
             var path = decoder.path();
             // Netty validates the HTTP method before we receive it, so this will always succeed
@@ -358,7 +359,7 @@ final class NettyHttpServer implements HttpServer {
                                        String path,
                                        Headers headers,
                                        QueryParams queryParams,
-                                       byte[] body) implements RequestContext {}
+                                       byte[] body) implements HttpRequest {}
 
     private static class NettyResponseWriter implements ResponseWriter {
         private final ChannelHandlerContext ctx;

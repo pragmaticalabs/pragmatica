@@ -4,6 +4,12 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.slice;
 
+import java.io.IOException;
+import java.net.URL;
+import java.util.Set;
+import java.util.jar.JarFile;
+import java.util.jar.Manifest;
+
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Functions.Fn1;
@@ -11,12 +17,6 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.utils.Causes;
-
-import java.io.IOException;
-import java.net.URL;
-import java.util.Set;
-import java.util.jar.JarFile;
-import java.util.jar.Manifest;
 
 import static org.pragmatica.lang.Option.option;
 
@@ -26,7 +26,7 @@ public interface SliceManifest {
     String SLICE_ARTIFACT_ATTR = "Slice-Artifact";
     String SLICE_CLASS_ATTR = "Slice-Class";
     String ENVELOPE_VERSION_ATTR = "Envelope-Version";
-    Set<Integer> SUPPORTED_ENVELOPE_VERSIONS = Set.of(1000);
+    Set<Integer> SUPPORTED_ENVELOPE_VERSIONS = Set.of(1000, 1001, 1002, 1003, 1004, 1005, 1006, 1007);
 
     static Result<SliceManifestInfo> read(URL jarUrl) {
         return readManifest(jarUrl).flatMap(SliceManifest::parseManifest);

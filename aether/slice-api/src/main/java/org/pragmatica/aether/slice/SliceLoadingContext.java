@@ -4,6 +4,11 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.slice;
 
+import java.util.List;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
+
 import org.pragmatica.config.ConfigurationProvider;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
@@ -13,11 +18,6 @@ import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.type.TypeToken;
-
-import java.util.List;
-import java.util.concurrent.CopyOnWriteArrayList;
-import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.atomic.AtomicReference;
 
 import static org.pragmatica.lang.Result.success;
 import static org.pragmatica.lang.Unit.unit;
@@ -78,7 +78,10 @@ public final class SliceLoadingContext implements SliceCreationContext {
 
     @Override
     public ResourceProviderFacade resources() {
-        var base = delegate.sliceId().map(id -> sliceAwareResourceProvider(delegate.resources(), id)).or(delegate.resources());
+        var base = delegate.sliceId()
+                           .map(id -> sliceAwareResourceProvider(delegate.resources(),
+                                                                 id))
+                           .or(delegate.resources());
 
         return new CompositeAwareResourceProvider(base, sliceComposite);
     }
@@ -188,8 +191,9 @@ public final class SliceLoadingContext implements SliceCreationContext {
 
         @Override
         public <T> Promise<T> provide(Class<T> resourceType, String configSection, ProvisioningContext context) {
-            var enriched = compositeRef.get().map(composite -> context.withExtension(ConfigurationProvider.class,
-                                                                                     composite)).or(context);
+            var enriched = compositeRef.get()
+                                       .map(composite -> context.withExtension(ConfigurationProvider.class, composite))
+                                       .or(context);
 
             return delegate.provide(resourceType, configSection, enriched);
         }

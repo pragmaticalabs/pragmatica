@@ -4,12 +4,6 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.slice.blueprint;
 
-import org.pragmatica.lang.Cause;
-import org.pragmatica.lang.Functions.Fn1;
-import org.pragmatica.lang.Option;
-import org.pragmatica.lang.Result;
-import org.pragmatica.lang.utils.Causes;
-
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -23,6 +17,12 @@ import java.util.Set;
 import java.util.zip.CRC32;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipInputStream;
+
+import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Functions.Fn1;
+import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Result;
+import org.pragmatica.lang.utils.Causes;
 
 
 @SuppressWarnings({"JBCT-SEQ-01", "JBCT-UTIL-02", "JBCT-EX-01"})
@@ -187,9 +187,9 @@ public interface BlueprintArtifactParser {
         var sql = readEntry(zis);
         var checksum = computeChecksum(sql);
 
-        migrations.computeIfAbsent(datasource, _ -> new ArrayList<>()).add(MigrationEntry.migrationEntry(filename,
-                                                                                                         sql,
-                                                                                                         checksum));
+        migrations.computeIfAbsent(datasource,
+                                   _ -> new ArrayList<>())
+                  .add(MigrationEntry.migrationEntry(filename, sql, checksum));
     }
 
     private static long computeChecksum(String content) {

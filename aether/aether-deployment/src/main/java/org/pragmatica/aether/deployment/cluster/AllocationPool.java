@@ -4,13 +4,13 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.deployment.cluster;
 
-import org.pragmatica.aether.config.PlacementPolicy;
-import org.pragmatica.consensus.NodeId;
-
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+
+import org.pragmatica.aether.config.PlacementPolicy;
+import org.pragmatica.consensus.NodeId;
 
 
 public record AllocationPool(List<NodeId> coreNodes,

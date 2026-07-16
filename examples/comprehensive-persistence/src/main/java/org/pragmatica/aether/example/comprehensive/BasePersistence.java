@@ -1,13 +1,13 @@
 package org.pragmatica.aether.example.comprehensive;
 
-import org.pragmatica.aether.pg.codegen.annotation.Query;
-import org.pragmatica.aether.resource.db.PgSql;
-import org.pragmatica.lang.Promise;
-
 import java.math.BigDecimal;
 import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
+
+import org.pragmatica.aether.pg.codegen.annotation.Query;
+import org.pragmatica.aether.resource.db.PgSql;
+import org.pragmatica.lang.Promise;
 
 
 @PgSql

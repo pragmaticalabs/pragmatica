@@ -4,12 +4,12 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.pg.schema.model;
 
-import org.pragmatica.lang.Option;
-
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Map;
 import java.util.Set;
+
+import org.pragmatica.lang.Option;
 
 
 public record Schema(Map<String, Table> tables,

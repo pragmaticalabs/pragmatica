@@ -4,18 +4,18 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.forge.load;
 
-import org.pragmatica.config.toml.TomlDocument;
-import org.pragmatica.config.toml.TomlParser;
-import org.pragmatica.lang.Cause;
-import org.pragmatica.lang.Option;
-import org.pragmatica.lang.Result;
-
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.stream.IntStream;
+
+import org.pragmatica.config.toml.TomlDocument;
+import org.pragmatica.config.toml.TomlParser;
+import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Result;
 
 import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.option;
@@ -43,7 +43,11 @@ public sealed interface LoadConfigLoader {
     }
 
     private static Result<LoadConfig> collectTargets(List<Map<String, Object>> tables) {
-        var indexedResults = IntStream.range(0, tables.size()).mapToObj(i -> toTargetWithIndex(tables.get(i), i)).toList();
+        var indexedResults = IntStream.range(0,
+                                             tables.size())
+                                      .mapToObj(i -> toTargetWithIndex(tables.get(i),
+                                                                       i))
+                                      .toList();
 
         return Result.allOf(indexedResults).flatMap(LoadConfigLoader::toLoadConfig);
     }

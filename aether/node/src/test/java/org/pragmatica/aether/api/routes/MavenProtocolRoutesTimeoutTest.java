@@ -15,7 +15,7 @@ import org.pragmatica.http.Headers;
 import org.pragmatica.http.HttpMethod;
 import org.pragmatica.http.HttpStatus;
 import org.pragmatica.http.QueryParams;
-import org.pragmatica.http.server.RequestContext;
+import org.pragmatica.http.HttpRequest;
 import org.pragmatica.http.server.ResponseWriter;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
@@ -84,8 +84,8 @@ class MavenProtocolRoutesTimeoutTest {
         };
     }
 
-    private static RequestContext getRequest() {
-        return new RequestContext() {
+    private static HttpRequest getRequest() {
+        return new HttpRequest() {
             @Override
             public String requestId() {
                 return "req_test";

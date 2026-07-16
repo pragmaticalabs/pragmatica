@@ -4,6 +4,13 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.api.routes;
 
+import java.util.Comparator;
+import java.util.List;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.BooleanSupplier;
+import java.util.function.Supplier;
+import java.util.stream.Stream;
+
 import org.pragmatica.aether.api.ManagementApiResponses.ScheduledTaskExecutionsByNodeResponse;
 import org.pragmatica.aether.api.ManagementApiResponses.ScheduledTaskInjectRequest;
 import org.pragmatica.aether.api.ManagementApiResponses.ScheduledTaskInjectResponse;
@@ -36,13 +43,6 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.utils.Causes;
-
-import java.util.Comparator;
-import java.util.List;
-import java.util.concurrent.atomic.AtomicReference;
-import java.util.function.BooleanSupplier;
-import java.util.function.Supplier;
-import java.util.stream.Stream;
 
 import static org.pragmatica.http.routing.PathParameter.aString;
 
@@ -299,8 +299,9 @@ public final class ScheduledTaskRoutes implements RouteSource {
 
         return invoker.invoke(task.artifact(),
                               task.methodName(),
-                              Unit.unit()).onFailure(cause -> writeFailureBestEffort(stateKey, priorState, cause))
-                             .flatMap(_ -> writeSuccessAndRespond(stateKey, priorState, req, previousExecutionMs));
+                              Unit.unit())
+                      .onFailure(cause -> writeFailureBestEffort(stateKey, priorState, cause))
+                      .flatMap(_ -> writeSuccessAndRespond(stateKey, priorState, req, previousExecutionMs));
     }
 
     private Promise<ScheduledTaskInjectResponse> writeSuccessAndRespond(ScheduledTaskStateKey stateKey,
@@ -337,9 +338,11 @@ public final class ScheduledTaskRoutes implements RouteSource {
     /// two tasks differing only by artifact (e.g. same `scheduling.heartbeat/heartbeat`
     /// section+method) flipped between a pause-write and a readback, producing a false
     /// `paused=false`. Ordering by `(configSection, artifact, method)` removes that flake.
-    private static final Comparator<ScheduledTask> TASK_ORDER = Comparator.comparing(ScheduledTask::configSection).thenComparing(task -> task.artifact()
-                                                                                                                                             .asString()).thenComparing(task -> task.methodName()
-                                                                                                                                                                                    .name());
+    private static final Comparator<ScheduledTask> TASK_ORDER = Comparator.comparing(ScheduledTask::configSection)
+                                                                          .thenComparing(task -> task.artifact()
+                                                                                                     .asString())
+                                                                          .thenComparing(task -> task.methodName()
+                                                                                                     .name());
 
     private ScheduledTasksResponse buildTasksResponse() {
         var tasks = registry.allTasks().stream().sorted(TASK_ORDER).map(this::toSummary).toList();
@@ -348,8 +351,13 @@ public final class ScheduledTaskRoutes implements RouteSource {
     }
 
     private Promise<FilteredTasksResponse> buildFilteredResponse(String configSection) {
-        var tasks = registry.allTasks().stream().filter(task -> task.configSection()
-                                                                    .equals(configSection)).sorted(TASK_ORDER).map(this::toSummary).toList();
+        var tasks = registry.allTasks()
+                            .stream()
+                            .filter(task -> task.configSection()
+                                                .equals(configSection))
+                            .sorted(TASK_ORDER)
+                            .map(this::toSummary)
+                            .toList();
 
         return Promise.success(new FilteredTasksResponse(tasks, configSection));
     }

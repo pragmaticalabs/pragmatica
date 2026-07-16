@@ -4,13 +4,13 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.resource.notification;
 
+import java.util.concurrent.TimeUnit;
+
 import org.pragmatica.email.http.EmailBody;
 import org.pragmatica.email.http.EmailMessage;
 import org.pragmatica.email.http.HttpEmailSender;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
-
-import java.util.concurrent.TimeUnit;
 
 import static org.pragmatica.aether.resource.notification.NotificationResult.notificationResult;
 import static org.pragmatica.lang.Unit.unit;
@@ -81,7 +81,12 @@ final class HttpNotificationSender implements NotificationSender {
             case NotificationBody.Html html -> html.fallback().map(fallback -> EmailBody.Html.html(html.content(),
                                                                                                    fallback)).or(EmailBody.Html.html(html.content()));
         };
-        var message = EmailMessage.emailMessage(email.from(), email.to(), email.subject(), body).withCc(email.cc()).withBcc(email.bcc());
+        var message = EmailMessage.emailMessage(email.from(),
+                                                email.to(),
+                                                email.subject(),
+                                                body)
+                                  .withCc(email.cc())
+                                  .withBcc(email.bcc());
 
         return email.replyTo()
                     .map(message::withReplyTo)

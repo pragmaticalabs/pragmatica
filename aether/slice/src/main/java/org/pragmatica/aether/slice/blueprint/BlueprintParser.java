@@ -4,6 +4,12 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.slice.blueprint;
 
+import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.slice.blueprint.DeploymentConfig.CanaryStageConfig;
 import org.pragmatica.aether.slice.blueprint.DeploymentConfig.Strategy;
@@ -14,12 +20,6 @@ import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.utils.Causes;
-
-import java.nio.file.Path;
-import java.util.ArrayList;
-import java.util.List;
-import java.util.Map;
-import java.util.Set;
 
 import static org.pragmatica.lang.io.FileOps.readString;
 import static org.pragmatica.lang.Option.none;
@@ -154,7 +154,12 @@ public interface BlueprintParser {
                                                  .mapError(_ -> INVALID_ARTIFACT.apply(artifactStr))
                                                  .flatMap(artifact -> parseMinAvailable(entry, instanceCount).flatMap(minAvail -> SliceSpec.sliceSpec(artifact,
                                                                                                                                                       instanceCount,
-                                                                                                                                                      minAvail)));
+                                                                                                                                                      minAvail,
+                                                                                                                                                      parseMaxInstances(entry),
+                                                                                                                                                      parseOptionalDouble(entry,
+                                                                                                                                                                          "scaleUpThreshold"),
+                                                                                                                                                      parseOptionalDouble(entry,
+                                                                                                                                                                          "scaleDownThreshold"))));
                               });
     }
 
@@ -164,6 +169,18 @@ public interface BlueprintParser {
         }
 
         return success(Math.ceilDiv(instanceCount, 2));
+    }
+
+    private static Option<Integer> parseMaxInstances(Map<String, Object> entry) {
+        return entry.get("maxInstances") instanceof Number n
+               ? some(n.intValue())
+               : none();
+    }
+
+    private static Option<Double> parseOptionalDouble(Map<String, Object> entry, String key) {
+        return entry.get(key) instanceof Number n
+               ? some(n.doubleValue())
+               : none();
     }
 
     Set<String> KNOWN_SECTIONS = Set.of("",
@@ -177,7 +194,9 @@ public interface BlueprintParser {
     Set<String> KNOWN_TABLE_ARRAYS = Set.of("slices", "deployment.canary.stages");
 
     static List<String> detectUnrecognizedSections(String dsl) {
-        var parseResult = option(dsl).filter(s -> !s.isBlank()).toResult(MISSING_ID).flatMap(content -> TomlParser.parse(content).mapError(cause -> cause("TOML parse error: " + cause.message())));
+        var parseResult = option(dsl).filter(s -> !s.isBlank())
+                                .toResult(MISSING_ID)
+                                .flatMap(content -> TomlParser.parse(content).mapError(cause -> cause("TOML parse error: " + cause.message())));
 
         return parseResult.fold(_ -> List.of(), BlueprintParser::collectUnrecognizedSections);
     }
@@ -185,16 +204,26 @@ public interface BlueprintParser {
     private static List<String> collectUnrecognizedSections(TomlDocument doc) {
         var warnings = new ArrayList<String>();
 
-        doc.sectionNames().stream().filter(name -> !KNOWN_SECTIONS.contains(name)).filter(name -> !name.startsWith("deployment.")).filter(name -> !name.startsWith("security.")).sorted().forEach(name -> warnings.add("Unrecognized config section: [" + name
-                                                                                                                                                                                                                      + "]"));
-        doc.tableArrayNames().stream().filter(name -> !KNOWN_TABLE_ARRAYS.contains(name)).sorted().forEach(name -> warnings.add("Unrecognized config table array: [[" + name
-                                                                                                                               + "]]"));
+        doc.sectionNames()
+           .stream()
+           .filter(name -> !KNOWN_SECTIONS.contains(name))
+           .filter(name -> !name.startsWith("deployment."))
+           .filter(name -> !name.startsWith("security."))
+           .sorted()
+           .forEach(name -> warnings.add("Unrecognized config section: [" + name + "]"));
+        doc.tableArrayNames()
+           .stream()
+           .filter(name -> !KNOWN_TABLE_ARRAYS.contains(name))
+           .sorted()
+           .forEach(name -> warnings.add("Unrecognized config table array: [[" + name + "]]"));
 
         return List.copyOf(warnings);
     }
 
     private static SecurityOverrides parseSecurityOverrides(TomlDocument doc) {
-        var policy = doc.getString("security", "override_policy").map(SecurityOverridePolicy::fromString).or(SecurityOverridePolicy.STRENGTHEN_ONLY);
+        var policy = doc.getString("security", "override_policy")
+                        .map(SecurityOverridePolicy::fromString)
+                        .or(SecurityOverridePolicy.STRENGTHEN_ONLY);
         var overrideMap = doc.getSection("security.overrides");
 
         if (overrideMap.isEmpty()) {

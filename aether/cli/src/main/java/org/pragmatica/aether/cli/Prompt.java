@@ -4,8 +4,6 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.cli;
 
-import org.pragmatica.lang.Result;
-
 import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStream;
@@ -13,6 +11,8 @@ import java.io.InputStreamReader;
 import java.io.PrintStream;
 import java.util.List;
 import java.util.function.Function;
+
+import org.pragmatica.lang.Result;
 
 
 @SuppressWarnings({"JBCT-EX-01", "JBCT-PAT-01"})

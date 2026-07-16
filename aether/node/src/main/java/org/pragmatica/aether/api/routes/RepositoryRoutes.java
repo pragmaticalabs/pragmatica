@@ -4,6 +4,9 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.api.routes;
 
+import java.util.function.Supplier;
+import java.util.stream.Stream;
+
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.artifact.ArtifactId;
 import org.pragmatica.aether.artifact.GroupId;
@@ -15,9 +18,6 @@ import org.pragmatica.http.routing.Route;
 import org.pragmatica.http.routing.RouteSource;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
-
-import java.util.function.Supplier;
-import java.util.stream.Stream;
 
 import static org.pragmatica.aether.api.ManagementApiResponses.ArtifactInfoResponse;
 import static org.pragmatica.http.routing.PathParameter.aString;

@@ -4,6 +4,12 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.ttm.onnx;
 
+import java.nio.FloatBuffer;
+import java.nio.file.Path;
+import java.util.Map;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
+
 import org.pragmatica.aether.config.TtmConfig;
 import org.pragmatica.aether.ttm.error.TTMError;
 import org.pragmatica.aether.ttm.model.FeatureIndex;
@@ -13,18 +19,13 @@ import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 
-import java.nio.FloatBuffer;
-import java.nio.file.Path;
-import java.util.Map;
-import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.atomic.AtomicReference;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import ai.onnxruntime.OnnxTensor;
 import ai.onnxruntime.OrtEnvironment;
 import ai.onnxruntime.OrtException;
 import ai.onnxruntime.OrtSession;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 import static org.pragmatica.lang.io.FileOps.exists;
 import static org.pragmatica.lang.Unit.unit;
@@ -62,7 +63,8 @@ record OnnxTTMPredictor(OrtEnvironment env,
     public Unit close() {
         ready.set(false);
         Result.lift(e -> new TTMError.InferenceFailed("Error closing ONNX session: " + e.getMessage()),
-                    this::closeSession).onFailure(cause -> log.warn(cause.message()));
+                    this::closeSession)
+              .onFailure(cause -> log.warn(cause.message()));
 
         return unit();
     }
@@ -249,8 +251,9 @@ record OnnxTTMPredictor(OrtEnvironment env,
         var warmupInput = new float[config.inputWindowMinutes()][FeatureIndex.FEATURE_COUNT];
 
         Result.lift(e -> new TTMError.InferenceFailed("Warm-up inference failed: " + e.getMessage()),
-                    () -> predictor.runInference(warmupInput)).onSuccess(output -> log.info("  Warm-up complete, output length: {}",
-                                                                                            output.length)).onFailure(cause -> log.warn("  Warm-up inference failed: {}",
-                                                                                                                                        cause.message()));
+                    () -> predictor.runInference(warmupInput))
+              .onSuccess(output -> log.info("  Warm-up complete, output length: {}", output.length))
+              .onFailure(cause -> log.warn("  Warm-up inference failed: {}",
+                                           cause.message()));
     }
 }

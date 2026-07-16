@@ -4,6 +4,17 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.http.security;
 
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.util.HexFormat;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Supplier;
+
 import org.pragmatica.aether.http.handler.HttpRequestContext;
 import org.pragmatica.aether.http.handler.security.AuthorizationRole;
 import org.pragmatica.aether.http.handler.security.Role;
@@ -16,17 +27,6 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.ApiKeyValue;
 import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
-
-import java.nio.charset.StandardCharsets;
-import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
-import java.util.HexFormat;
-import java.util.List;
-import java.util.Map;
-import java.util.Set;
-import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.atomic.AtomicReference;
-import java.util.function.Supplier;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -159,7 +159,13 @@ class KvStoreApiKeyValidator implements SecurityValidator {
     }
 
     private static Option<String> extractCaseInsensitive(Map<String, List<String>> headers) {
-        var value = headers.entrySet().stream().filter(e -> API_KEY_HEADER.equalsIgnoreCase(e.getKey())).map(Map.Entry::getValue).filter(values -> values != null && !values.isEmpty()).map(List::getFirst).findFirst();
+        var value = headers.entrySet()
+                           .stream()
+                           .filter(e -> API_KEY_HEADER.equalsIgnoreCase(e.getKey()))
+                           .map(Map.Entry::getValue)
+                           .filter(values -> values != null && !values.isEmpty())
+                           .map(List::getFirst)
+                           .findFirst();
 
         return Option.from(value);
     }

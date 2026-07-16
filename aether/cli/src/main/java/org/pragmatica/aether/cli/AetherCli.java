@@ -4,22 +4,6 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.cli;
 
-import org.pragmatica.aether.config.AetherConfig;
-import org.pragmatica.aether.config.BuildInfo;
-import org.pragmatica.aether.config.ConfigLoader;
-import org.pragmatica.aether.management.route.ManagementRoute;
-import org.pragmatica.config.toml.TomlDocument;
-import org.pragmatica.config.toml.TomlParser;
-import org.pragmatica.http.HttpOperations;
-import org.pragmatica.http.HttpResult;
-import org.pragmatica.http.JdkHttpOperations;
-import org.pragmatica.lang.Cause;
-import org.pragmatica.lang.Contract;
-import org.pragmatica.lang.Option;
-import org.pragmatica.lang.Result;
-import org.pragmatica.lang.io.TimeSpan;
-import org.pragmatica.lang.utils.Causes;
-
 import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStreamReader;
@@ -45,6 +29,22 @@ import javax.net.ssl.SSLContext;
 import javax.net.ssl.TrustManager;
 import javax.net.ssl.X509TrustManager;
 
+import org.pragmatica.aether.config.AetherConfig;
+import org.pragmatica.aether.config.BuildInfo;
+import org.pragmatica.aether.config.ConfigLoader;
+import org.pragmatica.aether.management.route.ManagementRoute;
+import org.pragmatica.config.toml.TomlDocument;
+import org.pragmatica.config.toml.TomlParser;
+import org.pragmatica.http.HttpOperations;
+import org.pragmatica.http.HttpResult;
+import org.pragmatica.http.JdkHttpOperations;
+import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Contract;
+import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Result;
+import org.pragmatica.lang.io.TimeSpan;
+import org.pragmatica.lang.utils.Causes;
+
 import picocli.AutoComplete.GenerateCompletion;
 import picocli.CommandLine;
 import picocli.CommandLine.Command;
@@ -56,7 +56,7 @@ import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Option.some;
 
 
-@Command(name = "aether", mixinStandardHelpOptions = true, versionProvider = AetherVersionProvider.class, description = "Command-line interface for Aether cluster management", subcommands = {AetherCli.StatusCommand.class, AetherCli.NodesCommand.class, AetherCli.SlicesCommand.class, AetherCli.MetricsCommand.class, AetherCli.HealthCommand.class, AetherCli.ScaleCommand.class, AetherCli.BlueprintCommand.class, AetherCli.ArtifactCommand.class, AetherCli.InvocationMetricsCommand.class, AetherCli.ControllerCommand.class, AetherCli.AlertsCommand.class, AetherCli.ThresholdsCommand.class, AetherCli.TracesCommand.class, AetherCli.ObservabilityCommand.class, AetherCli.LoggingCommand.class, AetherCli.ConfigCommand.class, AetherCli.ScheduledTasksCommand.class, AetherCli.EventsCommand.class, AetherCli.WorkersCommand.class, AetherCli.BackupCommand.class, AetherCli.BackupSingularCommand.class, AetherCli.SchemaCommand.class, AetherCli.AbTestCommand.class, AetherCli.StreamCommand.class, org.pragmatica.aether.cli.stream.StreamCommand.class, AetherCli.CertCommand.class, AetherCli.RoutesCommand.class, AetherCli.DhtCommand.class, org.pragmatica.aether.cli.deploy.DeployCommand.class, org.pragmatica.aether.cli.cluster.ClusterCommand.class, org.pragmatica.aether.cli.storage.StorageCommand.class, org.pragmatica.aether.cli.whoami.WhoamiCommand.class, org.pragmatica.aether.cli.ttm.TtmCommand.class, GenerateCompletion.class})
+@Command(name = "aether", mixinStandardHelpOptions = true, versionProvider = AetherVersionProvider.class, description = "Command-line interface for Aether cluster management", subcommands = {AetherCli.StatusCommand.class, AetherCli.NodesCommand.class, AetherCli.SlicesCommand.class, AetherCli.MetricsCommand.class, AetherCli.HealthCommand.class, AetherCli.ScaleCommand.class, AetherCli.BlueprintCommand.class, AetherCli.ArtifactCommand.class, AetherCli.InvocationMetricsCommand.class, AetherCli.ControllerCommand.class, AetherCli.AlertsCommand.class, AetherCli.ThresholdsCommand.class, AetherCli.TracesCommand.class, AetherCli.ObservabilityCommand.class, AetherCli.LoggingCommand.class, AetherCli.ConfigCommand.class, AetherCli.ScheduledTasksCommand.class, AetherCli.EventsCommand.class, AetherCli.WorkersCommand.class, AetherCli.BackupCommand.class, AetherCli.BackupSingularCommand.class, AetherCli.SchemaCommand.class, AetherCli.AbTestCommand.class, AetherCli.StreamCommand.class, org.pragmatica.aether.cli.stream.StreamCommand.class, AetherCli.CertCommand.class, AetherCli.RoutesCommand.class, AetherCli.VersionsCommand.class, AetherCli.DhtCommand.class, org.pragmatica.aether.cli.deploy.DeployCommand.class, org.pragmatica.aether.cli.cluster.ClusterCommand.class, org.pragmatica.aether.cli.storage.StorageCommand.class, org.pragmatica.aether.cli.whoami.WhoamiCommand.class, org.pragmatica.aether.cli.ttm.TtmCommand.class, GenerateCompletion.class})
 @Contract
 public class AetherCli implements Runnable {
     private static final String DEFAULT_ADDRESS = "localhost:8080";
@@ -94,7 +94,8 @@ public class AetherCli implements Runnable {
         cli.tlsSkipVerify = containsTlsSkipVerify(args);
         cli.httpOps = cli.buildHttpOperations();
         org.pragmatica.aether.cli.cluster.ClusterHttpClient.setEndpointOverride(cli.resolveEndpointUrl());
-        extractApiKeyArg(args).orElse(() -> option(System.getenv("AETHER_API_KEY")).filter(k -> !k.isBlank())).onPresent(org.pragmatica.aether.cli.cluster.ClusterHttpClient::setApiKeyOverride);
+        extractApiKeyArg(args).orElse(() -> option(System.getenv("AETHER_API_KEY")).filter(k -> !k.isBlank()))
+                        .onPresent(org.pragmatica.aether.cli.cluster.ClusterHttpClient::setApiKeyOverride);
         org.pragmatica.aether.cli.cluster.ClusterHttpClient.setRequestTimeout(resolveRequestTimeoutDuration(args));
         if (isReplMode(args)) {
             cli.runRepl(cmd);
@@ -148,12 +149,13 @@ public class AetherCli implements Runnable {
     @SuppressWarnings({"JBCT-PAT-01", "JBCT-EX-01"})
     private static Duration resolveRequestTimeoutDuration(String[] args) {
         var seconds = extractRequestTimeoutArg(args).map(s -> {
-            try {
-                return Integer.parseInt(s.trim());
-            } catch (NumberFormatException e) {
-                return 130;
-            }
-        }).or(130);
+                                                             try {
+                                                             return Integer.parseInt(s.trim());
+                                                         } catch (NumberFormatException e) {
+                                                             return 130;
+                                                         }
+                                                         })
+                                              .or(130);
 
         return seconds > 0
                ? TimeSpan.timeSpan(seconds)
@@ -582,7 +584,10 @@ public class AetherCli implements Runnable {
 
     @SuppressWarnings("JBCT-SEQ-01")
     private HttpRequest buildPostRequest(URI uri, String body) {
-        var builder = HttpRequest.newBuilder().uri(uri).header("Content-Type", "application/json").POST(HttpRequest.BodyPublishers.ofString(body));
+        var builder = HttpRequest.newBuilder()
+                                 .uri(uri)
+                                 .header("Content-Type", "application/json")
+                                 .POST(HttpRequest.BodyPublishers.ofString(body));
 
         attachApiKey(builder);
         attachTimeout(builder);
@@ -592,7 +597,10 @@ public class AetherCli implements Runnable {
 
     @SuppressWarnings("JBCT-SEQ-01")
     private HttpRequest buildPutRequest(URI uri, byte[] content, String contentType) {
-        var builder = HttpRequest.newBuilder().uri(uri).header("Content-Type", contentType).PUT(HttpRequest.BodyPublishers.ofByteArray(content));
+        var builder = HttpRequest.newBuilder()
+                                 .uri(uri)
+                                 .header("Content-Type", contentType)
+                                 .PUT(HttpRequest.BodyPublishers.ofByteArray(content));
 
         attachApiKey(builder);
         attachTimeout(builder);
@@ -672,14 +680,46 @@ public class AetherCli implements Runnable {
 
         @Override
         public Integer call() {
-            var response = option(nodeId).map(id -> parent.fetch(NODE_STATUS_GET, List.of(id))).or(() -> parent.fetch(NODE_STATUS));
+            var response = option(nodeId).map(id -> parent.fetch(NODE_STATUS_GET,
+                                                                 List.of(id)))
+                                 .or(() -> parent.fetch(NODE_STATUS));
 
             return OutputFormatter.printQuery(response, parent.outputOptions());
         }
     }
 
-    @Command(name = "nodes", description = "Node management — list, lifecycle, per-node introspection", subcommands = {NodesCommand.LifecycleCommand.class, NodesCommand.DrainCommand.class, NodesCommand.ShutdownCommand.class, NodesCommand.PromoteCommand.class, NodesCommand.SlicesCommand.class, NodesCommand.RoutesCommand.class, NodesCommand.InflightCommand.class, NodesCommand.MetricsCommand.class, NodesCommand.HealthCommand.class})
+    @Command(name = "nodes", description = "Node management — list, lifecycle, per-node introspection", subcommands = {NodesCommand.LifecycleCommand.class, NodesCommand.LiveCommand.class, NodesCommand.ResolveCommand.class, NodesCommand.DrainCommand.class, NodesCommand.ShutdownCommand.class, NodesCommand.PromoteCommand.class, NodesCommand.SlicesCommand.class, NodesCommand.RoutesCommand.class, NodesCommand.InflightCommand.class, NodesCommand.MetricsCommand.class, NodesCommand.HealthCommand.class})
     static class NodesCommand implements Callable<Integer> {
+        private static final OutputFormatter.TableSpec LIVE_NODES_TABLE = new OutputFormatter.TableSpec("Live Nodes",
+                                                                                                        List.of(new OutputFormatter.Column("NODE ID",
+                                                                                                                                           "nodeId",
+                                                                                                                                           30),
+                                                                                                                new OutputFormatter.Column("ADDRESS",
+                                                                                                                                           "address",
+                                                                                                                                           24),
+                                                                                                                new OutputFormatter.Column("ROLE",
+                                                                                                                                           "role",
+                                                                                                                                           8),
+                                                                                                                new OutputFormatter.Column("SWIM ALIVE",
+                                                                                                                                           "swimAlive",
+                                                                                                                                           12),
+                                                                                                                new OutputFormatter.Column("REPORTED STATE",
+                                                                                                                                           "reportedState",
+                                                                                                                                           16)),
+                                                                                                        "nodes");
+
+        private static final OutputFormatter.TableSpec RESOLVE_TABLE = new OutputFormatter.TableSpec("Endpoint",
+                                                                                                     List.of(new OutputFormatter.Column("NODE ID",
+                                                                                                                                        "nodeId",
+                                                                                                                                        30),
+                                                                                                             new OutputFormatter.Column("ADDRESS",
+                                                                                                                                        "address",
+                                                                                                                                        24),
+                                                                                                             new OutputFormatter.Column("REACHABLE",
+                                                                                                                                        "reachable",
+                                                                                                                                        12)),
+                                                                                                     null);
+
         @CommandLine.ParentCommand
         private AetherCli parent;
 
@@ -722,6 +762,52 @@ public class AetherCli implements Runnable {
                 var response = nodesParent.parent.fetch(NODE_LIFECYCLE_GET, List.of(id));
 
                 return OutputFormatter.printQuery(response, nodesParent.parent.outputOptions());
+            }
+        }
+
+        @Command(name = "live", description = "Show live nodes — unified identity/address/role/SWIM-liveness/reported-state document")
+        static class LiveCommand implements Callable<Integer> {
+            @CommandLine.ParentCommand
+            private NodesCommand nodesParent;
+
+            @CommandLine.Option(names = {"--only-alive"}, description = "Filter to nodes with swimAlive=true (excludes the zombie class)")
+            private boolean onlyAlive;
+
+            @Override
+            public Integer call() {
+                var response = nodesParent.parent.fetch(NODES_LIVE);
+                var filtered = onlyAlive
+                               ? LiveNodesFilter.onlyAlive(response)
+                               : response;
+
+                return OutputFormatter.printQuery(filtered, nodesParent.parent.outputOptions(), LIVE_NODES_TABLE);
+            }
+        }
+
+        @Command(name = "resolve", description = "Resolve a nodeId to its cluster-transport endpoint (exit 0 if reachable, 1 if not)")
+        static class ResolveCommand implements Callable<Integer> {
+            @CommandLine.ParentCommand
+            private NodesCommand nodesParent;
+
+            @Parameters(index = "0", description = "Node ID to resolve")
+            private String nodeId;
+
+            @Override
+            public Integer call() {
+                var response = nodesParent.parent.fetch(NODE_ENDPOINT_GET, List.of(nodeId));
+                var errorCode = OutputFormatter.checkResponseError(response,
+                                                                   nodesParent.parent.outputOptions(),
+                                                                   "Failed to resolve node " + nodeId);
+
+                if (errorCode >= 0) {
+                    return errorCode;
+                }
+
+                OutputFormatter.printQuery(response, nodesParent.parent.outputOptions(), RESOLVE_TABLE);
+
+                return LiveNodesFilter.isReachable(response)
+                       ? ExitCode.SUCCESS
+                       : ExitCode.ERROR;
             }
         }
 
@@ -792,7 +878,9 @@ public class AetherCli implements Runnable {
 
             @Override
             public Integer call() {
-                var response = option(nodeId).map(id -> nodesParent.parent.fetch(NODE_SLICES_GET, List.of(id))).or(() -> nodesParent.parent.fetch(NODE_SLICES));
+                var response = option(nodeId).map(id -> nodesParent.parent.fetch(NODE_SLICES_GET,
+                                                                                 List.of(id)))
+                                     .or(() -> nodesParent.parent.fetch(NODE_SLICES));
 
                 return OutputFormatter.printQuery(response, nodesParent.parent.outputOptions());
             }
@@ -808,7 +896,9 @@ public class AetherCli implements Runnable {
 
             @Override
             public Integer call() {
-                var response = option(nodeId).map(id -> nodesParent.parent.fetch(NODE_ROUTES_GET, List.of(id))).or(() -> nodesParent.parent.fetch(NODE_ROUTES));
+                var response = option(nodeId).map(id -> nodesParent.parent.fetch(NODE_ROUTES_GET,
+                                                                                 List.of(id)))
+                                     .or(() -> nodesParent.parent.fetch(NODE_ROUTES));
 
                 return OutputFormatter.printQuery(response, nodesParent.parent.outputOptions());
             }
@@ -824,7 +914,9 @@ public class AetherCli implements Runnable {
 
             @Override
             public Integer call() {
-                var response = option(nodeId).map(id -> nodesParent.parent.fetch(NODE_INFLIGHT_GET, List.of(id))).or(() -> nodesParent.parent.fetch(NODE_INFLIGHT));
+                var response = option(nodeId).map(id -> nodesParent.parent.fetch(NODE_INFLIGHT_GET,
+                                                                                 List.of(id)))
+                                     .or(() -> nodesParent.parent.fetch(NODE_INFLIGHT));
 
                 return OutputFormatter.printQuery(response, nodesParent.parent.outputOptions());
             }
@@ -840,7 +932,9 @@ public class AetherCli implements Runnable {
 
             @Override
             public Integer call() {
-                var response = option(nodeId).map(id -> nodesParent.parent.fetch(NODE_METRICS_GET, List.of(id))).or(() -> nodesParent.parent.fetch(NODE_METRICS));
+                var response = option(nodeId).map(id -> nodesParent.parent.fetch(NODE_METRICS_GET,
+                                                                                 List.of(id)))
+                                     .or(() -> nodesParent.parent.fetch(NODE_METRICS));
 
                 return OutputFormatter.printQuery(response, nodesParent.parent.outputOptions());
             }
@@ -865,7 +959,9 @@ public class AetherCli implements Runnable {
                 var localRoute = liveness
                                  ? HEALTH_LIVE
                                  : HEALTH_READY;
-                var response = option(nodeId).map(id -> nodesParent.parent.fetch(perNodeRoute, List.of(id))).or(() -> nodesParent.parent.fetch(localRoute));
+                var response = option(nodeId).map(id -> nodesParent.parent.fetch(perNodeRoute,
+                                                                                 List.of(id)))
+                                     .or(() -> nodesParent.parent.fetch(localRoute));
 
                 return OutputFormatter.printQuery(response, nodesParent.parent.outputOptions());
             }
@@ -960,6 +1056,19 @@ public class AetherCli implements Runnable {
         @Override
         public Integer call() {
             var response = parent.fetch(ROUTES_LIST);
+
+            return OutputFormatter.printQuery(response, parent.outputOptions());
+        }
+    }
+
+    @Command(name = "versions", description = "Show deployed versioned slices and their API version registries (#198)")
+    static class VersionsCommand implements Callable<Integer> {
+        @CommandLine.ParentCommand
+        private AetherCli parent;
+
+        @Override
+        public Integer call() {
+            var response = parent.fetch(VERSIONS);
 
             return OutputFormatter.printQuery(response, parent.outputOptions());
         }
@@ -1184,7 +1293,9 @@ public class AetherCli implements Runnable {
         }
 
         private String buildScaleBody() {
-            var sb = new StringBuilder("{\"artifact\":\"").append(escapeJsonValue(artifact)).append("\",\"instances\":").append(instances);
+            var sb = new StringBuilder("{\"artifact\":\"").append(escapeJsonValue(artifact))
+                                                          .append("\",\"instances\":")
+                                                          .append(instances);
 
             if (placement != null) {
                 sb.append(",\"placement\":\"").append(escapeJsonValue(placement)).append("\"");
@@ -1378,13 +1489,24 @@ public class AetherCli implements Runnable {
                 var aggregate = aggregateStatus(statuses);
                 var sb = new StringBuilder(256);
 
-                sb.append("{\"status\":\"").append(aggregate).append("\",").append("\"blueprint\":\"").append(escapeJsonValue(artifactId)).append("\",").append("\"artifacts\":[");
+                sb.append("{\"status\":\"")
+                  .append(aggregate)
+                  .append("\",")
+                  .append("\"blueprint\":\"")
+                  .append(escapeJsonValue(artifactId))
+                  .append("\",")
+                  .append("\"artifacts\":[");
                 for (int i = 0; i < artifacts.size(); i++) {
                     if (i > 0) {
                         sb.append(',');
                     }
 
-                    sb.append("{\"coords\":\"").append(escapeJsonValue(artifacts.get(i).label())).append("\",").append("\"status\":\"").append(statuses.get(i)).append("\"}");
+                    sb.append("{\"coords\":\"")
+                      .append(escapeJsonValue(artifacts.get(i).label()))
+                      .append("\",")
+                      .append("\"status\":\"")
+                      .append(statuses.get(i))
+                      .append("\"}");
                 }
 
                 sb.append("]}");
@@ -2417,7 +2539,7 @@ public class AetherCli implements Runnable {
         }
     }
 
-    @Command(name = "controller", description = "Controller configuration and status", subcommands = {ControllerCommand.ConfigCommand.class, ControllerCommand.StatusCommand.class, ControllerCommand.EvaluateCommand.class})
+    @Command(name = "controller", description = "Controller configuration and status", subcommands = {ControllerCommand.ConfigCommand.class, ControllerCommand.StatusCommand.class, ControllerCommand.DecisionsCommand.class, ControllerCommand.EvaluateCommand.class})
     static class ControllerCommand implements Runnable {
         @CommandLine.ParentCommand
         private AetherCli parent;
@@ -2485,6 +2607,19 @@ public class AetherCli implements Runnable {
             @Override
             public Integer call() {
                 var response = controllerParent.parent.fetch(CONTROLLER_STATUS);
+
+                return OutputFormatter.printQuery(response, controllerParent.parent.outputOptions());
+            }
+        }
+
+        @Command(name = "decisions", description = "Show per-slice scaling decision snapshot")
+        static class DecisionsCommand implements Callable<Integer> {
+            @CommandLine.ParentCommand
+            private ControllerCommand controllerParent;
+
+            @Override
+            public Integer call() {
+                var response = controllerParent.parent.fetch(CONTROLLER_DECISIONS);
 
                 return OutputFormatter.printQuery(response, controllerParent.parent.outputOptions());
             }
@@ -2600,7 +2735,14 @@ public class AetherCli implements Runnable {
             }
 
             private String buildInjectBody() {
-                var sb = new StringBuilder("{\"name\":\"").append(escapeJson(name)).append("\",").append("\"severity\":\"").append(escapeJson(severity)).append("\",").append("\"message\":\"").append(escapeJson(message)).append("\"");
+                var sb = new StringBuilder("{\"name\":\"").append(escapeJson(name))
+                                                          .append("\",")
+                                                          .append("\"severity\":\"")
+                                                          .append(escapeJson(severity))
+                                                          .append("\",")
+                                                          .append("\"message\":\"")
+                                                          .append(escapeJson(message))
+                                                          .append("\"");
 
                 if (metric != null) {
                     sb.append(",\"metric\":\"").append(escapeJson(metric)).append("\"");
@@ -2873,7 +3015,7 @@ public class AetherCli implements Runnable {
         }
     }
 
-    @Command(name = "observability", description = "Manage observability configuration", subcommands = {ObservabilityCommand.DepthListCommand.class, ObservabilityCommand.DepthSetCommand.class, ObservabilityCommand.DepthRemoveCommand.class})
+    @Command(name = "observability", description = "Manage observability configuration", subcommands = {ObservabilityCommand.DepthListCommand.class, ObservabilityCommand.DepthSetCommand.class, ObservabilityCommand.DepthRemoveCommand.class, ObservabilityCommand.ConfigListCommand.class, ObservabilityCommand.ConfigGetCommand.class, ObservabilityCommand.ConfigSetCommand.class, ObservabilityCommand.ConfigRemoveCommand.class})
     static class ObservabilityCommand implements Runnable {
         @CommandLine.ParentCommand
         private AetherCli parent;
@@ -2962,6 +3104,107 @@ public class AetherCli implements Runnable {
                 return OutputFormatter.printAction(response,
                                                    obsParent.parent.outputOptions(),
                                                    "Depth override removed for " + target);
+            }
+        }
+
+        @Command(name = "config", description = "List effective observability config (baseline|configured|darkened) per injection point")
+        static class ConfigListCommand implements Callable<Integer> {
+            @CommandLine.ParentCommand
+            private ObservabilityCommand obsParent;
+
+            @Override
+            public Integer call() {
+                var response = obsParent.parent.fetch(OBSERVABILITY_CONFIG_GET);
+
+                return OutputFormatter.printQuery(response, obsParent.parent.outputOptions());
+            }
+        }
+
+        @Command(name = "config-get", description = "Show effective observability config for one artifact/method")
+        static class ConfigGetCommand implements Callable<Integer> {
+            @CommandLine.ParentCommand
+            private ObservabilityCommand obsParent;
+
+            @Parameters(index = "0", description = "Artifact base (groupId:artifactId), or * for the global scope")
+            private String artifact;
+
+            @Parameters(index = "1", description = "Method name, or * for the artifact scope")
+            private String method;
+
+            @Override
+            public Integer call() {
+                var response = obsParent.parent.fetch(OBSERVABILITY_CONFIG_GET_ONE, List.of(artifact, method));
+
+                return OutputFormatter.printQuery(response, obsParent.parent.outputOptions());
+            }
+        }
+
+        @Command(name = "config-set", description = "Set the observability config snapshot for a scope (absent facet flags = off)")
+        static class ConfigSetCommand implements Callable<Integer> {
+            @CommandLine.ParentCommand
+            private ObservabilityCommand obsParent;
+
+            @Parameters(index = "0", description = "Artifact base (groupId:artifactId), or * for the global scope")
+            private String artifact;
+
+            @Parameters(index = "1", description = "Method name, or * for the artifact scope")
+            private String method;
+
+            @CommandLine.Option(names = {"--logging"}, description = "Enable the logging facet")
+            private boolean logging;
+
+            @CommandLine.Option(names = {"--metrics"}, description = "Enable the metrics (counting) facet")
+            private boolean metrics;
+
+            @CommandLine.Option(names = {"--tracing"}, description = "Enable the tracing facet")
+            private boolean tracing;
+
+            @CommandLine.Option(names = {"--spans"}, description = "Enable the spans facet (reserved, no body yet; #304)")
+            private boolean spans;
+
+            @CommandLine.Option(names = {"--depth"}, description = "Logging-ladder depth threshold (default 1)", defaultValue = "1")
+            private int depth;
+
+            @Override
+            public Integer call() {
+                var body = buildConfigSetBody();
+                var response = obsParent.parent.post(OBSERVABILITY_CONFIG_SET, body);
+
+                return OutputFormatter.printAction(response,
+                                                   obsParent.parent.outputOptions(),
+                                                   "Observability config set for " + artifact + "/" + method);
+            }
+
+            private String buildConfigSetBody() {
+                return "{\"artifact\":\"" + artifact
+                     + "\",\"method\":\"" + method
+                     + "\",\"logging\":" + logging
+                     + ",\"metrics\":" + metrics
+                     + ",\"spans\":" + spans
+                     + ",\"tracing\":" + tracing
+                     + ",\"depth\":" + depth
+                     + "}";
+            }
+        }
+
+        @Command(name = "config-remove", description = "Remove the observability config at a scope (resolution falls back per hierarchy)")
+        static class ConfigRemoveCommand implements Callable<Integer> {
+            @CommandLine.ParentCommand
+            private ObservabilityCommand obsParent;
+
+            @Parameters(index = "0", description = "Artifact base (groupId:artifactId), or * for the global scope")
+            private String artifact;
+
+            @Parameters(index = "1", description = "Method name, or * for the artifact scope")
+            private String method;
+
+            @Override
+            public Integer call() {
+                var response = obsParent.parent.delete(OBSERVABILITY_CONFIG_DELETE, List.of(artifact, method));
+
+                return OutputFormatter.printAction(response,
+                                                   obsParent.parent.outputOptions(),
+                                                   "Observability config removed for " + artifact + "/" + method);
             }
         }
     }
@@ -3099,7 +3342,10 @@ public class AetherCli implements Runnable {
 
             @SuppressWarnings("JBCT-UTIL-02")
             private String buildConfigSetBody() {
-                var sb = new StringBuilder("{\"key\":\"").append(key).append("\",\"value\":\"").append(value).append("\"");
+                var sb = new StringBuilder("{\"key\":\"").append(key)
+                                                         .append("\",\"value\":\"")
+                                                         .append(value)
+                                                         .append("\"");
 
                 option(nodeId).onPresent(id -> sb.append(",\"nodeId\":\"")
                                                  .append(id)
@@ -3382,8 +3628,19 @@ public class AetherCli implements Runnable {
             @Parameters(index = "0", description = "Git commit ID to restore from")
             private String commitId;
 
+            @CommandLine.Option(names = {"--yes", "--force"}, description = "Skip interactive confirmation")
+            private boolean skipConfirmation;
+
             @Override
             public Integer call() {
+                if (!DestructiveAction.destructiveAction().confirm(skipConfirmation,
+                                                                   "This will restore cluster state from backup " + commitId
+                                                                  + ", overwriting current state.")) {
+                    System.out.println("Aborted.");
+
+                    return ExitCode.SUCCESS;
+                }
+
                 var response = backupParent.parent.post(BACKUP_RESTORE, "{\"commit\":\"" + commitId + "\"}");
 
                 return OutputFormatter.printAction(response,
@@ -3509,8 +3766,19 @@ public class AetherCli implements Runnable {
             @CommandLine.Option(names = "--wait", description = "Reserved for future async-restore support (currently a no-op — restore is synchronous server-side)")
             private boolean waitForCompletion;
 
+            @CommandLine.Option(names = {"--yes", "--force"}, description = "Skip interactive confirmation")
+            private boolean skipConfirmation;
+
             @Override
             public Integer call() {
+                if (!DestructiveAction.destructiveAction().confirm(skipConfirmation,
+                                                                   "This will restore cluster state from backup " + commitId
+                                                                  + ", overwriting current state.")) {
+                    System.out.println("Aborted.");
+
+                    return ExitCode.SUCCESS;
+                }
+
                 var response = backupParent.parent.post(BACKUP_RESTORE, buildRestoreBody());
 
                 return OutputFormatter.printAction(response,

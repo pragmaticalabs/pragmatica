@@ -4,14 +4,6 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.resource.db.jooq.jdbc;
 
-import org.pragmatica.aether.resource.db.DatabaseConnectorConfig;
-import org.pragmatica.aether.resource.db.DatabaseConnectorError;
-import org.pragmatica.aether.resource.db.jooq.JooqConnector;
-import org.pragmatica.lang.Option;
-import org.pragmatica.lang.Promise;
-import org.pragmatica.lang.Result;
-import org.pragmatica.lang.Unit;
-
 import javax.sql.DataSource;
 import java.sql.Connection;
 import java.sql.SQLException;
@@ -19,6 +11,14 @@ import java.sql.SQLIntegrityConstraintViolationException;
 import java.sql.SQLTimeoutException;
 import java.sql.SQLTransactionRollbackException;
 import java.util.List;
+
+import org.pragmatica.aether.resource.db.DatabaseConnectorConfig;
+import org.pragmatica.aether.resource.db.DatabaseConnectorError;
+import org.pragmatica.aether.resource.db.jooq.JooqConnector;
+import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Unit;
 
 import org.jooq.DSLContext;
 import org.jooq.Query;

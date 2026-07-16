@@ -4,6 +4,19 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.deployment.loadbalancer;
 
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentLinkedDeque;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.locks.ReentrantLock;
+import java.util.stream.Collectors;
+
 import org.pragmatica.aether.environment.LoadBalancerProvider;
 import org.pragmatica.aether.environment.RouteChange;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
@@ -23,19 +36,6 @@ import org.pragmatica.consensus.topology.TransportObservation;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.messaging.MessageReceiver;
-
-import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.HashSet;
-import java.util.List;
-import java.util.Map;
-import java.util.Set;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ConcurrentLinkedDeque;
-import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.atomic.AtomicReference;
-import java.util.concurrent.locks.ReentrantLock;
-import java.util.stream.Collectors;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -158,8 +158,12 @@ public interface LoadBalancerManager {
             private void applyRemove(ValueRemove<NodeRoutesKey, NodeRoutesValue> valueRemove) {
                 var key = valueRemove.cause().key();
                 var nodeId = key.nodeId();
-                var affectedRoutes = routeNodes.entrySet().stream().filter(e -> e.getValue()
-                                                                                 .contains(nodeId)).map(Map.Entry::getKey).toList();
+                var affectedRoutes = routeNodes.entrySet()
+                                               .stream()
+                                               .filter(e -> e.getValue()
+                                                             .contains(nodeId))
+                                               .map(Map.Entry::getKey)
+                                               .toList();
 
                 for (var routeIdentity : affectedRoutes) {
                     var nodes = routeNodes.get(routeIdentity);
@@ -199,8 +203,9 @@ public interface LoadBalancerManager {
                     log.info("Reconciling load balancer: {} routes, {} node IPs", routes.size(), allNodeIps.size());
                     loadBalancerState(allNodeIps, routes).onSuccess(state -> provider.reconcile(state)
                                                                                      .onFailure(cause -> log.error("Load balancer reconciliation failed: {}",
-                                                                                                                   cause.message()))).onFailure(cause -> log.error("Failed to build load balancer state: {}",
-                                                                                                                                                                   cause.message()));
+                                                                                                                   cause.message())))
+                                     .onFailure(cause -> log.error("Failed to build load balancer state: {}",
+                                                                   cause.message()));
                 } finally {
                     activationLock.unlock();
                 }
@@ -235,22 +240,26 @@ public interface LoadBalancerManager {
 
                 allNodeIps.addAll(nodeIps);
                 if (!nodeIps.isEmpty()) {
-                    routeChange(parts[0], parts[1], nodeIps).onSuccess(routes::add).onFailure(cause -> log.warn("Failed to create route change for {}: {}",
-                                                                                                                routeIdentity,
-                                                                                                                cause.message()));
+                    routeChange(parts[0], parts[1], nodeIps).onSuccess(routes::add)
+                               .onFailure(cause -> log.warn("Failed to create route change for {}: {}",
+                                                            routeIdentity,
+                                                            cause.message()));
                 }
             }
 
             private void handleRouteRemoval(String httpMethod, String pathPrefix) {
                 log.info("Route removed: {} {}", httpMethod, pathPrefix);
-                routeChange(httpMethod, pathPrefix, Set.of()).onSuccess(change -> provider.onRouteChanged(change)
-                                                                                          .onFailure(cause -> log.error("Failed to remove load balancer route {} {}: {}",
-                                                                                                                        httpMethod,
-                                                                                                                        pathPrefix,
-                                                                                                                        cause.message()))).onFailure(cause -> log.error("Failed to create route change for removal of {} {}: {}",
-                                                                                                                                                                        httpMethod,
-                                                                                                                                                                        pathPrefix,
-                                                                                                                                                                        cause.message()));
+                routeChange(httpMethod,
+                            pathPrefix,
+                            Set.of()).onSuccess(change -> provider.onRouteChanged(change)
+                                                                  .onFailure(cause -> log.error("Failed to remove load balancer route {} {}: {}",
+                                                                                                httpMethod,
+                                                                                                pathPrefix,
+                                                                                                cause.message())))
+                           .onFailure(cause -> log.error("Failed to create route change for removal of {} {}: {}",
+                                                         httpMethod,
+                                                         pathPrefix,
+                                                         cause.message()));
             }
 
             private void handleRouteChange(String httpMethod, String pathPrefix, Set<NodeId> nodeIds) {
@@ -265,22 +274,27 @@ public interface LoadBalancerManager {
                                                                                          .onFailure(cause -> log.error("Failed to update load balancer route {} {}: {}",
                                                                                                                        httpMethod,
                                                                                                                        pathPrefix,
-                                                                                                                       cause.message()))).onFailure(cause -> log.error("Failed to create route change for {} {}: {}",
-                                                                                                                                                                       httpMethod,
-                                                                                                                                                                       pathPrefix,
-                                                                                                                                                                       cause.message()));
+                                                                                                                       cause.message())))
+                           .onFailure(cause -> log.error("Failed to create route change for {} {}: {}",
+                                                         httpMethod,
+                                                         pathPrefix,
+                                                         cause.message()));
             }
 
             private void handleNodeDeparture(NodeId departedNode) {
-                topologyManager.get(departedNode).map(NodeInfo::address).map(addr -> addr.host()).onPresent(this::removeNodeIp);
+                topologyManager.get(departedNode)
+                               .map(NodeInfo::address)
+                               .map(addr -> addr.host())
+                               .onPresent(this::removeNodeIp);
             }
 
             private void removeNodeIp(String ip) {
                 if (trackedNodeIps.remove(ip)) {
                     log.info("Node departed, removing IP {} from load balancer", ip);
-                    provider.onNodeRemoved(ip).onFailure(cause -> log.error("Failed to remove node {} from load balancer: {}",
-                                                                            ip,
-                                                                            cause.message()));
+                    provider.onNodeRemoved(ip)
+                            .onFailure(cause -> log.error("Failed to remove node {} from load balancer: {}",
+                                                          ip,
+                                                          cause.message()));
                 }
             }
 

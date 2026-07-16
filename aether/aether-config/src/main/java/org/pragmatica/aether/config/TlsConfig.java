@@ -4,10 +4,10 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.config;
 
+import java.nio.file.Path;
+
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
-
-import java.nio.file.Path;
 
 import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.option;

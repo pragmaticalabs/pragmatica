@@ -32,7 +32,11 @@ public record RetryConfig(int maxAttempts, BackoffStrategy backoffStrategy) {
 
     @SuppressWarnings("JBCT-NAM-01")
     private static RetryConfig withExponentialBackoff(int attempts) {
-        var strategy = BackoffStrategy.exponential().initialDelay(timeSpan(100).millis()).maxDelay(timeSpan(10).seconds()).factor(2.0).withoutJitter();
+        var strategy = BackoffStrategy.exponential()
+                                      .initialDelay(timeSpan(100).millis())
+                                      .maxDelay(timeSpan(10).seconds())
+                                      .factor(2.0)
+                                      .withoutJitter();
 
         return new RetryConfig(attempts, strategy);
     }

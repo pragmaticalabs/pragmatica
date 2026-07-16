@@ -4,13 +4,14 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.stream.replication;
 
+import java.util.List;
+import java.util.function.BiConsumer;
+
+import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Result;
 import org.pragmatica.messaging.MessageReceiver;
-
-import java.util.List;
-import java.util.function.BiConsumer;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -26,21 +27,35 @@ import static org.pragmatica.aether.stream.replication.ReplicationMessage.Replic
 /// replicated payloads into the local partition ring and acks the highest applied offset back to the
 /// owner.
 ///
-/// ## Offset-preserving, non-replicating apply
-/// Events are applied through {@link RecoveredAppender#appendRecovered} (the A4 seam, backed by
+/// ## Offset verification against the local head (S1 / #260)
+/// A replicated batch carries the OWNER-frame `fromOffset` it was published at. Before applying, the
+/// handler compares it to the replica's own next-expected offset ({@link LocalHead#nextExpectedOffset}
+/// = local ring head + 1, or 0 for an empty partition) so the owner-frame and replica-frame offsets
+/// stay in lock-step — the apply is NEVER a blind "append at whatever the local head happens to be":
+///   - `fromOffset == localNext` — contiguous: apply the batch (the normal path).
+///   - `fromOffset  > localNext` — a GAP: one or more earlier batches were dropped/reordered, so
+///     applying this batch now would land owner-offset-N events at the wrong local offsets and
+///     permanently diverge. The batch is REJECTED (nothing applied) and `onGap` fires so the replica
+///     re-enters SYNCING/backfill and pulls the missing prefix from a caught-up source.
+///   - `fromOffset  < localNext` — a stale/duplicate re-delivery: the overlapping prefix is already
+///     present locally, so it is SKIPPED (idempotent) and only the tail at-or-beyond `localNext` is
+///     applied. A batch fully below `localNext` is acked at its nominal end (the owner already has
+///     these) with no append and no gap.
+///
+/// Offsets are preserved because each surviving batch is applied only when it is exactly contiguous
+/// with what the replica already holds, and the ring assigns sequential offsets. The apply itself goes
+/// through {@link RecoveredAppender#appendRecovered} (the A4 seam, backed by
 /// `StreamPartitionManager::appendRecovered`) which appends WITHOUT re-invoking the replication
-/// manager. This is what stops an infinite replicate→apply→replicate loop: a replicated event lands
-/// locally but is never re-emitted onto the replication stream. Offsets are preserved because the
-/// owner replays its events in arrival order into the replica's empty (or backfilled-then-empty)
-/// partition, and the ring assigns sequential offsets.
+/// manager — this is what stops an infinite replicate→apply→replicate loop.
 ///
 /// ## Ack
-/// After applying a batch starting at `fromOffset` with `n` payloads, the highest applied offset is
-/// `fromOffset + n - 1`; that is acked back so {@link DefaultReplicationManager#handleAck} can advance
-/// the watermark and resolve any pending `awaitReplication(minAcks)` promise.
+/// After applying the verified portion of a batch up to highest offset `H`, `H` is acked back so
+/// {@link DefaultReplicationManager#handleAck} can advance the watermark and resolve any pending
+/// `awaitReplication(minAcks)` promise. The ack always reflects the replica's VERIFIED state — never a
+/// nominal batch end the replica did not actually reach contiguously.
 ///
 /// ## Partial-apply repair (M5)
-/// A mid-batch append failure applies only the contiguous prefix `[fromOffset, fromOffset+applied-1]`
+/// A mid-batch append failure applies only the contiguous prefix `[applyFrom, applyFrom+applied-1]`
 /// and leaves a gap for the tail of the batch. The handler acks ONLY that contiguous prefix (never the
 /// batch's nominal end), so the owner's watermark view never over-states what landed. A partial apply
 /// is NOT treated as success: the `onGap` repair seam is fired for `(streamName, partition)` so the
@@ -50,91 +65,187 @@ import static org.pragmatica.aether.stream.replication.ReplicationMessage.Replic
 public final class ReplicationReceiveHandler {
     private static final Logger log = LoggerFactory.getLogger(ReplicationReceiveHandler.class);
 
-    /// Non-replicating, offset-preserving append seam. In production this is
-    /// `StreamPartitionManager::appendRecovered`.
+    /// Non-replicating, offset-preserving append seam carrying the SENDING owner's `ownerEpoch`
+    /// fencing token (#345 item 1d-ii). In production this is `StreamPartitionManager::appendRecovered`,
+    /// which fences the append against the replica's own partition high-water before landing it — a
+    /// deposed owner's batch is rejected at the replica's commit point.
     @FunctionalInterface
     public interface RecoveredAppender {
-        Result<Long> appendRecovered(String streamName, int partition, byte[] payload, long timestamp);
+        Result<Long> appendRecovered(String streamName,
+                                     int partition,
+                                     byte[] payload,
+                                     long timestamp,
+                                     Epoch ownerEpoch);
+    }
+
+    /// Local next-expected-offset seam: the offset the NEXT contiguous append would be assigned for
+    /// `(streamName, partition)` — local ring head + 1, or 0 for an empty/absent partition. In
+    /// production this is `StreamPartitionManager::nextExpectedOffset`. Used to verify an incoming
+    /// batch's owner-frame `fromOffset` before applying (S1 / #260).
+    @FunctionalInterface
+    public interface LocalHead {
+        long nextExpectedOffset(String streamName, int partition);
     }
 
     private final NodeId self;
     private final RecoveredAppender appender;
+    private final LocalHead localHead;
     private final ReplicationTransport transport;
     private final BiConsumer<String, Integer> onGap;
 
     private ReplicationReceiveHandler(NodeId self,
                                       RecoveredAppender appender,
+                                      LocalHead localHead,
                                       ReplicationTransport transport,
                                       BiConsumer<String, Integer> onGap) {
         this.self = self;
         this.appender = appender;
+        this.localHead = localHead;
         this.transport = transport;
         this.onGap = onGap;
     }
 
+    /// Backward-compatible factory with no local-head verification: the incoming `fromOffset` is
+    /// trusted to be contiguous (a fresh/empty replica fed strictly in order). Retained for callers
+    /// that cannot supply a local-head view; new wiring should prefer the verifying factory.
     public static ReplicationReceiveHandler replicationReceiveHandler(NodeId self,
                                                                       RecoveredAppender appender,
                                                                       ReplicationTransport transport) {
         return new ReplicationReceiveHandler(self,
                                              appender,
+                                             NO_LOCAL_HEAD,
                                              transport,
                                              (_, _) -> {});
     }
 
     /// Factory with an explicit `onGap` repair seam, fired `(streamName, partition)` whenever a batch
-    /// fails to apply in full so the replica re-enters SYNCING/backfill (M5).
+    /// cannot apply in full so the replica re-enters SYNCING/backfill (M5). No local-head verification.
     public static ReplicationReceiveHandler replicationReceiveHandler(NodeId self,
                                                                       RecoveredAppender appender,
                                                                       ReplicationTransport transport,
                                                                       BiConsumer<String, Integer> onGap) {
-        return new ReplicationReceiveHandler(self, appender, transport, onGap);
+        return new ReplicationReceiveHandler(self, appender, NO_LOCAL_HEAD, transport, onGap);
+    }
+
+    /// Verifying factory (S1 / #260): `localHead` reports the replica's next-expected offset so an
+    /// incoming batch's owner-frame `fromOffset` is checked for gaps/duplicates before applying.
+    public static ReplicationReceiveHandler replicationReceiveHandler(NodeId self,
+                                                                      RecoveredAppender appender,
+                                                                      LocalHead localHead,
+                                                                      ReplicationTransport transport,
+                                                                      BiConsumer<String, Integer> onGap) {
+        return new ReplicationReceiveHandler(self, appender, localHead, transport, onGap);
     }
 
     @Contract
     @MessageReceiver
     public void onReplicateEvents(ReplicationMessage.ReplicateEvents message) {
+        var streamName = message.streamName();
+        var partition = message.partition();
         var payloads = message.payloads();
         var timestamps = message.timestamps();
         var fromOffset = message.fromOffset();
-        var applied = applyBatch(message.streamName(), message.partition(), fromOffset, payloads, timestamps);
+        var batchEnd = fromOffset + payloads.size() - 1;
+        var localNext = resolveLocalNext(streamName, partition, fromOffset);
 
-        if (applied < payloads.size()) {
-            // Partial (or zero) apply: a gap remains. Surface it so the replica is repaired rather than
-            // left silently behind — re-enter SYNCING/backfill from the acked watermark.
-            log.warn("ReplicationReceiveHandler: applied {}/{} events for {}[{}] from {} — triggering backfill repair",
+        if (fromOffset > localNext) {
+            handleGapAhead(message, fromOffset, localNext);
+
+            return;
+        }
+
+        if (batchEnd < localNext) {
+            handleStaleDuplicate(message, fromOffset, batchEnd, localNext);
+
+            return;
+        }
+
+        applyContiguous(message, streamName, partition, fromOffset, payloads, timestamps, localNext);
+    }
+
+    /// `fromOffset > localNext`: an earlier batch is missing. Applying now would diverge — reject the
+    /// whole batch and trigger backfill repair. No ack: the replica's verified offset is unchanged.
+    private void handleGapAhead(ReplicationMessage.ReplicateEvents message, long fromOffset, long localNext) {
+        log.warn("ReplicationReceiveHandler: gap for {}[{}] — batch starts at offset {} but next expected is {} "
+                + "(missing {} earlier offsets) — rejecting batch, triggering backfill repair",
+                 message.streamName(),
+                 message.partition(),
+                 fromOffset,
+                 localNext,
+                 fromOffset - localNext);
+        onGap.accept(message.streamName(), message.partition());
+    }
+
+    /// Whole batch is below `localNext`: the replica already holds these offsets (a duplicate/stale
+    /// re-delivery). Nothing to apply; re-ack the batch end so the owner's watermark view is not stuck
+    /// below what the replica already has, and surface no gap.
+    private void handleStaleDuplicate(ReplicationMessage.ReplicateEvents message,
+                                      long fromOffset,
+                                      long batchEnd,
+                                      long localNext) {
+        log.debug("ReplicationReceiveHandler: duplicate batch for {}[{}] — [{}, {}] already applied (next expected {}) "
+                 + "— re-acking, no append",
+                  message.streamName(),
+                  message.partition(),
+                  fromOffset,
+                  batchEnd,
+                  localNext);
+        transport.send(message.governorId(),
+                       replicateAck(self, message.streamName(), message.partition(), batchEnd));
+    }
+
+    /// `fromOffset <= localNext <= batchEnd`: the batch is contiguous with (or overlaps the tail of)
+    /// what the replica holds. Skip the already-present prefix `[fromOffset, localNext-1]` and apply
+    /// from `localNext` onward, preserving offsets.
+    private void applyContiguous(ReplicationMessage.ReplicateEvents message,
+                                 String streamName,
+                                 int partition,
+                                 long fromOffset,
+                                 List<byte[]> payloads,
+                                 List<Long> timestamps,
+                                 long localNext) {
+        var skip = (int)(localNext - fromOffset);
+        var applied = applyBatch(streamName, partition, localNext, payloads, timestamps, skip, message.ownerEpoch());
+        var expected = payloads.size() - skip;
+
+        if (applied < expected) {
+            log.warn("ReplicationReceiveHandler: applied {}/{} new events for {}[{}] from offset {} (owner {}) "
+                    + "— triggering backfill repair",
                      applied,
-                     payloads.size(),
-                     message.streamName(),
-                     message.partition(),
+                     expected,
+                     streamName,
+                     partition,
+                     localNext,
                      message.governorId());
-            onGap.accept(message.streamName(), message.partition());
+            onGap.accept(streamName, partition);
         }
 
         if (applied <= 0) {
             return;
         }
 
-        var highestApplied = fromOffset + applied - 1;
+        var highestApplied = localNext + applied - 1;
 
-        transport.send(message.governorId(),
-                       replicateAck(self, message.streamName(), message.partition(), highestApplied));
+        transport.send(message.governorId(), replicateAck(self, streamName, partition, highestApplied));
     }
 
     private int applyBatch(String streamName,
                            int partition,
-                           long fromOffset,
+                           long applyFrom,
                            List<byte[]> payloads,
-                           List<Long> timestamps) {
+                           List<Long> timestamps,
+                           int skip,
+                           Epoch ownerEpoch) {
         var applied = 0;
 
-        for (var i = 0; i < payloads.size(); i++) {
-            var result = appender.appendRecovered(streamName, partition, payloads.get(i), timestamps.get(i));
+        for (var i = skip; i < payloads.size(); i++) {
+            var result = appender.appendRecovered(streamName, partition, payloads.get(i), timestamps.get(i), ownerEpoch);
 
             if (result.isFailure()) {
-                result.onFailure(cause -> log.warn("ReplicationReceiveHandler: append failed for {}[{}] at index {}: {}",
+                result.onFailure(cause -> log.warn("ReplicationReceiveHandler: append failed for {}[{}] at offset {}: {}",
                                                    streamName,
                                                    partition,
-                                                   fromOffset,
+                                                   applyFrom,
                                                    cause.message()));
                 break;
             }
@@ -144,4 +255,17 @@ public final class ReplicationReceiveHandler {
 
         return applied;
     }
+
+    /// The replica's next-expected offset for `(streamName, partition)`, or `fromOffset` itself when no
+    /// real local-head view is wired ({@link #NO_LOCAL_HEAD}) so the batch applies verbatim — the
+    /// pre-#260 trust-the-owner behavior of the non-verifying factories.
+    private long resolveLocalNext(String streamName, int partition, long fromOffset) {
+        return localHead == NO_LOCAL_HEAD
+               ? fromOffset
+               : localHead.nextExpectedOffset(streamName, partition);
+    }
+
+    /// Sentinel seam for the non-verifying factories: {@link #resolveLocalNext} short-circuits it to
+    /// `fromOffset` so every batch is treated as contiguous (no gap detection, no skip). Never invoked.
+    private static final LocalHead NO_LOCAL_HEAD = (_, _) -> 0L;
 }

@@ -4,13 +4,13 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.resource.db.jooq;
 
+import java.util.List;
+
 import org.pragmatica.aether.resource.db.DatabaseConnector;
 import org.pragmatica.aether.resource.db.DatabaseConnectorError;
 import org.pragmatica.aether.resource.db.DatabaseType;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
-
-import java.util.List;
 
 import org.jooq.DSLContext;
 import org.jooq.Query;

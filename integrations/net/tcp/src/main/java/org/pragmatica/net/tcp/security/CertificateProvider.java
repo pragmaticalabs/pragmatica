@@ -46,4 +46,15 @@ public interface CertificateProvider {
     ///
     /// @return previous gossip key, or none if no rotation has occurred
     Option<GossipKey> previousGossipKey();
+
+    /// Retrieve the next-epoch gossip encryption key, accepted (but not used for encryption) so a
+    /// peer that has already rolled to the next key epoch — e.g. a node booted just after UTC
+    /// midnight with the day-(N+1) key — can still be decrypted by a node still on day N (#256).
+    /// Default none: providers without a wall-clock-derived key epoch (cloud providers, fixed-key
+    /// setups) have no next key to pre-accept.
+    ///
+    /// @return next-epoch gossip key, or none when not applicable
+    default Option<GossipKey> nextGossipKey() {
+        return Option.none();
+    }
 }

@@ -4,18 +4,18 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.cli.cluster;
 
+import java.util.ArrayList;
+import java.util.EnumMap;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+
 import org.pragmatica.aether.cli.cluster.BootstrapState.PhaseStatus;
 import org.pragmatica.json.JsonMapper;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
-
-import java.util.ArrayList;
-import java.util.EnumMap;
-import java.util.LinkedHashMap;
-import java.util.List;
-import java.util.Map;
 
 import tools.jackson.databind.JsonNode;
 
@@ -276,27 +276,65 @@ sealed interface BootstrapStateJson {
     }
 
     private static void appendSshKey(StringBuilder sb, CreatedResource.SshKeyResource key) {
-        sb.append("{\"type\": \"SshKeyResource\", \"provider\": \"").append(escapeJson(key.provider())).append("\", \"sshKeyId\": ").append(key.sshKeyId()).append(", \"name\": \"").append(escapeJson(key.name())).append("\"}");
+        sb.append("{\"type\": \"SshKeyResource\", \"provider\": \"")
+          .append(escapeJson(key.provider()))
+          .append("\", \"sshKeyId\": ")
+          .append(key.sshKeyId())
+          .append(", \"name\": \"")
+          .append(escapeJson(key.name()))
+          .append("\"}");
     }
 
     private static void appendVm(StringBuilder sb, CreatedResource.ProvisionedVm vm) {
-        sb.append("{\"type\": \"ProvisionedVm\", \"provider\": \"").append(escapeJson(vm.provider())).append("\", \"resourceId\": \"").append(escapeJson(vm.resourceId())).append("\", \"sourceName\": \"").append(escapeJson(vm.sourceName())).append("\", \"role\": \"").append(escapeJson(vm.role())).append("\"}");
+        sb.append("{\"type\": \"ProvisionedVm\", \"provider\": \"")
+          .append(escapeJson(vm.provider()))
+          .append("\", \"resourceId\": \"")
+          .append(escapeJson(vm.resourceId()))
+          .append("\", \"sourceName\": \"")
+          .append(escapeJson(vm.sourceName()))
+          .append("\", \"role\": \"")
+          .append(escapeJson(vm.role()))
+          .append("\"}");
     }
 
     private static void appendFirewallRule(StringBuilder sb, CreatedResource.FirewallRule rule) {
-        sb.append("{\"type\": \"FirewallRule\", \"provider\": \"").append(escapeJson(rule.provider())).append("\", \"resourceId\": \"").append(escapeJson(rule.resourceId())).append("\", \"sourceName\": \"").append(escapeJson(rule.sourceName())).append("\", \"port\": ").append(rule.port()).append(", \"protocol\": \"").append(escapeJson(rule.protocol())).append("\"}");
+        sb.append("{\"type\": \"FirewallRule\", \"provider\": \"")
+          .append(escapeJson(rule.provider()))
+          .append("\", \"resourceId\": \"")
+          .append(escapeJson(rule.resourceId()))
+          .append("\", \"sourceName\": \"")
+          .append(escapeJson(rule.sourceName()))
+          .append("\", \"port\": ")
+          .append(rule.port())
+          .append(", \"protocol\": \"")
+          .append(escapeJson(rule.protocol()))
+          .append("\"}");
     }
 
     private static void appendFloatingIp(StringBuilder sb, CreatedResource.FloatingIpAssignment ip) {
-        sb.append("{\"type\": \"FloatingIpAssignment\", \"provider\": \"").append(escapeJson(ip.provider())).append("\", \"floatingIp\": \"").append(escapeJson(ip.floatingIp())).append("\", \"targetNodeId\": \"").append(escapeJson(ip.targetNodeId())).append("\"}");
+        sb.append("{\"type\": \"FloatingIpAssignment\", \"provider\": \"")
+          .append(escapeJson(ip.provider()))
+          .append("\", \"floatingIp\": \"")
+          .append(escapeJson(ip.floatingIp()))
+          .append("\", \"targetNodeId\": \"")
+          .append(escapeJson(ip.targetNodeId()))
+          .append("\"}");
     }
 
     private static void appendDockerContainer(StringBuilder sb, CreatedResource.DockerContainer container) {
-        sb.append("{\"type\": \"DockerContainer\", \"containerId\": \"").append(escapeJson(container.containerId())).append("\", \"sourceName\": \"").append(escapeJson(container.sourceName())).append("\"}");
+        sb.append("{\"type\": \"DockerContainer\", \"containerId\": \"")
+          .append(escapeJson(container.containerId()))
+          .append("\", \"sourceName\": \"")
+          .append(escapeJson(container.sourceName()))
+          .append("\"}");
     }
 
     private static void appendSshConfig(StringBuilder sb, CreatedResource.SshDeployedConfig config) {
-        sb.append("{\"type\": \"SshDeployedConfig\", \"host\": \"").append(escapeJson(config.host())).append("\", \"remotePath\": \"").append(escapeJson(config.remotePath())).append("\"}");
+        sb.append("{\"type\": \"SshDeployedConfig\", \"host\": \"")
+          .append(escapeJson(config.host()))
+          .append("\", \"remotePath\": \"")
+          .append(escapeJson(config.remotePath()))
+          .append("\"}");
     }
 
     private static void appendSources(StringBuilder sb, Map<String, SourceCleanupHandle> sources) {
@@ -321,7 +359,11 @@ sealed interface BootstrapStateJson {
     }
 
     private static void appendSourceCleanupHandle(StringBuilder sb, SourceCleanupHandle handle) {
-        sb.append("{\"provider\": \"").append(escapeJson(handle.provider())).append("\", \"region\": \"").append(escapeJson(handle.region().or(""))).append("\", \"credentialEnvVars\": {");
+        sb.append("{\"provider\": \"")
+          .append(escapeJson(handle.provider()))
+          .append("\", \"region\": \"")
+          .append(escapeJson(handle.region().or("")))
+          .append("\", \"credentialEnvVars\": {");
         var first = true;
 
         for (var entry : handle.credentialEnvVars().entrySet()) {
@@ -329,7 +371,11 @@ sealed interface BootstrapStateJson {
                 sb.append(", ");
             }
 
-            sb.append('"').append(escapeJson(entry.getKey())).append("\": \"").append(escapeJson(entry.getValue())).append('"');
+            sb.append('"')
+              .append(escapeJson(entry.getKey()))
+              .append("\": \"")
+              .append(escapeJson(entry.getValue()))
+              .append('"');
             first = false;
         }
 

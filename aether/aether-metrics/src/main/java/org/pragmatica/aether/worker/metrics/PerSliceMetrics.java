@@ -4,6 +4,8 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.worker.metrics;
 
+import java.util.List;
+
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.serialization.Codec;
 
@@ -13,12 +15,28 @@ public record PerSliceMetrics(Artifact artifact,
                               long activeInvocations,
                               double p95LatencyMs,
                               double errorRate,
-                              long totalCalls) {
+                              long totalCalls,
+                              List<PerMethodMetrics> methods) {
+    public PerSliceMetrics {
+        methods = methods == null
+                  ? List.of()
+                  : List.copyOf(methods);
+    }
+
+    public static PerSliceMetrics perSliceMetrics(Artifact artifact,
+                                                  long activeInvocations,
+                                                  double p95LatencyMs,
+                                                  double errorRate,
+                                                  long totalCalls,
+                                                  List<PerMethodMetrics> methods) {
+        return new PerSliceMetrics(artifact, activeInvocations, p95LatencyMs, errorRate, totalCalls, methods);
+    }
+
     public static PerSliceMetrics perSliceMetrics(Artifact artifact,
                                                   long activeInvocations,
                                                   double p95LatencyMs,
                                                   double errorRate,
                                                   long totalCalls) {
-        return new PerSliceMetrics(artifact, activeInvocations, p95LatencyMs, errorRate, totalCalls);
+        return new PerSliceMetrics(artifact, activeInvocations, p95LatencyMs, errorRate, totalCalls, List.of());
     }
 }

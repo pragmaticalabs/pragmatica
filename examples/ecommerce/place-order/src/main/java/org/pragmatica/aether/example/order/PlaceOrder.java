@@ -1,5 +1,8 @@
 package org.pragmatica.aether.example.order;
 
+import java.time.Instant;
+import java.util.List;
+
 import org.pragmatica.aether.example.fulfillment.FulfillmentService;
 import org.pragmatica.aether.example.fulfillment.FulfillmentService.CalculateShippingRequest;
 import org.pragmatica.aether.example.fulfillment.FulfillmentService.CreateShipmentRequest;
@@ -33,9 +36,6 @@ import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
-
-import java.time.Instant;
-import java.util.List;
 
 
 @Slice
@@ -238,10 +238,12 @@ public interface PlaceOrder {
             private Promise<OrderWithPricing> applyDiscount(ValidOrder order,
                                                             PriceBreakdown basePrice,
                                                             ShippingQuote shippingQuote) {
-                var discountRequest = order.discountCode().map(code -> ApplyDiscountRequest.applyDiscountRequest(order.customerId(),
-                                                                                                                 basePrice.subtotal(),
-                                                                                                                 code)).or(() -> ApplyDiscountRequest.withoutCode(order.customerId(),
-                                                                                                                                                                  basePrice.subtotal()));
+                var discountRequest = order.discountCode()
+                                           .map(code -> ApplyDiscountRequest.applyDiscountRequest(order.customerId(),
+                                                                                                  basePrice.subtotal(),
+                                                                                                  code))
+                                           .or(() -> ApplyDiscountRequest.withoutCode(order.customerId(),
+                                                                                      basePrice.subtotal()));
 
                 return pricing.applyDiscount(discountRequest)
                               .flatMap(discount -> calculateTaxAndBuildPrice(order, basePrice, shippingQuote, discount));
@@ -299,7 +301,9 @@ public interface PlaceOrder {
                 var paymentRequest = ProcessPaymentRequest.processPaymentRequest(context.context().order().orderId(),
                                                                                  context.context().order().customerId(),
                                                                                  context.context().pricing().total(),
-                                                                                 context.context().order().paymentMethod());
+                                                                                 context.context()
+                                                                                        .order()
+                                                                                        .paymentMethod());
 
                 return payment.processPayment(paymentRequest)
                               .map(result -> new OrderWithPayment(context, result))

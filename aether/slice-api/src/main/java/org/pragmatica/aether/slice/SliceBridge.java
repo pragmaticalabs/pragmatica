@@ -4,11 +4,12 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.slice;
 
+import java.util.List;
+
 import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
-
-import java.util.List;
 
 
 public interface SliceBridge {
@@ -26,6 +27,20 @@ public interface SliceBridge {
 
     ClassLoader classLoader();
     List<String> methodNames();
+
+    /// The per-injection-point system-observability cell for `methodName` (#277 increment 2), resolved
+    /// at the interceptor dispatch sites so a call flows through `cell.around(...)`. Bridges that carry
+    /// no cells (stubs, non-default impls) return none and the dispatch runs untouched.
+    default Option<ObservabilityStrategyCell> observabilityCell(String methodName) {
+        return Option.none();
+    }
+
+    /// Every observability cell this bridge holds — the full per-method set, handed to the
+    /// ObservabilityCellRegistrar at slice load (register) and unload (deregister). Empty for bridges
+    /// that mint no cells.
+    default List<ObservabilityStrategyCell> observabilityCells() {
+        return List.of();
+    }
 
     enum BridgeError implements Cause {
         ENCODE_NOT_SUPPORTED("Encode not supported by this bridge"),

@@ -4,20 +4,6 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.forge.load;
 
-import org.pragmatica.aether.forge.ForgeMetrics;
-import org.pragmatica.aether.forge.load.pattern.TemplateProcessor;
-import org.pragmatica.aether.forge.simulator.EntryPointMetrics;
-import org.pragmatica.http.HttpOperations;
-import org.pragmatica.http.HttpResult;
-import org.pragmatica.http.JdkHttpOperations;
-import org.pragmatica.lang.Cause;
-import org.pragmatica.lang.Contract;
-import org.pragmatica.lang.Option;
-import org.pragmatica.lang.Result;
-import org.pragmatica.lang.Unit;
-import org.pragmatica.lang.concurrent.AtomicHolder;
-import org.pragmatica.lang.parse.Network;
-
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
@@ -39,6 +25,20 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Supplier;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
+
+import org.pragmatica.aether.forge.ForgeMetrics;
+import org.pragmatica.aether.forge.load.pattern.TemplateProcessor;
+import org.pragmatica.aether.forge.simulator.EntryPointMetrics;
+import org.pragmatica.http.HttpOperations;
+import org.pragmatica.http.HttpResult;
+import org.pragmatica.http.JdkHttpOperations;
+import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Contract;
+import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.concurrent.AtomicHolder;
+import org.pragmatica.lang.parse.Network;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -87,7 +87,11 @@ public final class ConfigurableLoadRunner {
     }
 
     private static HttpOperations buildHttpOperations() {
-        var client = HttpClient.newBuilder().version(HttpClient.Version.HTTP_1_1).connectTimeout(REQUEST_TIMEOUT).executor(Executors.newVirtualThreadPerTaskExecutor()).build();
+        var client = HttpClient.newBuilder()
+                               .version(HttpClient.Version.HTTP_1_1)
+                               .connectTimeout(REQUEST_TIMEOUT)
+                               .executor(Executors.newVirtualThreadPerTaskExecutor())
+                               .build();
 
         return JdkHttpOperations.jdkHttpOperations(client);
     }
@@ -667,15 +671,19 @@ public final class ConfigurableLoadRunner {
             var method = httpMethodFor(path, body);
             var uriStr = "http://localhost:" + portSupplier.get() + path;
 
-            Network.parseURI(uriStr).onSuccess(uri -> dispatchRequest(uri, method, body, requestStartTime)).onFailure(cause -> log.debug("Invalid URI '{}': {}",
-                                                                                                                                         uriStr,
-                                                                                                                                         cause.message()));
+            Network.parseURI(uriStr)
+                   .onSuccess(uri -> dispatchRequest(uri, method, body, requestStartTime))
+                   .onFailure(cause -> log.debug("Invalid URI '{}': {}",
+                                                 uriStr,
+                                                 cause.message()));
         }
 
         private void dispatchRequest(URI uri, String method, String body, long requestStartTime) {
             var request = buildHttpRequest(uri, method, body).build();
 
-            http.sendString(request).onSuccess(result -> recordHttpResult(result, requestStartTime)).onFailure(cause -> recordFailure(System.nanoTime() - requestStartTime));
+            http.sendString(request)
+                .onSuccess(result -> recordHttpResult(result, requestStartTime))
+                .onFailure(cause -> recordFailure(System.nanoTime() - requestStartTime));
         }
 
         private String httpMethodFor(String path, String body) {

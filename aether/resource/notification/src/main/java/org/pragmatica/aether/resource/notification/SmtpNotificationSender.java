@@ -4,12 +4,12 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.resource.notification;
 
+import java.util.concurrent.TimeUnit;
+
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.net.smtp.SmtpClient;
 import org.pragmatica.net.smtp.SmtpMessage;
-
-import java.util.concurrent.TimeUnit;
 
 import static org.pragmatica.aether.resource.notification.NotificationResult.notificationResult;
 import static org.pragmatica.lang.Unit.unit;
@@ -83,7 +83,8 @@ final class SmtpNotificationSender implements NotificationSender {
         return SmtpMessage.smtpMessage(email.from(),
                                        email.to(),
                                        email.subject(),
-                                       body).withCc(email.cc())
-                                      .withBcc(email.bcc());
+                                       body)
+                          .withCc(email.cc())
+                          .withBcc(email.bcc());
     }
 }

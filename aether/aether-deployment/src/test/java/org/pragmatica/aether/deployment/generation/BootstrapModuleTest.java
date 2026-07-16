@@ -6,11 +6,13 @@ package org.pragmatica.aether.deployment.generation;
 
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ClusterConfigKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.DhtPartitionOwnershipKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ClusterConfigValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.DhtPartitionOwnershipValue;
 import org.pragmatica.cluster.node.ClusterNode;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.consensus.NodeId;
@@ -19,6 +21,7 @@ import org.pragmatica.consensus.topology.MembershipDecision;
 import org.pragmatica.consensus.topology.NodeState;
 import org.pragmatica.consensus.topology.TopologyManager;
 import org.pragmatica.hlc.HlcClock;
+import org.pragmatica.hlc.HlcTimestamp;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
@@ -42,6 +45,7 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 /// seed grace window, the bootstrap-committed callback, and the leader-loss reset.
 class BootstrapModuleTest {
     private static final NodeId SELF = new NodeId("node-self");
+    private static final long FIXTURE_RABIA_TERM = 1L;
 
     @Nested
     class CorePartitionBootstrap {
@@ -53,6 +57,59 @@ class BootstrapModuleTest {
             var puts = collectPuts(fixture.cluster.batches);
             assertThat(puts).anyMatch(p -> p.key() instanceof DhtPartitionOwnershipKey
                                             && BootstrapModule.CORE_PARTITION_ID.equals(((DhtPartitionOwnershipKey) p.key()).partitionId()));
+        }
+    }
+
+    /// #345 DHT parity: the committed `ownerEpoch` couples its local counter to the per-partition
+    /// `ownershipTerm`, so the epoch advances on EVERY core-owner change — including a same-term
+    /// stale-owner takeover with no leader re-election. This is the gap-closing property that fences a
+    /// deposed-but-alive core owner. Mirrors the stream writer's
+    /// `decide_ownerChanged_sameTermReshuffle_stillAdvancesEpoch`.
+    @Nested
+    class CorePartitionOwnershipEpoch {
+        @Test
+        void onLeaderGained_initialPut_mintsEpochTermOne() {
+            // No committed core partition: the initial Put mints ownerEpoch (rabiaTerm, 1) — the local
+            // counter is the initial ownershipTerm 1, NOT the old (rabiaTerm, 0).
+            var fixture = newFixture(/* initialCoreSize */ 1);
+            fixture.module.onLeaderGained();
+
+            var ownership = coreOwnershipPut(fixture.cluster.batches);
+            assertThat(ownership.ownerNodeId()).isEqualTo(SELF);
+            assertThat(ownership.ownerEpoch())
+                .as("the initial core-partition ownerEpoch couples rabiaTerm with the initial ownershipTerm 1")
+                .isEqualTo(Epoch.epoch(FIXTURE_RABIA_TERM, 1L));
+            assertThat(ownership.ownershipTerm()).isEqualTo(1L);
+        }
+
+        @Test
+        void onLeaderGained_sameTermStaleOwnerTakeover_advancesEpochWithoutTermChange() {
+            // A committed core partition owned by a DEPOSED node (not self, not a current core member)
+            // at ownerEpoch (rabiaTerm, 1). Self takes over WITHOUT any leader re-election (rabiaTerm
+            // unchanged). The new ownerEpoch must advance to (rabiaTerm, 2) via the bumped ownershipTerm
+            // local counter, strictly dominating the deposed owner's epoch — closing the same-term gap.
+            var deposed = new NodeId("node-deposed");
+            var existing = DhtPartitionOwnershipValue.dhtPartitionOwnershipValue(deposed,
+                                                                                 BootstrapModule.CORE_COMMUNITY_ID,
+                                                                                 Epoch.epoch(FIXTURE_RABIA_TERM, 1L),
+                                                                                 1L,
+                                                                                 HlcTimestamp.ZERO);
+            var fixture = newFixture(/* initialCoreSize */ 1);
+            fixture.kv.put(DhtPartitionOwnershipKey.dhtPartitionOwnershipKey(BootstrapModule.CORE_PARTITION_ID), existing);
+
+            fixture.module.onLeaderGained();
+
+            var ownership = coreOwnershipPut(fixture.cluster.batches);
+            assertThat(ownership.ownerNodeId())
+                .as("self takes over from the deposed owner")
+                .isEqualTo(SELF);
+            assertThat(ownership.ownerEpoch())
+                .as("same-term stale-owner takeover advances the epoch via the ownershipTerm local counter")
+                .isEqualTo(Epoch.epoch(FIXTURE_RABIA_TERM, 2L));
+            assertThat(ownership.ownerEpoch().isStrictlyAfter(existing.ownerEpoch()))
+                .as("(rabiaTerm, 2) strictly dominates the deposed owner's (rabiaTerm, 1) at the SAME term — fence holds")
+                .isTrue();
+            assertThat(ownership.ownershipTerm()).isEqualTo(2L);
         }
     }
 
@@ -178,12 +235,12 @@ class BootstrapModuleTest {
             fixture.kv.put(ClusterConfigKey.CURRENT, existingConfig);
 
             // Pre-seed a core partition owned by self so planCoreBootstrap returns none.
-            var ownerEpoch = org.pragmatica.aether.slice.generation.Epoch.epoch(0L, 0L);
-            var existingOwnership = AetherValue.DhtPartitionOwnershipValue.dhtPartitionOwnershipValue(SELF,
-                                                                                                      BootstrapModule.CORE_COMMUNITY_ID,
-                                                                                                      ownerEpoch,
-                                                                                                      1L,
-                                                                                                      org.pragmatica.hlc.HlcTimestamp.ZERO);
+            var ownerEpoch = Epoch.epoch(0L, 0L);
+            var existingOwnership = DhtPartitionOwnershipValue.dhtPartitionOwnershipValue(SELF,
+                                                                                         BootstrapModule.CORE_COMMUNITY_ID,
+                                                                                         ownerEpoch,
+                                                                                         1L,
+                                                                                         HlcTimestamp.ZERO);
             fixture.kv.put(DhtPartitionOwnershipKey.dhtPartitionOwnershipKey(BootstrapModule.CORE_PARTITION_ID), existingOwnership);
 
             var fired = new AtomicInteger(0);
@@ -244,7 +301,7 @@ class BootstrapModuleTest {
         var isLeader = new AtomicBoolean(true);
         var cluster = new RecordingClusterNode();
         var module = BootstrapModule.bootstrapModule(isLeader::get,
-                                                      () -> 1L,
+                                                      () -> FIXTURE_RABIA_TERM,
                                                       () -> Option.<Long>none(),
                                                       hlcClock,
                                                       () -> Set.<NodeId>of(),
@@ -266,6 +323,17 @@ class BootstrapModuleTest {
             }
         }
         return result;
+    }
+
+    /// Extract the single core-partition ownership value the module committed. Fails the test if no
+    /// `DhtPartitionOwnershipKey("core")` Put was emitted.
+    private static DhtPartitionOwnershipValue coreOwnershipPut(List<List<KVCommand<AetherKey>>> batches) {
+        return collectPuts(batches).stream()
+                                   .filter(p -> p.key() instanceof DhtPartitionOwnershipKey k
+                                                && BootstrapModule.CORE_PARTITION_ID.equals(k.partitionId()))
+                                   .map(p -> (DhtPartitionOwnershipValue) p.value())
+                                   .findFirst()
+                                   .orElseThrow(() -> new AssertionError("expected a core DhtPartitionOwnership Put"));
     }
 
     private static final class Fixture {

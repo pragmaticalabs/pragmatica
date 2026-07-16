@@ -4,10 +4,10 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.metrics.network;
 
+import java.util.concurrent.CopyOnWriteArrayList;
+
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
-
-import java.util.concurrent.CopyOnWriteArrayList;
 
 import static org.pragmatica.lang.Result.unitResult;
 

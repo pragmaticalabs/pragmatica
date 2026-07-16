@@ -29,6 +29,29 @@ public sealed interface DHTError extends Cause {
         return new QuorumNotReached(required, achieved);
     }
 
+    /// Data-plane epoch-fence rejection (#345 piece 1c): a versioned put whose owner epoch is
+    /// STRICTLY older than the replica's per-DHT-partition high-water — a deposed owner attempting
+    /// to commit an OLD epoch over a newer one. Carries the presented epoch as its two primitive
+    /// longs (term, counter) so this Apache-2.0 module stays independent of the BSL-1.1 `Epoch`
+    /// type that mints it.
+    ///
+    /// Unlike a within-epoch HLC-version supersede (which `putVersioned` reports as a plain
+    /// `false` written-flag), an epoch reject is RETURNED to the caller as a failure (spec §8:
+    /// data-plane rejects are surfaced, not silent). It is the data-plane sibling of the
+    /// CP-plane `org.pragmatica.cluster.state.kvstore.StaleEpoch`; the aether-level gate impl can
+    /// translate to that shared vocabulary at its module boundary.
+    static DHTError staleEpochWrite(long epochTerm, long epochCounter) {
+        return new StaleEpochWrite(epochTerm, epochCounter);
+    }
+
+    record StaleEpochWrite(long epochTerm, long epochCounter) implements DHTError {
+        @Override
+        public String message() {
+            return "Stale-epoch DHT write rejected: presented owner epoch " + epochTerm + ":" + epochCounter
+                   + " is older than the partition high-water";
+        }
+    }
+
     /// Transport-layer refusal observed synchronously when dispatching a per-replica
     /// request. Carries the target peer id and a short reason ("backpressure",
     /// "connection dead", "no peer state") so the `QuorumCollector` can record this

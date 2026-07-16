@@ -49,8 +49,8 @@ class DHTAntiEntropyTest {
         @Test
         void computeDigest_isDeterministic_forSameEntries() {
             var entries = List.of(
-                new DHTMessage.KeyValue(key("a"), value("1"), 100L),
-                new DHTMessage.KeyValue(key("b"), value("2"), 200L)
+                new DHTMessage.KeyValue(key("a"), value("1"), 100L, 0L, 0L),
+                new DHTMessage.KeyValue(key("b"), value("2"), 200L, 0L, 0L)
             );
 
             var digest1 = DHTNode.computeDigest(entries);
@@ -62,12 +62,12 @@ class DHTAntiEntropyTest {
         @Test
         void computeDigest_isDeterministic_regardlessOfInputOrder() {
             var ordered = List.of(
-                new DHTMessage.KeyValue(key("a"), value("1"), 100L),
-                new DHTMessage.KeyValue(key("b"), value("2"), 200L)
+                new DHTMessage.KeyValue(key("a"), value("1"), 100L, 0L, 0L),
+                new DHTMessage.KeyValue(key("b"), value("2"), 200L, 0L, 0L)
             );
             var reversed = List.of(
-                new DHTMessage.KeyValue(key("b"), value("2"), 200L),
-                new DHTMessage.KeyValue(key("a"), value("1"), 100L)
+                new DHTMessage.KeyValue(key("b"), value("2"), 200L, 0L, 0L),
+                new DHTMessage.KeyValue(key("a"), value("1"), 100L, 0L, 0L)
             );
 
             var digest1 = DHTNode.computeDigest(ordered);
@@ -78,8 +78,8 @@ class DHTAntiEntropyTest {
 
         @Test
         void computeDigest_differs_forDifferentEntries() {
-            var entries1 = List.of(new DHTMessage.KeyValue(key("a"), value("1"), 100L));
-            var entries2 = List.of(new DHTMessage.KeyValue(key("a"), value("2"), 300L));
+            var entries1 = List.of(new DHTMessage.KeyValue(key("a"), value("1"), 100L, 0L, 0L));
+            var entries2 = List.of(new DHTMessage.KeyValue(key("a"), value("2"), 300L, 0L, 0L));
 
             var digest1 = DHTNode.computeDigest(entries1);
             var digest2 = DHTNode.computeDigest(entries2);
@@ -132,7 +132,7 @@ class DHTAntiEntropyTest {
         @Test
         void onDigestResponse_requestsMigration_whenDigestsDiffer() {
             var localDigest = DHTNode.computeDigest(List.of());
-            var remoteDigest = DHTNode.computeDigest(List.of(new DHTMessage.KeyValue(key("x"), value("y"), 100L)));
+            var remoteDigest = DHTNode.computeDigest(List.of(new DHTMessage.KeyValue(key("x"), value("y"), 100L, 0L, 0L)));
             var requestId = "test-req-2";
             injectPendingDigest(requestId, PEER, 5, localDigest);
 
@@ -203,12 +203,12 @@ class DHTAntiEntropyTest {
             var antiEntropy = dhtAntiEntropy(node, network, DHTConfig.SINGLE_NODE);
 
             var entries = List.of(
-                new DHTMessage.KeyValue(key("repaired-k1"), value("repaired-v1"), 100L),
-                new DHTMessage.KeyValue(key("repaired-k2"), value("repaired-v2"), 200L)
+                new DHTMessage.KeyValue(key("repaired-k1"), value("repaired-v1"), 100L, 0L, 0L),
+                new DHTMessage.KeyValue(key("repaired-k2"), value("repaired-v2"), 200L, 0L, 0L)
             );
 
             antiEntropy.onMigrationDataResponse(
-                new DHTMessage.MigrationDataResponse("mig-1", PEER, entries));
+                new DHTMessage.MigrationDataResponse("mig-1", PEER, entries, false));
 
             // Verify entries were applied to local storage
             node.getLocal(key("repaired-k1"))
@@ -229,10 +229,58 @@ class DHTAntiEntropyTest {
             var antiEntropy = dhtAntiEntropy(node, network, DHTConfig.SINGLE_NODE);
 
             antiEntropy.onMigrationDataResponse(
-                new DHTMessage.MigrationDataResponse("mig-2", PEER, List.of()));
+                new DHTMessage.MigrationDataResponse("mig-2", PEER, List.of(), false));
 
             // No storage changes
             assertThat(node.localSize()).isEqualTo(0);
+        }
+
+        @Test
+        void onMigrationDataResponse_ackRequested_appliesEntriesAndSendsAck() {
+            var storage = memoryStorageEngine();
+            var ring = ConsistentHashRing.<NodeId>consistentHashRing();
+            ring.addNode(LOCAL);
+            var node = dhtNode(LOCAL, storage, ring, DHTConfig.SINGLE_NODE);
+            var network = new CapturingNetwork();
+            var antiEntropy = dhtAntiEntropy(node, network, DHTConfig.SINGLE_NODE);
+
+            var entries = List.of(new DHTMessage.KeyValue(key("pushed-k1"), value("pushed-v1"), 100L, 0L, 0L));
+
+            antiEntropy.onMigrationDataResponse(
+                new DHTMessage.MigrationDataResponse("push-1", PEER, entries, true));
+
+            node.getLocal(key("pushed-k1"))
+                .await()
+                .onSuccess(opt -> assertThat(opt.isPresent()).isTrue());
+
+            var acks = network.captured.stream()
+                                       .filter(m -> m.message() instanceof DHTMessage.MigrationDataAck)
+                                       .map(m -> (DHTMessage.MigrationDataAck) m.message())
+                                       .toList();
+            assertThat(acks).hasSize(1);
+            assertThat(acks.getFirst().requestId()).isEqualTo("push-1");
+            assertThat(acks.getFirst().sender()).isEqualTo(LOCAL);
+            assertThat(network.captured.getFirst().target()).isEqualTo(PEER);
+        }
+
+        @Test
+        void onMigrationDataResponse_notAckRequested_sendsNoAck() {
+            var storage = memoryStorageEngine();
+            var ring = ConsistentHashRing.<NodeId>consistentHashRing();
+            ring.addNode(LOCAL);
+            var node = dhtNode(LOCAL, storage, ring, DHTConfig.SINGLE_NODE);
+            var network = new CapturingNetwork();
+            var antiEntropy = dhtAntiEntropy(node, network, DHTConfig.SINGLE_NODE);
+
+            var entries = List.of(new DHTMessage.KeyValue(key("pull-k1"), value("pull-v1"), 100L, 0L, 0L));
+
+            antiEntropy.onMigrationDataResponse(
+                new DHTMessage.MigrationDataResponse("pull-1", PEER, entries, false));
+
+            var acks = network.captured.stream()
+                                       .filter(m -> m.message() instanceof DHTMessage.MigrationDataAck)
+                                       .toList();
+            assertThat(acks).isEmpty();
         }
     }
 

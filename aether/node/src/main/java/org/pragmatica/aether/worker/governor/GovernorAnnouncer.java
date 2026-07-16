@@ -4,6 +4,11 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.worker.governor;
 
+import java.util.List;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Supplier;
+
 import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.GovernorAnnouncementKey;
@@ -19,11 +24,6 @@ import org.pragmatica.lang.concurrent.CancellableTask;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.SharedScheduler;
 import org.pragmatica.swim.SwimMember;
-
-import java.util.List;
-import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.atomic.AtomicReference;
-import java.util.function.Supplier;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -130,7 +130,10 @@ record GovernorAnnouncerRecord(NodeId self,
 
         var previous = currentGovernorRef.get();
         var elected = GovernorElection.evaluateElection(self, swimMembers, previous);
-        var aliveMembers = swimMembers.stream().filter(m -> m.state() == SwimMember.MemberState.ALIVE).map(SwimMember::nodeId).toList();
+        var aliveMembers = swimMembers.stream()
+                                      .filter(m -> m.state() == SwimMember.MemberState.ALIVE)
+                                      .map(SwimMember::nodeId)
+                                      .toList();
 
         lastAliveMembers.set(List.copyOf(aliveMembers));
         switch (elected) {
@@ -208,10 +211,12 @@ record GovernorAnnouncerRecord(NodeId self,
         var key = GovernorAnnouncementKey.forCommunity(communityId);
         var command = new KVCommand.Put<AetherKey, AetherValue>(key, value);
 
-        cluster.apply(List.<KVCommand<AetherKey>> of(command)).onFailure(cause -> log.warn("Failed to write GovernorAnnouncementKey({}) [{}]: {}",
-                                                                                           communityId,
-                                                                                           reason,
-                                                                                           cause.message())).onSuccess(_ -> lastAnnouncement.set(value));
+        cluster.apply(List.<KVCommand<AetherKey>> of(command))
+               .onFailure(cause -> log.warn("Failed to write GovernorAnnouncementKey({}) [{}]: {}",
+                                            communityId,
+                                            reason,
+                                            cause.message()))
+               .onSuccess(_ -> lastAnnouncement.set(value));
     }
 
     @Contract

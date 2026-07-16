@@ -69,19 +69,21 @@ test_task_last_execution_advances() {
     # slice's bridge (see SliceInvokerImpl.findSenderBridge). When the LB routes the
     # request to a non-hosting node the path used to NPE on the empty bridge Option and
     # surface as a generic 500. Route the inject directly to a node that hosts the slice
-    # by parsing `tasks.0.registeredBy` (e.g. `aether-a-node-5` → MGMT_PORT+4 in docker-compose).
+    # by parsing `tasks.0.registeredBy` and mapping it to the node's 0-based offset
+    # (docker: `aether-a-node-5` → offset 4; cloud: `hetzner-eu-core-4` → offset 4).
     #
     # Post NodeId-as-container-name migration (release-1.0.0-rc1), `registeredBy` is
     # emitted as `aether-{a|b}-node-N` for the integration cluster containers; the
     # optional prefix group accommodates that while still accepting the legacy
-    # bare `node-N` form for non-Docker deployments.
+    # bare `node-N` form for non-Docker deployments. On cloud the runtime id is the
+    # bootstrap form `<source>-core-K` (K already 0-based) — node_api_* maps a 0-based
+    # offset back to the right per-VM endpoint, so we normalise both forms to offset.
     local registered_by registered_offset
     registered_by=$(aether_field "scheduled-tasks list" "tasks.0.registeredBy")
-    if [[ ! "$registered_by" =~ ^(aether-[ab]-)?node-([0-9]+)$ ]]; then
-        log_fail "Cannot derive direct mgmt port from tasks.0.registeredBy='${registered_by}' (expected [aether-{a|b}-]node-N pattern)"
+    if ! registered_offset=$(_registered_by_to_offset "$registered_by"); then
+        log_fail "Cannot derive node offset from tasks.0.registeredBy='${registered_by}' (expected [aether-{a|b}-]node-N or <source>-core-K)"
         return 1
     fi
-    registered_offset=$(( ${BASH_REMATCH[2]} - 1 ))
     local inject_body inject_response inject_rc post_ts
     inject_body="{\"section\":\"${section}\",\"artifact\":\"${artifact}\",\"method\":\"${method}\"}"
     # `registeredBy` is registration history, not current placement — under concurrent
@@ -98,10 +100,11 @@ test_task_last_execution_advances() {
         if [ "$inject_rc" -eq 0 ]; then
             break
         fi
-        hint_node=$(printf '%s' "$inject_response" | grep -oE 'retry against node (aether-[ab]-)?node-[0-9]+' | sed 's/^retry against node //' || true)
-        if [[ "$hint_node" =~ ^(aether-[ab]-)?node-([0-9]+)$ ]]; then
+        hint_node=$(printf '%s' "$inject_response" | grep -oE 'retry against node (aether-[ab]-)?node-[0-9]+|retry against node [A-Za-z0-9-]+-core-[0-9]+' | sed 's/^retry against node //' || true)
+        local hint_offset
+        if [ -n "$hint_node" ] && hint_offset=$(_registered_by_to_offset "$hint_node"); then
             log_info "inject hit non-hosting node (attempt ${attempt}) — following SliceNotLocal hint to ${hint_node}"
-            registered_offset=$(( ${BASH_REMATCH[2]} - 1 ))
+            registered_offset="$hint_offset"
             continue
         fi
         break

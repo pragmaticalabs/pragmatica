@@ -4,6 +4,11 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.deployment.node;
 
+import java.util.List;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Function;
+import java.util.function.Supplier;
+
 import org.pragmatica.aether.deployment.node.fsm.NodeDeploymentContext;
 import org.pragmatica.aether.deployment.node.fsm.NodeDeploymentEvents.NodeArtifactPutReceived;
 import org.pragmatica.aether.deployment.node.fsm.NodeDeploymentEvents.NodeArtifactRemoveReceived;
@@ -45,11 +50,6 @@ import org.pragmatica.messaging.MessageRouter;
 import org.pragmatica.net.tcp.NodeAddress;
 import org.pragmatica.serialization.SliceCodec;
 import org.pragmatica.statemachine.Fsm;
-
-import java.util.List;
-import java.util.concurrent.atomic.AtomicReference;
-import java.util.function.Function;
-import java.util.function.Supplier;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -95,6 +95,19 @@ public interface NodeDeploymentManager {
     void setSelfReadySignal(Runnable signal);
 
     boolean isActive();
+
+    /// Level-heal for a silently-dropped `ClusterStateNotification.ACTIVE` edge. The ACTIVE edge is
+    /// emitted once and CAS-latched by the emitter; on a cold-start `restart_all_nodes` it can be
+    /// dropped while the message-router delegate is quiesced/being-rebuilt, leaving this node's FSM
+    /// stuck in `Dormant` — so `Active.onEntry` (self-ready signal → `subsystemsReady`) never runs
+    /// and the node reports `SYNCING` forever despite live consensus-active. A periodic driver
+    /// (gated on live consensus-active) calls this; it re-dispatches `QuorumEstablished` ONLY while
+    /// the FSM is still `Dormant`, so it is a guarded no-op once Active/Leaving/Stopped (the FSM
+    /// ignores `QuorumEstablished` in those states anyway — this guard keeps it from churning and
+    /// scopes the heal log to the rare real recovery). Idempotent on every healthy node thereafter.
+    @Contract
+    void reconcileActivation();
+
     ConfigFacade NO_OP_CONFIG = new NoOpDeploymentConfigFacade();
 
     record NoOpDeploymentConfigFacade() implements ConfigFacade {
@@ -525,13 +538,27 @@ public interface NodeDeploymentManager {
             return ctx.isActive();
         }
 
+        @Contract
+        @Override
+        public void reconcileActivation() {
+            if (!ctx.isDormant()) {
+                return;
+            }
+
+            log.info("Node {} still Dormant under live consensus-active — re-dispatching QuorumEstablished "
+                    + "(ACTIVE edge was dropped); healing activation",
+                     ctx.self().id());
+            dispatchQuorumEstablished();
+        }
+
         /// RC1 Step 2: replaces the retired `onNodeLifecyclePut`. The self-shutdown
         /// trigger fires when `TopologyObserver` projects a SHUTTING_DOWN lifecycle
         /// transition for this node — see `MembershipDecision.NodeShuttingDown`.
         @Contract
         @Override
         public void onMembershipDecision(MembershipDecision decision) {
-            if (decision instanceof MembershipDecision.NodeShuttingDown nodeShuttingDown && nodeShuttingDown.nodeId().equals(ctx.self())) {
+            if (decision instanceof MembershipDecision.NodeShuttingDown nodeShuttingDown && nodeShuttingDown.nodeId()
+                                                                                                            .equals(ctx.self())) {
                 log.warn("Node {} received SHUTTING_DOWN lifecycle decision — initiating shutdown",
                          ctx.self().id());
                 ctx.shutdownCallback().onPresent(Runnable::run);

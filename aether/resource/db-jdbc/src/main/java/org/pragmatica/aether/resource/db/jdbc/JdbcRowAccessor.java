@@ -4,12 +4,12 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.resource.db.jdbc;
 
+import java.sql.ResultSet;
+import java.sql.SQLException;
+
 import org.pragmatica.aether.resource.db.DatabaseConnectorError;
 import org.pragmatica.aether.resource.db.RowMapper.RowAccessor;
 import org.pragmatica.lang.Result;
-
-import java.sql.ResultSet;
-import java.sql.SQLException;
 
 import static org.pragmatica.lang.Option.option;
 

@@ -4,6 +4,12 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.forge.api;
 
+import java.net.URI;
+import java.net.http.HttpRequest;
+import java.time.Duration;
+import java.util.Arrays;
+import java.util.function.Consumer;
+
 import org.pragmatica.aether.ember.EmberCluster;
 import org.pragmatica.aether.ember.EmberCluster.EventLogEntry;
 import org.pragmatica.aether.forge.api.ForgeApiResponses.RepositoryPutResponse;
@@ -14,12 +20,6 @@ import org.pragmatica.http.routing.RouteSource;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.type.TypeToken;
-
-import java.net.URI;
-import java.net.http.HttpRequest;
-import java.time.Duration;
-import java.util.Arrays;
-import java.util.function.Consumer;
 
 import static org.pragmatica.http.routing.Route.get;
 import static org.pragmatica.http.routing.Route.post;
@@ -176,8 +176,12 @@ public sealed interface DeploymentRoutes {
     }
 
     private static Promise<String> proxyPost(JdkHttpOperations http, int port, String path, String body) {
-        var request = HttpRequest.newBuilder().uri(URI.create("http://localhost:" + port + path)).header("Content-Type",
-                                                                                                         "application/json").POST(HttpRequest.BodyPublishers.ofString(body)).timeout(HTTP_TIMEOUT).build();
+        var request = HttpRequest.newBuilder()
+                                 .uri(URI.create("http://localhost:" + port + path))
+                                 .header("Content-Type", "application/json")
+                                 .POST(HttpRequest.BodyPublishers.ofString(body))
+                                 .timeout(HTTP_TIMEOUT)
+                                 .build();
 
         return http.sendString(request)
                    .flatMap(result -> result.toResult()
@@ -185,7 +189,11 @@ public sealed interface DeploymentRoutes {
     }
 
     private static Promise<String> proxyGet(JdkHttpOperations http, int port, String path) {
-        var request = HttpRequest.newBuilder().uri(URI.create("http://localhost:" + port + path)).GET().timeout(HTTP_TIMEOUT).build();
+        var request = HttpRequest.newBuilder()
+                                 .uri(URI.create("http://localhost:" + port + path))
+                                 .GET()
+                                 .timeout(HTTP_TIMEOUT)
+                                 .build();
 
         return http.sendString(request)
                    .flatMap(result -> result.toResult()

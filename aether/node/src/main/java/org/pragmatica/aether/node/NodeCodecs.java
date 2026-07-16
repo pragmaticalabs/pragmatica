@@ -4,6 +4,13 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.node;
 
+import java.net.InetSocketAddress;
+import java.net.URI;
+import java.util.UUID;
+import java.time.OffsetDateTime;
+import java.util.ArrayList;
+import java.util.Set;
+
 import org.pragmatica.aether.slice.MethodName;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.vo.Email;
@@ -14,13 +21,6 @@ import org.pragmatica.lang.vo.Uuid;
 import org.pragmatica.serialization.CodecFor;
 import org.pragmatica.serialization.SliceCodec;
 import org.pragmatica.serialization.SliceCodec.TypeCodec;
-
-import java.net.InetSocketAddress;
-import java.net.URI;
-import java.util.UUID;
-import java.time.OffsetDateTime;
-import java.util.ArrayList;
-import java.util.Set;
 
 import static org.pragmatica.serialization.SliceCodec.deterministicTag;
 import static org.pragmatica.serialization.SliceCodec.readCompact;

@@ -5,6 +5,7 @@
 
 package org.pragmatica.aether.stream;
 
+import io.netty.buffer.ByteBuf;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
@@ -20,6 +21,8 @@ import org.pragmatica.aether.stream.replication.ReplicationState;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
+import org.pragmatica.serialization.Deserializer;
+import org.pragmatica.serialization.Serializer;
 
 import java.util.HashSet;
 import java.util.List;
@@ -63,6 +66,7 @@ class PartitionedStreamAccessTest {
                                                  Option.some(replicaRegistry),
                                                  Option.some(forwardClient),
                                                  SELF,
+                                                 (_, _) -> Option.none(),
                                                  StreamReadForwardMetrics.NOOP);
     }
 
@@ -102,6 +106,7 @@ class PartitionedStreamAccessTest {
                                                                     Option.some(replicaRegistry),
                                                                     Option.none(),
                                                                     SELF,
+                                                                    (_, _) -> Option.none(),
                                                                     StreamReadForwardMetrics.NOOP);
             var result = noClientRouter.read(STREAM, PARTITION, FROM_OFFSET, MAX_EVENTS, ReadPreference.ANY_REPLICA).await();
 
@@ -198,6 +203,347 @@ class PartitionedStreamAccessTest {
 
     private static RawEventDto rawEvent(long offset, String data) {
         return new RawEventDto(offset, System.currentTimeMillis(), data.getBytes());
+    }
+
+    /// SPEC: Fix #3 forward-read — direct PartitionedStreamAccess owner-forward routing tests.
+    ///
+    /// Drives PartitionedStreamAccess.selectReplicaAndRead through the forward-capable
+    /// `streamAccess` overload that carries the HRW owner-resolver (the production
+    /// `system:cluster-events` wiring). A lagging non-owner with NO locally-known caught-up
+    /// peer must forward the read to the deterministic owner instead of reading its own empty
+    /// local partition (the `200 []` regression).
+    @Nested
+    class OwnerForwardTests {
+        private static final NodeId OWNER = new NodeId("owner-node");
+
+        // SPEC: Fix #3 — lagging non-owner, no caught-up peer → forwards to HRW owner, returns owner events
+        @Test
+        void selectReplicaAndRead_laggingNonOwner_forwardsToOwner_returnsOwnerEvents() {
+            replicaRegistry.registerReplica(STREAM, PARTITION, SELF);
+            forwardClient.setSuccess(OWNER, List.of(rawEvent(0L, "owner-data")));
+
+            var access = ownerForwardingAccess(Option.some(OWNER));
+            var result = access.fetch(PARTITION, FROM_OFFSET, MAX_EVENTS).await();
+
+            assertThat(result.isSuccess()).isTrue();
+            result.onSuccess(list -> {
+                assertThat(list).hasSize(1);
+                assertThat((byte[]) list.getFirst().payload()).isEqualTo("owner-data".getBytes());
+            });
+            assertThat(forwardClient.reads).hasSize(1);
+            assertThat(forwardClient.reads.getFirst().target()).isEqualTo(OWNER);
+        }
+
+        // SPEC: Fix #3 — self CAUGHT_UP → reads local, no forward attempt
+        @Test
+        void selectReplicaAndRead_selfCaughtUp_readsLocal_noForward() {
+            replicaRegistry.registerReplica(STREAM, PARTITION, SELF);
+            replicaRegistry.updateWatermark(STREAM, PARTITION, SELF, 100L);
+
+            var access = ownerForwardingAccess(Option.some(OWNER));
+            var result = access.fetch(PARTITION, FROM_OFFSET, MAX_EVENTS).await();
+
+            assertThat(result.isSuccess()).isTrue();
+            result.onSuccess(list -> assertThat(list).hasSize(1));
+            assertThat(forwardClient.reads).isEmpty();
+        }
+
+        // SPEC: Fix #3 — a peer locally marked CAUGHT_UP → routed via attemptPrimary, not owner-forward
+        @Test
+        void selectReplicaAndRead_caughtUpPeer_routesViaPrimary() {
+            replicaRegistry.registerReplica(STREAM, PARTITION, REPLICA_A);
+            replicaRegistry.updateWatermark(STREAM, PARTITION, REPLICA_A, 100L);
+            forwardClient.setSuccess(REPLICA_A, List.of(rawEvent(0L, "peer-data")));
+
+            var access = ownerForwardingAccess(Option.some(OWNER));
+            var result = access.fetch(PARTITION, FROM_OFFSET, MAX_EVENTS).await();
+
+            assertThat(result.isSuccess()).isTrue();
+            result.onSuccess(list -> {
+                assertThat(list).hasSize(1);
+                assertThat((byte[]) list.getFirst().payload()).isEqualTo("peer-data".getBytes());
+            });
+            assertThat(forwardClient.reads).hasSize(1);
+            assertThat(forwardClient.reads.getFirst().target()).isEqualTo(REPLICA_A);
+        }
+
+        // SPEC: Fix #3 — owner == self and self not caught-up → best-effort local read, no forward
+        @Test
+        void selectReplicaAndRead_ownerIsSelf_notCaughtUp_readsLocal_noForward() {
+            replicaRegistry.registerReplica(STREAM, PARTITION, SELF);
+
+            var access = ownerForwardingAccess(Option.some(SELF));
+            var result = access.fetch(PARTITION, FROM_OFFSET, MAX_EVENTS).await();
+
+            assertThat(result.isSuccess()).isTrue();
+            result.onSuccess(list -> assertThat(list).hasSize(1));
+            assertThat(forwardClient.reads).isEmpty();
+        }
+
+        // SPEC: Fix #3 — owner unknown (bootstrap window) → fail-soft local read, no forward
+        @Test
+        void selectReplicaAndRead_ownerUnknown_readsLocal_noForward() {
+            replicaRegistry.registerReplica(STREAM, PARTITION, SELF);
+
+            var access = ownerForwardingAccess(Option.none());
+            var result = access.fetch(PARTITION, FROM_OFFSET, MAX_EVENTS).await();
+
+            assertThat(result.isSuccess()).isTrue();
+            result.onSuccess(list -> assertThat(list).hasSize(1));
+            assertThat(forwardClient.reads).isEmpty();
+        }
+
+        private PartitionedStreamAccess<byte[]> ownerForwardingAccess(Option<NodeId> owner) {
+            return PartitionedStreamAccess.streamAccess(partitionManager,
+                                                        identitySerializer(),
+                                                        identityDeserializer(),
+                                                        STREAM,
+                                                        1,
+                                                        Option.none(),
+                                                        ReadPreference.ANY_REPLICA,
+                                                        replicaRegistry,
+                                                        Option.some(forwardClient),
+                                                        SELF,
+                                                        Option.some(() -> owner),
+                                                        StreamReadForwardMetrics.NOOP);
+        }
+    }
+
+    /// A6 read-forwarding — the APP durable owner-routed overload (the `StreamAccessFactory.ownerRoutedAccess`
+    /// wiring) now pins NEAREST and threads the replica registry, so an app-stream consumer deployed on a
+    /// NON-replica node forwards the read to the partition's HRW owner instead of reading its own empty
+    /// local partition. Reproduces the A6 `StreamCrashDurabilityTest` read path at the unit level: with the
+    /// registry wired the non-replica forwards (the fix); with NO registry NEAREST short-circuits to a local
+    /// read (the no-op the GOVERNOR→NEAREST-only plan would have shipped).
+    @Nested
+    class DurableOwnerRoutedNearestTests {
+        private static final NodeId OWNER = new NodeId("owner-node");
+
+        // Non-replica consumer whose LOCAL partition is empty for the requested range → forwards to the
+        // HRW owner and returns the owner's events (the A6 post-restart non-owner read). Reads from an
+        // offset past the single seeded local event so the local read is empty.
+        @Test
+        void durableOwnerRouted_nonReplica_localEmpty_forwardsToOwner() {
+            forwardClient.setSuccess(OWNER, List.of(rawEvent(5L, "owner-data")));
+
+            var access = durableOwnerRoutedAccess(Option.some(OWNER), Option.some(replicaRegistry));
+            var result = access.fetch(PARTITION, 1L, MAX_EVENTS).await();
+
+            assertThat(result.isSuccess()).isTrue();
+            result.onSuccess(list -> {
+                assertThat(list).hasSize(1);
+                assertThat((byte[]) list.getFirst().payload()).isEqualTo("owner-data".getBytes());
+            });
+            assertThat(forwardClient.reads).hasSize(1);
+            assertThat(forwardClient.reads.getFirst().target()).isEqualTo(OWNER);
+        }
+
+        // Non-replica consumer that NONETHELESS holds the data locally (owner-routed publish landed here;
+        // placement/registry never marked it a replica — the StreamFanoutConsumerTest case) → reads LOCAL,
+        // does NOT forward away from the data it actually has. This is the fan-out regression guard.
+        @Test
+        void durableOwnerRouted_nonReplica_localHasData_readsLocal_noForward() {
+            forwardClient.setSuccess(OWNER, List.of(rawEvent(0L, "owner-data")));
+
+            var access = durableOwnerRoutedAccess(Option.some(OWNER), Option.some(replicaRegistry));
+            var result = access.fetch(PARTITION, FROM_OFFSET, MAX_EVENTS).await();
+
+            assertThat(result.isSuccess()).isTrue();
+            result.onSuccess(list -> {
+                assertThat(list).hasSize(1);
+                assertThat((byte[]) list.getFirst().payload()).isEqualTo("local-data".getBytes());
+            });
+            assertThat(forwardClient.reads).isEmpty();
+        }
+
+        // Regression guard for the prior plan's no-op: NEAREST with NO registry short-circuits to a local
+        // read (the partition seeded in setUp), never forwarding — exactly why flipping GOVERNOR→NEAREST
+        // WITHOUT wiring the registry would have left A6 red.
+        @Test
+        void durableOwnerRouted_noRegistry_readsLocal_noForward() {
+            var access = durableOwnerRoutedAccess(Option.some(OWNER), Option.none());
+            var result = access.fetch(PARTITION, FROM_OFFSET, MAX_EVENTS).await();
+
+            assertThat(result.isSuccess()).isTrue();
+            result.onSuccess(list -> assertThat(list).hasSize(1));
+            assertThat(forwardClient.reads).isEmpty();
+        }
+
+        // Self IS a caught-up replica → NEAREST keeps the read local (zero forward overhead for the common
+        // owner/replica-local case) even with the registry wired.
+        @Test
+        void durableOwnerRouted_selfCaughtUp_readsLocal_noForward() {
+            replicaRegistry.registerReplica(STREAM, PARTITION, SELF);
+            replicaRegistry.updateWatermark(STREAM, PARTITION, SELF, 100L);
+
+            var access = durableOwnerRoutedAccess(Option.some(OWNER), Option.some(replicaRegistry));
+            var result = access.fetch(PARTITION, FROM_OFFSET, MAX_EVENTS).await();
+
+            assertThat(result.isSuccess()).isTrue();
+            result.onSuccess(list -> assertThat(list).hasSize(1));
+            assertThat(forwardClient.reads).isEmpty();
+        }
+
+        // RF>1: self AND a remote are both caught-up replicas. NEAREST is LOCAL-FIRST — it must read the
+        // LOCAL copy (the publisher's node), NOT forward to the remote replica (which may lag). This is the
+        // StreamFanoutConsumerTest regression guard: the prior NEAREST==ANY_REPLICA behavior forwarded to a
+        // remote replica even when self held the data, under-reading a replicated stream.
+        @Test
+        void durableOwnerRouted_selfCaughtUp_remoteAlsoCaughtUp_readsLocal_noForward() {
+            replicaRegistry.registerReplica(STREAM, PARTITION, SELF);
+            replicaRegistry.updateWatermark(STREAM, PARTITION, SELF, 100L);
+            replicaRegistry.registerReplica(STREAM, PARTITION, REPLICA_A);
+            replicaRegistry.updateWatermark(STREAM, PARTITION, REPLICA_A, 100L);
+            forwardClient.setSuccess(REPLICA_A, List.of(rawEvent(0L, "remote-data")));
+
+            var access = durableOwnerRoutedAccess(Option.some(OWNER), Option.some(replicaRegistry));
+            var result = access.fetch(PARTITION, FROM_OFFSET, MAX_EVENTS).await();
+
+            assertThat(result.isSuccess()).isTrue();
+            result.onSuccess(list -> assertThat(list).hasSize(1));
+            assertThat(forwardClient.reads).isEmpty();
+        }
+
+        private PartitionedStreamAccess<byte[]> durableOwnerRoutedAccess(Option<NodeId> owner, Option<ReplicaRegistry> registry) {
+            return PartitionedStreamAccess.streamAccess(partitionManager,
+                                                        identitySerializer(),
+                                                        identityDeserializer(),
+                                                        STREAM,
+                                                        1,
+                                                        Option.none(),
+                                                        Option.some(forwardClient),
+                                                        SELF,
+                                                        Option.some(() -> owner),
+                                                        Option.none(),
+                                                        0,
+                                                        Option.none(),
+                                                        Option.none(),
+                                                        registry);
+        }
+    }
+
+    /// Convergence proof — the raw-event StreamReadRouter exercises the SAME shared
+    /// ForwardingReadRouter core as PartitionedStreamAccess, so a non-owner generic stream-read API
+    /// read (StreamRoutes) forwards to the owner instead of returning its own empty local partition.
+    @Nested
+    class RouterOwnerForwardTests {
+        private static final NodeId OWNER = new NodeId("owner-node");
+
+        // Lagging non-owner, no caught-up peer → forwards to HRW owner, returns owner's raw events
+        @Test
+        void read_laggingNonOwner_forwardsToOwner_returnsOwnerEvents() {
+            replicaRegistry.registerReplica(STREAM, PARTITION, SELF);
+            forwardClient.setSuccess(OWNER, List.of(rawEvent(0L, "owner-data")));
+
+            var result = ownerRouter(Option.some(OWNER)).read(STREAM, PARTITION, FROM_OFFSET, MAX_EVENTS, ReadPreference.ANY_REPLICA).await();
+
+            assertThat(result.isSuccess()).isTrue();
+            result.onSuccess(list -> {
+                assertThat(list).hasSize(1);
+                assertThat(list.getFirst().data()).isEqualTo("owner-data".getBytes());
+            });
+            assertThat(forwardClient.reads).hasSize(1);
+            assertThat(forwardClient.reads.getFirst().target()).isEqualTo(OWNER);
+        }
+
+        // Self CAUGHT_UP → reads local, no forward attempt
+        @Test
+        void read_selfCaughtUp_readsLocal_noForward() {
+            replicaRegistry.registerReplica(STREAM, PARTITION, SELF);
+            replicaRegistry.updateWatermark(STREAM, PARTITION, SELF, 100L);
+
+            var result = ownerRouter(Option.some(OWNER)).read(STREAM, PARTITION, FROM_OFFSET, MAX_EVENTS, ReadPreference.ANY_REPLICA).await();
+
+            assertThat(result.isSuccess()).isTrue();
+            result.onSuccess(list -> assertThat(list).hasSize(1));
+            assertThat(forwardClient.reads).isEmpty();
+        }
+
+        // A peer locally marked CAUGHT_UP → routed via attemptPrimary to that peer, not owner-forward
+        @Test
+        void read_caughtUpPeer_routesViaPrimary() {
+            replicaRegistry.registerReplica(STREAM, PARTITION, REPLICA_A);
+            replicaRegistry.updateWatermark(STREAM, PARTITION, REPLICA_A, 100L);
+            forwardClient.setSuccess(REPLICA_A, List.of(rawEvent(0L, "peer-data")));
+
+            var result = ownerRouter(Option.some(OWNER)).read(STREAM, PARTITION, FROM_OFFSET, MAX_EVENTS, ReadPreference.ANY_REPLICA).await();
+
+            assertThat(result.isSuccess()).isTrue();
+            result.onSuccess(list -> {
+                assertThat(list).hasSize(1);
+                assertThat(list.getFirst().data()).isEqualTo("peer-data".getBytes());
+            });
+            assertThat(forwardClient.reads).hasSize(1);
+            assertThat(forwardClient.reads.getFirst().target()).isEqualTo(REPLICA_A);
+        }
+
+        // owner == self and self not caught-up → best-effort local read, no forward / loop
+        @Test
+        void read_ownerIsSelf_notCaughtUp_readsLocal_noForward() {
+            replicaRegistry.registerReplica(STREAM, PARTITION, SELF);
+
+            var result = ownerRouter(Option.some(SELF)).read(STREAM, PARTITION, FROM_OFFSET, MAX_EVENTS, ReadPreference.ANY_REPLICA).await();
+
+            assertThat(result.isSuccess()).isTrue();
+            result.onSuccess(list -> assertThat(list).hasSize(1));
+            assertThat(forwardClient.reads).isEmpty();
+        }
+
+        // owner unknown (bootstrap window) → fail-soft local read, no forward
+        @Test
+        void read_ownerUnknown_readsLocal_noForward() {
+            replicaRegistry.registerReplica(STREAM, PARTITION, SELF);
+
+            var result = ownerRouter(Option.none()).read(STREAM, PARTITION, FROM_OFFSET, MAX_EVENTS, ReadPreference.ANY_REPLICA).await();
+
+            assertThat(result.isSuccess()).isTrue();
+            result.onSuccess(list -> assertThat(list).hasSize(1));
+            assertThat(forwardClient.reads).isEmpty();
+        }
+
+        private StreamReadRouter ownerRouter(Option<NodeId> owner) {
+            return StreamReadRouter.streamReadRouter(partitionManager,
+                                                     Option.some(replicaRegistry),
+                                                     Option.some(forwardClient),
+                                                     SELF,
+                                                     (_, _) -> owner,
+                                                     StreamReadForwardMetrics.NOOP);
+        }
+    }
+
+    private static Serializer identitySerializer() {
+        return new Serializer() {
+            @SuppressWarnings("unchecked")
+            @Override
+            public <T> byte[] encode(T object) {
+                return (byte[]) object;
+            }
+
+            @Override
+            public <T> void write(ByteBuf byteBuf, T object) {
+                byteBuf.writeBytes((byte[]) object);
+            }
+        };
+    }
+
+    private static Deserializer identityDeserializer() {
+        return new Deserializer() {
+            @SuppressWarnings("unchecked")
+            @Override
+            public <T> T decode(byte[] bytes) {
+                return (T) bytes;
+            }
+
+            @SuppressWarnings("unchecked")
+            @Override
+            public <T> T read(ByteBuf byteBuf) {
+                var bytes = new byte[byteBuf.readableBytes()];
+
+                byteBuf.readBytes(bytes);
+
+                return (T) bytes;
+            }
+        };
     }
 
     /// Test helper — records readRemote calls and can be scripted to succeed/fail.

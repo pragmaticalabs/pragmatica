@@ -5,6 +5,7 @@ import org.junit.jupiter.api.Test;
 import org.pragmatica.config.source.MapConfigSource;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
+import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.Causes;
 
 import java.time.Duration;
@@ -27,6 +28,10 @@ class ProviderBasedConfigServiceTest {
     record SimpleConfig(String name, int port, boolean enabled) {}
 
     record TimeoutConfig(Duration connectionTimeout, Duration idleTimeout) {}
+
+    record TimeSpanConfig(TimeSpan connectTimeout, TimeSpan requestTimeout) {}
+
+    record OptionalTimeSpanConfig(String name, Option<TimeSpan> timeout) {}
 
     record PropsConfig(String name, Map<String, String> properties) {}
 
@@ -128,6 +133,53 @@ class ProviderBasedConfigServiceTest {
             var config = result.unwrap();
             assertThat(config.connectionTimeout()).isEqualTo(Duration.ofSeconds(30));
             assertThat(config.idleTimeout()).isEqualTo(Duration.ofMinutes(10));
+        }
+    }
+
+    @Nested
+    class TimeSpanFieldBinding {
+
+        @Test
+        void config_ioTimeSpanFields_bindFromHumanFormat() {
+            var service = serviceFrom(Map.of(
+                "test.connect_timeout", "10s",
+                "test.request_timeout", "500ms"
+            ));
+
+            var result = service.config("test", TimeSpanConfig.class);
+
+            assertThat(result.isSuccess()).isTrue();
+            var config = result.unwrap();
+            assertThat(config.connectTimeout()).isEqualTo(TimeSpan.timeSpan(10).seconds());
+            assertThat(config.requestTimeout()).isEqualTo(TimeSpan.timeSpan(500).millis());
+            assertThat(config.connectTimeout().duration()).isEqualTo(Duration.ofSeconds(10));
+        }
+
+        @Test
+        void config_optionalIoTimeSpan_presentWhenValueExists() {
+            var service = serviceFrom(Map.of(
+                "test.name", "myapp",
+                "test.timeout", "30s"
+            ));
+
+            var result = service.config("test", OptionalTimeSpanConfig.class);
+
+            assertThat(result.isSuccess()).isTrue();
+            var config = result.unwrap();
+            assertThat(config.timeout().isPresent()).isTrue();
+            assertThat(config.timeout().unwrap()).isEqualTo(TimeSpan.timeSpan(30).seconds());
+        }
+
+        @Test
+        void config_optionalIoTimeSpan_noneWhenValueAbsent() {
+            var service = serviceFrom(Map.of(
+                "test.name", "myapp"
+            ));
+
+            var result = service.config("test", OptionalTimeSpanConfig.class);
+
+            assertThat(result.isSuccess()).isTrue();
+            assertThat(result.unwrap().timeout().isEmpty()).isTrue();
         }
     }
 

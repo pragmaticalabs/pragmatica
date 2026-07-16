@@ -4,12 +4,6 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.http.security;
 
-import org.pragmatica.json.JsonMapper;
-import org.pragmatica.lang.Contract;
-import org.pragmatica.lang.Option;
-import org.pragmatica.lang.Result;
-import org.pragmatica.lang.type.TypeToken;
-
 import java.math.BigInteger;
 import java.net.URI;
 import java.net.http.HttpClient;
@@ -27,6 +21,12 @@ import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
+
+import org.pragmatica.json.JsonMapper;
+import org.pragmatica.lang.Contract;
+import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Result;
+import org.pragmatica.lang.type.TypeToken;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -94,9 +94,10 @@ class JwksKeyStore implements AutoCloseable {
     }
 
     private void fetchAndCacheKeys() {
-        fetchJwks().onSuccess(this::applyJwksResponse).onFailure(cause -> log.warn("Failed to fetch JWKS from {}: {}",
-                                                                                   jwksUrl,
-                                                                                   cause.message()));
+        fetchJwks().onSuccess(this::applyJwksResponse)
+                 .onFailure(cause -> log.warn("Failed to fetch JWKS from {}: {}",
+                                              jwksUrl,
+                                              cause.message()));
     }
 
     @SuppressWarnings("unchecked")
@@ -191,7 +192,11 @@ class JwksKeyStore implements AutoCloseable {
     }
 
     private Map<String, Object> doFetchJwks() throws Exception {
-        var request = HttpRequest.newBuilder().uri(URI.create(jwksUrl)).header("Accept", "application/json").GET().build();
+        var request = HttpRequest.newBuilder()
+                                 .uri(URI.create(jwksUrl))
+                                 .header("Accept", "application/json")
+                                 .GET()
+                                 .build();
         var response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
 
         if (response.statusCode() != 200) {

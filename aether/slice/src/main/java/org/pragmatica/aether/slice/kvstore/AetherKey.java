@@ -354,8 +354,8 @@ public sealed interface AetherKey extends StructuredKey {
         }
     }
 
-    record ObservabilityDepthKey(String artifactBase, String methodName) implements AetherKey {
-        private static final String PREFIX = "obs-depth/";
+    record ObservabilityConfigKey(String artifactBase, String methodName) implements AetherKey {
+        private static final String PREFIX = "obs-config/";
 
         @Override
         public String asString() {
@@ -367,26 +367,26 @@ public sealed interface AetherKey extends StructuredKey {
             return asString();
         }
 
-        public static ObservabilityDepthKey observabilityDepthKey(String artifactBase, String methodName) {
-            return new ObservabilityDepthKey(artifactBase, methodName);
+        public static ObservabilityConfigKey observabilityConfigKey(String artifactBase, String methodName) {
+            return new ObservabilityConfigKey(artifactBase, methodName);
         }
 
-        public static Result<ObservabilityDepthKey> observabilityDepthKey(String key) {
+        public static Result<ObservabilityConfigKey> observabilityConfigKey(String key) {
             if (!key.startsWith(PREFIX)) {
-                return OBSERVABILITY_DEPTH_KEY_FORMAT_ERROR.apply(key).result();
+                return OBSERVABILITY_CONFIG_KEY_FORMAT_ERROR.apply(key).result();
             }
 
             var content = key.substring(PREFIX.length());
             var slashIndex = content.indexOf('/');
 
             if (slashIndex == -1 || slashIndex == 0 || slashIndex == content.length() - 1) {
-                return OBSERVABILITY_DEPTH_KEY_FORMAT_ERROR.apply(key).result();
+                return OBSERVABILITY_CONFIG_KEY_FORMAT_ERROR.apply(key).result();
             }
 
             var artifactBase = content.substring(0, slashIndex);
             var methodName = content.substring(slashIndex + 1);
 
-            return success(new ObservabilityDepthKey(artifactBase, methodName));
+            return success(new ObservabilityConfigKey(artifactBase, methodName));
         }
     }
 
@@ -943,6 +943,41 @@ public sealed interface AetherKey extends StructuredKey {
         }
     }
 
+    /// Desired-state community identity (worker-membership-spec §2, D1): a leader-minted, stable,
+    /// committed KV fact keyed on the immutable `communityId`. Mirrors [GovernorAnnouncementKey]
+    /// (the governor-owned *observed* statement for the same community) at the key level.
+    record CommunityKey(String communityId) implements AetherKey {
+        private static final String PREFIX = "community/";
+
+        @Override
+        public String asString() {
+            return PREFIX + communityId;
+        }
+
+        @Override
+        public String toString() {
+            return asString();
+        }
+
+        public static CommunityKey communityKey(String communityId) {
+            return new CommunityKey(communityId);
+        }
+
+        public static Result<CommunityKey> parseCommunityKey(String key) {
+            if (!key.startsWith(PREFIX)) {
+                return COMMUNITY_KEY_FORMAT_ERROR.apply(key).result();
+            }
+
+            var communityId = key.substring(PREFIX.length());
+
+            if (communityId.isEmpty()) {
+                return COMMUNITY_KEY_FORMAT_ERROR.apply(key).result();
+            }
+
+            return success(new CommunityKey(communityId));
+        }
+    }
+
     record AbTestKey(String testId) implements AetherKey {
         private static final String PREFIX = "ab-test/";
 
@@ -1089,6 +1124,8 @@ public sealed interface AetherKey extends StructuredKey {
 
     Fn1<Cause, String> GOVERNOR_ANNOUNCEMENT_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid governor-announcement key format: %s");
 
+    Fn1<Cause, String> COMMUNITY_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid community key format: %s");
+
     Fn1<Cause, String> GOSSIP_KEY_ROTATION_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid gossip-key-rotation key format: %s");
 
     Fn1<Cause, String> SCHEDULED_TASK_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid scheduled-task key format: %s");
@@ -1116,7 +1153,7 @@ public sealed interface AetherKey extends StructuredKey {
 
     Fn1<Cause, String> LOG_LEVEL_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid log-level key format: %s");
 
-    Fn1<Cause, String> OBSERVABILITY_DEPTH_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid obs-depth key format: %s");
+    Fn1<Cause, String> OBSERVABILITY_CONFIG_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid obs-config key format: %s");
 
     Fn1<Cause, String> CONFIG_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid config key format: %s");
 
@@ -1632,6 +1669,45 @@ public sealed interface AetherKey extends StructuredKey {
         }
     }
 
+    /// Per-`(stream, partition)` ownership key (#345 item 1d-i) — the stream-side mirror of
+    /// [DhtPartitionOwnershipKey]. The partition is the trailing path segment, so the stream name may
+    /// itself contain `/` (`lastIndexOf('/')` splits it off); the partition is an `int`.
+    record StreamPartitionOwnershipKey(String stream, int partition) implements AetherKey {
+        private static final String PREFIX = "stream-partition-ownership/";
+
+        @Override
+        public String asString() {
+            return PREFIX + stream + "/" + partition;
+        }
+
+        @Override
+        public String toString() {
+            return asString();
+        }
+
+        public static StreamPartitionOwnershipKey streamPartitionOwnershipKey(String stream, int partition) {
+            return new StreamPartitionOwnershipKey(stream, partition);
+        }
+
+        public static Result<StreamPartitionOwnershipKey> parseStreamPartitionOwnershipKey(String key) {
+            if (!key.startsWith(PREFIX)) {
+                return STREAM_PARTITION_OWNERSHIP_KEY_FORMAT_ERROR.apply(key).result();
+            }
+
+            var content = key.substring(PREFIX.length());
+            var slashIndex = content.lastIndexOf('/');
+
+            if (slashIndex <= 0 || slashIndex == content.length() - 1) {
+                return STREAM_PARTITION_OWNERSHIP_KEY_FORMAT_ERROR.apply(key).result();
+            }
+
+            var stream = content.substring(0, slashIndex);
+
+            return Number.parseInt(content.substring(slashIndex + 1)).map(partition -> new StreamPartitionOwnershipKey(stream,
+                                                                                                                       partition));
+        }
+    }
+
     record SpokesmanKey(NodeId coreNodeId) implements AetherKey {
         private static final String PREFIX = "spokesman/";
 
@@ -1665,6 +1741,8 @@ public sealed interface AetherKey extends StructuredKey {
     }
 
     Fn1<Cause, String> DHT_PARTITION_OWNERSHIP_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid dht-partition-ownership key format: %s");
+
+    Fn1<Cause, String> STREAM_PARTITION_OWNERSHIP_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid stream-partition-ownership key format: %s");
 
     Fn1<Cause, String> SPOKESMAN_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid spokesman key format: %s");
 

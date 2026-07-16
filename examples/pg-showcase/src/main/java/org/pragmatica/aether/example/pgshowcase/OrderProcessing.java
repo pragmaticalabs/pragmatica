@@ -1,5 +1,7 @@
 package org.pragmatica.aether.example.pgshowcase;
 
+import java.math.BigDecimal;
+
 import org.pragmatica.aether.example.pgshowcase.OrderPersistence.OrderRow;
 import org.pragmatica.aether.slice.annotation.Slice;
 import org.pragmatica.lang.Cause;
@@ -7,8 +9,6 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Verify;
-
-import java.math.BigDecimal;
 
 
 @Slice

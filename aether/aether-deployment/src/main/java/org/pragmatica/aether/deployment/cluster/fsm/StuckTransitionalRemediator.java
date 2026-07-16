@@ -4,13 +4,13 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.deployment.cluster.fsm;
 
+import java.util.Map;
+
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentState.Active;
 import org.pragmatica.aether.slice.SliceState;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceNodeKey;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
-
-import java.util.Map;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -31,9 +31,13 @@ record StuckTransitionalRemediator(Active active) {
     @Contract
     void detectStuckTransitionalStates() {
         var now = active.ctx().nowMs();
-        var stuckEntries = transitionalStateTimestamps().entrySet().stream().filter(entry -> isStuckTransitional(entry.getKey(),
-                                                                                                                 entry.getValue(),
-                                                                                                                 now)).map(Map.Entry::getKey).toList();
+        var stuckEntries = transitionalStateTimestamps().entrySet()
+                                                      .stream()
+                                                      .filter(entry -> isStuckTransitional(entry.getKey(),
+                                                                                           entry.getValue(),
+                                                                                           now))
+                                                      .map(Map.Entry::getKey)
+                                                      .toList();
 
         if (stuckEntries.isEmpty()) {
             return;

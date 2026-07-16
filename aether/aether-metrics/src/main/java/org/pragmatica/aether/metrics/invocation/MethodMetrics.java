@@ -4,14 +4,14 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.metrics.invocation;
 
-import org.pragmatica.aether.slice.MethodName;
-import org.pragmatica.lang.Result;
-import org.pragmatica.lang.Unit;
-
 import java.util.Arrays;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.stream.IntStream;
+
+import org.pragmatica.aether.slice.MethodName;
+import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Unit;
 
 import static org.pragmatica.lang.Result.unitResult;
 
@@ -37,7 +37,9 @@ public final class MethodMetrics {
 
     public MethodMetrics(MethodName methodName) {
         this.methodName = methodName;
-        this.histogram = IntStream.range(0, HISTOGRAM_SIZE).mapToObj(_ -> new AtomicInteger()).toArray(AtomicInteger[]::new);
+        this.histogram = IntStream.range(0, HISTOGRAM_SIZE)
+                                  .mapToObj(_ -> new AtomicInteger())
+                                  .toArray(AtomicInteger[]::new);
     }
 
     public Result<Unit> record(long durationNs, boolean success) {

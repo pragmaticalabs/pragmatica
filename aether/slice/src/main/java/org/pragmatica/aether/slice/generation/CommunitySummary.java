@@ -4,11 +4,11 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.slice.generation;
 
+import java.util.Set;
+
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Option;
 import org.pragmatica.serialization.Codec;
-
-import java.util.Set;
 
 
 @Codec

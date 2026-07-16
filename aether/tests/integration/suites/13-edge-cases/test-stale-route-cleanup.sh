@@ -11,6 +11,12 @@ BLUEPRINT="org.pragmatica.aether.test:test-echo:1.0.0"
 
 test_cluster_ready() {
     wait_for_cluster_ready 60
+    # Pre-test barrier (FIRST-CLASS GATE): the kill test downstream needs a running
+    # non-leader victim. A prior destructive suite (e.g. disruption-budget) can drain 2
+    # nodes whose ULID replacements aren't yet running/killable, so gate the whole suite
+    # on "a killable victim exists" before deploying — rather than letting the race
+    # surface as a timeout inside the 4th test. Bounded; fails loudly if it can't converge.
+    await_killable_victim_available || log_fail "no killable non-leader victim available pre-deploy"
     # By suite 13, prior destructive tests have churned cluster B: the pinned seed
     # CLUSTER_ENDPOINT (:5161) node may be gone, so re-resolve to a live core before the
     # quiesce barriers — otherwise they read "cluster unreachable" off a dead port and
@@ -45,12 +51,11 @@ test_app_routes_reachable() {
     # healthy != app route reachable) and pass falsely.
     #
     # Retarget APP_ENDPOINT to a node that currently hosts an ACTIVE echo slice
-    # FIRST. The pinned seed app port (:8080) belongs to a static that prior
-    # destructive tests churned out; the live owner is a ULID replacement on a
-    # different host port (bit Hetzner gate-F1: :8080 dead/000, route wired and
-    # serving 200 on :8081). This mirrors 02-chaos kill-under-load, which never
-    # probes the bare pinned app port for the same reason.
-    retarget_app_endpoint_to_active_slice "$BLUEPRINT" 8080 "/api/echo/health" 90 \
+    # FIRST. The default pinned APP_ENDPOINT may belong to a node that prior
+    # destructive tests churned out; the live owner is a ULID replacement, and the
+    # helper resolves its app port from APP_PORT. This mirrors 02-chaos
+    # kill-under-load, which never probes the bare pinned app port for the same reason.
+    retarget_app_endpoint_to_active_slice "$BLUEPRINT" "/api/echo/health" 90 \
         || log_warn "retarget: APP_ENDPOINT unchanged (no ACTIVE echo owner resolved) — probing pinned ${APP_ENDPOINT}"
     if ! app_route_wired "${APP_ENDPOINT}/api/echo/health" "${API_KEY}"; then
         log_fail "App route ${APP_ENDPOINT}/api/echo/health not wired (expected EchoSlice handler to respond)"
@@ -72,6 +77,24 @@ test_app_routes_reachable() {
 # is exact. Prints the chosen container name (empty when none).
 pick_route_kill_victim() {
     local leader="$1"
+    # Cloud has no shared Docker daemon — `docker ps` over SSH reaches only the seed VM,
+    # not CTM-provisioned replacement VMs, so it cannot enumerate the killable cores. On
+    # cloud, source candidates from the SAME mechanism the other cloud destructive suites
+    # use (02-chaos / 12-network via pick_non_leader): cloud_running_cores reads READY
+    # cores off the mgmt API (/api/nodes/lifecycle), which is reachable for every node
+    # regardless of SSH key. Any running non-leader READY core is a valid stale-route
+    # victim. Prints the chosen NodeId (empty when none).
+    if [ "${CLOUD_MODE:-false}" = "true" ]; then
+        local nid
+        while IFS= read -r nid; do
+            if [ -n "$nid" ] && [ "$nid" != "$leader" ]; then
+                echo "$nid"
+                return 0
+            fi
+        done <<< "$(cloud_running_cores)"
+        echo ""
+        return 0
+    fi
     local running
     running=$(remote_exec "docker ps --filter name=aether-b-node- --filter status=running --format '{{.Names}}'")
     local nid
@@ -93,6 +116,54 @@ pick_route_kill_victim() {
     echo ""
 }
 
+# Enumerate running non-leader-eligible core ids for DIAG/barrier — the same set the
+# picker draws from. Cloud: READY cores via mgmt API; docker: running aether-b cores.
+running_core_ids() {
+    if [ "${CLOUD_MODE:-false}" = "true" ]; then
+        cloud_running_cores
+    else
+        remote_exec "docker ps --filter name=aether-b-node- --filter status=running --format '{{.Names}}'"
+    fi
+}
+
+# Confirm a chosen victim still exists/runs before killing it. Cloud: present in the
+# READY-core set (mgmt API); docker: a running container with that exact name.
+victim_is_live() {
+    local v="$1"
+    [ -z "$v" ] && return 1
+    if [ "${CLOUD_MODE:-false}" = "true" ]; then
+        running_core_ids | grep -qx "$v"
+    else
+        remote_exec "docker ps --format '{{.Names}}'" | grep -qx "$v"
+    fi
+}
+
+# Bounded pre-deploy barrier: the kill test (test_kill_node_hosting_routes) needs a
+# running non-leader victim to kill, but a prior destructive suite can leave cluster B
+# mid-auto-heal (leader + JOINING replacements only) for tens of seconds. Wait until at
+# least two running non-leader cores exist — i.e. pick_route_kill_victim can resolve a
+# victim with one to spare — BEFORE deploying, so the killable-victim precondition is a
+# first-class gate rather than a race inside the 4th test. Reuses the picker's own
+# candidate enumeration (running_core_ids minus the current leader).
+await_killable_victim_available() {
+    local deadline=$((SECONDS + ${ROUTE_VICTIM_PICK_TIMEOUT:-180}))
+    local leader nonleader_count
+    while [ "$SECONDS" -lt "$deadline" ]; do
+        leader=$(cluster_leader) || leader=""
+        if [ -n "$leader" ]; then
+            nonleader_count=$(running_core_ids | grep -v '^$' | grep -vx "$leader" | grep -c '^' || true)
+            if [ "${nonleader_count:-0}" -ge 2 ]; then
+                log_info "killable-victim barrier: ${nonleader_count} running non-leader cores (leader=${leader})"
+                return 0
+            fi
+        fi
+        sleep 3
+    done
+    leader=$(cluster_leader) || leader=""
+    log_fail "killable-victim barrier: fewer than 2 running non-leader cores within ${ROUTE_VICTIM_PICK_TIMEOUT:-180}s (leader='${leader}', running=[$(running_core_ids | tr '\n' ' ')])"
+    return 1
+}
+
 test_kill_node_hosting_routes() {
     # Victim pick from running docker cores (see pick_route_kill_victim). The pick
     # WAITS (bounded) because by the time this script runs, the destructive wave can
@@ -103,12 +174,12 @@ test_kill_node_hosting_routes() {
     # the script under `set -e`. On exhaustion we dump the membership-vs-docker view so
     # a recurrence is diagnosable instead of guessable.
     local victim="" leader=""
-    local pick_deadline=$((SECONDS + 90))
+    local pick_deadline=$((SECONDS + ${ROUTE_VICTIM_PICK_TIMEOUT:-180}))
     while [ "$SECONDS" -lt "$pick_deadline" ]; do
         leader=$(cluster_leader) || leader=""
         if [ -n "$leader" ]; then
             victim=$(pick_route_kill_victim "$leader")
-            if [ -n "$victim" ] && remote_exec "docker ps --format '{{.Names}}'" | grep -qx "$victim"; then
+            if [ -n "$victim" ] && victim_is_live "$victim"; then
                 break
             fi
         fi
@@ -117,9 +188,9 @@ test_kill_node_hosting_routes() {
     done
     if [ -z "$victim" ]; then
         log_info "victim-pick DIAG: leader='${leader}'"
-        log_info "victim-pick DIAG: running cores = [$(remote_exec "docker ps --filter name=aether-b-node- --filter status=running --format '{{.Names}}'" | tr '\n' ' ')]"
+        log_info "victim-pick DIAG: running cores = [$(running_core_ids | tr '\n' ' ')]"
         log_info "victim-pick DIAG: membership = [$(cluster_node_list | grep -o '\"nodeId\"[[:space:]]*:[[:space:]]*\"[^\"]*\"' | sed 's/.*\"\([^\"]*\)\"$/\1/' | tr '\n' ' ')]"
-        log_fail "Could not pick a live non-leader victim within 90s"
+        log_fail "Could not pick a live non-leader victim within ${ROUTE_VICTIM_PICK_TIMEOUT:-180}s"
         return 1
     fi
 
@@ -151,7 +222,7 @@ test_no_502_504_after_cleanup() {
     # gone (gate-F1). Probing a live owner is the correct subject — the assertion
     # is "no stale-route 502/504", which must be measured against a node that
     # should serve cleanly, not a dead pinned port (which would read 000, not 502).
-    retarget_app_endpoint_to_active_slice "$BLUEPRINT" 8080 "/api/echo/health" 90 \
+    retarget_app_endpoint_to_active_slice "$BLUEPRINT" "/api/echo/health" 90 \
         || log_warn "retarget: APP_ENDPOINT unchanged (no surviving ACTIVE echo owner) — probing pinned ${APP_ENDPOINT}"
     local bad_status=0
     for i in $(seq 1 10); do

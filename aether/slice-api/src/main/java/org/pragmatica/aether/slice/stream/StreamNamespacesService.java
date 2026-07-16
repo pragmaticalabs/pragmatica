@@ -4,11 +4,11 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.slice.stream;
 
+import java.util.List;
+
 import org.pragmatica.aether.slice.resource.ResourceAddress;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
-
-import java.util.List;
 
 
 /// Facade for the stream-namespacing subsystem.

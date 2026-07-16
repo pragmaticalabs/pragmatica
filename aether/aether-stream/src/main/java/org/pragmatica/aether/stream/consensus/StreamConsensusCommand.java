@@ -4,10 +4,10 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.stream.consensus;
 
+import java.util.Arrays;
+
 import org.pragmatica.consensus.Command;
 import org.pragmatica.serialization.Codec;
-
-import java.util.Arrays;
 
 
 @Codec

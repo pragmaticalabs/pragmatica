@@ -105,7 +105,9 @@ class MavenProtocolHandlerTest {
                .await()
                .onFailureRun(Assertions::fail)
                .onSuccess(response -> {
-                   assertThat(response.statusCode()).isEqualTo(201);
+                   // .pom is an extension-blind artifact (stored, not discarded), so it
+                   // returns 200 + JSON status like a .jar; only sidecars/metadata stay 201.
+                   assertThat(response.statusCode()).isEqualTo(200);
                });
     }
 

@@ -27,11 +27,23 @@ package org.pragmatica.aether.deployment.membership.ntt;
 ///   this trigger is that follow-up firing. Self-rearming until the confirmed-member count
 ///   converges to the configured target — a bounded convergence loop, NOT a periodic tick
 ///   (it arms only while a deficit exists and stops the moment it converges).
+/// - [`#SURPLUS_FOLLOW_UP`] — the reconciler's own surplus-convergence follow-up (#331): the
+///   symmetric counterpart of [`#DEFICIT_FOLLOW_UP`] for OVER-provisioning. A pass that ended
+///   with an UNRESOLVED surplus (`effective > configuredCoreCount` after dispatch — a drain was
+///   dispatched but the victims have not yet left membership, or the floor capped the drainable
+///   count below the surplus) arms one deduped, debounce-spaced re-evaluation. A healthy surplus
+///   fires NO SWIM edge (a node sitting in surplus is HEALTHY; its eventual departure on drain
+///   does not re-trigger the surplus-detecting `MEMBER_APPEARED` ingress), so without this the
+///   leader drains one batch and then never re-checks — leaving the cluster over-provisioned past
+///   the settle window (the 02-chaos 6-where-5-expected convergence gap). Self-rearming until the
+///   effective count converges DOWN to the configured target — a bounded convergence loop, NOT a
+///   periodic tick (arms only while a surplus exists, stops the moment it converges).
 public enum ReconcileTrigger {
     LEADER_ACTIVATION,
     NTT_FIRE,
     QUORUM_LOSS,
     MEMBER_APPEARED,
     CONFIG_CHANGE,
-    DEFICIT_FOLLOW_UP
+    DEFICIT_FOLLOW_UP,
+    SURPLUS_FOLLOW_UP
 }

@@ -4,13 +4,13 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.stream.replication;
 
-import org.pragmatica.consensus.NodeId;
-import org.pragmatica.lang.Option;
-
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
+
+import org.pragmatica.consensus.NodeId;
+import org.pragmatica.lang.Option;
 
 
 /// Pure, deterministic stream-replica placement using HRW (highest-random-weight /
@@ -77,7 +77,9 @@ public final class ReplicaPlacement {
         var ranked = new ArrayList<NodeId>();
 
         members.forEach(ranked::add);
-        ranked.sort(Comparator.comparingLong((NodeId node) -> score(streamName, partition, node)).reversed().thenComparing(NodeId::id));
+        ranked.sort(Comparator.comparingLong((NodeId node) -> score(streamName, partition, node))
+                              .reversed()
+                              .thenComparing(NodeId::id));
 
         return ranked;
     }
@@ -98,8 +100,17 @@ public final class ReplicaPlacement {
                     .or(false);
     }
 
-    /// Effective replication factor for an APP stream:
-    /// `clamp(requested, 1, clusterSize)`. Returns 0 only when the cluster is empty.
+    /// Effective replication factor for an APP stream: `clamp(requested, 1, clusterSize)`, where
+    /// `requested` is the stream's `replicas` knob (total copies INCLUDING the owner). Returns 0 only
+    /// when the cluster is empty.
+    ///
+    /// Under the two-knob model (#262) `replicas` ALONE determines placement — how many copies exist —
+    /// while the separate `min-sync-replicas` knob governs only the write-ack floor (a synchronous
+    /// publish awaits `min-sync-replicas − 1` DISTINCT NON-SELF acks) and never changes RF. The owner
+    /// is index 0 of the owner-first HRW set, so a `replicas`-sized set holds the owner PLUS
+    /// `replicas − 1` peers. When `min-sync-replicas` exceeds the peers a too-small cluster can
+    /// provision, the publish fails CLEARLY via [ReplicationManager#awaitReplication] with
+    /// `NOT_ENOUGH_REPLICAS` rather than silently under-provisioning.
     public static int replicationFactor(int requested, int clusterSize) {
         if (clusterSize <= 0) {
             return 0;
@@ -108,16 +119,23 @@ public final class ReplicaPlacement {
         return clamp(requested, 1, clusterSize);
     }
 
-    /// Effective replication factor for a SYSTEM stream:
-    /// `min(max(3, N - 2), N)` where `N = clusterSize`. Returns 0 for an empty cluster.
+    /// Effective replication factor for a SYSTEM stream: the FULL cluster — every core node is a
+    /// replica (`RF = clusterSize`). Returns 0 for an empty cluster.
     ///
-    /// Examples: N=1→1, N=3→3, N=5→3, N=7→5, N=10→8.
+    /// System streams (e.g. `system:cluster-events`) are low-volume, operator-critical audit logs
+    /// whose value is being readable from ANY node. Making the replica set ≡ the core set means no
+    /// node is a non-replica that must forward-read, and there is no replica count to maintain as the
+    /// cluster scales: a core joins ⇒ it becomes a replica and backfills; a core leaves ⇒ one fewer
+    /// replica, no action. Durability then matches the cluster's own fault tolerance by construction —
+    /// the audit log survives exactly the failures the cluster survives.
+    ///
+    /// Examples: N=1→1, N=3→3, N=5→5, N=10→10.
     public static int systemReplicationFactor(int clusterSize) {
         if (clusterSize <= 0) {
             return 0;
         }
 
-        return Math.min(Math.max(3, clusterSize - 2), clusterSize);
+        return clusterSize;
     }
 
     /// Effective replication factor dispatched on [StreamClass]. For [StreamClass#APP] the

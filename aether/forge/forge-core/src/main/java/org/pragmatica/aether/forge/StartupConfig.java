@@ -4,12 +4,12 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.forge;
 
-import org.pragmatica.lang.Option;
-import org.pragmatica.lang.Result;
-
 import java.nio.file.Path;
 import java.util.HashMap;
 import java.util.Map;
+
+import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Result;
 
 import static org.pragmatica.lang.io.FileOps.exists;
 import static org.pragmatica.lang.io.FileOps.isReadable;

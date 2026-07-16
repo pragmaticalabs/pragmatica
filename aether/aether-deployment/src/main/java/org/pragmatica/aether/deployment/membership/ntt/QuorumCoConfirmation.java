@@ -4,10 +4,10 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.deployment.membership.ntt;
 
-import org.pragmatica.consensus.NodeId;
-
 import java.util.List;
 import java.util.stream.Stream;
+
+import org.pragmatica.consensus.NodeId;
 
 
 /// Membership co-confirmation snapshot consumed by [`QuorumLossDetector`] at firing time (Fix C,

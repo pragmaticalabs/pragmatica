@@ -4,6 +4,14 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.update;
 
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.stream.Collectors;
+
 import org.pragmatica.aether.artifact.ArtifactBase;
 import org.pragmatica.aether.artifact.Version;
 import org.pragmatica.aether.metrics.deployment.DeploymentEvent;
@@ -23,14 +31,6 @@ import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.messaging.MessageReceiver;
 import org.pragmatica.utility.IdGenerator;
-
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.stream.Collectors;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -113,8 +113,9 @@ public interface AbTestManager {
                 var artifactBase = event.artifact().base();
 
                 getActiveTest(artifactBase).filter(test -> containsVersion(test,
-                                                                           event.artifact().version())).filter(AbTestDeployment::isActive).onPresent(test -> triggerAutoRollback(test,
-                                                                                                                                                                                 event));
+                                                                           event.artifact().version()))
+                             .filter(AbTestDeployment::isActive)
+                             .onPresent(test -> triggerAutoRollback(test, event));
             }
 
             private boolean containsVersion(AbTestDeployment test, Version version) {
@@ -240,8 +241,12 @@ public interface AbTestManager {
 
             @SuppressWarnings("unchecked")
             private Promise<AbTestDeployment> deployVariants(AbTestDeployment test) {
-                var commands = test.variantVersions().values().stream().map(version -> buildDeployCommand(test.artifactBase(),
-                                                                                                          version)).toList();
+                var commands = test.variantVersions()
+                                   .values()
+                                   .stream()
+                                   .map(version -> buildDeployCommand(test.artifactBase(),
+                                                                      version))
+                                   .toList();
 
                 log.info("Deploying {} variant versions for A/B test {}", commands.size(), test.testId());
 
@@ -253,9 +258,26 @@ public interface AbTestManager {
             @SuppressWarnings("unchecked")
             private KVCommand<AetherKey> buildDeployCommand(ArtifactBase artifactBase, Version version) {
                 var key = SliceTargetKey.sliceTargetKey(artifactBase);
-                var value = new SliceTargetValue(version, 1, 1, Option.none(), "CORE_ONLY", System.currentTimeMillis());
+                var value = targetPreservingOverrides(key, version);
 
                 return (KVCommand<AetherKey>)(KVCommand<?>) new KVCommand.Put<>(key, value);
+            }
+
+            /// A/B lifecycle writes must not evaporate the operator's per-slice bounds (#424 review).
+            /// Reads the current SliceTargetValue and carries its `maxInstances`/threshold overrides
+            /// onto the new version (canary/promote/restore stay at 1 instance).
+            private SliceTargetValue targetPreservingOverrides(SliceTargetKey key, Version version) {
+                var current = kvStore.get(key)
+                                     .filter(SliceTargetValue.class::isInstance)
+                                     .map(SliceTargetValue.class::cast);
+
+                return SliceTargetValue.sliceTargetValue(version,
+                                                         1,
+                                                         1,
+                                                         Option.none(),
+                                                         current.flatMap(SliceTargetValue::maxInstances),
+                                                         current.flatMap(SliceTargetValue::scaleUpThreshold),
+                                                         current.flatMap(SliceTargetValue::scaleDownThreshold));
             }
 
             private Promise<AbTestDeployment> activateTest(AbTestDeployment test) {
@@ -291,12 +313,7 @@ public interface AbTestManager {
             private Promise<AbTestDeployment> promoteWinner(AbTestDeployment test, String winningVariant) {
                 var winnerVersion = test.variantVersions().get(winningVariant);
                 var key = SliceTargetKey.sliceTargetKey(test.artifactBase());
-                var value = new SliceTargetValue(winnerVersion,
-                                                 1,
-                                                 1,
-                                                 Option.none(),
-                                                 "CORE_ONLY",
-                                                 System.currentTimeMillis());
+                var value = targetPreservingOverrides(key, winnerVersion);
                 var command = (KVCommand<AetherKey>)(KVCommand<?>) new KVCommand.Put<>(key, value);
 
                 return clusterNode.<Unit> apply(List.of(command))
@@ -324,12 +341,7 @@ public interface AbTestManager {
             private Promise<AbTestDeployment> restoreBaseline(AbTestDeployment test) {
                 log.info("Restoring baseline {} for A/B test {}", test.baselineVersion(), test.testId());
                 var key = SliceTargetKey.sliceTargetKey(test.artifactBase());
-                var value = new SliceTargetValue(test.baselineVersion(),
-                                                 1,
-                                                 1,
-                                                 Option.none(),
-                                                 "CORE_ONLY",
-                                                 System.currentTimeMillis());
+                var value = targetPreservingOverrides(key, test.baselineVersion());
                 var command = (KVCommand<AetherKey>)(KVCommand<?>) new KVCommand.Put<>(key, value);
 
                 return clusterNode.<Unit> apply(List.of(command))
@@ -416,11 +428,12 @@ public interface AbTestManager {
                 var snapshots = metricsCollector.snapshot();
                 var metricsMap = new HashMap<String, AbTestMetrics.VariantMetrics>();
 
-                test.variantVersions().forEach((variant, version) -> metricsMap.put(variant,
-                                                                                    collectVariantMetrics(snapshots,
-                                                                                                          test.artifactBase(),
-                                                                                                          variant,
-                                                                                                          version)));
+                test.variantVersions()
+                    .forEach((variant, version) -> metricsMap.put(variant,
+                                                                  collectVariantMetrics(snapshots,
+                                                                                        test.artifactBase(),
+                                                                                        variant,
+                                                                                        version)));
 
                 return AbTestMetrics.abTestMetrics(test.testId(), metricsMap);
             }
@@ -430,10 +443,12 @@ public interface AbTestManager {
                                                                        String variant,
                                                                        Version version) {
                 var artifact = artifactBase.withVersion(version);
-                var accumulated = snapshots.stream().filter(s -> s.artifact()
-                                                                  .equals(artifact)).reduce(new long[]{0, 0, 0, 0},
-                                                                                            AbTestManager::accumulateSnapshot,
-                                                                                            AbTestManager::combineAccumulators);
+                var accumulated = snapshots.stream()
+                                           .filter(s -> s.artifact()
+                                                         .equals(artifact))
+                                           .reduce(new long[]{0, 0, 0, 0},
+                                                   AbTestManager::accumulateSnapshot,
+                                                   AbTestManager::combineAccumulators);
                 long requests = accumulated[0];
                 long errors = accumulated[1];
                 long totalLatency = accumulated[2];
@@ -457,9 +472,10 @@ public interface AbTestManager {
             @SuppressWarnings("JBCT-RET-01")
             private void pruneTerminalTests() {
                 var cutoff = System.currentTimeMillis() - terminalRetentionMs;
-                var pruned = tests.entrySet().removeIf(entry -> entry.getValue()
-                                                                     .isTerminal() && entry.getValue()
-                                                                                           .updatedAt() < cutoff);
+                var pruned = tests.entrySet()
+                                  .removeIf(entry -> entry.getValue()
+                                                          .isTerminal() && entry.getValue()
+                                                                                .updatedAt() < cutoff);
 
                 if (pruned) {
                     log.debug("Pruned terminal A/B tests older than retention period");

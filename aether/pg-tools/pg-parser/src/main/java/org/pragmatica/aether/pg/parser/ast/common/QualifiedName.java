@@ -4,10 +4,10 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.pg.parser.ast.common;
 
+import java.util.List;
+
 import org.pragmatica.lang.Option;
 import org.pragmatica.aether.pg.parser.PostgresParser.SourceSpan;
-
-import java.util.List;
 
 
 public record QualifiedName(SourceSpan span, List<Identifier> parts) {

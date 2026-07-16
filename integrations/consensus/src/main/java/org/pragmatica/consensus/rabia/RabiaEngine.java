@@ -140,6 +140,14 @@ public class RabiaEngine<C extends Command> {
     //--------------------------------- Node State Start
     private final Map<Phase, PhaseData<C>> phases = new ConcurrentHashMap<>();
     private final AtomicReference<Phase> currentPhase = new AtomicReference<>(Phase.ZERO);
+    /// Highest Rabia phase this node has ever observed the cluster reference, across any inbound
+    /// peer message (Propose / VoteRound1 / VoteRound2 / Decision) and any sync candidate's
+    /// `lastCommittedPhase`. Advance-only (never regresses). This is the engine's view of the
+    /// cluster's committed frontier; `currentPhase` is the locally-applied frontier. When the
+    /// former exceeds the latter the node is committed-ahead-of-applied — i.e. lagging — which
+    /// [#isPendingCatchUp] reports so leadership-pinned ownership can be withheld from a
+    /// not-yet-caught-up replacement leader (#329).
+    private final AtomicReference<Phase> highestObservedClusterPhase = new AtomicReference<>(Phase.ZERO);
     private final AtomicReference<EngineState> engineState = new AtomicReference<>(new EngineState.Stopped());
     private final AtomicReference<Promise<Unit>> startPromise = new AtomicReference<>(Promise.promise());
 
@@ -523,6 +531,7 @@ public class RabiaEngine<C extends Command> {
                    .onFailure(cause -> log.error("Node {} failed to persist empty state on reconfigure: {}", self, cause));
         phases.clear();
         currentPhase.set(Phase.ZERO);
+        highestObservedClusterPhase.set(Phase.ZERO);
         lockedValue.set(Option.none());
         stateMachine.reset();
         startPromise.set(Promise.promise());
@@ -551,6 +560,7 @@ public class RabiaEngine<C extends Command> {
                    .onFailure(cause -> log.error("Node {} failed to persist state on stop: {}", self, cause));
         phases.clear();
         currentPhase.set(Phase.ZERO);
+        highestObservedClusterPhase.set(Phase.ZERO);
         lockedValue.set(Option.none());
         stateMachine.reset();
         startPromise.set(Promise.promise());
@@ -570,6 +580,42 @@ public class RabiaEngine<C extends Command> {
     /// are rejected with [ConsensusError.QuorumPaused]. Mutually exclusive with `isActive`.
     public boolean isPaused() {
         return engineState.get().isPaused();
+    }
+
+    /// Returns true when this node's locally-applied frontier trails the cluster's observed
+    /// committed frontier — i.e. the engine is still draining the consensus log and has NOT
+    /// caught up. Distinct from [#isActive], which only reports protocol participation
+    /// (Idle/InPhase) and stays true for a freshly-elected replacement leader whose log is
+    /// still draining.
+    ///
+    /// Pending-catch-up is true when either:
+    ///   - the engine is mid-resync (`Syncing`) — by construction it is behind and pulling state, or
+    ///   - the highest cluster phase observed from any peer message exceeds the locally-applied
+    ///     `currentPhase` (the committed-ahead-of-applied gap).
+    ///
+    /// A genuinely caught-up active node (no higher cluster phase seen, not syncing) reports
+    /// false. Used by the leader-pinned task-group owner resolver (#329) to withhold ownership
+    /// from a lagging replacement leader so synchronous leader-local commits do not stall and
+    /// 503; the resolver bounds the suppression in time so this can never wedge ownership.
+    public boolean isPendingCatchUp() {
+        var state = engineState.get();
+        if (state instanceof EngineState.Syncing) {
+            return true;
+        }
+        return highestObservedClusterPhase.get()
+                                          .compareTo(currentPhase.get()) > 0;
+    }
+
+    /// Advance-only update of the cluster's observed committed frontier. Records the highest
+    /// phase any inbound peer message has referenced so [#isPendingCatchUp] can compare it to
+    /// the locally-applied `currentPhase`. Never regresses.
+    private void observeClusterPhase(Phase phase) {
+        highestObservedClusterPhase.updateAndGet(existing -> existing.compareTo(phase) >= 0 ? existing : phase);
+    }
+
+    /// Package-private test hook: highest observed cluster phase (the committed frontier).
+    Phase highestObservedClusterPhaseForTesting() {
+        return highestObservedClusterPhase.get();
     }
 
     /// Package-private test hook: current Rabia phase.
@@ -913,6 +959,7 @@ public class RabiaEngine<C extends Command> {
 
     private void restoreState(SavedState<C> state) {
         detectBootFutureHistory(state);
+        observeClusterPhase(state.lastCommittedPhase());
         syncResponses.clear();
         // Always carry forward the source's lastCommittedPhase + pendingBatches even when
         // the state-machine snapshot is empty. V0 decisions advance phase without touching
@@ -1105,25 +1152,34 @@ public class RabiaEngine<C extends Command> {
         }
     }
 
-    /// Creates a periodic stall detector that re-broadcasts the node's own proposal
-    /// when a phase hasn't advanced within the configured interval.
+    /// Creates a periodic stall detector that re-broadcasts the held proposal set and this
+    /// node's own votes when a phase hasn't advanced within the configured interval.
     private ScheduledFuture<?> createStallDetector() {
         return SharedScheduler.scheduleAtFixedRate(
             () -> safeExecute(this::checkPhaseStall),
             phaseStallCheck);
     }
 
-    /// Checks if the current phase is stalled and re-broadcasts this node's own
-    /// protocol messages (Propose, VoteRound1, VoteRound2) so peers that missed the
-    /// first send due to transient QUIC reconnect can collect them.
+    /// Checks if the current phase is stalled and re-broadcasts protocol messages so peers that
+    /// missed the first send (transient QUIC reconnect) or that joined the phase after the
+    /// original contributors died can collect them.
     ///
-    /// Why: on a 5-way simultaneous restart, peerLinks flap during the QUIC handshake
-    /// storm. `QuicClusterNetwork.broadcast` only sends to peers currently in peerLinks,
-    /// so a message sent while a peer is in re-dial gets dropped. Proposals used to be
-    /// the only message re-broadcast — votes were one-shot and could be lost, leaving
-    /// consensus deadlocked until the 3s proposal timeout retries (and the storm repeats).
-    /// Votes are idempotent at the receiver (registerRound1Vote/registerRound2Vote are
-    /// keyed on (phase, sender)), so re-broadcasting is safe.
+    /// Re-broadcasts, while short of quorum/majority:
+    ///   - the FULL proposal SET this node holds (not just its own) — see #258 below;
+    ///   - this node's own Round 1 / Round 2 votes.
+    ///
+    /// Why re-broadcast votes: on a 5-way simultaneous restart, peerLinks flap during the QUIC
+    /// handshake storm. `QuicClusterNetwork.broadcast` only sends to peers currently in peerLinks,
+    /// so a message sent while a peer is in re-dial gets dropped. Votes are idempotent at the
+    /// receiver (registerRound1Vote/registerRound2Vote are keyed on (phase, sender)), so
+    /// re-broadcasting is safe.
+    ///
+    /// Why re-broadcast the whole proposal set (#258): the detector used to re-broadcast only the
+    /// node's OWN proposal. If the voters that contributed the quorum proposals die mid-phase,
+    /// surviving/fresh voters can never satisfy `hasQuorumProposals` and can never vote — an
+    /// unrecoverable phase deadlock. The holder of a dead node's proposal now re-broadcasts it
+    /// (under the original sender's id; `registerProposal` is idempotent and keyed on sender), so
+    /// a fresh voter synced to the stalled phase can reach quorum proposals and make progress.
     private void checkPhaseStall() {
         if (!(engineState.get() instanceof EngineState.InPhase)) {
             return;
@@ -1134,11 +1190,10 @@ public class RabiaEngine<C extends Command> {
 
     private void checkPhaseStallFor(Phase phase, PhaseData<C> phaseData) {
         var quorumSize = topologyManager.quorumSize();
-        if (!phaseData.hasQuorumProposals(quorumSize) && phaseData.hasProposal(self)) {
-            log.debug("Node {} stall detected in phase {}: {}/{} proposals, re-broadcasting own proposal",
+        if (!phaseData.hasQuorumProposals(quorumSize) && phaseData.proposalCount() > 0) {
+            log.debug("Node {} stall detected in phase {}: {}/{} proposals, re-broadcasting full proposal set",
                       self, phase, phaseData.proposalCount(), quorumSize);
-            Option.option(phaseData.getProposal(self))
-                  .onPresent(batch -> network.broadcast(new Propose<>(self, phase, batch)));
+            rebroadcastProposalSet(phase, phaseData);
         }
         if (phaseData.hasVotedRound1(self) && !phaseData.hasRound1MajorityVotes(quorumSize)) {
             Option.option(phaseData.getRound1Vote(self))
@@ -1148,6 +1203,14 @@ public class RabiaEngine<C extends Command> {
             Option.option(phaseData.getRound2Vote(self))
                   .onPresent(value -> rebroadcastRound2Stall(phase, value));
         }
+    }
+
+    /// Re-broadcasts every proposal this node holds for the stalled phase, each under its
+    /// original contributing node's id. Idempotent at the receiver; bounded by the periodic
+    /// stall-check cadence and by the `!hasQuorumProposals` guard at the call site.
+    private void rebroadcastProposalSet(Phase phase, PhaseData<C> phaseData) {
+        phaseData.proposals()
+                 .forEach((proposer, batch) -> network.broadcast(new Propose<>(proposer, phase, batch)));
     }
 
     private void rebroadcastRound1Stall(Phase phase, StateValue value) {
@@ -1226,6 +1289,7 @@ public class RabiaEngine<C extends Command> {
     /// Rabia is leaderless — every node participates in every round.
     private void handlePropose(Propose<C> propose) {
         log.trace("Node {} received proposal from {} for phase {}", self, propose.sender(), propose.phase());
+        observeClusterPhase(propose.phase());
         var currentPhaseValue = currentPhase.get();
         if (isPastPhase(propose.phase(), currentPhaseValue)) {
             log.trace("Node {} ignoring proposal for past phase {}", self, propose.phase());
@@ -1333,6 +1397,7 @@ public class RabiaEngine<C extends Command> {
                   vote.sender(),
                   vote.phase(),
                   vote.stateValue());
+        observeClusterPhase(vote.phase());
         var phaseData = getOrCreatePhaseData(vote.phase());
         registerRound1Vote(vote, phaseData);
         tryBroadcastRound2Vote(vote.phase(), phaseData);
@@ -1405,6 +1470,7 @@ public class RabiaEngine<C extends Command> {
                   vote.sender(),
                   vote.phase(),
                   vote.stateValue());
+        observeClusterPhase(vote.phase());
         var phaseData = getOrCreatePhaseData(vote.phase());
         registerRound2Vote(vote, phaseData);
         tryMakeDecision(vote.phase(), phaseData);
@@ -1490,6 +1556,7 @@ public class RabiaEngine<C extends Command> {
     /// a full sync round on resume, which the new design explicitly avoids.
     private void handleDecision(Decision<C> decision) {
         log.trace("Node {} received decision {}", self, decision);
+        observeClusterPhase(decision.phase());
         var state = engineState.get();
         if (state instanceof EngineState.Stopped || state instanceof EngineState.Syncing) {
             bufferDecisionForReplay(decision);

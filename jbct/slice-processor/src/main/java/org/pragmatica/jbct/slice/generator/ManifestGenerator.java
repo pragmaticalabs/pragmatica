@@ -8,10 +8,12 @@ package org.pragmatica.jbct.slice.generator;
 import org.pragmatica.jbct.slice.model.DependencyModel;
 import org.pragmatica.jbct.slice.model.MethodModel;
 import org.pragmatica.jbct.slice.model.MethodModel.ReactiveMethodBinding;
+import org.pragmatica.jbct.slice.model.ResolvedTopicConstant;
 import org.pragmatica.jbct.slice.model.ResourceQualifierModel;
 import org.pragmatica.jbct.slice.model.SliceModel;
 import org.pragmatica.jbct.slice.model.SliceModel.TransitiveMethod;
 import org.pragmatica.jbct.slice.routing.RouteConfig;
+import org.pragmatica.jbct.slice.routing.RouteDsl;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
@@ -31,7 +33,11 @@ import java.util.Properties;
 import java.util.stream.Collectors;
 
 public class ManifestGenerator {
-    static final int ENVELOPE_FORMAT_VERSION = 1000;
+    /// Envelope bumped 1006 -> 1007: value-object HTTP path/query segments now bind through the VO's
+    /// `ValueMapping` (`static ValueMapping<Self, P> valueMapping()`), so generated `*Routes` compose
+    /// the framework `String -> P` parser with the VO's `lift` (`PathParameter.aXxx().mapped(...)` /
+    /// `QueryParameter.aXxx(name).mapped(...)`) and a lift failure yields a typed 400 (#397).
+    static final int ENVELOPE_FORMAT_VERSION = 1007;
 
     private final Filer filer;
     private final DependencyVersionResolver versionResolver;
@@ -58,18 +64,28 @@ public class ManifestGenerator {
     /// Generate per-slice manifest with class listings for multi-artifact packaging.
     /// Written to META-INF/slice/{SliceName}.manifest
     public Result<Unit> generateSliceManifest(SliceModel model) {
-        return generateSliceManifest(model, Option.none(), Option.none());
+        return generateSliceManifest(model, Option.none(), Option.none(), Map.of());
     }
 
     /// Generate per-slice manifest with optional Routes class.
     /// Written to META-INF/slice/{SliceName}.manifest
     public Result<Unit> generateSliceManifest(SliceModel model, Option<String> routesClass) {
-        return generateSliceManifest(model, routesClass, Option.none());
+        return generateSliceManifest(model, routesClass, Option.none(), Map.of());
     }
 
     /// Generate per-slice manifest with optional Routes class and route configuration.
     /// Written to META-INF/slice/{SliceName}.manifest
     public Result<Unit> generateSliceManifest(SliceModel model, Option<String> routesClass, Option<RouteConfig> routeConfig) {
+        return generateSliceManifest(model, routesClass, routeConfig, Map.of());
+    }
+
+    /// Generate per-slice manifest, threading the resolved single-source `Topic<T>` constants (#396)
+    /// so typed pub/sub blocks carry a `topicName` derived from the constant rather than a
+    /// resources.toml section.
+    public Result<Unit> generateSliceManifest(SliceModel model,
+                                              Option<String> routesClass,
+                                              Option<RouteConfig> routeConfig,
+                                              Map<String, ResolvedTopicConstant> topicBindings) {
         try{
             var props = new Properties();
             var sliceName = model.simpleName();
@@ -131,7 +147,7 @@ public class ManifestGenerator {
             // Slice config file path (for blueprint generator to read)
             props.setProperty("config.file", "slices/" + sliceName + ".toml");
             // Reactive bindings (unified format for all reactive annotations)
-            writeReactiveBindings(props, model);
+            writeReactiveBindings(props, model, topicBindings);
             // Publisher message types (for serializer registration)
             var publishMessageTypes = model.dependencies()
                                            .stream()
@@ -153,7 +169,7 @@ public class ManifestGenerator {
                 var pubPrefix = "publish.topic." + pubIndex + ".";
                 publishers.get(pubIndex)
                           .resourceQualifier()
-                          .onPresent(rq -> props.setProperty(pubPrefix + "config", rq.configSection()));
+                          .onPresent(rq -> writeTopicConfig(props, pubPrefix, rq.configSection(), topicBindings));
                 publishers.get(pubIndex)
                           .publisherMessageType()
                           .onPresent(mt -> props.setProperty(pubPrefix + "messageType", mt));
@@ -212,7 +228,7 @@ public class ManifestGenerator {
 
     private record ReactiveEntry(String category, String methodName, String config, Map<String, String> metadata) {}
 
-    private void writeReactiveBindings(Properties props, SliceModel model) {
+    private void writeReactiveBindings(Properties props, SliceModel model, Map<String, ResolvedTopicConstant> topicBindings) {
         var allReactive = new ArrayList<ReactiveEntry>();
 
         // Direct methods
@@ -240,10 +256,24 @@ public class ManifestGenerator {
             var prefix = "reactive." + i + ".";
             props.setProperty(prefix + "category", entry.category());
             props.setProperty(prefix + "method", entry.methodName());
-            props.setProperty(prefix + "config", entry.config());
+            writeTopicConfig(props, prefix, entry.config(), topicBindings);
             // Category-specific metadata
             entry.metadata().forEach((k, v) -> props.setProperty(prefix + k, v));
         }
+    }
+
+    /// Write the topic `config` and, for a typed-topic reference resolved to a single-source
+    /// `Topic<T>` constant (#396), the derived `topicName`. For a typed topic the `config` written is
+    /// the resolved topic name (so pub/sub orphan-matching and topic-address grammar validation
+    /// operate on the name); legacy lowercase section configs are written verbatim.
+    private static void writeTopicConfig(Properties props,
+                                         String prefix,
+                                         String configSection,
+                                         Map<String, ResolvedTopicConstant> topicBindings) {
+        var topicName = Option.option(topicBindings.get(configSection))
+                              .flatMap(ResolvedTopicConstant::topicName);
+        props.setProperty(prefix + "config", topicName.or(configSection));
+        topicName.onPresent(name -> props.setProperty(prefix + "topicName", name));
     }
 
     private Map<String, String> extractMetadata(MethodModel method, ReactiveMethodBinding binding) {
@@ -315,12 +345,49 @@ public class ManifestGenerator {
         for (int rtIndex = 0; rtIndex < routeEntries.size(); rtIndex++) {
             var rtPrefix = "route." + rtIndex + ".";
             var entry = routeEntries.get(rtIndex);
+            var version = config.routeVersion(entry.getKey());
             props.setProperty(rtPrefix + "method", entry.getValue().method());
-            props.setProperty(rtPrefix + "path", config.prefix().isEmpty()
-                                                  ? entry.getValue().pathTemplate()
-                                                  : config.prefix() + entry.getValue().pathTemplate());
+            props.setProperty(rtPrefix + "path", manifestRoutePath(config, entry.getKey(), entry.getValue()));
             props.setProperty(rtPrefix + "handler", entry.getKey());
+            props.setProperty(rtPrefix + "version", String.valueOf(version));
             props.setProperty(rtPrefix + "security", config.effectiveSecurity(entry.getKey()).toConfigString());
+        }
+        writeVersionProperties(props, config);
+    }
+
+    /// The route's mounted path for the manifest (consumed by the topology/visualization layer).
+    /// Versioned routes (#198 §6.4) compose `{apiPrefix}/v{N}/{path}` — the same path mounted at
+    /// registration time — so the manifest path stays identical to the pre-refactor baked form;
+    /// unversioned routes compose `{prefix}/{path}`.
+    private String manifestRoutePath(RouteConfig config, String handlerName, RouteDsl routeDsl) {
+        var version = config.routeVersion(handlerName);
+        if (version > 0) {
+            return config.apiPrefix() + "/v" + version + routeDsl.pathTemplate();
+        }
+        return config.prefix().isEmpty()
+               ? routeDsl.pathTemplate()
+               : config.prefix() + routeDsl.pathTemplate();
+    }
+
+    /// Write the #198 versioning metadata to the manifest. Unversioned slices emit
+    /// `versions.count = 0`. For versioned slices the version-agnostic `[api]` fields and per-version
+    /// `deprecated`/`sunset`/`defaultIfMissing` metadata are persisted for later phases (header
+    /// emission, version-registry endpoint).
+    private void writeVersionProperties(Properties props, RouteConfig config) {
+        props.setProperty("versions.count", String.valueOf(config.versions().size()));
+        if (config.versions().isEmpty()) {
+            return;
+        }
+        props.setProperty("api.prefix", config.apiPrefix());
+        props.setProperty("api.requireVersionHeader", String.valueOf(config.requireVersionHeader()));
+        var versions = new ArrayList<>(config.versions().values());
+        for (int i = 0; i < versions.size(); i++) {
+            var vPrefix = "version." + i + ".";
+            var version = versions.get(i);
+            props.setProperty(vPrefix + "number", String.valueOf(version.version()));
+            props.setProperty(vPrefix + "deprecated", String.valueOf(version.deprecated()));
+            props.setProperty(vPrefix + "defaultIfMissing", String.valueOf(version.defaultIfMissing()));
+            version.sunset().onPresent(sunset -> props.setProperty(vPrefix + "sunset", sunset));
         }
     }
 

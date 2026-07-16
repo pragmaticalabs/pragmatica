@@ -4,6 +4,12 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.slice.dependency;
 
+import java.net.URL;
+import java.util.ArrayList;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Set;
+
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.artifact.Version;
 import org.pragmatica.aether.slice.ProvisioningContext;
@@ -28,12 +34,6 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.utils.Causes;
-
-import java.net.URL;
-import java.util.ArrayList;
-import java.util.HashSet;
-import java.util.List;
-import java.util.Set;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -217,15 +217,16 @@ public interface DependencyResolver {
 
         return DependencyFile.load(manifest.sliceClassName(),
                                    createTempLoader(location.url(),
-                                                    sharedLibraryLoader)).async()
-                                  .flatMap(depFile -> processSharedAndLoadSliceWithContext(manifest,
-                                                                                           location,
-                                                                                           depFile,
-                                                                                           repository,
-                                                                                           registry,
-                                                                                           sharedLibraryLoader,
-                                                                                           loadingContext,
-                                                                                           resolutionPath));
+                                                    sharedLibraryLoader))
+                             .async()
+                             .flatMap(depFile -> processSharedAndLoadSliceWithContext(manifest,
+                                                                                      location,
+                                                                                      depFile,
+                                                                                      repository,
+                                                                                      registry,
+                                                                                      sharedLibraryLoader,
+                                                                                      loadingContext,
+                                                                                      resolutionPath));
     }
 
     private static Promise<ResolvedSlice> processSharedAndLoadSliceWithContext(SliceManifestInfo manifest,
@@ -239,21 +240,22 @@ public interface DependencyResolver {
         return SharedDependencyLoader.processSharedDependencies(depFile.shared(),
                                                                 sharedLibraryLoader,
                                                                 repository,
-                                                                location.url()).flatMap(sharedResult -> SharedDependencyLoader.processInfraDependencies(depFile.infra(),
-                                                                                                                                                        sharedLibraryLoader,
-                                                                                                                                                        repository)
-                                                                                                                              .map(_ -> sharedResult))
-                                                               .flatMap(sharedResult -> addSliceDependencyJarsToClassLoader(depFile.slices(),
-                                                                                                                            sharedResult,
-                                                                                                                            repository))
-                                                               .flatMap(sharedResult -> loadSliceClassAndResolveDepsWithContext(manifest,
-                                                                                                                                depFile,
-                                                                                                                                sharedResult,
-                                                                                                                                repository,
-                                                                                                                                registry,
-                                                                                                                                sharedLibraryLoader,
-                                                                                                                                loadingContext,
-                                                                                                                                resolutionPath));
+                                                                location.url())
+                                     .flatMap(sharedResult -> SharedDependencyLoader.processInfraDependencies(depFile.infra(),
+                                                                                                              sharedLibraryLoader,
+                                                                                                              repository)
+                                                                                    .map(_ -> sharedResult))
+                                     .flatMap(sharedResult -> addSliceDependencyJarsToClassLoader(depFile.slices(),
+                                                                                                  sharedResult,
+                                                                                                  repository))
+                                     .flatMap(sharedResult -> loadSliceClassAndResolveDepsWithContext(manifest,
+                                                                                                      depFile,
+                                                                                                      sharedResult,
+                                                                                                      repository,
+                                                                                                      registry,
+                                                                                                      sharedLibraryLoader,
+                                                                                                      loadingContext,
+                                                                                                      resolutionPath));
     }
 
     private static Promise<ResolvedSlice> loadSliceClassAndResolveDepsWithContext(SliceManifestInfo manifest,
@@ -445,15 +447,16 @@ public interface DependencyResolver {
 
         return DependencyFile.load(manifest.sliceClassName(),
                                    createTempLoader(location.url(),
-                                                    sharedLibraryLoader)).async()
-                                  .flatMap(depFile -> processSharedAndLoadSlice(manifest,
-                                                                                location,
-                                                                                depFile,
-                                                                                repository,
-                                                                                registry,
-                                                                                sharedLibraryLoader,
-                                                                                invokerFacade,
-                                                                                resolutionPath));
+                                                    sharedLibraryLoader))
+                             .async()
+                             .flatMap(depFile -> processSharedAndLoadSlice(manifest,
+                                                                           location,
+                                                                           depFile,
+                                                                           repository,
+                                                                           registry,
+                                                                           sharedLibraryLoader,
+                                                                           invokerFacade,
+                                                                           resolutionPath));
     }
 
     private static SliceClassLoader createTempLoader(URL jarUrl, SharedLibraryClassLoader parent) {
@@ -471,21 +474,22 @@ public interface DependencyResolver {
         return SharedDependencyLoader.processSharedDependencies(depFile.shared(),
                                                                 sharedLibraryLoader,
                                                                 repository,
-                                                                location.url()).flatMap(sharedResult -> SharedDependencyLoader.processInfraDependencies(depFile.infra(),
-                                                                                                                                                        sharedLibraryLoader,
-                                                                                                                                                        repository)
-                                                                                                                              .map(_ -> sharedResult))
-                                                               .flatMap(sharedResult -> addSliceDependencyJarsToClassLoader(depFile.slices(),
-                                                                                                                            sharedResult,
-                                                                                                                            repository))
-                                                               .flatMap(sharedResult -> loadSliceClassAndResolveDeps(manifest,
-                                                                                                                     depFile,
-                                                                                                                     sharedResult,
-                                                                                                                     repository,
-                                                                                                                     registry,
-                                                                                                                     sharedLibraryLoader,
-                                                                                                                     invokerFacade,
-                                                                                                                     resolutionPath));
+                                                                location.url())
+                                     .flatMap(sharedResult -> SharedDependencyLoader.processInfraDependencies(depFile.infra(),
+                                                                                                              sharedLibraryLoader,
+                                                                                                              repository)
+                                                                                    .map(_ -> sharedResult))
+                                     .flatMap(sharedResult -> addSliceDependencyJarsToClassLoader(depFile.slices(),
+                                                                                                  sharedResult,
+                                                                                                  repository))
+                                     .flatMap(sharedResult -> loadSliceClassAndResolveDeps(manifest,
+                                                                                           depFile,
+                                                                                           sharedResult,
+                                                                                           repository,
+                                                                                           registry,
+                                                                                           sharedLibraryLoader,
+                                                                                           invokerFacade,
+                                                                                           resolutionPath));
     }
 
     private static Promise<SharedDependencyLoader.SharedDependencyResult> addSliceDependencyJarsToClassLoader(List<ArtifactDependency> sliceDeps,
@@ -754,10 +758,12 @@ public interface DependencyResolver {
                                                        SliceCreationContext creationContext,
                                                        List<Slice> dependencies,
                                                        List<ArtifactDependency> descriptors) {
-        var legacyDescriptors = descriptors.stream().map(dep -> new DependencyDescriptor(ArtifactMapper.toClassName(dep.groupId(),
-                                                                                                                    dep.artifactId()),
-                                                                                         dep.versionPattern(),
-                                                                                         none())).toList();
+        var legacyDescriptors = descriptors.stream()
+                                           .map(dep -> new DependencyDescriptor(ArtifactMapper.toClassName(dep.groupId(),
+                                                                                                           dep.artifactId()),
+                                                                                dep.versionPattern(),
+                                                                                none()))
+                                           .toList();
 
         return SliceFactory.createSlice(sliceClass, creationContext, dependencies, legacyDescriptors);
     }

@@ -6,7 +6,10 @@
 package org.pragmatica.aether.cli.cluster;
 
 import org.junit.jupiter.api.Test;
+import org.pragmatica.aether.config.cluster.BootstrapOverlayGenerator;
 import org.pragmatica.aether.config.cluster.ClusterBootstrapConfigParser;
+
+import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -382,6 +385,84 @@ class BootstrapOverlayGeneratorTest {
 
         assertFalse(doc.hasSection("cloud.compute"));
         assertFalse(doc.hasSection("tls"));
+    }
+
+    @Test
+    void overlay_cloudRendersSshKeyIdsCommaJoinedWhenThreaded() {
+        // #442 — the resolved operator SSH key ids must land in [cloud.compute] ssh_key_ids as a
+        // comma-joined SCALAR (not a TOML array), because the node reads the section via
+        // TomlDocument.getSection which stringifies values and HetznerEnvironmentIntegrationFactory
+        // splits on ",". This is what lets a leader resolve keys from config (no API lookup) and
+        // provision replacements WITH the key, closing the PAM wall.
+        var config = ClusterBootstrapConfigParser.parse(CLOUD_BASE).unwrap();
+        var source = config.sources().get("eu-1");
+
+        var doc = BootstrapOverlayGenerator.overlay(config,
+                                                    source,
+                                                    0,
+                                                    empty(),
+                                                    empty(),
+                                                    some("seed-secret"),
+                                                    List.of(113681412L, 999L));
+
+        assertEquals("113681412,999", doc.getString("cloud.compute", "ssh_key_ids").unwrap(),
+                     "ssh_key_ids must be the comma-joined scalar HetznerEnvironmentIntegrationFactory parses");
+    }
+
+    @Test
+    void overlay_cloudOmitsSshKeyIdsWhenNoneResolved() {
+        // Empty resolved ids (keyless bootstrap, or the backward-compatible 6-arg overlay) must
+        // omit ssh_key_ids entirely so config.sshKeyIds() stays empty and the provider's
+        // name-prefix fallback takes over rather than parsing an empty string.
+        var config = ClusterBootstrapConfigParser.parse(CLOUD_BASE).unwrap();
+        var source = config.sources().get("eu-1");
+
+        var doc = BootstrapOverlayGenerator.overlay(config,
+                                                    source,
+                                                    0,
+                                                    empty(),
+                                                    empty(),
+                                                    some("seed-secret"),
+                                                    List.of());
+
+        assertTrue(doc.getString("cloud.compute", "ssh_key_ids").isEmpty(),
+                   "ssh_key_ids must be omitted when no keys were resolved");
+    }
+
+    @Test
+    void overlay_sixArgOverloadOmitsSshKeyIds() {
+        // The legacy 6-arg overload must remain byte-compatible: no ssh_key_ids emitted.
+        var config = ClusterBootstrapConfigParser.parse(CLOUD_BASE).unwrap();
+        var source = config.sources().get("eu-1");
+
+        var doc = BootstrapOverlayGenerator.overlay(config,
+                                                    source,
+                                                    0,
+                                                    empty(),
+                                                    empty(),
+                                                    some("seed-secret"));
+
+        assertTrue(doc.getString("cloud.compute", "ssh_key_ids").isEmpty(),
+                   "6-arg overlay must not emit ssh_key_ids (preserves prior behavior)");
+    }
+
+    @Test
+    void overlay_dockerIgnoresSshKeyIds() {
+        // Docker sources render dockerComputeSection, which has no ssh_key_ids concept; threading
+        // ids must never leak into a docker overlay.
+        var config = ClusterBootstrapConfigParser.parse(DOCKER_BASE).unwrap();
+        var source = config.sources().get("dev");
+
+        var doc = BootstrapOverlayGenerator.overlay(config,
+                                                    source,
+                                                    0,
+                                                    empty(),
+                                                    empty(),
+                                                    empty(),
+                                                    List.of(1L, 2L));
+
+        assertTrue(doc.getString("cloud.compute", "ssh_key_ids").isEmpty(),
+                   "docker overlay must never carry ssh_key_ids");
     }
 
     @Test

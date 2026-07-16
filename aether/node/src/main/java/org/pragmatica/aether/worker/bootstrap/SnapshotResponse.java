@@ -4,11 +4,11 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.worker.bootstrap;
 
+import java.util.Arrays;
+
 import org.pragmatica.messaging.Message;
 import org.pragmatica.messaging.StreamType;
 import org.pragmatica.serialization.Codec;
-
-import java.util.Arrays;
 
 
 @Codec

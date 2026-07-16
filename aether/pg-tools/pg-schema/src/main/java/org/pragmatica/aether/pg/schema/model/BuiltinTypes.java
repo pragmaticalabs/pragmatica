@@ -4,10 +4,10 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.pg.schema.model;
 
-import org.pragmatica.lang.Option;
-
 import java.util.List;
 import java.util.Map;
+
+import org.pragmatica.lang.Option;
 
 import static org.pragmatica.aether.pg.schema.model.PgType.TypeCategory.*;
 

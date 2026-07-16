@@ -4,10 +4,10 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.environment;
 
+import java.util.List;
+
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
-
-import java.util.List;
 
 
 public record CompositeSecretsProvider(List<SecretsProvider> providers) implements SecretsProvider {

@@ -4,18 +4,24 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.stream.forward;
 
+import java.util.ArrayList;
+import java.util.List;
+
+import org.pragmatica.aether.slice.ResourceCapacityExhausted;
+import org.pragmatica.aether.stream.LinearizableOwnerServe;
 import org.pragmatica.aether.stream.OffHeapRingBuffer;
+import org.pragmatica.aether.stream.StreamError;
 import org.pragmatica.aether.stream.StreamPartitionManager;
 import org.pragmatica.aether.stream.forward.StreamForwardMessage.PublishForward;
 import org.pragmatica.aether.stream.forward.StreamForwardMessage.PublishForwardResponse;
 import org.pragmatica.aether.stream.forward.StreamForwardMessage.ReadForward;
 import org.pragmatica.aether.stream.forward.StreamForwardMessage.ReadForwardResponse;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
+import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Promise;
 import org.pragmatica.messaging.MessageReceiver;
-
-import java.util.ArrayList;
-import java.util.List;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -39,7 +45,8 @@ public interface StreamForwardHandler {
                                                partitionManager,
                                                transport,
                                                DEFAULT_MAX_READ_RESPONSE_BYTES,
-                                               StreamReadForwardMetrics.NOOP);
+                                               StreamReadForwardMetrics.NOOP,
+                                               Option.none());
     }
 
     static StreamForwardHandler streamForwardHandler(NodeId selfNodeId,
@@ -47,7 +54,30 @@ public interface StreamForwardHandler {
                                                      StreamForwardTransport transport,
                                                      long maxReadResponseBytes,
                                                      StreamReadForwardMetrics metrics) {
-        return new DefaultStreamForwardHandler(selfNodeId, partitionManager, transport, maxReadResponseBytes, metrics);
+        return new DefaultStreamForwardHandler(selfNodeId,
+                                               partitionManager,
+                                               transport,
+                                               maxReadResponseBytes,
+                                               metrics,
+                                               Option.none());
+    }
+
+    /// #345 item 1e-a overload: wires the shared owner-side serve pipeline so a `LINEARIZABLE`-class
+    /// forwarded read (`ReadForward.linearizable()`) is re-guarded here (committed-owner check + epoch
+    /// fence + no-op round + catch-up gate) instead of served by an unguarded local read — the same
+    /// pipeline the local read path runs, so the two entry points cannot diverge.
+    static StreamForwardHandler streamForwardHandler(NodeId selfNodeId,
+                                                     StreamPartitionManager partitionManager,
+                                                     StreamForwardTransport transport,
+                                                     long maxReadResponseBytes,
+                                                     StreamReadForwardMetrics metrics,
+                                                     Option<LinearizableOwnerServe<OffHeapRingBuffer.RawEvent>> ownerServe) {
+        return new DefaultStreamForwardHandler(selfNodeId,
+                                               partitionManager,
+                                               transport,
+                                               maxReadResponseBytes,
+                                               metrics,
+                                               ownerServe);
     }
 
     StreamForwardHandler NOOP = new StreamForwardHandler() {
@@ -71,35 +101,70 @@ final class DefaultStreamForwardHandler implements StreamForwardHandler {
     private final StreamForwardTransport transport;
     private final long maxReadResponseBytes;
     private final StreamReadForwardMetrics metrics;
+    private final Option<LinearizableOwnerServe<OffHeapRingBuffer.RawEvent>> ownerServe;
 
     DefaultStreamForwardHandler(NodeId selfNodeId,
                                 StreamPartitionManager partitionManager,
                                 StreamForwardTransport transport,
                                 long maxReadResponseBytes,
-                                StreamReadForwardMetrics metrics) {
+                                StreamReadForwardMetrics metrics,
+                                Option<LinearizableOwnerServe<OffHeapRingBuffer.RawEvent>> ownerServe) {
         this.selfNodeId = selfNodeId;
         this.partitionManager = partitionManager;
         this.transport = transport;
         this.maxReadResponseBytes = maxReadResponseBytes;
         this.metrics = metrics;
+        this.ownerServe = ownerServe;
     }
 
     @Contract
     @Override
     @SuppressWarnings("JBCT-RET-01")
     public void onPublishForward(PublishForward request) {
-        partitionManager.publishLocal(request.streamName(), request.partition(), request.payload(), request.timestamp()).onSuccess(offset -> sendSuccessResponse(request,
-                                                                                                                                                                 offset)).onFailure(cause -> sendFailureResponse(request,
-                                                                                                                                                                                                                 cause.message()));
+        partitionManager.publishForwarded(request.streamName(),
+                                          request.partition(),
+                                          request.payload(),
+                                          request.timestamp())
+                        .onSuccess(offset -> sendSuccessResponse(request, offset))
+                        .onFailure(cause -> sendPublishFailure(request, cause));
     }
 
     @Contract
     @Override
     @SuppressWarnings("JBCT-RET-01")
     public void onReadForward(ReadForward request) {
-        partitionManager.readLocal(request.streamName(), request.partition(), request.fromOffset(), request.maxEvents()).onSuccess(events -> sendReadSuccess(request,
-                                                                                                                                                             events)).onFailure(cause -> sendReadFailure(request,
-                                                                                                                                                                                                         cause.message()));
+        serveRead(request).onSuccess(events -> sendReadSuccess(request, events))
+                 .onFailure(cause -> sendReadFailure(request,
+                                                     cause.message()));
+    }
+
+    /// A `LINEARIZABLE`-class forwarded read re-runs the shared owner-side serve pipeline
+    /// ({@link LinearizableOwnerServe#serveForwarded}) — the SAME committed-owner check + epoch fence +
+    /// no-op round + catch-up gate the local read path runs — so a forwarded linearizable read to a
+    /// deposed / not-caught-up owner is rejected (`StaleEpochRead` / `OwnerCatchupPending`) rather than
+    /// served stale. Every other forward is a replica-class read served by a plain local read. When no
+    /// owner-serve pipeline is wired (base handler / NOOP) even a linearizable forward degrades to the
+    /// local read.
+    private Promise<List<OffHeapRingBuffer.RawEvent>> serveRead(ReadForward request) {
+        return request.linearizable()
+               ? serveLinearizable(request)
+               : readLocal(request);
+    }
+
+    private Promise<List<OffHeapRingBuffer.RawEvent>> serveLinearizable(ReadForward request) {
+        return ownerServe.fold(() -> readLocal(request),
+                               serve -> serve.serveForwarded(request.streamName(),
+                                                             request.partition(),
+                                                             request.fromOffset(),
+                                                             request.maxEvents()));
+    }
+
+    private Promise<List<OffHeapRingBuffer.RawEvent>> readLocal(ReadForward request) {
+        return partitionManager.readLocal(request.streamName(),
+                                          request.partition(),
+                                          request.fromOffset(),
+                                          request.maxEvents())
+                               .async();
     }
 
     @Contract
@@ -120,6 +185,35 @@ final class DefaultStreamForwardHandler implements StreamForwardHandler {
 
         transport.send(request.sender(), response);
         log.warn("Forwarded publish failed for {}[{}] correlationId={}: {}",
+                 request.streamName(),
+                 request.partition(),
+                 request.correlationId(),
+                 errorMessage);
+    }
+
+    /// Owner-side forwarded-publish failure dispatch (write-forward race fix): a cause the owner deems
+    /// transient — its committed config not yet visible ({@link StreamError.StreamConfigNotYetVisible}) or a
+    /// capacity-deferred partition ({@link ResourceCapacityExhausted}) — is sent as a RETRYABLE response so
+    /// the forwarder backs off and retries a bounded number of times; every other cause is permanent.
+    @Contract
+    private void sendPublishFailure(PublishForward request, Cause cause) {
+        if (isRetryable(cause)) {
+            sendRetryableResponse(request, cause.message());
+        } else {
+            sendFailureResponse(request, cause.message());
+        }
+    }
+
+    private static boolean isRetryable(Cause cause) {
+        return cause instanceof StreamError.StreamConfigNotYetVisible || ResourceCapacityExhausted.isTransientCapacity(cause);
+    }
+
+    @Contract
+    private void sendRetryableResponse(PublishForward request, String errorMessage) {
+        var response = PublishForwardResponse.retryableResponse(selfNodeId, request.correlationId(), errorMessage);
+
+        transport.send(request.sender(), response);
+        log.warn("Forwarded publish retryable for {}[{}] correlationId={}: {}",
                  request.streamName(),
                  request.partition(),
                  request.correlationId(),

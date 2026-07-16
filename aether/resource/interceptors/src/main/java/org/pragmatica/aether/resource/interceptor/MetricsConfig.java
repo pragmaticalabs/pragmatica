@@ -4,10 +4,10 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.resource.interceptor;
 
+import java.util.List;
+
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Verify;
-
-import java.util.List;
 
 import io.micrometer.core.instrument.MeterRegistry;
 

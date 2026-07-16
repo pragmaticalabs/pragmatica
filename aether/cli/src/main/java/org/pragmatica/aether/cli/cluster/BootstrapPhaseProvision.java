@@ -4,6 +4,12 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.cli.cluster;
 
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.regex.Pattern;
+
 import org.pragmatica.aether.cli.cluster.ClusterBootstrapOrchestrator.BootstrapContext;
 import org.pragmatica.aether.config.cluster.CloudProviderName;
 import org.pragmatica.aether.config.cluster.NodeRole;
@@ -11,6 +17,7 @@ import org.pragmatica.aether.config.cluster.SourceProfile;
 import org.pragmatica.aether.config.cluster.SourceType;
 import org.pragmatica.aether.environment.CloudProviderSupport;
 import org.pragmatica.aether.environment.ComputeProvider;
+import org.pragmatica.aether.environment.EnvironmentError;
 import org.pragmatica.aether.environment.InstanceType;
 import org.pragmatica.aether.environment.NodeGroupConfig;
 import org.pragmatica.aether.environment.PlacementHint;
@@ -18,15 +25,10 @@ import org.pragmatica.aether.environment.ProvisionContext;
 import org.pragmatica.aether.environment.ProvisionSpec;
 import org.pragmatica.aether.environment.ProvisionedNode;
 import org.pragmatica.config.toml.TomlDocument;
+import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
-
-import java.util.ArrayList;
-import java.util.LinkedHashMap;
-import java.util.List;
-import java.util.Map;
-import java.util.regex.Pattern;
 
 import static org.pragmatica.aether.cli.cluster.BootstrapPhase.PROVISION;
 import static org.pragmatica.lang.Option.option;
@@ -219,12 +221,8 @@ sealed interface BootstrapPhaseProvision {
 
         for (var role : roleOrder) {
             var roleTable = option(source.roles().get(role));
-            var result = roleTable.flatMap(rt -> rt.count()).map(count -> provisionRoleGroup(compute,
-                                                                                             sourceName,
-                                                                                             role,
-                                                                                             count,
-                                                                                             source,
-                                                                                             clusterName));
+            var result = roleTable.flatMap(rt -> rt.count())
+                                  .map(count -> provisionRoleGroup(compute, sourceName, role, count, source, clusterName));
 
             if (result.isPresent()) {
                 var provisionResult = result.unwrap();
@@ -300,27 +298,131 @@ sealed interface BootstrapPhaseProvision {
                                                                          String clusterName,
                                                                          int nodeIndexBase) {
         logProvisionRole(sourceName, source.type(), role, Option.some(count));
+        ZoneProvisioner seam = (nodeId, globalIndex, zone) -> provisionOneInZone(compute,
+                                                                                 ctx,
+                                                                                 sourceName,
+                                                                                 source,
+                                                                                 role,
+                                                                                 clusterName,
+                                                                                 nodeId,
+                                                                                 globalIndex,
+                                                                                 zone);
+
+        return rotateZonesForRoleGroup(sourceName, role, count, nodeIndexBase, source.effectiveZones(), seam);
+    }
+
+    /// Provisions one node into a SPECIFIC zone: builds the spec without placement, applies
+    /// the candidate `zone` (empty string → provider default / no placement hint), then
+    /// provisions. Returned as a blocking `Result` because the bootstrap phase is synchronous.
+    @SuppressWarnings("JBCT-EX-01")
+    private static Result<ProvisionedNode> provisionOneInZone(ComputeProvider compute,
+                                                              BootstrapContext ctx,
+                                                              String sourceName,
+                                                              SourceProfile source,
+                                                              NodeRole role,
+                                                              String clusterName,
+                                                              String nodeId,
+                                                              int globalIndex,
+                                                              String zone) {
+        return buildCloudProvisionSpec(ctx, sourceName, source, role, nodeId, globalIndex, clusterName).map(spec -> applyZone(spec,
+                                                                                                                              zone))
+                                      .flatMap(spec -> CloudProviderSupport.provisionOne(compute, nodeId, spec).await());
+    }
+
+    /// Serial per-role-group zone rotation with a cursor shared across the group's nodes:
+    /// once a working zone is found, subsequent nodes start there (known-full zones are not
+    /// re-tried for every node). Capacity-unavailable advances the cursor; any other failure
+    /// aborts immediately (non-retryable); cursor exhaustion fails with a clear message.
+    /// An empty zone list means "single attempt, provider default" (backward-compatible).
+    @SuppressWarnings({"JBCT-EX-01", "JBCT-PAT-01"})
+    static Result<List<ProvisionedNode>> rotateZonesForRoleGroup(String sourceName,
+                                                                 NodeRole role,
+                                                                 int count,
+                                                                 int nodeIndexBase,
+                                                                 List<String> zones,
+                                                                 ZoneProvisioner seam) {
         var nodes = new ArrayList<ProvisionedNode>();
+        var cursor = new int[]{0};
 
         for (int i = 0; i < count; i++) {
             var nodeId = sourceName + "-" + role.value() + "-" + i;
             var globalIndex = nodeIndexBase + i;
-            var specResult = buildCloudProvisionSpec(ctx, sourceName, source, role, nodeId, globalIndex, clusterName);
+            var attempt = provisionWithRotation(sourceName, nodeId, globalIndex, zones, cursor, seam);
 
-            if (specResult.isFailure()) {
-                return specResult.map(_ -> List.<ProvisionedNode> of());
+            if (attempt.isFailure()) {
+                return attempt.map(_ -> List.<ProvisionedNode> of());
             }
 
-            var provisionResult = CloudProviderSupport.provisionOne(compute, nodeId, specResult.unwrap()).await();
-
-            if (provisionResult.isFailure()) {
-                return provisionResult.map(_ -> List.<ProvisionedNode> of());
-            }
-
-            var _ = provisionResult.onSuccess(nodes::add);
+            var _ = attempt.onSuccess(nodes::add);
         }
 
         return success(List.copyOf(nodes));
+    }
+
+    /// Provisions a single node, rotating from the shared cursor across the candidate zones.
+    /// Advances the cursor past capacity-exhausted zones (so the next node skips them) and
+    /// leaves it pointing at the zone that succeeded.
+    @SuppressWarnings({"JBCT-EX-01", "JBCT-PAT-01"})
+    private static Result<ProvisionedNode> provisionWithRotation(String sourceName,
+                                                                 String nodeId,
+                                                                 int globalIndex,
+                                                                 List<String> zones,
+                                                                 int[] cursor,
+                                                                 ZoneProvisioner seam) {
+        if (zones.isEmpty()) {
+            return seam.provisionInZone(nodeId, globalIndex, "");
+        }
+
+        while (cursor[0]< zones.size()) {
+            var zone = zones.get(cursor[0]);
+            var attempt = seam.provisionInZone(nodeId, globalIndex, zone);
+
+            if (attempt.isSuccess()) {
+                return attempt;
+            }
+
+            if (!isCapacityUnavailable(attempt)) {
+                return attempt;
+            }
+
+            logZoneRotation(nodeId, zone, nextZoneLabel(zones, cursor[0]));
+            cursor[0]++;
+        }
+
+        return zonesExhausted(sourceName, nodeId, zones);
+    }
+
+    private static boolean isCapacityUnavailable(Result<ProvisionedNode> attempt) {
+        return attempt.fold(BootstrapPhaseProvision::isCapacityCause, _ -> false);
+    }
+
+    private static boolean isCapacityCause(Cause cause) {
+        return cause instanceof EnvironmentError.CapacityUnavailable;
+    }
+
+    private static String nextZoneLabel(List<String> zones, int currentIndex) {
+        var next = currentIndex + 1;
+
+        return next < zones.size()
+               ? zones.get(next)
+               : "(no more zones)";
+    }
+
+    @Contract
+    private static void logZoneRotation(String nodeId, String fromZone, String toZone) {
+        System.out.printf("  WARN: zone %s capacity-unavailable for %s, retrying in %s%n", fromZone, nodeId, toZone);
+    }
+
+    private static Result<ProvisionedNode> zonesExhausted(String sourceName, String nodeId, List<String> zones) {
+        return new ZoneRotationError("all configured zones exhausted for source " + sourceName
+                                    + " (node " + nodeId
+                                    + "): " + String.join(", ", zones)).result();
+    }
+
+    record ZoneRotationError(String message) implements Cause {}
+
+    interface ZoneProvisioner {
+        Result<ProvisionedNode> provisionInZone(String nodeId, int globalIndex, String zone);
     }
 
     @SuppressWarnings("JBCT-EX-01")
@@ -334,26 +436,25 @@ sealed interface BootstrapPhaseProvision {
         var instanceType = source.roles().containsKey(role)
                            ? source.roles().get(role).instanceType().or("default")
                            : "default";
-        var zone = source.zone().or("default");
         var context = ProvisionContext.forBootstrap(clusterName, role.value(), sourceName, nodeId);
 
         return NodeConfigBuilder.compose(ctx,
                                          source,
                                          nodeIndex,
                                          Option.empty(),
-                                         Option.some(ctx.clusterSecret())).map(composedConfig -> renderUserData(ctx,
-                                                                                                                source,
-                                                                                                                role,
-                                                                                                                nodeId,
-                                                                                                                nodeIndex,
-                                                                                                                clusterName,
-                                                                                                                composedConfig))
-                                        .flatMap(userData -> ProvisionSpec.provisionSpec(InstanceType.ON_DEMAND,
-                                                                                         instanceType,
-                                                                                         role.value(),
-                                                                                         context).map(spec -> applyZone(spec,
-                                                                                                                        zone))
-                                                                                        .map(spec -> spec.withUserData(userData)));
+                                         Option.some(ctx.clusterSecret()))
+                                .map(composedConfig -> renderUserData(ctx,
+                                                                      source,
+                                                                      role,
+                                                                      nodeId,
+                                                                      nodeIndex,
+                                                                      clusterName,
+                                                                      composedConfig))
+                                .flatMap(userData -> ProvisionSpec.provisionSpec(InstanceType.ON_DEMAND,
+                                                                                 instanceType,
+                                                                                 role.value(),
+                                                                                 context)
+                                                                  .map(spec -> spec.withUserData(userData)));
     }
 
     private static String renderUserData(BootstrapContext ctx,
@@ -375,6 +476,8 @@ sealed interface BootstrapPhaseProvision {
                                        List.of());
     }
 
+    /// Applies a single candidate zone to a built spec as a placement hint. An empty or
+    /// "default" zone means "no placement" — the provider falls back to its default region.
     private static ProvisionSpec applyZone(ProvisionSpec spec, String zone) {
         return zone.isEmpty() || "default".equals(zone)
                ? spec

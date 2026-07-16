@@ -4,6 +4,11 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.worker.network;
 
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.function.Supplier;
+
 import org.pragmatica.aether.worker.governor.GovernorMesh;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.ProtocolMessage;
@@ -12,11 +17,6 @@ import org.pragmatica.dht.DHTNetwork;
 import org.pragmatica.lang.Option;
 import org.pragmatica.messaging.MessageRouter.DelegateRouter;
 import org.pragmatica.serialization.Serializer;
-
-import java.util.List;
-import java.util.Map;
-import java.util.Set;
-import java.util.function.Supplier;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;

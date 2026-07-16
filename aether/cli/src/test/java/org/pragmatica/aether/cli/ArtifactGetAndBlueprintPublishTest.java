@@ -7,7 +7,7 @@ package org.pragmatica.aether.cli;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.management.route.ManagementRoute;
-import org.pragmatica.http.routing.HttpMethod;
+import org.pragmatica.http.HttpMethod;
 
 import java.util.List;
 

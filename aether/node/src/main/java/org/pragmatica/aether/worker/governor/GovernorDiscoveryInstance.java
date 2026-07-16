@@ -4,11 +4,11 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.worker.governor;
 
-import org.pragmatica.consensus.NodeId;
-import org.pragmatica.lang.Option;
-
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+
+import org.pragmatica.consensus.NodeId;
+import org.pragmatica.lang.Option;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;

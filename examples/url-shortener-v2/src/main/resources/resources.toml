@@ -1,3 +1,6 @@
+# The `click-events` topic is referenced from both slices via @ResourceQualifier(config =
+# "CLICK_EVENTS") (shared Topic<ClickEvent> CLICK_EVENTS constant, see shared/Topics.java, #396).
+# The slice-processor resource-config validation still requires the backing topic section here.
 [click-events]
 topic_name = "click-events"
 

@@ -4,20 +4,39 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.api.routes;
 
+import java.nio.charset.StandardCharsets;
+import java.util.Base64;
+import java.util.List;
+import java.util.Map;
+import java.util.function.Supplier;
+import java.util.stream.Stream;
+
+import org.pragmatica.aether.api.ManagementApiResponses.ReplicaStateDetail;
+import org.pragmatica.aether.api.ManagementApiResponses.StreamHydrationDetail;
+import org.pragmatica.aether.api.ManagementApiResponses.StreamHydrationResponse;
+import org.pragmatica.aether.api.ManagementApiResponses.StreamReplicasResponse;
 import org.pragmatica.aether.management.route.ManagementRoute;
 import org.pragmatica.aether.node.ManageableNode;
 import org.pragmatica.aether.slice.ReadPreference;
 import org.pragmatica.aether.slice.RetentionPolicy;
 import org.pragmatica.aether.slice.StreamConfig;
+import org.pragmatica.aether.slice.kvstore.AetherKey.StreamConfigKey;
+import org.pragmatica.aether.slice.kvstore.AetherValue.StreamConfigValue;
 import org.pragmatica.aether.stream.OffHeapRingBuffer;
 import org.pragmatica.aether.stream.StreamCreateOutcome;
 import org.pragmatica.aether.stream.StreamPartitionManager;
+import org.pragmatica.aether.stream.StreamPartitionManager.HydrationSnapshot;
 import org.pragmatica.aether.stream.StreamPartitionManager.PartitionInfo;
+import org.pragmatica.aether.stream.StreamPartitionManager.StreamHydration;
 import org.pragmatica.aether.stream.StreamPartitionManager.StreamInfo;
 import org.pragmatica.aether.stream.StreamReadRouter;
+import org.pragmatica.aether.stream.StreamReadRouter.ReplicaSetView;
+import org.pragmatica.aether.stream.StreamReadRouter.ReplicaView;
+import org.pragmatica.aether.stream.StreamWriteRouter;
 import org.pragmatica.aether.stream.consumer.ConsumerGroupCoordinator;
 import org.pragmatica.aether.stream.consumer.ConsumerGroupCoordinator.ConsumerInfo;
 import org.pragmatica.aether.stream.consumer.ConsumerGroupRegistry;
+import org.pragmatica.aether.stream.replication.ReplicaSetController.Role;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.http.routing.PathParameter;
 import org.pragmatica.http.routing.QueryParameter;
@@ -29,13 +48,6 @@ import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.utils.Causes;
-
-import java.nio.charset.StandardCharsets;
-import java.util.Base64;
-import java.util.List;
-import java.util.Map;
-import java.util.function.Supplier;
-import java.util.stream.Stream;
 
 
 public final class StreamRoutes implements RouteSource {
@@ -126,10 +138,16 @@ public final class StreamRoutes implements RouteSource {
                                                    PathParameter.aInteger())
                                          .toResult(this::partitionDetails)
                                          .asJson(),
+                         ManagementRoutes.<StreamReplicasResponse> route(ManagementRoute.STREAM_REPLICAS)
+                                         .withPath(PathParameter.aString(),
+                                                   PathParameter.aInteger())
+                                         .toResult(this::replicaDetails)
+                                         .asJson(),
+                         ManagementRoutes.<StreamHydrationResponse> route(ManagementRoute.STREAM_HYDRATION).toJson(this::streamHydration),
                          ManagementRoutes.<PublishResponse> route(ManagementRoute.STREAM_PUBLISH)
                                          .withPath(PathParameter.aString())
                                          .withBody(PublishRequest.class)
-                                         .toResult(this::publishEvent)
+                                         .to(this::publishEvent)
                                          .asJson(),
                          ManagementRoutes.<ReadEventsResponse> route(ManagementRoute.STREAM_READ)
                                          .withPath(PathParameter.aString(),
@@ -190,18 +208,95 @@ public final class StreamRoutes implements RouteSource {
                             .map(PartitionDetail::fromPartitionInfo);
     }
 
-    private Result<PublishResponse> publishEvent(String name, PublishRequest request) {
+    /// #260/#261/#333 replica-state observability handler. Assembles the partition's replica-set view
+    /// off the router's `ReplicaRegistry` + HRW owner resolver (a Leaf — pure read of already-computed
+    /// state). Always succeeds: an unknown stream/partition yields an empty replica set with
+    /// `servedByOwner=false`, which is itself the operator-meaningful answer.
+    private Result<StreamReplicasResponse> replicaDetails(String name, Integer partition) {
+        return Result.success(toReplicasResponse(streamReadRouter().replicaSnapshot(name, partition)));
+    }
+
+    private static StreamReplicasResponse toReplicasResponse(ReplicaSetView view) {
+        return new StreamReplicasResponse(view.streamName(),
+                                          view.partition(),
+                                          view.ownerNodeId().or(""),
+                                          view.servedByOwner(),
+                                          view.ownerHeadOffset(),
+                                          view.earliestRetainedOffset(),
+                                          view.replicas().stream().map(StreamRoutes::toReplicaStateDetail).toList());
+    }
+
+    private static ReplicaStateDetail toReplicaStateDetail(ReplicaView replica) {
+        return new ReplicaStateDetail(replica.nodeId(), replica.state(), replica.confirmedOffset(), replica.hrwOwner());
+    }
+
+    /// #265 increment 0 per-node hydration snapshot handler (a Leaf — pure read of already-computed
+    /// state off the local `StreamPartitionManager`). Always succeeds; an empty cluster yields an empty
+    /// `streams` list with the node's live budget totals, itself the operator-meaningful answer.
+    private StreamHydrationResponse streamHydration() {
+        return toHydrationResponse(streamManager().hydrationSnapshot());
+    }
+
+    private static StreamHydrationResponse toHydrationResponse(HydrationSnapshot snapshot) {
+        return new StreamHydrationResponse(snapshot.totalAllocatedBytes(),
+                                           snapshot.maxTotalBytes(),
+                                           snapshot.overBudget(),
+                                           snapshot.deferredPartitions(),
+                                           snapshot.perStreamCeiling(),
+                                           snapshot.clusterAggregateGuard(),
+                                           snapshot.currentAggregatePartitionSlots(),
+                                           snapshot.aggregateHeadroom(),
+                                           snapshot.configOverCeilingStreams(),
+                                           snapshot.releaseCandidates(),
+                                           snapshot.releasedPartitionsSinceBoot(),
+                                           snapshot.materializeQueueDepth(),
+                                           snapshot.streams().stream().map(StreamRoutes::toHydrationDetail).toList());
+    }
+
+    private static StreamHydrationDetail toHydrationDetail(StreamHydration stream) {
+        var roles = stream.roleCounts();
+
+        return new StreamHydrationDetail(stream.name(),
+                                         stream.partitionsDeclared(),
+                                         stream.ringsMaterialized(),
+                                         stream.partitionsDeferred(),
+                                         stream.floorBytesAllocated(),
+                                         stream.overCeiling(),
+                                         roleCount(roles, Role.OWNER),
+                                         roleCount(roles, Role.REPLICA),
+                                         roleCount(roles, Role.NONE));
+    }
+
+    private static int roleCount(Map<Role, Long> roles, Role role) {
+        return roles.getOrDefault(role, 0L)
+                    .intValue();
+    }
+
+    private Promise<PublishResponse> publishEvent(String name, PublishRequest request) {
         return publishToPartition(name, request);
     }
 
-    private Result<PublishResponse> publishToPartition(String name, PublishRequest request) {
+    /// Publish to partition 0 (single-partition Management-API scope). When the stream's
+    /// `min-sync-replicas > 1`, the response resolves only after the local write AND
+    /// `minSyncReplicas - 1` distinct non-self replica acks land; a replication failure propagates as
+    /// an error response. `min-sync-replicas <= 1` resolves on the local write (owner-only/eventual).
+    private Promise<PublishResponse> publishToPartition(String name, PublishRequest request) {
         var payload = request.data().getBytes(StandardCharsets.UTF_8);
 
-        return ensureStreamExists(name).flatMap(_ -> streamManager().publishLocal(name,
-                                                                                  0,
-                                                                                  payload,
-                                                                                  System.currentTimeMillis()))
-                                 .map(PublishResponse::new);
+        return ensureStreamExists(name).async()
+                                 .flatMap(_ -> publishAndAwaitSync(name, payload));
+    }
+
+    /// Publish to partition 0 (single-partition Management-API scope) through the owner-routing
+    /// [StreamWriteRouter]: an owner appends locally and awaits the min-sync barrier; a metadata-only
+    /// node (#265) write-forwards to the partition owner instead of failing PARTITION_NOT_LOCAL. A
+    /// replication failure propagates as an error response.
+    private Promise<PublishResponse> publishAndAwaitSync(String name, byte[] payload) {
+        return streamWriteRouter().publish(name,
+                                           0,
+                                           payload,
+                                           System.currentTimeMillis())
+                                .map(PublishResponse::new);
     }
 
     private Result<StreamCreateResponse> createStream(StreamCreateRequest request) {
@@ -231,11 +326,39 @@ public final class StreamRoutes implements RouteSource {
                                                                                                     4 * 1024 * 1024L,
                                                                                                     60 * 60 * 1000L);
 
-    private Result<Unit> ensureStreamExists(String name) {
-        return StreamCreateOutcome.tolerateAlreadyExists(streamManager().createStream(StreamConfig.streamConfig(name,
-                                                                                                                DEFAULT_PARTITIONS,
-                                                                                                                MANAGEMENT_API_RETENTION,
-                                                                                                                "latest")));
+    /// Publish auto-create guard. A stream ALREADY materialized locally carries its own committed
+    /// `StreamConfig` — an app/blueprint-declared stream keeps its `replicas` / `minSyncReplicas`
+    /// durability knobs — so the management publish path must leave it INTACT rather than fabricate and
+    /// commit a `replicas=1/min-sync=0` MANAGEMENT DEFAULT over it (which would disarm the sync barrier
+    /// — `minSyncReplicas` read as 0 — and collapse the replica set to RF=1). `streamInfo` is a LOCAL
+    /// read of the manager's already-materialized state — NO consensus round-trip on the publish hot
+    /// path. When it MISSES (a first publish racing ahead of local materialization of an app config
+    /// committed at slice activation), the absent branch still prefers the committed config from applied
+    /// KV state before falling back to the management default, so the RF is preserved across the race.
+    /// Package-visible for direct unit coverage.
+    Result<Unit> ensureStreamExists(String name) {
+        return streamManager().streamInfo(name)
+                            .map(_ -> Result.unitResult())
+                            .or(() -> materializeAbsentStream(name));
+    }
+
+    /// Absent-locally branch. The app/blueprint stream's committed `StreamConfig` (with its
+    /// `replicas` / `minSyncReplicas` durability knobs) lands in applied KV state at slice activation but
+    /// may not yet be in the manager's local materialized map when a first publish races in. Prefer that
+    /// committed config so the auto-create preserves RF; fall back to the management default only for a
+    /// genuinely management-only stream that has no committed entry.
+    private Result<Unit> materializeAbsentStream(String name) {
+        var config = nodeSupplier.get()
+                                 .kvStore()
+                                 .getTyped(StreamConfigKey.streamConfigKey(name),
+                                           StreamConfigValue.class)
+                                 .map(StreamConfigValue::config)
+                                 .or(() -> StreamConfig.streamConfig(name,
+                                                                     DEFAULT_PARTITIONS,
+                                                                     MANAGEMENT_API_RETENTION,
+                                                                     "latest"));
+
+        return StreamCreateOutcome.tolerateAlreadyExists(streamManager().createStream(config));
     }
 
     private Promise<ReadEventsResponse> readEvents(String name,
@@ -266,6 +389,7 @@ public final class StreamRoutes implements RouteSource {
         return switch (value.toUpperCase()) {
             case "ANY_REPLICA", "ANY-REPLICA" -> ReadPreference.ANY_REPLICA;
             case "NEAREST" -> ReadPreference.NEAREST;
+            case "LINEARIZABLE" -> ReadPreference.LINEARIZABLE;
             default -> ReadPreference.GOVERNOR;
         };
     }
@@ -310,5 +434,10 @@ public final class StreamRoutes implements RouteSource {
     private StreamReadRouter streamReadRouter() {
         return nodeSupplier.get()
                            .streamReadRouter();
+    }
+
+    private StreamWriteRouter streamWriteRouter() {
+        return nodeSupplier.get()
+                           .streamWriteRouter();
     }
 }

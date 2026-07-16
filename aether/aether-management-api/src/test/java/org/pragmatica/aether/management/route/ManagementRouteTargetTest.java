@@ -22,4 +22,15 @@ class ManagementRouteTargetTest {
                 .as("CLUSTER_SCALE must dispatch to the leader — CTM.onClusterConfigChanged is leader-gated")
                 .isEqualTo(RouteTarget.LEADER);
     }
+
+    @Test
+    void events_routesToAnyCoreNode_notLeaderBound() {
+        // #267: /api/events must NOT be leader-bound — a LEADER target makes ManagementServer forward
+        // to the leader and return 503 during churn/election (no leader). cluster-events is a replicated
+        // single-partition stream, so ANY core node serves it (read-forwarding to a CAUGHT_UP replica),
+        // keeping the endpoint available throughout re-election.
+        assertThat(ManagementRoute.EVENTS.target())
+                .as("EVENTS must be served from ANY core node so it stays available during leader churn")
+                .isEqualTo(RouteTarget.ANY);
+    }
 }

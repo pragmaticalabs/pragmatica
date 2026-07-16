@@ -4,15 +4,15 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.slice;
 
-import org.pragmatica.lang.Result;
-import org.pragmatica.lang.utils.Causes;
-
 import java.io.IOException;
 import java.net.URL;
 import java.net.URLClassLoader;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+
+import org.pragmatica.lang.Result;
+import org.pragmatica.lang.utils.Causes;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -49,8 +49,13 @@ public class FrameworkClassLoader extends URLClassLoader {
     }
 
     private static Result<FrameworkClassLoader> toFrameworkClassLoader(java.util.List<Path> paths, Path frameworkDir) {
-        var jarUrls = paths.stream().filter(path -> path.toString()
-                                                        .endsWith(".jar")).map(FrameworkClassLoader::toUrl).filter(Result::isSuccess).map(Result::unwrap).toArray(URL[]::new);
+        var jarUrls = paths.stream()
+                           .filter(path -> path.toString()
+                                               .endsWith(".jar"))
+                           .map(FrameworkClassLoader::toUrl)
+                           .filter(Result::isSuccess)
+                           .map(Result::unwrap)
+                           .toArray(URL[]::new);
 
         if (jarUrls.length == 0) {
             return cause("No JAR files found in framework directory: " + frameworkDir).result();

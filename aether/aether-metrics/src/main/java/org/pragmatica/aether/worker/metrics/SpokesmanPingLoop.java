@@ -4,6 +4,16 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.worker.metrics;
 
+import java.util.HashMap;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Function;
+import java.util.function.Supplier;
+
 import org.pragmatica.aether.metrics.NodeReportedState;
 import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
@@ -26,16 +36,6 @@ import org.pragmatica.lang.concurrent.CancellableTask;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.SharedScheduler;
 import org.pragmatica.messaging.MessageReceiver;
-
-import java.util.HashMap;
-import java.util.LinkedHashMap;
-import java.util.List;
-import java.util.Map;
-import java.util.Set;
-import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.atomic.AtomicReference;
-import java.util.function.Function;
-import java.util.function.Supplier;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -126,9 +126,10 @@ record ClusterSpokesmanStatusWriter(ClusterNode<KVCommand<AetherKey>> cluster) i
         var active = baseValue.withStatus(SpokesmanStatus.ACTIVE);
         var command = new KVCommand.Put<AetherKey, AetherValue>(SpokesmanKey.spokesmanKey(self), active);
 
-        cluster.apply(java.util.List.<KVCommand<AetherKey>> of(command)).onFailure(cause -> LOG.warn("Failed to write SpokesmanValue ACTIVE for {}: {}",
-                                                                                                     self,
-                                                                                                     cause.message()));
+        cluster.apply(java.util.List.<KVCommand<AetherKey>> of(command))
+               .onFailure(cause -> LOG.warn("Failed to write SpokesmanValue ACTIVE for {}: {}",
+                                            self,
+                                            cause.message()));
     }
 
     @Contract
@@ -137,9 +138,10 @@ record ClusterSpokesmanStatusWriter(ClusterNode<KVCommand<AetherKey>> cluster) i
         var failed = baseValue.withFailure(reason);
         var command = new KVCommand.Put<AetherKey, AetherValue>(SpokesmanKey.spokesmanKey(self), failed);
 
-        cluster.apply(java.util.List.<KVCommand<AetherKey>> of(command)).onFailure(cause -> LOG.warn("Failed to write SpokesmanValue FAILED for {}: {}",
-                                                                                                     self,
-                                                                                                     cause.message()));
+        cluster.apply(java.util.List.<KVCommand<AetherKey>> of(command))
+               .onFailure(cause -> LOG.warn("Failed to write SpokesmanValue FAILED for {}: {}",
+                                            self,
+                                            cause.message()));
     }
 }
 

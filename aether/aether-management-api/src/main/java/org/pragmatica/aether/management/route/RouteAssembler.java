@@ -4,11 +4,11 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.management.route;
 
-import org.pragmatica.lang.Result;
-
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
+
+import org.pragmatica.lang.Result;
 
 
 public final class RouteAssembler {

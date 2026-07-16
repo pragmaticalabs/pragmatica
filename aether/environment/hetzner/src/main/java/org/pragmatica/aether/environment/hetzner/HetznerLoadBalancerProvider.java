@@ -4,6 +4,13 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.environment.hetzner;
 
+import java.util.Collection;
+import java.util.List;
+import java.util.Set;
+import java.util.function.Predicate;
+import java.util.stream.Collectors;
+import java.util.stream.Stream;
+
 import org.pragmatica.aether.environment.LoadBalancerInfo;
 import org.pragmatica.aether.environment.LoadBalancerProvider;
 import org.pragmatica.aether.environment.LoadBalancerState;
@@ -14,13 +21,6 @@ import org.pragmatica.cloud.hetzner.api.LoadBalancer.Target;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
-
-import java.util.Collection;
-import java.util.List;
-import java.util.Set;
-import java.util.function.Predicate;
-import java.util.stream.Collectors;
-import java.util.stream.Stream;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -62,9 +62,9 @@ public record HetznerLoadBalancerProvider(HetznerClient client, long loadBalance
     }
 
     private LoadBalancerInfo toLbInfo(LoadBalancer lb) {
-        var targets = resolveCurrentIps(lb.targets()).stream().map(ip -> new LoadBalancerInfo.TargetInfo(ip,
-                                                                                                         "healthy",
-                                                                                                         1)).toList();
+        var targets = resolveCurrentIps(lb.targets()).stream()
+                                       .map(ip -> new LoadBalancerInfo.TargetInfo(ip, "healthy", 1))
+                                       .toList();
 
         return new LoadBalancerInfo(String.valueOf(loadBalancerId), lb.name(), "", "active", targets);
     }

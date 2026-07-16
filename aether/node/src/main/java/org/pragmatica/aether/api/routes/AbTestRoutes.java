@@ -4,6 +4,13 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.api.routes;
 
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.function.Supplier;
+import java.util.stream.Collectors;
+import java.util.stream.Stream;
+
 import org.pragmatica.aether.artifact.ArtifactBase;
 import org.pragmatica.aether.artifact.Version;
 import org.pragmatica.aether.management.route.ManagementRoute;
@@ -18,13 +25,6 @@ import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.utils.Causes;
-
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
-import java.util.function.Supplier;
-import java.util.stream.Collectors;
-import java.util.stream.Stream;
 
 import static org.pragmatica.aether.api.ManagementApiResponses.AbTestInfo;
 import static org.pragmatica.aether.api.ManagementApiResponses.AbTestListResponse;
@@ -194,8 +194,11 @@ public final class AbTestRoutes implements RouteSource {
     }
 
     private AbTestMetricsResponse toAbTestMetricsResponse(AbTestMetrics metrics) {
-        var variants = metrics.variantMetrics().entrySet().stream().collect(Collectors.toMap(Map.Entry::getKey,
-                                                                                             entry -> toVariantMetrics(entry.getValue())));
+        var variants = metrics.variantMetrics()
+                              .entrySet()
+                              .stream()
+                              .collect(Collectors.toMap(Map.Entry::getKey,
+                                                        entry -> toVariantMetrics(entry.getValue())));
 
         return new AbTestMetricsResponse(metrics.testId(), variants, metrics.collectedAt());
     }

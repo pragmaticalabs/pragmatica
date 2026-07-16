@@ -4,6 +4,13 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.deployment.node.fsm;
 
+import java.util.List;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.LongSupplier;
+import java.util.function.Supplier;
+
 import org.pragmatica.aether.deployment.config.ConfigNotificationManager;
 import org.pragmatica.aether.deployment.drain.DrainReason;
 import org.pragmatica.aether.deployment.node.NodeDeploymentManager.SuspendedSlice;
@@ -28,13 +35,6 @@ import org.pragmatica.messaging.MessageRouter;
 import org.pragmatica.net.tcp.NodeAddress;
 import org.pragmatica.serialization.SliceCodec;
 import org.pragmatica.statemachine.Fsm;
-
-import java.util.List;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.atomic.AtomicLong;
-import java.util.concurrent.atomic.AtomicReference;
-import java.util.function.LongSupplier;
-import java.util.function.Supplier;
 
 
 public final class NodeDeploymentContext {
@@ -314,6 +314,10 @@ public final class NodeDeploymentContext {
 
     public boolean isActive() {
         return fsm.current() instanceof NodeDeploymentState.Active;
+    }
+
+    public boolean isDormant() {
+        return fsm.current() instanceof NodeDeploymentState.Dormant;
     }
 
     public Supplier<Option<Epoch>> currentEpochSupplier() {

@@ -4,6 +4,10 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.cli.cluster;
 
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
+
 import org.pragmatica.aether.environment.ComputeProvider;
 import org.pragmatica.aether.environment.InstanceId;
 import org.pragmatica.cloud.hetzner.HetznerClient;
@@ -13,10 +17,6 @@ import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.Functions.Fn1;
-
-import java.util.ArrayList;
-import java.util.Collections;
-import java.util.List;
 
 
 @SuppressWarnings({"JBCT-SEQ-01", "JBCT-UTIL-02"})
@@ -61,8 +61,9 @@ sealed interface BootstrapCleanup {
 
     @Contract
     private static void logResourceResult(Result<Unit> result, CreatedResource resource) {
-        var _ = result.onSuccess(_ -> System.out.println("  Cleaned up " + resource.description())).onFailure(cause -> System.err.println("  WARN: Failed to cleanup " + resource.description()
-                                                                                                                                         + ": " + cause.message()));
+        var _ = result.onSuccess(_ -> System.out.println("  Cleaned up " + resource.description()))
+                      .onFailure(cause -> System.err.println("  WARN: Failed to cleanup " + resource.description()
+                                                            + ": " + cause.message()));
     }
 
     private static Result<Unit> finishCleanup(BootstrapState state, List<String> failures) {

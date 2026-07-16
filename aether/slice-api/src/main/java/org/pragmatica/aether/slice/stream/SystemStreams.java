@@ -4,10 +4,10 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.slice.stream;
 
+import java.util.List;
+
 import org.pragmatica.aether.slice.resource.ResourceAddress;
 import org.pragmatica.aether.slice.resource.ResourceVersion;
-
-import java.util.List;
 
 
 /// Catalog of framework-internal stream addresses registered by the cluster at bootstrap.
@@ -19,7 +19,8 @@ public final class SystemStreams {
     public static final ResourceAddress CLUSTER_EVENTS = ResourceAddress.systemResource("cluster-events",
                                                                                         ResourceVersion.resourceVersion(1,
                                                                                                                         0,
-                                                                                                                        0).unwrap()).unwrap();
+                                                                                                                        0).unwrap())
+                                                                        .unwrap();
 
     /// All system stream addresses that must exist at cluster bootstrap.
     public static final List<ResourceAddress> ALL = List.of(CLUSTER_EVENTS);

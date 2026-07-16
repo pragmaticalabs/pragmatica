@@ -4,6 +4,28 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.node;
 
+import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.Base64;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Collection;
+import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.Executor;
+import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.BooleanSupplier;
+import java.util.function.Consumer;
+import java.util.function.Function;
+import java.util.function.IntSupplier;
+import java.util.function.Predicate;
+import java.util.function.Supplier;
+import java.util.stream.Collectors;
+import java.net.InetSocketAddress;
+
 import org.pragmatica.aether.api.AlertManager;
 import org.pragmatica.aether.api.ClusterEvent;
 import org.pragmatica.aether.api.ClusterEventAggregator;
@@ -18,6 +40,8 @@ import org.pragmatica.config.DynamicConfigurationProvider;
 import org.pragmatica.config.LayeredConfigProvider;
 import org.pragmatica.config.NamedConfigProvider;
 import org.pragmatica.config.ProviderBasedConfigService;
+import org.pragmatica.config.toml.TomlDocument;
+import org.pragmatica.config.toml.TomlParser;
 import org.pragmatica.aether.controller.ClusterController;
 import org.pragmatica.aether.controller.ControlLoop;
 import org.pragmatica.aether.controller.DecisionTreeController;
@@ -43,6 +67,7 @@ import org.pragmatica.aether.deployment.membership.ntt.DrainProcedure;
 import org.pragmatica.aether.deployment.membership.ntt.LeaderReconciler;
 import org.pragmatica.aether.deployment.membership.ntt.QuorumCoConfirmation;
 import org.pragmatica.aether.deployment.membership.ntt.QuorumLossDetector;
+import org.pragmatica.aether.deployment.membership.ntt.QuorumLossSnapshot;
 import org.pragmatica.aether.deployment.membership.ntt.PresenceSampler;
 import org.pragmatica.aether.deployment.membership.ntt.QuorumLossIntent;
 import org.pragmatica.aether.deployment.membership.phase.ClusterPhaseView;
@@ -52,10 +77,11 @@ import org.pragmatica.aether.deployment.schema.SchemaOrchestratorService;
 import org.pragmatica.aether.deployment.schema.SchemaPolicy;
 import org.pragmatica.aether.resource.db.DatasourceConnectionProvider;
 import org.pragmatica.aether.slice.delegation.TaskGroup;
-import org.pragmatica.aether.slice.delegation.TaskAssignmentError;
 import org.pragmatica.aether.deployment.loadbalancer.LoadBalancerManager;
 import org.pragmatica.aether.deployment.node.NodeDeploymentManager;
 import org.pragmatica.aether.dht.AetherMaps;
+import org.pragmatica.aether.dht.HighWaterOwnerEpochGate;
+import org.pragmatica.aether.dht.KvOwnerEpochSource;
 import org.pragmatica.aether.endpoint.EndpointRegistry;
 import org.pragmatica.aether.endpoint.TopicSubscriptionRegistry;
 import org.pragmatica.aether.http.AppHttpServer;
@@ -68,11 +94,11 @@ import org.pragmatica.aether.resource.ResourceProvider;
 import org.pragmatica.aether.resource.SpiResourceProvider;
 import org.pragmatica.aether.resource.artifact.ArtifactStore;
 import org.pragmatica.aether.resource.artifact.MavenProtocolHandler;
-import org.pragmatica.aether.api.ObservabilityDepthRegistry;
+import org.pragmatica.aether.api.ObservabilityBaseline;
+import org.pragmatica.aether.api.ObservabilityConfigRegistry;
 import org.pragmatica.aether.invoke.AdaptiveSampler;
 import org.pragmatica.aether.invoke.InvocationHandler;
 import org.pragmatica.aether.invoke.InvocationTraceStore;
-import org.pragmatica.aether.invoke.ObservabilityInterceptor;
 import org.pragmatica.aether.invoke.InvocationMessage;
 import org.pragmatica.aether.invoke.ScheduledTaskManager;
 import org.pragmatica.aether.invoke.ScheduledTaskRegistry;
@@ -89,6 +115,7 @@ import org.pragmatica.aether.metrics.ClusterSyncScheduler;
 import org.pragmatica.aether.metrics.DrainCommandRegistry;
 import org.pragmatica.aether.metrics.MinuteAggregator;
 import org.pragmatica.aether.metrics.PeriodicObservationConfig;
+import org.pragmatica.aether.slice.fence.OwnershipEpochHighWater;
 import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.slice.generation.HealthSignal;
 import org.pragmatica.aether.slice.generation.HealthSignalSink;
@@ -104,15 +131,20 @@ import org.pragmatica.aether.metrics.network.NetworkMetricsHandler;
 import org.pragmatica.aether.repository.RepositoryFactory;
 import org.pragmatica.aether.slice.*;
 import org.pragmatica.aether.storage.DelegatedStorageAdapter;
-import org.pragmatica.aether.storage.DhtStorageTier;
-import org.pragmatica.storage.MemoryTier;
 import org.pragmatica.storage.StorageInstance;
 import org.pragmatica.aether.slice.StreamPublisher;
 import org.pragmatica.aether.stream.DefaultStreamPublisher;
 import org.pragmatica.aether.stream.StreamError;
 import org.pragmatica.aether.slice.stream.StreamNamespacesService;
+import org.pragmatica.aether.stream.KvStreamOwnerEpochSource;
+import org.pragmatica.aether.stream.KvCommittedStreamOwnerSource;
+import org.pragmatica.aether.stream.CommittedStreamOwnerSource;
+import org.pragmatica.aether.stream.LinearizableBarrier;
+import org.pragmatica.aether.stream.LinearizableOwnerServe;
+import org.pragmatica.aether.stream.OffHeapRingBuffer;
 import org.pragmatica.aether.stream.StreamPartitionManager;
 import org.pragmatica.aether.stream.StreamReadRouter;
+import org.pragmatica.aether.stream.StreamWriteRouter;
 import org.pragmatica.aether.stream.consumer.ConsumerGroupCoordinator;
 import org.pragmatica.aether.stream.consumer.ConsumerGroupRegistry;
 import org.pragmatica.aether.stream.StreamPublisherFactory;
@@ -125,22 +157,30 @@ import org.pragmatica.aether.stream.forward.StreamReadForwardMetrics;
 import org.pragmatica.aether.stream.replication.GovernorFailoverHandler;
 import org.pragmatica.aether.stream.replication.ForwardCatchupTransport;
 import org.pragmatica.aether.stream.replication.PartitionBackfill;
+import org.pragmatica.aether.stream.replication.PartitionKey;
 import org.pragmatica.aether.stream.replication.ReplicaRegistry;
 import org.pragmatica.aether.stream.replication.ReplicaSetController;
+import org.pragmatica.aether.stream.replication.StreamPartitionOwnershipWriter;
 import org.pragmatica.aether.stream.replication.ReplicaWatermarkProbe;
 import org.pragmatica.aether.stream.replication.ReplicationManager;
 import org.pragmatica.aether.stream.replication.ReplicationMessage;
+import org.pragmatica.aether.stream.replication.ReplicationState;
 import org.pragmatica.aether.stream.replication.ReplicationReceiveHandler;
 import org.pragmatica.aether.stream.replication.SelfWatermark;
 import org.pragmatica.aether.stream.replication.StreamPartitionRecovery;
 import org.pragmatica.aether.stream.replication.WatermarkTracker;
-import org.pragmatica.aether.stream.EvictionListener;
+import org.pragmatica.aether.stream.segment.CursorStore;
 import org.pragmatica.aether.stream.segment.RetentionEnforcer;
 import org.pragmatica.aether.stream.segment.SegmentIndex;
 import org.pragmatica.aether.stream.segment.SegmentReader;
+import org.pragmatica.aether.stream.segment.SegmentSealer;
+import org.pragmatica.aether.stream.segment.StorageSegmentSink;
+import org.pragmatica.aether.stream.segment.TieredStreamReader;
 import org.pragmatica.aether.slice.dependency.SliceRegistry;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.StreamPartitionOwnershipKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.StreamPartitionOwnershipValue;
 import org.pragmatica.aether.slice.repository.Repository;
 import org.pragmatica.aether.ttm.AdaptiveDecisionTree;
 import org.pragmatica.aether.ttm.TTMManager;
@@ -148,14 +188,19 @@ import org.pragmatica.aether.update.AbTestManager;
 import org.pragmatica.aether.update.DeploymentManager;
 import org.pragmatica.aether.worker.bootstrap.WorkerBootstrap;
 import org.pragmatica.aether.worker.deployment.WorkerDeploymentManager;
+import org.pragmatica.aether.worker.governor.CommunityMembershipFilter;
 import org.pragmatica.aether.worker.governor.DecisionRelay;
+import org.pragmatica.aether.worker.governor.GovernorAnnouncer;
 import org.pragmatica.aether.worker.governor.GovernorMesh;
 import org.pragmatica.aether.worker.group.GroupMembershipTracker;
 import org.pragmatica.aether.worker.metrics.CommunityMetricsSnapshot;
-import org.pragmatica.aether.worker.metrics.CommunityScalingRequest;
+import org.pragmatica.aether.worker.metrics.WorkerMetricsAggregator;
 import org.pragmatica.aether.worker.mutation.MutationForwarder;
+import org.pragmatica.aether.config.AppHttpConfig;
 import org.pragmatica.aether.config.BackupConfig;
 import org.pragmatica.aether.config.BuildInfo;
+import org.pragmatica.aether.config.ReadLinearizationMode;
+import org.pragmatica.aether.config.StorageConfig;
 import org.pragmatica.aether.config.WorkerConfig;
 import org.pragmatica.cluster.metrics.DeploymentMetricsMessage;
 import org.pragmatica.cluster.metrics.ClusterSyncMessage;
@@ -182,6 +227,7 @@ import org.pragmatica.consensus.net.NodeInfo;
 import org.pragmatica.net.tcp.NodeAddress;
 import org.pragmatica.consensus.topology.GenerationSnapshotSource;
 import org.pragmatica.consensus.topology.TopologyObserver;
+import org.pragmatica.http.routing.RouteMountMode;
 import org.pragmatica.consensus.topology.TopologyConfig;
 import org.pragmatica.consensus.topology.TopologyManagementMessage;
 import org.pragmatica.consensus.topology.ClusterStateNotification;
@@ -196,6 +242,7 @@ import org.pragmatica.dht.DHTMessage;
 import org.pragmatica.dht.DHTNetwork;
 import org.pragmatica.dht.DHTNode;
 import org.pragmatica.dht.DHTRebalancer;
+import org.pragmatica.dht.DeparturePushObserver;
 import org.pragmatica.dht.DHTTopologyListener;
 import org.pragmatica.dht.DistributedDHTClient;
 import org.pragmatica.dht.storage.MemoryStorageEngine;
@@ -207,10 +254,12 @@ import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Functions.Fn2;
+import org.pragmatica.lang.Lazy;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.io.FileOps;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.aether.environment.ComputeProvider;
 import org.pragmatica.aether.environment.DiscoveryProvider;
@@ -227,8 +276,6 @@ import org.pragmatica.net.tcp.QuicSslContextFactory;
 import org.pragmatica.net.tcp.Server;
 import org.pragmatica.net.tcp.security.CertificateBundle;
 import org.pragmatica.net.tcp.security.CertificateRenewalScheduler;
-import org.pragmatica.swim.AesGcmGossipEncryptor;
-import org.pragmatica.swim.GossipEncryptor;
 import org.pragmatica.swim.RotatingGossipEncryptor;
 import org.pragmatica.swim.SwimConfig;
 import org.pragmatica.swim.SwimHealth;
@@ -246,26 +293,6 @@ import org.pragmatica.cluster.state.kvstore.KVNotificationRouter;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 
-import java.nio.file.Path;
-import java.util.ArrayList;
-import java.util.Base64;
-import java.util.HashMap;
-import java.util.HashSet;
-import java.util.List;
-import java.util.Collection;
-import java.util.Map;
-import java.util.Set;
-import java.util.concurrent.Executors;
-import java.util.concurrent.atomic.AtomicLong;
-import java.util.concurrent.atomic.AtomicReference;
-import java.util.function.BooleanSupplier;
-import java.util.function.Consumer;
-import java.util.function.IntSupplier;
-import java.util.function.Predicate;
-import java.util.function.Supplier;
-import java.util.stream.Collectors;
-import java.net.InetSocketAddress;
-
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -278,6 +305,11 @@ public interface AetherNode extends ManageableNode {
     /// aggregator requests and must stay >= that maxCount so a single fetch covers the full retained
     /// window (the B5a/#239 fix). The default retention maxCount equals this value.
     long CLUSTER_EVENTS_MAX_RETAINED = org.pragmatica.aether.api.ClusterEventAggregator.MAX_RETAINED_EVENTS;
+    /// #336 — system property carrying the absolute path of the config file this node loaded
+    /// (published by [org.pragmatica.aether.Main] where it resolves `--config=`). The CTM
+    /// placeholder-resolution path reads it via [#parseOwnResolvedConfig] to source the leader's own
+    /// resolved overlay. Unset on the forge / test paths, which then degrade to none() gracefully.
+    String CONFIG_PATH_PROPERTY = "aether.config.path";
     String VERSION = BuildInfo.version();
     NodeId self();
     Promise<Unit> start();
@@ -299,7 +331,6 @@ public interface AetherNode extends ManageableNode {
     AbTestManager abTestManager();
     EndpointRegistry endpointRegistry();
     AlertManager alertManager();
-    ObservabilityDepthRegistry observabilityDepthRegistry();
     InvocationTraceStore traceStore();
     LogLevelRegistry logLevelRegistry();
     Option<DynamicConfigManager> dynamicConfigManager();
@@ -382,7 +413,13 @@ public interface AetherNode extends ManageableNode {
         Serializer serializer = nodeCodec;
         Deserializer deserializer = nodeCodec;
         var kvStore = new KVStore<AetherKey, AetherValue>(delegateRouter, serializer, deserializer);
-        var dhtStorage = MemoryStorageEngine.memoryStorageEngine();
+        // #345 1c: the per-ownership-domain epoch high-water (data-plane half of the ownership
+        // fence) must exist BEFORE the DHT storage engine, because the engine's owner-epoch gate is
+        // backed by it. The SAME instance is threaded into assembleNode for its KV-router
+        // notification wiring and the ManageableNode accessor — one high-water per node.
+        var ownershipEpochHighWater = OwnershipEpochHighWater.ownershipEpochHighWater(kvStore);
+        var dhtStorage = MemoryStorageEngine.memoryStorageEngine(HighWaterOwnerEpochGate.highWaterOwnerEpochGate(ownershipEpochHighWater,
+                                                                                                                 BootstrapModule.CORE_PARTITION_ID));
         var dhtRing = ConsistentHashRing.<NodeId> consistentHashRing();
 
         dhtRing.addNode(config.self());
@@ -505,6 +542,7 @@ public interface AetherNode extends ManageableNode {
                                                              deserializer,
                                                              nodeCodec,
                                                              dhtNode,
+                                                             ownershipEpochHighWater,
                                                              leaderTerm,
                                                              hlcClock,
                                                              snapshotSource,
@@ -573,6 +611,16 @@ public interface AetherNode extends ManageableNode {
         Option.option(quorumLossDetectorRef.get()).onPresent(detector -> detector.onMemberCountChanged(memberCount));
     }
 
+    /// True iff this transition crosses the exact-`Member` boundary — i.e. the strict core member
+    /// count ([`MembershipFsm#strictCoreMemberCount`], the quorum-loss numerator) changes. Feeding the
+    /// detector on this edge (NOT only on the 15s presence down-hysteresis / DEAD edge) is what lets a
+    /// node recognize quorum loss promptly when several cores enter SUSPECT at once — the design's own
+    /// safety argument (propagateMemberCount javadoc) already assumes this feed; the splitTimeout window
+    /// + refutation-cancel + Fix-C co-confirmation guard against a transient SUSPECT flap.
+    private static boolean crossesMemberBoundary(MembershipTransitionRecord record) {
+        return "Member".equals(record.fromState()) != "Member".equals(record.toState());
+    }
+
     /// Build the Fix C co-confirmation snapshot at the detector's firing instant. The counted
     /// denominator is the FSM's role-scoped MEMBER+SUSPECT set ([`MembershipFsm#coreCountedMembers`],
     /// includes self); the STUCK set is the counted members ABSENT from the strict MEMBER-only count
@@ -634,18 +682,87 @@ public interface AetherNode extends ManageableNode {
     }
 
     long DEFAULT_STREAM_RETENTION_MS = 24 * 60 * 60 * 1000L;
-    long DEFAULT_STREAM_MEMORY_BYTES = 16 * 1024 * 1024L;
     /// A4 catch-up: number of events pulled per forward-read page during partition backfill.
     int STREAM_CATCHUP_BATCH_SIZE = 256;
+    /// A4 periodic backfill re-drive interval. `reconcilePartition` fires `onBecameReplica → backfill`
+    /// ONCE per reconcile edge (no built-in retry), so a cold-start replica that observed NO_SOURCE on
+    /// its first attempt would never re-attempt and stay SYNCING forever. This periodic re-drive
+    /// re-invokes backfill for every partition where self is a registered, not-yet-CAUGHT_UP replica, so
+    /// the owner-immediate / bounded-wait cold-start promotion is actually reached and non-owners
+    /// re-attempt once the owner becomes CAUGHT_UP. Kept well under the backfill source-wait bound (20s)
+    /// so several attempts occur within one wait window; CAUGHT_UP partitions are skipped (no-op).
+    TimeSpan STREAM_BACKFILL_REDRIVE_INTERVAL = TimeSpan.timeSpan(5).seconds();
+    /// Cadence for the metadata snapshot driver (A3b). Drives `SnapshotManager.maybeSnapshot()` across
+    /// every storage setup; the manager self-gates on its mutation-count / time-interval trigger, so
+    /// this tick only needs to be frequent enough to bound the post-trigger snapshot latency.
+    TimeSpan METADATA_SNAPSHOT_INTERVAL = TimeSpan.timeSpan(10).seconds();
+    /// Cadence for the WAL disk-reclamation driver (streaming-persistence W5). Periodically truncates
+    /// every partition's write-ahead log up to its DURABLE last-sealed offset, dropping records already
+    /// persisted in cold segments so the WAL does not grow unbounded. `truncate` is threshold-lazy
+    /// (cheap when nothing new has sealed), so a modest 30s tick keeps the WAL bounded without contending
+    /// with the publish fsync path.
+    TimeSpan WAL_TRUNCATE_INTERVAL = TimeSpan.timeSpan(30).seconds();
 
-    private static StorageInstance createStreamStorage(Option<DHTClient> dhtClient) {
-        var memoryTier = MemoryTier.memoryTier(DEFAULT_STREAM_MEMORY_BYTES);
+    /// Cadence for the NodeDeploymentManager activation level-heal. On a cold-start
+    /// `restart_all_nodes` the single CAS-latched `ClusterStateNotification.ACTIVE` edge can be
+    /// dropped while the message-router delegate is being rebuilt, leaving NDM stuck in `Dormant`
+    /// (never runs `Active.onEntry` → self-ready → `subsystemsReady`) so the node reports `SYNCING`
+    /// forever despite live consensus-active. A periodic tick gated on `clusterNode.isActive()`
+    /// re-dispatches `QuorumEstablished` only while still Dormant; matches the 5s reconcile cadence
+    /// and is a no-op on every healthy node thereafter.
+    TimeSpan NDM_ACTIVATION_RECONCILE_INTERVAL = TimeSpan.timeSpan(5).seconds();
 
-        return dhtClient.map(client -> DhtStorageTier.dhtStorageTier(client, "stream-segments"))
-                        .map(dht -> StorageInstance.storageInstance("streams",
-                                                                    List.of(memoryTier, dht)))
-                        .or(StorageInstance.storageInstance("streams",
-                                                            List.of(memoryTier)));
+    /// Cadence for the #265 increment-5 reshuffle-lifecycle reconcile
+    /// ({@link StreamPartitionManager#reconcileReshuffle}): frees reshuffle-concurrency slots for
+    /// finished/lost partitions, evaluates release candidates (role-loss debounce → catch-up + owner gate →
+    /// release), and drains the materialization queue. Matches the 5s reconcile cadence, so the
+    /// {@code RELEASE_DEBOUNCE_TICKS = 2} flap-debounce window is ≈10s wall-clock (spec §5.4). A no-op tick is
+    /// cheap (a sweep of the materialized partitions + empty queues) so a steady-state node pays almost nothing.
+    TimeSpan STREAM_RESHUFFLE_RECONCILE_INTERVAL = TimeSpan.timeSpan(5).seconds();
+
+    /// Per-node, restart-stable data dir for the disk-backed stream storage. Derived as a sibling of
+    /// the node's artifact disk path (the artifacts/content convention, `StorageConfig.diskPath()`)
+    /// suffixed with the node id, so that (a) it lives under the same durable `${data.dir}` mount in
+    /// production, (b) it is distinct per node — critical for a multi-node `EmberCluster` running in a
+    /// single JVM, which would otherwise share one segment dir and collide on the `latest` snapshot
+    /// link and content-addressed blocks — and (c) it is stable across a same-node restart because the
+    /// node id is stable, so sealed segments are reclaimed on reboot.
+    private static Path streamDataDir(AetherNodeConfig config) {
+        var artifactsConfig = Option.option(config.storageConfig().get("artifacts")).or(StorageConfig.storageConfig());
+
+        return Path.of(artifactsConfig.diskPath())
+                   .resolveSibling("stream-segments")
+                   .resolve(config.self().id());
+    }
+
+    /// The per-node stream WAL directory (`<streamDataDir>/wal`) when it is writable, else `none()`.
+    /// Probing with a create mirrors the disk-tier degradation: on a read-only mount (e.g. Forge's
+    /// `/data`) the WAL is disabled and streaming runs non-crash-durable (in-memory tail only), so the
+    /// optional-WAL path leaves existing in-memory deployments and tests unchanged.
+    private static Option<Path> resolveStreamWalDir(AetherNodeConfig config) {
+        var walDir = streamDataDir(config).resolve("wal");
+
+        return FileOps.createDirectories(walDir).fold(cause -> walDisabled(walDir, cause), _ -> Option.some(walDir));
+    }
+
+    private static Option<Path> walDisabled(Path walDir, Cause cause) {
+        LOG.warn("Stream WAL disabled ({} not writable): {} — streaming runs non-crash-durable (in-memory tail)",
+                 walDir,
+                 cause.message());
+
+        return Option.none();
+    }
+
+    /// Fold the `streams` StorageSetup into the (immutable) map produced by `StorageFactory.createAll`
+    /// so that downstream consumers — storage-status routes today, the snapshot scheduler later —
+    /// treat stream storage uniformly with artifacts/content.
+    private static Map<String, StorageFactory.StorageSetup> withStreamSetup(Map<String, StorageFactory.StorageSetup> base,
+                                                                            StorageFactory.StorageSetup streamSetup) {
+        var merged = new HashMap<>(base);
+
+        merged.put(streamSetup.name(), streamSetup);
+
+        return Map.copyOf(merged);
     }
 
     /// Build a named daemon thread for a single-thread executor's `ThreadFactory`. Extracted so the
@@ -659,7 +776,167 @@ public interface AetherNode extends ManageableNode {
         return thread;
     }
 
-    /// Cold-start backfill probe: resolve a peer replica's CURRENT local watermark (highest held offset,
+    /// Periodic backfill re-drive (A4): for every partition where self is a registered, not-yet-CAUGHT_UP
+    /// replica — PLUS a CAUGHT_UP non-owner replica still stale against the HRW owner (#333 write-idle
+    /// residual) — re-submit `backfill` onto the dedicated backfill executor. Idempotent and bounded —
+    /// {@link PartitionBackfill#redriveCandidates} enumerates the registry (owner-aware, offset-quiesced),
+    /// so once everything has genuinely caught up this is a no-op. Runs off the periodic scheduler tick;
+    /// backfill itself stays on `backfillExecutor` (its dedicated thread), so no competing thread pool is
+    /// introduced.
+    @Contract
+    private static void redriveIncompleteBackfills(PartitionBackfill backfill, Executor backfillExecutor) {
+        backfill.redriveCandidates()
+                .forEach(key -> backfillExecutor.execute(() -> backfill.backfill(key.streamName(),
+                                                                                 key.partition())));
+    }
+
+    /// #265 increment 2 materialize-on-reconcile hook. Fired (on the backfill executor) behind the
+    /// controller's `onBecameReplica` seam — which triggers the instant `self` joins a partition's replica
+    /// set (owner-inclusive: the HRW owner is index 0 of the owner-first replica set). It MATERIALIZES the
+    /// held partition's ring FIRST, then runs the existing backfill. This resolves the spec §5.4
+    /// defer-then-materialize case: a config committed before placement was known is hydrated metadata-only,
+    /// and the ring is built here the moment the role resolves to OWNER/REPLICA. Materialize is idempotent
+    /// (a ring built at hydrate time is a no-op) and runs before backfill so the recovered events have a
+    /// ring to land in; a materialize failure is logged and backfill still attempts (the owner-append
+    /// safety valve is the backstop).
+    @Contract
+    private static void materializeThenBackfill(StreamPartitionManager manager,
+                                                PartitionBackfill backfill,
+                                                String streamName,
+                                                int partition) {
+        manager.materializePartition(streamName, partition)
+               .onFailure(cause -> LOG.warn("Stream partition {}[{}] materialize-on-reconcile failed: {} — backfill will still attempt",
+                                            streamName,
+                                            partition,
+                                            cause.message()));
+        backfill.backfill(streamName, partition);
+    }
+
+    /// #445 single-sourced placement view: the backfill orchestrator ranks its owner/member view over the
+    /// SAME reconciled snapshot [ReplicaSetController#roleFor] / [ReplicaSetController#ownerFor] and the
+    /// registry reconcile use ([ReplicaSetController#reconciledMembers]) — NOT an independent LIVE
+    /// `observer().coreNodes()` read. This removes the live-vs-reconciled split that let a node the owner
+    /// registers as a replica self-classify NONE — never materializing its ring, bouncing every apply
+    /// `PARTITION_NOT_LOCAL`, leaving RF≥2 structurally unreachable. Before the controller is bound / its
+    /// first reconcile it falls back to the live topology observer, the SAME pre-reconcile fallback
+    /// `roleFor` uses, so cold-start owner-immediate self-promotion is unaffected.
+    private static List<NodeId> streamPlacementMembers(AtomicReference<ReplicaSetController> controllerRef,
+                                                       ClusterTopologyManager topologyManager) {
+        return Option.option(controllerRef.get())
+                     .map(ReplicaSetController::reconciledMembers)
+                     .or(() -> List.copyOf(topologyManager.observer().coreNodes()));
+    }
+
+    /// #265 increment 5: the live replica catch-up view for the release gate + slot completion, read from the
+    /// [ReplicaRegistry]. `caughtUpReplicaCount` is the number of OTHER (non-self) replicas of the current
+    /// registered replica set that have reached CAUGHT_UP (the release catch-up gate compares it against the
+    /// effective, clamped RF); `selfCaughtUp` is whether THIS node has finished backfilling the partition (so
+    /// its reshuffle slot may free). Self is excluded from the count so the "≥ RF caught-up remain AFTER I
+    /// release" invariant holds regardless of whether the controller has already unregistered self.
+    private static StreamPartitionManager.ReplicaCatchupSource.CatchupView streamCatchupView(ReplicaRegistry registry,
+                                                                                             NodeId self,
+                                                                                             String stream,
+                                                                                             int partition) {
+        var replicas = registry.replicasFor(stream, partition);
+        var caughtUpOthers = (int) replicas.stream()
+                                           .filter(descriptor -> descriptor.state() == ReplicationState.CAUGHT_UP && !descriptor.nodeId()
+                                                                                                                                .equals(self))
+                                           .count();
+        var selfCaughtUp = replicas.stream()
+                                   .anyMatch(descriptor -> descriptor.nodeId()
+                                                                     .equals(self) && descriptor.state() == ReplicationState.CAUGHT_UP);
+
+        return new StreamPartitionManager.ReplicaCatchupSource.CatchupView(caughtUpOthers, selfCaughtUp);
+    }
+
+    /// #265 increment 5: the committed-ownership release guard. Safe to release (on the ownership axis) when
+    /// the committed `StreamPartitionOwnershipValue.owner` names a node OTHER than self, or no ownership record
+    /// is committed yet. While the committed owner is still self, the node holds the ring until the 1d-iii
+    /// reshuffle driver commits the ownership change — a deposed-but-still-committed owner must not release.
+    private static boolean committedOwnerElsewhere(CommittedStreamOwnerSource source,
+                                                   NodeId self,
+                                                   String stream,
+                                                   int partition) {
+        return source.committedOwner(stream, partition)
+                     .map(owner -> !owner.owner()
+                                         .equals(self))
+                     .or(true);
+    }
+
+    private static void snapshotAllSetups(Map<String, StorageFactory.StorageSetup> storageSetups) {
+        storageSetups.values().forEach(setup -> setup.snapshotManager()
+                                                     .maybeSnapshot());
+    }
+
+    /// 1d-iii / #265 owner-reconciled BATCH driver: once per [ReplicaSetController] reconcile pass, the
+    /// controller flushes the pass's reconciled `(stream, partition)` list here. The leader-only
+    /// [StreamPartitionOwnershipWriter#writeOwnershipChanges] decides each pair — self-limiting to the
+    /// leader (its `isLeaderSupplier` gate short-circuits BEFORE any committed-state read) and to
+    /// genuinely-moved partitions (an unchanged owner's `decide` returns [Option#none]) — and returns the
+    /// ownership-change Puts as ONE list. That list is applied through the consensus `ClusterNode` as a
+    /// SINGLE batch, so a mass reshuffle (a membership change that shifts HRW ownership for many
+    /// stream×partitions) commits ONE consensus batch per reconcile pass instead of N un-batched applies —
+    /// the fan-out bound #265 promises. There is no extra leader-epoch guard around the apply (unlike the
+    /// DHT bootstrap writer, whose apply runs in an async retry batch that can straddle a leader change):
+    /// the decide-then-apply here is synchronous on the reconcile thread, the writer re-checks leadership
+    /// immediately before deciding each pair, and consensus rejects a stale-leader apply. A failed apply
+    /// is logged, never thrown — the next membership-change reconcile re-drives.
+    @Contract
+    private static void driveStreamOwnership(StreamPartitionOwnershipWriter writer,
+                                             Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> applier,
+                                             List<PartitionKey> reconciled) {
+        applyStreamOwnershipBatch(applier, writer.writeOwnershipChanges(reconciled));
+    }
+
+    /// Apply the reconcile pass's ownership-change Puts as ONE consensus batch. An empty batch (a
+    /// follower, or a pass with no moved partitions) applies nothing and logs nothing — the empty apply
+    /// is skipped rather than sent (an empty command batch would be rejected by consensus).
+    @Contract
+    private static void applyStreamOwnershipBatch(Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> applier,
+                                                  List<KVCommand<AetherKey>> commands) {
+        if (commands.isEmpty()) {
+            return;
+        }
+
+        applier.apply(commands)
+               .onFailure(cause -> LOG.warn("Stream ownership batch write for {} moved partition(s) failed: {} — re-driven on next reconcile",
+                                            commands.size(),
+                                            cause.message()));
+    }
+
+    /// #336 reachability-evidence: when an app/blueprint stream's committed `StreamConfig` lands via
+    /// consensus (e.g. `replicas=2 / min-sync=2` at slice activation), place its replica set NOW instead
+    /// of waiting for an unrelated membership/quorum edge that may never fire in a membership-stable
+    /// cluster. Registered as the SECOND `StreamConfigKey` put-handler, so it runs AFTER
+    /// [StreamPartitionManager#onStreamConfigPut] has hydrated the stream into `replicaCatalog()`
+    /// (KVNotificationRouter dispatches handlers in registration order) — the reconcile scan therefore
+    /// sees the new stream. [ReplicaSetController#reconcile] returns immediately (the work is serialized
+    /// on the controller's own executor), so the KV-apply thread never blocks; it is idempotent and
+    /// coalescing (safe to fire per config Put, on every applying node — each does per-node HRW
+    /// placement) and writes only `StreamPartitionOwnershipKey`, never a `StreamConfigKey`, so it cannot
+    /// re-trigger this edge. No-op until the controller is bound; boot-time streams are covered by the
+    /// initial reconcile fired once membership is available.
+    @Contract
+    private static void reconcileReplicaSetOnConfigPut(AtomicReference<ReplicaSetController> controllerRef) {
+        Option.option(controllerRef.get()).onPresent(ReplicaSetController::reconcile);
+    }
+
+    /// Periodic activation level-heal tick (see [#NDM_ACTIVATION_RECONCILE_INTERVAL]). Gated on a
+    /// LIVE consensus-active sample (`clusterNode::isActive`, the SAME accessor the readiness pong
+    /// and leader election use) so it only acts when this node IS in quorum: a dropped ACTIVE edge
+    /// then surfaces as NDM still Dormant, and `reconcileActivation()` re-dispatches the missing
+    /// `QuorumEstablished`. No-op when consensus is not active (correctly Dormant) or once NDM has
+    /// activated.
+    @Contract
+    private static void reconcileNodeActivation(BooleanSupplier consensusActive,
+                                                NodeDeploymentManager nodeDeploymentManager) {
+        if (!consensusActive.getAsBoolean()) {
+            return;
+        }
+
+        nodeDeploymentManager.reconcileActivation();
+    }
+
     /// `-1` for empty) by paging its partition over the forward-read transport, or FAIL when the peer is
     /// unreachable. The success/failure split is the data-safety signal the backfill deadlock-break needs:
     /// a reachable peer's watermark is comparable; an unreachable peer's is unknown (and might be ahead),
@@ -716,6 +993,7 @@ public interface AetherNode extends ManageableNode {
                                                    Deserializer deserializer,
                                                    SliceCodec nodeCodec,
                                                    DHTNode dhtNode,
+                                                   OwnershipEpochHighWater ownershipEpochHighWater,
                                                    AtomicLong leaderTerm,
                                                    HlcClock hlcClock,
                                                    GenerationSnapshotSource snapshotSource,
@@ -723,6 +1001,18 @@ public interface AetherNode extends ManageableNode {
                                                    AtomicReference<ClusterSyncCollector> metricsCollectorRef,
                                                    org.pragmatica.cluster.node.rabia.SyncHoldRegistry syncHoldRegistry,
                                                    Runnable jvmExit) {
+        // #329: leader-pinned task-group ownership is gated on consensus catch-up. A freshly
+        // elected replacement leader whose Rabia log is still draining (isPendingCatchUp) is
+        // isActive but not caught up; granting it ownership funnels every leader-pinned op
+        // through a wedged node (synchronous node.apply().await stalls -> 503). The gate withholds
+        // ownership (notAssigned -> HttpForwarder 3x200ms re-resolution retry) only while lagging
+        // and only for a bounded window, so it can never become a permanent no-owner wedge.
+        // Shared by both taskGroupOwnerResolver sites below (the AppHttpServer wiring var and the
+        // ManageableNode.taskGroupOwnerResolver() override).
+        var leaderCatchUpGate = LeaderCatchUpGate.leaderCatchUpGate(config.self(),
+                                                                    () -> clusterNode.leaderManager()
+                                                                                     .leader(),
+                                                                    clusterNode::isPendingCatchUp);
         // Concrete adapter (not a lambda) so we can override `sendOutcome` and forward
         // it to the QUIC transport's tracked-write API. The default DHTNetwork impl
         // just calls `send` and reports Sent — but the DHT quorum collectors need the
@@ -762,22 +1052,37 @@ public interface AetherNode extends ManageableNode {
                 // is always included (it handles local replicas directly). Before the FSM is published
                 // (early boot / non-cluster worker paths) this degrades to the prior transport view
                 // (connectedPeers + self), preserving back-compat.
-                var live = Option.option(membershipFsmRef.get()).map(MembershipFsm::dhtRoutableMembers).or(() -> new HashSet<>(clusterNode.network()
-                                                                                                                                          .connectedPeers()));
+                var live = Option.option(membershipFsmRef.get())
+                                 .map(MembershipFsm::dhtRoutableMembers)
+                                 .or(() -> new HashSet<>(clusterNode.network().connectedPeers()));
 
                 live.add(config.self());
 
                 return live;
             }
         };
-        var dhtClient = DistributedDHTClient.distributedDHTClient(dhtNode, dhtNetwork, config.artifactRepo());
+        var dhtClient = DistributedDHTClient.distributedDHTClient(dhtNode,
+                                                                  dhtNetwork,
+                                                                  config.artifactRepo(),
+                                                                  KvOwnerEpochSource.kvOwnerEpochSource(kvStore,
+                                                                                                        BootstrapModule.CORE_PARTITION_ID));
         var aetherMaps = AetherMaps.aetherMaps(dhtClient.scoped(DHTConfig.FULL));
         var cacheDhtClient = dhtClient.scoped(config.cache());
         var dhtClientOption = Option.<DHTClient> some(dhtClient);
-        var storageSetups = StorageFactory.createAll(config.storageConfig(),
-                                                     config.self().id(),
-                                                     dhtClientOption);
-        var artifactStorage = Option.option(storageSetups.get("artifacts")).map(StorageFactory.StorageSetup::instance).or(StorageFactory.defaultArtifactStorage(dhtClientOption));
+        var baseStorageSetups = StorageFactory.createAll(config.storageConfig(),
+                                                         config.self().id(),
+                                                         dhtClientOption);
+        // Stream storage is a first-class, disk-backed snapshot-capable StorageSetup (memory -> disk
+        // -> DHT) keyed under "streams". It is built here (not via `createAll`, which is config-map
+        // driven) so it can be folded into `storageSetups` — a later snapshot scheduler iterates that
+        // map — while its `instance()` is reused as `streamStorage` at the stream wiring site below.
+        var streamStorageSetup = StorageFactory.defaultStreamStorage(dhtClientOption,
+                                                                     streamDataDir(config),
+                                                                     config.self().id());
+        var storageSetups = withStreamSetup(baseStorageSetups, streamStorageSetup);
+        var artifactStorage = Option.option(storageSetups.get("artifacts"))
+                                    .map(StorageFactory.StorageSetup::instance)
+                                    .or(StorageFactory.defaultArtifactStorage(dhtClientOption));
         var artifactStore = ArtifactStore.artifactStore(dhtClient, artifactStorage);
         var repositoryFactory = RepositoryFactory.repositoryFactory(artifactStore);
         var repositories = repositoryFactory.createAll(config.sliceConfig());
@@ -794,7 +1099,12 @@ public interface AetherNode extends ManageableNode {
         var dhtTopologyListener = DHTTopologyListener.dhtTopologyListener(dhtNode, dhtRebalancer);
         var dhtAntiEntropy = DHTAntiEntropy.dhtAntiEntropy(dhtNode, dhtNetwork, config.artifactRepo());
         var switchableCluster = SwitchableClusterNode.switchableClusterNode(clusterNode);
-        var corePeerIds = config.topology().coreNodes().stream().map(NodeInfo::id).filter(id -> !id.equals(config.self())).collect(Collectors.toSet());
+        var corePeerIds = config.topology()
+                                .coreNodes()
+                                .stream()
+                                .map(NodeInfo::id)
+                                .filter(id -> !id.equals(config.self()))
+                                .collect(Collectors.toSet());
         var forwardingClusterNode = ForwardingClusterNode.forwardingClusterNode(clusterNode,
                                                                                 clusterNode.network(),
                                                                                 corePeerIds);
@@ -802,9 +1112,11 @@ public interface AetherNode extends ManageableNode {
         record aetherNode(AetherNodeConfig config,
                           MessageRouter.DelegateRouter router,
                           KVStore<AetherKey, AetherValue> kvStore,
+                          OwnershipEpochHighWater ownershipEpochHighWaterInstance,
                           SliceRegistry sliceRegistry,
                           SliceStore sliceStore,
                           RabiaNode<KVCommand<AetherKey>> clusterNode,
+                          Fn1<Result<NodeId>, TaskGroup> taskGroupOwnerResolver,
                           SwitchableClusterNode<KVCommand<AetherKey>> switchableCluster,
                           NodeDeploymentManager nodeDeploymentManager,
                           ClusterDeploymentManager clusterDeploymentManager,
@@ -815,6 +1127,7 @@ public interface AetherNode extends ManageableNode {
                           DeploymentMetricsCollector deploymentMetricsCollector,
                           DeploymentMetricsScheduler deploymentMetricsScheduler,
                           ControlLoop controlLoop,
+                          WorkerMetricsAggregator workerMetricsAggregator,
                           SliceInvoker sliceInvoker,
                           InvocationHandler invocationHandler,
                           BlueprintService blueprintService,
@@ -825,7 +1138,6 @@ public interface AetherNode extends ManageableNode {
                           DeploymentManager deploymentManager,
                           AbTestManager abTestManager,
                           AlertManager alertManager,
-                          ObservabilityDepthRegistry observabilityDepthRegistry,
                           InvocationTraceStore traceStore,
                           LogLevelRegistry logLevelRegistry,
                           Option<DynamicConfigManager> dynamicConfigManager,
@@ -840,6 +1152,7 @@ public interface AetherNode extends ManageableNode {
                           BackupService backupService,
                           StreamPartitionManager streamPartitionManager,
                           StreamReadRouter streamReadRouter,
+                          StreamWriteRouter streamWriteRouter,
                           ConsumerGroupCoordinator consumerGroupCoordinator,
                           ConsumerGroupRegistry consumerGroupRegistry,
                           StreamNamespacesService streamNamespacesService,
@@ -848,7 +1161,9 @@ public interface AetherNode extends ManageableNode {
                           EventLoopMetricsCollector eventLoopMetricsCollector,
                           CoreSwimHealthDetector swimHealthDetector,
                           PresenceSampler presenceSampler,
+                          LeaderReconciler leaderReconciler,
                           MembershipFsm membershipFsm,
+                          QuorumLossDetector quorumLossDetector,
                           TransitionJournal transitionJournal,
                           Runnable startSwimTrigger,
                           Option<ManagementServer> managementServer,
@@ -887,16 +1202,10 @@ public interface AetherNode extends ManageableNode {
             }
 
             @Override
-            public Fn1<Result<NodeId>, TaskGroup> taskGroupOwnerResolver() {
-                return group -> clusterNode.leaderManager()
-                                           .leader()
-                                           .toResult(TaskAssignmentError.notAssigned(group));
-            }
-
-            @Override
             public Promise<Unit> start() {
                 log.info("Starting Aether node {}", self());
                 snapshotCollector.start();
+                workerMetricsAggregator.start();
                 SliceRuntime.setSliceInvoker(sliceInvoker);
                 certRenewalScheduler.onPresent(CertificateRenewalScheduler::start);
 
@@ -922,6 +1231,7 @@ public interface AetherNode extends ManageableNode {
                 router.route(ClusterStateNotification.passive());
                 router.quiesce();
                 controlLoop.stop();
+                workerMetricsAggregator.stop();
                 metricsScheduler.stop();
                 deploymentMetricsScheduler.stop();
                 ttmManager.stop();
@@ -967,18 +1277,18 @@ public interface AetherNode extends ManageableNode {
 
             private void registerWithDiscovery(DiscoveryProvider dp) {
                 Option.from(config.topology().coreNodes().stream().filter(n -> n.id()
-                                                                                .equals(self())).findFirst()).map(n -> new PeerInfo(n.address()
-                                                                                                                                     .host(),
-                                                                                                                                    n.address()
-                                                                                                                                     .port(),
-                                                                                                                                    Map.of("role",
-                                                                                                                                           "core",
-                                                                                                                                           "nodeId",
-                                                                                                                                           self().id()))).onPresent(peerInfo -> dp.registerSelf(peerInfo)
-                                                                                                                                                                                  .await()
-                                                                                                                                                                                  .onSuccess(_ -> log.info("Registered self with discovery provider"))
-                                                                                                                                                                                  .onFailure(cause -> log.warn("Failed to register with discovery: {}",
-                                                                                                                                                                                                               cause.message())));
+                                                                                .equals(self())).findFirst())
+                      .map(n -> new PeerInfo(n.address().host(),
+                                             n.address().port(),
+                                             Map.of("role",
+                                                    "core",
+                                                    "nodeId",
+                                                    self().id())))
+                      .onPresent(peerInfo -> dp.registerSelf(peerInfo)
+                                               .await()
+                                               .onSuccess(_ -> log.info("Registered self with discovery provider"))
+                                               .onFailure(cause -> log.warn("Failed to register with discovery: {}",
+                                                                            cause.message())));
             }
 
             private void applyNodeIdTag() {
@@ -986,18 +1296,20 @@ public interface AetherNode extends ManageableNode {
             }
 
             private void tagSelfInstance(ComputeProvider provider) {
-                provider.listInstances().onSuccess(instances -> tagMatchingInstance(provider, instances)).onFailure(cause -> log.warn("Failed to list instances for self-tagging: {}",
-                                                                                                                                      cause.message()));
+                provider.listInstances()
+                        .onSuccess(instances -> tagMatchingInstance(provider, instances))
+                        .onFailure(cause -> log.warn("Failed to list instances for self-tagging: {}",
+                                                     cause.message()));
             }
 
             private void tagMatchingInstance(ComputeProvider provider, List<InstanceInfo> instances) {
                 findSelfInstance(instances).onPresent(instance -> provider.applyTags(instance.id(),
                                                                                      Map.of("aether-node-id",
-                                                                                            self().id())).onSuccess(_ -> log.info("Applied aether-node-id tag to instance {}",
-                                                                                                                                  instance.id()
-                                                                                                                                          .value()))
-                                                                                    .onFailure(cause -> log.warn("Failed to apply aether-node-id tag: {}",
-                                                                                                                 cause.message())));
+                                                                                            self().id()))
+                                                                          .onSuccess(_ -> log.info("Applied aether-node-id tag to instance {}",
+                                                                                                   instance.id().value()))
+                                                                          .onFailure(cause -> log.warn("Failed to apply aether-node-id tag: {}",
+                                                                                                       cause.message())));
             }
 
             private Option<InstanceInfo> findSelfInstance(List<InstanceInfo> instances) {
@@ -1019,17 +1331,27 @@ public interface AetherNode extends ManageableNode {
             }
 
             private void deregisterFromDiscovery(DiscoveryProvider dp) {
-                dp.stopWatching().await().onFailure(cause -> log.warn("Failed to stop discovery watching: {}",
-                                                                      cause.message()));
-                dp.deregisterSelf().await().onFailure(cause -> log.warn("Failed to deregister from discovery: {}",
-                                                                        cause.message()));
+                dp.stopWatching()
+                  .await()
+                  .onFailure(cause -> log.warn("Failed to stop discovery watching: {}",
+                                               cause.message()));
+                dp.deregisterSelf()
+                  .await()
+                  .onFailure(cause -> log.warn("Failed to deregister from discovery: {}",
+                                               cause.message()));
             }
 
             private void printStartupBanner() {
                 var nodeId = self().id();
-                var clusterPort = Option.from(config.topology().coreNodes().stream().filter(n -> n.id()
-                                                                                                  .equals(self())).findFirst()).map(n -> n.address()
-                                                                                                                                          .port()).or(0);
+                var clusterPort = Option.from(config.topology()
+                                                    .coreNodes()
+                                                    .stream()
+                                                    .filter(n -> n.id()
+                                                                  .equals(self()))
+                                                    .findFirst())
+                                        .map(n -> n.address()
+                                                   .port())
+                                        .or(0);
                 var mgmtPort = config.managementPort();
                 var appHttpPort = config.appHttp().enabled()
                                   ? config.appHttp().port()
@@ -1114,6 +1436,34 @@ public interface AetherNode extends ManageableNode {
             @Override
             public Option<ClusterTopologyManager> clusterTopologyManager() {
                 return Option.some(clusterTopologyManagerInstance);
+            }
+
+            @Override
+            public int observedPeakMembership() {
+                return presenceSampler.peakMembershipCount();
+            }
+
+            @Override
+            public Option<ProvisioningDiagnostics> provisioningDiagnostics() {
+                return isLeader()
+                       ? Option.some(assembleProvisioningDiagnostics(leaderReconciler.currentProvisioningSnapshot()))
+                       : Option.none();
+            }
+
+            private ProvisioningDiagnostics assembleProvisioningDiagnostics(LeaderReconciler.ProvisioningDecisionSnapshot decision) {
+                return new ProvisioningDiagnostics(decision,
+                                                   clusterTopologyManagerInstance.circuitBreakerState(),
+                                                   clusterTopologyManagerInstance.lastProvisionFailure());
+            }
+
+            @Override
+            public Option<QuorumLossSnapshot> quorumLossSnapshot() {
+                return Option.option(quorumLossDetector).map(QuorumLossSnapshot::from);
+            }
+
+            @Override
+            public Option<OwnershipEpochHighWater> ownershipEpochHighWater() {
+                return Option.some(ownershipEpochHighWaterInstance);
             }
 
             @Override
@@ -1218,24 +1568,39 @@ public interface AetherNode extends ManageableNode {
                                              ((TopologyObserver) clusterNode.topologyManager()).inQuorum());
             }
         }
-        var httpRoutePublisher = HttpRoutePublisher.httpRoutePublisher(config.self(), clusterNode);
+        var httpRoutePublisher = HttpRoutePublisher.httpRoutePublisher(config.self(),
+                                                                       clusterNode,
+                                                                       GenerationSnapshotSource.noop(),
+                                                                       routeMountMode(config.appHttp()));
         var invocationMetrics = InvocationMetricsCollector.invocationMetricsCollector();
         var logLevelRegistry = LogLevelRegistry.logLevelRegistry(clusterNode, kvStore);
-        var depthRegistry = ObservabilityDepthRegistry.observabilityDepthRegistry(clusterNode,
-                                                                                  kvStore,
-                                                                                  config.observability());
         var traceStore = InvocationTraceStore.invocationTraceStore();
-        var observabilityInterceptor = config.observability().depthThreshold() < 0
-                                       ? ObservabilityInterceptor.noOp()
-                                       : createObservabilityInterceptor(config, traceStore, depthRegistry);
+        // #277 increment 5a: the strategy-cell system is the ONE observability engine. Unconfigured
+        // injection points run the fleet baseline (sampling + tracing + depth-leveled logging + counting),
+        // absorbed here from the retired ObservabilityInterceptor. depthThreshold < 0 disables observability
+        // -> counting-only baseline (no fleet emission), the prior noOp-interceptor posture.
+        var observabilityBaseline = config.observability().depthThreshold() < 0
+                                    ? ObservabilityBaseline.countingOnly()
+                                    : ObservabilityBaseline.fleet(AdaptiveSampler.adaptiveSampler(config.observability()
+                                                                                                        .targetTracesPerSec()),
+                                                                  traceStore,
+                                                                  config.self().id(),
+                                                                  config.observability().depthThreshold());
+        var configRegistry = ObservabilityConfigRegistry.observabilityConfigRegistry(clusterNode,
+                                                                                     kvStore,
+                                                                                     observabilityBaseline);
         var invocationHandler = InvocationHandler.invocationHandler(config.self(),
                                                                     clusterNode.network(),
                                                                     invocationMetrics,
                                                                     config.timeouts().invocation().timeout(),
                                                                     serializer,
                                                                     deserializer,
-                                                                    httpRoutePublisher,
-                                                                    observabilityInterceptor);
+                                                                    httpRoutePublisher);
+        // #277 increment 2: the config registry IS the write-side cell registrar for both dispatch
+        // seams — bind it so bridge (east-west) and route (north-south) cells register at slice load /
+        // route publish and deregister at unload, and a KV config put swaps their behaviour in place.
+        invocationHandler.setObservabilityCellRegistrar(configRegistry);
+        httpRoutePublisher.setObservabilityCellRegistrar(configRegistry);
         var deploymentMetricsCollector = DeploymentMetricsCollector.deploymentMetricsCollector(config.self(),
                                                                                                clusterNode.network());
         var deploymentMetricsScheduler = DeploymentMetricsScheduler.deploymentMetricsScheduler(config.self(),
@@ -1285,6 +1650,13 @@ public interface AetherNode extends ManageableNode {
         var cdmDrainingNodesRef = new AtomicReference<Supplier<Set<NodeId>>>(Set::of);
         Supplier<Set<NodeId>> stableCdmDrainingNodesSupplier = () -> cdmDrainingNodesRef.get()
                                                                                         .get();
+        // #241 (worker-membership-spec §4.1 / D2): the CDM resolves a joining worker's membership
+        // source at role-assignment time to mint/reuse its per-source community. Reads the last-wins
+        // MemberDescriptor.source from the membership FSM (retained even across DEAD/rejoin), through
+        // the same shared membershipFsmRef the other CDM suppliers deref. Absent → none() → "default".
+        Function<NodeId, Option<String>> cdmMemberSourceSupplier = nodeId -> Option.option(membershipFsmRef.get())
+                                                                                   .flatMap(fsm -> fsm.memberDescriptor(nodeId))
+                                                                                   .map(MemberDescriptor::source);
         var clusterDeploymentManager = ClusterDeploymentManager.clusterDeploymentManager(config.self(),
                                                                                          clusterNode,
                                                                                          kvStore,
@@ -1293,18 +1665,24 @@ public interface AetherNode extends ManageableNode {
                                                                                          clusterNode.topologyManager(),
                                                                                          config.atomicity(),
                                                                                          config.topology().coreMax(),
-                                                                                         config.timeouts().deployment().reconciliationInterval(),
+                                                                                         config.timeouts()
+                                                                                               .deployment()
+                                                                                               .reconciliationInterval(),
                                                                                          schemaOrchestrator,
                                                                                          stableHealthSink,
                                                                                          cdmCoreCountedMembersSupplier,
                                                                                          stableCdmReadyNodesSupplier,
-                                                                                         stableCdmDrainingNodesSupplier);
-        var loadBalancerManager = config.environment().flatMap(EnvironmentIntegration::loadBalancer).map(provider -> LoadBalancerManager.loadBalancerManager(config.self(),
-                                                                                                                                                             kvStore,
-                                                                                                                                                             clusterNode.topologyManager(),
-                                                                                                                                                             provider,
-                                                                                                                                                             config.appHttp()
-                                                                                                                                                                   .port()));
+                                                                                         stableCdmDrainingNodesSupplier,
+                                                                                         cdmMemberSourceSupplier,
+                                                                                         config.deploymentDefaults()
+                                                                                               .communitySizing());
+        var loadBalancerManager = config.environment()
+                                        .flatMap(EnvironmentIntegration::loadBalancer)
+                                        .map(provider -> LoadBalancerManager.loadBalancerManager(config.self(),
+                                                                                                 kvStore,
+                                                                                                 clusterNode.topologyManager(),
+                                                                                                 provider,
+                                                                                                 config.appHttp().port()));
         var discoveryProvider = config.environment().flatMap(EnvironmentIntegration::discovery);
         var endpointRegistry = EndpointRegistry.endpointRegistry();
         var topicSubscriptionRegistry = TopicSubscriptionRegistry.topicSubscriptionRegistry();
@@ -1313,7 +1691,10 @@ public interface AetherNode extends ManageableNode {
         var httpRouteRegistry = HttpRouteRegistry.httpRouteRegistry();
         var metricsCollector = ClusterSyncCollector.clusterSyncCollector(config.self(),
                                                                          clusterNode.network(),
-                                                                         config.timeouts().observability().metricsSlidingWindow().millis());
+                                                                         config.timeouts()
+                                                                               .observability()
+                                                                               .metricsSlidingWindow()
+                                                                               .millis());
         // Publish the collector into the deferred holder captured by the leader-election FSM's
         // leader-acting lease predicate (built in createNode, before this collector existed). From
         // now on the FSM's Led-tenure lease reads real leader-ping freshness via
@@ -1461,10 +1842,19 @@ public interface AetherNode extends ManageableNode {
         // the aggregator is bound. Kept as a Consumer<DrainReason> so aether-deployment stays free
         // of any ClusterEvent dependency.
         var clusterEventDrainEmitterRef = new java.util.concurrent.atomic.AtomicReference<java.util.function.Consumer<org.pragmatica.aether.deployment.cluster.DrainReason>>(reason -> {});
+        // #427 graceful-departure push: the leaving node pushes its held DHT chunks to their new
+        // replicas, ack-gated, before it halts. The DrainProcedure invokes this supplier once at
+        // DRAINING and its quiesced-fork exit waits for it (bounded by the push's own budget; the
+        // grace fork never does). The observer — resolved once the ClusterEventAggregator is bound
+        // below — turns a budget overrun into a DeparturePushIncomplete event; it stays a no-op until
+        // then, keeping aether-deployment free of any ClusterEvent / DHT-event dependency.
+        var departurePushObserverRef = new java.util.concurrent.atomic.AtomicReference<>(DeparturePushObserver.noop());
+        Supplier<Promise<Unit>> departurePush = () -> dhtRebalancer.pushOnDeparture(departurePushObserverRef.get());
         var drainProcedure = DrainProcedure.drainProcedure(inFlightTrackerForDrain,
                                                            () -> {},
                                                            reason -> clusterEventDrainEmitterRef.get()
                                                                                                 .accept(reason),
+                                                           departurePush,
                                                            jvmExit);
         Supplier<Option<NodeId>> healthLeaderSupplier = () -> clusterNode.leaderManager()
                                                                          .leader();
@@ -1475,6 +1865,14 @@ public interface AetherNode extends ManageableNode {
                                                                  () -> healthLeaderSupplier.get()
                                                                                            .isPresent());
         Supplier<AetherValue.ClusterPhase> effectivePhaseSupplier = clusterPhaseView::compute;
+        // #336 — the leader's OWN resolved config (its per-node overlay rendered by the CLI with
+        // ${env:...}/${secrets:...} resolved to literals at bootstrap), parsed ONCE (Lazy) from the
+        // node's config file. Threaded into the CTM so the render path can substitute the placeholders
+        // a replacement's composed overlay inherits from the deliberately-unresolved persisted KV TOML
+        // with the leader's literals at the same TOML path — so a CTM-provisioned scale-up / auto-heal
+        // node boots with resolved credentials instead of crashing on placeholders. Returns none()
+        // gracefully when no config path was published (forge/tests) or the file can't be parsed.
+        var resolvedLocalConfig = Lazy.lazy(AetherNode::parseOwnResolvedConfig);
         var clusterTopologyManager = ClusterTopologyManager.clusterTopologyManager((TopologyObserver) clusterNode.topologyManager(),
                                                                                    lifecycleManager,
                                                                                    config.autoHeal(),
@@ -1486,7 +1884,8 @@ public interface AetherNode extends ManageableNode {
                                                                                    target -> requestDrainThroughFsm(drainCommandRegistry,
                                                                                                                     membershipFsmRef,
                                                                                                                     target),
-                                                                                   drainCommandRegistry::clearDrain);
+                                                                                   drainCommandRegistry::clearDrain,
+                                                                                   resolvedLocalConfig::get);
         // E2 Phase 2b (2026-05-28): OrphanSelfDrainChecker deleted; NTT (§6) drives departure
         // detection and the §8 unified drain handles surplus dissolution. Membership v2 finale:
         // the leader-pinned `LifecycleReconciler` (and the FSM it wrote through) are gone — the
@@ -1497,13 +1896,17 @@ public interface AetherNode extends ManageableNode {
         var mavenProtocolHandler = MavenProtocolHandler.mavenProtocolHandler(artifactStore);
         var deploymentManager = DeploymentManager.deploymentManager(clusterNode, kvStore);
         var alertManager = AlertManager.alertManager(clusterNode, kvStore);
-        var dynamicConfigManager = resourceProviderSetup.dynamicProvider().map(dp -> DynamicConfigManager.dynamicConfigManager(clusterNode,
-                                                                                                                               kvStore,
-                                                                                                                               dp,
-                                                                                                                               config.self()));
+        var dynamicConfigManager = resourceProviderSetup.dynamicProvider()
+                                                        .map(dp -> DynamicConfigManager.dynamicConfigManager(clusterNode,
+                                                                                                             kvStore,
+                                                                                                             dp,
+                                                                                                             config.self()));
         var minuteAggregator = MinuteAggregator.minuteAggregator();
         var gcMetricsCollector = GCMetricsCollector.gcMetricsCollector();
-        var eventLoopMetricsCollector = EventLoopMetricsCollector.eventLoopMetricsCollector(config.timeouts().observability().eventLoopProbe().millis());
+        var eventLoopMetricsCollector = EventLoopMetricsCollector.eventLoopMetricsCollector(config.timeouts()
+                                                                                                  .observability()
+                                                                                                  .eventLoopProbe()
+                                                                                                  .millis());
         var snapshotCollector = ComprehensiveSnapshotCollector.comprehensiveSnapshotCollector(gcMetricsCollector,
                                                                                               eventLoopMetricsCollector,
                                                                                               networkMetricsHandler,
@@ -1573,6 +1976,11 @@ public interface AetherNode extends ManageableNode {
                                                                                                                         .id(),
                                                                                                                   "reason",
                                                                                                                   String.valueOf(reason)))));
+        // #427: resolve the departure-push observer now the aggregator is bound — a budget overrun
+        // during graceful departure emits DeparturePushIncomplete (per-node fact, un-gated emitLocal).
+        departurePushObserverRef.set((keysAtRisk, sampleKeys) -> eventAggregator.onDeparturePushIncomplete(config.self(),
+                                                                                                           keysAtRisk,
+                                                                                                           sampleKeys));
         // Operator-driven inject endpoints replicate via the events stream so peer nodes return
         // injected items on cross-node reads. AlertManager emits AlertInjected; InvocationTraceStore
         // emits TraceInjected through a thin sink that keeps the aether-invoke module free of any
@@ -1585,7 +1993,10 @@ public interface AetherNode extends ManageableNode {
                                                                                                                                                  metadata)));
         traceStore.bindClusterEventsSource(() -> eventAggregator.events()
                                                                 .map(AetherNode::projectClusterTraceInjections));
-        var ttmManager = TTMManager.ttmManager(config.ttm(), minuteAggregator, controller::configuration).or(TTMManager.noOp(config.ttm()));
+        var ttmManager = TTMManager.ttmManager(config.ttm(),
+                                               minuteAggregator,
+                                               controller::configuration)
+                                   .or(TTMManager.noOp(config.ttm()));
         ClusterController effectiveController = ttmManager.isEnabled()
                                                 ? AdaptiveDecisionTree.adaptiveDecisionTree(controller, ttmManager)
                                                 : controller;
@@ -1594,10 +2005,18 @@ public interface AetherNode extends ManageableNode {
                                                   metricsCollector,
                                                   Option.some(invocationMetrics),
                                                   clusterNode,
-                                                  kvStore,
                                                   config.controllerConfig().scalingConfig().evaluationInterval(),
                                                   config.controllerConfig(),
                                                   delegateRouter::route);
+        var workerMetricsAggregator = WorkerMetricsAggregator.workerMetricsAggregator(config.self(),
+                                                                                      () -> config.self()
+                                                                                                  .id(),
+                                                                                      invocationMetrics,
+                                                                                      snapshot -> delegateRouter.route(new NetworkServiceMessage.Broadcast(snapshot)),
+                                                                                      config.controllerConfig()
+                                                                                            .scalingConfig()
+                                                                                            .evaluationInterval()
+                                                                                            .millis());
         var rollbackManager = config.rollback().enabled()
                               ? RollbackManager.rollbackManager(config.self(),
                                                                 config.rollback(),
@@ -1614,8 +2033,7 @@ public interface AetherNode extends ManageableNode {
                                                      deserializer,
                                                      config.timeouts().invocation().invokerTimeout().millis(),
                                                      config.timeouts().observability().invocationCleanup().millis(),
-                                                     deploymentManager,
-                                                     observabilityInterceptor);
+                                                     deploymentManager);
 
         deferredInvoker.setDelegate(sliceInvoker);
         var scheduledTaskManager = ScheduledTaskManager.scheduledTaskManager(scheduledTaskRegistry,
@@ -1624,10 +2042,12 @@ public interface AetherNode extends ManageableNode {
                                                                              command -> clusterNode.apply(List.of(command)),
                                                                              clusterNode.leaderManager());
 
-        resourceProviderSetup.spiProvider().onPresent(spi -> registerRuntimeExtensions(spi,
-                                                                                       topicSubscriptionRegistry,
-                                                                                       sliceInvoker,
-                                                                                       cacheDhtClient));
+        resourceProviderSetup.spiProvider()
+                             .onPresent(spi -> registerRuntimeExtensions(spi,
+                                                                         topicSubscriptionRegistry,
+                                                                         sliceInvoker,
+                                                                         cacheDhtClient,
+                                                                         StorageFactory.defaultContentStorage(dhtClientOption)));
         var selfAddress = findSelfAddress(config);
         var nodeDeploymentManager = NodeDeploymentManager.nodeDeploymentManagerFromSnapshot(config.self(),
                                                                                             selfAddress,
@@ -1640,17 +2060,20 @@ public interface AetherNode extends ManageableNode {
                                                                                             nodeCodec,
                                                                                             Option.some(httpRoutePublisher),
                                                                                             Option.some(sliceInvoker),
-                                                                                            config.timeouts().deployment().activationChain(),
-                                                                                            config.timeouts().deployment().transitionRetryDelay(),
+                                                                                            config.timeouts()
+                                                                                                  .deployment()
+                                                                                                  .activationChain(),
+                                                                                            config.timeouts()
+                                                                                                  .deployment()
+                                                                                                  .transitionRetryDelay(),
                                                                                             currentGenerationEpochSupplier);
         var serverBossGroup = clusterNode.network().server().map(Server::bossGroup);
         var serverWorkerGroup = clusterNode.network().server().map(Server::workerGroup);
         // #231 Step 3: every control-plane TaskGroup is leader-pinned, so the owner of any group is
-        // the current leader. Resolver mirrors the former registry's no-owner failure (notAssigned)
-        // when no leader is committed, using the same leaderManager source as the toggle*OnLeaderChange routes.
-        Fn1<Result<NodeId>, TaskGroup> taskGroupOwnerResolver = group -> clusterNode.leaderManager()
-                                                                                    .leader()
-                                                                                    .toResult(TaskAssignmentError.notAssigned(group));
+        // the current leader. #329: gated on consensus catch-up via leaderCatchUpGate (shared with the
+        // ManageableNode.taskGroupOwnerResolver() override) — a lagging replacement leader is withheld
+        // ownership (notAssigned) for a bounded window so leader-local commits do not stall and 503.
+        Fn1<Result<NodeId>, TaskGroup> taskGroupOwnerResolver = leaderCatchUpGate::resolve;
         // Silent-death fix: the data-path forwarder narrows candidates to currently-reachable nodes so
         // a hard-killed peer (QUIC still CONNECTED until eviction) is dropped from selection/retry long
         // before the forward timeout would otherwise burn. Membership-FSM unification (Wave D, consumer
@@ -1710,8 +2133,9 @@ public interface AetherNode extends ManageableNode {
                                                 sliceInvoker,
                                                 invocationHandler,
                                                 alertManager,
-                                                depthRegistry,
+                                                configRegistry,
                                                 logLevelRegistry,
+                                                ownershipEpochHighWater,
                                                 dynamicConfigManager,
                                                 ttmManager,
                                                 rabiaMetricsCollector,
@@ -1767,6 +2191,9 @@ public interface AetherNode extends ManageableNode {
                                                                                                                               response))));
         aetherEntries.add(MessageRouter.Entry.route(DHTMessage.MigrationDataResponse.class,
                                                     dhtAntiEntropy::onMigrationDataResponse));
+        // #427: a graceful-departure push's ack resolves the departing node's pending push, so its
+        // drain can confirm the chunk reached a surviving replica before halting.
+        aetherEntries.add(MessageRouter.Entry.route(DHTMessage.MigrationDataAck.class, dhtRebalancer::onMigrationDataAck));
         aetherEntries.add(MessageRouter.Entry.route(MembershipDecision.NodeJoined.class,
                                                     dhtTopologyListener::onNodeJoined));
         aetherEntries.add(MessageRouter.Entry.route(MembershipDecision.NodeRemoved.class,
@@ -1804,19 +2231,31 @@ public interface AetherNode extends ManageableNode {
         var selfId = config.self();
         var rotatingEncryptor = createGossipEncryptor(config);
         var gossipKeyRotationHandler = GossipKeyRotationHandler.gossipKeyRotationHandler(rotatingEncryptor);
-        var activationKvRouter = KVNotificationRouter.<AetherKey, AetherValue> builder(AetherKey.class).onPut(AetherKey.ActivationDirectiveKey.class,
-                                                                                                              (ValuePut<AetherKey.ActivationDirectiveKey, AetherValue.ActivationDirectiveValue> put) -> handleActivationDirective(put,
-                                                                                                                                                                                                                                  selfId,
-                                                                                                                                                                                                                                  clusterNode,
-                                                                                                                                                                                                                                  switchableCluster,
-                                                                                                                                                                                                                                  forwardingClusterNode,
-                                                                                                                                                                                                                                  config,
-                                                                                                                                                                                                                                  delegateRouter,
-                                                                                                                                                                                                                                  kvStore,
-                                                                                                                                                                                                                                  sliceStore,
-                                                                                                                                                                                                                                  sliceInvoker,
-                                                                                                                                                                                                                                  growthLog)).onPut(AetherKey.GossipKeyRotationKey.class,
-                                                                                                                                                                                                                                                    gossipKeyRotationHandler::onGossipKeyRotationPut).build();
+        // Worker-mode activation needs the SWIM detector to feed the governor announcer
+        // (GAP 2). The detector is a local declared further down (after the SWIM config is
+        // built), but this registration lambda is constructed here — so capture it through a
+        // holder seeded immediately after the detector is created. The ActivationDirectiveKey
+        // ValuePut handler only fires long after seeding, so the holder is always populated by
+        // read time. A holder (not a reorder) keeps the router-build / replay-burst ordering
+        // documented below intact.
+        var swimHealthDetectorHolder = new AtomicReference<CoreSwimHealthDetector>();
+        var activationKvRouter = KVNotificationRouter.<AetherKey, AetherValue> builder(AetherKey.class)
+                                                     .onPut(AetherKey.ActivationDirectiveKey.class,
+                                                            (ValuePut<AetherKey.ActivationDirectiveKey, AetherValue.ActivationDirectiveValue> put) -> handleActivationDirective(put,
+                                                                                                                                                                                selfId,
+                                                                                                                                                                                clusterNode,
+                                                                                                                                                                                switchableCluster,
+                                                                                                                                                                                forwardingClusterNode,
+                                                                                                                                                                                config,
+                                                                                                                                                                                delegateRouter,
+                                                                                                                                                                                kvStore,
+                                                                                                                                                                                sliceStore,
+                                                                                                                                                                                sliceInvoker,
+                                                                                                                                                                                swimHealthDetectorHolder::get,
+                                                                                                                                                                                growthLog))
+                                                     .onPut(AetherKey.GossipKeyRotationKey.class,
+                                                            gossipKeyRotationHandler::onGossipKeyRotationPut)
+                                                     .build();
         // Gossip-key delivery (§5.8 AMENDED): the GossipKeyRotationKey subscription above is the
         // SOLE delivery path. A late joiner that synced AFTER the rotation PUT receives the
         // current rotation as a replayed ValuePut on this normal subscription once the engine
@@ -1831,7 +2270,8 @@ public interface AetherNode extends ManageableNode {
         var swimTimeouts = config.timeouts().swim();
         var swimConfig = SwimConfig.fromTimeouts(swimTimeouts.period(),
                                                  swimTimeouts.probeTimeout(),
-                                                 swimTimeouts.suspectTimeout()).withSwimPortOffset(CoreSwimHealthDetector.SWIM_PORT_OFFSET);
+                                                 swimTimeouts.suspectTimeout())
+                                   .withSwimPortOffset(CoreSwimHealthDetector.SWIM_PORT_OFFSET);
         // Phase-aware SWIM cold-boot suppression (D.3, 2026-05-11). SWIM suppresses
         // FAULTY-for-never-HEALTHY peers ONLY while the cluster is in `COLD_BOOT`
         // (initial formation, never reached quorum). In `NORMAL` and `RECOVERING`,
@@ -1841,7 +2281,22 @@ public interface AetherNode extends ManageableNode {
         // write + NODE_LEFT / NODE_FAILED downstream event).
         // E.6 / E.8 (spec §7.2): SWIM phase-suppression gate routes through `ClusterPhaseView`
         // (the single source of truth post-E.8).
-        BooleanSupplier swimIsBootingSupplier = () -> effectivePhaseSupplier.get() == AetherValue.ClusterPhase.COLD_BOOT;
+        //
+        // A6 cold-boot convergence window (2026-06-28): the phase-only gate flips out of COLD_BOOT at
+        // FIRST quorum (e.g. 3/5), but on a simultaneous full-cluster restart the remaining nodes' QUIC
+        // links may not have formed yet — the transport single-dialer force-dials a straggler only after
+        // a 60s grace (QuicClusterNetwork.RECONCILE_BACKOFF_CAP_MS). Without a window SWIM would
+        // FAULTY-evict (then authoritatively REMOVE) the not-yet-connected seeds at ~quorum time, wedging
+        // the cluster permanently below full membership (terminal-removal is irreversible). OR-in a
+        // one-shot window anchored at THIS node's boot so never-HEALTHY SEEDS stay UNKNOWN (the existing,
+        // tested COLD_BOOT suppression branch — no tombstone, formation-safe) until the transport has
+        // exhausted its dial attempts. Proven-HEALTHY peers are unaffected: every suppression branch
+        // short-circuits on everSeenHealthy, so a real death still FAULTYs immediately regardless.
+        long swimBootAtMs = System.currentTimeMillis();
+        BooleanSupplier swimIsBootingSupplier = () -> coldBootConvergenceActive(effectivePhaseSupplier.get() == AetherValue.ClusterPhase.COLD_BOOT,
+                                                                                swimBootAtMs,
+                                                                                System.currentTimeMillis(),
+                                                                                COLD_BOOT_CONVERGENCE_WINDOW_MS);
         // Leader-faulty evictor (2026-05-09): bridges SWIM-FAULTY → QUIC disconnect when
         // the FAULTY peer IS the current cluster leader. Breaks the consensus.apply
         // broadcast stall on cloud Container kill-leader (post-Step-3 architecture
@@ -1870,6 +2325,8 @@ public interface AetherNode extends ManageableNode {
                                                                                swimIsBootingSupplier,
                                                                                faultyLeaderEvictor,
                                                                                swimTransportConnected);
+
+        swimHealthDetectorHolder.set(swimHealthDetector);
         // Single `(NodeId, incarnation)` authority: the metrics readiness epoch is sourced from
         // the SWIM self-incarnation, floored at a captured boot value so it never reports below
         // boot-millis during the pre-announce window (before `announceJoin` seeds the SWIM counter).
@@ -1883,16 +2340,31 @@ public interface AetherNode extends ManageableNode {
         // SWIM HEALTHY requires actual probe-ack within `suspectTimeout`, so this gate is
         // robust against owner partial-network errors. See `ClusterSyncCollector.processEvictionHints`.
         metricsCollector.setPeerLocallyAlive(nodeId -> swimHealthDetector.healthOf(nodeId) == SwimHealth.HEALTHY);
+        // Option 1 (S01) — feed cluster-sync missed-pong into SWIM as a transport-unreachable HINT
+        // instead of a destructive disconnect. SWIM drives the SUSPECT → 3s-floored-FAULTY →
+        // DepartedObserved → synchronous-DEAD pipeline (the same path the QUIC `onPeerLeft` listener
+        // feeds) and refutes the hint when pongs resume, so a transient flap no longer false-evicts a
+        // healthy peer. The owner-side SWIM-HEALTHY early-skip in `emitPingTimeoutIfExceeded` still
+        // suppresses the hint for a peer SWIM already trusts (avoids conflicting evidence).
+        metricsCollector.setUnreachableReporter(nodeId -> swimHealthDetector.recordTransportHint(new TransportObservation.PeerUnreachable(nodeId,
+                                                                                                                                          QuicTransportCause.PING_TIMEOUT)));
         allEntries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
                                                  change -> swimHealthDetector.onLeaderChanged(change.leaderId())));
         var announceTopology = config.topology();
-        var selfNodeInfo = announceTopology.coreNodes().stream().filter(n -> n.id()
-                                                                              .equals(announceTopology.self())).findFirst().orElse(null);
-        var swimSeeds = announceTopology.coreNodes().stream().filter(n -> !n.id()
-                                                                            .equals(announceTopology.self())).map(n -> InetSocketAddress.createUnresolved(n.address()
-                                                                                                                                                           .host(),
-                                                                                                                                                          n.address()
-                                                                                                                                                           .port() + CoreSwimHealthDetector.SWIM_PORT_OFFSET)).toList();
+        var selfNodeInfo = announceTopology.coreNodes()
+                                           .stream()
+                                           .filter(n -> n.id()
+                                                         .equals(announceTopology.self()))
+                                           .findFirst()
+                                           .orElse(null);
+        var swimSeeds = announceTopology.coreNodes()
+                                        .stream()
+                                        .filter(n -> !n.id()
+                                                       .equals(announceTopology.self()))
+                                        .map(n -> InetSocketAddress.createUnresolved(n.address().host(),
+                                                                                     n.address()
+                                                                                      .port() + CoreSwimHealthDetector.SWIM_PORT_OFFSET))
+                                        .toList();
         Runnable announceJoinTrigger = selfNodeInfo == null
                                        ? () -> {}
                                        : () -> swimHealthDetector.announceJoin(selfNodeInfo,
@@ -1972,7 +2444,10 @@ public interface AetherNode extends ManageableNode {
         // is in scope.
         var transitionJournal = TransitionJournal.transitionJournal();
 
-        membershipFsm.onTransition(record -> appendFsmTransition(transitionJournal, record));
+        membershipFsm.onTransition(record -> onFsmTransition(transitionJournal,
+                                                             quorumLossDetectorRef,
+                                                             membershipFsm,
+                                                             record));
         // Wave-4 (cluster-topology-overhaul, #245): the MembershipDeltaProjector is the SOLE
         // emitter of MembershipDecision, fed by the FSM's own JOINED/REMOVED delta edge —
         // installed BEFORE the boot seed below so the seeded members' OBSERVED→MEMBER
@@ -2054,7 +2529,8 @@ public interface AetherNode extends ManageableNode {
         // quorumLossDrainThreshold) and drives the §8.2 unified `DrainProcedure` directly.
         // Trigger detection (QuorumLossDetector) and procedure execution (DrainProcedure)
         // stay separated.
-        Consumer<QuorumLossIntent> quorumLossChain = ((Consumer<QuorumLossIntent>) leaderReconciler::onQuorumLossIntent).andThen(intent -> drainProcedure.initiate(DrainReason.QUORUM_LOSS)).andThen(intent -> nodeReportedStateHolder.onDrainStarted());
+        Consumer<QuorumLossIntent> quorumLossChain = ((Consumer<QuorumLossIntent>) leaderReconciler::onQuorumLossIntent).andThen(intent -> drainProcedure.initiate(DrainReason.QUORUM_LOSS))
+                                                                                                                        .andThen(intent -> nodeReportedStateHolder.onDrainStarted());
 
         quorumLossDetector.setQuorumLossListener(quorumLossChain);
         // Fix C (split-brain self-fence co-confirmation): before the QUORUM_LOSS drain commits, the
@@ -2066,15 +2542,22 @@ public interface AetherNode extends ManageableNode {
         // fails both (unreachable members are NOT SWIM-alive and age out of SUSPECT), so the real
         // self-fence is never masked.
         quorumLossDetector.setCoConfirmationSupplier(() -> buildQuorumCoConfirmation(membershipFsm, swimHealthDetector));
+        // A6: gate the quorum-loss self-drain with the SAME cold-boot window the SWIM FAULTY-suppression
+        // uses. On a simultaneous full-cluster restart SWIM's first probe-acks lag the QUIC attach, so the
+        // detector's SWIM-alive count momentarily decays below threshold and healthy nodes would self-fence
+        // before convergence (the 3/5-wedge root cause). Deferring the fence during the bounded cold-boot
+        // window lets all nodes reform; a genuine minority still self-fences once the window elapses.
+        quorumLossDetector.setColdBootSupplier(swimIsBootingSupplier);
         metricsCollector.setDrainCommandHandler(() -> commandedDrain(drainProcedure, nodeReportedStateHolder));
         // QUIC reconnect feeds NTT's soft up-bias (unchanged) AND the FSM's peer-connected tap.
         Consumer<NodeId> nttConnectTap = ((Consumer<NodeId>) presenceSampler::onQuicReconnect).andThen(membershipFsm::onPeerConnected);
         // QUIC disconnect feeds BOTH NTT's soft down-bias (unchanged) AND the liveness half of the
         // confirmed-death gate in the authoritative MembershipFsm. A routed QUIC disconnect fires on a
-        // bare transport drop AND on the 3-missed-pong ClusterSync ping-timeout
-        // (emitPingTimeoutIfExceeded calls network.disconnect → PeerDisconnected), so this single tap
-        // captures the spec's liveness-gone signal. Bare disconnect alone does NOT evict — the FSM
-        // gates it behind SWIM-FAULTY co-confirmation. Leader-gated inside the FSM.
+        // bare transport drop — a genuine transport-gone sensor. The 3-missed-pong ClusterSync
+        // ping-timeout no longer manufactures a disconnect (option 1); it now feeds SWIM a transport-
+        // unreachable hint, which reaches the FSM via SWIM-FAULTY co-confirmation instead of this tap.
+        // Bare disconnect alone does NOT evict — the FSM gates it behind SWIM-FAULTY co-confirmation.
+        // Leader-gated inside the FSM.
         Consumer<NodeId> nttDisconnectTap = ((Consumer<NodeId>) presenceSampler::onQuicDisconnect).andThen(membershipFsm::onLivenessGone);
         // P5: the NTT-reconciler leader-toggle (auto-heal activation) is now wired into the
         // live router. Safe because LeaderReconciler is identity-aware — it arms provisioning
@@ -2182,11 +2665,15 @@ public interface AetherNode extends ManageableNode {
         // would wait for the sampler's natural ~nttDepartureTimeout down-hysteresis crossing.
         Consumer<NodeId> dropDeadPeerLink = clusterNetworkRef::departurePermanent;
 
-        membershipFsm.onConfirmedDeparture(departed -> onMembershipDeath(departed,
-                                                                         dropDeadPeerLink,
-                                                                         quorumLossDetectorRef,
-                                                                         membershipFsmRef,
-                                                                         leaderReconcilerRef));
+        membershipFsm.onConfirmedDeparture(departed -> {
+            onMembershipDeath(departed, dropDeadPeerLink, quorumLossDetectorRef, membershipFsmRef, leaderReconcilerRef);
+            // #210: emit the user-facing NODE_FAILED from this ungated DEAD edge — the SAME confirmed-
+            // death signal that drives auto-heal above — instead of the quorum-gated
+            // MembershipDecision.NodeRemoved, which the MembershipDeltaProjector drops during the
+            // post-kill re-election window so the event never reached /api/events on cloud. Leader-gated
+            // inside the aggregator (fires on every node's FSM; only the leader publishes).
+            eventAggregator.onConfirmedDeparture(departed);
+        });
         // Join-grace leak fix: a CTM-provisioned replacement that boots but NEVER reaches
         // SWIM-healthy within the M10 join-grace window is reaped OBSERVED→DEAD by the FSM, but
         // nothing terminated its container/JVM — it ran on as a non-member zombie (Docker count
@@ -2265,7 +2752,9 @@ public interface AetherNode extends ManageableNode {
         // source is the authoritative MembershipFsm (healthHints()). The SwimHintsRegistry tap stays
         // wired (peer-health observability) but no longer feeds any consumer; the FSM is the single
         // membership-health authority.
-        var swimHints = SwimHintsRegistry.swimHintsRegistry(java.time.Duration.ofMillis(config.autoHeal().swimHintsTtl().millis()),
+        var swimHints = SwimHintsRegistry.swimHintsRegistry(java.time.Duration.ofMillis(config.autoHeal()
+                                                                                              .swimHintsTtl()
+                                                                                              .millis()),
                                                             () -> {});
 
         peerObservationStore.subscribeHealth(swimHints::onPeerHealth);
@@ -2305,16 +2794,21 @@ public interface AetherNode extends ManageableNode {
         // Membership derives from the authoritative MembershipFsm delta edge; there is no
         // node-state KV listener.
         wireMembershipDecisionTail(allEntries, bootstrapModule::onMembershipDecision);
-        var healthKvRouter = KVNotificationRouter.<AetherKey, AetherValue> builder(AetherKey.class).onPut(AetherKey.SpokesmanKey.class,
-                                                                                                          _ -> bootstrapModule.retryIfNeeded()).onPut(AetherKey.ClusterConfigKey.class,
-                                                                                                                                                      (KVStoreNotification.ValuePut<AetherKey.ClusterConfigKey, AetherValue.ClusterConfigValue> put) -> onClusterConfigPut(put,
-                                                                                                                                                                                                                                                                           clusterTopologyManager,
-                                                                                                                                                                                                                                                                           leaderReconciler)).build();
+        var healthKvRouter = KVNotificationRouter.<AetherKey, AetherValue> builder(AetherKey.class)
+                                                 .onPut(AetherKey.SpokesmanKey.class,
+                                                        _ -> bootstrapModule.retryIfNeeded())
+                                                 .onPut(AetherKey.ClusterConfigKey.class,
+                                                        (KVStoreNotification.ValuePut<AetherKey.ClusterConfigKey, AetherValue.ClusterConfigValue> put) -> onClusterConfigPut(put,
+                                                                                                                                                                             clusterTopologyManager,
+                                                                                                                                                                             leaderReconciler))
+                                                 .build();
 
         allEntries.addAll(healthKvRouter.asRouteEntries());
         var spokesmanPingLoop = org.pragmatica.aether.worker.metrics.SpokesmanPingLoop.spokesmanPingLoop(config.self(),
                                                                                                          clusterNode.network(),
-                                                                                                         config.timeouts().cluster().pingInterval(),
+                                                                                                         config.timeouts()
+                                                                                                               .cluster()
+                                                                                                               .pingInterval(),
                                                                                                          rabiaTermSupplier,
                                                                                                          metricsCollector::allMetrics,
                                                                                                          communityId -> lookupGovernor(kvStore,
@@ -2323,9 +2817,12 @@ public interface AetherNode extends ManageableNode {
 
         spokesmanPingLoop.start();
         metricsCollector.setCommunityReportSupplier(spokesmanPingLoop::currentReports);
-        var spokesmanKvRouter = KVNotificationRouter.<AetherKey, AetherValue> builder(AetherKey.class).onPut(AetherKey.SpokesmanKey.class,
-                                                                                                             spokesmanPingLoop::onSpokesmanPut).onRemove(AetherKey.SpokesmanKey.class,
-                                                                                                                                                         spokesmanPingLoop::onSpokesmanRemove).build();
+        var spokesmanKvRouter = KVNotificationRouter.<AetherKey, AetherValue> builder(AetherKey.class)
+                                                    .onPut(AetherKey.SpokesmanKey.class,
+                                                           spokesmanPingLoop::onSpokesmanPut)
+                                                    .onRemove(AetherKey.SpokesmanKey.class,
+                                                              spokesmanPingLoop::onSpokesmanRemove)
+                                                    .build();
 
         allEntries.addAll(spokesmanKvRouter.asRouteEntries());
         metricsCollector.addPongListener(spokesmanPingLoop::onClusterSyncPong);
@@ -2338,22 +2835,66 @@ public interface AetherNode extends ManageableNode {
         // lands replicated events offset-preserving WITHOUT re-replicating (appendRecovered).
         var streamReplicaRegistry = ReplicaRegistry.replicaRegistry();
         org.pragmatica.aether.stream.replication.ReplicationTransport streamReplicationTransport = clusterNode.network()::send;
+        // #261: the live-ack path promotes a replica to CAUGHT_UP only when its confirmed offset
+        // reaches back to the owner's earliest retained offset. The partition manager is constructed
+        // just below (it needs this manager), so the earliest-retained seam reads through a holder set
+        // immediately after.
+        var streamPartitionManagerRef = new AtomicReference<StreamPartitionManager>();
         var streamReplicationManager = ReplicationManager.replicationManager(config.self(),
                                                                              streamReplicaRegistry,
-                                                                             streamReplicationTransport);
+                                                                             streamReplicationTransport,
+                                                                             (streamName, partition) -> Option.option(streamPartitionManagerRef.get())
+                                                                                                              .map(spm -> spm.earliestRetainedOffset(streamName,
+                                                                                                                                                     partition))
+                                                                                                              .or(-1L));
+        var streamSegmentIndex = new SegmentIndex();
+        // A3b restore-at-boot: the streams MetadataStore was already restored from its latest disk
+        // snapshot when `streamStorageSetup` was assembled (StorageFactory.restoreAndSignalReady), so
+        // the durable `streams/` refs are present here. Rebuild the in-memory offset→segment index from
+        // them so sealed segments are readable immediately after a same-node restart, before any new
+        // append re-populates the index.
+        streamSegmentIndex.rebuildFromRefs(streamStorageSetup.metadataStore());
+        var streamStorage = streamStorageSetup.instance();
+        // A4/A5: per-node durable cursor store + tiered reader over the same disk-backed stream storage;
+        // registered as SPI extensions below so StreamAccessFactory persists consumer offsets and serves
+        // post-restart reads from sealed cold segments.
+        var streamCursorStore = CursorStore.cursorStore(streamStorage);
+        var streamTieredReader = TieredStreamReader.tieredStreamReader(streamSegmentIndex, streamStorage);
+        // #336 epoch-adoption: the committed owner-epoch source is SHARED between the live-append stamp
+        // (StreamPartitionManager, below) and the backfill/recovery seam (streamPartitionRecovery, below), so
+        // a recovered/backfilled event carries the SAME committed fencing token a live append would. Both
+        // read the identical committed StreamPartitionOwnershipValue.ownerEpoch the fence high-water derives
+        // from — otherwise the recovery seam's Epoch.ZERO (0:0) is rejected by an advanced high-water (1:N).
+        var streamOwnerEpochSource = KvStreamOwnerEpochSource.kvStreamOwnerEpochSource(kvStore);
         var streamPartitionManager = StreamPartitionManager.streamPartitionManager(streamMaxMemoryBytes,
-                                                                                   EvictionListener.NOOP,
+                                                                                   SegmentSealer.segmentSealer(StorageSegmentSink.storageSegmentSink(streamStorage,
+                                                                                                                                                     streamSegmentIndex)),
                                                                                    streamReplicationManager,
-                                                                                   clusterNode);
+                                                                                   clusterNode,
+                                                                                   ownershipEpochHighWater,
+                                                                                   streamOwnerEpochSource,
+                                                                                   resolveStreamWalDir(config),
+                                                                                   streamSegmentIndex::lastSealedOffset);
+
+        streamPartitionManagerRef.set(streamPartitionManager);
         // stream-offheap-budget-spec §4.5c / reconciliation #14: route off-heap budget exhaustion
         // (create-floor + growth) OUT of aether-stream via the injected Consumer<Exhaustion> sink and
         // INTO the cluster-event aggregator, which stamps this node's id and emits a
         // StreamMemoryExceeded event through its un-gated emitLocal path (per-node fact, like
         // SelfDrainInitiated). The aggregator owns the per-(stream,phase) 60s throttle.
         streamPartitionManager.exhaustionSink(eventAggregator::onStreamMemoryExceeded);
-        var streamConfigKvRouter = KVNotificationRouter.<AetherKey, AetherValue> builder(AetherKey.class).onPut(AetherKey.StreamConfigKey.class,
-                                                                                                                streamPartitionManager::onStreamConfigPut).onRemove(AetherKey.StreamConfigKey.class,
-                                                                                                                                                                    streamPartitionManager::onStreamConfigRemove).build();
+        // #336: the two StreamConfigKey put-handlers run in registration order — hydrate the committed
+        // config into replicaCatalog() FIRST (onStreamConfigPut), then place its replica set
+        // (reconcileReplicaSetOnConfigPut). clusterEventsControllerRef is the late-bound holder for the
+        // stream ReplicaSetController (set below, after the controller is built).
+        var streamConfigKvRouter = KVNotificationRouter.<AetherKey, AetherValue> builder(AetherKey.class)
+                                                       .onPut(AetherKey.StreamConfigKey.class,
+                                                              streamPartitionManager::onStreamConfigPut)
+                                                       .onPut(AetherKey.StreamConfigKey.class,
+                                                              _ -> reconcileReplicaSetOnConfigPut(clusterEventsControllerRef))
+                                                       .onRemove(AetherKey.StreamConfigKey.class,
+                                                                 streamPartitionManager::onStreamConfigRemove)
+                                                       .build();
 
         allEntries.addAll(streamConfigKvRouter.asRouteEntries());
         // B5b — provision system:cluster-events:1.0.0 as a REAL partition-managed stream.
@@ -2387,8 +2928,10 @@ public interface AetherNode extends ManageableNode {
         org.pragmatica.aether.stream.SystemStreamFactories.<ClusterEvent> systemStreamPublisher(org.pragmatica.aether.slice.stream.SystemStreams.CLUSTER_EVENTS,
                                                                                                 streamPartitionManager,
                                                                                                 serializer,
-                                                                                                clusterEventsStreamConfig).onSuccess(clusterEventsPublisherRef::set).onFailure(cause -> LOG.warn("cluster-events stream publisher wiring failed: {} — events fall back to log-only",
-                                                                                                                                                                                                 cause.message()));
+                                                                                                clusterEventsStreamConfig)
+                                                          .onSuccess(clusterEventsPublisherRef::set)
+                                                          .onFailure(cause -> LOG.warn("cluster-events stream publisher wiring failed: {} — events fall back to log-only",
+                                                                                       cause.message()));
         // Fix #3: the forward-capable cluster-events CONSUMER is wired further below, after
         // streamForwardClient + streamReadForwardMetrics are constructed, so a non-replica node
         // read-forwards observability reads to a caught-up replica instead of reading its own empty
@@ -2413,9 +2956,7 @@ public interface AetherNode extends ManageableNode {
         // backoff until both legs commit, so a commit timeout in the post-leader-gain window no longer
         // leaves the stream unregistered (which made /api/events|alerts|traces return 200 []).
         // deleted alongside the audit publisher and RecentCommandsBuffer.
-        var streamSegmentIndex = new SegmentIndex();
         var streamWatermarkTracker = WatermarkTracker.watermarkTracker();
-        var streamStorage = createStreamStorage(dhtClientOption);
         var streamSegmentReader = SegmentReader.segmentReader(streamStorage, streamSegmentIndex);
         var streamRetentionEnforcer = RetentionEnforcer.retentionEnforcer(streamStorage,
                                                                           streamSegmentIndex,
@@ -2426,7 +2967,19 @@ public interface AetherNode extends ManageableNode {
         // A4: lands backfilled/recovered events into the local ring offset-preserving WITHOUT
         // re-replicating (the receiver is not an owner), replacing the StreamPartitionRecovery NOOP
         // for both governor-failover recovery and the A4 backfill path below.
-        StreamPartitionRecovery streamPartitionRecovery = streamPartitionManager::appendRecovered;
+        // #336 epoch adoption (NOT invention): stamp the recovery/backfill append with the SAME committed
+        // owner epoch a live publish stamps (streamOwnerEpochSource reads the committed
+        // StreamPartitionOwnershipValue.ownerEpoch — the identical source the fence high-water is seeded
+        // from), so a backfilled event is equal-or-newer than the partition high-water and passes the fence
+        // instead of being rejected at the Epoch.ZERO floor (0:0 < 1:N). Cold-start/unowned arcs read
+        // Epoch.ZERO == the fence's ZERO default (equal → passes), so fresh-stream recovery is not regressed.
+        // The fence itself is untouched — this is a truthful stamp, not a wholesale exemption.
+        StreamPartitionRecovery streamPartitionRecovery = (s, p, payload, ts) -> streamPartitionManager.appendRecovered(s,
+                                                                                                                        p,
+                                                                                                                        payload,
+                                                                                                                        ts,
+                                                                                                                        streamOwnerEpochSource.currentOwnerEpoch(s,
+                                                                                                                                                                 p));
         var streamFailoverHandler = GovernorFailoverHandler.governorFailoverHandler(streamReplicaRegistry,
                                                                                     streamPartitionRecovery);
         // A4: production catch-up wiring. The forward transport/client are constructed here (ahead of
@@ -2443,21 +2996,38 @@ public interface AetherNode extends ManageableNode {
                                                                           streamingConfig.publishForwardTimeout(),
                                                                           streamingConfig.readForwardTimeout(),
                                                                           streamReadForwardMetrics);
-        // cluster-events CONSUMER: LOCAL read (governor/local preference). `/api/events` is a LEADER-bound
-        // route, and NODE_FAILED/NODE_LEFT are emitted leader-gated (ClusterEventAggregator.emitAsLeader),
-        // so reader and writer are the SAME node (the leader) by construction. The leader-gated emit
-        // publishes to the leader's LOCAL partition-0 buffer (DefaultStreamPublisher local-buffer branch);
-        // this local-read consumer reads that same buffer, so a leader-emitted event is immediately
-        // visible. The prior ANY_REPLICA forward-capable consumer forwarded the read AWAY to a remote HRW
-        // replica while deriving the fetch offset from leader-local metadata — mismatching the leader-local
-        // publish and returning 200 [] (the lost-NODE_FAILED root, #94/B5). Replica-forwarding was only
-        // needed in the OWNER-gated emit world (writer != reader); leader-gated emit makes it wrong.
+        // cluster-events CONSUMER: forward-capable (ANY_REPLICA). `/api/events` is now an ANY-target
+        // route (#267) — served from any core node, not leader-bound — so the endpoint stays available
+        // during leader churn/election (the prior LEADER binding 503'd exactly when operators most need
+        // events). A node that is NOT a cluster-events replica read-forwards to a CAUGHT_UP replica via
+        // the StreamForwardClient instead of reading its own empty partition (returning 200 []); a node
+        // that IS a caught-up replica reads locally; during the bootstrap window (no caught-up replica
+        // visible yet) it fails soft to the local partition. NODE_FAILED/NODE_LEFT are still emitted
+        // leader-gated to the leader's local partition-0 buffer, then replicated to the replica set.
+        //
+        // HISTORY (#94/B5): forward-capable reads were previously reverted to LOCAL because a fresh
+        // replica did not actually hold the partition's history (no real backfill) and offsets were
+        // unverified, so a forwarded fetch derived from leader-local metadata mismatched the replica and
+        // returned 200 []. Wave-1 #260 (receiver verifies fromOffset, rejects gaps) + #261 (backfill
+        // fires on becoming a replica; CAUGHT_UP only after history coverage) fixed that root: a
+        // CAUGHT_UP replica now genuinely holds [earliest..N], so a forwarded fetch from the retained
+        // tail returns the full window. Staleness: a forwarded read reflects the replica's CAUGHT_UP
+        // watermark, which may trail the owner by the in-flight replication window (sub-second under
+        // steady load) — acceptable for observability and far preferable to a 503.
         org.pragmatica.aether.stream.SystemStreamFactories.<ClusterEvent> systemStreamConsumer(org.pragmatica.aether.slice.stream.SystemStreams.CLUSTER_EVENTS,
                                                                                                streamPartitionManager,
                                                                                                serializer,
                                                                                                deserializer,
-                                                                                               clusterEventsStreamConfig).onSuccess(clusterEventsConsumerRef::set).onFailure(cause -> LOG.warn("cluster-events stream consumer wiring failed: {} — events reads return empty",
-                                                                                                                                                                                               cause.message()));
+                                                                                               clusterEventsStreamConfig,
+                                                                                               streamReplicaRegistry,
+                                                                                               Option.some(streamForwardClient),
+                                                                                               config.self(),
+                                                                                               Option.some(() -> Option.option(clusterEventsControllerRef.get()).flatMap(clusterEventsController -> clusterEventsController.ownerFor(clusterEventsStreamName,
+                                                                                                                                                                                                                                     0))),
+                                                                                               streamReadForwardMetrics)
+                                                          .onSuccess(clusterEventsConsumerRef::set)
+                                                          .onFailure(cause -> LOG.warn("cluster-events stream consumer wiring failed: {} — events reads return empty",
+                                                                                       cause.message()));
         var streamCatchupTransport = ForwardCatchupTransport.forwardCatchupTransport(streamForwardClient,
                                                                                      STREAM_CATCHUP_BATCH_SIZE);
         // Cold-start deadlock-break: a watermark+reachability probe over the same forward-read transport.
@@ -2468,19 +3038,27 @@ public interface AetherNode extends ManageableNode {
                                                                                                            target,
                                                                                                            streamName,
                                                                                                            partition);
-        // Self's local watermark for the cold-start promotion contest: the local partition's tail offset
-        // (-1 when the partition is absent/empty). Read locally — this is the SAME notion the peer probe
-        // computes remotely, so the highest-watermark comparison is symmetric.
+        // Self's local watermark: the local partition's HIGHEST held offset (ring head; -1 when the
+        // partition is absent/empty). Read locally — this is the SAME notion the peer probe computes
+        // remotely (its highest offset), so the highest-watermark contest is symmetric, AND it is the
+        // base for the #333 owner-source backfill `fromOffset` (head + 1 = next-expected, contiguous).
+        // NOTE: this is `headOffset` (highest), NOT `tailOffset` (earliest retained) — using the tail
+        // understated self's position, breaking both the cold-start contest symmetry and the owner-source
+        // contiguous fromOffset.
         SelfWatermark streamSelfWatermark = (streamName, partition) -> streamPartitionManager.partitionInfo(streamName,
-                                                                                                            partition).map(StreamPartitionManager.PartitionInfo::tailOffset)
-                                                                                                           .or(-1L);
+                                                                                                            partition)
+                                                                                             .map(StreamPartitionManager.PartitionInfo::headOffset)
+                                                                                             .or(-1L);
         var streamPartitionBackfill = PartitionBackfill.partitionBackfill(streamReplicaRegistry,
                                                                           streamPartitionRecovery,
                                                                           streamCatchupTransport,
+                                                                          streamReplicationTransport,
                                                                           streamWatermarkProbe,
                                                                           streamSelfWatermark,
                                                                           config.self(),
-                                                                          streamingConfig.backfillSourceWaitBound());
+                                                                          streamingConfig.backfillSourceWaitBound(),
+                                                                          () -> streamPlacementMembers(clusterEventsControllerRef,
+                                                                                                       clusterTopologyManager));
         var streamBackfillExecutor = Executors.newSingleThreadExecutor(runnable -> daemonThread(runnable,
                                                                                                 "stream-partition-backfill"));
         // A2: per-node controller that reconciles the (previously never-populated) ReplicaRegistry
@@ -2488,19 +3066,83 @@ public interface AetherNode extends ManageableNode {
         // size come from the consensus topology observer; the stream catalog (name/partitions/
         // minSyncReplicas + partition-has-data) is adapted from the partition manager. The A4
         // catch-up seam now runs backfill off the reconcile thread on a dedicated executor.
+        //
+        // 1d-iii / #265: the leader-only StreamPartitionOwnershipWriter, fired by the controller's
+        // onReconcilePassComplete batch driver seam. It mirrors the DHT BootstrapModule ownership writer:
+        //   - isLeaderSupplier / rabiaTermSupplier / hlcClock are the same suppliers the DHT writer uses,
+        //   - CommittedOwnership reads the committed StreamPartitionOwnershipValue exactly as
+        //     KvStreamOwnerEpochSource does (getTyped on the StreamPartitionOwnershipKey),
+        //   - HrwOwner late-binds to streamReplicaSetController::ownerFor through clusterEventsControllerRef
+        //     (set to the same controller below, before the first reconcile fires the driver).
+        // The writer self-limits: writeOwnershipChange returns none() on a follower (its isLeaderSupplier
+        // gate short-circuits BEFORE any KV read) and none() for an unchanged owner, so the driver only
+        // emits a consensus Put on the leader and only for genuinely-moved partitions. #265 increment 6:
+        // the driver is now BATCH-shaped — the controller flushes ONE reconciled (stream, partition) list
+        // per reconcile pass (onReconcilePassComplete) and driveStreamOwnership applies the emitted Puts as
+        // a SINGLE consensus batch, so a mass reshuffle commits one batch per pass, not one apply per moved
+        // partition. This keeps the reshuffle fan-out bound the promise #265 makes.
+        var streamOwnershipWriter = StreamPartitionOwnershipWriter.streamPartitionOwnershipWriter(isLeaderSupplier,
+                                                                                                  rabiaTermSupplier,
+                                                                                                  hlcClock,
+                                                                                                  (stream, partition) -> kvStore.getTyped(StreamPartitionOwnershipKey.streamPartitionOwnershipKey(stream,
+                                                                                                                                                                                                  partition),
+                                                                                                                                          StreamPartitionOwnershipValue.class),
+                                                                                                  (stream, partition) -> Option.option(clusterEventsControllerRef.get()).flatMap(ownershipController -> ownershipController.ownerFor(stream,
+                                                                                                                                                                                                                                     partition)));
         var streamReplicaSetController = ReplicaSetController.replicaSetController(streamReplicaRegistry,
                                                                                    config.self(),
                                                                                    () -> List.copyOf(clusterTopologyManager.observer()
                                                                                                                            .coreNodes()),
                                                                                    clusterTopologyManager.observer()::clusterSize,
                                                                                    streamPartitionManager.replicaCatalog(),
-                                                                                   (streamName, partition) -> streamBackfillExecutor.execute(() -> streamPartitionBackfill.backfill(streamName,
-                                                                                                                                                                                    partition)));
+                                                                                   (streamName, partition) -> streamBackfillExecutor.execute(() -> materializeThenBackfill(streamPartitionManager,
+                                                                                                                                                                           streamPartitionBackfill,
+                                                                                                                                                                           streamName,
+                                                                                                                                                                           partition)),
+                                                                                   (List<PartitionKey> reconciled) -> driveStreamOwnership(streamOwnershipWriter,
+                                                                                                                                           clusterCommandApplier,
+                                                                                                                                           reconciled));
         // B5b: bind the owner-gate ref so ClusterEventAggregator.emit can consult isOwner(...) for
         // (system:cluster-events:1.0.0, partition 0). isOwner is computed from the live HRW placement
         // against the current topology, independent of reconcile, so it is correct as soon as members
         // are visible (and true for a steady-state single-node cluster).
         clusterEventsControllerRef.set(streamReplicaSetController);
+        // #265 increment 1/2: late-bind the placement-role supplier now that the controller exists. The
+        // controller is constructed AFTER StreamPartitionManager (it consumes replicaCatalog()), so this
+        // is the same construction-order inversion the streamPartitionManagerRef seam resolves above —
+        // resolved here by a settable field rather than an AtomicReference. Increment 2 flipped the gate:
+        // hydrate/create now materialize a partition ring IFF roleFor(stream, partition) ∈ {OWNER, REPLICA},
+        // so a non-replica node holds the partition metadata-only (no ring, no off-heap bytes) — THE memory
+        // win. The reconcile hook (materializeThenBackfill, bound above via onBecameReplica) and the
+        // owner-append safety valve materialize a deferred ring once the role resolves. Forge/unit managers
+        // keep the default always-OWNER supplier (materialize-everything, unchanged).
+        streamPartitionManager.placementRoleSupplier(streamReplicaSetController::roleFor);
+        // #265 increment 4: bind the aggregate partition-guard's cluster-size source to the SAME
+        // topology-observer count the ReplicaSetController uses for HRW placement, so the create-time guard's
+        // node count matches placement. The default `() -> 0` in Forge/unit/legacy managers disables the
+        // aggregate guard (only the per-stream ceiling applies).
+        streamPartitionManager.clusterSizeSupplier(clusterTopologyManager.observer()::clusterSize);
+        // Write-forward race fix: bind the owner-side forwarded-publish config source to committed KV state
+        // so a forwarded publish that races ahead of this owner's onStreamConfigPut can lazily materialize
+        // from the committed StreamConfigKey (preserving RF); absent config yields the retryable
+        // StreamConfigNotYetVisible the forwarder backs off on. Forge/unit managers keep the default (none).
+        streamPartitionManager.committedConfigSource(name -> kvStore.getTyped(AetherKey.StreamConfigKey.streamConfigKey(name),
+                                                                              AetherValue.StreamConfigValue.class)
+                                                                    .map(AetherValue.StreamConfigValue::config));
+        // #265 increment 5: reshuffle lifecycle. The release catch-up gate reads the live replica registry
+        // (self-excluded CAUGHT_UP count + self caught-up flag); the owner rule reads the committed
+        // StreamPartitionOwnershipValue (release only once ownership names a DIFFERENT node than self). Both
+        // are bound through static helpers so the supplier lambdas stay single-expression.
+        var streamCommittedOwnerSource = KvCommittedStreamOwnerSource.kvCommittedStreamOwnerSource(kvStore);
+
+        streamPartitionManager.replicaCatchupSource((stream, partition) -> streamCatchupView(streamReplicaRegistry,
+                                                                                             config.self(),
+                                                                                             stream,
+                                                                                             partition));
+        streamPartitionManager.ownerReleaseGuard((stream, partition) -> committedOwnerElsewhere(streamCommittedOwnerSource,
+                                                                                                config.self(),
+                                                                                                stream,
+                                                                                                partition));
         // Reconcile on every membership decision (all variants via the tail helper) and on
         // ClusterStateNotification edges (PASSIVE suppresses; PASSIVE->ACTIVE re-reconciles).
         wireMembershipDecisionTail(allEntries, streamReplicaSetController::onMembershipDecision);
@@ -2509,6 +3151,34 @@ public interface AetherNode extends ManageableNode {
         // Initial reconcile once membership is available; serialized on the controller executor, so
         // this is a safe no-op until the topology observer reports core members.
         streamReplicaSetController.reconcile();
+        // A4 periodic backfill re-drive: reconcilePartition fires backfill ONCE per reconcile edge, so a
+        // cold-start replica that saw NO_SOURCE on its first attempt would never re-attempt and stay
+        // SYNCING forever (the system:cluster-events GET /api/events -> 200 [] deadlock). Re-drive every
+        // STREAM_BACKFILL_REDRIVE_INTERVAL onto the SAME backfill executor so the owner-immediate /
+        // bounded-wait cold-start promotion is actually reached; CAUGHT_UP partitions are skipped.
+        SharedScheduler.scheduleAtFixedRate(() -> redriveIncompleteBackfills(streamPartitionBackfill,
+                                                                             streamBackfillExecutor),
+                                            STREAM_BACKFILL_REDRIVE_INTERVAL);
+        // A3b snapshot driver: `SnapshotManager.maybeSnapshot()` has no other caller — without this tick
+        // no metadata snapshot is ever taken and nothing survives a restart. Iterate ALL storage setups
+        // (streams + artifacts/content), so every MetadataStore's refs are persisted; maybeSnapshot
+        // self-gates on its mutation-count / interval trigger, so a 10s tick is cheap when not due.
+        SharedScheduler.scheduleAtFixedRate(() -> snapshotAllSetups(storageSetups), METADATA_SNAPSHOT_INTERVAL);
+        // W5 WAL disk-reclamation driver: truncate every partition's write-ahead log up to its DURABLE
+        // last-sealed offset so the WAL does not grow unbounded. Records <= lastSealedOffset are already in
+        // durable cold segments (served post-restart by the tiered reader), so dropping them from the WAL
+        // loses nothing; the un-sealed tail stays in the WAL. truncate is threshold-lazy, so this tick is
+        // cheap when nothing new has sealed. Driven off the durable sealed bound (not the void
+        // eviction->seal listener) to avoid any truncated-before-durable window.
+        SharedScheduler.scheduleAtFixedRate(streamPartitionManager::truncateWalsToSealed, WAL_TRUNCATE_INTERVAL);
+        // #265 increment 5 reshuffle-lifecycle driver: each tick frees reshuffle-concurrency slots for
+        // finished (self CAUGHT_UP) / owner / role-lost partitions, evaluates release candidates (role-loss
+        // debounce → catch-up + owner gate → release, freeing ring memory + budget while KEEPING the WAL on
+        // disk), then drains the materialization queue (system first) so budget a release just freed admits a
+        // queued partition in the same tick. 5s cadence → the 2-tick flap debounce is ≈10s; a steady-state
+        // tick is a cheap sweep of materialized partitions over empty queues.
+        SharedScheduler.scheduleAtFixedRate(streamPartitionManager::reconcileReshuffle,
+                                            STREAM_RESHUFFLE_RECONCILE_INTERVAL);
         var streamingCoordinator = StreamingCoordinator.streamingCoordinator(streamFailoverHandler,
                                                                              streamRetentionEnforcer,
                                                                              streamPartitionManager,
@@ -2535,16 +3205,60 @@ public interface AetherNode extends ManageableNode {
 
         allEntries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
                                                  systemStreamRegistrar::onLeaderChange));
+        // #290: cluster-formation bootstrap admin API key. On first leadership, if no admin key is yet
+        // present in the KV store, generate one cluster-wide and print the plaintext once. Self-healing
+        // and idempotent (mirrors SystemStreamRegistrar); the leg uses the same clusterNode.apply
+        // consensus path as the API-key routes and the same KV store the validator reads.
+        var bootstrapAdminKeyRegistrar = BootstrapAdminKeyRegistrar.bootstrapAdminKeyRegistrar(BootstrapAdminKeyLeg.bootstrapAdminKeyLeg(() -> kvStore,
+                                                                                                                                         isLeaderSupplier::getAsBoolean,
+                                                                                                                                         clusterCommandApplier));
+
+        allEntries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
+                                                 bootstrapAdminKeyRegistrar::onLeaderChange));
+        // #345 item 1e-a: the committed-owner source, the linearizable no-op-round barrier, and the
+        // shared owner-side serve pipeline. The barrier orders one no-op consensus round through the
+        // cluster apply path and awaits this node's local apply of it (spec §8.1 `no-op-round`); the
+        // mode is the parsed `[durable-entity] read-linearization` knob (only NO_OP_ROUND ships — a
+        // `lease` value is rejected at config parse). The owner-serve pipeline is shared by the local
+        // read path (StreamReadRouter) AND the forwarded read path (StreamForwardHandler) so a
+        // forwarded LINEARIZABLE read is re-guarded at the owner instead of served unguarded.
+        var committedStreamOwnerSource = KvCommittedStreamOwnerSource.kvCommittedStreamOwnerSource(kvStore);
+        Option<LinearizableBarrier> linearizableBarrier = streamingConfig.readLinearization() == ReadLinearizationMode.NO_OP_ROUND
+                                                          ? Option.some(LinearizableBarrier.noOpRound(clusterCommandApplier,
+                                                                                                      streamingConfig.readForwardTimeout()))
+                                                          : Option.none();
+        var linearizableOwnerServe = LinearizableOwnerServe.<OffHeapRingBuffer.RawEvent> linearizableOwnerServe(config.self(),
+                                                                                                                Option.some(streamReplicaRegistry),
+                                                                                                                Option.some(committedStreamOwnerSource),
+                                                                                                                Option.some(ownershipEpochHighWater),
+                                                                                                                linearizableBarrier,
+                                                                                                                (stream, partition, fromOffset, maxEvents) -> streamPartitionManager.readLocal(stream,
+                                                                                                                                                                                               partition,
+                                                                                                                                                                                               fromOffset,
+                                                                                                                                                                                               maxEvents)
+                                                                                                                                                                                    .async());
         var streamForwardHandler = StreamForwardHandler.streamForwardHandler(config.self(),
                                                                              streamPartitionManager,
                                                                              streamForwardTransport,
                                                                              streamingConfig.maxReadResponseBytes(),
-                                                                             streamReadForwardMetrics);
+                                                                             streamReadForwardMetrics,
+                                                                             Option.some(linearizableOwnerServe));
         var streamReadRouter = StreamReadRouter.streamReadRouter(streamPartitionManager,
                                                                  Option.some(streamReplicaRegistry),
                                                                  Option.some(streamForwardClient),
                                                                  config.self(),
-                                                                 streamReadForwardMetrics);
+                                                                 streamReplicaSetController::ownerFor,
+                                                                 streamReadForwardMetrics,
+                                                                 Option.some(committedStreamOwnerSource),
+                                                                 Option.some(ownershipEpochHighWater),
+                                                                 linearizableBarrier);
+        // Publish-side mirror: same forward client + HRW owner resolver the read router uses, so a
+        // management publish landing on a metadata-only node write-forwards to the owner (#265) instead
+        // of failing PARTITION_NOT_LOCAL on a local append.
+        var streamWriteRouter = StreamWriteRouter.streamWriteRouter(streamPartitionManager,
+                                                                    Option.some(streamForwardClient),
+                                                                    config.self(),
+                                                                    streamReplicaSetController::ownerFor);
 
         allEntries.add(MessageRouter.Entry.route(StreamForwardMessage.PublishForward.class,
                                                  streamForwardHandler::onPublishForward));
@@ -2562,6 +3276,7 @@ public interface AetherNode extends ManageableNode {
         // partition message transport as the forward handler.
         var streamReplicationReceiveHandler = ReplicationReceiveHandler.replicationReceiveHandler(config.self(),
                                                                                                   streamPartitionManager::appendRecovered,
+                                                                                                  streamPartitionManager::nextExpectedOffset,
                                                                                                   streamReplicationTransport,
                                                                                                   (streamName, partition) -> streamBackfillExecutor.execute(() -> streamPartitionBackfill.backfill(streamName,
                                                                                                                                                                                                    partition)));
@@ -2575,9 +3290,15 @@ public interface AetherNode extends ManageableNode {
                                         taskGroupOwnerResolver,
                                         streamReplicaSetController::ownerFor,
                                         streamPartitionManager,
+                                        streamCursorStore,
+                                        streamTieredReader,
                                         serializer,
                                         deserializer,
-                                        config.self());
+                                        config.self(),
+                                        streamReplicaRegistry,
+                                        committedStreamOwnerSource,
+                                        ownershipEpochHighWater,
+                                        linearizableBarrier);
         var certRenewalScheduler = createCertRenewalScheduler(config,
                                                               clusterNode,
                                                               appHttpServer,
@@ -2587,9 +3308,11 @@ public interface AetherNode extends ManageableNode {
         var node = new aetherNode(config,
                                   delegateRouter,
                                   kvStore,
+                                  ownershipEpochHighWater,
                                   sliceRegistry,
                                   sliceStore,
                                   clusterNode,
+                                  taskGroupOwnerResolver,
                                   switchableCluster,
                                   nodeDeploymentManager,
                                   clusterDeploymentManager,
@@ -2600,6 +3323,7 @@ public interface AetherNode extends ManageableNode {
                                   deploymentMetricsCollector,
                                   deploymentMetricsScheduler,
                                   controlLoop,
+                                  workerMetricsAggregator,
                                   sliceInvoker,
                                   invocationHandler,
                                   blueprintService,
@@ -2610,7 +3334,6 @@ public interface AetherNode extends ManageableNode {
                                   deploymentManager,
                                   abTestManager,
                                   alertManager,
-                                  depthRegistry,
                                   traceStore,
                                   logLevelRegistry,
                                   dynamicConfigManager,
@@ -2625,6 +3348,7 @@ public interface AetherNode extends ManageableNode {
                                   BackupService.disabled(),
                                   streamPartitionManager,
                                   streamReadRouter,
+                                  streamWriteRouter,
                                   consumerGroupCoordinator,
                                   consumerGroupRegistry,
                                   streamNamespacesService,
@@ -2633,7 +3357,9 @@ public interface AetherNode extends ManageableNode {
                                   eventLoopMetricsCollector,
                                   swimHealthDetector,
                                   presenceSampler,
+                                  leaderReconciler,
                                   membershipFsm,
+                                  quorumLossDetector,
                                   transitionJournal,
                                   startSwimTrigger,
                                   Option.empty(),
@@ -2652,6 +3378,13 @@ public interface AetherNode extends ManageableNode {
         nodeDeploymentManager.setShutdownCallback(node::stop);
         nodeDeploymentManager.setSelfReadySignal(() -> markSubsystemsReady(nodeLifecycle::signalReady,
                                                                            nodeReportedStateHolder));
+        // Activation level-heal: a cold-start `restart_all_nodes` can drop the single CAS-latched
+        // ClusterStateNotification.ACTIVE edge while the router delegate is being rebuilt, leaving NDM
+        // stuck in Dormant (self-ready/subsystemsReady never fire) so the node reports SYNCING forever.
+        // This tick re-dispatches QuorumEstablished only while still Dormant AND consensus is live —
+        // a dropped edge self-heals within one interval; a no-op on every healthy node thereafter.
+        SharedScheduler.scheduleAtFixedRate(() -> reconcileNodeActivation(clusterNode::isActive, nodeDeploymentManager),
+                                            NDM_ACTIVATION_RECONCILE_INTERVAL);
         nodeLifecycle.subsystemsReady();
 
         return RabiaNode.buildAndWireRouter(delegateRouter, allEntries).map(_ -> {
@@ -2666,7 +3399,7 @@ public interface AetherNode extends ManageableNode {
                 var managementServer = ManagementServer.managementServer(config.managementPort(),
                                                                          () -> node,
                                                                          alertManager,
-                                                                         depthRegistry,
+                                                                         configRegistry,
                                                                          traceStore,
                                                                          logLevelRegistry,
                                                                          dynamicConfigManager,
@@ -2694,9 +3427,11 @@ public interface AetherNode extends ManageableNode {
                 return new aetherNode(config,
                                       delegateRouter,
                                       kvStore,
+                                      ownershipEpochHighWater,
                                       sliceRegistry,
                                       sliceStore,
                                       clusterNode,
+                                      taskGroupOwnerResolver,
                                       switchableCluster,
                                       nodeDeploymentManager,
                                       clusterDeploymentManager,
@@ -2707,6 +3442,7 @@ public interface AetherNode extends ManageableNode {
                                       deploymentMetricsCollector,
                                       deploymentMetricsScheduler,
                                       controlLoop,
+                                      workerMetricsAggregator,
                                       sliceInvoker,
                                       invocationHandler,
                                       blueprintService,
@@ -2717,7 +3453,6 @@ public interface AetherNode extends ManageableNode {
                                       deploymentManager,
                                       abTestManager,
                                       alertManager,
-                                      depthRegistry,
                                       traceStore,
                                       logLevelRegistry,
                                       dynamicConfigManager,
@@ -2732,6 +3467,7 @@ public interface AetherNode extends ManageableNode {
                                       BackupService.disabled(),
                                       streamPartitionManager,
                                       streamReadRouter,
+                                      streamWriteRouter,
                                       consumerGroupCoordinator,
                                       consumerGroupRegistry,
                                       streamNamespacesService,
@@ -2740,7 +3476,9 @@ public interface AetherNode extends ManageableNode {
                                       eventLoopMetricsCollector,
                                       swimHealthDetector,
                                       presenceSampler,
+                                      leaderReconciler,
                                       membershipFsm,
+                                      quorumLossDetector,
                                       transitionJournal,
                                       startSwimTrigger,
                                       Option.some(managementServer),
@@ -2764,6 +3502,26 @@ public interface AetherNode extends ManageableNode {
     TimeSpan PHASE_WATCH_INTERVAL = TimeSpan.timeSpan(1).seconds();
     /// Wave-1 item 3 (#245 baseline diagnostic) cadence for [#logMembershipBaselineTrace].
     TimeSpan MEMBERSHIP_BASELINE_TRACE_INTERVAL = TimeSpan.timeSpan(30).seconds();
+
+    /// Single FSM-transition fan-out installed at the central transition chokepoint
+    /// ([`MembershipFsm#onTransition`], fired once per ACTUAL per-member state change under the FSM's
+    /// synchronized per-member dispatch monitor). Records the transition into the per-node journal
+    /// (Wave-1 Enrichment A) AND — when the transition crosses the exact-`Member` boundary — re-feeds
+    /// the strict-core count to the quorum-loss detector. This prompt re-feed (NOT only the 15s
+    /// presence down-hysteresis `onNttReconcile` / DEAD `onMembershipDeath` paths) is what arms the
+    /// self-drain window when several cores enter SUSPECT at once, and CANCELS it on a SUSPECT→MEMBER
+    /// refutation. Safe-by-precedent: `onMembershipDeath` already drives the same
+    /// `propagateMemberCount`→`strictCoreMemberCount` chain from inside this same dispatch monitor.
+    @Contract
+    private static void onFsmTransition(TransitionJournal journal,
+                                        AtomicReference<QuorumLossDetector> quorumLossDetectorRef,
+                                        MembershipFsm membershipFsm,
+                                        MembershipTransitionRecord record) {
+        appendFsmTransition(journal, record);
+        if (crossesMemberBoundary(record)) {
+            propagateMemberCount(quorumLossDetectorRef, membershipFsm);
+        }
+    }
 
     /// Wave-1 Enrichment A: map one FSM transition observation into the per-node journal.
     @Contract
@@ -2844,7 +3602,10 @@ public interface AetherNode extends ManageableNode {
     private static void onClusterConfigPut(ValuePut<AetherKey.ClusterConfigKey, AetherValue.ClusterConfigValue> put,
                                            ClusterTopologyManager clusterTopologyManager,
                                            LeaderReconciler leaderReconciler) {
-        clusterTopologyManager.observer().handleSetClusterSize(new TopologyManagementMessage.SetClusterSize(put.cause().value().coreCount()));
+        clusterTopologyManager.observer()
+                              .handleSetClusterSize(new TopologyManagementMessage.SetClusterSize(put.cause()
+                                                                                                    .value()
+                                                                                                    .coreCount()));
         clusterTopologyManager.onClusterConfigChanged();
         leaderReconciler.onConfigChange();
     }
@@ -2961,10 +3722,40 @@ public interface AetherNode extends ManageableNode {
     }
 
     private static AetherValue.ProvisioningSource detectProvisioningSource() {
-        var raw = Option.option(System.getenv("AETHER_PROVISIONED_BY")).filter(v -> !v.isBlank()).map(String::trim).map(String::toLowerCase);
+        var raw = Option.option(System.getenv("AETHER_PROVISIONED_BY"))
+                        .filter(v -> !v.isBlank())
+                        .map(String::trim)
+                        .map(String::toLowerCase);
 
         return raw.map(AetherNode::provisioningSourceFrom)
                   .or(AetherValue.ProvisioningSource.MANUAL);
+    }
+
+    /// #336 — parse this node's OWN resolved config file (the per-node overlay the CLI rendered at
+    /// bootstrap with `${env:...}` / `${secrets:...}` placeholders resolved to literals) into a
+    /// [TomlDocument], so the leader's CTM render path can substitute the placeholders a replacement's
+    /// composed overlay inherits from the deliberately-unresolved persisted KV TOML with these
+    /// literals at the same TOML path. The config path is published by [org.pragmatica.aether.Main]
+    /// via the `aether.config.path` system property where it resolves the `--config=` argument (the
+    /// node module's established pattern of reading runtime context from props/env at the assemble
+    /// site). Returns [Option#none] gracefully when no path was published (forge / tests / a config
+    /// loaded by other means) or the file cannot be parsed — the CTM then passes composed overlays
+    /// through unchanged, preserving prior behavior.
+    private static Option<TomlDocument> parseOwnResolvedConfig() {
+        return Option.option(System.getProperty(CONFIG_PATH_PROPERTY))
+                     .filter(path -> !path.isBlank())
+                     .map(Path::of)
+                     .filter(path -> path.toFile()
+                                         .exists())
+                     .flatMap(AetherNode::parseConfigFile);
+    }
+
+    private static Option<TomlDocument> parseConfigFile(Path path) {
+        return TomlParser.parseFile(path)
+                         .onFailure(cause -> LOG.warn("#336: failed to parse own resolved config at {} for CTM placeholder resolution: {}",
+                                                      path,
+                                                      cause.message()))
+                         .option();
     }
 
     private static AetherValue.ProvisioningSource provisioningSourceFrom(String raw) {
@@ -3052,14 +3843,17 @@ public interface AetherNode extends ManageableNode {
         };
 
         quicNetwork.setPeerStateListener(listener);
-        quicNetwork.connectedPeers().forEach(peer -> {
-            LOG.debug("QuicPeerState: catch-up recordTransportHint(reachable) for already-connected peer {}", peer);
-            swimDetector.recordTransportHint(new TransportObservation.PeerReachable(peer));
-        });
+        quicNetwork.connectedPeers()
+                   .forEach(peer -> {
+                                LOG.debug("QuicPeerState: catch-up recordTransportHint(reachable) for already-connected peer {}",
+                                          peer);
+                                swimDetector.recordTransportHint(new TransportObservation.PeerReachable(peer));
+                            });
     }
 
     enum QuicTransportCause implements Cause {
-        PEER_LEFT("QUIC peer connection closed");
+        PEER_LEFT("QUIC peer connection closed"),
+        PING_TIMEOUT("cluster-sync ping/pong timeout (missed-pong threshold)");
         private final String message;
         QuicTransportCause(String message) {
             this.message = message;
@@ -3349,12 +4143,14 @@ public interface AetherNode extends ManageableNode {
                                                   KVStore<AetherKey, AetherValue> kvStore,
                                                   SliceStore sliceStore,
                                                   SliceInvoker sliceInvoker,
+                                                  Supplier<CoreSwimHealthDetector> swimHealthDetectorSupplier,
                                                   Logger growthLog) {
         if (!put.cause().key().nodeId().equals(selfId)) {
             return;
         }
 
         var role = put.cause().value().role();
+        var communityId = put.cause().value().communityId();
 
         if (AetherValue.ActivationDirectiveValue.CORE.equals(role)) {
             growthLog.info("Received core activation directive from CDM");
@@ -3370,6 +4166,8 @@ public interface AetherNode extends ManageableNode {
                                kvStore,
                                sliceStore,
                                sliceInvoker,
+                               communityId,
+                               swimHealthDetectorSupplier.get(),
                                growthLog);
         }
     }
@@ -3384,6 +4182,8 @@ public interface AetherNode extends ManageableNode {
                                            KVStore<AetherKey, AetherValue> kvStore,
                                            SliceStore sliceStore,
                                            SliceInvoker sliceInvoker,
+                                           String communityId,
+                                           CoreSwimHealthDetector swimHealthDetector,
                                            Logger log) {
         clusterNode.authorizeObservation();
         switchableCluster.switchTo(forwardingClusterNode);
@@ -3393,26 +4193,55 @@ public interface AetherNode extends ManageableNode {
         var workerBootstrap = WorkerBootstrap.workerBootstrap(selfId, delegateRouter, kvStore);
         var governorMesh = GovernorMesh.governorMesh(delegateRouter);
         var groupMembershipTracker = GroupMembershipTracker.groupMembershipTracker(selfId,
-                                                                                   config.workerConfig().map(WorkerConfig::groupName).or(WorkerConfig.DEFAULT_GROUP_NAME),
-                                                                                   config.workerConfig().map(WorkerConfig::maxGroupSize).or(WorkerConfig.DEFAULT_MAX_GROUP_SIZE));
+                                                                                   config.workerConfig()
+                                                                                         .map(WorkerConfig::groupName)
+                                                                                         .or(WorkerConfig.DEFAULT_GROUP_NAME),
+                                                                                   config.workerConfig()
+                                                                                         .map(WorkerConfig::maxGroupSize)
+                                                                                         .or(WorkerConfig.DEFAULT_MAX_GROUP_SIZE));
         var workerDeploymentManager = WorkerDeploymentManager.workerDeploymentManager(selfId,
                                                                                       sliceStore,
                                                                                       mutationForwarder,
                                                                                       List.of(),
-                                                                                      () -> groupMembershipTracker.myGroup()
-                                                                                                                  .communityId());
+                                                                                      () -> communityId);
         var workerHlc = HlcClock.hlcClock(selfId);
         var workerTcpAddress = resolveSelfTcpAddress(config);
-        var governorAnnouncer = org.pragmatica.aether.worker.governor.GovernorAnnouncer.governorAnnouncer(selfId,
-                                                                                                          clusterNode,
-                                                                                                          workerHlc,
-                                                                                                          () -> groupMembershipTracker.myGroup()
-                                                                                                                                      .communityId(),
-                                                                                                          () -> workerTcpAddress,
-                                                                                                          () -> Epoch.ZERO);
+        // GAP 1.5 (announce → consensus): the announcer must apply through the forwarding
+        // cluster node, NOT the raw RabiaNode. A worker is observation-only and cannot drive
+        // consensus locally; forwardingClusterNode relays cluster.apply to a core peer (the
+        // leader), so the GovernorAnnouncementKey Put reaches consensus instead of being a
+        // dropped local apply.
+        var governorAnnouncer = GovernorAnnouncer.governorAnnouncer(selfId,
+                                                                    forwardingClusterNode,
+                                                                    workerHlc,
+                                                                    () -> communityId,
+                                                                    () -> workerTcpAddress,
+                                                                    () -> Epoch.ZERO);
 
         governorAnnouncer.start();
+        // GAP 2 (SWIM → governor): SWIM observations are edge-triggered, so on every edge we
+        // re-read the full ALIVE set and hand the community-filtered slice to the announcer.
+        // CommunityMembershipFilter scopes by the committed ActivationDirectiveValue.communityId
+        // (kvStore), NOT SwimMember source-labels: labels are absent for gossip-learned members
+        // and would silently drop community peers, whereas the committed directive is
+        // authoritative consensus state. Source-scoping (one community per source) is the
+        // single-community-per-source form; communityId-scoping is the refinement once the
+        // growth comparator splits a source into multiple communities.
+        swimHealthDetector.addObservationListener(observation -> announceCommunityMembership(governorAnnouncer,
+                                                                                             swimHealthDetector,
+                                                                                             kvStore,
+                                                                                             communityId));
         log.info("Worker {} subsystems created, ready for SWIM-based community formation", selfId.id());
+    }
+
+    @SuppressWarnings({"JBCT-RET-01"})
+    private static void announceCommunityMembership(GovernorAnnouncer governorAnnouncer,
+                                                    CoreSwimHealthDetector swimHealthDetector,
+                                                    KVStore<AetherKey, AetherValue> kvStore,
+                                                    String communityId) {
+        governorAnnouncer.onMembershipChange(CommunityMembershipFilter.communityAliveMembers(swimHealthDetector.aliveMembers(),
+                                                                                             kvStore,
+                                                                                             communityId));
     }
 
     private static String resolveSelfTcpAddress(AetherNodeConfig config) {
@@ -3431,11 +4260,13 @@ public interface AetherNode extends ManageableNode {
     @SuppressWarnings({"unchecked", "rawtypes", "JBCT-RET-01"})
     private static void handleForwardApplyRequest(ForwardApplyRequest request,
                                                   RabiaNode<KVCommand<AetherKey>> clusterNode) {
-        clusterNode.apply((List) request.commands()).onSuccess(results -> sendSuccessResponse(clusterNode,
-                                                                                              request,
-                                                                                              (List) results)).onFailure(cause -> sendFailureResponse(clusterNode,
-                                                                                                                                                      request,
-                                                                                                                                                      (Cause) cause));
+        clusterNode.apply((List) request.commands())
+                   .onSuccess(results -> sendSuccessResponse(clusterNode,
+                                                             request,
+                                                             (List) results))
+                   .onFailure(cause -> sendFailureResponse(clusterNode,
+                                                           request,
+                                                           (Cause) cause));
     }
 
     @SuppressWarnings({"rawtypes"})
@@ -3459,41 +4290,13 @@ public interface AetherNode extends ManageableNode {
         clusterNode.network().send(request.sender(), response);
     }
 
-    @SuppressWarnings("JBCT-RET-01")
+    /// Build the boot-time SWIM gossip encryptor. Delegates to the shared
+    /// [SwimGossipEncryptors] factory so the running node and the boot-time self-address
+    /// reflection probe ([org.pragmatica.aether.SelfAddressResolver]) encrypt gossip with
+    /// byte-identical key material (a divergent encryptor would silently fail to decrypt the
+    /// seed's `WhoAmI` reply).
     private static RotatingGossipEncryptor createGossipEncryptor(AetherNodeConfig config) {
-        var initial = config.certificateProvider().flatMap(provider -> buildDualKeyEncryptor(provider)).or(GossipEncryptor.none());
-
-        return RotatingGossipEncryptor.rotatingGossipEncryptor(initial);
-    }
-
-    @SuppressWarnings("JBCT-RET-01")
-    private static Option<GossipEncryptor> buildDualKeyEncryptor(org.pragmatica.net.tcp.security.CertificateProvider provider) {
-        return provider.currentGossipKey()
-                       .option()
-                       .flatMap(current -> buildEncryptorFromKeys(current,
-                                                                  provider.previousGossipKey()));
-    }
-
-    @SuppressWarnings("JBCT-RET-01")
-    private static Option<GossipEncryptor> buildEncryptorFromKeys(org.pragmatica.net.tcp.security.GossipKey current,
-                                                                  Option<org.pragmatica.net.tcp.security.GossipKey> previous) {
-        return previous.flatMap(prev -> buildDualKeyAesEncryptor(current, prev))
-                       .orElse(() -> buildSingleKeyAesEncryptor(current));
-    }
-
-    private static Option<GossipEncryptor> buildDualKeyAesEncryptor(org.pragmatica.net.tcp.security.GossipKey current,
-                                                                    org.pragmatica.net.tcp.security.GossipKey prev) {
-        return AesGcmGossipEncryptor.aesGcmGossipEncryptor(current.key(),
-                                                           current.keyId(),
-                                                           prev.key(),
-                                                           prev.keyId())
-                                    .option();
-    }
-
-    private static Option<GossipEncryptor> buildSingleKeyAesEncryptor(org.pragmatica.net.tcp.security.GossipKey current) {
-        return AesGcmGossipEncryptor.aesGcmGossipEncryptor(current.key(),
-                                                           current.keyId())
-                                    .option();
+        return SwimGossipEncryptors.fromCertificateProvider(config.certificateProvider());
     }
 
     @SuppressWarnings("JBCT-PAT-01")
@@ -3555,13 +4358,16 @@ public interface AetherNode extends ManageableNode {
 
         log.info("Certificate renewed, valid until {}", newBundle.notAfter());
         Result.all(QuicSslContextFactory.createServerFromBundle(newBundle, QuicTlsProvider.CLUSTER_PROTOCOL),
-                   QuicSslContextFactory.createClientFromBundle(newBundle, QuicTlsProvider.CLUSTER_PROTOCOL)).id().onSuccess(tuple -> triggerCertRotation(clusterNode,
-                                                                                                                                                          tuple.first(),
-                                                                                                                                                          tuple.last(),
-                                                                                                                                                          newBundle,
-                                                                                                                                                          appHttpServer,
-                                                                                                                                                          managementServerSupplier)).onFailure(cause -> log.error("Failed to build SSL contexts from renewed certificate: {}",
-                                                                                                                                                                                                                  cause.message()));
+                   QuicSslContextFactory.createClientFromBundle(newBundle, QuicTlsProvider.CLUSTER_PROTOCOL))
+              .id()
+              .onSuccess(tuple -> triggerCertRotation(clusterNode,
+                                                      tuple.first(),
+                                                      tuple.last(),
+                                                      newBundle,
+                                                      appHttpServer,
+                                                      managementServerSupplier))
+              .onFailure(cause -> log.error("Failed to build SSL contexts from renewed certificate: {}",
+                                            cause.message()));
     }
 
     @SuppressWarnings("JBCT-PAT-01")
@@ -3595,7 +4401,11 @@ public interface AetherNode extends ManageableNode {
     /// `resolvedAddress()`; since `target.address()` IS the FSM-resolved address, the dialed address is
     /// correct. Role/source labels come from the per-member descriptor (empty map when none is known yet).
     private static NodeInfo dialNodeInfo(PeerTarget target, Option<MemberDescriptor> descriptor) {
-        var labels = descriptor.map(d -> Map.of(NodeInfo.LABEL_ROLE, d.role(), NodeInfo.LABEL_SOURCE, d.source())).or(Map.of());
+        var labels = descriptor.map(d -> Map.of(NodeInfo.LABEL_ROLE,
+                                                d.role(),
+                                                NodeInfo.LABEL_SOURCE,
+                                                d.source()))
+                               .or(Map.of());
 
         return NodeInfo.nodeInfo(target.id(), target.address(), labels);
     }
@@ -3605,21 +4415,27 @@ public interface AetherNode extends ManageableNode {
                                           io.netty.handler.codec.quic.QuicSslContext clientSsl,
                                           Logger log) {
         if (clusterNode.network() instanceof QuicClusterNetwork quicNetwork) {
-            quicNetwork.rotateCertificate(serverSsl, clientSsl).onSuccess(_ -> log.info("QUIC certificate rotation complete")).onFailure(cause -> log.error("QUIC certificate rotation failed: {}",
-                                                                                                                                                            cause.message()));
+            quicNetwork.rotateCertificate(serverSsl, clientSsl)
+                       .onSuccess(_ -> log.info("QUIC certificate rotation complete"))
+                       .onFailure(cause -> log.error("QUIC certificate rotation failed: {}",
+                                                     cause.message()));
         } else {
             log.warn("QUIC certificate rotation skipped: network is not QUIC-based");
         }
     }
 
     private static void rotateManagementServer(ManagementServer mgmt, CertificateBundle newBundle, Logger log) {
-        mgmt.rotateCertificate(newBundle).onSuccess(_ -> log.info("Management server certificate rotation complete")).onFailure(cause -> log.error("Management server certificate rotation failed: {}",
-                                                                                                                                                   cause.message()));
+        mgmt.rotateCertificate(newBundle)
+            .onSuccess(_ -> log.info("Management server certificate rotation complete"))
+            .onFailure(cause -> log.error("Management server certificate rotation failed: {}",
+                                          cause.message()));
     }
 
     private static void rotateAppHttpServer(AppHttpServer appHttpServer, CertificateBundle newBundle, Logger log) {
-        appHttpServer.rotateCertificate(newBundle).onSuccess(_ -> log.info("App HTTP server certificate rotation complete")).onFailure(cause -> log.error("App HTTP server certificate rotation failed: {}",
-                                                                                                                                                          cause.message()));
+        appHttpServer.rotateCertificate(newBundle)
+                     .onSuccess(_ -> log.info("App HTTP server certificate rotation complete"))
+                     .onFailure(cause -> log.error("App HTTP server certificate rotation failed: {}",
+                                                   cause.message()));
     }
 
     private static long resolveStreamMaxMemoryBytes() {
@@ -3719,8 +4535,9 @@ public interface AetherNode extends ManageableNode {
                                                                     SliceInvoker sliceInvoker,
                                                                     InvocationHandler invocationHandler,
                                                                     AlertManager alertManager,
-                                                                    ObservabilityDepthRegistry depthRegistry,
+                                                                    ObservabilityConfigRegistry configRegistry,
                                                                     LogLevelRegistry logLevelRegistry,
+                                                                    OwnershipEpochHighWater ownershipEpochHighWater,
                                                                     Option<DynamicConfigManager> dynamicConfigManager,
                                                                     TTMManager ttmManager,
                                                                     RabiaMetricsCollector rabiaMetricsCollector,
@@ -3741,52 +4558,90 @@ public interface AetherNode extends ManageableNode {
                                                                     AtomicReference<Option<ManagementServer>> managementServerRef,
                                                                     NodeId self) {
         var entries = new ArrayList<MessageRouter.Entry<?>>();
-        var kvRouterBuilder = KVNotificationRouter.<AetherKey, AetherValue> builder(AetherKey.class).onPut(AetherKey.AppBlueprintKey.class,
-                                                                                                           clusterDeploymentManager::onAppBlueprintPut).onPut(AetherKey.SliceTargetKey.class,
-                                                                                                                                                              clusterDeploymentManager::onSliceTargetPut).onPut(AetherKey.VersionRoutingKey.class,
-                                                                                                                                                                                                                clusterDeploymentManager::onVersionRoutingPut).onRemove(AetherKey.AppBlueprintKey.class,
-                                                                                                                                                                                                                                                                        clusterDeploymentManager::onAppBlueprintRemove).onRemove(AetherKey.SliceTargetKey.class,
-                                                                                                                                                                                                                                                                                                                                 clusterDeploymentManager::onSliceTargetRemove).onRemove(AetherKey.VersionRoutingKey.class,
-                                                                                                                                                                                                                                                                                                                                                                                         clusterDeploymentManager::onVersionRoutingRemove).onPut(AetherKey.SliceTargetKey.class,
-                                                                                                                                                                                                                                                                                                                                                                                                                                                 controlLoop::onSliceTargetPut).onRemove(AetherKey.SliceTargetKey.class,
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         controlLoop::onSliceTargetRemove).onPut(AetherKey.AlertThresholdKey.class,
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 alertManager::onAlertThresholdPut).onRemove(AetherKey.AlertThresholdKey.class,
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             alertManager::onAlertThresholdRemove).onPut(AetherKey.ObservabilityDepthKey.class,
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         depthRegistry::onDepthPut).onRemove(AetherKey.ObservabilityDepthKey.class,
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             depthRegistry::onDepthRemove).onPut(AetherKey.LogLevelKey.class,
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 logLevelRegistry::onLogLevelPut).onRemove(AetherKey.LogLevelKey.class,
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           logLevelRegistry::onLogLevelRemove).onPut(AetherKey.SliceTargetKey.class,
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     rollbackManager::onSliceTargetPut).onPut(AetherKey.PreviousVersionKey.class,
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              rollbackManager::onPreviousVersionPut).onPut(AetherKey.TopicSubscriptionKey.class,
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           topicSubscriptionRegistry::onSubscriptionPut).onRemove(AetherKey.TopicSubscriptionKey.class,
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  topicSubscriptionRegistry::onSubscriptionRemove).onPut(AetherKey.ScheduledTaskKey.class,
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         scheduledTaskRegistry::onScheduledTaskPut).onRemove(AetherKey.ScheduledTaskKey.class,
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             scheduledTaskRegistry::onScheduledTaskRemove).onPut(AetherKey.ScheduledTaskStateKey.class,
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 scheduledTaskStateRegistry::onStatePut).onRemove(AetherKey.ScheduledTaskStateKey.class,
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  scheduledTaskStateRegistry::onStateRemove)
-        // Membership v2: the NodeLifecycleKey atom is deleted. NodeDeploymentManager and
-        // ClusterDeploymentManager derive membership from MembershipDecision (routed near the
-        // generationSnapshotPublisher wiring above); there are no remaining NodeLifecycleKey consumers.
-        .onPut(AetherKey.ActivationDirectiveKey.class, clusterDeploymentManager::onActivationDirectivePut).onRemove(AetherKey.ActivationDirectiveKey.class,
-                                                                                                                    clusterDeploymentManager::onActivationDirectiveRemove).onPut(AetherKey.SchemaVersionKey.class,
-                                                                                                                                                                                 clusterDeploymentManager::onSchemaVersionPut).onPut(AetherKey.NodeArtifactKey.class,
-                                                                                                                                                                                                                                     nodeDeploymentManager::onNodeArtifactPut).onPut(AetherKey.NodeArtifactKey.class,
-                                                                                                                                                                                                                                                                                     clusterDeploymentManager::onNodeArtifactPut).onPut(AetherKey.NodeArtifactKey.class,
-                                                                                                                                                                                                                                                                                                                                        endpointRegistry::onNodeArtifactPut).onPut(AetherKey.NodeArtifactKey.class,
-                                                                                                                                                                                                                                                                                                                                                                                   artifactMetricsCollector.deploymentTracker()::onNodeArtifactPut).onPut(AetherKey.NodeArtifactKey.class,
-                                                                                                                                                                                                                                                                                                                                                                                                                                                          deploymentMap::onNodeArtifactPut).onPut(AetherKey.NodeArtifactKey.class,
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  controlLoop::onNodeArtifactPut).onPut(AetherKey.NodeArtifactKey.class,
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        eventAggregator::onNodeArtifactPut).onRemove(AetherKey.NodeArtifactKey.class,
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     nodeDeploymentManager::onNodeArtifactRemove).onRemove(AetherKey.NodeArtifactKey.class,
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           clusterDeploymentManager::onNodeArtifactRemove).onRemove(AetherKey.NodeArtifactKey.class,
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    endpointRegistry::onNodeArtifactRemove).onRemove(AetherKey.NodeArtifactKey.class,
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     artifactMetricsCollector.deploymentTracker()::onNodeArtifactRemove).onRemove(AetherKey.NodeArtifactKey.class,
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  deploymentMap::onNodeArtifactRemove).onRemove(AetherKey.NodeArtifactKey.class,
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                controlLoop::onNodeArtifactRemove).onPut(AetherKey.NodeRoutesKey.class,
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         httpRouteRegistry::onNodeRoutesPut).onPut(AetherKey.NodeRoutesKey.class,
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   appHttpServer::onNodeRoutesPut).onRemove(AetherKey.NodeRoutesKey.class,
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            httpRouteRegistry::onNodeRoutesRemove).onRemove(AetherKey.NodeRoutesKey.class,
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            appHttpServer::onNodeRoutesRemove);
+        var kvRouterBuilder = KVNotificationRouter.<AetherKey, AetherValue> builder(AetherKey.class)
+                                                  .onPut(AetherKey.AppBlueprintKey.class,
+                                                         clusterDeploymentManager::onAppBlueprintPut)
+                                                  .onPut(AetherKey.SliceTargetKey.class,
+                                                         clusterDeploymentManager::onSliceTargetPut)
+                                                  .onPut(AetherKey.VersionRoutingKey.class,
+                                                         clusterDeploymentManager::onVersionRoutingPut)
+                                                  .onRemove(AetherKey.AppBlueprintKey.class,
+                                                            clusterDeploymentManager::onAppBlueprintRemove)
+                                                  .onRemove(AetherKey.SliceTargetKey.class,
+                                                            clusterDeploymentManager::onSliceTargetRemove)
+                                                  .onRemove(AetherKey.VersionRoutingKey.class,
+                                                            clusterDeploymentManager::onVersionRoutingRemove)
+                                                  .onPut(AetherKey.SliceTargetKey.class, controlLoop::onSliceTargetPut)
+                                                  .onRemove(AetherKey.SliceTargetKey.class,
+                                                            controlLoop::onSliceTargetRemove)
+                                                  .onPut(AetherKey.AlertThresholdKey.class,
+                                                         alertManager::onAlertThresholdPut)
+                                                  .onRemove(AetherKey.AlertThresholdKey.class,
+                                                            alertManager::onAlertThresholdRemove)
+                                                  .onPut(AetherKey.ObservabilityConfigKey.class,
+                                                         configRegistry::onObservabilityConfigPut)
+                                                  .onRemove(AetherKey.ObservabilityConfigKey.class,
+                                                            configRegistry::onObservabilityConfigRemove)
+                                                  .onPut(AetherKey.LogLevelKey.class, logLevelRegistry::onLogLevelPut)
+                                                  .onRemove(AetherKey.LogLevelKey.class,
+                                                            logLevelRegistry::onLogLevelRemove)
+                                                  .onPut(AetherKey.SliceTargetKey.class,
+                                                         rollbackManager::onSliceTargetPut)
+                                                  .onPut(AetherKey.PreviousVersionKey.class,
+                                                         rollbackManager::onPreviousVersionPut)
+                                                  .onPut(AetherKey.TopicSubscriptionKey.class,
+                                                         topicSubscriptionRegistry::onSubscriptionPut)
+                                                  .onRemove(AetherKey.TopicSubscriptionKey.class,
+                                                            topicSubscriptionRegistry::onSubscriptionRemove)
+                                                  .onPut(AetherKey.ScheduledTaskKey.class,
+                                                         scheduledTaskRegistry::onScheduledTaskPut)
+                                                  .onRemove(AetherKey.ScheduledTaskKey.class,
+                                                            scheduledTaskRegistry::onScheduledTaskRemove)
+                                                  .onPut(AetherKey.ScheduledTaskStateKey.class,
+                                                         scheduledTaskStateRegistry::onStatePut)
+                                                  .onRemove(AetherKey.ScheduledTaskStateKey.class,
+                                                            scheduledTaskStateRegistry::onStateRemove)
+                                                  // Membership v2: the NodeLifecycleKey atom is deleted. NodeDeploymentManager and
+                                                  // ClusterDeploymentManager derive membership from MembershipDecision (routed near the
+                                                  // generationSnapshotPublisher wiring above); there are no remaining NodeLifecycleKey consumers.
+                                                  .onPut(AetherKey.ActivationDirectiveKey.class,
+                                                         clusterDeploymentManager::onActivationDirectivePut)
+                                                  .onRemove(AetherKey.ActivationDirectiveKey.class,
+                                                            clusterDeploymentManager::onActivationDirectiveRemove)
+                                                  .onPut(AetherKey.SchemaVersionKey.class,
+                                                         clusterDeploymentManager::onSchemaVersionPut)
+                                                  .onPut(AetherKey.NodeArtifactKey.class,
+                                                         nodeDeploymentManager::onNodeArtifactPut)
+                                                  .onPut(AetherKey.NodeArtifactKey.class,
+                                                         clusterDeploymentManager::onNodeArtifactPut)
+                                                  .onPut(AetherKey.NodeArtifactKey.class,
+                                                         endpointRegistry::onNodeArtifactPut)
+                                                  .onPut(AetherKey.NodeArtifactKey.class,
+                                                         artifactMetricsCollector.deploymentTracker()::onNodeArtifactPut)
+                                                  .onPut(AetherKey.NodeArtifactKey.class,
+                                                         deploymentMap::onNodeArtifactPut)
+                                                  .onPut(AetherKey.NodeArtifactKey.class, controlLoop::onNodeArtifactPut)
+                                                  .onPut(AetherKey.NodeArtifactKey.class,
+                                                         eventAggregator::onNodeArtifactPut)
+                                                  .onRemove(AetherKey.NodeArtifactKey.class,
+                                                            nodeDeploymentManager::onNodeArtifactRemove)
+                                                  .onRemove(AetherKey.NodeArtifactKey.class,
+                                                            clusterDeploymentManager::onNodeArtifactRemove)
+                                                  .onRemove(AetherKey.NodeArtifactKey.class,
+                                                            endpointRegistry::onNodeArtifactRemove)
+                                                  .onRemove(AetherKey.NodeArtifactKey.class,
+                                                            artifactMetricsCollector.deploymentTracker()::onNodeArtifactRemove)
+                                                  .onRemove(AetherKey.NodeArtifactKey.class,
+                                                            deploymentMap::onNodeArtifactRemove)
+                                                  .onRemove(AetherKey.NodeArtifactKey.class,
+                                                            controlLoop::onNodeArtifactRemove)
+                                                  .onPut(AetherKey.NodeRoutesKey.class,
+                                                         httpRouteRegistry::onNodeRoutesPut)
+                                                  .onPut(AetherKey.NodeRoutesKey.class, appHttpServer::onNodeRoutesPut)
+                                                  .onRemove(AetherKey.NodeRoutesKey.class,
+                                                            httpRouteRegistry::onNodeRoutesRemove)
+                                                  .onRemove(AetherKey.NodeRoutesKey.class,
+                                                            appHttpServer::onNodeRoutesRemove);
         // Stream-namespaces rebuild (Stage 4): the ClusterEventLogKey KV materialised-view
         // subscription is gone — cluster events now flow through the system:cluster-events:1.0.0
         // stream (publish via ClusterEventAggregator.emit, read via the stream consumer), not the
@@ -3798,6 +4653,13 @@ public interface AetherNode extends ManageableNode {
                                                              .onRemove(AetherKey.ConfigKey.class, dcm::onConfigRemove));
         kvRouterBuilder.onPut(AetherKey.ConsumerGroupKey.class, consumerGroupRegistry::onConsumerGroupPut);
         kvRouterBuilder.onRemove(AetherKey.ConsumerGroupKey.class, consumerGroupRegistry::onConsumerGroupRemove);
+        // #345 1b: feed the per-ownership-domain epoch high-water table from committed EpochBearing puts.
+        // No onRemove — the high-water is monotonic by definition, so ownership/governor removes are intentionally ignored.
+        kvRouterBuilder.onPut(AetherKey.GovernorAnnouncementKey.class,
+                              ownershipEpochHighWater::onGovernorAnnouncementPut);
+        kvRouterBuilder.onPut(AetherKey.DhtPartitionOwnershipKey.class, ownershipEpochHighWater::onDhtOwnershipPut);
+        kvRouterBuilder.onPut(AetherKey.StreamPartitionOwnershipKey.class,
+                              ownershipEpochHighWater::onStreamPartitionOwnershipPut);
         entries.addAll(kvRouterBuilder.build().asRouteEntries());
         entries.add(MessageRouter.Entry.route(ClusterStateNotification.class, nodeDeploymentManager::onQuorumStateChange));
         entries.add(MessageRouter.Entry.route(ClusterStateNotification.class, controlLoop::onQuorumStateChange));
@@ -3941,8 +4803,11 @@ public interface AetherNode extends ManageableNode {
         entries.add(MessageRouter.Entry.route(org.pragmatica.consensus.topology.TransportObservation.PeerJoined.class,
                                               eventAggregator::onPeerJoined));
         entries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class, eventAggregator::onLeaderChange));
-        // Membership-driven observable departure events (NODE_FAILED / NODE_LEFT). Re-sourced
-        // from MembershipDecision after the node-lifecycle atom was deleted (membership-v2).
+        // NODE_LEFT (graceful departures) is sourced from MembershipDecision. NODE_FAILED is NO LONGER
+        // sourced here (#210) — it now rides the ungated FSM DEAD edge (membershipFsm.onConfirmedDeparture
+        // → eventAggregator.onConfirmedDeparture, wired above) because the quorum-gated NodeRemoved
+        // decision is dropped by the projector during post-kill churn. The NodeRemoved route stays for the
+        // (now no-op) decision case; NodeDecommissioned still maps to NODE_LEFT.
         entries.add(MessageRouter.Entry.route(MembershipDecision.NodeRemoved.class,
                                               eventAggregator::onMembershipDecision));
         entries.add(MessageRouter.Entry.route(MembershipDecision.NodeDecommissioned.class,
@@ -3953,9 +4818,9 @@ public interface AetherNode extends ManageableNode {
                                               eventAggregator::onSliceFailure));
         entries.add(MessageRouter.Entry.route(ScalingEvent.ScaledUp.class, eventAggregator::onScaledUp));
         entries.add(MessageRouter.Entry.route(ScalingEvent.ScaledDown.class, eventAggregator::onScaledDown));
+        entries.add(MessageRouter.Entry.route(ScalingEvent.ScaleCapped.class, eventAggregator::onScaleCapped));
         entries.add(MessageRouter.Entry.route(ClusterDeploymentManager.ReconciliationAdjustment.class,
                                               eventAggregator::onReconciliationAdjustment));
-        entries.add(MessageRouter.Entry.route(CommunityScalingRequest.class, controlLoop::onCommunityScalingRequest));
         entries.add(MessageRouter.Entry.route(CommunityMetricsSnapshot.class, controlLoop::onCommunityMetricsSnapshot));
         entries.add(MessageRouter.Entry.route(NetworkServiceMessage.ConnectionEstablished.class,
                                               eventAggregator::onConnectionEstablished));
@@ -4030,17 +4895,13 @@ public interface AetherNode extends ManageableNode {
         }
     }
 
-    private static ObservabilityInterceptor createObservabilityInterceptor(AetherNodeConfig config,
-                                                                           InvocationTraceStore traceStore,
-                                                                           ObservabilityDepthRegistry depthRegistry) {
-        var sampler = AdaptiveSampler.adaptiveSampler(config.observability().targetTracesPerSec());
-
-        return ObservabilityInterceptor.observabilityInterceptor(sampler,
-                                                                 traceStore,
-                                                                 config.self().id(),
-                                                                 (artifact, method) -> depthRegistry.getConfig(artifact,
-                                                                                                               method)
-                                                                                                    .depthThreshold());
+    /// Resolve the cluster-level #198 route-mount mode (§7) from the app-HTTP config. Path mode is
+    /// the default; header mode carries the configured API-version header name into dispatch.
+    private static RouteMountMode routeMountMode(AppHttpConfig appHttp) {
+        return appHttp.apiVersioningDetection()
+                      .isHeaderMode()
+               ? RouteMountMode.headerMode(appHttp.apiVersionHeaderName())
+               : RouteMountMode.pathMode();
     }
 
     private static SharedLibraryClassLoader createSharedLibraryLoader(AetherNodeConfig config) {
@@ -4173,10 +5034,30 @@ public interface AetherNode extends ManageableNode {
     private static void registerRuntimeExtensions(SpiResourceProvider spi,
                                                   TopicSubscriptionRegistry topicSubscriptionRegistry,
                                                   SliceInvoker sliceInvoker,
-                                                  DHTClient cacheDhtClient) {
+                                                  DHTClient cacheDhtClient,
+                                                  StorageInstance contentStorage) {
         spi.registerExtension(TopicSubscriptionRegistry.class, topicSubscriptionRegistry);
         spi.registerExtension(SliceInvoker.class, sliceInvoker);
         spi.registerExtension(DHTClient.class, cacheDhtClient);
+        // #251 (#99 regression): ContentStoreFactory.provision() requires a StorageInstance extension.
+        // Register a tiered content store so slice-facing ContentStore resources can provision.
+        spi.registerExtension(StorageInstance.class, contentStorage);
+    }
+
+    /// A6 cold-boot convergence window: how long after THIS node's boot the SWIM cold-boot
+    /// FAULTY-suppression stays active even after the cluster phase has flipped out of COLD_BOOT
+    /// (which happens at first quorum, e.g. 3/5). Sized to cover the transport single-dialer
+    /// force-dial grace (`QuicClusterNetwork.RECONCILE_BACKOFF_CAP_MS` = 60s) + one reconcile tick
+    /// (~5s) + a suspect margin (~10s), so a straggler whose QUIC link forms only via the 60s
+    /// force-dial is not FAULTY-evicted before it can connect on a simultaneous full-cluster restart.
+    long COLD_BOOT_CONVERGENCE_WINDOW_MS = 75_000L;
+
+    /// Pure predicate for the SWIM cold-boot suppression gate (A6): cold-boot convergence is still
+    /// active iff the cluster phase is COLD_BOOT, OR this node booted within the convergence window.
+    /// Extracted as a static pure function so the window logic is unit-testable without standing up a
+    /// node. See `swimIsBootingSupplier` wiring for the rationale.
+    static boolean coldBootConvergenceActive(boolean phaseIsColdBoot, long bootAtMs, long nowMs, long windowMs) {
+        return phaseIsColdBoot || (nowMs - bootAtMs) < windowMs;
     }
 
     private static StreamForwardTransport createStreamForwardTransport(ClusterNetwork network) {
@@ -4188,17 +5069,30 @@ public interface AetherNode extends ManageableNode {
                                                         Fn1<Result<NodeId>, TaskGroup> ownerResolver,
                                                         Fn2<Option<NodeId>, String, Integer> partitionOwnerResolver,
                                                         StreamPartitionManager streamPartitionManager,
+                                                        CursorStore streamCursorStore,
+                                                        TieredStreamReader streamTieredReader,
                                                         Serializer serializer,
                                                         Deserializer deserializer,
-                                                        NodeId self) {
-        resourceProviderSetup.spiProvider().onPresent(spi -> registerForwardExtensionsOnSpi(spi,
-                                                                                            forwardClient,
-                                                                                            ownerResolver,
-                                                                                            partitionOwnerResolver,
-                                                                                            streamPartitionManager,
-                                                                                            serializer,
-                                                                                            deserializer,
-                                                                                            self));
+                                                        NodeId self,
+                                                        ReplicaRegistry streamReplicaRegistry,
+                                                        CommittedStreamOwnerSource committedStreamOwnerSource,
+                                                        OwnershipEpochHighWater ownershipEpochHighWater,
+                                                        Option<LinearizableBarrier> linearizableBarrier) {
+        resourceProviderSetup.spiProvider()
+                             .onPresent(spi -> registerForwardExtensionsOnSpi(spi,
+                                                                              forwardClient,
+                                                                              ownerResolver,
+                                                                              partitionOwnerResolver,
+                                                                              streamPartitionManager,
+                                                                              streamCursorStore,
+                                                                              streamTieredReader,
+                                                                              serializer,
+                                                                              deserializer,
+                                                                              self,
+                                                                              streamReplicaRegistry,
+                                                                              committedStreamOwnerSource,
+                                                                              ownershipEpochHighWater,
+                                                                              linearizableBarrier));
     }
 
     private static void registerForwardExtensionsOnSpi(SpiResourceProvider spi,
@@ -4206,16 +5100,28 @@ public interface AetherNode extends ManageableNode {
                                                        Fn1<Result<NodeId>, TaskGroup> ownerResolver,
                                                        Fn2<Option<NodeId>, String, Integer> partitionOwnerResolver,
                                                        StreamPartitionManager streamPartitionManager,
+                                                       CursorStore streamCursorStore,
+                                                       TieredStreamReader streamTieredReader,
                                                        Serializer serializer,
                                                        Deserializer deserializer,
-                                                       NodeId self) {
+                                                       NodeId self,
+                                                       ReplicaRegistry streamReplicaRegistry,
+                                                       CommittedStreamOwnerSource committedStreamOwnerSource,
+                                                       OwnershipEpochHighWater ownershipEpochHighWater,
+                                                       Option<LinearizableBarrier> linearizableBarrier) {
         spi.registerExtension(StreamForwardClient.class, forwardClient);
         spi.registerExtension(StreamPartitionManager.class, streamPartitionManager);
+        spi.registerExtension(CursorStore.class, streamCursorStore);
+        spi.registerExtension(TieredStreamReader.class, streamTieredReader);
         spi.registerExtension(Serializer.class, serializer);
         spi.registerExtension(Deserializer.class, deserializer);
         // A6: self identity so the app StreamAccessFactory can wire owner-routed publish (compare the
         // resolved HRW owner against this node).
         spi.registerExtension(NodeId.class, self);
+        // A6 read-forwarding: expose the node-level replica registry so the app StreamAccessFactory wires
+        // NEAREST app-stream reads — a non-replica consumer forwards to the partition's HRW owner instead
+        // of reading its own empty local partition (the asymmetry that left GOVERNOR-default reads empty).
+        spi.registerExtension(ReplicaRegistry.class, streamReplicaRegistry);
         // #47: the STREAMING publish resolver carries BOTH the arg-less leader resolver (retained for
         // the STRONG / forward-fallback path) AND the (stream, partition)-aware HRW owner-resolver from
         // the ReplicaSetController. App-stream EVENTUAL publishes now route to the HRW owner — the SAME
@@ -4225,6 +5131,14 @@ public interface AetherNode extends ManageableNode {
                               new StreamPublisherFactory.GovernorResolver(() -> ownerResolver.apply(TaskGroup.STREAMING)
                                                                                              .option(),
                                                                           Option.some(partitionOwnerResolver)));
+        // #345 item 1e-c: expose the LINEARIZABLE pipeline components so the app StreamAccessFactory
+        // wires a typed LINEARIZABLE read through the SAME committed-owner routing + owner-side
+        // fence/round/catch-up pipeline as the raw StreamReadRouter path (1e-a). The barrier is present
+        // only when [durable-entity] read-linearization is NO_OP_ROUND; when absent the typed
+        // LINEARIZABLE arm degrades to the replica-routed read exactly as the raw path does.
+        spi.registerExtension(CommittedStreamOwnerSource.class, committedStreamOwnerSource);
+        spi.registerExtension(OwnershipEpochHighWater.class, ownershipEpochHighWater);
+        linearizableBarrier.onPresent(barrier -> spi.registerExtension(LinearizableBarrier.class, barrier));
     }
 
     /// Project the aggregator's materialised `ClusterEvent` view onto

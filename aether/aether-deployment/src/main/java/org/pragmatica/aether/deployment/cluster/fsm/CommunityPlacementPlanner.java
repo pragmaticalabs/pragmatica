@@ -4,20 +4,6 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.deployment.cluster.fsm;
 
-import org.pragmatica.aether.artifact.Artifact;
-import org.pragmatica.aether.deployment.cluster.AllocationPool;
-import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentState.Active;
-import org.pragmatica.aether.slice.kvstore.AetherKey;
-import org.pragmatica.aether.slice.kvstore.AetherKey.GovernorAnnouncementKey;
-import org.pragmatica.aether.slice.kvstore.AetherKey.WorkerSliceDirectiveKey;
-import org.pragmatica.aether.slice.kvstore.AetherValue;
-import org.pragmatica.aether.slice.kvstore.AetherValue.GovernorAnnouncementValue;
-import org.pragmatica.aether.slice.kvstore.AetherValue.WorkerSliceDirectiveValue;
-import org.pragmatica.cluster.state.kvstore.KVCommand;
-import org.pragmatica.consensus.NodeId;
-import org.pragmatica.lang.Contract;
-import org.pragmatica.lang.Option;
-
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
@@ -25,6 +11,23 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+
+import org.pragmatica.aether.artifact.Artifact;
+import org.pragmatica.aether.deployment.cluster.AllocationPool;
+import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentState.Active;
+import org.pragmatica.aether.slice.kvstore.AetherKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.CommunityKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.GovernorAnnouncementKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.WorkerSliceDirectiveKey;
+import org.pragmatica.aether.slice.kvstore.AetherValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.CommunityValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.GovernorAnnouncementValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.WorkerSliceDirectiveValue;
+import org.pragmatica.aether.slice.kvstore.CommunityState;
+import org.pragmatica.cluster.state.kvstore.KVCommand;
+import org.pragmatica.consensus.NodeId;
+import org.pragmatica.lang.Contract;
+import org.pragmatica.lang.Option;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -38,14 +41,37 @@ import org.slf4j.LoggerFactory;
 record CommunityPlacementPlanner(Active active) {
     private static final Logger log = LoggerFactory.getLogger(CommunityPlacementPlanner.class);
 
+    /// The authoritative DESIRED community set (worker-membership-spec D1 / §3.3): the committed,
+    /// leader-authored [`CommunityKey`]/[`CommunityValue`] facts, filtered to the strictly `ACTIVE`
+    /// state. Slice 2's per-community FSM (leader-evaluated in `reconcile()`) now drives a community
+    /// to `ACTIVE` once its observed live membership reaches the viability floor, so placement gates
+    /// on `ACTIVE` and excludes the still-`FORMING`, transiently-`DEGRADED`, and terminal
+    /// `DISSOLVING`/`DISSOLVED` communities. (The previous source enumerated the governor-OWNED
+    /// [`GovernorAnnouncementKey`], which is the OBSERVED statement; that read is preserved in the
+    /// governor/worker-map methods below.)
     Set<String> activeCommunityIds() {
         var ids = new LinkedHashSet<String>();
 
-        active.ctx().kvStore().forEach(GovernorAnnouncementKey.class,
-                                       GovernorAnnouncementValue.class,
-                                       (key, value) -> ids.add(key.communityId()));
+        active.ctx()
+              .kvStore()
+              .forEach(CommunityKey.class,
+                       CommunityValue.class,
+                       (key, value) -> collectDesiredCommunity(ids, key, value));
 
         return Set.copyOf(ids);
+    }
+
+    private static void collectDesiredCommunity(Set<String> ids, CommunityKey key, CommunityValue value) {
+        if (isDesiredState(value.state())) {
+            ids.add(key.communityId());
+        }
+    }
+
+    /// A community counts toward the desired set only once the per-community FSM has driven it to
+    /// `ACTIVE` (worker-membership-spec §3.3). `FORMING` (not yet viable), `DEGRADED` (lost quorum),
+    /// and the terminal `DISSOLVING`/`DISSOLVED` teardown states are all excluded.
+    private static boolean isDesiredState(CommunityState state) {
+        return state == CommunityState.ACTIVE;
     }
 
     private Option<GovernorAnnouncementValue> communityGovernor(String communityId) {
@@ -105,11 +131,13 @@ record CommunityPlacementPlanner(Active active) {
         var value = WorkerSliceDirectiveValue.workerSliceDirectiveValue(artifact, targetInstances, placement);
         var command = new KVCommand.Put<AetherKey, AetherValue>(key, value);
 
-        active.ctx().cluster().apply(List.of(command)).onSuccess(_ -> log.info("Written worker directive for {} with {} instances",
-                                                                               artifact,
-                                                                               targetInstances)).onFailure(cause -> log.error("Failed to write worker directive for {}: {}",
-                                                                                                                              artifact,
-                                                                                                                              cause.message()));
+        active.ctx()
+              .cluster()
+              .apply(List.of(command))
+              .onSuccess(_ -> log.info("Written worker directive for {} with {} instances", artifact, targetInstances))
+              .onFailure(cause -> log.error("Failed to write worker directive for {}: {}",
+                                            artifact,
+                                            cause.message()));
     }
 
     private void writeWorkerDirective(Artifact artifact, int targetInstances, String placement, String communityId) {
@@ -120,13 +148,17 @@ record CommunityPlacementPlanner(Active active) {
                                                                         communityId);
         var command = new KVCommand.Put<AetherKey, AetherValue>(key, value);
 
-        active.ctx().cluster().apply(List.of(command)).onSuccess(_ -> log.info("Written worker directive for {} community '{}' with {} instances",
-                                                                               artifact,
-                                                                               communityId,
-                                                                               targetInstances)).onFailure(cause -> log.error("Failed to write worker directive for {} community '{}': {}",
-                                                                                                                              artifact,
-                                                                                                                              communityId,
-                                                                                                                              cause.message()));
+        active.ctx()
+              .cluster()
+              .apply(List.of(command))
+              .onSuccess(_ -> log.info("Written worker directive for {} community '{}' with {} instances",
+                                       artifact,
+                                       communityId,
+                                       targetInstances))
+              .onFailure(cause -> log.error("Failed to write worker directive for {} community '{}': {}",
+                                            artifact,
+                                            communityId,
+                                            cause.message()));
     }
 
     private void distributeToCommunities(Artifact artifact, int desiredInstances, String placement) {

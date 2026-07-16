@@ -4,6 +4,9 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.cli.cluster;
 
+import java.time.Instant;
+import java.util.concurrent.Callable;
+
 import org.pragmatica.aether.cli.ExitCode;
 import org.pragmatica.aether.cli.OutputFormat;
 import org.pragmatica.aether.cli.OutputFormatter;
@@ -11,9 +14,6 @@ import org.pragmatica.aether.cli.OutputOptions;
 import org.pragmatica.json.JsonMapper;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
-
-import java.time.Instant;
-import java.util.concurrent.Callable;
 
 import picocli.CommandLine;
 import picocli.CommandLine.Command;
@@ -93,7 +93,9 @@ class ClusterExportCommand implements Callable<Integer> {
 
     @Contract
     private static void enrichWithLiveStatus() {
-        ClusterHttpClient.fetch(CLUSTER_STATUS).flatMap(MAPPER::readTree).onSuccess(ClusterExportCommand::printLiveStatusComments);
+        ClusterHttpClient.fetch(CLUSTER_STATUS)
+                         .flatMap(MAPPER::readTree)
+                         .onSuccess(ClusterExportCommand::printLiveStatusComments);
     }
 
     private static void printLiveStatusComments(JsonNode status) {
