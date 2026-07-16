@@ -26,7 +26,12 @@ public final class CircuitBreakerInterceptorFactory implements ResourceFactory<C
     }
 
     private static CircuitBreakerMethodInterceptor interceptor(CircuitBreakerConfig config) {
-        var breaker = CircuitBreaker.builder().failureThreshold(config.failureThreshold()).resetTimeout(config.resetTimeout()).testAttempts(config.testAttempts()).withDefaultShouldTrip().withDefaultTimeSource();
+        var breaker = CircuitBreaker.builder()
+                                    .failureThreshold(config.failureThreshold())
+                                    .resetTimeout(config.resetTimeout())
+                                    .testAttempts(config.testAttempts())
+                                    .withDefaultShouldTrip()
+                                    .withDefaultTimeSource();
 
         return new CircuitBreakerMethodInterceptor(breaker);
     }

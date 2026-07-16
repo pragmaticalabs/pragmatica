@@ -32,6 +32,67 @@ class ConfigLoaderTest {
     }
 
     @Test
+    void loadFromString_defaultsReadLinearizationToNoOpRound_whenSectionAbsent() {
+        var toml = """
+            [cluster]
+            environment = "docker"
+            nodes = 5
+            """;
+
+        ConfigLoader.loadFromString(toml)
+            .onFailure(cause -> Assertions.fail(cause.message()))
+            .onSuccess(config -> assertThat(config.streaming().readLinearization()).isEqualTo(ReadLinearizationMode.NO_OP_ROUND));
+    }
+
+    @Test
+    void loadFromString_parsesNoOpRoundReadLinearization() {
+        var toml = """
+            [cluster]
+            environment = "docker"
+            nodes = 5
+
+            [durable-entity]
+            read-linearization = "no-op-round"
+            """;
+
+        ConfigLoader.loadFromString(toml)
+            .onFailure(cause -> Assertions.fail(cause.message()))
+            .onSuccess(config -> assertThat(config.streaming().readLinearization()).isEqualTo(ReadLinearizationMode.NO_OP_ROUND));
+    }
+
+    @Test
+    void loadFromString_rejectsLeaseReadLinearization_withNamedError() {
+        var toml = """
+            [cluster]
+            environment = "docker"
+            nodes = 5
+
+            [durable-entity]
+            read-linearization = "lease"
+            """;
+
+        ConfigLoader.loadFromString(toml)
+            .onSuccess(config -> Assertions.fail("expected lease linearization to be rejected at parse"))
+            .onFailure(cause -> assertThat(cause.message()).contains("lease linearization not implemented"));
+    }
+
+    @Test
+    void loadFromString_rejectsUnknownReadLinearization() {
+        var toml = """
+            [cluster]
+            environment = "docker"
+            nodes = 5
+
+            [durable-entity]
+            read-linearization = "leader-lease"
+            """;
+
+        ConfigLoader.loadFromString(toml)
+            .onSuccess(config -> Assertions.fail("expected unknown read-linearization to be rejected at parse"))
+            .onFailure(cause -> assertThat(cause.message()).contains("unknown read-linearization"));
+    }
+
+    @Test
     void loadFromString_parsesFullConfig() {
         var toml = """
             [cluster]

@@ -4,8 +4,14 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.http.adapter.impl;
 
+import java.util.List;
+import java.util.function.Supplier;
+
 import org.pragmatica.aether.http.handler.HttpRequestContext;
 import org.pragmatica.aether.http.handler.security.SecurityContext;
+import org.pragmatica.http.Headers;
+import org.pragmatica.http.HttpMethod;
+import org.pragmatica.http.QueryParams;
 import org.pragmatica.http.routing.MultipartParser;
 import org.pragmatica.http.routing.MultipartRequest;
 import org.pragmatica.http.routing.PathUtils;
@@ -15,13 +21,6 @@ import org.pragmatica.json.JsonMapper;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.type.TypeToken;
 
-import java.nio.charset.StandardCharsets;
-import java.util.List;
-import java.util.Map;
-import java.util.function.Supplier;
-
-import io.netty.buffer.ByteBuf;
-import io.netty.buffer.Unpooled;
 import io.netty.handler.codec.http.DefaultHttpHeadersFactory;
 import io.netty.handler.codec.http.HttpHeaders;
 
@@ -35,12 +34,9 @@ public final class SliceRequestContext implements RequestContext {
     private final HttpRequestContext httpContext;
     private final Route<?> route;
     private final JsonMapper jsonMapper;
-    private final ByteBuf bodyBuf;
     private final HttpHeaders responseHeaders;
 
     private Supplier<List<String>> pathParamsSupplier = lazy(() -> pathParamsSupplier = value(initPathParams()));
-
-    private Supplier<Map<String, String>> headersSupplier = lazy(() -> headersSupplier = value(initRequestHeaders()));
 
     private Supplier<Result<MultipartRequest>> multipartSupplier = lazy(() -> multipartSupplier = value(initMultipart()));
 
@@ -48,7 +44,6 @@ public final class SliceRequestContext implements RequestContext {
         this.httpContext = httpContext;
         this.route = route;
         this.jsonMapper = jsonMapper;
-        this.bodyBuf = Unpooled.wrappedBuffer(httpContext.body());
         this.responseHeaders = DefaultHttpHeadersFactory.headersFactory().withCombiningHeaders(true).newHeaders();
     }
 
@@ -72,7 +67,12 @@ public final class SliceRequestContext implements RequestContext {
     }
 
     @Override
-    public String requestPath() {
+    public HttpMethod method() {
+        return HttpMethod.httpMethod(httpContext.method()).or(HttpMethod.GET);
+    }
+
+    @Override
+    public String path() {
         return httpContext.path();
     }
 
@@ -82,13 +82,8 @@ public final class SliceRequestContext implements RequestContext {
     }
 
     @Override
-    public ByteBuf body() {
-        return bodyBuf;
-    }
-
-    @Override
-    public String bodyAsString() {
-        return new String(httpContext.body(), StandardCharsets.UTF_8);
+    public byte[] body() {
+        return httpContext.body();
     }
 
     @Override
@@ -102,13 +97,13 @@ public final class SliceRequestContext implements RequestContext {
     }
 
     @Override
-    public Map<String, List<String>> queryParams() {
-        return httpContext.queryParams();
+    public QueryParams queryParams() {
+        return QueryParams.queryParams(httpContext.queryParams());
     }
 
     @Override
-    public Map<String, String> requestHeaders() {
-        return headersSupplier.get();
+    public Headers headers() {
+        return Headers.headers(httpContext.headers());
     }
 
     @Override
@@ -123,7 +118,7 @@ public final class SliceRequestContext implements RequestContext {
 
     @Override
     public boolean isMultipart() {
-        return MultipartParser.isMultipart(requestHeaders().get("content-type"));
+        return MultipartParser.isMultipart(headers().get("content-type"));
     }
 
     private Result<MultipartRequest> initMultipart() {
@@ -150,17 +145,5 @@ public final class SliceRequestContext implements RequestContext {
         }
 
         return List.of(elements);
-    }
-
-    private Map<String, String> initRequestHeaders() {
-        var headers = new java.util.HashMap<String, String>();
-
-        httpContext.headers().forEach((key, values) -> {
-            if (!values.isEmpty()) {
-                headers.put(key, values.getFirst());
-            }
-        });
-
-        return Map.copyOf(headers);
     }
 }

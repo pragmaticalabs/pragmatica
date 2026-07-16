@@ -4,15 +4,15 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.config;
 
-import org.pragmatica.lang.Cause;
-import org.pragmatica.lang.Result;
-import org.pragmatica.lang.io.TimeSpan;
-
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
 import java.util.regex.Pattern;
+
+import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Result;
+import org.pragmatica.lang.io.TimeSpan;
 
 import static org.pragmatica.lang.io.FileOps.exists;
 import static org.pragmatica.lang.Result.success;
@@ -146,13 +146,15 @@ public final class ConfigValidator {
     }
 
     private static void missingCertPathError(TlsConfig tls, List<String> errors) {
-        tls.certFile().onEmpty(() -> errors.add("TLS enabled but no certificate path provided."
-                                               + " Set tls.auto_generate = true or provide tls.cert_path"));
+        tls.certFile()
+           .onEmpty(() -> errors.add("TLS enabled but no certificate path provided."
+                                    + " Set tls.auto_generate = true or provide tls.cert_path"));
     }
 
     private static void missingKeyPathError(TlsConfig tls, List<String> errors) {
-        tls.keyFile().onEmpty(() -> errors.add("TLS enabled but no key path provided."
-                                              + " Set tls.auto_generate = true or provide tls.key_path"));
+        tls.keyFile()
+           .onEmpty(() -> errors.add("TLS enabled but no key path provided."
+                                    + " Set tls.auto_generate = true or provide tls.key_path"));
     }
 
     private static void fileExistsError(Path path, String fileType, List<String> errors) {

@@ -4,11 +4,11 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.resource.interceptor;
 
+import java.util.concurrent.ConcurrentHashMap;
+
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
-
-import java.util.concurrent.ConcurrentHashMap;
 
 
 final class InMemoryCache implements CacheBackend {

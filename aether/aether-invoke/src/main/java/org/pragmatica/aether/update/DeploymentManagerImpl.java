@@ -4,6 +4,10 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.update;
 
+import java.util.ArrayList;
+import java.util.List;
+import java.util.concurrent.ConcurrentHashMap;
+
 import org.pragmatica.aether.artifact.ArtifactBase;
 import org.pragmatica.aether.artifact.Version;
 import org.pragmatica.aether.slice.blueprint.BlueprintId;
@@ -26,10 +30,6 @@ import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.utility.IdGenerator;
-
-import java.util.ArrayList;
-import java.util.List;
-import java.util.concurrent.ConcurrentHashMap;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -168,7 +168,10 @@ final class DeploymentManagerImpl implements DeploymentManager {
         var deadline = System.currentTimeMillis() + BLUEPRINT_LOOKUP_BUDGET_MS;
 
         while (true) {
-            var hit = kvStore.get(key).filter(AppBlueprintValue.class::isInstance).map(AppBlueprintValue.class::cast).map(AppBlueprintValue::blueprint);
+            var hit = kvStore.get(key)
+                             .filter(AppBlueprintValue.class::isInstance)
+                             .map(AppBlueprintValue.class::cast)
+                             .map(AppBlueprintValue::blueprint);
 
             if (hit.isPresent() || System.currentTimeMillis() >= deadline) {
                 return hit.toResult(blueprintNotFound(id.asString()));
@@ -189,8 +192,11 @@ final class DeploymentManagerImpl implements DeploymentManager {
     }
 
     private Result<Unit> checkNoActiveDeployment(String blueprintId) {
-        var existing = activeDeployments.values().stream().filter(Deployment::isActive).anyMatch(d -> d.blueprintId()
-                                                                                                       .equals(blueprintId));
+        var existing = activeDeployments.values()
+                                        .stream()
+                                        .filter(Deployment::isActive)
+                                        .anyMatch(d -> d.blueprintId()
+                                                        .equals(blueprintId));
 
         if (existing) {
             return deploymentAlreadyExists(blueprintId).result();
@@ -208,7 +214,9 @@ final class DeploymentManagerImpl implements DeploymentManager {
 
             artifacts.add(base);
             if (currentVersion.isEmpty()) {
-                var target = kvStore.get(SliceTargetKey.sliceTargetKey(base)).filter(SliceTargetValue.class::isInstance).map(SliceTargetValue.class::cast);
+                var target = kvStore.get(SliceTargetKey.sliceTargetKey(base))
+                                    .filter(SliceTargetValue.class::isInstance)
+                                    .map(SliceTargetValue.class::cast);
 
                 if (target.isEmpty()) {
                     return noCurrentVersion(base.asString()).result();
@@ -399,7 +407,12 @@ final class DeploymentManagerImpl implements DeploymentManager {
                                        Version version,
                                        int instances) {
         var key = SliceTargetKey.sliceTargetKey(base);
-        var value = SliceTargetValue.sliceTargetValue(version, instances);
+        var value = kvStore.get(key)
+                           .filter(SliceTargetValue.class::isInstance)
+                           .map(SliceTargetValue.class::cast)
+                           .map(current -> current.withVersion(version)
+                                                  .withInstances(instances))
+                           .or(SliceTargetValue.sliceTargetValue(version, instances));
 
         commands.add(new KVCommand.Put<>(key, value));
     }
@@ -429,8 +442,10 @@ final class DeploymentManagerImpl implements DeploymentManager {
                                            Deployment deployment) {
         var key = VersionRoutingKey.versionRoutingKey(base);
         var routing = deployment.routing();
-        var value = VersionRoutingValue.versionRoutingValue(deployment.oldVersion(), deployment.newVersion()).withRouting(routing.newWeight(),
-                                                                                                                          routing.oldWeight());
+        var value = VersionRoutingValue.versionRoutingValue(deployment.oldVersion(),
+                                                            deployment.newVersion())
+                                       .withRouting(routing.newWeight(),
+                                                    routing.oldWeight());
 
         commands.add(new KVCommand.Put<>(key, value));
     }
@@ -438,7 +453,11 @@ final class DeploymentManagerImpl implements DeploymentManager {
     @SuppressWarnings("JBCT-SEQ-01")
     private void addDeploymentCommand(List<KVCommand<AetherKey>> commands, Deployment deployment) {
         var key = DeploymentKey.deploymentKey(deployment.deploymentId());
-        var artifactsStr = deployment.artifacts().stream().map(ArtifactBase::asString).reduce((a, b) -> a + "," + b).orElse("");
+        var artifactsStr = deployment.artifacts()
+                                     .stream()
+                                     .map(ArtifactBase::asString)
+                                     .reduce((a, b) -> a + "," + b)
+                                     .orElse("");
         var value = DeploymentValue.deploymentValue(deployment.deploymentId(),
                                                     deployment.blueprintId(),
                                                     deployment.oldVersion().toString(),
@@ -547,9 +566,11 @@ final class DeploymentManagerImpl implements DeploymentManager {
         var results = new ArrayList<ArtifactBase>();
 
         for (var part : artifactsStr.split(",")) {
-            ArtifactBase.artifactBase(part.trim()).onSuccess(results::add).onFailure(cause -> log.warn("Failed to parse artifact '{}': {}",
-                                                                                                       part,
-                                                                                                       cause.message()));
+            ArtifactBase.artifactBase(part.trim())
+                        .onSuccess(results::add)
+                        .onFailure(cause -> log.warn("Failed to parse artifact '{}': {}",
+                                                     part,
+                                                     cause.message()));
         }
 
         return List.copyOf(results);

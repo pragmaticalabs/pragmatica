@@ -4,13 +4,13 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.controller;
 
+import java.util.EnumMap;
+import java.util.Map;
+
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.Causes;
-
-import java.util.EnumMap;
-import java.util.Map;
 
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
@@ -33,10 +33,11 @@ public record ScalingConfig(int windowSize,
 
     public static ScalingConfig productionDefaults() {
         var weights = new EnumMap<ScalingMetric, Double>(ScalingMetric.class);
-
-        weights.put(ScalingMetric.CPU, 0.4);
-        weights.put(ScalingMetric.ACTIVE_INVOCATIONS, 0.4);
-        weights.put(ScalingMetric.P95_LATENCY, 0.2);
+        // CPU dropped as a scaling trigger (#422): it is a node metric and mis-attributes to
+        // slices by construction. Its weight is redistributed to the per-slice signals.
+        weights.put(ScalingMetric.CPU, 0.0);
+        weights.put(ScalingMetric.ACTIVE_INVOCATIONS, 0.6);
+        weights.put(ScalingMetric.P95_LATENCY, 0.4);
         weights.put(ScalingMetric.ERROR_RATE, 0.0);
 
         return new ScalingConfig(DEFAULT_WINDOW_SIZE,

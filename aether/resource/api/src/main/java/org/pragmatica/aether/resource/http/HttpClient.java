@@ -4,13 +4,13 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.resource.http;
 
+import java.util.Map;
+
 import org.pragmatica.http.HttpResult;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.type.TypeToken;
-
-import java.util.Map;
 
 import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.some;

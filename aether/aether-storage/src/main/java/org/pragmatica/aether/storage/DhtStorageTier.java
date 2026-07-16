@@ -4,6 +4,8 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.storage;
 
+import java.nio.charset.StandardCharsets;
+
 import org.pragmatica.dht.DHTClient;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
@@ -11,8 +13,6 @@ import org.pragmatica.lang.Unit;
 import org.pragmatica.storage.BlockId;
 import org.pragmatica.storage.StorageTier;
 import org.pragmatica.storage.TierLevel;
-
-import java.nio.charset.StandardCharsets;
 
 
 public final class DhtStorageTier implements StorageTier {

@@ -4,10 +4,10 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.resource.db;
 
+import java.util.List;
+
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
-
-import java.util.List;
 
 
 public interface SqlConnector extends DatabaseConnector {

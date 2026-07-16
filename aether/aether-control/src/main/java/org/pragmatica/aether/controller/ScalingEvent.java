@@ -20,4 +20,18 @@ public sealed interface ScalingEvent extends Message.Local {
             return new ScaledDown(artifact, previousInstances, newInstances);
         }
     }
+
+    /// Emitted when the autoscaler's requested instance count is reduced by a cap before it is
+    /// applied (#425). `reason` is `"max-instances"` (the blueprint's per-slice `maxInstances` bound
+    /// bit first) or `"cluster-cap"` (the cluster-size bound bit). Emitted ONLY when a real reduction
+    /// happened (`requestedInstances > cappedAtInstances`) — a pure observability signal that the
+    /// slice wants more capacity than policy or the cluster currently allows.
+    record ScaleCapped(Artifact artifact, int requestedInstances, int cappedAtInstances, String reason) implements ScalingEvent {
+        public static ScaleCapped scaleCapped(Artifact artifact,
+                                              int requestedInstances,
+                                              int cappedAtInstances,
+                                              String reason) {
+            return new ScaleCapped(artifact, requestedInstances, cappedAtInstances, reason);
+        }
+    }
 }

@@ -4,11 +4,11 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.metrics.artifact;
 
-import org.pragmatica.aether.artifact.Artifact;
-import org.pragmatica.aether.resource.artifact.ArtifactStore;
-
 import java.util.Map;
 import java.util.Set;
+
+import org.pragmatica.aether.artifact.Artifact;
+import org.pragmatica.aether.resource.artifact.ArtifactStore;
 
 
 public interface ArtifactMetricsCollector {

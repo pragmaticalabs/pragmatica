@@ -4,6 +4,9 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.resource.db.async;
 
+import java.util.List;
+import java.util.concurrent.CopyOnWriteArrayList;
+
 import org.pragmatica.aether.resource.ResourceFactory;
 import org.pragmatica.aether.resource.db.DatabaseConnectorConfig;
 import org.pragmatica.aether.resource.db.DatabaseConnectorError;
@@ -18,9 +21,6 @@ import org.pragmatica.postgres.net.Connectible;
 import org.pragmatica.postgres.net.Connection;
 import org.pragmatica.postgres.net.Listening;
 import org.pragmatica.postgres.net.netty.NettyConnectibleBuilder;
-
-import java.util.List;
-import java.util.concurrent.CopyOnWriteArrayList;
 
 
 public final class NotificationListenerFactory implements ResourceFactory<PgNotificationSubscriber, PgNotificationConfig> {
@@ -77,8 +77,10 @@ public final class NotificationListenerFactory implements ResourceFactory<PgNoti
 
     private static Promise<PgNotificationSubscriber> subscribeToChannels(Connection connection, List<String> channels) {
         var handle = new NotificationListenerHandle(connection);
-        var subscriptions = channels.stream().map(channel -> connection.subscribe(channel, handle::onNotification)
-                                                                       .map(handle::addListening)).toList();
+        var subscriptions = channels.stream()
+                                    .map(channel -> connection.subscribe(channel, handle::onNotification)
+                                                              .map(handle::addListening))
+                                    .toList();
 
         return Promise.allOf(subscriptions).map(_ -> handle);
     }

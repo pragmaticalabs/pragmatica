@@ -4,11 +4,11 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.resource.db.async;
 
+import java.util.function.Consumer;
+
 import org.pragmatica.aether.resource.db.SqlConnector;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.postgres.net.Listening;
-
-import java.util.function.Consumer;
 
 
 public interface AsyncSqlConnector extends SqlConnector {

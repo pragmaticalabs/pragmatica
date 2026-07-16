@@ -4,10 +4,10 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.http.handler;
 
+import java.util.Objects;
+
 import org.pragmatica.aether.http.handler.security.SecurityPolicy;
 import org.pragmatica.lang.Result;
-
-import java.util.Objects;
 
 import static org.pragmatica.lang.Result.success;
 
@@ -49,8 +49,9 @@ public record HttpRouteDefinition(String httpMethod,
                           success(normalizePrefix(pathPrefix)),
                           success(artifactCoord),
                           success(sliceMethod),
-                          success(security)).map(HttpRouteDefinition::new)
-                         .unwrap();
+                          success(security))
+                     .map(HttpRouteDefinition::new)
+                     .unwrap();
     }
 
     private static String normalizePrefix(String path) {

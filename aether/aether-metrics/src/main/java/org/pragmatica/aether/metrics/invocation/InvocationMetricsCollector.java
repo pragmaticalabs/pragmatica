@@ -4,19 +4,21 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.metrics.invocation;
 
-import org.pragmatica.aether.artifact.Artifact;
-import org.pragmatica.aether.slice.MethodName;
-import org.pragmatica.lang.Contract;
-import org.pragmatica.lang.Option;
-import org.pragmatica.lang.Result;
-import org.pragmatica.lang.Unit;
-
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.locks.ReentrantLock;
+
+import org.pragmatica.aether.artifact.Artifact;
+import org.pragmatica.aether.slice.MethodName;
+import org.pragmatica.aether.worker.metrics.PerMethodMetrics;
+import org.pragmatica.aether.worker.metrics.PerSliceMetrics;
+import org.pragmatica.lang.Contract;
+import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Unit;
 
 import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Result.unitResult;
@@ -102,6 +104,48 @@ public final class InvocationMetricsCollector {
                                                     .stream())
                          .mapToLong(m -> m.metrics.activeInvocations())
                          .sum();
+    }
+
+    /// Per-slice scaling feed (#423). Groups the live per-(artifact, method) gauges into one
+    /// [PerSliceMetrics] per artifact carrying the artifact-level aggregate (summed calls and
+    /// active invocations, worst-method p95 and error rate) plus the per-method breakdown the
+    /// decision path uses to let the worst-sustained method drive the artifact.
+    public List<PerSliceMetrics> collectPerSliceMetrics() {
+        return metricsMap.entrySet()
+                         .stream()
+                         .map(InvocationMetricsCollector::buildPerSliceMetrics)
+                         .toList();
+    }
+
+    private static PerSliceMetrics buildPerSliceMetrics(Map.Entry<Artifact, Map<MethodName, MethodMetricsWithSlowCalls>> entry) {
+        var methods = entry.getValue()
+                           .values()
+                           .stream()
+                           .map(InvocationMetricsCollector::buildPerMethodMetrics)
+                           .toList();
+        var activeInvocations = methods.stream().mapToLong(PerMethodMetrics::activeInvocations).sum();
+        var totalCalls = methods.stream().mapToLong(PerMethodMetrics::totalCalls).sum();
+        var worstP95 = methods.stream().mapToDouble(PerMethodMetrics::p95LatencyMs).max().orElse(0.0);
+        var worstErrorRate = methods.stream().mapToDouble(PerMethodMetrics::errorRate).max().orElse(0.0);
+
+        return PerSliceMetrics.perSliceMetrics(entry.getKey(),
+                                               activeInvocations,
+                                               worstP95,
+                                               worstErrorRate,
+                                               totalCalls,
+                                               methods);
+    }
+
+    private static PerMethodMetrics buildPerMethodMetrics(MethodMetricsWithSlowCalls collector) {
+        var snapshot = collector.metrics.snapshot();
+        var p95Ms = snapshot.estimatePercentileNs(95) / 1_000_000.0;
+        var errorRate = 1.0 - snapshot.successRate();
+
+        return PerMethodMetrics.perMethodMetrics(collector.metrics.methodName().name(),
+                                                 collector.metrics.activeInvocations(),
+                                                 p95Ms,
+                                                 errorRate,
+                                                 snapshot.count());
     }
 
     public Result<Unit> recordFailure(Artifact artifact,

@@ -4,6 +4,12 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.stream.segment;
 
+import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.stream.Stream;
+
 import org.pragmatica.aether.stream.OffHeapRingBuffer.RawEvent;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
@@ -12,12 +18,6 @@ import org.pragmatica.storage.BlockEncryptor;
 import org.pragmatica.storage.Compression;
 import org.pragmatica.storage.EncryptionParams;
 import org.pragmatica.storage.StorageInstance;
-
-import java.nio.ByteBuffer;
-import java.nio.ByteOrder;
-import java.util.ArrayList;
-import java.util.List;
-import java.util.stream.Stream;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;

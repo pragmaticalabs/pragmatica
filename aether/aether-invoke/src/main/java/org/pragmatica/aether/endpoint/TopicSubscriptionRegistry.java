@@ -4,6 +4,14 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.endpoint;
 
+import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicInteger;
+
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.slice.MethodName;
 import org.pragmatica.aether.slice.resource.ResourceAddress;
@@ -14,14 +22,6 @@ import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValueRemove;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Option;
 import org.pragmatica.messaging.MessageReceiver;
-
-import java.util.ArrayList;
-import java.util.Comparator;
-import java.util.LinkedHashMap;
-import java.util.List;
-import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.atomic.AtomicInteger;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -36,7 +36,12 @@ public interface TopicSubscriptionRegistry {
     @SuppressWarnings("JBCT-RET-01")
     void onSubscriptionRemove(ValueRemove<TopicSubscriptionKey, TopicSubscriptionValue> valueRemove);
 
-    List<TopicSubscriber> findSubscribers(String topicName);
+    /// Find the round-robin-selected subscribers for a fully-qualified topic address.
+    ///
+    /// The argument is the canonical [ResourceAddress#asString] form (`namespace:name:version`),
+    /// NOT the bare topic name — routing is namespace- and version-aware so topics with the same
+    /// bare name in different blueprints/namespaces never cross-deliver (RC2 #274).
+    List<TopicSubscriber> findSubscribers(String topicAddress);
     List<TopicSubscription> allSubscriptions();
 
     record TopicSubscription(ResourceAddress address, Artifact artifact, MethodName methodName, NodeId nodeId) {
@@ -44,10 +49,18 @@ public interface TopicSubscriptionRegistry {
             return TopicSubscriptionKey.topicSubscriptionKey(address, artifact, methodName);
         }
 
-        /// Bare topic name — the runtime routing identity.
+        /// Bare topic name — addressing metadata only, NOT the runtime routing identity. Routing
+        /// matches on the full [#routingKey] (`namespace:name:version`); this accessor is kept for
+        /// display/diagnostics and for any caller that still needs the un-namespaced name.
         public String topicName() {
             return address.name()
                           .value();
+        }
+
+        /// Canonical routing identity: the full `namespace:name:version` address string. Subscribers
+        /// match a publish only when this equals the publisher's resolved address string.
+        public String routingKey() {
+            return address.asString();
         }
     }
 
@@ -79,11 +92,11 @@ public interface TopicSubscriptionRegistry {
             }
 
             @Override
-            public List<TopicSubscriber> findSubscribers(String topicName) {
+            public List<TopicSubscriber> findSubscribers(String topicAddress) {
                 var groups = new LinkedHashMap<String, List<TopicSubscription>>();
 
                 for (var sub : subscriptions.values()) {
-                    if (sub.topicName().equals(topicName)) {
+                    if (sub.routingKey().equals(topicAddress)) {
                         var groupKey = sub.artifact().asString() + "/" + sub.methodName().name();
 
                         groups.computeIfAbsent(groupKey, _ -> new ArrayList<>()).add(sub);

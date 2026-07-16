@@ -4,16 +4,24 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.stream;
 
+import java.lang.foreign.MemorySegment;
+import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.List;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.Function;
+import java.util.stream.IntStream;
+import java.util.stream.Stream;
+
 import org.pragmatica.aether.slice.ReadPreference;
 import org.pragmatica.aether.slice.StreamAccess;
+import org.pragmatica.aether.slice.fence.OwnershipEpochHighWater;
 import org.pragmatica.aether.stream.forward.RawEventDto;
 import org.pragmatica.aether.stream.forward.StreamForwardClient;
-import org.pragmatica.aether.stream.forward.StreamForwardClient.ReadForwardResult;
 import org.pragmatica.aether.stream.forward.StreamReadForwardMetrics;
-import org.pragmatica.aether.stream.replication.ReplicaDescriptor;
 import org.pragmatica.aether.stream.replication.ReplicaPlacement;
 import org.pragmatica.aether.stream.replication.ReplicaRegistry;
-import org.pragmatica.aether.stream.replication.ReplicationState;
 import org.pragmatica.aether.stream.segment.CursorStore;
 import org.pragmatica.aether.stream.segment.TieredStreamReader;
 import org.pragmatica.consensus.NodeId;
@@ -25,17 +33,6 @@ import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.serialization.Deserializer;
 import org.pragmatica.serialization.Serializer;
-
-import java.lang.foreign.MemorySegment;
-import java.util.ArrayList;
-import java.util.Comparator;
-import java.util.List;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ThreadLocalRandom;
-import java.util.concurrent.atomic.AtomicLong;
-import java.util.function.Function;
-import java.util.stream.IntStream;
-import java.util.stream.Stream;
 
 import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Result.allOf;
@@ -68,6 +65,10 @@ public final class PartitionedStreamAccess<T> implements StreamAccess<T> {
     private final Option<Fn0<Option<NodeId>>> ownerResolver;
     private final Option<Function<Integer, Option<NodeId>>> partitionOwnerResolver;
     private final StreamReadForwardMetrics metrics;
+    private final int minSyncReplicas;
+    private final Option<CommittedStreamOwnerSource> committedOwnerSource;
+    private final Option<OwnershipEpochHighWater> epochHighWater;
+    private final Option<LinearizableBarrier> barrier;
     private final AtomicLong roundRobinCounter;
     private final ConcurrentHashMap<ConsumerPartitionKey, Long> committedOffsets;
 
@@ -86,7 +87,55 @@ public final class PartitionedStreamAccess<T> implements StreamAccess<T> {
                                     NodeId selfNodeId,
                                     Option<Fn0<Option<NodeId>>> ownerResolver,
                                     Option<Function<Integer, Option<NodeId>>> partitionOwnerResolver,
-                                    StreamReadForwardMetrics metrics) {
+                                    StreamReadForwardMetrics metrics,
+                                    int minSyncReplicas) {
+        this(partitionManager,
+             serializer,
+             deserializer,
+             streamName,
+             partitionCount,
+             partitionKeyExtractor,
+             cursorWriter,
+             tieredReader,
+             cursorStore,
+             readPreference,
+             replicaRegistry,
+             forwardClient,
+             selfNodeId,
+             ownerResolver,
+             partitionOwnerResolver,
+             metrics,
+             minSyncReplicas,
+             Option.none(),
+             Option.none(),
+             Option.none());
+    }
+
+    /// #345 item 1e-c: full constructor adding the three `LINEARIZABLE` pipeline components — the
+    /// committed-owner source, the ownership epoch high-water, and the no-op-round barrier — that the
+    /// typed read path threads into {@link #forwardingReadRouter()} so a `LINEARIZABLE` read runs the
+    /// same owner-routed fence/round/catch-up pipeline as the raw {@link StreamReadRouter} path. Every
+    /// other overload delegates here with [Option#none] components (no behaviour change).
+    private PartitionedStreamAccess(StreamPartitionManager partitionManager,
+                                    Serializer serializer,
+                                    Deserializer deserializer,
+                                    String streamName,
+                                    int partitionCount,
+                                    Option<Function<T, Object>> partitionKeyExtractor,
+                                    CursorCheckpointWriter cursorWriter,
+                                    Option<TieredStreamReader> tieredReader,
+                                    Option<CursorStore> cursorStore,
+                                    ReadPreference readPreference,
+                                    Option<ReplicaRegistry> replicaRegistry,
+                                    Option<StreamForwardClient> forwardClient,
+                                    NodeId selfNodeId,
+                                    Option<Fn0<Option<NodeId>>> ownerResolver,
+                                    Option<Function<Integer, Option<NodeId>>> partitionOwnerResolver,
+                                    StreamReadForwardMetrics metrics,
+                                    int minSyncReplicas,
+                                    Option<CommittedStreamOwnerSource> committedOwnerSource,
+                                    Option<OwnershipEpochHighWater> epochHighWater,
+                                    Option<LinearizableBarrier> barrier) {
         this.partitionManager = partitionManager;
         this.serializer = serializer;
         this.deserializer = deserializer;
@@ -103,6 +152,10 @@ public final class PartitionedStreamAccess<T> implements StreamAccess<T> {
         this.ownerResolver = ownerResolver;
         this.partitionOwnerResolver = partitionOwnerResolver;
         this.metrics = metrics;
+        this.minSyncReplicas = minSyncReplicas;
+        this.committedOwnerSource = committedOwnerSource;
+        this.epochHighWater = epochHighWater;
+        this.barrier = barrier;
         this.roundRobinCounter = new AtomicLong(0);
         this.committedOffsets = new ConcurrentHashMap<>();
     }
@@ -128,12 +181,17 @@ public final class PartitionedStreamAccess<T> implements StreamAccess<T> {
                                              EMPTY_SELF,
                                              Option.none(),
                                              Option.none(),
-                                             StreamReadForwardMetrics.NOOP);
+                                             StreamReadForwardMetrics.NOOP,
+                                             0);
     }
 
     /// A6: app-stream overload that wires owner-routed {@link #publish} (forward client + self +
     /// owner-resolver) while keeping the default local read path (no tiered/cursor/registry). Used by
     /// the app `StreamAccessFactory` so a non-owner producer write-forwards to the partition owner.
+    /// `minSyncReplicas > 1` makes a local app publish AWAIT `minSyncReplicas - 1` distinct non-self
+    /// replica acks before the publisher's promise resolves (#262.4) — the owner counts as one of the
+    /// in-sync set, so only the remaining peers are awaited. `minSyncReplicas <= 1` resolves on the
+    /// local write (0 = eventual, 1 = owner-only) — the durability guarantee the stream was created with.
     public static <T> PartitionedStreamAccess<T> streamAccess(StreamPartitionManager partitionManager,
                                                               Serializer serializer,
                                                               Deserializer deserializer,
@@ -143,7 +201,8 @@ public final class PartitionedStreamAccess<T> implements StreamAccess<T> {
                                                               Option<StreamForwardClient> forwardClient,
                                                               NodeId selfNodeId,
                                                               Option<Fn0<Option<NodeId>>> ownerResolver,
-                                                              Option<Function<Integer, Option<NodeId>>> partitionOwnerResolver) {
+                                                              Option<Function<Integer, Option<NodeId>>> partitionOwnerResolver,
+                                                              int minSyncReplicas) {
         return new PartitionedStreamAccess<>(partitionManager,
                                              serializer,
                                              deserializer,
@@ -159,7 +218,140 @@ public final class PartitionedStreamAccess<T> implements StreamAccess<T> {
                                              selfNodeId,
                                              ownerResolver,
                                              partitionOwnerResolver,
-                                             StreamReadForwardMetrics.NOOP);
+                                             StreamReadForwardMetrics.NOOP,
+                                             minSyncReplicas);
+    }
+
+    /// A4+A5: durable owner-routed overload — mirrors the owner-routed publish overload above and ADDS
+    /// the durability machinery (tiered cold reads + cursor store). When a {@link CursorStore} is present
+    /// the consumer-offset {@link #commit} is checkpointed through it so offsets survive a same-node
+    /// restart; when a {@link TieredStreamReader} is present a post-restart read against an empty hot ring
+    /// is served from sealed cold segments. NOTE the cursor arg-order: the writer is invoked with
+    /// `(stream, group, …)` but {@link CursorStore#commit} takes `(group, stream, …)` — hence the swap in
+    /// the writer lambda.
+    ///
+    /// A6 read-forwarding: pins {@link ReadPreference#NEAREST} and threads `replicaRegistry` so an
+    /// app-stream consumer deployed on a NON-replica node forwards the read to the partition's HRW owner
+    /// (which holds the WAL-recovered log) via the already-wired `forwardClient` / owner-resolver, instead
+    /// of reading its own empty local partition and returning `[]`. When self IS a caught-up replica the
+    /// read still lands locally (zero overhead) — the forward fires only on a local miss. With
+    /// `replicaRegistry` = {@link Option#none()} (the plain-access delegate / minimal runtimes) NEAREST
+    /// short-circuits in {@link ForwardingReadRouter} to a byte-identical local read.
+    public static <T> PartitionedStreamAccess<T> streamAccess(StreamPartitionManager partitionManager,
+                                                              Serializer serializer,
+                                                              Deserializer deserializer,
+                                                              String streamName,
+                                                              int partitionCount,
+                                                              Option<Function<T, Object>> partitionKeyExtractor,
+                                                              Option<StreamForwardClient> forwardClient,
+                                                              NodeId selfNodeId,
+                                                              Option<Fn0<Option<NodeId>>> ownerResolver,
+                                                              Option<Function<Integer, Option<NodeId>>> partitionOwnerResolver,
+                                                              int minSyncReplicas,
+                                                              Option<TieredStreamReader> tieredReader,
+                                                              Option<CursorStore> cursorStore,
+                                                              Option<ReplicaRegistry> replicaRegistry) {
+        return streamAccess(partitionManager,
+                            serializer,
+                            deserializer,
+                            streamName,
+                            partitionCount,
+                            partitionKeyExtractor,
+                            forwardClient,
+                            selfNodeId,
+                            ownerResolver,
+                            partitionOwnerResolver,
+                            minSyncReplicas,
+                            tieredReader,
+                            cursorStore,
+                            replicaRegistry,
+                            ReadPreference.NEAREST,
+                            Option.none(),
+                            Option.none(),
+                            Option.none());
+    }
+
+    /// #345 item 1e-c: the full-component durable owner-routed overload — the same wiring as the
+    /// 14-arg overload above PLUS an explicit `readPreference` and the three `LINEARIZABLE` pipeline
+    /// components (the committed-owner source, the ownership epoch high-water, and the no-op-round
+    /// barrier). Threaded from `AetherNode` through `StreamAccessFactory` so a typed `LINEARIZABLE`
+    /// read runs the SAME committed-owner routing + owner-side fence/round/catch-up pipeline as the raw
+    /// {@link StreamReadRouter} path (1e-a), instead of degrading to the replica-routed read. The
+    /// non-linearizable preferences ignore the three components, so `NEAREST` (the app default the
+    /// 14-arg overload delegates with) stays byte-for-byte unchanged; with [Option#none] components the
+    /// `LINEARIZABLE` arm falls back to the replica-routed read so nothing breaks.
+    public static <T> PartitionedStreamAccess<T> streamAccess(StreamPartitionManager partitionManager,
+                                                              Serializer serializer,
+                                                              Deserializer deserializer,
+                                                              String streamName,
+                                                              int partitionCount,
+                                                              Option<Function<T, Object>> partitionKeyExtractor,
+                                                              Option<StreamForwardClient> forwardClient,
+                                                              NodeId selfNodeId,
+                                                              Option<Fn0<Option<NodeId>>> ownerResolver,
+                                                              Option<Function<Integer, Option<NodeId>>> partitionOwnerResolver,
+                                                              int minSyncReplicas,
+                                                              Option<TieredStreamReader> tieredReader,
+                                                              Option<CursorStore> cursorStore,
+                                                              Option<ReplicaRegistry> replicaRegistry,
+                                                              ReadPreference readPreference,
+                                                              Option<CommittedStreamOwnerSource> committedOwnerSource,
+                                                              Option<OwnershipEpochHighWater> epochHighWater,
+                                                              Option<LinearizableBarrier> barrier) {
+        var cursorWriter = cursorStore.map(cs -> (CursorCheckpointWriter)(stream, group, partition, offset) -> cs.commit(group,
+                                                                                                                         stream,
+                                                                                                                         partition,
+                                                                                                                         offset))
+                                      .or(NOOP_WRITER);
+
+        return new PartitionedStreamAccess<>(partitionManager,
+                                             serializer,
+                                             deserializer,
+                                             streamName,
+                                             partitionCount,
+                                             partitionKeyExtractor,
+                                             cursorWriter,
+                                             tieredReader,
+                                             cursorStore,
+                                             readPreference,
+                                             replicaRegistry,
+                                             forwardClient,
+                                             selfNodeId,
+                                             ownerResolver,
+                                             partitionOwnerResolver,
+                                             StreamReadForwardMetrics.NOOP,
+                                             minSyncReplicas,
+                                             committedOwnerSource,
+                                             epochHighWater,
+                                             barrier);
+    }
+
+    /// A4+A5: durable plain overload — the same cursor/tiered durability wiring as the owner-routed
+    /// overload above but for the `StreamAccessFactory.plainAccess` fallback (no self identity / minimal
+    /// runtime). Delegates with no-owner / no-registry defaults so the cursor-writer derivation lives in
+    /// exactly one place. With no registry the inherited NEAREST read preference degrades to a local read.
+    public static <T> PartitionedStreamAccess<T> streamAccess(StreamPartitionManager partitionManager,
+                                                              Serializer serializer,
+                                                              Deserializer deserializer,
+                                                              String streamName,
+                                                              int partitionCount,
+                                                              Option<Function<T, Object>> partitionKeyExtractor,
+                                                              Option<TieredStreamReader> tieredReader,
+                                                              Option<CursorStore> cursorStore) {
+        return streamAccess(partitionManager,
+                            serializer,
+                            deserializer,
+                            streamName,
+                            partitionCount,
+                            partitionKeyExtractor,
+                            Option.none(),
+                            EMPTY_SELF,
+                            Option.none(),
+                            Option.none(),
+                            0,
+                            tieredReader,
+                            cursorStore,
+                            Option.none());
     }
 
     /// Fix #3: read-forwarding overload for REPLICATED single-/multi-partition streams that carry no
@@ -167,9 +359,10 @@ public final class PartitionedStreamAccess<T> implements StreamAccess<T> {
     /// + forward client + self node id and pins a replica-routed `readPreference` (typically
     /// `ANY_REPLICA`) so a node OUTSIDE the stream's replica set forwards reads to a caught-up replica
     /// instead of reading its own empty local partition. When self IS a caught-up replica the read
-    /// lands locally; during the bootstrap window (no caught-up replica visible yet) it fails soft to
-    /// the local partition (see {@link #selectReplicaAndRead}). No cursor/tiered machinery is wired —
-    /// those are `Option.none()`.
+    /// lands locally; during the bootstrap window (no caught-up replica visible yet) the read forwards to
+    /// the deterministic HRW owner via `ownerResolver`, and fails soft to the local partition only when
+    /// the owner is unknown/self (see {@link ForwardingReadRouter}). No cursor/tiered machinery is wired
+    /// — those are `Option.none()`.
     public static <T> PartitionedStreamAccess<T> streamAccess(StreamPartitionManager partitionManager,
                                                               Serializer serializer,
                                                               Deserializer deserializer,
@@ -180,6 +373,7 @@ public final class PartitionedStreamAccess<T> implements StreamAccess<T> {
                                                               ReplicaRegistry replicaRegistry,
                                                               Option<StreamForwardClient> forwardClient,
                                                               NodeId selfNodeId,
+                                                              Option<Fn0<Option<NodeId>>> ownerResolver,
                                                               StreamReadForwardMetrics metrics) {
         return new PartitionedStreamAccess<>(partitionManager,
                                              serializer,
@@ -194,9 +388,10 @@ public final class PartitionedStreamAccess<T> implements StreamAccess<T> {
                                              Option.some(replicaRegistry),
                                              forwardClient,
                                              selfNodeId,
+                                             ownerResolver,
                                              Option.none(),
-                                             Option.none(),
-                                             metrics);
+                                             metrics,
+                                             0);
     }
 
     public static <T> PartitionedStreamAccess<T> streamAccess(StreamPartitionManager partitionManager,
@@ -221,7 +416,8 @@ public final class PartitionedStreamAccess<T> implements StreamAccess<T> {
                                              EMPTY_SELF,
                                              Option.none(),
                                              Option.none(),
-                                             StreamReadForwardMetrics.NOOP);
+                                             StreamReadForwardMetrics.NOOP,
+                                             0);
     }
 
     public static <T> PartitionedStreamAccess<T> streamAccess(StreamPartitionManager partitionManager,
@@ -247,7 +443,8 @@ public final class PartitionedStreamAccess<T> implements StreamAccess<T> {
                                              EMPTY_SELF,
                                              Option.none(),
                                              Option.none(),
-                                             StreamReadForwardMetrics.NOOP);
+                                             StreamReadForwardMetrics.NOOP,
+                                             0);
     }
 
     public static <T> PartitionedStreamAccess<T> streamAccess(StreamPartitionManager partitionManager,
@@ -274,7 +471,8 @@ public final class PartitionedStreamAccess<T> implements StreamAccess<T> {
                                              EMPTY_SELF,
                                              Option.none(),
                                              Option.none(),
-                                             StreamReadForwardMetrics.NOOP);
+                                             StreamReadForwardMetrics.NOOP,
+                                             0);
     }
 
     public static <T> PartitionedStreamAccess<T> streamAccess(StreamPartitionManager partitionManager,
@@ -303,7 +501,8 @@ public final class PartitionedStreamAccess<T> implements StreamAccess<T> {
                                              EMPTY_SELF,
                                              Option.none(),
                                              Option.none(),
-                                             StreamReadForwardMetrics.NOOP);
+                                             StreamReadForwardMetrics.NOOP,
+                                             0);
     }
 
     public static <T> PartitionedStreamAccess<T> streamAccess(StreamPartitionManager partitionManager,
@@ -335,7 +534,8 @@ public final class PartitionedStreamAccess<T> implements StreamAccess<T> {
                                              selfNodeId,
                                              Option.none(),
                                              Option.none(),
-                                             metrics);
+                                             metrics,
+                                             0);
     }
 
     /// A6: full overload that also wires an owner-resolver so {@link #publish} routes writes to the
@@ -374,7 +574,8 @@ public final class PartitionedStreamAccess<T> implements StreamAccess<T> {
                                              selfNodeId,
                                              ownerResolver,
                                              Option.none(),
-                                             metrics);
+                                             metrics,
+                                             0);
     }
 
     /// A6 owner-routed publish. Resolves the HRW owner of `(stream, partition)` via the injected
@@ -418,9 +619,25 @@ public final class PartitionedStreamAccess<T> implements StreamAccess<T> {
                               .or(() -> publishLocal(partition, bytes, timestamp));
     }
 
+    /// Local publish on the owner. With `minSyncReplicas > 1` the publish does not resolve until
+    /// `minSyncReplicas - 1` DISTINCT non-self replica acks land (#262.4) — the owner itself is one of
+    /// the in-sync set, so only the remaining peers are awaited. `awaitReplication` registers the
+    /// pending ack against the already-fired replication (the manager seeds it from the registry to
+    /// close the ack-before-register race). With `minSyncReplicas <= 1` it resolves on the local write
+    /// (0 = eventual, 1 = owner-only).
     private Promise<Long> publishLocal(int partition, byte[] bytes, long timestamp) {
+        if (minSyncReplicas <= 1) {
+            return partitionManager.publishLocal(streamName, partition, bytes, timestamp)
+                                   .async();
+        }
+
         return partitionManager.publishLocal(streamName, partition, bytes, timestamp)
-                               .async();
+                               .async()
+                               .flatMap(offset -> partitionManager.awaitReplication(streamName,
+                                                                                    partition,
+                                                                                    offset,
+                                                                                    minSyncReplicas - 1)
+                                                                  .map(_ -> offset));
     }
 
     @Override
@@ -492,9 +709,11 @@ public final class PartitionedStreamAccess<T> implements StreamAccess<T> {
     /// routes GOVERNOR → `readPartition`, so existing local-only callers are unaffected — while
     /// `ANY_REPLICA`/`NEAREST` forward to a caught-up replica.
     private Promise<List<StreamEvent<T>>> fetchFromAllPartitions(long fromOffset, int maxEvents) {
-        List<Promise<List<StreamEvent<T>>>> perPartitionPromises = IntStream.range(0, partitionCount).mapToObj(p -> readWithPreference(p,
-                                                                                                                                       fromOffset,
-                                                                                                                                       maxEvents)).toList();
+        List<Promise<List<StreamEvent<T>>>> perPartitionPromises = IntStream.range(0, partitionCount)
+                                                                            .mapToObj(p -> readWithPreference(p,
+                                                                                                              fromOffset,
+                                                                                                              maxEvents))
+                                                                            .toList();
 
         return Promise.allOf(perPartitionPromises).flatMap(results -> allOf(results).map(lists -> mergeAndLimit(lists,
                                                                                                                 maxEvents))
@@ -502,129 +721,43 @@ public final class PartitionedStreamAccess<T> implements StreamAccess<T> {
     }
 
     private Promise<List<StreamEvent<T>>> readWithPreference(int partition, long fromOffset, int maxEvents) {
-        return switch (readPreference) {
-            case GOVERNOR -> readPartition(partition, fromOffset, maxEvents);
-            case ANY_REPLICA, NEAREST -> readFromReplicaOrLocal(partition, fromOffset, maxEvents);
-        };
+        return forwardingReadRouter().route(streamName, partition, fromOffset, maxEvents);
     }
 
-    private Promise<List<StreamEvent<T>>> readFromReplicaOrLocal(int partition, long fromOffset, int maxEvents) {
-        return replicaRegistry.map(registry -> selectReplicaAndRead(registry, partition, fromOffset, maxEvents))
-                              .or(() -> readPartition(partition, fromOffset, maxEvents));
-    }
-
-    private Promise<List<StreamEvent<T>>> selectReplicaAndRead(ReplicaRegistry registry,
-                                                               int partition,
-                                                               long fromOffset,
-                                                               int maxEvents) {
-        var caughtUp = registry.replicasFor(streamName, partition).stream().filter(PartitionedStreamAccess::isCaughtUp).toList();
-
-        if (caughtUp.isEmpty()) {
-            return readPartition(partition, fromOffset, maxEvents);
-        }
-
-        return readWithPrimaryAndRetry(caughtUp, partition, fromOffset, maxEvents);
-    }
-
-    private Promise<List<StreamEvent<T>>> readWithPrimaryAndRetry(List<ReplicaDescriptor> caughtUp,
-                                                                  int partition,
-                                                                  long fromOffset,
-                                                                  int maxEvents) {
-        var remote = caughtUp.stream().filter(r -> !r.nodeId()
-                                                     .equals(selfNodeId)).toList();
-
-        if (remote.isEmpty()) {
-            return readPartition(partition, fromOffset, maxEvents);
-        }
-
-        return forwardClient.map(client -> attemptPrimary(client, remote, partition, fromOffset, maxEvents))
-                            .or(() -> readPartition(partition, fromOffset, maxEvents));
-    }
-
-    private Promise<List<StreamEvent<T>>> attemptPrimary(StreamForwardClient client,
-                                                         List<ReplicaDescriptor> pool,
-                                                         int partition,
-                                                         long fromOffset,
-                                                         int maxEvents) {
-        var primary = pickReplica(pool);
-
-        LOG.log(System.Logger.Level.DEBUG,
-                "ReadPreference {0}: primary replica {1} for {2}[{3}]",
-                readPreference,
-                primary.nodeId(),
-                streamName,
-                partition);
-
-        return client.readRemote(primary.nodeId(),
-                                 streamName,
-                                 partition,
-                                 fromOffset,
-                                 maxEvents).map(result -> decodeAll(result.events(),
-                                                                    partition))
-                                .fold(result -> result.fold(cause -> retryOrFail(client,
-                                                                                 primary,
-                                                                                 pool,
-                                                                                 partition,
-                                                                                 fromOffset,
-                                                                                 maxEvents,
-                                                                                 cause),
-                                                            Promise::success));
-    }
-
-    private Promise<List<StreamEvent<T>>> retryOrFail(StreamForwardClient client,
-                                                      ReplicaDescriptor primary,
-                                                      List<ReplicaDescriptor> pool,
-                                                      int partition,
-                                                      long fromOffset,
-                                                      int maxEvents,
-                                                      Cause firstCause) {
-        var alternatives = pool.stream().filter(r -> !r.nodeId()
-                                                       .equals(primary.nodeId())).toList();
-
-        if (alternatives.isEmpty()) {
-            LOG.log(System.Logger.Level.DEBUG,
-                    "ReadPreference {0}: single-replica failure for {1}[{2}]: {3}",
-                    readPreference,
-                    streamName,
-                    partition,
-                    firstCause.message());
-
-            return firstCause.promise();
-        }
-
-        metrics.recordRetry();
-        var retry = pickReplica(alternatives);
-
-        LOG.log(System.Logger.Level.DEBUG,
-                "ReadPreference {0}: retry replica {1} for {2}[{3}] after primary {4} failed: {5}",
-                readPreference,
-                retry.nodeId(),
-                streamName,
-                partition,
-                primary.nodeId(),
-                firstCause.message());
-
-        return client.readRemote(retry.nodeId(),
-                                 streamName,
-                                 partition,
-                                 fromOffset,
-                                 maxEvents)
-                     .map(result -> decodeAll(result.events(),
-                                              partition));
-    }
-
-    private static ReplicaDescriptor pickReplica(List<ReplicaDescriptor> pool) {
-        return pool.get(ThreadLocalRandom.current().nextInt(pool.size()));
+    /// Fix #3 (forward-read): build the shared forward-read core for this stream's typed reads. The
+    /// routing ALGORITHM (caught-up-replica selection → owner-forward fallback) lives once in
+    /// {@link ForwardingReadRouter}; here we supply only the typed local-read ({@link #readPartition},
+    /// adapted to ignore the fixed stream name), the decode ({@link #decodeAll}) and the owner resolver
+    /// ({@link #resolveOwner}, which already blends the partition-aware HRW resolver + arg-less resolver).
+    /// A non-owner / still-catching-up node thus forwards to a caught-up replica or the deterministic HRW
+    /// owner instead of reading its own empty local partition (`200 []`); GOVERNOR / no-registry paths
+    /// stay byte-identical local reads.
+    ///
+    /// #345 item 1e-c: threads the committed-owner source + ownership epoch high-water + no-op-round
+    /// barrier so a typed `LINEARIZABLE` read runs the same committed-owner routing + owner-side
+    /// fence/round/catch-up pipeline as the raw {@link StreamReadRouter} path (1e-a). With [Option#none]
+    /// components the `LINEARIZABLE` arm degrades to the replica-routed read; the non-linearizable arms
+    /// ignore all three.
+    private ForwardingReadRouter<StreamEvent<T>> forwardingReadRouter() {
+        return ForwardingReadRouter.forwardingReadRouter(replicaRegistry,
+                                                         selfNodeId,
+                                                         forwardClient,
+                                                         readPreference,
+                                                         (_, partition) -> resolveOwner(partition),
+                                                         (_, partition, fromOffset, maxEvents) -> readPartition(partition,
+                                                                                                                fromOffset,
+                                                                                                                maxEvents),
+                                                         this::decodeAll,
+                                                         metrics,
+                                                         committedOwnerSource,
+                                                         epochHighWater,
+                                                         barrier);
     }
 
     private List<StreamEvent<T>> decodeAll(List<RawEventDto> events, int partition) {
         return events.stream()
                      .map(dto -> toStreamEventFromDto(dto, partition))
                      .toList();
-    }
-
-    private static boolean isCaughtUp(ReplicaDescriptor descriptor) {
-        return descriptor.state() == ReplicationState.CAUGHT_UP;
     }
 
     private Promise<List<StreamEvent<T>>> readPartition(int partition, long fromOffset, int maxEvents) {
@@ -634,7 +767,7 @@ public final class PartitionedStreamAccess<T> implements StreamAccess<T> {
                                      Promise::success);
     }
 
-    private Promise<List<StreamEvent<T>>> handleReadFailure(org.pragmatica.lang.Cause cause,
+    private Promise<List<StreamEvent<T>>> handleReadFailure(Cause cause,
                                                             int partition,
                                                             long fromOffset,
                                                             int maxEvents) {
@@ -682,8 +815,9 @@ public final class PartitionedStreamAccess<T> implements StreamAccess<T> {
         var bufferStart = sealedEvents.isEmpty()
                           ? fromOffset
                           : sealedEvents.getLast().offset() + 1;
-        var bufferEvents = partitionManager.readLocal(streamName, partition, bufferStart, remaining).map(rawEvents -> toStreamEvents(rawEvents,
-                                                                                                                                     partition)).or(List.of());
+        var bufferEvents = partitionManager.readLocal(streamName, partition, bufferStart, remaining)
+                                           .map(rawEvents -> toStreamEvents(rawEvents, partition))
+                                           .or(List.of());
 
         return List.copyOf(Stream.concat(sealed.stream(), bufferEvents.stream()).toList());
     }

@@ -4,13 +4,13 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.config.cluster;
 
-import org.pragmatica.lang.Option;
-
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+
+import org.pragmatica.lang.Option;
 
 import static org.pragmatica.aether.config.cluster.DiffPlan.diffPlan;
 
@@ -123,6 +123,7 @@ public final class ClusterBootstrapConfigDiff {
         checkSourceField(sourceName, "databases", stored.databases(), desired.databases(), modifications);
         checkSourceField(sourceName, "region", stored.region(), desired.region(), modifications);
         checkSourceField(sourceName, "zone", stored.zone(), desired.zone(), modifications);
+        checkSourceField(sourceName, "zones", stored.zones(), desired.zones(), modifications);
         checkSourceField(sourceName, "loadBalancer", stored.loadBalancer(), desired.loadBalancer(), modifications);
         checkSourceField(sourceName,
                          "loadBalancerIps",
@@ -227,7 +228,14 @@ public final class ClusterBootstrapConfigDiff {
         var workerCount = countByRole(config, NodeRole.WORKER);
         var sourceCount = config.sources().size();
 
-        sb.append(label).append(": ").append(coreCount).append(" cores, ").append(workerCount).append(" workers (").append(sourceCount).append(" sources)\n");
+        sb.append(label)
+          .append(": ")
+          .append(coreCount)
+          .append(" cores, ")
+          .append(workerCount)
+          .append(" workers (")
+          .append(sourceCount)
+          .append(" sources)\n");
     }
 
     private static int countByRole(ClusterBootstrapConfig config, NodeRole role) {

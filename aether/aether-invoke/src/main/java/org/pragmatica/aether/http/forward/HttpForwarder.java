@@ -4,6 +4,16 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.http.forward;
 
+import java.nio.charset.StandardCharsets;
+import java.util.HashSet;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Supplier;
+
 import org.pragmatica.aether.http.HttpRouteRegistry;
 import org.pragmatica.aether.http.forward.HttpForwardMessage.HttpForwardRequest;
 import org.pragmatica.aether.http.forward.HttpForwardMessage.HttpForwardResponse;
@@ -18,7 +28,7 @@ import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.ClusterNetwork;
 import org.pragmatica.consensus.topology.MembershipDecision;
 import org.pragmatica.consensus.topology.TransportObservation;
-import org.pragmatica.http.routing.HttpMethod;
+import org.pragmatica.http.HttpMethod;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Option;
@@ -32,16 +42,6 @@ import org.pragmatica.messaging.MessageReceiver;
 import org.pragmatica.serialization.Deserializer;
 import org.pragmatica.serialization.Serializer;
 import org.pragmatica.utility.IdGenerator;
-
-import java.nio.charset.StandardCharsets;
-import java.util.HashSet;
-import java.util.LinkedHashMap;
-import java.util.List;
-import java.util.Map;
-import java.util.Set;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.atomic.AtomicInteger;
-import java.util.function.Supplier;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -258,7 +258,9 @@ public interface HttpForwarder {
                                                      String pathPrefix,
                                                      String requestId) {
                 var resultPromise = Promise.<HttpResponseData> promise();
-                var connectedNodes = filterConnectedNodes(routeRegistry.findRoute(httpMethod, pathPrefix).map(HttpRouteRegistry.RouteInfo::nodes).or(Set.of()));
+                var connectedNodes = filterConnectedNodes(routeRegistry.findRoute(httpMethod, pathPrefix)
+                                                                       .map(HttpRouteRegistry.RouteInfo::nodes)
+                                                                       .or(Set.of()));
 
                 if (connectedNodes.isEmpty()) {
                     log.warn("No connected nodes available for route {} {} [{}]", httpMethod, pathPrefix, requestId);
@@ -478,14 +480,20 @@ public interface HttpForwarder {
                     return;
                 }
 
-                forwardToSpecificNode(requestContext, owner, requestId).onSuccess(resultPromise::succeed).onFailure(cause -> {
-                    log.debug("Forward to owner {} failed: {} (retries={}) [{}]",
-                              owner,
-                              cause.message(),
-                              retriesRemaining,
-                              requestId);
-                    retryTaskGroupOrFail(group, requestContext, requestId, resultPromise, retriesRemaining, () -> cause);
-                });
+                forwardToSpecificNode(requestContext, owner, requestId).onSuccess(resultPromise::succeed)
+                                     .onFailure(cause -> {
+                                                    log.debug("Forward to owner {} failed: {} (retries={}) [{}]",
+                                                              owner,
+                                                              cause.message(),
+                                                              retriesRemaining,
+                                                              requestId);
+                                                    retryTaskGroupOrFail(group,
+                                                                         requestContext,
+                                                                         requestId,
+                                                                         resultPromise,
+                                                                         retriesRemaining,
+                                                                         () -> cause);
+                                                });
             }
 
             private void retryTaskGroupOrFail(TaskGroup group,
@@ -500,11 +508,13 @@ public interface HttpForwarder {
                     return;
                 }
 
-                Promise.<Unit> promise().timeout(timeSpan(retryDelayMs).millis()).onResult(_ -> attemptTaskGroupForward(group,
-                                                                                                                        requestContext,
-                                                                                                                        requestId,
-                                                                                                                        resultPromise,
-                                                                                                                        retriesRemaining - 1));
+                Promise.<Unit> promise()
+                       .timeout(timeSpan(retryDelayMs).millis())
+                       .onResult(_ -> attemptTaskGroupForward(group,
+                                                              requestContext,
+                                                              requestId,
+                                                              resultPromise,
+                                                              retriesRemaining - 1));
             }
 
             private Promise<HttpResponseData> forwardToSpecificNode(HttpRequestContext requestContext,
@@ -603,10 +613,11 @@ public interface HttpForwarder {
                           response.requestId(),
                           response.correlationId(),
                           response.success());
-                Option.option(pendingForwards.remove(response.correlationId())).onEmpty(() -> log.debug("[{}] Received forward response for unknown correlationId: {}",
-                                                                                                        response.requestId(),
-                                                                                                        response.correlationId())).onPresent(pending -> processForwardResponse(pending,
-                                                                                                                                                                               response));
+                Option.option(pendingForwards.remove(response.correlationId()))
+                      .onEmpty(() -> log.debug("[{}] Received forward response for unknown correlationId: {}",
+                                               response.requestId(),
+                                               response.correlationId()))
+                      .onPresent(pending -> processForwardResponse(pending, response));
             }
 
             @Override
@@ -709,12 +720,14 @@ public interface HttpForwarder {
                               requestId,
                               retryDelayMs,
                               retriesRemaining);
-                    Promise.<Unit> promise().timeout(timeSpan(retryDelayMs).millis()).onResult(_ -> retryAfterDelay(requestContext,
-                                                                                                                    resultPromise,
-                                                                                                                    routeIdentity,
-                                                                                                                    requestId,
-                                                                                                                    retriesRemaining,
-                                                                                                                    pipeline));
+                    Promise.<Unit> promise()
+                           .timeout(timeSpan(retryDelayMs).millis())
+                           .onResult(_ -> retryAfterDelay(requestContext,
+                                                          resultPromise,
+                                                          routeIdentity,
+                                                          requestId,
+                                                          retriesRemaining,
+                                                          pipeline));
 
                     return;
                 }
@@ -816,11 +829,12 @@ public interface HttpForwarder {
 
                 clusterNetwork.send(targetNode, forwardRequest);
                 log.trace("Forwarded request to {} [{}] correlationId={}", targetNode, requestId, correlationId);
-                internalPromise.onSuccess(resultPromise::succeed).onFailure(cause -> handleInternalFailure(cause,
-                                                                                                           correlationId,
-                                                                                                           targetNode,
-                                                                                                           requestId,
-                                                                                                           onFailure));
+                internalPromise.onSuccess(resultPromise::succeed)
+                               .onFailure(cause -> handleInternalFailure(cause,
+                                                                         correlationId,
+                                                                         targetNode,
+                                                                         requestId,
+                                                                         onFailure));
             }
 
             private void handleInternalFailure(Cause cause,
@@ -870,12 +884,19 @@ public interface HttpForwarder {
             }
 
             private void handleNodeDeparture(NodeId departedNode) {
-                Option.option(pendingForwardsByNode.remove(departedNode)).filter(ids -> !ids.isEmpty()).onPresent(correlationIds -> retryPendingForwards(departedNode,
-                                                                                                                                                         correlationIds));
+                Option.option(pendingForwardsByNode.remove(departedNode))
+                      .filter(ids -> !ids.isEmpty())
+                      .onPresent(correlationIds -> retryPendingForwards(departedNode, correlationIds));
             }
 
             private void retryPendingForwards(NodeId departedNode, Set<String> correlationIds) {
-                var affectedRequestIds = correlationIds.stream().map(pendingForwards::get).map(Option::option).flatMap(Option::stream).map(PendingForward::requestId).limit(5).toList();
+                var affectedRequestIds = correlationIds.stream()
+                                                       .map(pendingForwards::get)
+                                                       .map(Option::option)
+                                                       .flatMap(Option::stream)
+                                                       .map(PendingForward::requestId)
+                                                       .limit(5)
+                                                       .toList();
 
                 log.debug("Node {} departed, triggering immediate retry for {} pending forwards, requestIds={}",
                           departedNode,

@@ -4,18 +4,19 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.stream.forward;
 
+import java.util.List;
+import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
+
 import org.pragmatica.aether.stream.forward.StreamForwardMessage.PublishForwardResponse;
 import org.pragmatica.aether.stream.forward.StreamForwardMessage.ReadForward;
 import org.pragmatica.aether.stream.forward.StreamForwardMessage.ReadForwardResponse;
+import org.pragmatica.aether.slice.ReadPreference;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.SharedScheduler;
 import org.pragmatica.messaging.MessageReceiver;
-
-import java.util.List;
-import java.util.UUID;
-import java.util.concurrent.ConcurrentHashMap;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -36,6 +37,20 @@ public interface StreamForwardClient {
                                           int partition,
                                           long fromOffset,
                                           int maxEvents);
+
+    /// #345 item 1e-a: forward a read tagged with its routing preference, so a `LINEARIZABLE` forward is
+    /// re-guarded at the committed owner (the owner-side serve pipeline) rather than served by an
+    /// unguarded local read. The default drops the tag and forwards plainly — it matters only on the
+    /// production transport ({@link DefaultStreamForwardClient}), which stamps it into the
+    /// {@link ReadForward} message; test fakes and {@link #NOOP} inherit the plain forward.
+    default Promise<ReadForwardResult> readRemote(NodeId replicaId,
+                                                  String streamName,
+                                                  int partition,
+                                                  long fromOffset,
+                                                  int maxEvents,
+                                                  ReadPreference preference) {
+        return readRemote(replicaId, streamName, partition, fromOffset, maxEvents);
+    }
 
     @MessageReceiver
     @SuppressWarnings("JBCT-RET-01")
@@ -175,22 +190,39 @@ final class DefaultStreamForwardClient implements StreamForwardClient {
                                                  int partition,
                                                  long fromOffset,
                                                  int maxEvents) {
+        return readRemote(replicaId, streamName, partition, fromOffset, maxEvents, ReadPreference.GOVERNOR);
+    }
+
+    @Override
+    public Promise<ReadForwardResult> readRemote(NodeId replicaId,
+                                                 String streamName,
+                                                 int partition,
+                                                 long fromOffset,
+                                                 int maxEvents,
+                                                 ReadPreference preference) {
         metrics.recordAttempt();
         var correlationId = UUID.randomUUID().toString();
         Promise<ReadForwardResult> promise = Promise.promise();
 
         pendingReads.put(correlationId, promise);
         SharedScheduler.schedule(() -> timeoutRead(correlationId), readTimeout);
-        var message = readForward(selfNodeId, correlationId, streamName, partition, fromOffset, maxEvents);
+        var message = readForward(selfNodeId,
+                                  correlationId,
+                                  streamName,
+                                  partition,
+                                  fromOffset,
+                                  maxEvents,
+                                  preference == ReadPreference.LINEARIZABLE);
 
         transport.send(replicaId, message);
-        log.trace("Sent ReadForward to {} for {}[{}] fromOffset={} maxEvents={} correlationId={}",
+        log.trace("Sent ReadForward to {} for {}[{}] fromOffset={} maxEvents={} correlationId={} preference={}",
                   replicaId,
                   streamName,
                   partition,
                   fromOffset,
                   maxEvents,
-                  correlationId);
+                  correlationId,
+                  preference);
 
         return promise;
     }
@@ -198,23 +230,33 @@ final class DefaultStreamForwardClient implements StreamForwardClient {
     @Override
     @SuppressWarnings("JBCT-RET-01")
     public void onPublishForwardResponse(PublishForwardResponse response) {
-        option(pendingRequests.remove(response.correlationId())).onEmpty(() -> logOrphanedPublishResponse(response)).onPresent(promise -> resolveFromResponse(promise,
-                                                                                                                                                              response));
+        option(pendingRequests.remove(response.correlationId())).onEmpty(() -> logOrphanedPublishResponse(response))
+              .onPresent(promise -> resolveFromResponse(promise, response));
     }
 
     @Override
     @SuppressWarnings("JBCT-RET-01")
     public void onReadForwardResponse(ReadForwardResponse response) {
-        option(pendingReads.remove(response.correlationId())).onEmpty(() -> logOrphanedReadResponse(response)).onPresent(promise -> resolveFromReadResponse(promise,
-                                                                                                                                                            response));
+        option(pendingReads.remove(response.correlationId())).onEmpty(() -> logOrphanedReadResponse(response))
+              .onPresent(promise -> resolveFromReadResponse(promise, response));
     }
 
     private void resolveFromResponse(Promise<Long> promise, PublishForwardResponse response) {
         if (response.success()) {
             promise.succeed(response.offset());
         } else {
-            promise.resolve(new StreamForwardError.RemotePublishFailed(response.errorMessage()).result());
+            promise.resolve(publishFailureCause(response).result());
         }
+    }
+
+    /// Rebuild the typed forward-publish cause from the wire response, preserving the owner's
+    /// retryable/permanent classification (write-forward race fix): a `retryable` response becomes
+    /// {@link StreamForwardError.RemotePublishRetryable} so the forwarder bounded-retries, otherwise a
+    /// permanent {@link StreamForwardError.RemotePublishFailed}.
+    private static StreamForwardError publishFailureCause(PublishForwardResponse response) {
+        return response.retryable()
+               ? new StreamForwardError.RemotePublishRetryable(response.errorMessage())
+               : new StreamForwardError.RemotePublishFailed(response.errorMessage());
     }
 
     private void resolveFromReadResponse(Promise<ReadForwardResult> promise, ReadForwardResponse response) {

@@ -4,6 +4,14 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.stream.consumer;
 
+import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.List;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.atomic.AtomicReference;
+
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ConsumerGroupKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
@@ -16,14 +24,6 @@ import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.messaging.MessageReceiver;
-
-import java.util.ArrayList;
-import java.util.Comparator;
-import java.util.List;
-import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.CopyOnWriteArrayList;
-import java.util.concurrent.atomic.AtomicReference;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -156,10 +156,11 @@ public sealed interface ConsumerGroupCoordinator {
                 var commands = buildAssignmentCommands(groupId, streamName, partitionCount, sorted);
 
                 if (!commands.isEmpty()) {
-                    clusterNode.apply(commands).onFailure(cause -> log.error("Consensus proposal failed for consumer group {}/{}: {}",
-                                                                             groupId,
-                                                                             streamName,
-                                                                             cause.message()));
+                    clusterNode.apply(commands)
+                               .onFailure(cause -> log.error("Consensus proposal failed for consumer group {}/{}: {}",
+                                                             groupId,
+                                                             streamName,
+                                                             cause.message()));
                 }
             }
 

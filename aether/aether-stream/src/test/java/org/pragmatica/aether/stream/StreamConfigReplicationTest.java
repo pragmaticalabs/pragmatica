@@ -8,7 +8,9 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.pragmatica.aether.slice.ConsistencyMode;
 import org.pragmatica.aether.slice.RetentionPolicy;
+import org.pragmatica.aether.slice.StreamCompression;
 import org.pragmatica.aether.slice.StreamConfig;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.StreamConfigKey;
@@ -347,6 +349,103 @@ class StreamConfigReplicationTest {
                     .isEmpty();
             } finally {
                 follower.close();
+            }
+        }
+    }
+
+    @Nested
+    class AuthoritativeConfigAdoption {
+        private static final RetentionPolicy RETENTION = RetentionPolicy.retentionPolicy(1000, 1024 * 1024, 60_000);
+
+        private static StreamConfig durableConfig(int partitions, int replicas, int minSyncReplicas) {
+            return StreamConfig.streamConfig("orders",
+                                             partitions,
+                                             RETENTION,
+                                             "latest",
+                                             1_048_576L,
+                                             ConsistencyMode.EVENTUAL,
+                                             replicas,
+                                             minSyncReplicas,
+                                             StreamCompression.NONE,
+                                             Option.none());
+        }
+
+        private static void putConfig(StreamPartitionManager manager, StreamConfig config) {
+            var put = new KVCommand.Put<StreamConfigKey, StreamConfigValue>(StreamConfigKey.streamConfigKey(config.name()),
+                                                                            StreamConfigValue.streamConfigValue(config));
+            manager.onStreamConfigPut(new ValuePut<>(put, Option.empty()));
+        }
+
+        @Test
+        void onStreamConfigPut_committedAppConfig_adoptsOverPriorManagementDefault_preservingData() {
+            // Reproduces the reported clobber: the REST publish auto-create wins the race and materializes
+            // a replicas=1/min-sync=0 management DEFAULT first; the app/blueprint config (replicas=2,
+            // min-sync=2) commits afterwards and MUST become authoritative — without dropping the data the
+            // default entry already buffered.
+            var manager = streamPartitionManager(Long.MAX_VALUE);
+            try {
+                putConfig(manager, durableConfig(4, 1, 0));
+                assertThat(manager.minSyncReplicasFor("orders")).isEqualTo(0);
+
+                manager.publishLocal("orders", 0, "e0".getBytes(), 1L)
+                       .onFailure(_ -> org.junit.jupiter.api.Assertions.fail("seed publish must succeed"));
+                var allocBefore = manager.totalAllocatedBytes();
+
+                putConfig(manager, durableConfig(4, 2, 2));
+
+                assertThat(manager.minSyncReplicasFor("orders"))
+                    .as("committed app config must become authoritative over the prior REST default")
+                    .isEqualTo(2);
+                assertThat(manager.totalAllocatedBytes())
+                    .as("config adoption must reuse the live rings, not re-allocate")
+                    .isEqualTo(allocBefore);
+                manager.readLocal("orders", 0, 0L, 10)
+                       .onFailure(_ -> org.junit.jupiter.api.Assertions.fail("Expected read success"))
+                       .onSuccess(events -> assertThat(events)
+                           .as("adopted config must preserve the buffered data")
+                           .hasSize(1));
+            } finally {
+                manager.close();
+            }
+        }
+
+        @Test
+        void onStreamConfigPut_weakerConfig_keepsExistingAppDurability() {
+            // Monotonic-up: a stray/late management default must NOT re-weaken the adopted app config
+            // (no ping-pong between competing name-keyed config Puts).
+            var manager = streamPartitionManager(Long.MAX_VALUE);
+            try {
+                putConfig(manager, durableConfig(4, 2, 2));
+                assertThat(manager.minSyncReplicasFor("orders")).isEqualTo(2);
+
+                putConfig(manager, durableConfig(4, 1, 0));
+
+                assertThat(manager.minSyncReplicasFor("orders"))
+                    .as("a weaker committed config must not downgrade the stream")
+                    .isEqualTo(2);
+            } finally {
+                manager.close();
+            }
+        }
+
+        @Test
+        void onStreamConfigPut_strongerConfigWithDifferentPartitions_keepsExistingRings() {
+            // A partition-count change cannot be re-shaped onto live rings: keep the existing entry.
+            var manager = streamPartitionManager(Long.MAX_VALUE);
+            try {
+                putConfig(manager, durableConfig(4, 1, 0));
+
+                putConfig(manager, durableConfig(8, 2, 2));
+
+                manager.streamInfo("orders")
+                       .onPresent(si -> assertThat(si.partitions())
+                           .as("a partition-count change must not resize live rings")
+                           .isEqualTo(4));
+                assertThat(manager.minSyncReplicasFor("orders"))
+                    .as("an incompatible partition change must not adopt the new durability knobs")
+                    .isEqualTo(0);
+            } finally {
+                manager.close();
             }
         }
     }

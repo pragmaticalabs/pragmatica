@@ -4,10 +4,10 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.metrics;
 
-import org.pragmatica.lang.Contract;
-
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BooleanSupplier;
+
+import org.pragmatica.lang.Contract;
 
 
 /// Node-local holder for the node's self-reported readiness state

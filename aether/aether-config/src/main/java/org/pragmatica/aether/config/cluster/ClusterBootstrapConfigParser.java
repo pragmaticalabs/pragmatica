@@ -4,18 +4,18 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.config.cluster;
 
-import org.pragmatica.config.toml.TomlDocument;
-import org.pragmatica.config.toml.TomlParser;
-import org.pragmatica.lang.Cause;
-import org.pragmatica.lang.Option;
-import org.pragmatica.lang.Result;
-
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+
+import org.pragmatica.config.toml.TomlDocument;
+import org.pragmatica.config.toml.TomlParser;
+import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Result;
 
 import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Result.success;
@@ -105,7 +105,8 @@ public final class ClusterBootstrapConfigParser {
 
     private static Result<ClusterIdentity> parseClusterIdentity(TomlDocument doc) {
         var name = doc.getString(CLUSTER_SECTION, "name").toResult(parseFailed("Missing required field: cluster.name"));
-        var version = doc.getString(CLUSTER_SECTION, "version").toResult(parseFailed("Missing required field: cluster.version"));
+        var version = doc.getString(CLUSTER_SECTION, "version")
+                         .toResult(parseFailed("Missing required field: cluster.version"));
 
         return Result.all(name, version).flatMap(ClusterIdentity::clusterIdentity);
     }
@@ -174,10 +175,12 @@ public final class ClusterBootstrapConfigParser {
     }
 
     private static SourceProfile buildSourceProfile(TomlDocument doc, String name, String section, SourceType type) {
-        var provider = doc.getString(section, "provider").flatMap(raw -> CloudProviderName.cloudProviderName(raw).option());
+        var provider = doc.getString(section, "provider")
+                          .flatMap(raw -> CloudProviderName.cloudProviderName(raw).option());
         var credentials = doc.getString(section, "credentials");
         var region = doc.getString(section, "region");
         var zone = doc.getString(section, "zone");
+        var zones = doc.getStringList(section, "zones").or(List.of());
         var user = doc.getString(section, "user");
         var key = doc.getString(section, "key");
         var sshPort = doc.getInt(section, "ssh_port");
@@ -195,6 +198,7 @@ public final class ClusterBootstrapConfigParser {
                                            credentials,
                                            region,
                                            zone,
+                                           zones,
                                            user,
                                            key,
                                            sshPort,
@@ -262,11 +266,12 @@ public final class ClusterBootstrapConfigParser {
     }
 
     private static void extractInlineDatabases(Map<String, Object> sectionData, Map<String, String> databases) {
-        sectionData.entrySet().stream().filter(entry -> entry.getKey()
-                                                             .startsWith(DATABASES_PREFIX)).forEach(entry -> databases.put(entry.getKey()
-                                                                                                                                .substring(DATABASES_PREFIX.length()),
-                                                                                                                           entry.getValue()
-                                                                                                                                .toString()));
+        sectionData.entrySet()
+                   .stream()
+                   .filter(entry -> entry.getKey()
+                                         .startsWith(DATABASES_PREFIX))
+                   .forEach(entry -> databases.put(entry.getKey().substring(DATABASES_PREFIX.length()),
+                                                   entry.getValue().toString()));
     }
 
     private static Map<NodeRole, RoleSubTable> parseRoles(TomlDocument doc, String sourceName, SourceType type) {
@@ -395,7 +400,9 @@ public final class ClusterBootstrapConfigParser {
     }
 
     private static InfrastructureConfig parseInfrastructure(TomlDocument doc) {
-        var networkingType = doc.getString(INFRA_NETWORKING_SECTION, "type").flatMap(raw -> NetworkingType.networkingType(raw).option()).or(NetworkingType.MANUAL);
+        var networkingType = doc.getString(INFRA_NETWORKING_SECTION, "type")
+                                .flatMap(raw -> NetworkingType.networkingType(raw).option())
+                                .or(NetworkingType.MANUAL);
 
         return InfrastructureConfig.infrastructureConfig(networkingType, parseSshConfig(doc));
     }
@@ -406,8 +413,9 @@ public final class ClusterBootstrapConfigParser {
         }
 
         var keyFiles = collectSshKeyFiles(doc);
+        var authorizedKeys = doc.getStringList(INFRA_SSH_SECTION, "authorized_keys").or(List.of());
 
-        return Option.some(SshDeploymentConfig.sshDeploymentConfig(keyFiles));
+        return Option.some(SshDeploymentConfig.sshDeploymentConfig(keyFiles, authorizedKeys));
     }
 
     private static List<String> collectSshKeyFiles(TomlDocument doc) {
@@ -452,12 +460,18 @@ public final class ClusterBootstrapConfigParser {
         var enabled = doc.getBoolean(OPERATIONS_AUTO_HEAL_SECTION, "enabled").or(true);
         var retryInterval = doc.getString(OPERATIONS_AUTO_HEAL_SECTION, "retry_interval").or("60s");
         var startupCooldown = doc.getString(OPERATIONS_AUTO_HEAL_SECTION, "startup_cooldown").or("15s");
-        var staleObservationTtl = doc.getString(OPERATIONS_AUTO_HEAL_SECTION, "stale_observation_ttl").or(AutoHealSpec.DEFAULT_STALE_OBSERVATION_TTL);
-        var quicMissPromotionThreshold = doc.getInt(OPERATIONS_AUTO_HEAL_SECTION, "quic_miss_promotion_threshold").or(AutoHealSpec.DEFAULT_QUIC_MISS_PROMOTION_THRESHOLD);
-        var provisioningTimeout = doc.getString(OPERATIONS_AUTO_HEAL_SECTION, "provisioning_timeout").or(AutoHealSpec.DEFAULT_PROVISIONING_TIMEOUT);
-        var provisionStabilityWindow = doc.getString(OPERATIONS_AUTO_HEAL_SECTION, "provision_stability_window").or(AutoHealSpec.DEFAULT_PROVISION_STABILITY_WINDOW);
-        var decommissionedRetention = doc.getString(OPERATIONS_AUTO_HEAL_SECTION, "decommissioned_retention").or(AutoHealSpec.DEFAULT_DECOMMISSIONED_RETENTION);
-        var swimHintsTtl = doc.getString(OPERATIONS_AUTO_HEAL_SECTION, "swim_hints_ttl").or(AutoHealSpec.DEFAULT_SWIM_HINTS_TTL);
+        var staleObservationTtl = doc.getString(OPERATIONS_AUTO_HEAL_SECTION, "stale_observation_ttl")
+                                     .or(AutoHealSpec.DEFAULT_STALE_OBSERVATION_TTL);
+        var quicMissPromotionThreshold = doc.getInt(OPERATIONS_AUTO_HEAL_SECTION, "quic_miss_promotion_threshold")
+                                            .or(AutoHealSpec.DEFAULT_QUIC_MISS_PROMOTION_THRESHOLD);
+        var provisioningTimeout = doc.getString(OPERATIONS_AUTO_HEAL_SECTION, "provisioning_timeout")
+                                     .or(AutoHealSpec.DEFAULT_PROVISIONING_TIMEOUT);
+        var provisionStabilityWindow = doc.getString(OPERATIONS_AUTO_HEAL_SECTION, "provision_stability_window")
+                                          .or(AutoHealSpec.DEFAULT_PROVISION_STABILITY_WINDOW);
+        var decommissionedRetention = doc.getString(OPERATIONS_AUTO_HEAL_SECTION, "decommissioned_retention")
+                                         .or(AutoHealSpec.DEFAULT_DECOMMISSIONED_RETENTION);
+        var swimHintsTtl = doc.getString(OPERATIONS_AUTO_HEAL_SECTION, "swim_hints_ttl")
+                              .or(AutoHealSpec.DEFAULT_SWIM_HINTS_TTL);
 
         return AutoHealSpec.autoHealSpec(enabled,
                                          retryInterval,

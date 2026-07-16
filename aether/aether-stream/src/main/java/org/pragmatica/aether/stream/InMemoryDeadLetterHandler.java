@@ -4,12 +4,12 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.stream;
 
-import org.pragmatica.aether.stream.DeadLetterHandler.DeadLetterEntry;
-import org.pragmatica.lang.Contract;
-
 import java.util.List;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
+
+import org.pragmatica.aether.stream.DeadLetterHandler.DeadLetterEntry;
+import org.pragmatica.lang.Contract;
 
 import static org.pragmatica.lang.Option.option;
 

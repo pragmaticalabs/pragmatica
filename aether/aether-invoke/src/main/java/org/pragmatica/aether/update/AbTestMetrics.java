@@ -4,9 +4,9 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.update;
 
-import org.pragmatica.aether.artifact.Version;
-
 import java.util.Map;
+
+import org.pragmatica.aether.artifact.Version;
 
 
 public record AbTestMetrics(String testId, Map<String, VariantMetrics> variantMetrics, long collectedAt) {

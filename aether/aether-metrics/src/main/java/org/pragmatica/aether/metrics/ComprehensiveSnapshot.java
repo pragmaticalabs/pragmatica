@@ -4,12 +4,12 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.metrics;
 
+import java.util.Map;
+
 import org.pragmatica.aether.metrics.consensus.RabiaMetrics;
 import org.pragmatica.aether.metrics.eventloop.EventLoopMetrics;
 import org.pragmatica.aether.metrics.gc.GCMetrics;
 import org.pragmatica.aether.metrics.network.NetworkMetrics;
-
-import java.util.Map;
 
 
 public record ComprehensiveSnapshot(long timestamp,

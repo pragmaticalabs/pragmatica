@@ -4,6 +4,13 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.config;
 
+import java.nio.file.Path;
+import java.time.Duration;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+
 import org.pragmatica.aether.environment.CloudConfig;
 import org.pragmatica.config.toml.TomlDocument;
 import org.pragmatica.config.toml.TomlParser;
@@ -13,13 +20,6 @@ import org.pragmatica.lang.Result;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.parse.DataSize;
 import org.pragmatica.lang.parse.Number;
-
-import java.nio.file.Path;
-import java.time.Duration;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
-import java.util.Set;
 
 import static org.pragmatica.lang.Result.success;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
@@ -70,10 +70,33 @@ public final class ConfigLoader {
 
             mergeCliOverrides(overrides, builder);
 
-            return success(builder.build());
+            return parseReadLinearization(doc).map(mode -> applyReadLinearization(builder.build(), mode));
         } catch (IllegalArgumentException e) {
             return ConfigError.invalidConfig(e.getMessage()).result();
         }
+    }
+
+    /// Parse the `[durable-entity] read-linearization` ops knob (spec §8.1, durable-entity primitive).
+    /// Absent → the default no-op round. `no-op-round` → [ReadLinearizationMode#NO_OP_ROUND]. `lease` →
+    /// REJECTED with a named error: the lease mechanism ships only once its clock-skew chaos validation
+    /// gate is green, so deployments run no-op-round until then. Any other value is an invalid config.
+    /// Result-based (like {@code Environment.environment}), so a rejection fails the whole config load.
+    private static Result<ReadLinearizationMode> parseReadLinearization(TomlDocument doc) {
+        return doc.getString("durable-entity", "read-linearization")
+                  .fold(() -> success(StreamingConfig.DEFAULT_READ_LINEARIZATION),
+                        ConfigLoader::readLinearizationOf);
+    }
+
+    private static Result<ReadLinearizationMode> readLinearizationOf(String raw) {
+        return switch (raw.trim()) {
+            case "no-op-round" -> success(ReadLinearizationMode.NO_OP_ROUND);
+            case "lease" -> ConfigError.invalidConfig("lease linearization not implemented — use no-op-round").result();
+            default -> ConfigError.invalidConfig("unknown read-linearization '" + raw + "' — use no-op-round").result();
+        };
+    }
+
+    private static AetherConfig applyReadLinearization(AetherConfig config, ReadLinearizationMode mode) {
+        return config.withStreaming(config.streaming().withReadLinearization(mode));
     }
 
     private static AetherConfig.Builder populateBuilder(TomlDocument doc, Environment environment) {
@@ -188,7 +211,9 @@ public final class ConfigLoader {
     private static PortsConfig portsFromDocument(TomlDocument doc) {
         var mgmtPort = doc.getInt("cluster.ports", "management").or(PortsConfig.DEFAULT_MANAGEMENT_PORT);
         var clusterPort = doc.getInt("cluster.ports", "cluster").or(PortsConfig.DEFAULT_CLUSTER_PORT);
-        var mgmtProtocol = doc.getString("cluster.ports", "management_protocol").flatMap(HttpProtocol::httpProtocol).or(HttpProtocol.H1);
+        var mgmtProtocol = doc.getString("cluster.ports", "management_protocol")
+                              .flatMap(HttpProtocol::httpProtocol)
+                              .or(HttpProtocol.H1);
 
         return PortsConfig.portsConfig(mgmtPort, clusterPort, mgmtProtocol).unwrap();
     }
@@ -218,7 +243,9 @@ public final class ConfigLoader {
         var certPath = doc.getString("tls", "cert_path").or("");
         var keyPath = doc.getString("tls", "key_path").or("");
         var caPath = doc.getString("tls", "ca_path").or("");
-        var clusterSecret = doc.getString("tls", "cluster_secret").orElse(Option.option(System.getenv("AETHER_CLUSTER_SECRET"))).or("");
+        var clusterSecret = doc.getString("tls", "cluster_secret")
+                               .orElse(Option.option(System.getenv("AETHER_CLUSTER_SECRET")))
+                               .or("");
 
         return new TlsConfig(autoGen, certPath, keyPath, caPath, clusterSecret);
     }
@@ -276,7 +303,10 @@ public final class ConfigLoader {
 
     @SuppressWarnings({"JBCT-STY-05", "JBCT-RET-07"})
     private static void populateSliceConfig(TomlDocument doc, AetherConfig.Builder builder) {
-        doc.getStringList("slice", "repositories").map(repos -> SliceConfig.sliceConfigFromNames(repos)).flatMap(Result::option).onPresent(builder::sliceConfig);
+        doc.getStringList("slice", "repositories")
+           .map(repos -> SliceConfig.sliceConfigFromNames(repos))
+           .flatMap(Result::option)
+           .onPresent(builder::sliceConfig);
     }
 
     @SuppressWarnings("JBCT-STY-05")
@@ -286,21 +316,33 @@ public final class ConfigLoader {
         var maxRequestSize = parseDataSize(doc, "app-http", "max_request_size", AppHttpConfig.DEFAULT_MAX_REQUEST_SIZE);
         var explicitMode = doc.getString("app-http", "security_mode").flatMap(SecurityMode::securityMode);
         var apiKeys = resolveApiKeys(doc);
-        var securityMode = explicitMode.or(apiKeys.isEmpty()
-                                           ? SecurityMode.NONE
-                                           : SecurityMode.API_KEY);
+        // #290: secure by default. When `security_mode` is not configured the effective mode is
+        // API_KEY (was: NONE unless api-keys present), so a default-config node's management plane and
+        // dashboard require authentication rather than serving the control plane wide open. The
+        // cluster-wide bootstrap admin key (BootstrapAdminKeyRegistrar) supplies a credential when
+        // none was provisioned. An explicit `security_mode` (including "none") always wins.
+        var securityMode = explicitMode.or(SecurityMode.API_KEY);
         var jwtConfig = parseJwtConfig(doc);
-        var httpProtocol = doc.getString("app-http", "protocol").flatMap(HttpProtocol::httpProtocol).or(HttpProtocol.H1);
+        var httpProtocol = doc.getString("app-http", "protocol")
+                              .flatMap(HttpProtocol::httpProtocol)
+                              .or(HttpProtocol.H1);
+        // #198 §7: cluster-level API-version detection mode + header name (per-slice override is a
+        // documented follow-up). Defaults keep path mode (byte-identical to pre-#198-C3b behavior).
+        var apiVersioningDetection = doc.getString("app-http", "api_versioning_detection")
+                                        .flatMap(ApiVersioningDetection::apiVersioningDetection)
+                                        .or(ApiVersioningDetection.PATH);
+        var apiVersionHeaderName = doc.getString("app-http", "api_version_header")
+                                      .or(AppHttpConfig.DEFAULT_API_VERSION_HEADER);
 
-        if (enabled || !apiKeys.isEmpty()) {
-            builder.appHttp(AppHttpConfig.appHttpConfig(enabled,
-                                                        port,
-                                                        apiKeys,
-                                                        maxRequestSize,
-                                                        securityMode,
-                                                        jwtConfig,
-                                                        httpProtocol).unwrap());
-        }
+        builder.appHttp(AppHttpConfig.appHttpConfig(enabled,
+                                                    port,
+                                                    apiKeys,
+                                                    maxRequestSize,
+                                                    securityMode,
+                                                    jwtConfig,
+                                                    httpProtocol,
+                                                    apiVersioningDetection,
+                                                    apiVersionHeaderName).unwrap());
     }
 
     private static Option<JwtConfig> parseJwtConfig(TomlDocument doc) {
@@ -332,7 +374,8 @@ public final class ConfigLoader {
 
     private static void populateDhtReplicationConfig(TomlDocument doc, AetherConfig.Builder builder) {
         var hasDelay = doc.getString("dht.replication", "cooldown_delay").isPresent() || doc.getLong("dht.replication",
-                                                                                                     "cooldown_delay_ms").isPresent();
+                                                                                                     "cooldown_delay_ms")
+                                                                                            .isPresent();
         var hasRate = doc.getInt("dht.replication", "cooldown_rate").isPresent();
         var hasRf = doc.getInt("dht.replication", "target_rf").isPresent();
 
@@ -741,8 +784,10 @@ public final class ConfigLoader {
                                               String stringKey,
                                               String msKey,
                                               TimeSpan defaultValue) {
-        var fromString = doc.getString(section, stringKey).flatMap(v -> org.pragmatica.lang.parse.TimeSpan.timeSpan(v)
-                                                                                                          .option()).map(ts -> TimeSpan.fromDuration(ts.duration()));
+        var fromString = doc.getString(section, stringKey)
+                            .flatMap(v -> org.pragmatica.lang.parse.TimeSpan.timeSpan(v)
+                                                                            .option())
+                            .map(ts -> TimeSpan.fromDuration(ts.duration()));
 
         if (fromString.isPresent()) {
             return fromString.unwrap();
@@ -871,20 +916,23 @@ public final class ConfigLoader {
 
     private static Duration parseDurationMs(String normalized) {
         return Number.parseLong(normalized.substring(0,
-                                                     normalized.length() - 2)).map(Duration::ofMillis)
-                               .or(DEFAULT_DURATION);
+                                                     normalized.length() - 2))
+                     .map(Duration::ofMillis)
+                     .or(DEFAULT_DURATION);
     }
 
     private static Duration parseDurationSeconds(String normalized) {
         return Number.parseLong(normalized.substring(0,
-                                                     normalized.length() - 1)).map(Duration::ofSeconds)
-                               .or(DEFAULT_DURATION);
+                                                     normalized.length() - 1))
+                     .map(Duration::ofSeconds)
+                     .or(DEFAULT_DURATION);
     }
 
     private static Duration parseDurationMinutes(String normalized) {
         return Number.parseLong(normalized.substring(0,
-                                                     normalized.length() - 1)).map(Duration::ofMinutes)
-                               .or(DEFAULT_DURATION);
+                                                     normalized.length() - 1))
+                     .map(Duration::ofMinutes)
+                     .or(DEFAULT_DURATION);
     }
 
     private static Duration parseDurationRaw(String normalized) {

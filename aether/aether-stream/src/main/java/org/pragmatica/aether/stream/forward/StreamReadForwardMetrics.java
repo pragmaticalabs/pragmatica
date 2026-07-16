@@ -4,9 +4,9 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.stream.forward;
 
-import org.pragmatica.lang.Contract;
-
 import java.util.concurrent.atomic.AtomicLong;
+
+import org.pragmatica.lang.Contract;
 
 
 @Contract

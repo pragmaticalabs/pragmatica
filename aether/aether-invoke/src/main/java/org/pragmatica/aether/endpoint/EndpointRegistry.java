@@ -4,6 +4,12 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.endpoint;
 
+import java.util.Comparator;
+import java.util.List;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicInteger;
+
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.artifact.ArtifactBase;
 import org.pragmatica.aether.artifact.Version;
@@ -19,12 +25,6 @@ import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValueRemove;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Option;
 import org.pragmatica.messaging.MessageReceiver;
-
-import java.util.Comparator;
-import java.util.List;
-import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.atomic.AtomicInteger;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -106,10 +106,14 @@ public interface EndpointRegistry {
             }
 
             private void unregisterEndpointsForNodeArtifact(NodeArtifactKey key) {
-                var keysToRemove = endpoints.keySet().stream().filter(ek -> ek.artifact()
-                                                                              .equals(key.artifact())).filter(ek -> endpoints.get(ek) != null && endpoints.get(ek)
-                                                                                                                                                          .nodeId()
-                                                                                                                                                          .equals(key.nodeId())).toList();
+                var keysToRemove = endpoints.keySet()
+                                            .stream()
+                                            .filter(ek -> ek.artifact()
+                                                            .equals(key.artifact()))
+                                            .filter(ek -> endpoints.get(ek) != null && endpoints.get(ek)
+                                                                                                .nodeId()
+                                                                                                .equals(key.nodeId()))
+                                            .toList();
 
                 keysToRemove.forEach(this::unregisterEndpoint);
             }
@@ -145,8 +149,10 @@ public interface EndpointRegistry {
 
             @Override
             public Option<Endpoint> selectEndpoint(Artifact artifact, MethodName methodName) {
-                var available = findEndpoints(artifact, methodName).stream().sorted(Comparator.comparing(e -> e.nodeId()
-                                                                                                               .id())).toList();
+                var available = findEndpoints(artifact, methodName).stream()
+                                             .sorted(Comparator.comparing(e -> e.nodeId()
+                                                                                .id()))
+                                             .toList();
 
                 if (available.isEmpty()) {
                     return Option.none();
@@ -163,8 +169,11 @@ public interface EndpointRegistry {
             public Option<Endpoint> selectEndpointExcluding(Artifact artifact,
                                                             MethodName methodName,
                                                             java.util.Set<NodeId> excludeNodes) {
-                var available = findEndpoints(artifact, methodName).stream().filter(e -> !excludeNodes.contains(e.nodeId())).sorted(Comparator.comparing(e -> e.nodeId()
-                                                                                                                                                               .id())).toList();
+                var available = findEndpoints(artifact, methodName).stream()
+                                             .filter(e -> !excludeNodes.contains(e.nodeId()))
+                                             .sorted(Comparator.comparing(e -> e.nodeId()
+                                                                                .id()))
+                                             .toList();
 
                 if (available.isEmpty()) {
                     return Option.none();
@@ -204,14 +213,20 @@ public interface EndpointRegistry {
                     return Option.none();
                 }
 
-                var oldEndpoints = allEndpoints.stream().filter(e -> e.artifact()
-                                                                      .version()
-                                                                      .equals(oldVersion)).sorted(Comparator.comparing(e -> e.nodeId()
-                                                                                                                             .id())).toList();
-                var newEndpoints = allEndpoints.stream().filter(e -> e.artifact()
-                                                                      .version()
-                                                                      .equals(newVersion)).sorted(Comparator.comparing(e -> e.nodeId()
-                                                                                                                             .id())).toList();
+                var oldEndpoints = allEndpoints.stream()
+                                               .filter(e -> e.artifact()
+                                                             .version()
+                                                             .equals(oldVersion))
+                                               .sorted(Comparator.comparing(e -> e.nodeId()
+                                                                                  .id()))
+                                               .toList();
+                var newEndpoints = allEndpoints.stream()
+                                               .filter(e -> e.artifact()
+                                                             .version()
+                                                             .equals(newVersion))
+                                               .sorted(Comparator.comparing(e -> e.nodeId()
+                                                                                  .id()))
+                                               .toList();
 
                 if (routing.isAllOld() || newEndpoints.isEmpty()) {
                     return selectFromList(oldEndpoints,
@@ -224,17 +239,18 @@ public interface EndpointRegistry {
                 }
 
                 return routing.scaleToInstances(newEndpoints.size(),
-                                                oldEndpoints.size()).flatMap(scaled -> weightedRoundRobin(scaled,
-                                                                                                          newEndpoints,
-                                                                                                          oldEndpoints,
-                                                                                                          artifactBase,
-                                                                                                          methodName))
-                                               .orElse(() -> fallbackToOld(routing,
-                                                                           newEndpoints.size(),
-                                                                           oldEndpoints.size(),
-                                                                           oldEndpoints,
-                                                                           artifactBase,
-                                                                           methodName));
+                                                oldEndpoints.size())
+                              .flatMap(scaled -> weightedRoundRobin(scaled,
+                                                                    newEndpoints,
+                                                                    oldEndpoints,
+                                                                    artifactBase,
+                                                                    methodName))
+                              .orElse(() -> fallbackToOld(routing,
+                                                          newEndpoints.size(),
+                                                          oldEndpoints.size(),
+                                                          oldEndpoints,
+                                                          artifactBase,
+                                                          methodName));
             }
 
             @Override
@@ -268,14 +284,16 @@ public interface EndpointRegistry {
                                                    List<Endpoint> oldEndpoints,
                                                    ArtifactBase artifactBase,
                                                    MethodName methodName) {
-                InvocationContext.currentRequestId().onPresent(requestId -> log.warn("[requestId={}] Cannot satisfy routing {} with {} new and {} old instances, falling back to old",
-                                                                                     requestId,
-                                                                                     routing,
-                                                                                     newCount,
-                                                                                     oldCount)).onEmpty(() -> log.warn("Cannot satisfy routing {} with {} new and {} old instances, falling back to old",
-                                                                                                                       routing,
-                                                                                                                       newCount,
-                                                                                                                       oldCount));
+                InvocationContext.currentRequestId()
+                                 .onPresent(requestId -> log.warn("[requestId={}] Cannot satisfy routing {} with {} new and {} old instances, falling back to old",
+                                                                  requestId,
+                                                                  routing,
+                                                                  newCount,
+                                                                  oldCount))
+                                 .onEmpty(() -> log.warn("Cannot satisfy routing {} with {} new and {} old instances, falling back to old",
+                                                         routing,
+                                                         newCount,
+                                                         oldCount));
 
                 return selectFromList(oldEndpoints,
                                       artifactBase.asString() + "/old/" + methodName.name());

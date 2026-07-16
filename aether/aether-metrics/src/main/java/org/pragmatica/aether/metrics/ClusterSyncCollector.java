@@ -4,6 +4,24 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.metrics;
 
+import java.lang.management.ManagementFactory;
+import java.lang.management.MemoryMXBean;
+import java.lang.management.OperatingSystemMXBean;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.atomic.DoubleAdder;
+import java.util.concurrent.atomic.LongAdder;
+import java.util.function.Consumer;
+import java.util.function.LongSupplier;
+import java.util.function.Supplier;
+import java.util.stream.Collectors;
+
 import org.pragmatica.aether.metrics.invocation.InvocationMetricsCollector;
 import org.pragmatica.aether.slice.MethodName;
 import org.pragmatica.aether.slice.generation.Epoch;
@@ -23,24 +41,6 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.messaging.MessageReceiver;
 import org.pragmatica.utility.RingBuffer;
-
-import java.lang.management.ManagementFactory;
-import java.lang.management.MemoryMXBean;
-import java.lang.management.OperatingSystemMXBean;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
-import java.util.Set;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.CopyOnWriteArrayList;
-import java.util.concurrent.atomic.AtomicLong;
-import java.util.concurrent.atomic.AtomicReference;
-import java.util.concurrent.atomic.DoubleAdder;
-import java.util.concurrent.atomic.LongAdder;
-import java.util.function.Consumer;
-import java.util.function.LongSupplier;
-import java.util.function.Supplier;
-import java.util.stream.Collectors;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -178,6 +178,22 @@ public interface ClusterSyncCollector {
         return true;
     }
 
+    /// Option 1 (S01) — wire the consumer that feeds a transport-unreachable HINT into SWIM when a
+    /// peer misses `pingTimeoutThreshold` pongs. `ClusterSyncContext.emitPingTimeoutIfExceeded`
+    /// invokes [reportUnreachable] (after the SWIM-HEALTHY early-skip) INSTEAD of the former
+    /// destructive `network.disconnect` + eviction-hint broadcast. Mirrors the [setPeerLocallyAlive]
+    /// injection pattern. Default no-op (test doubles inherit; production wires in `AetherNode` to
+    /// `CoreSwimHealthDetector.recordTransportHint(new TransportObservation.PeerUnreachable(...))`).
+    @Contract
+    default void setUnreachableReporter(Consumer<NodeId> reporter) {}
+
+    /// Option 1 (S01) — report `peer` to SWIM as transport-unreachable evidence via the consumer
+    /// wired through [setUnreachableReporter]. SWIM drives the SUSPECT → FAULTY → DEAD pipeline and
+    /// refutes the hint when pongs resume, so a transient flap no longer false-evicts a healthy peer.
+    /// Default no-op (no reporter wired → silently ignored, preserving prior test-double behavior).
+    @Contract
+    default void reportUnreachable(NodeId peer) {}
+
     /// Emit one `PeerConnectivityObservation` per topology peer (excluding `self`)
     /// into the wired `PeerObservationBuffer`. Peers in `connected` get state
     /// `CONNECTED`; peers in `topology` but absent from `connected` get state
@@ -254,6 +270,12 @@ class ClusterSyncCollectorImpl implements ClusterSyncCollector {
     /// SwimHealth.HEALTHY`. When this predicate returns TRUE for a peer, the follower
     /// IGNORES the owner's eviction hint for that peer — independence preserved.
     private final AtomicReference<java.util.function.Predicate<NodeId>> peerLocallyAlive = new AtomicReference<>(_ -> true);
+
+    /// Option 1 (S01) — consumer that feeds a transport-unreachable HINT into SWIM on ping-timeout.
+    /// Default no-op until `AetherNode` wires it to `swimHealthDetector.recordTransportHint(new
+    /// TransportObservation.PeerUnreachable(peer, QuicTransportCause.PING_TIMEOUT))`. Replaces the
+    /// former destructive disconnect — SWIM arbitrates the hint and refutes it when pongs resume.
+    private final AtomicReference<Consumer<NodeId>> unreachableReporter = new AtomicReference<>(_ -> {});
 
     /// Membership v2 (§7.5.3) — node-reported readiness state supplier. `buildPong()`
     /// stamps `current().name()` onto the pong's `lifecycleState` field, repurposing it
@@ -616,6 +638,20 @@ class ClusterSyncCollectorImpl implements ClusterSyncCollector {
 
     @Override
     @Contract
+    public void setUnreachableReporter(Consumer<NodeId> reporter) {
+        unreachableReporter.set(reporter == null
+                                ? _ -> {}
+                                : reporter);
+    }
+
+    @Override
+    @Contract
+    public void reportUnreachable(NodeId peer) {
+        unreachableReporter.get().accept(peer);
+    }
+
+    @Override
+    @Contract
     public void setNodeReportedStateSupplier(Supplier<NodeReportedState> supplier) {
         nodeReportedStateSupplier.set(Option.option(supplier));
     }
@@ -644,13 +680,16 @@ class ClusterSyncCollectorImpl implements ClusterSyncCollector {
         var epochTerm = epoch.rabiaTerm();
         var epochCounter = epoch.localCounter();
 
-        topology.stream().filter(peer -> !peer.equals(self)).map(peer -> new PeerConnectivityObservation(peer,
-                                                                                                         connected.contains(peer)
-                                                                                                         ? ConnectivityState.CONNECTED
-                                                                                                         : ConnectivityState.DISCONNECTED,
-                                                                                                         epochTerm,
-                                                                                                         epochCounter,
-                                                                                                         nowMs)).forEach(buffer::pushConnectivity);
+        topology.stream()
+                .filter(peer -> !peer.equals(self))
+                .map(peer -> new PeerConnectivityObservation(peer,
+                                                             connected.contains(peer)
+                                                             ? ConnectivityState.CONNECTED
+                                                             : ConnectivityState.DISCONNECTED,
+                                                             epochTerm,
+                                                             epochCounter,
+                                                             nowMs))
+                .forEach(buffer::pushConnectivity);
     }
 
     @Override

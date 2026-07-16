@@ -4,4 +4,5 @@ org.pragmatica.aether.resource.interceptor.RateLimitInterceptorFactory
 org.pragmatica.aether.resource.interceptor.LoggingInterceptorFactory
 org.pragmatica.aether.resource.interceptor.MetricsInterceptorFactory
 org.pragmatica.aether.resource.interceptor.CacheInterceptorFactory
+org.pragmatica.aether.resource.interceptor.IdempotencyInterceptorFactory
 org.pragmatica.aether.resource.interceptor.RateGuardFactory

@@ -4,13 +4,13 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.metrics;
 
+import java.util.List;
+import java.util.concurrent.locks.ReentrantReadWriteLock;
+
 import org.pragmatica.aether.metrics.eventloop.EventLoopMetrics;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.utility.RingBuffer;
-
-import java.util.List;
-import java.util.concurrent.locks.ReentrantReadWriteLock;
 
 import static org.pragmatica.lang.Result.unitResult;
 

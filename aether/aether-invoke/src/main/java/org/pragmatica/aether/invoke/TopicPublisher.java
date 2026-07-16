@@ -4,6 +4,8 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.invoke;
 
+import java.util.ArrayList;
+
 import org.pragmatica.aether.endpoint.TopicSubscriptionRegistry;
 import org.pragmatica.aether.endpoint.TopicSubscriptionRegistry.TopicSubscriber;
 import org.pragmatica.aether.slice.Publisher;
@@ -11,15 +13,20 @@ import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.type.TypeToken;
 
-import java.util.ArrayList;
 
-
-public record TopicPublisher<T>(String topicName, TopicSubscriptionRegistry registry, SliceInvoker invoker) implements Publisher<T> {
+/// Publisher that routes a message to all subscribers of a topic, identified by its fully-qualified
+/// [org.pragmatica.aether.slice.resource.ResourceAddress] string (`namespace:name:version`).
+///
+/// `topicAddress` is the canonical address string, NOT the bare topic name — so a publish in one
+/// blueprint/namespace never reaches subscribers that merely share the same bare topic name in a
+/// different namespace (RC2 #274). The publisher and subscriber resolve the same declared topic to
+/// the same address via `TopicAddressResolver`.
+public record TopicPublisher<T>(String topicAddress, TopicSubscriptionRegistry registry, SliceInvoker invoker) implements Publisher<T> {
     private static final TypeToken<Unit> UNIT_TYPE_TOKEN = new TypeToken<>() {};
 
     @Override
     public Promise<Unit> publish(T message) {
-        var subscribers = registry.findSubscribers(topicName);
+        var subscribers = registry.findSubscribers(topicAddress);
 
         if (subscribers.isEmpty()) {
             return Promise.unitPromise();

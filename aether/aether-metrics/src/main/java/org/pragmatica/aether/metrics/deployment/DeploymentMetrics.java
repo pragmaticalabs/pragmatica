@@ -4,14 +4,14 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.metrics.deployment;
 
+import java.util.LinkedHashMap;
+import java.util.Map;
+
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.cluster.metrics.DeploymentMetricsMessage.DeploymentMetricsEntry;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
-
-import java.util.LinkedHashMap;
-import java.util.Map;
 
 
 public record DeploymentMetrics(Artifact artifact,

@@ -4,16 +4,17 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.stream.replication;
 
-import org.pragmatica.consensus.NodeId;
-import org.pragmatica.lang.Contract;
-import org.pragmatica.lang.io.TimeSpan;
-import org.pragmatica.lang.utils.SharedScheduler;
-
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.locks.ReentrantLock;
+
+import org.pragmatica.aether.slice.generation.Epoch;
+import org.pragmatica.consensus.NodeId;
+import org.pragmatica.lang.Contract;
+import org.pragmatica.lang.io.TimeSpan;
+import org.pragmatica.lang.utils.SharedScheduler;
 
 import static org.pragmatica.aether.stream.replication.PartitionKey.partitionKey;
 import static org.pragmatica.aether.stream.replication.ReplicationMessage.ReplicateEvents.replicateEvents;
@@ -57,10 +58,10 @@ public final class ReplicationBatcher implements AutoCloseable {
     }
 
     @Contract
-    public void add(String streamName, int partition, long offset, byte[] payload, long timestamp) {
+    public void add(String streamName, int partition, long offset, byte[] payload, long timestamp, Epoch ownerEpoch) {
         var key = partitionKey(streamName, partition);
         var accumulator = accumulators.computeIfAbsent(key, _ -> new BatchAccumulator());
-        var shouldFlush = accumulator.add(offset, payload, timestamp, maxEvents);
+        var shouldFlush = accumulator.add(offset, payload, timestamp, ownerEpoch, maxEvents);
 
         if (shouldFlush) {
             flushPartition(key, accumulator);
@@ -90,7 +91,14 @@ public final class ReplicationBatcher implements AutoCloseable {
     }
 
     private void sendBatch(PartitionKey key, BatchSnapshot snapshot) {
-        var replicas = registry.replicasFor(key.streamName(), key.partition());
+        // #262.2/.5: the HRW replica set is owner-first, so it contains self — exclude it. Replicating
+        // a batch to self would loop it back through onReplicateEvents (double-append).
+        var replicas = registry.replicasFor(key.streamName(),
+                                            key.partition())
+                               .stream()
+                               .map(ReplicaDescriptor::nodeId)
+                               .filter(nodeId -> !nodeId.equals(governorId))
+                               .toList();
 
         if (replicas.isEmpty()) {
             return;
@@ -101,25 +109,30 @@ public final class ReplicationBatcher implements AutoCloseable {
                                       key.partition(),
                                       snapshot.fromOffset(),
                                       snapshot.payloads(),
-                                      snapshot.timestamps());
+                                      snapshot.timestamps(),
+                                      snapshot.ownerEpoch());
 
-        replicas.forEach(replica -> transport.send(replica.nodeId(), message));
+        replicas.forEach(replica -> transport.send(replica, message));
     }
 
     static final class BatchAccumulator {
         private final ReentrantLock lock = new ReentrantLock();
         private long fromOffset = -1;
+        private Epoch ownerEpoch = Epoch.ZERO;
         private List<byte[]> payloads = new ArrayList<>();
         private List<Long> timestamps = new ArrayList<>();
 
         @SuppressWarnings("JBCT-EX-01")
-        boolean add(long offset, byte[] payload, long timestamp, int maxEvents) {
+        boolean add(long offset, byte[] payload, long timestamp, Epoch ownerEpoch, int maxEvents) {
             lock.lock();
             try {
                 if (payloads.isEmpty()) {
                     fromOffset = offset;
                 }
-
+                // A single owner accumulates a partition batch at one epoch; the latest stamp wins so
+                // a flush always carries the most recent owner epoch the accumulated events were
+                // published under (monotonic within an owner).
+                this.ownerEpoch = ownerEpoch;
                 payloads.add(payload.clone());
                 timestamps.add(timestamp);
 
@@ -137,11 +150,12 @@ public final class ReplicationBatcher implements AutoCloseable {
                     return BatchSnapshot.EMPTY;
                 }
 
-                var snapshot = new BatchSnapshot(fromOffset, payloads, timestamps);
+                var snapshot = new BatchSnapshot(fromOffset, payloads, timestamps, ownerEpoch);
 
                 payloads = new ArrayList<>();
                 timestamps = new ArrayList<>();
                 fromOffset = -1;
+                ownerEpoch = Epoch.ZERO;
 
                 return snapshot;
             } finally {
@@ -150,8 +164,8 @@ public final class ReplicationBatcher implements AutoCloseable {
         }
     }
 
-    record BatchSnapshot(long fromOffset, List<byte[]> payloads, List<Long> timestamps) {
-        static final BatchSnapshot EMPTY = new BatchSnapshot(-1, List.of(), List.of());
+    record BatchSnapshot(long fromOffset, List<byte[]> payloads, List<Long> timestamps, Epoch ownerEpoch) {
+        static final BatchSnapshot EMPTY = new BatchSnapshot(-1, List.of(), List.of(), Epoch.ZERO);
 
         boolean isEmpty() {
             return payloads.isEmpty();

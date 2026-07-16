@@ -4,12 +4,12 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.resource.http;
 
+import java.net.http.HttpClient.Redirect;
+import java.util.Map;
+
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.io.TimeSpan;
-
-import java.net.http.HttpClient.Redirect;
-import java.util.Map;
 
 import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.option;
@@ -21,7 +21,8 @@ public record HttpClientConfig(Option<String> baseUrl,
                                TimeSpan requestTimeout,
                                Redirect followRedirects,
                                Option<JsonConfig> json,
-                               Map<String, String> defaultHeaders) {
+                               Map<String, String> defaultHeaders,
+                               Option<HttpBackend> backend) {
     private static final TimeSpan DEFAULT_CONNECT_TIMEOUT = TimeSpan.timeSpan(10).seconds();
     private static final TimeSpan DEFAULT_REQUEST_TIMEOUT = TimeSpan.timeSpan(30).seconds();
     private static final Redirect DEFAULT_REDIRECT = Redirect.NORMAL;
@@ -32,7 +33,8 @@ public record HttpClientConfig(Option<String> baseUrl,
                                             DEFAULT_REQUEST_TIMEOUT,
                                             DEFAULT_REDIRECT,
                                             none(),
-                                            Map.of()));
+                                            Map.of(),
+                                            none()));
     }
 
     public static Result<HttpClientConfig> httpClientConfig(String baseUrl) {
@@ -41,7 +43,8 @@ public record HttpClientConfig(Option<String> baseUrl,
                                             DEFAULT_REQUEST_TIMEOUT,
                                             DEFAULT_REDIRECT,
                                             none(),
-                                            Map.of()));
+                                            Map.of(),
+                                            none()));
     }
 
     public static Result<HttpClientConfig> httpClientConfig(String baseUrl,
@@ -52,7 +55,8 @@ public record HttpClientConfig(Option<String> baseUrl,
                                             requestTimeout,
                                             DEFAULT_REDIRECT,
                                             none(),
-                                            Map.of()));
+                                            Map.of(),
+                                            none()));
     }
 
     public static Result<HttpClientConfig> httpClientConfig(Option<String> baseUrl,
@@ -68,11 +72,29 @@ public record HttpClientConfig(Option<String> baseUrl,
                                                             Redirect followRedirects,
                                                             Option<JsonConfig> json,
                                                             Map<String, String> defaultHeaders) {
+        return httpClientConfig(baseUrl, connectTimeout, requestTimeout, followRedirects, json, defaultHeaders, none());
+    }
+
+    public static Result<HttpClientConfig> httpClientConfig(Option<String> baseUrl,
+                                                            TimeSpan connectTimeout,
+                                                            TimeSpan requestTimeout,
+                                                            Redirect followRedirects,
+                                                            Option<JsonConfig> json,
+                                                            Map<String, String> defaultHeaders,
+                                                            Option<HttpBackend> backend) {
         return success(new HttpClientConfig(baseUrl,
                                             connectTimeout,
                                             requestTimeout,
                                             followRedirects,
                                             json,
-                                            defaultHeaders));
+                                            defaultHeaders,
+                                            backend));
+    }
+
+    /// Selects the [org.pragmatica.http.HttpOperations] backend used by the provisioned client.
+    /// Absent ([Option#none]) resolves to [#JDK] — the JDK backend is the default when unset.
+    public enum HttpBackend {
+        JDK,
+        NETTY
     }
 }

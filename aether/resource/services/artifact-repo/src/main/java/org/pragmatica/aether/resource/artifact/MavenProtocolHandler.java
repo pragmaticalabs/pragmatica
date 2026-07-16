@@ -4,6 +4,12 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.resource.artifact;
 
+import java.nio.charset.StandardCharsets;
+import java.time.Instant;
+import java.time.ZoneOffset;
+import java.time.format.DateTimeFormatter;
+import java.util.List;
+
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.artifact.ArtifactId;
 import org.pragmatica.aether.artifact.GroupId;
@@ -13,12 +19,6 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.utils.Causes;
-
-import java.nio.charset.StandardCharsets;
-import java.time.Instant;
-import java.time.ZoneOffset;
-import java.time.format.DateTimeFormatter;
-import java.util.List;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -297,9 +297,10 @@ class MavenProtocolHandlerImpl implements MavenProtocolHandler {
         }
 
         return Result.all(GroupId.groupId(groupPath.toString()),
-                          ArtifactId.artifactId(artifactIdStr)).map((groupId, artifactId) -> Option.<ParsedPath> some(new ParsedPath.MetadataPath(groupId,
-                                                                                                                                                  artifactId)))
-                         .or(Option.none());
+                          ArtifactId.artifactId(artifactIdStr))
+                     .map((groupId, artifactId) -> Option.<ParsedPath> some(new ParsedPath.MetadataPath(groupId,
+                                                                                                        artifactId)))
+                     .or(Option.none());
     }
 
     private Option<ParsedPath> parseArtifactPath(String[] parts) {
@@ -321,12 +322,13 @@ class MavenProtocolHandlerImpl implements MavenProtocolHandler {
 
         return Result.all(GroupId.groupId(groupPath.toString()),
                           ArtifactId.artifactId(artifactIdStr),
-                          Version.version(versionStr)).map((groupId, artifactId, version) -> toArtifactPath(groupId,
-                                                                                                            artifactId,
-                                                                                                            version,
-                                                                                                            classifier,
-                                                                                                            extension))
-                         .or(Option.none());
+                          Version.version(versionStr))
+                     .map((groupId, artifactId, version) -> toArtifactPath(groupId,
+                                                                           artifactId,
+                                                                           version,
+                                                                           classifier,
+                                                                           extension))
+                     .or(Option.none());
     }
 
     private Option<ParsedPath> toArtifactPath(GroupId groupId,
@@ -367,8 +369,11 @@ class MavenProtocolHandlerImpl implements MavenProtocolHandler {
 
     private String generateMavenMetadata(GroupId groupId, ArtifactId artifactId, List<Version> versions) {
         var latest = versions.getLast();
-        var release = versions.stream().filter(v -> !v.withQualifier()
-                                                      .contains("SNAPSHOT")).reduce((a, b) -> b).orElse(latest);
+        var release = versions.stream()
+                              .filter(v -> !v.withQualifier()
+                                             .contains("SNAPSHOT"))
+                              .reduce((a, b) -> b)
+                              .orElse(latest);
         var timestamp = DateTimeFormatter.ofPattern("yyyyMMddHHmmss").format(Instant.now().atOffset(ZoneOffset.UTC));
         var sb = new StringBuilder();
 

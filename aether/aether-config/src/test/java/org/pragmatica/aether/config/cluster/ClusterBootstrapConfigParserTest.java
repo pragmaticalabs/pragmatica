@@ -156,6 +156,68 @@ class ClusterBootstrapConfigParserTest {
         }
 
         @Test
+        void parse_infrastructureSshAuthorizedKeys_parsesContents() {
+            var toml = """
+                config_version = "1.0.0"
+
+                [cluster]
+                name = "staging"
+                version = "1.0.0"
+
+                [source.eu-1]
+                type = "cloud"
+                provider = "hetzner"
+
+                [source.eu-1.core]
+                count = 3
+
+                [infrastructure.ssh]
+                public_key_file = "~/.ssh/id_ed25519.pub"
+                authorized_keys = ["ssh-ed25519 AAAAC3Nz operator@host", "ssh-rsa AAAAB3Nz ci@runner"]
+                """;
+
+            ClusterBootstrapConfigParser.parse(toml)
+                .onFailure(cause -> Assertions.fail(cause.message()))
+                .onSuccess(config -> {
+                    var ssh = config.infrastructure().ssh();
+                    assertThat(ssh.isPresent()).isTrue();
+                    assertThat(ssh.or(SshDeploymentConfig.empty()).publicKeyFiles())
+                        .containsExactly("~/.ssh/id_ed25519.pub");
+                    assertThat(ssh.or(SshDeploymentConfig.empty()).authorizedKeys())
+                        .containsExactly("ssh-ed25519 AAAAC3Nz operator@host", "ssh-rsa AAAAB3Nz ci@runner");
+                });
+        }
+
+        @Test
+        void parse_infrastructureSshWithoutAuthorizedKeys_yieldsEmptyAuthorizedKeys() {
+            var toml = """
+                config_version = "1.0.0"
+
+                [cluster]
+                name = "staging"
+                version = "1.0.0"
+
+                [source.eu-1]
+                type = "cloud"
+                provider = "hetzner"
+
+                [source.eu-1.core]
+                count = 3
+
+                [infrastructure.ssh]
+                public_key_file = "~/.ssh/id_ed25519.pub"
+                """;
+
+            ClusterBootstrapConfigParser.parse(toml)
+                .onFailure(cause -> Assertions.fail(cause.message()))
+                .onSuccess(config -> {
+                    var ssh = config.infrastructure().ssh();
+                    assertThat(ssh.isPresent()).isTrue();
+                    assertThat(ssh.or(SshDeploymentConfig.empty()).authorizedKeys()).isEmpty();
+                });
+        }
+
+        @Test
         void parse_dockerSource_parsesCorrectly() {
             var toml = """
                 config_version = "1.0.0"

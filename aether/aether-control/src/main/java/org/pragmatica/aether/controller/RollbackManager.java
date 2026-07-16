@@ -4,6 +4,9 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.controller;
 
+import java.util.List;
+import java.util.concurrent.ConcurrentHashMap;
+
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.artifact.ArtifactBase;
 import org.pragmatica.aether.artifact.Version;
@@ -27,9 +30,6 @@ import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.messaging.MessageReceiver;
-
-import java.util.List;
-import java.util.concurrent.ConcurrentHashMap;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -243,11 +243,13 @@ public interface RollbackManager {
 
                 var artifactBase = event.artifact().base();
 
-                Option.option(rollbackStates.get(artifactBase)).onPresent(state -> initiateRollback(event.artifact(),
-                                                                                                    state,
-                                                                                                    event.requestId())).onEmpty(() -> log.warn("[requestId={}] No previous version tracked for {}, cannot rollback",
-                                                                                                                                               event.requestId(),
-                                                                                                                                               event.artifact()));
+                Option.option(rollbackStates.get(artifactBase))
+                      .onPresent(state -> initiateRollback(event.artifact(),
+                                                           state,
+                                                           event.requestId()))
+                      .onEmpty(() -> log.warn("[requestId={}] No previous version tracked for {}, cannot rollback",
+                                              event.requestId(),
+                                              event.artifact()));
             }
 
             @Override
@@ -348,19 +350,21 @@ public interface RollbackManager {
                 var value = PreviousVersionValue.previousVersionValue(artifactBase, previousVersion, currentVersion);
                 var command = new KVCommand.Put<AetherKey, AetherValue>(key, value);
 
-                cluster.apply(List.of(command)).onSuccess(_ -> log.debug("Stored previous version {} for {} in KVStore",
-                                                                         previousVersion,
-                                                                         artifactBase)).onFailure(cause -> log.error("Failed to store previous version for {}: {}",
-                                                                                                                     artifactBase,
-                                                                                                                     cause.message()));
+                cluster.apply(List.of(command))
+                       .onSuccess(_ -> log.debug("Stored previous version {} for {} in KVStore",
+                                                 previousVersion,
+                                                 artifactBase))
+                       .onFailure(cause -> log.error("Failed to store previous version for {}: {}",
+                                                     artifactBase,
+                                                     cause.message()));
             }
 
             private void initiateRollback(Artifact failedArtifact, RollbackState state, String requestId) {
                 var now = System.currentTimeMillis();
 
-                state.canRollback(config, now).onFailure(cause -> logRollbackSkipped(cause, requestId, failedArtifact)).onSuccess(decision -> executeRollback(failedArtifact,
-                                                                                                                                                              decision,
-                                                                                                                                                              requestId));
+                state.canRollback(config, now)
+                     .onFailure(cause -> logRollbackSkipped(cause, requestId, failedArtifact))
+                     .onSuccess(decision -> executeRollback(failedArtifact, decision, requestId));
             }
 
             private void logRollbackSkipped(Cause cause, String requestId, Artifact artifact) {
@@ -399,21 +403,28 @@ public interface RollbackManager {
                                                       String requestId) {
                 var artifactBase = rollbackArtifact.base();
                 var key = SliceTargetKey.sliceTargetKey(artifactBase);
-                var instanceCount = kvStore.get(key).map(v -> ((SliceTargetValue) v).targetInstances()).or(1);
-                var value = SliceTargetValue.sliceTargetValue(decision.targetVersion(), instanceCount);
+                var value = kvStore.get(key)
+                                   .filter(SliceTargetValue.class::isInstance)
+                                   .map(SliceTargetValue.class::cast)
+                                   .map(current -> current.withVersion(decision.targetVersion()))
+                                   .or(SliceTargetValue.sliceTargetValue(decision.targetVersion(),
+                                                                         1));
+                var instanceCount = value.targetInstances();
                 var command = new KVCommand.Put<AetherKey, AetherValue>(key, value);
                 var failedVersion = decision.failedVersion();
                 var targetVersion = decision.targetVersion();
 
-                cluster.apply(List.of(command)).onSuccess(_ -> recordRollbackCompleted(artifactBase,
-                                                                                       failedVersion,
-                                                                                       targetVersion,
-                                                                                       requestId,
-                                                                                       rollbackArtifact,
-                                                                                       instanceCount)).onFailure(cause -> log.error("[requestId={}] ROLLBACK FAILED: Could not update slice target for {}: {}",
-                                                                                                                                    requestId,
-                                                                                                                                    rollbackArtifact,
-                                                                                                                                    cause.message()));
+                cluster.apply(List.of(command))
+                       .onSuccess(_ -> recordRollbackCompleted(artifactBase,
+                                                               failedVersion,
+                                                               targetVersion,
+                                                               requestId,
+                                                               rollbackArtifact,
+                                                               instanceCount))
+                       .onFailure(cause -> log.error("[requestId={}] ROLLBACK FAILED: Could not update slice target for {}: {}",
+                                                     requestId,
+                                                     rollbackArtifact,
+                                                     cause.message()));
             }
 
             private void recordRollbackCompleted(ArtifactBase artifactBase,

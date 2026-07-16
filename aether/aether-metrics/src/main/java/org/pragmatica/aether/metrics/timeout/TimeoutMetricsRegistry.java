@@ -4,12 +4,12 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.metrics.timeout;
 
-import org.pragmatica.lang.Contract;
-
 import java.util.EnumMap;
 import java.util.Map;
 import java.util.concurrent.atomic.LongAdder;
 import java.util.stream.Collectors;
+
+import org.pragmatica.lang.Contract;
 
 
 /// Counts the number of timeouts fired per `TimeoutSubsystem`. Backed by one

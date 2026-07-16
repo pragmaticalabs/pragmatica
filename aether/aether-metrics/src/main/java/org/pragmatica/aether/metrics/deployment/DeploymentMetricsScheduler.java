@@ -4,6 +4,11 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.metrics.deployment;
 
+import java.util.List;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
+
 import org.pragmatica.cluster.metrics.DeploymentMetricsMessage.DeploymentMetricsPing;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Promise;
@@ -19,11 +24,6 @@ import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.SharedScheduler;
 import org.pragmatica.consensus.topology.ClusterStateNotification;
 import org.pragmatica.lang.concurrent.CancellableTask;
-
-import java.util.List;
-import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.atomic.AtomicLong;
-import java.util.concurrent.atomic.AtomicReference;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -159,7 +159,9 @@ class DeploymentMetricsSchedulerImpl implements DeploymentMetricsScheduler {
             var localMetrics = collector.collectLocalEntries();
             var ping = new DeploymentMetricsPing(self, localMetrics);
 
-            currentTopology.stream().filter(nodeId -> !nodeId.equals(self)).forEach(nodeId -> network.send(nodeId, ping));
+            currentTopology.stream()
+                           .filter(nodeId -> !nodeId.equals(self))
+                           .forEach(nodeId -> network.send(nodeId, ping));
             log.trace("Sent DeploymentMetricsPing to {} nodes", currentTopology.size() - 1);
         } catch (Exception e) {
             log.warn("Failed to send deployment metrics ping: {}", e.getMessage());

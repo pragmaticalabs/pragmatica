@@ -4,6 +4,11 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.metrics.consensus;
 
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.atomic.LongAdder;
+
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.rabia.ConsensusMetrics;
 import org.pragmatica.lang.Contract;
@@ -12,11 +17,6 @@ import org.pragmatica.consensus.rabia.StateValue;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
-
-import java.util.concurrent.atomic.AtomicInteger;
-import java.util.concurrent.atomic.AtomicLong;
-import java.util.concurrent.atomic.AtomicReference;
-import java.util.concurrent.atomic.LongAdder;
 
 import static org.pragmatica.lang.Result.unitResult;
 

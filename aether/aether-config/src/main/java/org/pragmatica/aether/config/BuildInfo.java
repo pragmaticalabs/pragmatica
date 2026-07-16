@@ -4,12 +4,12 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.config;
 
-import org.pragmatica.lang.Option;
-
 import java.io.File;
 import java.net.URL;
 import java.util.jar.JarFile;
 import java.util.jar.Manifest;
+
+import org.pragmatica.lang.Option;
 
 
 public final class BuildInfo {

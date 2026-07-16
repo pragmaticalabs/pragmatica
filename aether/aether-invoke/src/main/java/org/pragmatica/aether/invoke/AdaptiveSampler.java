@@ -4,10 +4,10 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.invoke;
 
-import org.pragmatica.lang.utils.SharedScheduler;
-
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.atomic.AtomicLong;
+
+import org.pragmatica.lang.utils.SharedScheduler;
 
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 

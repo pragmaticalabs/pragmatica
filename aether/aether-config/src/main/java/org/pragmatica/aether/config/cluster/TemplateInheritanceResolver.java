@@ -4,10 +4,6 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.config.cluster;
 
-import org.pragmatica.config.toml.TomlDocument;
-import org.pragmatica.lang.Option;
-import org.pragmatica.lang.Result;
-
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -15,6 +11,10 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+
+import org.pragmatica.config.toml.TomlDocument;
+import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Result;
 
 import static org.pragmatica.lang.Result.success;
 
@@ -269,8 +269,11 @@ public final class TemplateInheritanceResolver {
     private static Map<String, Object> mergeSectionOverBase(Map<String, Object> base, Map<String, Object> overlay) {
         var merged = new LinkedHashMap<>(base);
 
-        overlay.entrySet().stream().filter(e -> !INHERIT_KEY.equals(e.getKey())).forEach(e -> merged.put(e.getKey(),
-                                                                                                         e.getValue()));
+        overlay.entrySet()
+               .stream()
+               .filter(e -> !INHERIT_KEY.equals(e.getKey()))
+               .forEach(e -> merged.put(e.getKey(),
+                                        e.getValue()));
         merged.remove(INHERIT_KEY);
 
         return merged;

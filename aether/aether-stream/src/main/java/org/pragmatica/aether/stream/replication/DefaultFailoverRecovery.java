@@ -4,12 +4,12 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.stream.replication;
 
-import org.pragmatica.lang.Option;
-import org.pragmatica.lang.Promise;
-
 import java.util.Comparator;
 import java.util.List;
 import java.util.stream.IntStream;
+
+import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Promise;
 
 import static org.pragmatica.aether.stream.replication.FailoverRecovery.RecoveryResult.recoveryResult;
 import static org.pragmatica.aether.stream.replication.ReplicationMessage.CatchupRequest.catchupRequest;

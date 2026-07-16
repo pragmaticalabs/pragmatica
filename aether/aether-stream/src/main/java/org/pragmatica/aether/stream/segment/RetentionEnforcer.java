@@ -4,6 +4,10 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.stream.segment;
 
+import java.util.List;
+import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.atomic.AtomicBoolean;
+
 import org.pragmatica.aether.slice.RetentionPolicy;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Promise;
@@ -12,10 +16,6 @@ import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.SharedScheduler;
 import org.pragmatica.storage.BlockId;
 import org.pragmatica.storage.StorageInstance;
-
-import java.util.List;
-import java.util.concurrent.ScheduledFuture;
-import java.util.concurrent.atomic.AtomicBoolean;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -83,9 +83,11 @@ public final class RetentionEnforcer implements AutoCloseable {
 
         var now = System.currentTimeMillis();
         var partitionKeys = index.listPartitionKeys();
-        var totalRemoved = partitionKeys.stream().mapToInt(key -> enforcePartition(key.streamName(),
-                                                                                   key.partition(),
-                                                                                   now)).sum();
+        var totalRemoved = partitionKeys.stream()
+                                        .mapToInt(key -> enforcePartition(key.streamName(),
+                                                                          key.partition(),
+                                                                          now))
+                                        .sum();
 
         if (totalRemoved > 0) {
             log.info("Retention enforcement removed {} expired segment(s)", totalRemoved);
@@ -123,10 +125,9 @@ public final class RetentionEnforcer implements AutoCloseable {
     private void removeSegment(String streamName, int partition, SegmentIndex.SegmentRef ref) {
         var refName = SegmentIndex.buildRefName(streamName, partition, ref);
 
-        storage.resolveRef(refName).map(blockId -> deleteBlockAndRef(refName, blockId)).onPresent(promise -> promise.onFailure(cause -> logDeleteFailure(streamName,
-                                                                                                                                                         partition,
-                                                                                                                                                         ref,
-                                                                                                                                                         cause)));
+        storage.resolveRef(refName)
+               .map(blockId -> deleteBlockAndRef(refName, blockId))
+               .onPresent(promise -> promise.onFailure(cause -> logDeleteFailure(streamName, partition, ref, cause)));
         index.removeSegment(streamName, partition, ref.startOffset());
         log.debug("Removed expired segment {}/{}:[{}-{}] maxTimestamp={}",
                   streamName,

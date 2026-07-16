@@ -4,11 +4,11 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.metrics.observability;
 
+import java.util.function.Supplier;
+
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.metrics.PromiseMetrics;
-
-import java.util.function.Supplier;
 
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.Gauge;
@@ -100,7 +100,9 @@ public interface ObservabilityRegistry {
         public Result<Unit> registerNodeCount(Supplier<Number> nodeCountSupplier) {
             Gauge.builder("aether.cluster.nodes",
                           () -> nodeCountSupplier.get()
-                                                 .doubleValue()).description("Number of nodes in the cluster").register(prometheusRegistry);
+                                                 .doubleValue())
+                 .description("Number of nodes in the cluster")
+                 .register(prometheusRegistry);
 
             return unitResult();
         }
@@ -109,7 +111,9 @@ public interface ObservabilityRegistry {
         public Result<Unit> registerSliceCount(Supplier<Number> sliceCountSupplier) {
             Gauge.builder("aether.slices.active",
                           () -> sliceCountSupplier.get()
-                                                  .doubleValue()).description("Number of active slice instances").register(prometheusRegistry);
+                                                  .doubleValue())
+                 .description("Number of active slice instances")
+                 .register(prometheusRegistry);
 
             return unitResult();
         }
@@ -134,7 +138,9 @@ public interface ObservabilityRegistry {
             Gauge.builder(name,
                           () -> metricsSupplier.get()
                                                .getOrDefault(name, 0)
-                                               .doubleValue()).description(description).register(prometheusRegistry);
+                                               .doubleValue())
+                 .description(description)
+                 .register(prometheusRegistry);
         }
     }
 }

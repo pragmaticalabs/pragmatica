@@ -4,25 +4,28 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.controller;
 
+import java.util.Map;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Consumer;
+import java.util.function.Function;
+
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.controller.fsm.ControlLoopContext;
 import org.pragmatica.aether.controller.fsm.ControlLoopEvents.Activate;
 import org.pragmatica.aether.controller.fsm.ControlLoopEvents.Deactivate;
 import org.pragmatica.aether.controller.fsm.ControlLoopState;
+import org.pragmatica.aether.controller.fsm.ScalingDecisionRecord;
 import org.pragmatica.aether.metrics.ClusterSyncCollector;
 import org.pragmatica.aether.metrics.invocation.InvocationMetricsCollector;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeArtifactKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceNodeKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceTargetKey;
-import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeArtifactValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceTargetValue;
 import org.pragmatica.aether.worker.metrics.CommunityMetricsSnapshot;
-import org.pragmatica.aether.worker.metrics.CommunityScalingRequest;
 import org.pragmatica.cluster.node.ClusterNode;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
-import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValueRemove;
 import org.pragmatica.consensus.NodeId;
@@ -39,11 +42,6 @@ import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.messaging.MessageReceiver;
 import org.pragmatica.statemachine.Fsm;
-
-import java.util.Map;
-import java.util.concurrent.atomic.AtomicReference;
-import java.util.function.Consumer;
-import java.util.function.Function;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -73,21 +71,31 @@ public interface ControlLoop {
     @MessageReceiver
     void onQuorumStateChange(ClusterStateNotification notification);
 
-    void registerBlueprint(Artifact artifact, int instances, int minInstances);
+    void registerBlueprint(Artifact artifact,
+                           int instances,
+                           int minInstances,
+                           Option<Integer> maxInstances,
+                           Option<Double> scaleUpThreshold,
+                           Option<Double> scaleDownThreshold);
+
     void unregisterBlueprint(Artifact artifact);
     ControllerConfig configuration();
     void updateConfiguration(ControllerConfig config);
     void stop();
-    void onCommunityScalingRequest(CommunityScalingRequest request);
     void onCommunityMetricsSnapshot(CommunityMetricsSnapshot snapshot);
     Map<String, CommunityMetricsSnapshot> communitySnapshots();
+    /// Bounded snapshot of the latest per-artifact scaling decision (#425). Leader-only observability
+    /// surface; empty on nodes whose control loop has not evaluated.
+    Map<Artifact, ScalingDecisionRecord> scalingDecisions();
+    /// Cluster-average CPU usage surfaced alongside [scalingDecisions] as honest node-capacity
+    /// context (never acted on by the autoscaler).
+    double clusterCpuContext();
 
     static ControlLoop controlLoop(NodeId self,
                                    ClusterController controller,
                                    ClusterSyncCollector metricsCollector,
                                    Option<InvocationMetricsCollector> invocationMetricsCollector,
                                    ClusterNode<KVCommand<AetherKey>> cluster,
-                                   KVStore<AetherKey, AetherValue> kvStore,
                                    TimeSpan interval,
                                    ControllerConfig config,
                                    Consumer<ScalingEvent> eventPublisher) {
@@ -99,7 +107,6 @@ public interface ControlLoop {
                                                                                                                      metricsCollector,
                                                                                                                      invocationMetricsCollector,
                                                                                                                      cluster,
-                                                                                                                     kvStore,
                                                                                                                      interval,
                                                                                                                      config,
                                                                                                                      eventPublisher);
@@ -115,7 +122,6 @@ public interface ControlLoop {
                                                  ClusterSyncCollector metricsCollector,
                                                  Option<InvocationMetricsCollector> invocationMetricsCollector,
                                                  ClusterNode<KVCommand<AetherKey>> cluster,
-                                                 KVStore<AetherKey, AetherValue> kvStore,
                                                  TimeSpan interval,
                                                  ControllerConfig config,
                                                  Consumer<ScalingEvent> eventPublisher) {
@@ -125,7 +131,6 @@ public interface ControlLoop {
                                          metricsCollector,
                                          invocationMetricsCollector,
                                          cluster,
-                                         kvStore,
                                          interval,
                                          config,
                                          eventPublisher);
@@ -165,8 +170,8 @@ public interface ControlLoop {
         public void onMembershipDecision(MembershipDecision decision) {
             switch (decision) {
                 case NodeJoined(_, var newTopology, _, _) -> ctx.setTopology(newTopology);
-                case NodeRemoved(_, var newTopology, _, _) -> ctx.setTopology(newTopology);
-                case NodeDecommissioned(_, var newTopology, _, _) -> ctx.setTopology(newTopology);
+                case NodeRemoved(var departed, var newTopology, _, _) -> ctx.onNodeDeparted(departed, newTopology);
+                case NodeDecommissioned(var departed, var newTopology, _, _) -> ctx.onNodeDeparted(departed, newTopology);
                 // RC1 Step 2 lifecycle-projection variants: ControlLoop reacts to terminal
                 // topology changes only — JOINING / DRAINING / FAILED_DRAIN /
                 // SHUTTING_DOWN do not adjust the committed core set.
@@ -195,7 +200,10 @@ public interface ControlLoop {
 
             registerBlueprint(key.artifactBase().withVersion(value.currentVersion()),
                               value.targetInstances(),
-                              value.effectiveMinInstances());
+                              value.effectiveMinInstances(),
+                              value.maxInstances(),
+                              value.scaleUpThreshold(),
+                              value.scaleDownThreshold());
         }
 
         @Override
@@ -220,9 +228,18 @@ public interface ControlLoop {
         }
 
         @Override
-        public void registerBlueprint(Artifact artifact, int instances, int minInstances) {
-            ctx.putBlueprint(artifact, instances, minInstances);
-            log.info("Registered blueprint: {} with {} instances (min: {})", artifact, instances, minInstances);
+        public void registerBlueprint(Artifact artifact,
+                                      int instances,
+                                      int minInstances,
+                                      Option<Integer> maxInstances,
+                                      Option<Double> scaleUpThreshold,
+                                      Option<Double> scaleDownThreshold) {
+            ctx.putBlueprint(artifact, instances, minInstances, maxInstances, scaleUpThreshold, scaleDownThreshold);
+            log.info("Registered blueprint: {} with {} instances (min: {}, max: {})",
+                     artifact,
+                     instances,
+                     minInstances,
+                     maxInstances);
         }
 
         @Override
@@ -247,17 +264,6 @@ public interface ControlLoop {
         }
 
         @Override
-        public void onCommunityScalingRequest(CommunityScalingRequest request) {
-            if (!isActive()) {
-                log.debug("Ignoring community scaling request: not active");
-
-                return;
-            }
-
-            ctx.handleCommunityScalingRequest(request);
-        }
-
-        @Override
         public void onCommunityMetricsSnapshot(CommunityMetricsSnapshot snapshot) {
             ctx.storeCommunitySnapshot(snapshot);
         }
@@ -265,6 +271,16 @@ public interface ControlLoop {
         @Override
         public Map<String, CommunityMetricsSnapshot> communitySnapshots() {
             return ctx.communitySnapshots();
+        }
+
+        @Override
+        public Map<Artifact, ScalingDecisionRecord> scalingDecisions() {
+            return ctx.scalingDecisions();
+        }
+
+        @Override
+        public double clusterCpuContext() {
+            return ctx.clusterCpuContext();
         }
     }
 }

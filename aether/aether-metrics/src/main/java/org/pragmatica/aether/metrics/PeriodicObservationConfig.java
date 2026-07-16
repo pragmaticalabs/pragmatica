@@ -4,9 +4,9 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.metrics;
 
-import org.pragmatica.lang.io.TimeSpan;
-
 import java.util.function.IntSupplier;
+
+import org.pragmatica.lang.io.TimeSpan;
 
 
 /// Configuration for the periodic `PeerConnectivityObservation` emission task.

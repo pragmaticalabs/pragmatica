@@ -4,13 +4,13 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.http.handler.security;
 
-import org.pragmatica.http.routing.security.RequestSecurityContext;
-import org.pragmatica.lang.Result;
-import org.pragmatica.serialization.Codec;
-
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+
+import org.pragmatica.http.routing.security.RequestSecurityContext;
+import org.pragmatica.lang.Result;
+import org.pragmatica.serialization.Codec;
 
 import static org.pragmatica.aether.http.handler.security.Principal.PrincipalType;
 import static org.pragmatica.lang.Result.success;
@@ -71,8 +71,9 @@ public record SecurityContext(Principal principal,
         return Result.all(success(principal),
                           success(roles),
                           success(claims),
-                          success(authorizationRole)).map(SecurityContext::new)
-                         .unwrap();
+                          success(authorizationRole))
+                     .map(SecurityContext::new)
+                     .unwrap();
     }
 
     public boolean isAuthenticated() {

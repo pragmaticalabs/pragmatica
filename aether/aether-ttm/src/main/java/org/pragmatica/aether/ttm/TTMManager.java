@@ -4,6 +4,11 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.ttm;
 
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Consumer;
+import java.util.function.Supplier;
+
 import org.pragmatica.aether.config.TtmConfig;
 import org.pragmatica.aether.controller.ControllerConfig;
 import org.pragmatica.aether.metrics.MinuteAggregator;
@@ -19,11 +24,6 @@ import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.utils.SharedScheduler;
 import org.pragmatica.lang.concurrent.CancellableTask;
-
-import java.util.concurrent.CopyOnWriteArrayList;
-import java.util.concurrent.atomic.AtomicReference;
-import java.util.function.Consumer;
-import java.util.function.Supplier;
 
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.Metrics;
@@ -254,8 +254,9 @@ public interface TTMManager {
 
         private void safeInvokeCallback(Consumer<TTMForecast> callback, TTMForecast forecast) {
             Result.lift(e -> new TTMError.InferenceFailed("Callback error: " + e.getMessage()),
-                        () -> invokeCallback(callback, forecast)).onFailure(cause -> log.warn("Forecast callback error: {}",
-                                                                                              cause.message()));
+                        () -> invokeCallback(callback, forecast))
+                  .onFailure(cause -> log.warn("Forecast callback error: {}",
+                                               cause.message()));
         }
 
         private static Unit invokeCallback(Consumer<TTMForecast> callback, TTMForecast forecast) {

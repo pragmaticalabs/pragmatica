@@ -4,11 +4,11 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.metrics;
 
-import org.pragmatica.consensus.NodeId;
-import org.pragmatica.lang.Contract;
-
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+
+import org.pragmatica.consensus.NodeId;
+import org.pragmatica.lang.Contract;
 
 
 /// Membership v2 (B5a) — leader-local registry of nodes the leader wants to command DRAIN.

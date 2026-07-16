@@ -4,13 +4,13 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.stream.forward;
 
+import java.util.Arrays;
+import java.util.List;
+
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.ProtocolMessage;
 import org.pragmatica.messaging.StreamType;
 import org.pragmatica.serialization.Codec;
-
-import java.util.Arrays;
-import java.util.List;
 
 
 @Codec
@@ -69,33 +69,61 @@ public sealed interface StreamForwardMessage extends ProtocolMessage {
         }
     }
 
+    /// A forwarded-publish response. `retryable` (write-forward race fix) marks a failure the OWNER
+    /// classified as transient — its committed config was not yet visible when the forward arrived, or the
+    /// partition was capacity-deferred — so the forwarder re-attempts a BOUNDED number of times with short
+    /// backoff instead of surfacing it as permanent. A `false` value (the default `failureResponse`
+    /// factory) means a permanent failure, served exactly as before.
     record PublishForwardResponse(NodeId sender,
                                   String correlationId,
                                   boolean success,
                                   long offset,
-                                  String errorMessage) implements StreamForwardMessage {
+                                  String errorMessage,
+                                  boolean retryable) implements StreamForwardMessage {
         public static PublishForwardResponse successResponse(NodeId sender, String correlationId, long offset) {
-            return new PublishForwardResponse(sender, correlationId, true, offset, "");
+            return new PublishForwardResponse(sender, correlationId, true, offset, "", false);
         }
 
         public static PublishForwardResponse failureResponse(NodeId sender, String correlationId, String errorMessage) {
-            return new PublishForwardResponse(sender, correlationId, false, -1L, errorMessage);
+            return new PublishForwardResponse(sender, correlationId, false, -1L, errorMessage, false);
+        }
+
+        public static PublishForwardResponse retryableResponse(NodeId sender,
+                                                               String correlationId,
+                                                               String errorMessage) {
+            return new PublishForwardResponse(sender, correlationId, false, -1L, errorMessage, true);
         }
     }
 
+    /// A forwarded read. `linearizable` (#345 item 1e-a) marks a `LINEARIZABLE`-class read so the
+    /// forwarded-to node re-runs the SAME owner-side serve pipeline the local path uses (committed-owner
+    /// check + epoch fence + no-op round + catch-up gate) instead of an unguarded local read — closing
+    /// the forward-guard asymmetry. A `false` value (the default factory) means a replica-class read
+    /// served by a plain local read, exactly as before.
     record ReadForward(NodeId sender,
                        String correlationId,
                        String streamName,
                        int partition,
                        long fromOffset,
-                       int maxEvents) implements StreamForwardMessage {
+                       int maxEvents,
+                       boolean linearizable) implements StreamForwardMessage {
         public static ReadForward readForward(NodeId sender,
                                               String correlationId,
                                               String streamName,
                                               int partition,
                                               long fromOffset,
                                               int maxEvents) {
-            return new ReadForward(sender, correlationId, streamName, partition, fromOffset, maxEvents);
+            return new ReadForward(sender, correlationId, streamName, partition, fromOffset, maxEvents, false);
+        }
+
+        public static ReadForward readForward(NodeId sender,
+                                              String correlationId,
+                                              String streamName,
+                                              int partition,
+                                              long fromOffset,
+                                              int maxEvents,
+                                              boolean linearizable) {
+            return new ReadForward(sender, correlationId, streamName, partition, fromOffset, maxEvents, linearizable);
         }
     }
 

@@ -4,9 +4,9 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.dht;
 
-import org.pragmatica.dht.DHTClient;
-
 import java.util.function.Function;
+
+import org.pragmatica.dht.DHTClient;
 
 
 public interface ReplicatedMapFactory {

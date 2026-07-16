@@ -4,12 +4,6 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.invoke;
 
-import org.pragmatica.lang.Cause;
-import org.pragmatica.lang.Contract;
-import org.pragmatica.lang.Option;
-import org.pragmatica.lang.Promise;
-import org.pragmatica.lang.Result;
-
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -19,6 +13,12 @@ import java.util.UUID;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.Predicate;
 import java.util.function.Supplier;
+
+import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Contract;
+import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Result;
 
 
 public final class InvocationTraceStore {
@@ -133,7 +133,9 @@ public final class InvocationTraceStore {
                                                   Option<Integer> depth,
                                                   Option<String> requestId,
                                                   Option<String> traceId) {
-        var resolvedRequestId = requestId.filter(InvocationTraceStore::nonBlank).orElse(() -> traceId.filter(InvocationTraceStore::nonBlank)).or(InvocationTraceStore::generateUuid);
+        var resolvedRequestId = requestId.filter(InvocationTraceStore::nonBlank)
+                                         .orElse(() -> traceId.filter(InvocationTraceStore::nonBlank))
+                                         .or(InvocationTraceStore::generateUuid);
         var resolvedDepth = depth.or(0);
         var resolvedDurationMs = durationMs.or(DEFAULT_INJECTED_DURATION_MS);
         var durationNs = Math.max(0L, resolvedDurationMs) * 1_000_000L;

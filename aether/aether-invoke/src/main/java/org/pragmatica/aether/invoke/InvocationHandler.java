@@ -4,25 +4,27 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.invoke;
 
+import java.nio.charset.StandardCharsets;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.http.HttpRoutePublisher;
 import org.pragmatica.aether.invoke.InvocationMessage.InvokeRequest;
 import org.pragmatica.aether.invoke.InvocationMessage.InvokeResponse;
 import org.pragmatica.aether.metrics.invocation.InvocationMetricsCollector;
+import org.pragmatica.aether.slice.ObservabilityCellRegistrar;
 import org.pragmatica.aether.slice.SliceBridge;
 import org.pragmatica.consensus.net.ClusterNetwork;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Unit;
 import org.pragmatica.messaging.MessageReceiver;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.serialization.Deserializer;
 import org.pragmatica.serialization.Serializer;
-
-import java.nio.charset.StandardCharsets;
-import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -46,6 +48,13 @@ public interface InvocationHandler {
     Option<InvocationMetricsCollector> metricsCollector();
     TimeSpan DEFAULT_INVOCATION_TIMEOUT = timeSpan(15).seconds();
 
+    /// Bind the write-side registrar so a loaded slice's per-method observability cells (#277 increment
+    /// 2) are registered at registerSlice and dropped at unregisterSlice. Default no-op keeps stubs and
+    /// observability-off nodes at passthrough.
+    default Unit setObservabilityCellRegistrar(ObservabilityCellRegistrar registrar) {
+        return Unit.unit();
+    }
+
     static InvocationHandler invocationHandler(NodeId self, ClusterNetwork network) {
         return new InvocationHandlerImpl(self,
                                          network,
@@ -53,8 +62,7 @@ public interface InvocationHandler {
                                          DEFAULT_INVOCATION_TIMEOUT,
                                          Option.none(),
                                          Option.none(),
-                                         Option.none(),
-                                         ObservabilityInterceptor.noOp());
+                                         Option.none());
     }
 
     static InvocationHandler invocationHandler(NodeId self,
@@ -66,8 +74,7 @@ public interface InvocationHandler {
                                          DEFAULT_INVOCATION_TIMEOUT,
                                          Option.none(),
                                          Option.none(),
-                                         Option.none(),
-                                         ObservabilityInterceptor.noOp());
+                                         Option.none());
     }
 
     static InvocationHandler invocationHandler(NodeId self,
@@ -82,8 +89,7 @@ public interface InvocationHandler {
                                          DEFAULT_INVOCATION_TIMEOUT,
                                          Option.option(serializer),
                                          Option.option(deserializer),
-                                         Option.option(httpRoutePublisher),
-                                         ObservabilityInterceptor.noOp());
+                                         Option.option(httpRoutePublisher));
     }
 
     static InvocationHandler invocationHandler(NodeId self,
@@ -96,25 +102,7 @@ public interface InvocationHandler {
                                          invocationTimeout,
                                          Option.none(),
                                          Option.none(),
-                                         Option.none(),
-                                         ObservabilityInterceptor.noOp());
-    }
-
-    static InvocationHandler invocationHandler(NodeId self,
-                                               ClusterNetwork network,
-                                               InvocationMetricsCollector metricsCollector,
-                                               Serializer serializer,
-                                               Deserializer deserializer,
-                                               HttpRoutePublisher httpRoutePublisher,
-                                               ObservabilityInterceptor observabilityInterceptor) {
-        return invocationHandler(self,
-                                 network,
-                                 metricsCollector,
-                                 DEFAULT_INVOCATION_TIMEOUT,
-                                 serializer,
-                                 deserializer,
-                                 httpRoutePublisher,
-                                 observabilityInterceptor);
+                                         Option.none());
     }
 
     static InvocationHandler invocationHandler(NodeId self,
@@ -123,16 +111,14 @@ public interface InvocationHandler {
                                                TimeSpan invocationTimeout,
                                                Serializer serializer,
                                                Deserializer deserializer,
-                                               HttpRoutePublisher httpRoutePublisher,
-                                               ObservabilityInterceptor observabilityInterceptor) {
+                                               HttpRoutePublisher httpRoutePublisher) {
         return new InvocationHandlerImpl(self,
                                          network,
                                          Option.option(metricsCollector),
                                          invocationTimeout,
                                          Option.option(serializer),
                                          Option.option(deserializer),
-                                         Option.option(httpRoutePublisher),
-                                         observabilityInterceptor);
+                                         Option.option(httpRoutePublisher));
     }
 }
 
@@ -146,9 +132,9 @@ class InvocationHandlerImpl implements InvocationHandler {
     private final Option<Serializer> serializer;
     private final Option<Deserializer> deserializer;
     private final Option<HttpRoutePublisher> httpRoutePublisher;
-    private final ObservabilityInterceptor observabilityInterceptor;
     private final Map<Artifact, SliceBridge> localSlices = new ConcurrentHashMap<>();
     private final Map<ClassLoader, SliceBridge> classLoaderBridges = new ConcurrentHashMap<>();
+    private volatile ObservabilityCellRegistrar cellRegistrar = ObservabilityCellRegistrar.NOOP;
 
     InvocationHandlerImpl(NodeId self,
                           ClusterNetwork network,
@@ -156,8 +142,7 @@ class InvocationHandlerImpl implements InvocationHandler {
                           TimeSpan invocationTimeout,
                           Option<Serializer> serializer,
                           Option<Deserializer> deserializer,
-                          Option<HttpRoutePublisher> httpRoutePublisher,
-                          ObservabilityInterceptor observabilityInterceptor) {
+                          Option<HttpRoutePublisher> httpRoutePublisher) {
         this.self = self;
         this.network = network;
         this.metricsCollector = metricsCollector;
@@ -165,7 +150,14 @@ class InvocationHandlerImpl implements InvocationHandler {
         this.serializer = serializer;
         this.deserializer = deserializer;
         this.httpRoutePublisher = httpRoutePublisher;
-        this.observabilityInterceptor = observabilityInterceptor;
+    }
+
+    @Override
+    @SuppressWarnings("JBCT-RET-01")
+    public Unit setObservabilityCellRegistrar(ObservabilityCellRegistrar registrar) {
+        this.cellRegistrar = registrar;
+
+        return Unit.unit();
     }
 
     @Override
@@ -173,6 +165,7 @@ class InvocationHandlerImpl implements InvocationHandler {
     public void registerSlice(Artifact artifact, SliceBridge bridge) {
         localSlices.put(artifact, bridge);
         classLoaderBridges.put(bridge.classLoader(), bridge);
+        bridge.observabilityCells().forEach(cellRegistrar::register);
         log.debug("Registered slice for invocation: {}", artifact);
     }
 
@@ -183,6 +176,7 @@ class InvocationHandlerImpl implements InvocationHandler {
 
         if (bridge != null) {
             classLoaderBridges.remove(bridge.classLoader());
+            bridge.observabilityCells().forEach(cellRegistrar::deregister);
         }
 
         log.debug("Unregistered slice from invocation: {}", artifact);
@@ -223,8 +217,9 @@ class InvocationHandlerImpl implements InvocationHandler {
     }
 
     private void processInvokeRequest(InvokeRequest request) {
-        Option.option(localSlices.get(request.targetSlice())).onEmpty(() -> handleSliceNotFound(request)).onPresent(bridge -> invokeSliceMethod(request,
-                                                                                                                                                bridge));
+        Option.option(localSlices.get(request.targetSlice()))
+              .onEmpty(() -> handleSliceNotFound(request))
+              .onPresent(bridge -> invokeSliceMethod(request, bridge));
     }
 
     private void handleSliceNotFound(InvokeRequest request) {
@@ -239,18 +234,12 @@ class InvocationHandlerImpl implements InvocationHandler {
         var requestBytes = request.payload().length;
 
         metricsCollector.onPresent(mc -> mc.recordStart(request.targetSlice(), request.method()));
-        observabilityInterceptor.intercept(request.targetSlice(),
-                                           request.method(),
-                                           request.requestId(),
-                                           request.depth(),
-                                           true,
-                                           () -> invokeWithHttpRouting(request, bridge)).timeout(invocationTimeout).onSuccess(data -> handleInvocationSuccess(request,
-                                                                                                                                                              data,
-                                                                                                                                                              startTime,
-                                                                                                                                                              requestBytes)).onFailure(cause -> handleInvocationFailure(request,
-                                                                                                                                                                                                                        cause,
-                                                                                                                                                                                                                        startTime,
-                                                                                                                                                                                                                        requestBytes));
+        ObservabilityCells.around(bridge,
+                                  request.method().name(),
+                                  () -> invokeWithHttpRouting(request, bridge))
+                          .timeout(invocationTimeout)
+                          .onSuccess(data -> handleInvocationSuccess(request, data, startTime, requestBytes))
+                          .onFailure(cause -> handleInvocationFailure(request, cause, startTime, requestBytes));
     }
 
     private Promise<byte[]> invokeWithHttpRouting(InvokeRequest request, SliceBridge bridge) {

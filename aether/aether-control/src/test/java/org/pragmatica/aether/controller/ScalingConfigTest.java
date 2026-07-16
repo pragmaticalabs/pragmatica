@@ -21,9 +21,10 @@ class ScalingConfigTest {
         void productionDefaults_hasCorrectWeights() {
             var config = ScalingConfig.productionDefaults();
 
-            assertThat(config.weight(ScalingMetric.CPU)).isEqualTo(0.4);
-            assertThat(config.weight(ScalingMetric.ACTIVE_INVOCATIONS)).isEqualTo(0.4);
-            assertThat(config.weight(ScalingMetric.P95_LATENCY)).isEqualTo(0.2);
+            // CPU dropped as a scaling trigger (#422); weight redistributed to the per-slice signals.
+            assertThat(config.weight(ScalingMetric.CPU)).isEqualTo(0.0);
+            assertThat(config.weight(ScalingMetric.ACTIVE_INVOCATIONS)).isEqualTo(0.6);
+            assertThat(config.weight(ScalingMetric.P95_LATENCY)).isEqualTo(0.4);
             assertThat(config.weight(ScalingMetric.ERROR_RATE)).isEqualTo(0.0);
         }
     }

@@ -4,6 +4,8 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.resource.db.async;
 
+import java.util.List;
+
 import org.pragmatica.aether.resource.ResourceFactory;
 import org.pragmatica.aether.resource.db.DatabaseConnectorConfig;
 import org.pragmatica.aether.resource.db.DatabaseConnectorError;
@@ -13,8 +15,6 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.postgres.net.netty.NettyConnectibleBuilder;
-
-import java.util.List;
 
 
 public final class PgSqlConnectorFactory implements ResourceFactory<PgSqlConnector, DatabaseConnectorConfig> {

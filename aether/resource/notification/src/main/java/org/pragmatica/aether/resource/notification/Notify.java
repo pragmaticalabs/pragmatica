@@ -4,12 +4,12 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.resource.notification;
 
-import org.pragmatica.aether.slice.annotation.ResourceQualifier;
-
 import java.lang.annotation.ElementType;
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
 import java.lang.annotation.Target;
+
+import org.pragmatica.aether.slice.annotation.ResourceQualifier;
 
 
 @ResourceQualifier(type = NotificationSender.class, config = "notification")

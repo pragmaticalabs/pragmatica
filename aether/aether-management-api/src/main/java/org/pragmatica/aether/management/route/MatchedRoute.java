@@ -4,11 +4,11 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.management.route;
 
-import org.pragmatica.lang.Option;
-
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+
+import org.pragmatica.lang.Option;
 
 
 public record MatchedRoute(ManagementRoute route, Map<String, String> params) {

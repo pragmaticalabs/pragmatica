@@ -4,9 +4,9 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.update;
 
-import org.pragmatica.lang.io.TimeSpan;
-
 import java.util.List;
+
+import org.pragmatica.lang.io.TimeSpan;
 
 
 public sealed interface StrategyConfig {

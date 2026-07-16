@@ -4,6 +4,15 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.invoke;
 
+import java.time.Instant;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Consumer;
+import java.util.function.Function;
+
 import org.pragmatica.aether.invoke.ScheduledTaskRegistry.ScheduledTask;
 import org.pragmatica.aether.slice.ExecutionMode;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
@@ -30,15 +39,6 @@ import org.pragmatica.messaging.MessageReceiver;
 import org.pragmatica.statemachine.Fsm;
 import org.pragmatica.statemachine.FsmState;
 import org.pragmatica.statemachine.TransitionRequest;
-
-import java.time.Instant;
-import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ScheduledFuture;
-import java.util.concurrent.atomic.AtomicLong;
-import java.util.concurrent.atomic.AtomicReference;
-import java.util.function.Consumer;
-import java.util.function.Function;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -258,13 +258,19 @@ public interface ScheduledTaskManager {
         private TaskOps() {}
 
         static void startEligibleTasks(Context ctx, boolean leader) {
-            ctx.registry.allTasks().stream().filter(task -> !task.paused()).filter(task -> task.executionMode() == ExecutionMode.ALL || (leader && task.executionMode() == ExecutionMode.SINGLE)).forEach(task -> {
-                var key = ScheduledTaskKey.scheduledTaskKey(task.configSection(), task.artifact(), task.methodName());
+            ctx.registry.allTasks()
+                        .stream()
+                        .filter(task -> !task.paused())
+                        .filter(task -> task.executionMode() == ExecutionMode.ALL || (leader && task.executionMode() == ExecutionMode.SINGLE))
+                        .forEach(task -> {
+                                     var key = ScheduledTaskKey.scheduledTaskKey(task.configSection(),
+                                                                                 task.artifact(),
+                                                                                 task.methodName());
 
-                if (!ctx.activeTimers.containsKey(key)) {
-                    startTimer(ctx, key, task);
-                }
-            });
+                                     if (!ctx.activeTimers.containsKey(key)) {
+                                     startTimer(ctx, key, task);
+                                 }
+                                 });
         }
 
         static void startTimer(Context ctx, ScheduledTaskKey key, ScheduledTask task) {
@@ -276,10 +282,12 @@ public interface ScheduledTaskManager {
         }
 
         private static void startIntervalTimer(Context ctx, ScheduledTaskKey key, ScheduledTask task) {
-            IntervalParser.parse(task.interval()).onSuccess(interval -> scheduleAtFixedRate(ctx, key, task, interval)).onFailure(cause -> log.warn("Failed to parse interval '{}' for task {}: {}",
-                                                                                                                                                   task.interval(),
-                                                                                                                                                   key,
-                                                                                                                                                   cause.message()));
+            IntervalParser.parse(task.interval())
+                          .onSuccess(interval -> scheduleAtFixedRate(ctx, key, task, interval))
+                          .onFailure(cause -> log.warn("Failed to parse interval '{}' for task {}: {}",
+                                                       task.interval(),
+                                                       key,
+                                                       cause.message()));
         }
 
         private static void scheduleAtFixedRate(Context ctx,
@@ -293,19 +301,23 @@ public interface ScheduledTaskManager {
         }
 
         private static void startCronTimer(Context ctx, ScheduledTaskKey key, ScheduledTask task) {
-            CronExpression.parse(task.cron()).onSuccess(cron -> scheduleNextCronFire(ctx, key, task, cron)).onFailure(cause -> log.warn("Failed to parse cron '{}' for task {}: {}",
-                                                                                                                                        task.cron(),
-                                                                                                                                        key,
-                                                                                                                                        cause.message()));
+            CronExpression.parse(task.cron())
+                          .onSuccess(cron -> scheduleNextCronFire(ctx, key, task, cron))
+                          .onFailure(cause -> log.warn("Failed to parse cron '{}' for task {}: {}",
+                                                       task.cron(),
+                                                       key,
+                                                       cause.message()));
         }
 
         private static void scheduleNextCronFire(Context ctx,
                                                  ScheduledTaskKey key,
                                                  ScheduledTask task,
                                                  CronExpression cron) {
-            cron.delayUntilNext(Instant.now()).onSuccess(delay -> registerCronFire(ctx, key, task, cron, delay)).onFailure(cause -> log.warn("Failed to compute next cron fire for task {}: {}",
-                                                                                                                                             key,
-                                                                                                                                             cause.message()));
+            cron.delayUntilNext(Instant.now())
+                .onSuccess(delay -> registerCronFire(ctx, key, task, cron, delay))
+                .onFailure(cause -> log.warn("Failed to compute next cron fire for task {}: {}",
+                                             key,
+                                             cause.message()));
         }
 
         private static void registerCronFire(Context ctx,
@@ -330,10 +342,13 @@ public interface ScheduledTaskManager {
         }
 
         private static void executeTask(Context ctx, ScheduledTask task) {
-            ctx.invoker.invoke(task.artifact(), task.methodName(), Unit.unit()).onSuccess(_ -> writeSuccessState(ctx,
-                                                                                                                 task)).onFailure(cause -> handleTaskFailure(ctx,
-                                                                                                                                                             task,
-                                                                                                                                                             cause.message()));
+            ctx.invoker.invoke(task.artifact(),
+                               task.methodName(),
+                               Unit.unit())
+                       .onSuccess(_ -> writeSuccessState(ctx, task))
+                       .onFailure(cause -> handleTaskFailure(ctx,
+                                                             task,
+                                                             cause.message()));
         }
 
         private static void handleTaskFailure(Context ctx, ScheduledTask task, String message) {

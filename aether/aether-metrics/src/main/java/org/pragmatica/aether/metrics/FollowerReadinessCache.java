@@ -4,15 +4,15 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.metrics;
 
-import org.pragmatica.consensus.NodeId;
-import org.pragmatica.consensus.leader.LeaderManager;
-import org.pragmatica.lang.Contract;
-import org.pragmatica.lang.Option;
-
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.LongSupplier;
 import java.util.stream.Collectors;
+
+import org.pragmatica.consensus.NodeId;
+import org.pragmatica.consensus.leader.LeaderManager;
+import org.pragmatica.lang.Contract;
+import org.pragmatica.lang.Option;
 
 
 /// Readiness-broadcast (failover-readability): a follower's cache of the LEADER's authoritative

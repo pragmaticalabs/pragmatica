@@ -4,15 +4,6 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.resource.db.jdbc;
 
-import org.pragmatica.aether.resource.db.DatabaseConnectorConfig;
-import org.pragmatica.aether.resource.db.DatabaseConnectorError;
-import org.pragmatica.aether.resource.db.RowMapper;
-import org.pragmatica.aether.resource.db.SqlConnector;
-import org.pragmatica.lang.Option;
-import org.pragmatica.lang.Promise;
-import org.pragmatica.lang.Result;
-import org.pragmatica.lang.Unit;
-
 import javax.sql.DataSource;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
@@ -23,6 +14,15 @@ import java.sql.SQLTimeoutException;
 import java.sql.SQLTransactionRollbackException;
 import java.util.ArrayList;
 import java.util.List;
+
+import org.pragmatica.aether.resource.db.DatabaseConnectorConfig;
+import org.pragmatica.aether.resource.db.DatabaseConnectorError;
+import org.pragmatica.aether.resource.db.RowMapper;
+import org.pragmatica.aether.resource.db.SqlConnector;
+import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Unit;
 
 import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.option;

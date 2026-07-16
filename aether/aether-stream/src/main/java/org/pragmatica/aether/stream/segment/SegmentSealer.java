@@ -4,13 +4,13 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.stream.segment;
 
-import org.pragmatica.aether.stream.EvictionListener;
-import org.pragmatica.aether.stream.OffHeapRingBuffer.RawEvent;
-import org.pragmatica.lang.Contract;
-
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.util.List;
+
+import org.pragmatica.aether.stream.EvictionListener;
+import org.pragmatica.aether.stream.OffHeapRingBuffer.RawEvent;
+import org.pragmatica.lang.Contract;
 
 
 public final class SegmentSealer implements EvictionListener {

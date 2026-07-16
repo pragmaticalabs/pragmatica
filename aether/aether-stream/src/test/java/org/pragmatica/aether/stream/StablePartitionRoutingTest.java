@@ -71,6 +71,61 @@ class StablePartitionRoutingTest {
         assertThat(p1Partition).isEqualTo(p2Partition);
     }
 
+    // #266: a mixed-key batch must land each event on the SAME partition a single publish of that key
+    // would — the whole batch must NOT be routed to the first event's partition.
+    @Test
+    void mixedKeyBatch_landsPerKeyOnSamePartitionsAsSinglePublish() {
+        Function<byte[], Object> keyExtractor = bytes -> new String(bytes).split("\\|", 2)[0];
+
+        // Reference partitions from SINGLE publishes (fresh manager each, to read the routed partition).
+        var partA = singlePartitionFor("A|x", keyExtractor);
+        tearDown();
+        setUp();
+        var partB = singlePartitionFor("B|x", keyExtractor);
+        tearDown();
+        setUp();
+        var partC = singlePartitionFor("C|x", keyExtractor);
+        tearDown();
+        setUp();
+
+        // Now publish a mixed-key batch through ONE publisher.
+        var publisher = streamPublisher(partitionManager,
+                                        identitySerializer(),
+                                        STREAM,
+                                        PARTITION_COUNT,
+                                        Option.some(keyExtractor));
+        publisher.publishBatch(java.util.List.of("A|1".getBytes(),
+                                                 "B|1".getBytes(),
+                                                 "C|1".getBytes(),
+                                                 "A|2".getBytes(),
+                                                 "B|2".getBytes())).await();
+
+        // Each key's events land on the SAME partition a single publish of that key chose — NOT all on
+        // the first event's (A's) partition. Per-key counts are collision-tolerant.
+        assertThat(countOfKeyInPartition("A", partA)).isEqualTo(2);
+        assertThat(countOfKeyInPartition("B", partB)).isEqualTo(2);
+        assertThat(countOfKeyInPartition("C", partC)).isEqualTo(1);
+        // No key leaked to a partition it does not route to (every event is on its key's partition).
+        assertThat(totalEventsAcrossPartitions()).isEqualTo(5);
+    }
+
+    /// Count of events whose key (part before `|`) equals `key` that landed in `partition`.
+    private long countOfKeyInPartition(String key, int partition) {
+        return partitionManager.readLocal(STREAM, partition, 0, 100)
+                               .or(java.util.List.<OffHeapRingBuffer.RawEvent>of())
+                               .stream()
+                               .filter(event -> new String(event.data()).split("\\|", 2)[0].equals(key))
+                               .count();
+    }
+
+    private long totalEventsAcrossPartitions() {
+        var total = 0L;
+        for (var partition = 0; partition < PARTITION_COUNT; partition++) {
+            total += partitionManager.readLocal(STREAM, partition, 0, 100).or(java.util.List.of()).size();
+        }
+        return total;
+    }
+
     private int singlePartitionFor(String key, Function<byte[], Object> keyExtractor) {
         var publisher = streamPublisher(partitionManager,
                                         identitySerializer(),

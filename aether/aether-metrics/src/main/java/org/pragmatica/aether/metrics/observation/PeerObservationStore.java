@@ -4,12 +4,6 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.metrics.observation;
 
-import org.pragmatica.cluster.metrics.PeerConnectivityObservation;
-import org.pragmatica.cluster.metrics.PeerHealthObservation;
-import org.pragmatica.cluster.metrics.PeerObservationBuffer;
-import org.pragmatica.lang.Contract;
-import org.pragmatica.consensus.NodeId;
-
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Deque;
@@ -19,6 +13,12 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.function.Consumer;
 import java.util.function.IntSupplier;
+
+import org.pragmatica.cluster.metrics.PeerConnectivityObservation;
+import org.pragmatica.cluster.metrics.PeerHealthObservation;
+import org.pragmatica.cluster.metrics.PeerObservationBuffer;
+import org.pragmatica.lang.Contract;
+import org.pragmatica.consensus.NodeId;
 
 
 public final class PeerObservationStore implements PeerObservationBuffer {

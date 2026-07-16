@@ -4,13 +4,14 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.management.route;
 
-import org.pragmatica.aether.slice.delegation.TaskGroup;
-import org.pragmatica.http.routing.HttpMethod;
-import org.pragmatica.lang.Result;
-
 import java.util.Arrays;
 import java.util.List;
 
+import org.pragmatica.aether.slice.delegation.TaskGroup;
+import org.pragmatica.http.HttpMethod;
+import org.pragmatica.lang.Result;
+
+import static org.pragmatica.aether.management.route.RouteTarget.ANY;
 import static org.pragmatica.aether.management.route.RouteTarget.LEADER;
 import static org.pragmatica.aether.management.route.RouteTarget.LOCAL;
 import static org.pragmatica.aether.management.route.RouteTarget.taskGroup;
@@ -19,10 +20,10 @@ import static org.pragmatica.aether.slice.delegation.TaskGroup.SCALING;
 import static org.pragmatica.aether.slice.delegation.TaskGroup.STORAGE;
 import static org.pragmatica.aether.slice.delegation.TaskGroup.STRATEGIES;
 import static org.pragmatica.aether.slice.delegation.TaskGroup.STREAMING;
-import static org.pragmatica.http.routing.HttpMethod.DELETE;
-import static org.pragmatica.http.routing.HttpMethod.GET;
-import static org.pragmatica.http.routing.HttpMethod.POST;
-import static org.pragmatica.http.routing.HttpMethod.PUT;
+import static org.pragmatica.http.HttpMethod.DELETE;
+import static org.pragmatica.http.HttpMethod.GET;
+import static org.pragmatica.http.HttpMethod.POST;
+import static org.pragmatica.http.HttpMethod.PUT;
 
 
 public enum ManagementRoute {
@@ -32,10 +33,18 @@ public enum ManagementRoute {
     HEALTH_READY_GET(GET, "/health/ready", List.of("id"), RouteTarget.nodeIdParam(0)),
     NODE_STATUS(GET, "/api/nodes/status", List.of(), LEADER),
     NODE_STATUS_GET(GET, "/api/nodes/status", List.of("id"), RouteTarget.nodeIdParam(0)),
+    NODE_ENDPOINT_GET(GET, "/api/nodes/endpoint", List.of("id"), RouteTarget.nodeIdParam(0)),
+    NODES_LIVE(GET, "/api/nodes/live", List.of(), RouteTarget.ANY),
     NODES_LIST(GET, "/api/nodes", List.of(), LEADER),
     WHOAMI(GET, "/api/whoami", List.of(), LOCAL),
     CLUSTER_HEALTH(GET, "/api/health", List.of(), LEADER),
-    EVENTS(GET, "/api/events", List.of(), LEADER),
+    // #267: served from ANY core node, not leader-bound. cluster-events is a replicated single-partition
+    // stream; a non-replica core node read-forwards to a CAUGHT_UP replica (forward-capable consumer),
+    // so `/api/events` stays available during leader churn/election instead of returning 503 — exactly
+    // when operators most need events. Replica-read correctness rests on #260 (offset verification) and
+    // #261 (real backfill). Staleness: a forwarded read reflects the replica's CAUGHT_UP watermark,
+    // which may trail the owner by the in-flight replication window (sub-second under steady load).
+    EVENTS(GET, "/api/events", List.of(), ANY),
     CERTIFICATES_LIST(GET, "/api/certificates", List.of(), LOCAL),
     CLUSTER_TOPOLOGY(GET, "/api/cluster/topology", List.of(), LEADER),
     CLUSTER_GENERATION(GET, "/api/cluster/generation", List.of(), LEADER),
@@ -43,6 +52,18 @@ public enum ManagementRoute {
     CLUSTER_GOVERNORS(GET, "/api/cluster/governors", List.of(), LEADER),
     CLUSTER_JOURNAL(GET, "/api/cluster/journal", List.of(), LOCAL),
     CLUSTER_CONFIG_GET(GET, "/api/cluster/config", List.of(), taskGroup(DEPLOYMENT)),
+    CLUSTER_PROVISIONING_GET(GET, "/api/cluster/provisioning", List.of(), taskGroup(DEPLOYMENT)),
+    // PER-NODE local view (LOCAL, never leader/owner-forwarded): each survivor answers from its OWN
+    // MembershipFsm + QuorumLossDetector, so an operator can query a specific node and see THAT
+    // node's per-peer SUSPECT/DEAD states + self-drain armed/below-quorum signal. taskGroup/LEADER
+    // would forward and collapse the per-node distinction this endpoint exists to expose.
+    CLUSTER_MEMBERSHIP_GET(GET, "/api/cluster/membership", List.of(), LOCAL),
+    // #345 item 1f: per-node committed ownership/fence view. `domain` (community|dht|stream) is a path
+    // param; LOCAL (never leader/owner-forwarded) like membership — each node answers from its OWN
+    // committed KV-Store, so an operator can read the owner NodeId + fence Epoch per partition/key that
+    // THIS node has applied. The committed ownership atoms are Rabia-replicated, so a LOCAL read off any
+    // caught-up node reflects the fenced owner without forwarding.
+    CLUSTER_OWNERSHIP_GET(GET, "/api/ownership", List.of("domain"), LOCAL),
     CLUSTER_STATUS(GET, "/api/cluster/status", List.of(), LEADER),
     CLUSTER_CONFIG_APPLY(POST, "/api/cluster/config", List.of(), taskGroup(DEPLOYMENT)),
     CLUSTER_SCALE(POST, "/api/cluster/scale", List.of(), LEADER),
@@ -80,6 +101,10 @@ public enum ManagementRoute {
     NODE_ROUTES(GET, "/api/nodes/routes", List.of(), LEADER),
     NODE_ROUTES_GET(GET, "/api/nodes/routes", List.of("id"), RouteTarget.nodeIdParam(0)),
     ROUTES_LIST(GET, "/api/routes", List.of(), LEADER),
+    // PER-NODE local view (#198 §11.3): each node lists the versioned slices IT has deployed, read
+    // from its own HttpRoutePublisher registry. LOCAL (not LEADER/forwarded) so an operator can query
+    // a specific node and see that node's served version metadata + deprecation/sunset knobs.
+    VERSIONS(GET, "/api/versions", List.of(), LOCAL),
     SLICE_SCALE(POST, "/api/scale", List.of(), taskGroup(SCALING)),
     WORKERS_LIST(GET, "/api/workers", List.of(), LEADER),
     WORKERS_HEALTH(GET, "/api/workers/health", List.of(), LEADER),
@@ -120,6 +145,19 @@ public enum ManagementRoute {
     STREAM_DELETE(DELETE, "/api/streams", List.of("name"), taskGroup(STREAMING)),
     STREAM_CONSUMERS(GET, "/api/streams/consumers", List.of("name"), taskGroup(STREAMING)),
     STREAM_READ(GET, "/api/streams/read", List.of("name", "partition"), taskGroup(STREAMING)),
+    // #260/#261/#333 replica-state observability. taskGroup(STREAMING) lands the request on a
+    // STREAMING-capable node; the handler then resolves the partition's deterministic HRW owner and
+    // assembles the replica-set view from the local `ReplicaRegistry` (authoritative only ON the
+    // owner — see `servedByOwner` in the response). Per-partition-owner management forwarding is not
+    // a `RouteTarget` variant (the owner is computed from name+partition, not a path param), so the
+    // response is owner-aware rather than owner-forwarded.
+    STREAM_REPLICAS(GET, "/api/streams/replicas", List.of("name", "partition"), taskGroup(STREAMING)),
+    // #265 increment 0 per-node hydration observability. Static prefix `/api/streams/hydration` (0
+    // params) is matched before `/api/streams/{name}` (STREAM_GET, 1 param) by the longest-static-prefix
+    // rule in RouteMatcher, so there is no collision. taskGroup(STREAMING) lands it on a STREAMING-capable
+    // node; the handler assembles the snapshot from that node's local StreamPartitionManager (per-node
+    // materialized-ring / floor-byte / placement-role view — the §6 regression sensor).
+    STREAM_HYDRATION(GET, "/api/streams/hydration", List.of(), taskGroup(STREAMING)),
     CONSUMER_GROUP_JOIN(POST, "/api/streams/groups/join", List.of(), taskGroup(STREAMING)),
     CONSUMER_GROUP_LEAVE(POST, "/api/streams/groups/leave", List.of(), taskGroup(STREAMING)),
     CONSUMER_GROUP_STATUS(GET, "/api/streams/groups", List.of("id"), taskGroup(STREAMING)),
@@ -149,14 +187,8 @@ public enum ManagementRoute {
     SCHEDULED_TASKS_LIST(GET, "/api/scheduled-tasks", List.of(), LEADER),
     SCHEDULED_TASKS_BY_SECTION(GET, "/api/scheduled-tasks", List.of("section"), LEADER),
     SCHEDULED_TASK_STATE(GET, "/api/scheduled-tasks/state", List.of("section", "artifact", "methodName"), LEADER),
-    SCHEDULED_TASK_PAUSE(POST,
-                         "/api/scheduled-tasks/pause",
-                         List.of("section", "artifact", "methodName"),
-                         taskGroup(STRATEGIES)),
-    SCHEDULED_TASK_RESUME(POST,
-                          "/api/scheduled-tasks/resume",
-                          List.of("section", "artifact", "methodName"),
-                          taskGroup(STRATEGIES)),
+    SCHEDULED_TASK_PAUSE(POST, "/api/scheduled-tasks/pause", List.of("section", "artifact", "methodName"), LEADER),
+    SCHEDULED_TASK_RESUME(POST, "/api/scheduled-tasks/resume", List.of("section", "artifact", "methodName"), LEADER),
     SCHEDULED_TASK_TRIGGER(POST,
                            "/api/scheduled-tasks/trigger",
                            List.of("section", "artifact", "methodName"),
@@ -205,6 +237,9 @@ public enum ManagementRoute {
     CONFIG_NODE_DELETE(DELETE, "/api/config/nodes", List.of("id", "key"), taskGroup(DEPLOYMENT)),
     CONTROLLER_CONFIG_GET(GET, "/api/controller/config", List.of(), LEADER),
     CONTROLLER_STATUS(GET, "/api/controller/status", List.of(), LEADER),
+    // #425 per-slice scaling decision snapshot. LEADER-bound: the control loop runs on the leader,
+    // so the decision map + cluster-CPU context live there. Pure snapshot read (no hot-path cost).
+    CONTROLLER_DECISIONS(GET, "/api/controller/decisions", List.of(), LEADER),
     CONTROLLER_CONFIG_SET(POST, "/api/controller/config", List.of(), LEADER),
     CONTROLLER_EVALUATE(POST, "/api/controller/evaluate", List.of(), LEADER),
     TTM_STATUS(GET, "/api/ttm/status", List.of(), LOCAL),
@@ -219,6 +254,10 @@ public enum ManagementRoute {
     OBSERVABILITY_DEPTH_GET(GET, "/api/observability/depth", List.of(), LEADER),
     OBSERVABILITY_DEPTH_SET(POST, "/api/observability/depth", List.of(), LEADER),
     OBSERVABILITY_DEPTH_DELETE(DELETE, "/api/observability/depth", List.of("artifact", "methodName"), LEADER),
+    OBSERVABILITY_CONFIG_GET(GET, "/api/observability/config", List.of(), LEADER),
+    OBSERVABILITY_CONFIG_GET_ONE(GET, "/api/observability/config", List.of("artifact", "method"), LEADER),
+    OBSERVABILITY_CONFIG_SET(POST, "/api/observability/config", List.of(), LEADER),
+    OBSERVABILITY_CONFIG_DELETE(DELETE, "/api/observability/config", List.of("artifact", "method"), LEADER),
     DHT_INJECT(POST, "/api/dht/inject", List.of(), LOCAL),
     DHT_REPLICATION_MAP(GET, "/api/dht/replication-map", List.of(), LOCAL);
     private final HttpMethod method;
