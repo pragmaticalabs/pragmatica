@@ -52,6 +52,32 @@ class ClusterBootstrapConfigParserTest {
                                                               .contains("restore"));
         }
 
+        @Test
+        void parse_badVersionWithBrokenTemplate_failsWithVersionNotTemplateError() {
+            // #480: the config_version gate runs BEFORE template-inheritance resolution, so an
+            // old-format config with a broken template surfaces the Q1 re-bootstrap message rather
+            // than a "not found" template-resolution error (the cleaner operator diagnostic).
+            var toml = """
+                config_version = "0.9.0"
+
+                [cluster]
+                name = "dev-local"
+                version = "1.0.0"
+
+                [source.local]
+                type = "forge"
+                inherit = "nonexistent"
+
+                [source.local.core]
+                count = 3
+                """;
+
+            ClusterBootstrapConfigParser.parse(toml)
+                .onSuccess(config -> Assertions.fail("Expected failure"))
+                .onFailure(cause -> assertThat(cause.message()).contains("re-bootstrap")
+                                                              .doesNotContain("not found"));
+        }
+
         private static String forgeToml(String versionLine) {
             return versionLine + """
 

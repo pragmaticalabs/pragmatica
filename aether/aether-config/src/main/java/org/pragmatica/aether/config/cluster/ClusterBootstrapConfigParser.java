@@ -4,7 +4,6 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.config.cluster;
 
-import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.LinkedHashMap;
@@ -44,24 +43,16 @@ public final class ClusterBootstrapConfigParser {
     private static final String DATABASES_PREFIX = "databases.";
     private static final Set<String> ROLE_NAMES = Set.of("core", "worker", "spot");
 
-    public static Result<ClusterBootstrapConfig> parseFile(Path path) {
-        return TomlParser.parseFile(path)
-                         .mapError(ClusterBootstrapConfigParser::wrapError)
-                         .flatMap(ClusterBootstrapConfigParser::validateConfigVersion)
-                         .flatMap(doc -> resolveIncludes(doc, path))
-                         .flatMap(resolved -> TemplateInheritanceResolver.resolve(resolved).mapError(ClusterBootstrapConfigParser::wrapError))
-                         .flatMap(ClusterBootstrapConfigParser::fromDocument);
-    }
-
-    private static Result<TomlDocument> resolveIncludes(TomlDocument doc, Path path) {
-        return IncludeResolver.resolve(doc,
-                                       path.getParent())
-                              .mapError(ClusterBootstrapConfigParser::wrapError);
-    }
-
+    /// The single parse boundary both readers share: the CLI bootstrap AND the KV-persisted re-parse
+    /// a leader/CTM does (`ClusterConfigRoutes`/`ClusterTopologyManagerRecord` call this). #480 — the
+    /// W6 `config_version` gate ([#validateConfigVersion]) runs FIRST, before template inheritance
+    /// resolution, so an old/newer-format config surfaces the Q1 named error rather than a
+    /// template-resolution error. (A former `parseFile` overload existed but had zero callers, #479 —
+    /// deleted; this is the only entry point.)
     public static Result<ClusterBootstrapConfig> parse(String content) {
         return TomlParser.parse(content)
                          .mapError(ClusterBootstrapConfigParser::wrapError)
+                         .flatMap(ClusterBootstrapConfigParser::validateConfigVersion)
                          .flatMap(resolved -> TemplateInheritanceResolver.resolve(resolved).mapError(ClusterBootstrapConfigParser::wrapError))
                          .flatMap(ClusterBootstrapConfigParser::fromDocument);
     }

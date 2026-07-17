@@ -212,9 +212,12 @@ public record HetznerComputeProvider(HetznerClient client, HetznerEnvironmentCon
     /// root password. The ids live only in the bootstrap CLI process — so a leader provisioning an
     /// auto-heal replacement re-derives them here by listing the account's keys and matching the
     /// prefix scoped to ITS OWN cluster (RFC-0016 W3 §3.2–3.3: no persisted numeric id, self-healing
-    /// against deleted/recreated keys, and — unlike the deleted account-wide bare match — never
-    /// resolving another cluster's keys). Mirrors `BootstrapPhaseSshKey.HETZNER_KEY_NAME_PREFIX` — the
-    /// `aether-cli` constant cannot be imported from this provider module.
+    /// against deleted/recreated keys, and — unlike the deleted account-wide bare match — bounded to
+    /// this cluster's keys at a delimiter boundary (#444: matches `aether-bootstrap-<cluster>-`, so
+    /// `prod` no longer matches `production`). NESTED-DELIMITER names (`prod` vs `prod-eu`) still
+    /// collide — that is the #444 exact-id remainder, not fixed by prefix matching). Mirrors
+    /// `BootstrapPhaseSshKey.HETZNER_KEY_NAME_PREFIX` — the `aether-cli` constant cannot be imported
+    /// from this provider module.
     static final String BOOTSTRAP_KEY_NAME_PREFIX = "aether-bootstrap";
     /// Sentinel returned by [#clusterNameOrDefault] when no cluster name resolves. Used to gate the
     /// ssh-key prefix scope: an unresolved (blank/`unknown`) cluster produces NO cluster-scoped
@@ -268,8 +271,12 @@ public record HetznerComputeProvider(HetznerClient client, HetznerEnvironmentCon
     }
 
     private static boolean isBootstrapKey(SshKey key, String prefix) {
+        // #444 — require a delimiter boundary (`prefix + "-"`): a `prod` cluster (prefix
+        // `aether-bootstrap-prod`) no longer matches `aether-bootstrap-production-*`. Keys are named
+        // `aether-bootstrap-<cluster>-<blob>`, so a same-cluster key always carries the trailing '-'.
+        // Nested-delimiter names (`prod` vs `prod-eu`) still collide — the #444 exact-id remainder.
         return key.name() != null && key.name()
-                                        .startsWith(prefix);
+                                        .startsWith(prefix + "-");
     }
 
     /// #442 / RFC-0016 W3 — one operator-diagnosable line naming which branch resolved the ssh-key

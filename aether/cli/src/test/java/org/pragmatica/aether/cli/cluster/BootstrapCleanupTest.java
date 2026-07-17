@@ -14,6 +14,7 @@ import org.pragmatica.aether.environment.InstanceId;
 import org.pragmatica.aether.environment.InstanceInfo;
 import org.pragmatica.aether.environment.ProvisionRequest;
 import org.pragmatica.cloud.hetzner.HetznerClient;
+import org.pragmatica.cloud.hetzner.HetznerError;
 import org.pragmatica.cloud.hetzner.api.Firewall;
 import org.pragmatica.cloud.hetzner.api.FloatingIp;
 import org.pragmatica.cloud.hetzner.api.LoadBalancer;
@@ -32,6 +33,7 @@ import java.util.ArrayList;
 import java.util.EnumMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -318,6 +320,129 @@ class BootstrapCleanupTest {
         assertTrue(result.isSuccess(), () -> "no-handle fallback must still reap the ssh key: " + result);
         assertEquals(List.of(7L), deleteCalls,
                      "no-handle fallback must reap the ssh key via the injected default resolver");
+    }
+
+    // --- #481: cluster-scoped ssh-key sweep ---
+
+    private static BootstrapState stateWithHetznerHandle() {
+        var phases = new EnumMap<BootstrapPhase, PhaseStatus>(BootstrapPhase.class);
+        for (var phase : BootstrapPhase.values()) {phases.put(phase, PhaseStatus.COMPLETED);}
+        var handle = SourceCleanupHandle.sourceCleanupHandle("hetzner",
+                                                             Option.some("eu-central"),
+                                                             Map.of("api_token", NON_DEFAULT_TOKEN_ENV));
+        return BootstrapState.bootstrapState(CLUSTER_NAME,
+                                             "hash-1",
+                                             "2026-05-01T00:00:00Z",
+                                             phases,
+                                             List.of(),
+                                             List.of(),
+                                             List.of(),
+                                             "",
+                                             Map.of("core-source", handle));
+    }
+
+    private static Fn1<HetznerClient, String> sweepingClientFactory(HetznerClient client, List<String> tokens) {
+        return token -> recordSweepFactory(token, client, tokens);
+    }
+
+    private static HetznerClient recordSweepFactory(String token, HetznerClient client, List<String> tokens) {
+        tokens.add(token);
+        return client;
+    }
+
+    /// #481 — the sweep deletes ONLY keys scoped to THIS cluster by the delimiter boundary
+    /// `aether-bootstrap-<cluster>-`. Run with clusterName `prod`, so it must reap `aether-bootstrap-prod-op`
+    /// yet leave `aether-bootstrap-production-op` (delimiter boundary), `aether-bootstrap-other-op` (different
+    /// cluster), and `someones-laptop` (not a bootstrap key) untouched. The HetznerClient is resolved
+    /// handle-first (via HCLOUD_TOKEN_PROD from the persisted handle), never raw HCLOUD_TOKEN.
+    @Test
+    void destroy_deletesClusterScopedSshKeys() {
+        var deleteCalls = new ArrayList<Long>();
+        var envReads = new ArrayList<String>();
+        var factoryTokens = new ArrayList<String>();
+        var keys = List.of(new SshKey(42L, "aether-bootstrap-prod-op", "fp-42", "pk-42"),
+                           new SshKey(99L, "aether-bootstrap-production-op", "fp-99", "pk-99"),
+                           new SshKey(43L, "aether-bootstrap-other-op", "fp-43", "pk-43"),
+                           new SshKey(44L, "someones-laptop", "fp-44", "pk-44"));
+        var client = new SweepingHetznerClient(keys, deleteCalls, Set.of());
+        var state = stateWithHetznerHandle();
+        var env = Map.of(NON_DEFAULT_TOKEN_ENV, PROD_TOKEN_VALUE);
+
+        var result = BootstrapCleanup.sweepClusterSshKeys(state,
+                                                          "prod",
+                                                          recordingGetenv(env, envReads),
+                                                          sweepingClientFactory(client, factoryTokens));
+
+        assertTrue(result.isSuccess(), () -> "sweep must succeed: " + result);
+        assertEquals(List.of(42L), deleteCalls,
+                     "only the cluster-scoped key (aether-bootstrap-prod-op) may be deleted; 'production' must survive the delimiter boundary");
+        assertEquals(List.of(PROD_TOKEN_VALUE), factoryTokens,
+                     "sweep HetznerClient must be built from the HCLOUD_TOKEN_PROD-derived token, not raw HCLOUD_TOKEN");
+        assertFalse(envReads.contains("HCLOUD_TOKEN"),
+                    "sweep must resolve the client handle-first and never read raw HCLOUD_TOKEN");
+    }
+
+    /// #481 — an already-gone key (Hetzner 404 / `not_found`) is tolerated as success, so a recorded key that
+    /// the state-based cleanup already deleted does not abort the sweep or fail the destroy.
+    @Test
+    void destroy_sshKeyAlreadyGone_toleratedNoFailure() {
+        var deleteCalls = new ArrayList<Long>();
+        var keys = List.of(new SshKey(42L, "aether-bootstrap-prod-op", "fp-42", "pk-42"));
+        var client = new SweepingHetznerClient(keys, deleteCalls, Set.of(42L));
+        var state = stateWithHetznerHandle();
+        var env = Map.of(NON_DEFAULT_TOKEN_ENV, PROD_TOKEN_VALUE);
+
+        var result = BootstrapCleanup.sweepClusterSshKeys(state,
+                                                          "prod",
+                                                          recordingGetenv(env, new ArrayList<>()),
+                                                          sweepingClientFactory(client, new ArrayList<>()));
+
+        assertTrue(result.isSuccess(), () -> "an already-gone (404/not_found) key must be tolerated: " + result);
+        assertEquals(List.of(42L), deleteCalls, "the sweep must still attempt the delete before tolerating 404");
+    }
+
+    /// Stub for the #481 sweep: records `listSshKeys` results and `deleteSshKey` calls; ids in `goneIds`
+    /// surface as a Hetzner 404 `not_found` `ApiError` (already-gone). All other operations throw.
+    record SweepingHetznerClient(List<SshKey> keys, List<Long> deleteCalls, Set<Long> goneIds) implements HetznerClient {
+        @Override public Promise<List<SshKey>> listSshKeys() {
+            return Promise.success(keys);
+        }
+
+        @Override public Promise<Unit> deleteSshKey(long sshKeyId) {
+            deleteCalls.add(sshKeyId);
+            if (goneIds.contains(sshKeyId)) {
+                return new HetznerError.ApiError(404, "not_found", "ssh key not found").promise();
+            }
+            return Promise.success(Unit.unit());
+        }
+
+        @Override public Promise<SshKey> createSshKey(SshKey.CreateSshKeyRequest request) {throw fail("createSshKey");}
+        @Override public Promise<Server> createServer(CreateServerRequest request) {throw fail("createServer");}
+        @Override public Promise<Unit> deleteServer(long serverId) {throw fail("deleteServer");}
+        @Override public Promise<Server> getServer(long serverId) {throw fail("getServer");}
+        @Override public Promise<List<Server>> listServers() {throw fail("listServers");}
+        @Override public Promise<List<Server>> listServers(String labelSelector) {throw fail("listServers(label)");}
+        @Override public Promise<Unit> updateServerLabels(long serverId, Map<String, String> labels) {throw fail("updateServerLabels");}
+        @Override public Promise<Unit> rebootServer(long serverId) {throw fail("rebootServer");}
+        @Override public Promise<List<Network>> listNetworks() {throw fail("listNetworks");}
+        @Override public Promise<Network> getNetwork(long networkId) {throw fail("getNetwork");}
+        @Override public Promise<List<Firewall>> listFirewalls() {throw fail("listFirewalls");}
+        @Override public Promise<Unit> applyFirewall(long firewallId, long serverId) {throw fail("applyFirewall");}
+        @Override public Promise<LoadBalancer> createLoadBalancer(LoadBalancer.CreateLoadBalancerRequest request) {throw fail("createLoadBalancer");}
+        @Override public Promise<Unit> deleteLoadBalancer(long loadBalancerId) {throw fail("deleteLoadBalancer");}
+        @Override public Promise<List<LoadBalancer>> listLoadBalancers() {throw fail("listLoadBalancers");}
+        @Override public Promise<Unit> addTarget(long loadBalancerId, long serverId) {throw fail("addTarget");}
+        @Override public Promise<Unit> removeTarget(long loadBalancerId, long serverId) {throw fail("removeTarget");}
+        @Override public Promise<Unit> addIpTarget(long loadBalancerId, String ip) {throw fail("addIpTarget");}
+        @Override public Promise<Unit> removeIpTarget(long loadBalancerId, String ip) {throw fail("removeIpTarget");}
+        @Override public Promise<LoadBalancer> getLoadBalancer(long loadBalancerId) {throw fail("getLoadBalancer");}
+        @Override public Promise<List<FloatingIp>> listFloatingIps() {throw fail("listFloatingIps");}
+        @Override public Promise<FloatingIp> getFloatingIp(long floatingIpId) {throw fail("getFloatingIp");}
+        @Override public Promise<Unit> assignFloatingIp(long floatingIpId, long serverId) {throw fail("assignFloatingIp");}
+
+        private static AssertionError fail(String name) {
+            return new AssertionError("Test stub: '" + name + "' must not be called by SSH-key sweep");
+        }
     }
 
     /// Stub used to assert that the only Hetzner call made by SSH-key cleanup

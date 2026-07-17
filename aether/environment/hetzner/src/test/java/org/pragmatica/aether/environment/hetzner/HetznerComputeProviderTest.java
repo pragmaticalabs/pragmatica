@@ -269,6 +269,29 @@ class HetznerComputeProviderTest {
         }
 
         @Test
+        void provision_emptyConfigSshKeyIds_prodDoesNotMatchProductionKeys() {
+            // #444 — delimiter-boundary matching (`prefix + "-"`): provisioning for cluster "prod"
+            // (prefix `aether-bootstrap-prod`) must NOT attach "production"'s keys. Under the old bare
+            // `startsWith` this collided ("aether-bootstrap-production-op".startsWith("aether-bootstrap-prod"));
+            // requiring the trailing '-' fixes non-delimiter string-prefix pairs like prod/production.
+            var keylessProvider = HetznerComputeProvider.hetznerComputeProvider(testClient,
+                                                                               configWith("cx22", List.of())).unwrap();
+            testClient.createServerResponse = Promise.success(runningServer(42, "aether-test"));
+            testClient.listSshKeysResponse = Promise.success(List.of(
+                new SshKey(7, "aether-bootstrap-prod-op", "aa:bb", "ssh-ed25519 AAAA"),
+                new SshKey(8, "aether-bootstrap-production-op", "ee:ff", "ssh-ed25519 CCCC")));
+            var context = ProvisionContext.provisionContext("prod", "core", "eu-1", ProvisionContext.PROVISIONED_BY_CTM)
+                                          .withNodeId("aether-core-node-prod");
+            var spec = ProvisionSpec.provisionSpec(InstanceType.ON_DEMAND, "cx22", "core", context).unwrap();
+
+            keylessProvider.provision(spec).await().onFailure(cause -> assertThat(cause).isNull());
+
+            assertThat(testClient.lastCreateServerRequest.sshKeys())
+                    .as("cluster 'prod' matches only 'aether-bootstrap-prod-*', never 'production'")
+                    .containsExactly(7L);
+        }
+
+        @Test
         void createServerPayload_serializesServerTypeSshKeysAndLabels() {
             testClient.createServerResponse = Promise.success(runningServer(42, "aether-test"));
 

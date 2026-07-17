@@ -158,11 +158,11 @@ include = ["path/to/fragment.toml", ...]
 
 `config_version` is a **top-level scalar** (not inside any section). It identifies which version of this specification the config file was written against. The CLI validates it before any other processing.
 
-**REQ-3.2.1**: `config_version` MUST be present. Absent → validation error: "Missing required field `config_version`. Add `config_version = \"1.0.0\"` at the top of your config file."
+**REQ-3.2.1**: `config_version` MUST be present. It is the persisted-document format version, gated by an **exact match** with the build's required version (W6, RFC-0016 §3.5). Absent → validation error: "Persisted config has no config_version (document format version); this build requires `1.0.0` — re-bootstrap the cluster."
 
-**REQ-3.2.2**: The CLI MUST reject config files with an unrecognized `config_version`. The error MUST name both the file's version and the versions the CLI supports. This enables safe evolution: future CLI versions can support multiple config versions with backward-compatible parsing, and old CLIs fail fast on config files written for a newer spec.
+**REQ-3.2.2**: The CLI MUST reject config files with a non-current `config_version` (exact-match gate). The error names the file's version and the required version, and distinguishes direction: an **older/unsupported** version → "…is not supported by this build (requires `1.0.0`) — re-bootstrap the cluster"; a **newer** version → "…is NEWER than this build supports…; restore the pre-upgrade persisted state…" (the binary-rollback-after-migration failure mode). There is no `absent = legacy-baseline` case.
 
-**REQ-3.2.3**: `config_version` is checked BEFORE include resolution, template inheritance, and variable substitution. A file with a wrong version is rejected before any external I/O (env var lookups, file reads, cloud API calls).
+**REQ-3.2.3**: `config_version` is checked FIRST — before template inheritance and variable substitution — at the single `parse` boundary both readers share (the CLI bootstrap and the leader/CTM KV re-parse). An old- or newer-format config is therefore rejected with the clean version message rather than a downstream template-resolution error, and before any external I/O (env-var lookups, cloud API calls). (#480: the live path was reordered so the gate precedes `TemplateInheritanceResolver`.)
 
 ### 3.3 `[cluster]` -- Cluster Identity
 

@@ -12,6 +12,8 @@ import org.pragmatica.aether.environment.ComputeProvider;
 import org.pragmatica.aether.environment.InstanceId;
 import org.pragmatica.cloud.hetzner.HetznerClient;
 import org.pragmatica.cloud.hetzner.HetznerConfig;
+import org.pragmatica.cloud.hetzner.HetznerError;
+import org.pragmatica.cloud.hetzner.api.SshKey;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Result;
@@ -25,6 +27,8 @@ sealed interface BootstrapCleanup {
 
     /// Handle credential alias for the cloud API token (see `BootstrapPhaseProvision.CREDENTIAL_FIELD_KEYS`).
     String API_TOKEN_KEY = "api_token";
+    /// Provider identity for Hetzner cloud (matches `SourceCleanupHandle.provider()` and `CreatedResource.provider()`).
+    String HETZNER_PROVIDER = "hetzner";
 
     /// RFC-0016 W4 (#439) — the injectable seams cleanup uses to resolve teardown credentials, so a
     /// timeout-triggered cleanup reaps VMs *and* ssh keys with the SAME credential the operator used to
@@ -131,6 +135,149 @@ sealed interface BootstrapCleanup {
         var failures = collectCleanupFailures(state, resources, resolvers);
 
         return finishCleanup(state, failures);
+    }
+
+    /// #481 — defensive cluster-scoped ssh-key sweep. `cleanup` above deletes only keys the state recorded
+    /// as a `SshKeyResource` (exact id); a *reused* pre-existing key, or one the state never captured,
+    /// orphans on the Hetzner account and gets re-matched by a same-name recreate's prefix listing. This
+    /// sweep lists the account's keys and deletes those scoped to THIS cluster by the delimiter-bounded name
+    /// prefix `aether-bootstrap-<cluster>-` — the SAME boundary `HetznerComputeProvider.isBootstrapKey` uses
+    /// (post-#444), so a `prod` destroy never touches `production`'s keys. Runs AFTER the state-based cleanup,
+    /// so an already-recorded-and-deleted key surfaces as a tolerated 404/`not_found`.
+    static Result<Unit> sweepClusterSshKeys(BootstrapState state, String clusterName) {
+        return sweepClusterSshKeys(state, clusterName, CleanupResolvers.cleanupResolvers());
+    }
+
+    /// Full-control entry for the #481 sweep test: injects the env lookup and the token → HetznerClient
+    /// factory so the sweep is observable without a real cloud call. The Hetzner client is still resolved
+    /// handle-first (from the persisted hetzner `SourceCleanupHandle`), never raw `HCLOUD_TOKEN`.
+    static Result<Unit> sweepClusterSshKeys(BootstrapState state,
+                                            String clusterName,
+                                            Fn1<String, String> getenv,
+                                            Fn1<HetznerClient, String> hetznerClientFactory) {
+        return sweepClusterSshKeys(state,
+                                   clusterName,
+                                   CleanupResolvers.cleanupResolvers()
+                                                   .withGetenv(getenv)
+                                                   .withHetznerClientFactory(hetznerClientFactory));
+    }
+
+    @SuppressWarnings("JBCT-PAT-01")
+    private static Result<Unit> sweepClusterSshKeys(BootstrapState state,
+                                                    String clusterName,
+                                                    CleanupResolvers resolvers) {
+        if (clusterName == null || clusterName.isBlank()) {
+            System.out.println("  Skipping SSH-key sweep: cluster name is blank (cannot scope the sweep).");
+
+            return Result.unitResult();
+        }
+
+        var handle = state.sources()
+                          .values()
+                          .stream()
+                          .filter(candidate -> HETZNER_PROVIDER.equals(candidate.provider()))
+                          .findFirst()
+                          .orElse(null);
+
+        if (handle == null) {
+            System.out.println("  Skipping SSH-key sweep: no persisted Hetzner source handle for cluster '" + clusterName
+                              + "' (nothing cloud-scoped to sweep).");
+
+            return Result.unitResult();
+        }
+
+        var prefix = BootstrapPhaseSshKey.HETZNER_KEY_NAME_PREFIX + "-" + clusterName + "-";
+
+        System.out.println("Sweeping orphaned Hetzner SSH keys scoped to cluster '" + clusterName
+                          + "' (prefix '" + prefix
+                          + "')...");
+
+        return hetznerClientFromHandle(handle, resolvers).flatMap(client -> sweepWithClient(client, prefix));
+    }
+
+    @SuppressWarnings("JBCT-EX-01")
+    private static Result<Unit> sweepWithClient(HetznerClient client, String prefix) {
+        return client.listSshKeys()
+                     .await()
+                     .flatMap(keys -> deleteMatchingKeys(client, keys, prefix));
+    }
+
+    private static Result<Unit> deleteMatchingKeys(HetznerClient client, List<SshKey> keys, String prefix) {
+        var matches = keys.stream().filter(key -> keyNameMatches(key, prefix)).toList();
+
+        if (matches.isEmpty()) {
+            System.out.println("  No cluster-scoped SSH keys found to sweep.");
+
+            return Result.unitResult();
+        }
+
+        var failures = collectSweepFailures(client, matches);
+
+        return finishSweep(matches.size(), failures);
+    }
+
+    private static boolean keyNameMatches(SshKey key, String prefix) {
+        return key.name() != null && key.name()
+                                        .startsWith(prefix);
+    }
+
+    private static List<String> collectSweepFailures(HetznerClient client, List<SshKey> matches) {
+        var failures = new ArrayList<String>();
+
+        for (var key : matches) {
+            var result = deleteSweptKey(client, key);
+            var _ = result.onFailure(cause -> failures.add(key.name() + " (id=" + key.id() + "): " + cause.message()));
+        }
+
+        return List.copyOf(failures);
+    }
+
+    @SuppressWarnings("JBCT-EX-01")
+    private static Result<Unit> deleteSweptKey(HetznerClient client, SshKey key) {
+        System.out.printf("  Sweeping orphaned SSH key %d (%s)...%n", key.id(), key.name());
+
+        return client.deleteSshKey(key.id())
+                     .await()
+                     .fold(cause -> tolerateAlreadyGone(cause, key),
+                           _ -> logSwept(key));
+    }
+
+    private static Result<Unit> logSwept(SshKey key) {
+        System.out.printf("    deleted SSH key %d.%n", key.id());
+
+        return Result.unitResult();
+    }
+
+    private static Result<Unit> tolerateAlreadyGone(Cause cause, SshKey key) {
+        if (isAlreadyGone(cause)) {
+            System.out.printf("    SSH key %d already gone — tolerated.%n", key.id());
+
+            return Result.unitResult();
+        }
+
+        System.err.printf("    WARN: failed to delete SSH key %d (%s): %s%n", key.id(), key.name(), cause.message());
+
+        return cause.result();
+    }
+
+    @SuppressWarnings("JBCT-PAT-01")
+    private static boolean isAlreadyGone(Cause cause) {
+        return switch (cause) {
+            case HetznerError.ApiError apiError -> apiError.statusCode() == 404 || "not_found".equalsIgnoreCase(apiError.code());
+            default -> false;
+        };
+    }
+
+    private static Result<Unit> finishSweep(int matchCount, List<String> failures) {
+        if (!failures.isEmpty()) {
+            System.err.printf("  SSH-key sweep: %d of %d deletion(s) failed.%n", failures.size(), matchCount);
+
+            return new SshKeySweepFailed(String.join("; ", failures)).result();
+        }
+
+        System.out.printf("  SSH-key sweep: %d cluster-scoped key(s) removed.%n", matchCount);
+
+        return Result.unitResult();
     }
 
     private static List<String> collectCleanupFailures(BootstrapState state,
@@ -319,6 +466,13 @@ sealed interface BootstrapCleanup {
         @Override
         public String message() {
             return "Cleanup completed with failures: " + detail;
+        }
+    }
+
+    record SshKeySweepFailed(String detail) implements Cause {
+        @Override
+        public String message() {
+            return "SSH-key sweep completed with failures: " + detail;
         }
     }
 

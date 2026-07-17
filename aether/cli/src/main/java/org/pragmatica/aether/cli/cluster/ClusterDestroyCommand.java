@@ -7,6 +7,7 @@ package org.pragmatica.aether.cli.cluster;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.Callable;
+import java.util.function.BiFunction;
 import java.util.function.Function;
 import java.util.regex.Pattern;
 
@@ -38,6 +39,12 @@ class ClusterDestroyCommand implements Callable<Integer> {
     static Function<String, org.pragmatica.lang.Option<BootstrapState>> stateLoader = BootstrapStatePersistence::load;
 
     static Function<BootstrapState, Result<Unit>> resourceCleaner = BootstrapCleanup::cleanup;
+
+    /// #481 — cluster-scoped ssh-key sweep seam, called AFTER the state-based cleanup so recorded keys
+    /// already deleted are tolerated. Deletes account keys named `aether-bootstrap-<cluster>-*` (the
+    /// delimiter boundary) that `resourceCleaner` misses (reused / unrecorded keys). Injectable like
+    /// `resourceCleaner`/`stateLoader` so tests exercise it without a real cloud call.
+    static BiFunction<BootstrapState, String, Result<Unit>> sshKeySweeper = BootstrapCleanup::sweepClusterSshKeys;
 
     @Option(names = "--yes", description = "Skip interactive confirmation")
     private boolean skipConfirmation;
@@ -156,6 +163,13 @@ class ClusterDestroyCommand implements Callable<Integer> {
     }
 
     private boolean runCleanup(BootstrapState state) {
+        var cleanupOk = runResourceCleanup(state);
+        var sweepOk = runSshKeySweep(state);
+
+        return cleanupOk && sweepOk;
+    }
+
+    private boolean runResourceCleanup(BootstrapState state) {
         if (state.createdResources().isEmpty()) {
             System.out.println("Bootstrap state has no created resources — nothing to clean up.");
 
@@ -169,6 +183,14 @@ class ClusterDestroyCommand implements Callable<Integer> {
                               .onFailure(c -> System.err.println("Resource cleanup failed: " + c.message()))
                               .onSuccess(_ -> System.out.println("Resource cleanup complete."))
                               .isSuccess();
+    }
+
+    private boolean runSshKeySweep(BootstrapState state) {
+        return sshKeySweeper.apply(state,
+                                   state.clusterName())
+                            .onFailure(c -> System.err.println("SSH-key sweep failed: " + c.message()))
+                            .onSuccess(_ -> System.out.println("SSH-key sweep complete."))
+                            .isSuccess();
     }
 
     private static boolean confirmDestruction(String clusterName) {

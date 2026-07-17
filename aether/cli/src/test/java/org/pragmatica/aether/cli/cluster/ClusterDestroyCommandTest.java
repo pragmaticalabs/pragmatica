@@ -24,6 +24,7 @@ import java.util.EnumMap;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.BiFunction;
 import java.util.function.Function;
 
 import picocli.CommandLine;
@@ -43,16 +44,21 @@ class ClusterDestroyCommandTest {
 
     private Function<BootstrapState, Result<Unit>> originalCleaner;
 
+    private BiFunction<BootstrapState, String, Result<Unit>> originalSweeper;
+
     @BeforeEach
     void saveStaticSeams() {
         originalLoader = ClusterDestroyCommand.stateLoader;
         originalCleaner = ClusterDestroyCommand.resourceCleaner;
+        originalSweeper = ClusterDestroyCommand.sshKeySweeper;
+        ClusterDestroyCommand.sshKeySweeper = (state, name) -> Result.unitResult();
     }
 
     @AfterEach
     void restoreStaticSeams() {
         ClusterDestroyCommand.stateLoader = originalLoader;
         ClusterDestroyCommand.resourceCleaner = originalCleaner;
+        ClusterDestroyCommand.sshKeySweeper = originalSweeper;
     }
 
     private static BootstrapState stateWithVms(int vmCount) {
@@ -175,6 +181,54 @@ class ClusterDestroyCommandTest {
 
             assertTrue(ok);
             assertEquals(CLUSTER_NAME, capturedName.get());
+        }
+
+        @Test
+        void destroy_invokesSshKeySweeper_afterStateCleanup() {
+            var sweepClusterName = new AtomicReference<String>();
+            ClusterDestroyCommand.stateLoader = name -> some(stateWithVms(2));
+            ClusterDestroyCommand.resourceCleaner = state -> Result.unitResult();
+            ClusterDestroyCommand.sshKeySweeper = (state, clusterName) -> {
+                sweepClusterName.set(clusterName);
+                return Result.unitResult();
+            };
+            var command = new ClusterDestroyCommand();
+
+            var ok = command.cleanupCloudResources(CLUSTER_NAME);
+
+            assertTrue(ok);
+            assertEquals(CLUSTER_NAME, sweepClusterName.get(),
+                         "sweeper must be invoked with the cluster name from the loaded bootstrap state");
+        }
+
+        @Test
+        void destroy_sweeperFailure_returnsFalseButDoesNotThrow() {
+            ClusterDestroyCommand.stateLoader = name -> some(stateWithVms(1));
+            ClusterDestroyCommand.resourceCleaner = state -> Result.unitResult();
+            ClusterDestroyCommand.sshKeySweeper = (state, clusterName) -> new TestCause("sweep api error").result();
+            var command = new ClusterDestroyCommand();
+
+            var ok = command.cleanupCloudResources(CLUSTER_NAME);
+
+            assertFalse(ok, "a failed ssh-key sweep must surface as cleanup failure");
+        }
+
+        @Test
+        void destroy_keepResourcesFlag_skipsSweep() {
+            var sweepCalls = new AtomicInteger(0);
+            ClusterDestroyCommand.stateLoader = name -> some(stateWithVms(3));
+            ClusterDestroyCommand.resourceCleaner = state -> Result.unitResult();
+            ClusterDestroyCommand.sshKeySweeper = (state, clusterName) -> {
+                sweepCalls.incrementAndGet();
+                return Result.unitResult();
+            };
+            var command = new ClusterDestroyCommand();
+            command.setKeepResources(true);
+
+            var ok = command.cleanupCloudResources(CLUSTER_NAME);
+
+            assertTrue(ok);
+            assertEquals(0, sweepCalls.get(), "--keep-resources must short-circuit before the sweeper runs");
         }
     }
 
