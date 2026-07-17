@@ -358,7 +358,7 @@ ExplainStmt     <- ExplainKW RestOfStatement
 CopyStmt        <- CopyKW RestOfStatement
 RefreshMatViewStmt <- RefreshKW MaterializedKW ViewKW RestOfStatement
 
-RestOfStatement <- (!';' .)*
+RestOfStatement <- (DollarString / BasicString / EscapeString / !';' .)*
 
 # ============================================================
 # Expressions
@@ -491,7 +491,7 @@ SignedNumericLiteral <- [+\-]? NumericLiteral
 StringLiteral   <- EscapeString / DollarString / BasicString
 BasicString     <- '\'' < ('\'' '\'' / [^'])* > '\''
 EscapeString    <- [eE] '\'' < ('\\' . / [^'])* > '\''
-DollarString    <- '$$' < (!'$$' .)* > '$$'
+DollarString    <- '$$' < (!'$$' .)* > '$$' / '$' $tag< [a-zA-Z_] [a-zA-Z0-9_]* > '$' < (!('$' $tag '$') .)* > '$' $tag '$'
 
 # ============================================================
 # Clause Keywords (not reserved but should not be consumed as aliases)

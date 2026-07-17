@@ -53937,55 +53937,135 @@ private Map<Class<? extends RuleId>,
             int beforeColumn0 = column;
             int zomIterPending0 = 0;
             if (tokenBoundaryDepth == 0) skipWhitespace();
-            CstParseResult zomElem0 = CstParseResult.successNoLoc(null, "");
-            int seqStartPos2 = pos;
-            int seqStartLine2 = line;
-            int seqStartColumn2 = column;
-            int seqPending2 = 0;
-            var seqChildren2 = new ArrayList<>(children);
-            boolean cut2 = false;
-            if (zomElem0.isSuccess()) {
-                int notStartPos3 = pos;
-                int notStartLine3 = line;
-                int notStartColumn3 = column;
-                var savedChildrenNot3 = new ArrayList<>(children);
-                var notElem3 = matchLiteralCst(";", false);
-                restoreLocationRaw(notStartPos3, notStartLine3, notStartColumn3);
+            CstParseResult zomElem0 = null;
+            int choiceStart2Pos = pos;
+            int choiceStart2Line = line;
+            int choiceStart2Column = column;
+            int choicePending2 = 0;
+            var savedChildren2 = new ArrayList<>(children);
+            if (pos < input.length()) {
+                char dispatchChar2 = input.charAt(pos);
+                switch (dispatchChar2) {
+                    case '$':
+                    {
+                        children.clear();
+                        children.addAll(savedChildren2);
+                        var alt2_0 = parse_DollarString();
+                        if (alt2_0.isSuccess() && alt2_0.node.isPresent()) {
+                            children.add(alt2_0.node.unwrap());
+                        }
+                        if (alt2_0.isSuccess()) {
+                            zomElem0 = alt2_0;
+                        } else if (alt2_0.isCutFailure()) {
+                            zomElem0 = alt2_0.asRegularFailure();
+                        } else {
+                            restoreLocationRaw(choiceStart2Pos, choiceStart2Line, choiceStart2Column);
+                        }
+                        break;
+                    }
+                    case '\'':
+                    {
+                        children.clear();
+                        children.addAll(savedChildren2);
+                        var alt2_1 = parse_BasicString();
+                        if (alt2_1.isSuccess() && alt2_1.node.isPresent()) {
+                            children.add(alt2_1.node.unwrap());
+                        }
+                        if (alt2_1.isSuccess()) {
+                            zomElem0 = alt2_1;
+                        } else if (alt2_1.isCutFailure()) {
+                            zomElem0 = alt2_1.asRegularFailure();
+                        } else {
+                            restoreLocationRaw(choiceStart2Pos, choiceStart2Line, choiceStart2Column);
+                        }
+                        break;
+                    }
+                    case 'E':
+                    case 'e':
+                    {
+                        children.clear();
+                        children.addAll(savedChildren2);
+                        var alt2_2 = parse_EscapeString();
+                        if (alt2_2.isSuccess() && alt2_2.node.isPresent()) {
+                            children.add(alt2_2.node.unwrap());
+                        }
+                        if (alt2_2.isSuccess()) {
+                            zomElem0 = alt2_2;
+                        } else if (alt2_2.isCutFailure()) {
+                            zomElem0 = alt2_2.asRegularFailure();
+                        } else {
+                            restoreLocationRaw(choiceStart2Pos, choiceStart2Line, choiceStart2Column);
+                        }
+                        break;
+                    }
+                }
+            }
+            if (zomElem0 == null) {
+                restoreLocationRaw(choiceStart2Pos, choiceStart2Line, choiceStart2Column);
                 children.clear();
-                children.addAll(savedChildrenNot3);
-                var elem2_0 = notElem3.isSuccess() ? CstParseResult.failure("not match") : CstParseResult.successNoLoc(null, "");
-                if (elem2_0.isCutFailure()) {
-                    restoreLocationRaw(seqStartPos2, seqStartLine2, seqStartColumn2);
+                children.addAll(savedChildren2);
+                CstParseResult alt2_3 = CstParseResult.successNoLoc(null, "");
+                int seqStartPos6 = pos;
+                int seqStartLine6 = line;
+                int seqStartColumn6 = column;
+                int seqPending6 = 0;
+                var seqChildren6 = new ArrayList<>(children);
+                boolean cut6 = false;
+                if (alt2_3.isSuccess()) {
+                    int notStartPos7 = pos;
+                    int notStartLine7 = line;
+                    int notStartColumn7 = column;
+                    var savedChildrenNot7 = new ArrayList<>(children);
+                    var notElem7 = matchLiteralCst(";", false);
+                    restoreLocationRaw(notStartPos7, notStartLine7, notStartColumn7);
                     children.clear();
-                    children.addAll(seqChildren2);
-                    zomElem0 = elem2_0;
-                } else if (elem2_0.isFailure()) {
-                    restoreLocationRaw(seqStartPos2, seqStartLine2, seqStartColumn2);
-                    children.clear();
-                    children.addAll(seqChildren2);
-                    zomElem0 = cut2 ? elem2_0.asCutFailure() : elem2_0;
+                    children.addAll(savedChildrenNot7);
+                    var elem6_0 = notElem7.isSuccess() ? CstParseResult.failure("not match") : CstParseResult.successNoLoc(null, "");
+                    if (elem6_0.isCutFailure()) {
+                        restoreLocationRaw(seqStartPos6, seqStartLine6, seqStartColumn6);
+                        children.clear();
+                        children.addAll(seqChildren6);
+                        alt2_3 = elem6_0;
+                    } else if (elem6_0.isFailure()) {
+                        restoreLocationRaw(seqStartPos6, seqStartLine6, seqStartColumn6);
+                        children.clear();
+                        children.addAll(seqChildren6);
+                        alt2_3 = cut6 ? elem6_0.asCutFailure() : elem6_0;
+                    }
+                }
+                if (alt2_3.isSuccess()) {
+                    if (tokenBoundaryDepth == 0) skipWhitespace();
+                    var elem6_1 = matchAnyCst();
+                    if (elem6_1.isSuccess() && elem6_1.node.isPresent()) {
+                        children.add(elem6_1.node.unwrap());
+                    }
+                    if (elem6_1.isCutFailure()) {
+                        restoreLocationRaw(seqStartPos6, seqStartLine6, seqStartColumn6);
+                        children.clear();
+                        children.addAll(seqChildren6);
+                        alt2_3 = elem6_1;
+                    } else if (elem6_1.isFailure()) {
+                        restoreLocationRaw(seqStartPos6, seqStartLine6, seqStartColumn6);
+                        children.clear();
+                        children.addAll(seqChildren6);
+                        alt2_3 = cut6 ? elem6_1.asCutFailure() : elem6_1;
+                    }
+                }
+                if (alt2_3.isSuccess()) {
+                    alt2_3 = CstParseResult.successNoLoc(null, substring(seqStartPos6, pos));
+                }
+                if (alt2_3.isSuccess()) {
+                    zomElem0 = alt2_3;
+                } else if (alt2_3.isCutFailure()) {
+                    zomElem0 = alt2_3.asRegularFailure();
+                } else {
+                    restoreLocationRaw(choiceStart2Pos, choiceStart2Line, choiceStart2Column);
                 }
             }
-            if (zomElem0.isSuccess()) {
-                if (tokenBoundaryDepth == 0) skipWhitespace();
-                var elem2_1 = matchAnyCst();
-                if (elem2_1.isSuccess() && elem2_1.node.isPresent()) {
-                    children.add(elem2_1.node.unwrap());
-                }
-                if (elem2_1.isCutFailure()) {
-                    restoreLocationRaw(seqStartPos2, seqStartLine2, seqStartColumn2);
-                    children.clear();
-                    children.addAll(seqChildren2);
-                    zomElem0 = elem2_1;
-                } else if (elem2_1.isFailure()) {
-                    restoreLocationRaw(seqStartPos2, seqStartLine2, seqStartColumn2);
-                    children.clear();
-                    children.addAll(seqChildren2);
-                    zomElem0 = cut2 ? elem2_1.asCutFailure() : elem2_1;
-                }
-            }
-            if (zomElem0.isSuccess()) {
-                zomElem0 = CstParseResult.successNoLoc(null, substring(seqStartPos2, pos));
+            if (zomElem0 == null) {
+                children.clear();
+                children.addAll(savedChildren2);
+                zomElem0 = CstParseResult.failure("one of alternatives");
             }
             if (zomElem0.isCutFailure()) {
                 result = zomElem0;
@@ -76398,11 +76478,6 @@ private Map<Class<? extends RuleId>,
         int startLine = line;
         int startColumn = column;
         
-        // Check cache at pre-whitespace position. Bug B fix:
-        // on a settled-success cache hit we must reproduce the first-parse
-        // trivia attribution — drain pending-leading, run skipWhitespace at
-        // the same pre-WS position, then jump pos to the cached body-end and
-        // attach the rebuilt leading trivia. Failure hits return as-is.
         long key = cacheKey(308, startOffset);
         if (cache != null) {
             var cached = cache.get(key);
@@ -76420,24 +76495,36 @@ private Map<Class<? extends RuleId>,
             }
         }
         
-        // Skip leading whitespace and combine with carried pending-leading.
         var carriedLeading = List.<Trivia>of();
         var localLeadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : skipWhitespace();
         var leadingTrivia = concatTrivia(carriedLeading, localLeadingTrivia);
         var children = new ArrayList<CstNode>();
         var __ruleName = RULE_DOLLAR_STRING;
         
-        CstParseResult result = CstParseResult.successNoLoc(null, "");
-        int seqStartPos0 = pos;
-        int seqStartLine0 = line;
-        int seqStartColumn0 = column;
-        int seqPending0 = 0;
-        var seqChildren0 = new ArrayList<>(children);
-        result = parse_DollarString_seq0_chunk0(children, seqStartPos0, seqStartLine0, seqStartColumn0, seqPending0, seqChildren0);
-        if (result.isSuccess()) result = parse_DollarString_seq0_chunk1(children, seqStartPos0, seqStartLine0, seqStartColumn0, seqPending0, seqChildren0);
-        if (result.isSuccess()) result = parse_DollarString_seq0_chunk2(children, seqStartPos0, seqStartLine0, seqStartColumn0, seqPending0, seqChildren0);
-        if (result.isSuccess()) {
-            result = CstParseResult.successNoLoc(null, substring(seqStartPos0, pos));
+        CstParseResult result = null;
+        int choiceStart0Pos = pos;
+        int choiceStart0Line = line;
+        int choiceStart0Column = column;
+        int choicePending0 = 0;
+        var savedChildren0 = new ArrayList<>(children);
+        if (pos < input.length()) {
+            char dispatchChar0 = input.charAt(pos);
+            switch (dispatchChar0) {
+                case '$':
+                {
+                    result = parse_DollarString_alt0(children, choiceStart0Pos, choiceStart0Line, choiceStart0Column, choicePending0, savedChildren0);
+                    if (!result.isSuccess() && !result.isCutFailure()) {
+                        result = parse_DollarString_alt1(children, choiceStart0Pos, choiceStart0Line, choiceStart0Column, choicePending0, savedChildren0);
+                    }
+                    if (result != null && result.isCutFailure()) result = result.asRegularFailure();
+                    break;
+                }
+            }
+        }
+        if (result == null) {
+            children.clear();
+            children.addAll(savedChildren0);
+            result = CstParseResult.failure("one of alternatives");
         }
         
         CstParseResult finalResult;
@@ -76459,6 +76546,64 @@ private Map<Class<? extends RuleId>,
         
         if (cache != null) cache.put(key, cacheableResult);
         return finalResult;
+    }
+
+    private CstParseResult parse_DollarString_alt0(ArrayList<CstNode> children, int choiceStartPos, int choiceStartLine, int choiceStartColumn, int choicePending, ArrayList<CstNode> childrenState) {
+        var __ruleName = RULE_DOLLAR_STRING;
+        children.clear();
+        children.addAll(childrenState);
+        CstParseResult alt0_0 = CstParseResult.successNoLoc(null, "");
+        int seqStartPos0 = pos;
+        int seqStartLine0 = line;
+        int seqStartColumn0 = column;
+        int seqPending0 = 0;
+        var seqChildren0 = new ArrayList<>(children);
+        alt0_0 = parse_DollarString_seq0_chunk0(children, seqStartPos0, seqStartLine0, seqStartColumn0, seqPending0, seqChildren0);
+        if (alt0_0.isSuccess()) alt0_0 = parse_DollarString_seq0_chunk1(children, seqStartPos0, seqStartLine0, seqStartColumn0, seqPending0, seqChildren0);
+        if (alt0_0.isSuccess()) alt0_0 = parse_DollarString_seq0_chunk2(children, seqStartPos0, seqStartLine0, seqStartColumn0, seqPending0, seqChildren0);
+        if (alt0_0.isSuccess()) {
+            alt0_0 = CstParseResult.successNoLoc(null, substring(seqStartPos0, pos));
+        }
+        if (alt0_0.isSuccess()) {
+            return alt0_0;
+        }
+        if (alt0_0.isCutFailure()) {
+            return alt0_0;
+        }
+        this.pos = choiceStartPos;
+        this.line = choiceStartLine;
+        this.column = choiceStartColumn;
+        return alt0_0;
+    }
+
+    private CstParseResult parse_DollarString_alt1(ArrayList<CstNode> children, int choiceStartPos, int choiceStartLine, int choiceStartColumn, int choicePending, ArrayList<CstNode> childrenState) {
+        var __ruleName = RULE_DOLLAR_STRING;
+        children.clear();
+        children.addAll(childrenState);
+        CstParseResult alt0_1 = CstParseResult.successNoLoc(null, "");
+        int seqStartPos0 = pos;
+        int seqStartLine0 = line;
+        int seqStartColumn0 = column;
+        int seqPending0 = 0;
+        var seqChildren0 = new ArrayList<>(children);
+        alt0_1 = parse_DollarString_seq1_chunk0(children, seqStartPos0, seqStartLine0, seqStartColumn0, seqPending0, seqChildren0);
+        if (alt0_1.isSuccess()) alt0_1 = parse_DollarString_seq1_chunk1(children, seqStartPos0, seqStartLine0, seqStartColumn0, seqPending0, seqChildren0);
+        if (alt0_1.isSuccess()) alt0_1 = parse_DollarString_seq1_chunk2(children, seqStartPos0, seqStartLine0, seqStartColumn0, seqPending0, seqChildren0);
+        if (alt0_1.isSuccess()) alt0_1 = parse_DollarString_seq1_chunk3(children, seqStartPos0, seqStartLine0, seqStartColumn0, seqPending0, seqChildren0);
+        if (alt0_1.isSuccess()) alt0_1 = parse_DollarString_seq1_chunk4(children, seqStartPos0, seqStartLine0, seqStartColumn0, seqPending0, seqChildren0);
+        if (alt0_1.isSuccess()) {
+            alt0_1 = CstParseResult.successNoLoc(null, substring(seqStartPos0, pos));
+        }
+        if (alt0_1.isSuccess()) {
+            return alt0_1;
+        }
+        if (alt0_1.isCutFailure()) {
+            return alt0_1;
+        }
+        this.pos = choiceStartPos;
+        this.line = choiceStartLine;
+        this.column = choiceStartColumn;
+        return alt0_1;
     }
 
     private CstParseResult parse_DollarString_seq0_chunk0(ArrayList<CstNode> children, int seqStartPos, int seqStartLine, int seqStartColumn, int seqPending, ArrayList<CstNode> seqChildren) {
@@ -76602,6 +76747,379 @@ private Map<Class<? extends RuleId>,
                         children.clear();
                 children.addAll(seqChildren);
                 result = cut ? elem_2.asCutFailure() : elem_2;
+            }
+        }
+        return result;
+    }
+
+    private CstParseResult parse_DollarString_seq1_chunk0(ArrayList<CstNode> children, int seqStartPos, int seqStartLine, int seqStartColumn, int seqPending, ArrayList<CstNode> seqChildren) {
+        var __ruleName = RULE_DOLLAR_STRING;
+        CstParseResult result = CstParseResult.successNoLoc(null, "");
+        boolean cut = false;
+        if (result.isSuccess()) {
+            if (tokenBoundaryDepth == 0) skipWhitespace();
+            var elem_0 = matchLiteralCst("$", false);
+            if (elem_0.isSuccess() && elem_0.node.isPresent()) {
+                children.add(elem_0.node.unwrap());
+            }
+            if (elem_0.isCutFailure()) {
+                restoreLocationRaw(seqStartPos, seqStartLine, seqStartColumn);
+                        children.clear();
+                children.addAll(seqChildren);
+                result = elem_0;
+            } else if (elem_0.isFailure()) {
+                restoreLocationRaw(seqStartPos, seqStartLine, seqStartColumn);
+                        children.clear();
+                children.addAll(seqChildren);
+                result = cut ? elem_0.asCutFailure() : elem_0;
+            }
+        }
+        return result;
+    }
+
+    private CstParseResult parse_DollarString_seq1_chunk1(ArrayList<CstNode> children, int seqStartPos, int seqStartLine, int seqStartColumn, int seqPending, ArrayList<CstNode> seqChildren) {
+        var __ruleName = RULE_DOLLAR_STRING;
+        CstParseResult result = CstParseResult.successNoLoc(null, "");
+        boolean cut = false;
+        if (result.isSuccess()) {
+            if (tokenBoundaryDepth == 0) skipWhitespace();
+            int capStartPos0 = pos;
+            CstParseResult capElem0 = CstParseResult.successNoLoc(null, "");
+            int seqStartPos1 = pos;
+            int seqStartLine1 = line;
+            int seqStartColumn1 = column;
+            int seqPending1 = 0;
+            var seqChildren1 = new ArrayList<>(children);
+            boolean cut1 = false;
+            if (capElem0.isSuccess()) {
+                if (tokenBoundaryDepth == 0) skipWhitespace();
+                var elem1_0 = matchCharClassCst("a-zA-Z_", false, false);
+                if (elem1_0.isSuccess() && elem1_0.node.isPresent()) {
+                    children.add(elem1_0.node.unwrap());
+                }
+                if (elem1_0.isCutFailure()) {
+                    restoreLocationRaw(seqStartPos1, seqStartLine1, seqStartColumn1);
+                    children.clear();
+                    children.addAll(seqChildren1);
+                    capElem0 = elem1_0;
+                } else if (elem1_0.isFailure()) {
+                    restoreLocationRaw(seqStartPos1, seqStartLine1, seqStartColumn1);
+                    children.clear();
+                    children.addAll(seqChildren1);
+                    capElem0 = cut1 ? elem1_0.asCutFailure() : elem1_0;
+                }
+            }
+            if (capElem0.isSuccess()) {
+                if (tokenBoundaryDepth == 0) skipWhitespace();
+                CstParseResult elem1_1 = CstParseResult.successNoLoc(null, "");
+                int zomStartPos3 = pos;
+                int zomStartLine3 = line;
+                int zomStartColumn3 = column;
+                var savedChildrenZom3 = new ArrayList<>(children);
+                children.clear();
+                while (true) {
+                    int beforePos3 = pos;
+                    int beforeLine3 = line;
+                    int beforeColumn3 = column;
+                    int zomIterPending3 = 0;
+                    if (tokenBoundaryDepth == 0) skipWhitespace();
+                    var zomElem3 = matchCharClassCst("a-zA-Z0-9_", false, false);
+                    if (zomElem3.isSuccess() && zomElem3.node.isPresent()) {
+                        children.add(zomElem3.node.unwrap());
+                    }
+                    if (zomElem3.isCutFailure()) {
+                        elem1_1 = zomElem3;
+                        break;
+                    }
+                    if (zomElem3.isFailure() || pos == beforePos3) {
+                        restoreLocationRaw(beforePos3, beforeLine3, beforeColumn3);
+                        break;
+                    }
+                }
+                if (!elem1_1.isCutFailure()) {
+                    var zomChildren3 = new ArrayList<>(children);
+                    children.clear();
+                    children.addAll(savedChildrenZom3);
+                    if (zomChildren3.size() == 1) {
+                        children.add(zomChildren3.getFirst());
+                    } else if (!zomChildren3.isEmpty()) {
+                        var zomSpan3 = new SourceSpan(zomStartLine3, zomStartColumn3, zomStartPos3, line, column, pos);
+                        children.add(new CstNode.NonTerminal(idGen.next(), zomSpan3, __ruleName, zomChildren3, List.of(), List.of()));
+                    }
+                    elem1_1 = CstParseResult.successNoLoc(null, substring(zomStartPos3, pos));
+                } else {
+                    children.clear();
+                    children.addAll(savedChildrenZom3);
+                }
+                if (elem1_1.isCutFailure()) {
+                    restoreLocationRaw(seqStartPos1, seqStartLine1, seqStartColumn1);
+                    children.clear();
+                    children.addAll(seqChildren1);
+                    capElem0 = elem1_1;
+                } else if (elem1_1.isFailure()) {
+                    restoreLocationRaw(seqStartPos1, seqStartLine1, seqStartColumn1);
+                    children.clear();
+                    children.addAll(seqChildren1);
+                    capElem0 = cut1 ? elem1_1.asCutFailure() : elem1_1;
+                }
+            }
+            if (capElem0.isSuccess()) {
+                capElem0 = CstParseResult.successNoLoc(null, substring(seqStartPos1, pos));
+            }
+            if (capElem0.isSuccess()) {
+                captures.put("tag", substring(capStartPos0, pos));
+            }
+            var elem_1 = capElem0;
+            if (elem_1.isCutFailure()) {
+                restoreLocationRaw(seqStartPos, seqStartLine, seqStartColumn);
+                        children.clear();
+                children.addAll(seqChildren);
+                result = elem_1;
+            } else if (elem_1.isFailure()) {
+                restoreLocationRaw(seqStartPos, seqStartLine, seqStartColumn);
+                        children.clear();
+                children.addAll(seqChildren);
+                result = cut ? elem_1.asCutFailure() : elem_1;
+            }
+        }
+        return result;
+    }
+
+    private CstParseResult parse_DollarString_seq1_chunk2(ArrayList<CstNode> children, int seqStartPos, int seqStartLine, int seqStartColumn, int seqPending, ArrayList<CstNode> seqChildren) {
+        var __ruleName = RULE_DOLLAR_STRING;
+        CstParseResult result = CstParseResult.successNoLoc(null, "");
+        boolean cut = false;
+        if (result.isSuccess()) {
+            if (tokenBoundaryDepth == 0) skipWhitespace();
+            var elem_2 = matchLiteralCst("$", false);
+            if (elem_2.isSuccess() && elem_2.node.isPresent()) {
+                children.add(elem_2.node.unwrap());
+            }
+            if (elem_2.isCutFailure()) {
+                restoreLocationRaw(seqStartPos, seqStartLine, seqStartColumn);
+                        children.clear();
+                children.addAll(seqChildren);
+                result = elem_2;
+            } else if (elem_2.isFailure()) {
+                restoreLocationRaw(seqStartPos, seqStartLine, seqStartColumn);
+                        children.clear();
+                children.addAll(seqChildren);
+                result = cut ? elem_2.asCutFailure() : elem_2;
+            }
+        }
+        return result;
+    }
+
+    private CstParseResult parse_DollarString_seq1_chunk3(ArrayList<CstNode> children, int seqStartPos, int seqStartLine, int seqStartColumn, int seqPending, ArrayList<CstNode> seqChildren) {
+        var __ruleName = RULE_DOLLAR_STRING;
+        CstParseResult result = CstParseResult.successNoLoc(null, "");
+        boolean cut = false;
+        if (result.isSuccess()) {
+            if (tokenBoundaryDepth == 0) skipWhitespace();
+            int tbStartPos0 = pos;
+            int tbStartLine0 = line;
+            int tbStartColumn0 = column;
+            tokenBoundaryDepth++;
+            var savedChildrenTb0 = new ArrayList<>(children);
+            CstParseResult tbElem0 = CstParseResult.successNoLoc(null, "");
+            int zomStartPos1 = pos;
+            int zomStartLine1 = line;
+            int zomStartColumn1 = column;
+            while (true) {
+                int beforePos1 = pos;
+                int beforeLine1 = line;
+                int beforeColumn1 = column;
+                int zomIterPending1 = 0;
+                if (tokenBoundaryDepth == 0) skipWhitespace();
+                CstParseResult zomElem1 = CstParseResult.successNoLoc(null, "");
+                int seqStartPos3 = pos;
+                int seqStartLine3 = line;
+                int seqStartColumn3 = column;
+                int seqPending3 = 0;
+                zomElem1 = parse_DollarString_seq2_chunk0(seqStartPos3, seqStartLine3, seqStartColumn3, seqPending3);
+                if (zomElem1.isSuccess()) zomElem1 = parse_DollarString_seq2_chunk1(seqStartPos3, seqStartLine3, seqStartColumn3, seqPending3);
+                if (zomElem1.isSuccess()) {
+                    zomElem1 = CstParseResult.successNoLoc(null, substring(seqStartPos3, pos));
+                }
+                if (zomElem1.isCutFailure()) {
+                    tbElem0 = zomElem1;
+                    break;
+                }
+                if (zomElem1.isFailure() || pos == beforePos1) {
+                    restoreLocationRaw(beforePos1, beforeLine1, beforeColumn1);
+                    break;
+                }
+            }
+            if (!tbElem0.isCutFailure()) {
+                tbElem0 = CstParseResult.successNoLoc(null, substring(zomStartPos1, pos));
+            }
+            tokenBoundaryDepth--;
+            children.clear();
+            children.addAll(savedChildrenTb0);
+            CstParseResult elem_3;
+            if (tbElem0.isSuccess()) {
+                var tbText0 = substringSpan(tbStartPos0, pos);
+                var tbSpan0 = new SourceSpan(tbStartLine0, tbStartColumn0, tbStartPos0, line, column, pos);
+                var tbNode0 = new CstNode.Token(idGen.next(), tbSpan0, __ruleName, tbText0, List.<Trivia>of(), List.of());
+                children.add(tbNode0);
+                elem_3 = CstParseResult.successNoLoc(tbNode0, tbText0);
+            } else {
+                elem_3 = tbElem0;
+            }
+            if (elem_3.isCutFailure()) {
+                restoreLocationRaw(seqStartPos, seqStartLine, seqStartColumn);
+                        children.clear();
+                children.addAll(seqChildren);
+                result = elem_3;
+            } else if (elem_3.isFailure()) {
+                restoreLocationRaw(seqStartPos, seqStartLine, seqStartColumn);
+                        children.clear();
+                children.addAll(seqChildren);
+                result = cut ? elem_3.asCutFailure() : elem_3;
+            }
+        }
+        return result;
+    }
+
+    private CstParseResult parse_DollarString_seq2_chunk0(int seqStartPos, int seqStartLine, int seqStartColumn, int seqPending) {
+        var __ruleName = RULE_DOLLAR_STRING;
+        CstParseResult result = CstParseResult.successNoLoc(null, "");
+        boolean cut = false;
+        if (result.isSuccess()) {
+            int notStartPos0 = pos;
+            int notStartLine0 = line;
+            int notStartColumn0 = column;
+            CstParseResult notElem0 = CstParseResult.successNoLoc(null, "");
+            int seqStartPos2 = pos;
+            int seqStartLine2 = line;
+            int seqStartColumn2 = column;
+            int seqPending2 = 0;
+            boolean cut2 = false;
+            if (notElem0.isSuccess()) {
+                if (tokenBoundaryDepth == 0) skipWhitespace();
+                var elem2_0 = matchLiteralCst("$", false);
+                if (elem2_0.isCutFailure()) {
+                    restoreLocationRaw(seqStartPos2, seqStartLine2, seqStartColumn2);
+                    notElem0 = elem2_0;
+                } else if (elem2_0.isFailure()) {
+                    restoreLocationRaw(seqStartPos2, seqStartLine2, seqStartColumn2);
+                    notElem0 = cut2 ? elem2_0.asCutFailure() : elem2_0;
+                }
+            }
+            if (notElem0.isSuccess()) {
+                if (tokenBoundaryDepth == 0) skipWhitespace();
+                var captured4 = captures.get("tag");
+                var elem2_1 = captured4 != null ? matchLiteralCst(captured4, false) : CstParseResult.failure("capture '");
+                if (elem2_1.isCutFailure()) {
+                    restoreLocationRaw(seqStartPos2, seqStartLine2, seqStartColumn2);
+                    notElem0 = elem2_1;
+                } else if (elem2_1.isFailure()) {
+                    restoreLocationRaw(seqStartPos2, seqStartLine2, seqStartColumn2);
+                    notElem0 = cut2 ? elem2_1.asCutFailure() : elem2_1;
+                }
+            }
+            if (notElem0.isSuccess()) {
+                if (tokenBoundaryDepth == 0) skipWhitespace();
+                var elem2_2 = matchLiteralCst("$", false);
+                if (elem2_2.isCutFailure()) {
+                    restoreLocationRaw(seqStartPos2, seqStartLine2, seqStartColumn2);
+                    notElem0 = elem2_2;
+                } else if (elem2_2.isFailure()) {
+                    restoreLocationRaw(seqStartPos2, seqStartLine2, seqStartColumn2);
+                    notElem0 = cut2 ? elem2_2.asCutFailure() : elem2_2;
+                }
+            }
+            if (notElem0.isSuccess()) {
+                notElem0 = CstParseResult.successNoLoc(null, substring(seqStartPos2, pos));
+            }
+            restoreLocationRaw(notStartPos0, notStartLine0, notStartColumn0);
+            var elem_0 = notElem0.isSuccess() ? CstParseResult.failure("not match") : CstParseResult.successNoLoc(null, "");
+            if (elem_0.isCutFailure()) {
+                restoreLocationRaw(seqStartPos, seqStartLine, seqStartColumn);
+                        result = elem_0;
+            } else if (elem_0.isFailure()) {
+                restoreLocationRaw(seqStartPos, seqStartLine, seqStartColumn);
+                        result = cut ? elem_0.asCutFailure() : elem_0;
+            }
+        }
+        return result;
+    }
+
+    private CstParseResult parse_DollarString_seq2_chunk1(int seqStartPos, int seqStartLine, int seqStartColumn, int seqPending) {
+        var __ruleName = RULE_DOLLAR_STRING;
+        CstParseResult result = CstParseResult.successNoLoc(null, "");
+        boolean cut = false;
+        if (result.isSuccess()) {
+            if (tokenBoundaryDepth == 0) skipWhitespace();
+            var elem_1 = matchAnyCst();
+            if (elem_1.isCutFailure()) {
+                restoreLocationRaw(seqStartPos, seqStartLine, seqStartColumn);
+                        result = elem_1;
+            } else if (elem_1.isFailure()) {
+                restoreLocationRaw(seqStartPos, seqStartLine, seqStartColumn);
+                        result = cut ? elem_1.asCutFailure() : elem_1;
+            }
+        }
+        return result;
+    }
+
+    private CstParseResult parse_DollarString_seq1_chunk4(ArrayList<CstNode> children, int seqStartPos, int seqStartLine, int seqStartColumn, int seqPending, ArrayList<CstNode> seqChildren) {
+        var __ruleName = RULE_DOLLAR_STRING;
+        CstParseResult result = CstParseResult.successNoLoc(null, "");
+        boolean cut = false;
+        if (result.isSuccess()) {
+            if (tokenBoundaryDepth == 0) skipWhitespace();
+            var elem_4 = matchLiteralCst("$", false);
+            if (elem_4.isSuccess() && elem_4.node.isPresent()) {
+                children.add(elem_4.node.unwrap());
+            }
+            if (elem_4.isCutFailure()) {
+                restoreLocationRaw(seqStartPos, seqStartLine, seqStartColumn);
+                        children.clear();
+                children.addAll(seqChildren);
+                result = elem_4;
+            } else if (elem_4.isFailure()) {
+                restoreLocationRaw(seqStartPos, seqStartLine, seqStartColumn);
+                        children.clear();
+                children.addAll(seqChildren);
+                result = cut ? elem_4.asCutFailure() : elem_4;
+            }
+        }
+        if (result.isSuccess()) {
+            if (tokenBoundaryDepth == 0) skipWhitespace();
+            var captured1 = captures.get("tag");
+            var elem_5 = captured1 != null ? matchLiteralCst(captured1, false) : CstParseResult.failure("capture '");
+            if (elem_5.isSuccess() && elem_5.node.isPresent()) {
+                children.add(elem_5.node.unwrap());
+            }
+            if (elem_5.isCutFailure()) {
+                restoreLocationRaw(seqStartPos, seqStartLine, seqStartColumn);
+                        children.clear();
+                children.addAll(seqChildren);
+                result = elem_5;
+            } else if (elem_5.isFailure()) {
+                restoreLocationRaw(seqStartPos, seqStartLine, seqStartColumn);
+                        children.clear();
+                children.addAll(seqChildren);
+                result = cut ? elem_5.asCutFailure() : elem_5;
+            }
+        }
+        if (result.isSuccess()) {
+            if (tokenBoundaryDepth == 0) skipWhitespace();
+            var elem_6 = matchLiteralCst("$", false);
+            if (elem_6.isSuccess() && elem_6.node.isPresent()) {
+                children.add(elem_6.node.unwrap());
+            }
+            if (elem_6.isCutFailure()) {
+                restoreLocationRaw(seqStartPos, seqStartLine, seqStartColumn);
+                        children.clear();
+                children.addAll(seqChildren);
+                result = elem_6;
+            } else if (elem_6.isFailure()) {
+                restoreLocationRaw(seqStartPos, seqStartLine, seqStartColumn);
+                        children.clear();
+                children.addAll(seqChildren);
+                result = cut ? elem_6.asCutFailure() : elem_6;
             }
         }
         return result;
