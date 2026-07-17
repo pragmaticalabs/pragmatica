@@ -598,6 +598,7 @@ sealed interface BootstrapPhaseDeploy {
             var result = NodeConfigBuilder.compose(ctx,
                                                    source,
                                                    nodeIndex,
+                                                   NodeRole.CORE,
                                                    Option.empty(),
                                                    Option.some(clusterSecret))
                                           .flatMap(doc -> deploySshNode(node,
@@ -719,8 +720,9 @@ sealed interface BootstrapPhaseDeploy {
     static Result<TomlDocument> composeNodeConfig(BootstrapContext ctx,
                                                   SourceProfile source,
                                                   int nodeIndex,
+                                                  NodeRole role,
                                                   Option<String> dockerGid,
                                                   Option<String> clusterSecret) {
-        return NodeConfigBuilder.compose(ctx, source, nodeIndex, dockerGid, clusterSecret);
+        return NodeConfigBuilder.compose(ctx, source, nodeIndex, role, dockerGid, clusterSecret);
     }
 }

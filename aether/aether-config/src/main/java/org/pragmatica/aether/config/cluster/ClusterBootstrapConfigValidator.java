@@ -260,11 +260,26 @@ public final class ClusterBootstrapConfigValidator {
         checkSpotProviderSupport(name, source, errors);
     }
 
+    /// Providers WITHOUT an implemented spot/preemptible arm reject a `[source.<provider>.spot]`
+    /// sub-table loudly (W10). Post-W1 ground truth: only AWS has a real spot arm (its `createFrom`
+    /// attaches EC2 `InstanceMarketOptions`); the others reject SPOT at `createFrom`. AWS is therefore
+    /// ABSENT from this map (a spot sub-table is allowed only on aws sources today). This map is the
+    /// single place to extend: when a GCP/Azure spot arm lands, remove that provider's entry.
+    private static final Map<CloudProviderName, String> SPOT_UNSUPPORTED_REASONS = Map.of(CloudProviderName.HETZNER,
+                                                                                          "Provider 'hetzner' does not support spot/preemptible",
+                                                                                          CloudProviderName.GCP,
+                                                                                          "Provider 'gcp' spot (provisioningModel=SPOT) provisioning is not yet implemented on this client",
+                                                                                          CloudProviderName.AZURE,
+                                                                                          "Provider 'azure' spot (priority=Spot) provisioning is not yet implemented on this client");
+
     private static void checkSpotProviderSupport(String name, SourceProfile source, List<String> errors) {
         source.provider()
-              .filter(provider -> provider == CloudProviderName.HETZNER)
-              .onPresent(provider -> errors.add("PF-16: Provider 'hetzner' does not support spot/preemptible on source '" + name
-                                               + "'"));
+              .flatMap(ClusterBootstrapConfigValidator::spotUnsupportedReason)
+              .onPresent(reason -> errors.add("PF-16: " + reason + " on source '" + name + "'"));
+    }
+
+    private static Option<String> spotUnsupportedReason(CloudProviderName provider) {
+        return Option.option(SPOT_UNSUPPORTED_REASONS.get(provider));
     }
 
     private static void validateElectedLbRestriction(String name, SourceProfile source, List<String> errors) {

@@ -27,11 +27,13 @@ public sealed interface ReplacementNodeConfigComposer {
 
     /// Compose the replacement node config for the cloud source backing the given role. The
     /// `clusterSecret` is emitted into the cloud `tls.cluster_secret` section (when present) the
-    /// same way the bootstrap path does.
+    /// same way the bootstrap path does. Defaults the node role to [NodeRole#CORE] (the historical
+    /// core-only behavior); callers auto-healing a specific role use the role-aware overload so the
+    /// overlay's tier-2 `[cloud.compute] image` reflects THAT role.
     static Result<TomlDocument> compose(ClusterBootstrapConfig config,
                                         SourceProfile source,
                                         Option<String> clusterSecret) {
-        return compose(config, source, clusterSecret, List.of());
+        return compose(config, source, NodeRole.CORE, clusterSecret, List.of());
     }
 
     /// #442 — `sshKeyIds` are the operator SSH key ids the LEADER itself was provisioned with (read
@@ -40,8 +42,13 @@ public sealed interface ReplacementNodeConfigComposer {
     /// from config — extending the bootstrap-seeded inheritance across replacement generations
     /// without persisting the ids in the KV cluster config. Empty degrades to the prior behavior
     /// (no `ssh_key_ids`; the provider's name-prefix fallback then applies).
+    ///
+    /// RFC-0016 W2 — `role` is the replacement's intended role (from the CTM's `intendedRole`).
+    /// Threaded into the overlay so tier-2 `[cloud.compute] image` carries the node's OWN role image:
+    /// a WORKER/SPOT replacement re-provisions from its role's snapshot, never the core's.
     static Result<TomlDocument> compose(ClusterBootstrapConfig config,
                                         SourceProfile source,
+                                        NodeRole role,
                                         Option<String> clusterSecret,
                                         List<Long> sshKeyIds) {
         var overlay = BootstrapOverlayGenerator.overlay(config,
@@ -50,6 +57,7 @@ public sealed interface ReplacementNodeConfigComposer {
                                                         Option.empty(),
                                                         Option.empty(),
                                                         clusterSecret,
+                                                        role,
                                                         sshKeyIds);
 
         return Result.all(DefaultNodeConfig.globalDefault(),

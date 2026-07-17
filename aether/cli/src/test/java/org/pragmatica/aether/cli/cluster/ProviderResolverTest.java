@@ -10,7 +10,6 @@ import org.pragmatica.aether.config.cluster.ClusterBootstrapConfigParser;
 
 import java.util.List;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 
 
@@ -50,17 +49,21 @@ class ProviderResolverTest {
             """;
 
     @Test
-    void buildCloudConfig_roleImagePresent_computeMapCarriesImage() {
-        // #459 seed path — the CORE role's [source...] image must be threaded into the resolved
-        // cloud config's [cloud.compute] image so the bootstrap-time provider's config.image() boots
-        // from the operator's prepared snapshot instead of the provider's hardcoded default.
+    void buildCloudConfig_roleImagePresent_computeMapStillOmitsImage() {
+        // RFC-0016 W2 — MECHANICAL UPDATE of a #459 test that pinned the interim core-stamps-all
+        // mechanism. buildCloudConfig NO LONGER stamps [cloud.compute] image, even when the CORE role
+        // sets one: the per-role VM image is threaded as tier-1 ProvisionSpec.imageId instead (see
+        // BootstrapPhaseProvision.buildCloudProvisionSpec). Stamping the core image here forced every
+        // role onto the core's image (the bug W2 removes), so the correct post-W2 expectation is that
+        // the compute map carries no image at all.
         var config = ClusterBootstrapConfigParser.parse(CLOUD_WITH_IMAGE).unwrap();
         var source = config.sources().get("eu-1");
 
         var cloudConfig = ProviderResolver.buildCloudConfig("hetzner", source, List.of(), "");
 
-        assertEquals("snapshot-174523891", cloudConfig.compute().get("image"),
-                     "cloud.compute.image must come from the CORE role's [source...] image");
+        assertFalse(cloudConfig.compute().containsKey("image"),
+                    "buildCloudConfig must NOT stamp [cloud.compute] image post-W2 — the per-role image "
+                    + "is threaded via ProvisionSpec.imageId (tier-1), not the provider compute map");
     }
 
     @Test

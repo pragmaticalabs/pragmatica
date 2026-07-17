@@ -31,8 +31,9 @@ public interface BootstrapOverlayGenerator {
                                 int nodeIndex,
                                 Option<String> apiKey,
                                 Option<String> dockerGid,
-                                Option<String> clusterSecret) {
-        return overlay(config, source, nodeIndex, apiKey, dockerGid, clusterSecret, List.of());
+                                Option<String> clusterSecret,
+                                NodeRole role) {
+        return overlay(config, source, nodeIndex, apiKey, dockerGid, clusterSecret, role, List.of());
     }
 
     /// #442 — `sshKeyIds` carries the operator SSH key ids resolved for the source's cloud provider
@@ -41,19 +42,24 @@ public interface BootstrapOverlayGenerator {
     /// node's runtime config carries them and a leader provisioning a replacement resolves keys from
     /// config (no API lookup) — closing the PAM wall on keyless replacements. Empty for non-cloud
     /// sources and when no keys were resolved: the field is then omitted.
+    ///
+    /// RFC-0016 W2 — `role` selects which role's `image` is rendered into `[cloud.compute] image`
+    /// (via [#roleImage]): a worker node's overlay carries the worker role's image, a core node's the
+    /// core role's — no cross-role fallback.
     static TomlDocument overlay(ClusterBootstrapConfig config,
                                 SourceProfile source,
                                 int nodeIndex,
                                 Option<String> apiKey,
                                 Option<String> dockerGid,
                                 Option<String> clusterSecret,
+                                NodeRole role,
                                 List<Long> sshKeyIds) {
         var fixed = Stream.of(Option.some(clusterSection(config)),
                               Option.some(clusterPortsSection(config)),
                               cloudSection(source),
                               cloudCredentialsSection(source),
                               cloudDiscoverySection(config, source),
-                              sourceSpecificSection(config, source, nodeIndex, apiKey, dockerGid, sshKeyIds),
+                              sourceSpecificSection(config, source, nodeIndex, apiKey, dockerGid, sshKeyIds, role),
                               tlsSection(source, clusterSecret))
                           .flatMap(Option::stream);
         var databases = databaseSections(source).stream();
@@ -96,10 +102,11 @@ public interface BootstrapOverlayGenerator {
                                                          int nodeIndex,
                                                          Option<String> apiKey,
                                                          Option<String> dockerGid,
-                                                         List<Long> sshKeyIds) {
+                                                         List<Long> sshKeyIds,
+                                                         NodeRole role) {
         return switch (source.type()) {
             case DOCKER -> Option.some(dockerComputeSection(config, nodeIndex, apiKey, dockerGid));
-            case CLOUD -> Option.some(cloudComputeSection(source, sshKeyIds));
+            case CLOUD -> Option.some(cloudComputeSection(source, sshKeyIds, role));
             case SSH, FORGE -> Option.empty();
         };
     }
@@ -121,12 +128,12 @@ public interface BootstrapOverlayGenerator {
         return Section.section("cloud.compute", values);
     }
 
-    private static Section cloudComputeSection(SourceProfile source, List<Long> sshKeyIds) {
+    private static Section cloudComputeSection(SourceProfile source, List<Long> sshKeyIds, NodeRole role) {
         var values = new LinkedHashMap<String, Object>();
 
         source.region().onPresent(region -> values.put("region", region));
         coreInstanceType(source).onPresent(serverType -> values.put("server_type", serverType));
-        coreImage(source).onPresent(image -> values.put("image", image));
+        roleImage(source, role).onPresent(image -> values.put("image", image));
         if (!sshKeyIds.isEmpty()) {
             values.put("ssh_key_ids", joinLongs(sshKeyIds));
         }
@@ -180,15 +187,16 @@ public interface BootstrapOverlayGenerator {
         return Option.option(source.roles().get(NodeRole.CORE)).flatMap(RoleSubTable::instanceType);
     }
 
-    /// #459 — the source's core-role `image` (VM boot image / snapshot id), rendered into each node's
-    /// runtime `[cloud.compute] image` so a running leader's `config.image()` carries it and both
-    /// bootstrap seeds AND CTM auto-heal replacements boot from the operator's prepared snapshot. The
-    /// source profile is persisted in the KV cluster config, so a replacement re-parses the same image
-    /// and inherits it via this overlay — no per-generation threading needed (the image is spec-level,
-    /// unlike the runtime-resolved `ssh_key_ids`). Absent for roles with no `image`; the field is then
-    /// omitted and the provider's loud default applies.
-    private static Option<String> coreImage(SourceProfile source) {
-        return Option.option(source.roles().get(NodeRole.CORE)).flatMap(RoleSubTable::image);
+    /// #459 / RFC-0016 W2 — the node's OWN role `image` (VM boot image / snapshot id), rendered into
+    /// each node's runtime `[cloud.compute] image` so a running leader's `config.image()` carries the
+    /// image for ITS role and both bootstrap seeds AND CTM auto-heal replacements boot from the
+    /// operator's prepared snapshot for that role. The source profile is persisted in the KV cluster
+    /// config, so a replacement re-parses the same image and inherits it via this overlay — no
+    /// per-generation threading needed (the image is spec-level, unlike the runtime-resolved
+    /// `ssh_key_ids`). NO cross-role fallback: a role with no `image` renders no `[cloud.compute]
+    /// image` (the field is omitted and the provider's loud default applies), never a sibling's image.
+    private static Option<String> roleImage(SourceProfile source, NodeRole role) {
+        return Option.option(source.roles().get(role)).flatMap(RoleSubTable::image);
     }
 
     private static Option<Section> tlsSection(SourceProfile source, Option<String> clusterSecret) {

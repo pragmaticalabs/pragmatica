@@ -60,6 +60,21 @@ class ClusterBootstrapConfigValidatorTest {
                                       infrastructureConfig(NetworkingType.MANUAL), defaultOperationsConfig());
     }
 
+    private static ClusterBootstrapConfig cloudConfigWithSpot(CloudProviderName provider) {
+        var runtime = runtimeProfile("prod", RuntimeType.CONTAINER, some("aether:latest"), none());
+        var coreRole = roleSubTable(NodeRole.CORE, some(3), none(), some("cx41"), "prod");
+        var spotRole = roleSubTable(NodeRole.SPOT, some(2), none(), some("cx31"), "prod");
+        var source = sourceProfile("cloud-src", SourceType.CLOUD, some(provider),
+                                   some("key"), some("eu-central"), none(), none(), none(), none(),
+                                   LoadBalancerMode.EXTERNAL, List.of("10.0.0.1"), none(), Map.of(),
+                                   Map.of(NodeRole.CORE, coreRole, NodeRole.SPOT, spotRole), List.of());
+
+        return clusterBootstrapConfig("1.0.0", clusterIdentity("production", "1.0.0").unwrap(),
+                                      defaultCoreTopology(), Map.of("cloud-src", source),
+                                      Map.of("prod", runtime),
+                                      infrastructureConfig(NetworkingType.MANUAL), defaultOperationsConfig());
+    }
+
     @Nested
     class HappyPath {
 
@@ -224,6 +239,42 @@ class ClusterBootstrapConfigValidatorTest {
             validate(config)
                 .onSuccess(v -> Assertions.fail("Expected failure"))
                 .onFailure(cause -> assertThat(cause.message()).contains("PF-15"));
+        }
+
+        @Test
+        void validate_spotOnAwsSource_succeeds() {
+            // W10: AWS has a real spot arm (createFrom attaches EC2 InstanceMarketOptions), so a
+            // [source.aws.spot] sub-table is the one provider allowed to carry spot today.
+            validate(cloudConfigWithSpot(CloudProviderName.AWS))
+                .onFailure(cause -> Assertions.fail(cause.message()))
+                .onSuccess(config -> assertThat(config.cluster().name()).isEqualTo("production"));
+        }
+
+        @Test
+        void validate_spotOnHetznerSource_returnsPf16() {
+            validate(cloudConfigWithSpot(CloudProviderName.HETZNER))
+                .onSuccess(v -> Assertions.fail("Expected failure"))
+                .onFailure(cause -> assertThat(cause.message()).contains("PF-16")
+                                                              .contains("hetzner")
+                                                              .contains("does not support spot"));
+        }
+
+        @Test
+        void validate_spotOnGcpSource_returnsPf16() {
+            validate(cloudConfigWithSpot(CloudProviderName.GCP))
+                .onSuccess(v -> Assertions.fail("Expected failure"))
+                .onFailure(cause -> assertThat(cause.message()).contains("PF-16")
+                                                              .contains("gcp")
+                                                              .contains("provisioningModel=SPOT"));
+        }
+
+        @Test
+        void validate_spotOnAzureSource_returnsPf16() {
+            validate(cloudConfigWithSpot(CloudProviderName.AZURE))
+                .onSuccess(v -> Assertions.fail("Expected failure"))
+                .onFailure(cause -> assertThat(cause.message()).contains("PF-16")
+                                                              .contains("azure")
+                                                              .contains("priority=Spot"));
         }
 
         @Test

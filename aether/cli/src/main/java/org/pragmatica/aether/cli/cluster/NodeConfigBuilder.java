@@ -9,6 +9,7 @@ import org.pragmatica.aether.config.cluster.BootstrapOverlayGenerator;
 import org.pragmatica.aether.config.cluster.CloudProviderName;
 import org.pragmatica.aether.config.cluster.DefaultNodeConfig;
 import org.pragmatica.aether.config.cluster.NodeConfigComposer;
+import org.pragmatica.aether.config.cluster.NodeRole;
 import org.pragmatica.aether.config.cluster.SourceProfile;
 import org.pragmatica.config.toml.TomlDocument;
 import org.pragmatica.lang.Option;
@@ -22,6 +23,7 @@ sealed interface NodeConfigBuilder {
     static Result<TomlDocument> compose(BootstrapContext ctx,
                                         SourceProfile source,
                                         int nodeIndex,
+                                        NodeRole role,
                                         Option<String> dockerGid,
                                         Option<String> clusterSecret) {
         var overlay = BootstrapOverlayGenerator.overlay(ctx.config(),
@@ -30,6 +32,7 @@ sealed interface NodeConfigBuilder {
                                                         ctx.apiKey(),
                                                         dockerGid,
                                                         clusterSecret,
+                                                        role,
                                                         ctx.sshKeyIdsFor(providerName(source)));
 
         return Result.all(DefaultNodeConfig.globalDefault(),

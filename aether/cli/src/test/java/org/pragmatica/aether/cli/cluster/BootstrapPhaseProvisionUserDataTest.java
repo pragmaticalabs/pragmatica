@@ -65,6 +65,39 @@ class BootstrapPhaseProvisionUserDataTest {
                                            List.of());
     }
 
+    /// RFC-0016 W2 — a cloud source whose CORE role sets NO image but whose WORKER role carries its
+    /// own `image`, so the seed spec's tier-1 imageId can be asserted per role (worker → its image,
+    /// core → absent, no cross-role fallback).
+    private static SourceProfile cloudSourceWithPerRoleImages() {
+        return SourceProfile.sourceProfile("eu-1",
+                                           SourceType.CLOUD,
+                                           Option.some(CloudProviderName.HETZNER),
+                                           Option.some("dummy-token"),
+                                           Option.some("eu-central"),
+                                           Option.empty(),
+                                           Option.empty(),
+                                           Option.empty(),
+                                           Option.empty(),
+                                           LoadBalancerMode.NONE,
+                                           List.of(),
+                                           Option.empty(),
+                                           Map.of(),
+                                           Map.of(NodeRole.CORE,
+                                                  RoleSubTable.roleSubTable(NodeRole.CORE,
+                                                                            Option.some(1),
+                                                                            Option.empty(),
+                                                                            Option.empty(),
+                                                                            "default"),
+                                                  NodeRole.WORKER,
+                                                  RoleSubTable.roleSubTable(NodeRole.WORKER,
+                                                                            Option.some(1),
+                                                                            Option.empty(),
+                                                                            Option.empty(),
+                                                                            Option.some("worker-snap-99"),
+                                                                            "default")),
+                                           List.of());
+    }
+
     private static ClusterBootstrapConfig configWithSource(SourceProfile source) {
         return ClusterBootstrapConfig.clusterBootstrapConfig("1.0.0",
                                                              ClusterIdentity.clusterIdentity("prod", "1.0.0").unwrap(),
@@ -271,11 +304,46 @@ class BootstrapPhaseProvisionUserDataTest {
                    "PEERS env var still exported so the Dockerfile entrypoint can fold it");
     }
 
+    @Test
+    void buildCloudProvisionSpec_workerRoleWithOwnImage_specImageIsWorkerImage() {
+        // RFC-0016 W2 tier-1 — a WORKER role with its own image yields a spec whose imageId is the
+        // worker's image, so the seed VM boots from the worker's snapshot (not the core's, not empty).
+        var source = cloudSourceWithPerRoleImages();
+        var ctx = baseContext(configWithSource(source));
+
+        var spec = invokeBuildCloudProvisionSpec(ctx, source, NodeRole.WORKER, "eu-1-worker-0", 0);
+
+        assertEquals("worker-snap-99", spec.imageId().or(""),
+                     "spec.imageId must be the WORKER role's own image (tier-1 per-role)");
+    }
+
+    @Test
+    void buildCloudProvisionSpec_coreRoleWithoutImage_specImageAbsent_noSiblingFallback() {
+        // RFC-0016 W2 tier-1, no cross-role fallback — the CORE role sets no image, so its spec carries
+        // NO imageId even though the worker sibling declares one; resolution falls to tier-2 then the
+        // loud default rather than inheriting the worker's snapshot.
+        var source = cloudSourceWithPerRoleImages();
+        var ctx = baseContext(configWithSource(source));
+
+        var spec = invokeBuildCloudProvisionSpec(ctx, source, NodeRole.CORE, "eu-1-core-0", 0);
+
+        assertTrue(spec.imageId().isEmpty(),
+                   "spec.imageId must be absent for a role with no image, never the sibling worker's");
+    }
+
     /// Reflective indirection because BootstrapPhaseProvision keeps these helpers
     /// package-private/private. We exercise them through Java reflection rather
     /// than widening visibility just for tests.
     private static ProvisionSpec invokeBuildCloudProvisionSpec(BootstrapContext ctx,
                                                                 SourceProfile source,
+                                                                String nodeId,
+                                                                int nodeIndex) {
+        return invokeBuildCloudProvisionSpec(ctx, source, NodeRole.CORE, nodeId, nodeIndex);
+    }
+
+    private static ProvisionSpec invokeBuildCloudProvisionSpec(BootstrapContext ctx,
+                                                                SourceProfile source,
+                                                                NodeRole role,
                                                                 String nodeId,
                                                                 int nodeIndex) {
         try {
@@ -293,7 +361,7 @@ class BootstrapPhaseProvisionUserDataTest {
                                                                                     ctx,
                                                                                     "eu-1",
                                                                                     source,
-                                                                                    NodeRole.CORE,
+                                                                                    role,
                                                                                     nodeId,
                                                                                     nodeIndex,
                                                                                     "prod");

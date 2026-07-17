@@ -145,7 +145,11 @@ public final class ProviderResolver {
 
     /// Package-private (not private) so `ProviderResolverTest` can assert the resolved compute map
     /// directly — the public `resolveCloudCompute` returns an opaque [ComputeProvider], hiding the
-    /// `[cloud.compute]` map this method threads `server_type`/`image`/`ssh_key_ids` into.
+    /// `[cloud.compute]` map this method threads `server_type`/`ssh_key_ids` into.
+    ///
+    /// RFC-0016 W2 — no `image` is stamped here: the per-role VM image is threaded as tier-1
+    /// `ProvisionSpec.imageId` (see `BootstrapPhaseProvision.buildCloudProvisionSpec`), so a role
+    /// without its own image never inherits the core role's (which core-stamps-all did).
     static CloudConfig buildCloudConfig(String providerName,
                                         SourceProfile source,
                                         List<Long> sshKeyIds,
@@ -163,7 +167,6 @@ public final class ProviderResolver {
         source.region().onPresent(r -> compute.put("region", r));
         source.zone().onPresent(z -> compute.put("zone", z));
         coreInstanceType(source).onPresent(t -> compute.put("server_type", t));
-        coreImage(source).onPresent(i -> compute.put("image", i));
         if (!sshKeyIds.isEmpty()) {
             compute.put("ssh_key_ids", joinLongs(sshKeyIds));
         }
@@ -193,15 +196,6 @@ public final class ProviderResolver {
     /// each node's runtime config), so the bootstrap-time provider and a running leader agree.
     private static Option<String> coreInstanceType(SourceProfile source) {
         return Option.option(source.roles().get(NodeRole.CORE)).flatMap(RoleSubTable::instanceType);
-    }
-
-    /// #459 — the source's core-role `image` (VM boot image / snapshot id), threaded into the
-    /// provider's `[cloud.compute] image` so seed provisioning boots from the operator's prepared
-    /// snapshot instead of the provider's hardcoded default. Mirrors `coreInstanceType` and
-    /// `BootstrapOverlayGenerator.coreImage`, so the bootstrap-time provider and a running leader
-    /// agree on the image. Absent for roles with no `image` — the provider's loud default then wins.
-    private static Option<String> coreImage(SourceProfile source) {
-        return Option.option(source.roles().get(NodeRole.CORE)).flatMap(RoleSubTable::image);
     }
 
     private static CloudConfig dockerCloudConfig() {

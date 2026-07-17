@@ -91,10 +91,13 @@ to the hardcoded default OS image. Precedence: role-specific `[source…] image`
 `[cloud.compute] image` > loud default. A Hetzner image id or a name
 (`ubuntu-22.04`) are both accepted in the same field.
 
-> **Interim, until RFC-0016 W2 (epic #463):** the **core role's `image` stamps all roles** —
-> a per-role image override is not yet honored, so set the snapshot on the
-> source's `core` role and every provisioned node (core and worker) boots from
-> it. Per-role snapshot layouts come with W2.
+> **Per-role images (RFC-0016 W2):** each role boots from **its own `image`** — a
+> `[source.<provider>.worker] image` provisions workers from that snapshot while
+> `[source.<provider>.core] image` provisions core nodes from theirs, with no
+> implicit cross-role fallback. A role that sets no `image` resolves via
+> `[cloud.compute] image` then the loud default. This holds on both the bootstrap
+> seed path and CTM auto-heal replacements (each node's overlay carries its own
+> role's image).
 
 For tests, the easier path is the env-var override exposed by
 `run-tests.sh` — see the test-framework section below.

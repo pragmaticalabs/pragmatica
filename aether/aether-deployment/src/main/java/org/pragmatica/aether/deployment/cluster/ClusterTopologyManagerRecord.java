@@ -680,6 +680,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                             NodeRole intendedRole) {
         return ReplacementNodeConfigComposer.compose(config,
                                                      source,
+                                                     intendedRole,
                                                      clusterSecretFromEnv(),
                                                      leaderSshKeyIds())
                                             .option()

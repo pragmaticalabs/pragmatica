@@ -8,6 +8,7 @@ package org.pragmatica.aether.cli.cluster;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.config.cluster.BootstrapOverlayGenerator;
 import org.pragmatica.aether.config.cluster.ClusterBootstrapConfigParser;
+import org.pragmatica.aether.config.cluster.NodeRole;
 
 import java.util.List;
 
@@ -66,7 +67,8 @@ class BootstrapOverlayGeneratorTest {
                                                     0,
                                                     some("api-key-xyz"),
                                                     some("999"),
-                                                    empty());
+                                                    empty(),
+                                                    NodeRole.CORE);
 
         assertEquals("test-cluster", doc.getString("cluster", "name").unwrap());
         assertEquals("api-key-xyz", doc.getString("cloud.compute", "api_key").unwrap());
@@ -87,7 +89,8 @@ class BootstrapOverlayGeneratorTest {
                                                     0,
                                                     empty(),
                                                     empty(),
-                                                    empty());
+                                                    empty(),
+                                                    NodeRole.CORE);
 
         assertEquals(5160, doc.getInt("cluster.ports", "management").unwrap(),
                      "cluster.ports.management must surface operator port so Main.parseManagementPort " +
@@ -109,7 +112,8 @@ class BootstrapOverlayGeneratorTest {
                                                     0,
                                                     empty(),
                                                     empty(),
-                                                    some("seed-secret"));
+                                                    some("seed-secret"),
+                                                    NodeRole.CORE);
 
         assertFalse(doc.hasSection("node"),
                     "[node] block must NOT be emitted — Main never reads it and we'd be lying about schema");
@@ -127,7 +131,8 @@ class BootstrapOverlayGeneratorTest {
                                                     0,
                                                     empty(),
                                                     empty(),
-                                                    some("seed-secret"));
+                                                    some("seed-secret"),
+                                                    NodeRole.CORE);
 
         assertTrue(doc.getString("cluster", "peers").isEmpty(),
                    "[cluster].peers must NOT be emitted — Main has no such schema field");
@@ -143,7 +148,8 @@ class BootstrapOverlayGeneratorTest {
                                                     1,
                                                     empty(),
                                                     empty(),
-                                                    empty());
+                                                    empty(),
+                                                    NodeRole.CORE);
 
         assertTrue(doc.getString("cloud.compute", "api_key").isEmpty());
         assertTrue(doc.getString("cloud.compute", "docker_gid").isEmpty());
@@ -160,7 +166,8 @@ class BootstrapOverlayGeneratorTest {
                                                     0,
                                                     empty(),
                                                     empty(),
-                                                    some("seed-secret"));
+                                                    some("seed-secret"),
+                                                    NodeRole.CORE);
 
         // Top-level [cloud] provider is what ConfigLoader.populateCloudConfig reads.
         // Without it, lifecycleManager.isCloudManaged() is false and runtime auto-scale fails.
@@ -198,7 +205,8 @@ class BootstrapOverlayGeneratorTest {
                                                     0,
                                                     empty(),
                                                     empty(),
-                                                    some("seed-secret"));
+                                                    some("seed-secret"),
+                                                    NodeRole.CORE);
 
         assertEquals("secret-token", doc.getString("cloud.credentials", "api_token").unwrap(),
                      "cloud.credentials.api_token must propagate so runtime CTM can authenticate when " +
@@ -237,7 +245,8 @@ class BootstrapOverlayGeneratorTest {
                                                     0,
                                                     empty(),
                                                     empty(),
-                                                    some("seed-secret"));
+                                                    some("seed-secret"),
+                                                    NodeRole.CORE);
 
         assertEquals("174523891", doc.getString("cloud.compute", "image").unwrap(),
                      "cloud.compute.image must come from the CORE role's [source...] image so replacements inherit it");
@@ -256,10 +265,93 @@ class BootstrapOverlayGeneratorTest {
                                                     0,
                                                     empty(),
                                                     empty(),
-                                                    some("seed-secret"));
+                                                    some("seed-secret"),
+                                                    NodeRole.CORE);
 
         assertTrue(doc.getString("cloud.compute", "image").isEmpty(),
                    "image must be omitted when the CORE role sets none");
+    }
+
+    private static final String CLOUD_MULTI_ROLE_IMAGES = """
+            config_version = "1.0.0"
+
+            [cluster]
+            name = "prod-cluster"
+            version = "1.0.0"
+
+            [source.eu-1]
+            type = "cloud"
+            provider = "hetzner"
+            region = "eu-central"
+
+            [source.eu-1.core]
+            count = 3
+            image = "core-snap-1"
+
+            [source.eu-1.worker]
+            count = 2
+            image = "worker-snap-2"
+
+            [source.eu-1.spot]
+            count = 1
+            """;
+
+    @Test
+    void overlay_cloudRendersWorkerImageForWorkerNode() {
+        // RFC-0016 W2 — a WORKER node's overlay must carry the WORKER role's own [source...] image,
+        // so a worker leader's config.image() (tier-2) re-provisions from the worker's snapshot.
+        var config = ClusterBootstrapConfigParser.parse(CLOUD_MULTI_ROLE_IMAGES).unwrap();
+        var source = config.sources().get("eu-1");
+
+        var doc = BootstrapOverlayGenerator.overlay(config,
+                                                    source,
+                                                    0,
+                                                    empty(),
+                                                    empty(),
+                                                    some("seed-secret"),
+                                                    NodeRole.WORKER);
+
+        assertEquals("worker-snap-2", doc.getString("cloud.compute", "image").unwrap(),
+                     "cloud.compute.image must come from the WORKER role's own image, not the core's");
+    }
+
+    @Test
+    void overlay_cloudRendersCoreImageForCoreNode_notSiblingWorkerImage() {
+        // RFC-0016 W2 — a CORE node's overlay must carry the CORE role's own image even when a worker
+        // sibling declares a different one (no cross-role leakage between per-role overlays).
+        var config = ClusterBootstrapConfigParser.parse(CLOUD_MULTI_ROLE_IMAGES).unwrap();
+        var source = config.sources().get("eu-1");
+
+        var doc = BootstrapOverlayGenerator.overlay(config,
+                                                    source,
+                                                    0,
+                                                    empty(),
+                                                    empty(),
+                                                    some("seed-secret"),
+                                                    NodeRole.CORE);
+
+        assertEquals("core-snap-1", doc.getString("cloud.compute", "image").unwrap(),
+                     "cloud.compute.image must come from the CORE role's own image, not the worker sibling's");
+    }
+
+    @Test
+    void overlay_cloudOmitsImageForRoleWithoutOwnImage_evenWhenSiblingHasOne() {
+        // RFC-0016 W2 — no cross-role fallback: the SPOT role sets no image, so its overlay omits
+        // [cloud.compute] image entirely even though core/worker siblings declare one. The provider's
+        // loud default then applies for spot nodes rather than a sibling's snapshot.
+        var config = ClusterBootstrapConfigParser.parse(CLOUD_MULTI_ROLE_IMAGES).unwrap();
+        var source = config.sources().get("eu-1");
+
+        var doc = BootstrapOverlayGenerator.overlay(config,
+                                                    source,
+                                                    0,
+                                                    empty(),
+                                                    empty(),
+                                                    some("seed-secret"),
+                                                    NodeRole.SPOT);
+
+        assertTrue(doc.getString("cloud.compute", "image").isEmpty(),
+                   "image must be omitted for a role that sets none, never inherited from a sibling role");
     }
 
     @Test
@@ -272,7 +364,8 @@ class BootstrapOverlayGeneratorTest {
                                                     0,
                                                     empty(),
                                                     empty(),
-                                                    some("seed-secret"));
+                                                    some("seed-secret"),
+                                                    NodeRole.CORE);
 
         assertFalse(doc.hasSection("cloud.credentials"));
     }
@@ -289,7 +382,8 @@ class BootstrapOverlayGeneratorTest {
                                                     0,
                                                     empty(),
                                                     empty(),
-                                                    empty());
+                                                    empty(),
+                                                    NodeRole.CORE);
 
         assertFalse(doc.hasSection("cloud"),
                     "docker overlay must not emit top-level [cloud] — comes from aether-docker.toml default");
@@ -306,7 +400,8 @@ class BootstrapOverlayGeneratorTest {
                                                     0,
                                                     empty(),
                                                     empty(),
-                                                    empty());
+                                                    empty(),
+                                                    NodeRole.CORE);
 
         assertFalse(doc.hasSection("tls"));
     }
@@ -326,7 +421,8 @@ class BootstrapOverlayGeneratorTest {
                                                     0,
                                                     empty(),
                                                     empty(),
-                                                    empty());
+                                                    empty(),
+                                                    NodeRole.CORE);
 
         assertEquals("postgresql://forge:forge@db:5432/forge",
                      doc.getString("database.main", "async_url").unwrap());
@@ -347,7 +443,8 @@ class BootstrapOverlayGeneratorTest {
                                                     0,
                                                     empty(),
                                                     empty(),
-                                                    empty());
+                                                    empty(),
+                                                    NodeRole.CORE);
 
         assertEquals("jdbc:oracle:thin:@//oracle.corp:1521/LEGACY",
                      doc.getString("database.legacy", "jdbc_url").unwrap());
@@ -370,7 +467,8 @@ class BootstrapOverlayGeneratorTest {
                                                     0,
                                                     empty(),
                                                     empty(),
-                                                    empty());
+                                                    empty(),
+                                                    NodeRole.CORE);
 
         assertEquals("postgresql://primary:5432/app", doc.getString("database.primary", "async_url").unwrap());
         assertEquals("jdbc:postgresql://analytics:5432/dw", doc.getString("database.analytics", "jdbc_url").unwrap());
@@ -391,7 +489,8 @@ class BootstrapOverlayGeneratorTest {
                                                     0,
                                                     empty(),
                                                     empty(),
-                                                    empty());
+                                                    empty(),
+                                                    NodeRole.CORE);
 
         assertEquals("postgresql://${secrets:db-user}:${secrets:db-pass}@${env:DB_HOST}/app",
                      doc.getString("database.main", "async_url").unwrap());
@@ -407,7 +506,8 @@ class BootstrapOverlayGeneratorTest {
                                                     0,
                                                     empty(),
                                                     empty(),
-                                                    empty());
+                                                    empty(),
+                                                    NodeRole.CORE);
 
         assertFalse(doc.hasSection("database"));
         assertFalse(doc.hasSection("database.main"));
@@ -436,7 +536,8 @@ class BootstrapOverlayGeneratorTest {
                                                     0,
                                                     empty(),
                                                     empty(),
-                                                    some("ignored-secret"));
+                                                    some("ignored-secret"),
+                                                    NodeRole.CORE);
 
         assertFalse(doc.hasSection("cloud.compute"));
         assertFalse(doc.hasSection("tls"));
@@ -458,6 +559,7 @@ class BootstrapOverlayGeneratorTest {
                                                     empty(),
                                                     empty(),
                                                     some("seed-secret"),
+                                                    NodeRole.CORE,
                                                     List.of(113681412L, 999L));
 
         assertEquals("113681412,999", doc.getString("cloud.compute", "ssh_key_ids").unwrap(),
@@ -478,6 +580,7 @@ class BootstrapOverlayGeneratorTest {
                                                     empty(),
                                                     empty(),
                                                     some("seed-secret"),
+                                                    NodeRole.CORE,
                                                     List.of());
 
         assertTrue(doc.getString("cloud.compute", "ssh_key_ids").isEmpty(),
@@ -495,7 +598,8 @@ class BootstrapOverlayGeneratorTest {
                                                     0,
                                                     empty(),
                                                     empty(),
-                                                    some("seed-secret"));
+                                                    some("seed-secret"),
+                                                    NodeRole.CORE);
 
         assertTrue(doc.getString("cloud.compute", "ssh_key_ids").isEmpty(),
                    "6-arg overlay must not emit ssh_key_ids (preserves prior behavior)");
@@ -514,6 +618,7 @@ class BootstrapOverlayGeneratorTest {
                                                     empty(),
                                                     empty(),
                                                     empty(),
+                                                    NodeRole.CORE,
                                                     List.of(1L, 2L));
 
         assertTrue(doc.getString("cloud.compute", "ssh_key_ids").isEmpty(),
@@ -543,7 +648,8 @@ class BootstrapOverlayGeneratorTest {
                                                     0,
                                                     empty(),
                                                     empty(),
-                                                    empty());
+                                                    empty(),
+                                                    NodeRole.CORE);
 
         assertFalse(doc.hasSection("cloud.compute"));
         assertFalse(doc.hasSection("tls"));

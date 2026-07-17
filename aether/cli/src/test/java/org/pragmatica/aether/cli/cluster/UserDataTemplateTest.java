@@ -43,7 +43,8 @@ class UserDataTemplateTest {
                                                         0,
                                                         empty(),
                                                         empty(),
-                                                        empty());
+                                                        empty(),
+                                                        NodeRole.CORE);
 
         var script = UserDataTemplate.render(config,
                                              source,

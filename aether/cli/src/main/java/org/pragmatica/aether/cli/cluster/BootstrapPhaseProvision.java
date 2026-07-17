@@ -13,6 +13,7 @@ import java.util.regex.Pattern;
 import org.pragmatica.aether.cli.cluster.ClusterBootstrapOrchestrator.BootstrapContext;
 import org.pragmatica.aether.config.cluster.CloudProviderName;
 import org.pragmatica.aether.config.cluster.NodeRole;
+import org.pragmatica.aether.config.cluster.RoleSubTable;
 import org.pragmatica.aether.config.cluster.SourceProfile;
 import org.pragmatica.aether.config.cluster.SourceType;
 import org.pragmatica.aether.environment.CloudProviderSupport;
@@ -436,11 +437,13 @@ sealed interface BootstrapPhaseProvision {
         var instanceType = source.roles().containsKey(role)
                            ? source.roles().get(role).instanceType().or("default")
                            : "default";
+        var roleImage = roleImage(source, role);
         var context = ProvisionContext.forBootstrap(clusterName, role.value(), sourceName, nodeId);
 
         return NodeConfigBuilder.compose(ctx,
                                          source,
                                          nodeIndex,
+                                         role,
                                          Option.empty(),
                                          Option.some(ctx.clusterSecret()))
                                 .map(composedConfig -> renderUserData(ctx,
@@ -454,7 +457,22 @@ sealed interface BootstrapPhaseProvision {
                                                                                  instanceType,
                                                                                  role.value(),
                                                                                  context)
-                                                                  .map(spec -> spec.withUserData(userData)));
+                                                                  .map(spec -> spec.withUserData(userData))
+                                                                  .map(spec -> applyImage(spec, roleImage)));
+    }
+
+    /// RFC-0016 W2 — tier-1 per-role image: applies the role's OWN `image` (VM boot image / snapshot
+    /// id) to the spec's `imageId` when present, so `ProvisionRequest.resolve` boots the node from the
+    /// operator's prepared snapshot for THAT role. Absent → the spec carries no `imageId` and
+    /// resolution falls to tier-2 (`[cloud.compute] image`) then the loud stock default. NEVER applies
+    /// an empty image, and never a sibling role's image (no cross-role fallback).
+    private static ProvisionSpec applyImage(ProvisionSpec spec, Option<String> image) {
+        return image.map(spec::withImage)
+                    .or(spec);
+    }
+
+    private static Option<String> roleImage(SourceProfile source, NodeRole role) {
+        return option(source.roles().get(role)).flatMap(RoleSubTable::image);
     }
 
     private static String renderUserData(BootstrapContext ctx,
