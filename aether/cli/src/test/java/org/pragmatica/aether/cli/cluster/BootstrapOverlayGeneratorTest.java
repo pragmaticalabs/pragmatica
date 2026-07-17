@@ -208,6 +208,61 @@ class BootstrapOverlayGeneratorTest {
     }
 
     @Test
+    void overlay_cloudRendersImageFromCoreRole() {
+        // #459 — the CORE role's [source...] image (VM snapshot id) must be rendered into the node
+        // overlay's [cloud.compute] image, so a running leader's config.image() carries it and both
+        // bootstrap seeds AND CTM auto-heal replacements boot from the operator's prepared snapshot
+        // rather than the provider's hardcoded default.
+        var toml = """
+                config_version = "1.0.0"
+
+                [cluster]
+                name = "prod-cluster"
+                version = "1.0.0"
+
+                [source.eu-1]
+                type = "cloud"
+                provider = "hetzner"
+                region = "eu-central"
+
+                [source.eu-1.core]
+                count = 3
+                image = "174523891"
+                """;
+        var config = ClusterBootstrapConfigParser.parse(toml).unwrap();
+        var source = config.sources().get("eu-1");
+
+        var doc = BootstrapOverlayGenerator.overlay(config,
+                                                    source,
+                                                    0,
+                                                    empty(),
+                                                    empty(),
+                                                    some("seed-secret"));
+
+        assertEquals("174523891", doc.getString("cloud.compute", "image").unwrap(),
+                     "cloud.compute.image must come from the CORE role's [source...] image so replacements inherit it");
+    }
+
+    @Test
+    void overlay_cloudOmitsImageWhenCoreRoleHasNone() {
+        // No [source...] image → the overlay omits [cloud.compute] image entirely, so config.image()
+        // stays empty and the provider's loud hardcoded default applies (rather than an empty image
+        // reaching the create request).
+        var config = ClusterBootstrapConfigParser.parse(CLOUD_BASE).unwrap();
+        var source = config.sources().get("eu-1");
+
+        var doc = BootstrapOverlayGenerator.overlay(config,
+                                                    source,
+                                                    0,
+                                                    empty(),
+                                                    empty(),
+                                                    some("seed-secret"));
+
+        assertTrue(doc.getString("cloud.compute", "image").isEmpty(),
+                   "image must be omitted when the CORE role sets none");
+    }
+
+    @Test
     void overlay_cloudOmitsCredentialsWhenAbsent() {
         var config = ClusterBootstrapConfigParser.parse(CLOUD_BASE).unwrap();
         var source = config.sources().get("eu-1");

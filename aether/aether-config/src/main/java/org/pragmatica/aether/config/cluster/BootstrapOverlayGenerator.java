@@ -126,6 +126,7 @@ public interface BootstrapOverlayGenerator {
 
         source.region().onPresent(region -> values.put("region", region));
         coreInstanceType(source).onPresent(serverType -> values.put("server_type", serverType));
+        coreImage(source).onPresent(image -> values.put("image", image));
         if (!sshKeyIds.isEmpty()) {
             values.put("ssh_key_ids", joinLongs(sshKeyIds));
         }
@@ -177,6 +178,17 @@ public interface BootstrapOverlayGenerator {
 
     private static Option<String> coreInstanceType(SourceProfile source) {
         return Option.option(source.roles().get(NodeRole.CORE)).flatMap(RoleSubTable::instanceType);
+    }
+
+    /// #459 — the source's core-role `image` (VM boot image / snapshot id), rendered into each node's
+    /// runtime `[cloud.compute] image` so a running leader's `config.image()` carries it and both
+    /// bootstrap seeds AND CTM auto-heal replacements boot from the operator's prepared snapshot. The
+    /// source profile is persisted in the KV cluster config, so a replacement re-parses the same image
+    /// and inherits it via this overlay — no per-generation threading needed (the image is spec-level,
+    /// unlike the runtime-resolved `ssh_key_ids`). Absent for roles with no `image`; the field is then
+    /// omitted and the provider's loud default applies.
+    private static Option<String> coreImage(SourceProfile source) {
+        return Option.option(source.roles().get(NodeRole.CORE)).flatMap(RoleSubTable::image);
     }
 
     private static Option<Section> tlsSection(SourceProfile source, Option<String> clusterSecret) {

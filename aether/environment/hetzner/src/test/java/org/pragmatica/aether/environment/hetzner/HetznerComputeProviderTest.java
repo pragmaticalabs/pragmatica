@@ -53,6 +53,14 @@ class HetznerComputeProviderTest {
             "#!/bin/bash\necho hello").unwrap();
     }
 
+    private static HetznerEnvironmentConfig configWithImage(String image) {
+        return HetznerEnvironmentConfig.hetznerEnvironmentConfig(
+            hetznerConfig("test-token"),
+            "cx22", image, "fsn1",
+            List.of(1L, 2L), List.of(10L), List.of(5L),
+            "#!/bin/bash\necho hello").unwrap();
+    }
+
     private TestHetznerClient testClient;
     private HetznerComputeProvider provider;
 
@@ -247,6 +255,43 @@ class HetznerComputeProviderTest {
                     .contains("\"labels\":")
                     .contains("aether-cluster")
                     .contains("aether-node-id");
+        }
+
+        @Test
+        void provision_bootstrapSeedWithConfigImage_usedAsCreateServerImage() {
+            // #459 — the spec-level [source...] image lands in config.image() (threaded by
+            // ProviderResolver for seeds); the bootstrap seed provision must carry it to the create
+            // request instead of the hardcoded default.
+            testClient.createServerResponse = Promise.success(runningServer(42, "aether-test"));
+
+            provider.provision(InstanceType.ON_DEMAND).await().onFailure(cause -> assertThat(cause).isNull());
+
+            assertThat(testClient.lastCreateServerRequest.image()).isEqualTo("ubuntu-24.04");
+        }
+
+        @Test
+        void provision_ctmReplacementWithConfigImage_usedAsCreateServerImage() {
+            // #459 — a CTM auto-heal replacement resolves the image from the leader's node
+            // [cloud.compute] image (config.image()), so the replacement boots the same snapshot.
+            testClient.createServerResponse = Promise.success(runningServer(42, "aether-test"));
+
+            provider.provision(ctmSpec("cx22")).await().onFailure(cause -> assertThat(cause).isNull());
+
+            assertThat(testClient.lastCreateServerRequest.image()).isEqualTo("ubuntu-24.04");
+        }
+
+        @Test
+        void provision_noImageResolvable_fallsBackToLoudHardcodedDefault() {
+            // #459 — unlike server_type (which fails loud), an unresolved image keeps the SAFE stock
+            // default so the VM still boots; the fallback is made LOUD via a WARN (not asserted here)
+            // so an operator who intended a snapshot sees the stock image was used.
+            var imagelessProvider = HetznerComputeProvider.hetznerComputeProvider(testClient,
+                                                                                  configWithImage("")).unwrap();
+            testClient.createServerResponse = Promise.success(runningServer(42, "aether-test"));
+
+            imagelessProvider.provision(ctmSpec("cx22")).await().onFailure(cause -> assertThat(cause).isNull());
+
+            assertThat(testClient.lastCreateServerRequest.image()).isEqualTo("ubuntu-22.04");
         }
 
         private ProvisionSpec ctmSpec(String instanceSize) {

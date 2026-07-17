@@ -295,9 +295,10 @@ public final class ClusterBootstrapConfigParser {
         var count = doc.getInt(section, "count");
         var hosts = doc.getStringList(section, "hosts");
         var instanceType = doc.getString(section, "instance_type");
+        var image = doc.getString(section, "image");
         var runtimeRef = doc.getString(section, "runtime").or(defaultRuntimeRef(type));
 
-        return RoleSubTable.roleSubTable(role, count, hosts, instanceType, runtimeRef);
+        return RoleSubTable.roleSubTable(role, count, hosts, instanceType, image, runtimeRef);
     }
 
     private static String defaultRuntimeRef(SourceType type) {

@@ -75,6 +75,7 @@ class ClusterBootstrapConfigParserTest {
                 [source.hetzner-eu.core]
                 count = 5
                 instance_type = "cx41"
+                image = "snapshot-174523891"
                 runtime = "prod-container"
 
                 [source.hetzner-eu.worker]
@@ -105,6 +106,8 @@ class ClusterBootstrapConfigParserTest {
                     assertThat(source.roles()).containsKey(NodeRole.CORE);
                     assertThat(source.roles()).containsKey(NodeRole.WORKER);
                     assertThat(source.roles().get(NodeRole.CORE).instanceType()).isEqualTo(Option.some("cx41"));
+                    assertThat(source.roles().get(NodeRole.CORE).image()).isEqualTo(Option.some("snapshot-174523891"));
+                    assertThat(source.roles().get(NodeRole.WORKER).image()).isEqualTo(Option.empty());
                     assertThat(source.roles().get(NodeRole.CORE).runtimeRef()).isEqualTo("prod-container");
                     assertThat(source.roles().get(NodeRole.WORKER).count()).isEqualTo(Option.some(3));
 

@@ -6,6 +6,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [1.0.0-rc3] - Unreleased
 
+### Fixed
+- **Cloud (Hetzner): spec-level `[source.<provider>.<role>] image` (VM boot image / snapshot id) now reaches provision requests for both bootstrap seeds and CTM auto-heal replacements (#459).** The field was previously dropped at parse (`RoleSubTable` had no `image`), so the documented snapshot mechanism (`vm-snapshot.md`) had no effect and every VM booted the stock Ubuntu image — snapshot-accelerated provisioning (30–120s saved per VM) was unreachable. The field is now parsed and threaded through the seed path (`ProviderResolver` → `[cloud.compute] image`) and the node overlay (`BootstrapOverlayGenerator`), so replacements inherit the snapshot across leader generations via the persisted profile — the same mechanism as `ssh_key_ids`; the provider's silent hardcoded `ubuntu-22.04` default is demoted to a provision-time loud WARN fallback (kept safe — a stock image still boots — deliberately unlike `server_type`'s fail-loud from #442). Precedence: role `image` > `[cloud.compute] image` > loud default; existing TOMLs that set `[cloud.compute] image` directly behave unchanged. Unit-tested end-to-end across parser/overlay/resolver/provider (aether-config 296/0, cli 531/0, environment-hetzner 68/0, jbct:check clean); cloud verification (snapshot-booted cluster, `hcloud` image-id assertion) rides the first rc3 cloud run. Provider-agnostic generalization is RFC-0016 (epic #463).
+
 ## [1.0.0-rc2] - 2026-07-16
 
 ### Fixed

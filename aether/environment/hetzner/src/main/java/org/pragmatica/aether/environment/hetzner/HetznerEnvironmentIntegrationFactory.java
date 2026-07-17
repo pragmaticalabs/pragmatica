@@ -35,8 +35,8 @@ public record HetznerEnvironmentIntegrationFactory() implements EnvironmentInteg
 
     // #442: no hardcoded instance-type default. An absent server_type stays empty ("unset") and is
     // resolved from the ProvisionSpec's per-role instance type — or fails loud — at provision time.
-    private static final String DEFAULT_IMAGE = "ubuntu-22.04";
-
+    // #459: image is symmetric — an absent image stays empty here and the provider resolves the loud
+    // hardcoded default (with a WARN) at provision time, so the fallback is operator-visible.
     private static Result<HetznerEnvironmentConfig> buildEnvironmentConfig(CloudConfig config) {
         return validateCredentials(config.credentials()).flatMap(creds -> buildFromValidated(creds, config));
     }
@@ -67,7 +67,7 @@ public record HetznerEnvironmentIntegrationFactory() implements EnvironmentInteg
                                         nonBlank(compute.get("server_type"),
                                                  ""),
                                         nonBlank(compute.get("image"),
-                                                 DEFAULT_IMAGE),
+                                                 ""),
                                         compute.getOrDefault("region", ""),
                                         parseLongList(compute.getOrDefault("ssh_key_ids", "")),
                                         parseLongList(compute.getOrDefault("network_ids", "")),

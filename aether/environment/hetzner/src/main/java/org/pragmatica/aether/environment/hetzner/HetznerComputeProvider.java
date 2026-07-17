@@ -246,6 +246,40 @@ public record HetznerComputeProvider(HetznerClient client, HetznerEnvironmentCon
                && !DEFAULT_INSTANCE_SIZE_SENTINEL.equals(value);
     }
 
+    /// #459 — hardcoded VM boot image applied only when neither the source's role `image` nor the
+    /// node's `[cloud.compute] image` resolves. Unlike the server type (which fails loud, because a
+    /// wrong default caused an over-provisioning death spiral), the stock OS image is a SAFE default
+    /// — a VM boots — so the fallback is retained but made LOUD, so an operator who intended a
+    /// prepared snapshot sees that the stock image was used instead.
+    private static final String DEFAULT_IMAGE = "ubuntu-22.04";
+
+    /// Resolves the VM boot image: the provider's `[cloud.compute] image` (threaded from the source's
+    /// role `image` by `ProviderResolver` for seeds and `BootstrapOverlayGenerator` for the node
+    /// overlay / CTM replacements) when concrete, otherwise the loud hardcoded default. Precedence:
+    /// role-specific `[source...] image` > `[cloud.compute]` image > loud default.
+    private String resolveImage() {
+        var configured = config.image();
+
+        if (isConcreteImage(configured)) {
+            return configured;
+        }
+
+        return warnAndUseDefaultImage();
+    }
+
+    private static boolean isConcreteImage(String value) {
+        return value != null && !value.isBlank();
+    }
+
+    private static String warnAndUseDefaultImage() {
+        log.warn("Hetzner provision: no image resolved from the source's role image or [cloud.compute] image; "
+                + "using the hardcoded default '{}'. Set image on the source's core role (or [cloud.compute] image) "
+                + "to boot from a prepared VM snapshot.",
+                 DEFAULT_IMAGE);
+
+        return DEFAULT_IMAGE;
+    }
+
     private Promise<List<Long>> resolveSshKeyIds() {
         if (!config.sshKeyIds().isEmpty()) {
             log.info("Hetzner provision: SSH key ids resolved from node config (branch=config, count={}) — replacement inherits the cluster's keys",
@@ -305,7 +339,7 @@ public record HetznerComputeProvider(HetznerClient client, HetznerEnvironmentCon
                                                    Map<String, String> labels,
                                                    String userData) {
         var name = generateServerName();
-        var image = config.image();
+        var image = resolveImage();
         var networkIds = config.networkIds();
         var firewallIds = config.firewallIds();
 
