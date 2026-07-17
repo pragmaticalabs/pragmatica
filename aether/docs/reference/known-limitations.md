@@ -49,7 +49,17 @@ We neither claim it works nor hide that it is the open frontier. Until #367 prod
 - **The dissolve-timeout (`split_timeout`) tuning curve** for hierarchical topologies — the recommended default for multi-community clusters comes out of this run.
 - **Core coordination-load slope** at 1→2→3 communities — the real "how far does it scale" answer, and whether the hierarchy has a ceiling to know about before GA.
 
-> A hard node-count ceiling is deliberately **not** quoted here. The core tier is 5–9 nodes (Rabia's all-to-all O(N²) message cost; see [`../architecture/05-worker-pools.md`](../architecture/05-worker-pools.md)); the worker-tier scaling number is an **output of #367**, not a pre-committed figure. When it is measured, it lives in one place — the validation epic — and is referenced here.
+### The scaling numbers (single source)
+
+Two distinct scale dimensions must not be conflated, and each has its own validation gate:
+
+| Dimension | Number | Status |
+|-----------|--------|--------|
+| **Single community at scale** — one worker community at its node cap | **~100 nodes** (design target) | Designed; **pending validation** by the single-community node-cap sweep (#365 / #366) — not yet a proven ceiling |
+| **Multi-community / hierarchical seam** — total reach across communities | An **output of #367**, not pre-committed | **Pending validation** by the 3×3 barrier sweep (#367) |
+| **Core tier** — Rabia consensus members | **5–9 nodes**; tolerates ⌊(N−1)/2⌋ simultaneous losses | Bounded by Rabia's all-to-all O(N²) cost (established, not a target) |
+
+The **~100 per-community figure is a design target under validation, stated here once**: it is the number the single-community sweep is built to confirm, not a measured cap, and the consistency-lens rule forbids presenting it as proven until the sweep lands. Other docs (e.g. [`../architecture/08-scaling.md`](../architecture/08-scaling.md)) **reference this row rather than restating the number**, so it can never drift. When the sweeps produce measured ceilings, they replace the target here — in one place.
 
 ## Performance numbers are single-machine / simulated
 

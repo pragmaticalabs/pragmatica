@@ -231,3 +231,4 @@ Resources are provisioned during slice activation and cleaned up during deactiva
 - [02-deployment.md](02-deployment.md) - Slice lifecycle state machine
 - [03-invocation.md](03-invocation.md) - Generated proxies and invocation
 - [09-storage.md](09-storage.md) - Artifact storage in DHT
+- [15-resource-and-isolation-model.md](15-resource-and-isolation-model.md) - Runtime resource isolation (heap/GC/threads) — the axis ClassLoader isolation does not cover
