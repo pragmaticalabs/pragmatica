@@ -55,6 +55,7 @@ public interface OrderService {
 
 | Document | Description |
 |----------|-------------|
+| [Thinking in Slices](thinking-in-slices.md) | The functional-model on-ramp — no exceptions, no null, no `*Impl`, composition over control flow. **Start here if you are new to `Result`/`Option`/`Promise`.** |
 | [Getting Started](getting-started.md) | Create your first slice in 5 minutes |
 | [Development Guide](development-guide.md) | Complete development workflow |
 | [Slice Patterns](slice-patterns.md) | Service vs Lean slices, common patterns |

@@ -13,6 +13,7 @@ High-level design and visual overviews of the Aether platform.
 
 Build applications on Aether. Start with the [section index](slice-developers/README.md).
 
+- [Thinking in Slices](slice-developers/thinking-in-slices.md) - The functional-model on-ramp: no exceptions, no null, composition over control flow
 - [Getting Started](slice-developers/getting-started.md) - Your first slice in 5 minutes
 - [Development Guide](slice-developers/development-guide.md) - Complete development workflow
 - [Slice Patterns](slice-developers/slice-patterns.md) - Writing slices with JBCT patterns
