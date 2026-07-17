@@ -7,6 +7,7 @@ package org.pragmatica.aether.forge;
 
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInstance;
 import org.junit.jupiter.api.io.TempDir;
@@ -63,6 +64,7 @@ import org.pragmatica.aether.ember.EmberCluster;
 /// `test-stream` keeps NO server-side consumer cursor (the slice exposes only `publish`/`read`; every
 /// consumer tracks its own offset client-side), so cursor durability is not exercised here — the
 /// events-survive assertion is the required A6 proof.
+@Tag("Heavy")
 @Execution(ExecutionMode.SAME_THREAD)
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 class StreamCrashDurabilityTest {

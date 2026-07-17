@@ -8,6 +8,7 @@ package org.pragmatica.aether.forge;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Nested;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInstance;
 import org.junit.jupiter.api.parallel.Execution;
@@ -55,6 +56,7 @@ import org.pragmatica.aether.ember.EmberCluster;
 /// The `test-stream` stream is a single shared log; each scenario captures `base` (the head
 /// offset before it publishes) and treats it as that scenario's logical "offset 0", so the tests
 /// are robust to the shared, accumulating log and to `@Nested` execution order.
+@Tag("Heavy")
 @Execution(ExecutionMode.SAME_THREAD)
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 class StreamFanoutConsumerTest {
