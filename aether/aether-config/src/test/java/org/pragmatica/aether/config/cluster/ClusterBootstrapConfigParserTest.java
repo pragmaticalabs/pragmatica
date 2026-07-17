@@ -18,6 +18,57 @@ import static org.assertj.core.api.Assertions.assertThat;
 class ClusterBootstrapConfigParserTest {
 
     @Nested
+    class FormatVersionGate {
+
+        @Test
+        void parse_currentConfigVersion_succeeds() {
+            ClusterBootstrapConfigParser.parse(forgeToml("config_version = \"1.0.0\"\n"))
+                .onFailure(cause -> Assertions.fail(cause.message()))
+                .onSuccess(config -> assertThat(config.configVersion()).isEqualTo("1.0.0"));
+        }
+
+        @Test
+        void parse_absentConfigVersion_failsNamedReBootstrap() {
+            ClusterBootstrapConfigParser.parse(forgeToml(""))
+                .onSuccess(config -> Assertions.fail("Expected failure"))
+                .onFailure(cause -> assertThat(cause.message()).contains("no config_version")
+                                                              .contains("re-bootstrap"));
+        }
+
+        @Test
+        void parse_olderConfigVersion_failsReBootstrap() {
+            ClusterBootstrapConfigParser.parse(forgeToml("config_version = \"0.9.0\"\n"))
+                .onSuccess(config -> Assertions.fail("Expected failure"))
+                .onFailure(cause -> assertThat(cause.message()).contains("0.9.0")
+                                                              .contains("re-bootstrap"));
+        }
+
+        @Test
+        void parse_newerConfigVersion_failsRestoreFromPreUpgrade() {
+            ClusterBootstrapConfigParser.parse(forgeToml("config_version = \"2.0.0\"\n"))
+                .onSuccess(config -> Assertions.fail("Expected failure"))
+                .onFailure(cause -> assertThat(cause.message()).contains("2.0.0")
+                                                              .contains("NEWER")
+                                                              .contains("restore"));
+        }
+
+        private static String forgeToml(String versionLine) {
+            return versionLine + """
+
+                [cluster]
+                name = "dev-local"
+                version = "1.0.0"
+
+                [source.local]
+                type = "forge"
+
+                [source.local.core]
+                count = 3
+                """;
+        }
+    }
+
+    @Nested
     class HappyPath {
 
         @Test
@@ -468,7 +519,7 @@ class ClusterBootstrapConfigParserTest {
 
             ClusterBootstrapConfigParser.parse(toml)
                 .onSuccess(_ -> Assertions.fail("Expected failure for wrong config_version"))
-                .onFailure(cause -> assertThat(cause.message()).contains("Unsupported config_version"));
+                .onFailure(cause -> assertThat(cause.message()).contains("NEWER").contains("restore"));
         }
 
         @Test

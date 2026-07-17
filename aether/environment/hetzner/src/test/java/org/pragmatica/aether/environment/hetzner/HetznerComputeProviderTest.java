@@ -219,15 +219,20 @@ class HetznerComputeProviderTest {
             var keylessProvider = HetznerComputeProvider.hetznerComputeProvider(testClient,
                                                                                configWith("cx22", List.of())).unwrap();
             testClient.createServerResponse = Promise.success(runningServer(42, "aether-test"));
+            // RFC-0016 W3 §3.3 — the lookup now matches the CLUSTER-SCOPED prefix
+            // `aether-bootstrap-<cluster>` (ctmSpec context cluster = "cluster-x"), never the old
+            // account-wide bare `aether-bootstrap`. Key 7 is scoped to this cluster and matches; the
+            // laptop key does not. Same INTENT: empty config ids -> name-prefix lookup finds the
+            // cluster's keys.
             testClient.listSshKeysResponse = Promise.success(List.of(
-                new SshKey(7, "aether-bootstrap-op", "aa:bb", "ssh-ed25519 AAAA"),
+                new SshKey(7, "aether-bootstrap-cluster-x-op", "aa:bb", "ssh-ed25519 AAAA"),
                 new SshKey(9, "someones-laptop", "cc:dd", "ssh-ed25519 BBBB")));
 
             keylessProvider.provision(ctmSpec("cx22")).await().onFailure(cause -> assertThat(cause).isNull());
 
             assertThat(testClient.listSshKeysCalled).isTrue();
             assertThat(testClient.lastCreateServerRequest.sshKeys())
-                    .as("only aether-bootstrap-prefixed keys are attached")
+                    .as("only this cluster's aether-bootstrap-<cluster>-prefixed keys are attached")
                     .containsExactly(7L);
         }
 
@@ -242,6 +247,25 @@ class HetznerComputeProviderTest {
             keylessProvider.provision(ctmSpec("cx22")).await().onFailure(cause -> assertThat(cause).isNull());
 
             assertThat(testClient.lastCreateServerRequest.sshKeys()).isEmpty();
+        }
+
+        @Test
+        void provision_emptyConfigSshKeyIds_ignoresOtherClustersBootstrapKeys() {
+            // RFC-0016 W3 §3.3 — account-wide bare-prefix guessing is DELETED: a key scoped to a
+            // DIFFERENT cluster (`aether-bootstrap-other-cluster-*`) must NOT be attached when
+            // provisioning for "cluster-x". Only this cluster's own scoped key (id 7) matches.
+            var keylessProvider = HetznerComputeProvider.hetznerComputeProvider(testClient,
+                                                                               configWith("cx22", List.of())).unwrap();
+            testClient.createServerResponse = Promise.success(runningServer(42, "aether-test"));
+            testClient.listSshKeysResponse = Promise.success(List.of(
+                new SshKey(7, "aether-bootstrap-cluster-x-op", "aa:bb", "ssh-ed25519 AAAA"),
+                new SshKey(8, "aether-bootstrap-other-cluster-op", "ee:ff", "ssh-ed25519 CCCC")));
+
+            keylessProvider.provision(ctmSpec("cx22")).await().onFailure(cause -> assertThat(cause).isNull());
+
+            assertThat(testClient.lastCreateServerRequest.sshKeys())
+                    .as("a leader resolves ONLY its own cluster's scoped keys, never another cluster's")
+                    .containsExactly(7L);
         }
 
         @Test

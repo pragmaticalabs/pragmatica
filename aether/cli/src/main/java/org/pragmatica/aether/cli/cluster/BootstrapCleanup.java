@@ -23,34 +23,123 @@ import org.pragmatica.lang.Functions.Fn1;
 sealed interface BootstrapCleanup {
     record unused() implements BootstrapCleanup {}
 
+    /// Handle credential alias for the cloud API token (see `BootstrapPhaseProvision.CREDENTIAL_FIELD_KEYS`).
+    String API_TOKEN_KEY = "api_token";
+
+    /// RFC-0016 W4 (#439) — the injectable seams cleanup uses to resolve teardown credentials, so a
+    /// timeout-triggered cleanup reaps VMs *and* ssh keys with the SAME credential the operator used to
+    /// provision (re-derived from the persisted `SourceCleanupHandle`), never a hard-coded `HCLOUD_TOKEN`.
+    ///
+    /// - `cloudComputeFallback` / `hetznerClientFallback` — raw-env last resort (provider name → provider),
+    ///   reached ONLY when no persisted handle exists (bootstrap did not record one).
+    /// - `handleComputeResolver` — VM reaping via the persisted handle (already the right thing pre-W4).
+    /// - `getenv` — env-var NAME → value, so the handle's recorded name (e.g. `HCLOUD_TOKEN_PROD`) is read.
+    /// - `hetznerClientFactory` — token → `HetznerClient` (infallible build), the seam a test stubs so no
+    ///   real cloud call runs; the env-read failure is handled before it is invoked.
+    record CleanupResolvers(Fn1<Result<ComputeProvider>, String> cloudComputeFallback,
+                            Fn1<Result<ComputeProvider>, SourceCleanupHandle> handleComputeResolver,
+                            Fn1<Result<HetznerClient>, String> hetznerClientFallback,
+                            Fn1<String, String> getenv,
+                            Fn1<HetznerClient, String> hetznerClientFactory) {
+        static CleanupResolvers cleanupResolvers() {
+            return new CleanupResolvers(ProviderResolver::resolveCloudComputeForCleanup,
+                                        ProviderResolver::resolveCloudComputeFromHandle,
+                                        BootstrapCleanup::defaultHetznerClient,
+                                        System::getenv,
+                                        BootstrapCleanup::hetznerClientFromToken);
+        }
+
+        CleanupResolvers withCloudComputeFallback(Fn1<Result<ComputeProvider>, String> resolver) {
+            return new CleanupResolvers(resolver,
+                                        handleComputeResolver,
+                                        hetznerClientFallback,
+                                        getenv,
+                                        hetznerClientFactory);
+        }
+
+        CleanupResolvers withHandleComputeResolver(Fn1<Result<ComputeProvider>, SourceCleanupHandle> resolver) {
+            return new CleanupResolvers(cloudComputeFallback,
+                                        resolver,
+                                        hetznerClientFallback,
+                                        getenv,
+                                        hetznerClientFactory);
+        }
+
+        CleanupResolvers withHetznerClientFallback(Fn1<Result<HetznerClient>, String> resolver) {
+            return new CleanupResolvers(cloudComputeFallback,
+                                        handleComputeResolver,
+                                        resolver,
+                                        getenv,
+                                        hetznerClientFactory);
+        }
+
+        CleanupResolvers withGetenv(Fn1<String, String> lookup) {
+            return new CleanupResolvers(cloudComputeFallback,
+                                        handleComputeResolver,
+                                        hetznerClientFallback,
+                                        lookup,
+                                        hetznerClientFactory);
+        }
+
+        CleanupResolvers withHetznerClientFactory(Fn1<HetznerClient, String> factory) {
+            return new CleanupResolvers(cloudComputeFallback,
+                                        handleComputeResolver,
+                                        hetznerClientFallback,
+                                        getenv,
+                                        factory);
+        }
+    }
+
     static Result<Unit> cleanup(BootstrapState state) {
-        return cleanup(state, ProviderResolver::resolveCloudComputeForCleanup, BootstrapCleanup::defaultHetznerClient);
+        return cleanupWith(state, CleanupResolvers.cleanupResolvers());
     }
 
     static Result<Unit> cleanup(BootstrapState state, Fn1<Result<ComputeProvider>, String> cloudComputeResolver) {
-        return cleanup(state, cloudComputeResolver, BootstrapCleanup::defaultHetznerClient);
+        return cleanupWith(state,
+                           CleanupResolvers.cleanupResolvers().withCloudComputeFallback(cloudComputeResolver));
     }
 
     static Result<Unit> cleanup(BootstrapState state,
                                 Fn1<Result<ComputeProvider>, String> cloudComputeResolver,
                                 Fn1<Result<HetznerClient>, String> hetznerClientResolver) {
+        return cleanupWith(state,
+                           CleanupResolvers.cleanupResolvers()
+                                           .withCloudComputeFallback(cloudComputeResolver)
+                                           .withHetznerClientFallback(hetznerClientResolver));
+    }
+
+    /// RFC-0016 W4 — full-control entry for the money-path regression test: injects the handle-derived
+    /// VM resolver, the env lookup, and the token → HetznerClient factory so both reaps are observable
+    /// without a real cloud call. Raw-env fallbacks keep their production defaults (never reached when a
+    /// handle is present).
+    static Result<Unit> cleanup(BootstrapState state,
+                                Fn1<Result<ComputeProvider>, SourceCleanupHandle> handleComputeResolver,
+                                Fn1<String, String> getenv,
+                                Fn1<HetznerClient, String> hetznerClientFactory) {
+        return cleanupWith(state,
+                           CleanupResolvers.cleanupResolvers()
+                                           .withHandleComputeResolver(handleComputeResolver)
+                                           .withGetenv(getenv)
+                                           .withHetznerClientFactory(hetznerClientFactory));
+    }
+
+    private static Result<Unit> cleanupWith(BootstrapState state, CleanupResolvers resolvers) {
         System.out.println("Cleaning up resources for cluster '" + state.clusterName() + "'...");
         var resources = new ArrayList<>(state.createdResources());
 
         Collections.reverse(resources);
-        var failures = collectCleanupFailures(state, resources, cloudComputeResolver, hetznerClientResolver);
+        var failures = collectCleanupFailures(state, resources, resolvers);
 
         return finishCleanup(state, failures);
     }
 
     private static List<String> collectCleanupFailures(BootstrapState state,
                                                        List<CreatedResource> resources,
-                                                       Fn1<Result<ComputeProvider>, String> cloudComputeResolver,
-                                                       Fn1<Result<HetznerClient>, String> hetznerClientResolver) {
+                                                       CleanupResolvers resolvers) {
         var failures = new ArrayList<String>();
 
         for (var resource : resources) {
-            var result = destroyResource(state, resource, cloudComputeResolver, hetznerClientResolver);
+            var result = destroyResource(state, resource, resolvers);
 
             logResourceResult(result, resource);
             var _ = result.onFailure(cause -> failures.add(resource.description() + ": " + cause.message()));
@@ -77,29 +166,76 @@ sealed interface BootstrapCleanup {
     @SuppressWarnings("JBCT-PAT-01")
     private static Result<Unit> destroyResource(BootstrapState state,
                                                 CreatedResource resource,
-                                                Fn1<Result<ComputeProvider>, String> cloudComputeResolver,
-                                                Fn1<Result<HetznerClient>, String> hetznerClientResolver) {
+                                                CleanupResolvers resolvers) {
         return switch (resource) {
-            case CreatedResource.ProvisionedVm vm -> destroyVm(state, vm, cloudComputeResolver);
+            case CreatedResource.ProvisionedVm vm -> destroyVm(state, vm, resolvers);
             case CreatedResource.FirewallRule rule -> deleteFirewallRule(rule);
             case CreatedResource.FloatingIpAssignment ip -> detachFloatingIp(ip);
             case CreatedResource.DockerContainer container -> removeContainer(container);
             case CreatedResource.SshDeployedConfig config -> removeRemoteConfig(config);
-            case CreatedResource.SshKeyResource key -> deleteSshKey(key, hetznerClientResolver);
+            case CreatedResource.SshKeyResource key -> deleteSshKey(state, key, resolvers);
         };
     }
 
     @SuppressWarnings("JBCT-EX-01")
-    private static Result<Unit> deleteSshKey(CreatedResource.SshKeyResource key,
-                                             Fn1<Result<HetznerClient>, String> hetznerClientResolver) {
+    private static Result<Unit> deleteSshKey(BootstrapState state,
+                                             CreatedResource.SshKeyResource key,
+                                             CleanupResolvers resolvers) {
         System.out.printf("  Deleting SSH key %d (%s) from %s...%n", key.sshKeyId(), key.name(), key.provider());
         if (!"hetzner".equals(key.provider())) {
             return new UnsupportedSshKeyProvider(key.provider()).result();
         }
 
-        return hetznerClientResolver.apply(key.provider())
-                                    .flatMap(client -> client.deleteSshKey(key.sshKeyId())
-                                                             .await());
+        return resolveHetznerClient(state, key, resolvers).flatMap(client -> client.deleteSshKey(key.sshKeyId())
+                                                                                   .await());
+    }
+
+    /// RFC-0016 W4 — SSH-key reaping routes through the persisted handle first (the credential the token
+    /// that provisioned uses), so a token supplied under a non-default env-var name still reaps its own
+    /// keys. Only when NO handle names this provider does it fall back — loudly — to the raw-env resolver.
+    @SuppressWarnings("JBCT-PAT-01")
+    private static Result<HetznerClient> resolveHetznerClient(BootstrapState state,
+                                                              CreatedResource.SshKeyResource key,
+                                                              CleanupResolvers resolvers) {
+        var handle = state.sources()
+                          .values()
+                          .stream()
+                          .filter(candidate -> key.provider()
+                                                  .equals(candidate.provider()))
+                          .findFirst()
+                          .orElse(null);
+
+        if (handle == null) {
+            System.err.println("  WARN: no persisted cleanup handle names SSH-key provider '" + key.provider()
+                              + "'; falling back to raw HCLOUD_TOKEN. A token that provisioned SHOULD be able to reap"
+                              + " its own ssh keys — a missing handle means bootstrap did not persist one.");
+
+            return resolvers.hetznerClientFallback()
+                            .apply(key.provider());
+        }
+
+        return hetznerClientFromHandle(handle, resolvers);
+    }
+
+    private static Result<HetznerClient> hetznerClientFromHandle(SourceCleanupHandle handle,
+                                                                 CleanupResolvers resolvers) {
+        var envVarName = handle.credentialEnvVars().get(API_TOKEN_KEY);
+
+        if (envVarName == null || envVarName.isBlank()) {
+            return new HetznerCleanupHandleMissingToken(handle.provider()).result();
+        }
+
+        var token = resolvers.getenv().apply(envVarName);
+
+        if (token == null || token.isBlank()) {
+            return new HetznerCleanupTokenEnvUnset(envVarName).result();
+        }
+
+        return Result.success(resolvers.hetznerClientFactory().apply(token));
+    }
+
+    private static HetznerClient hetznerClientFromToken(String token) {
+        return HetznerClient.hetznerClient(HetznerConfig.hetznerConfig(token));
     }
 
     private static Result<HetznerClient> defaultHetznerClient(String providerName) {
@@ -113,29 +249,38 @@ sealed interface BootstrapCleanup {
             return new HetznerCredentialsMissing().result();
         }
 
-        return Result.success(HetznerClient.hetznerClient(HetznerConfig.hetznerConfig(token)));
+        return Result.success(hetznerClientFromToken(token));
     }
 
     @SuppressWarnings("JBCT-EX-01")
     private static Result<Unit> destroyVm(BootstrapState state,
                                           CreatedResource.ProvisionedVm vm,
-                                          Fn1<Result<ComputeProvider>, String> cloudComputeResolver) {
+                                          CleanupResolvers resolvers) {
         System.out.printf("  Destroying VM %s (provider: %s)...%n", vm.resourceId(), vm.provider());
 
-        return resolveComputeForVm(state, vm, cloudComputeResolver).flatMap(compute -> terminateInstance(compute,
-                                                                                                         vm.resourceId()));
+        return resolveComputeForVm(state, vm, resolvers).flatMap(compute -> terminateInstance(compute, vm.resourceId()));
     }
 
+    /// RFC-0016 W4 — VM reaping resolves compute from the persisted handle; the raw-env resolver is a loud
+    /// last resort reached only when bootstrap recorded no handle for the VM's source.
     private static Result<ComputeProvider> resolveComputeForVm(BootstrapState state,
                                                                CreatedResource.ProvisionedVm vm,
-                                                               Fn1<Result<ComputeProvider>, String> cloudComputeResolver) {
+                                                               CleanupResolvers resolvers) {
         var handle = state.sources().get(vm.sourceName());
 
         if (handle == null) {
-            return cloudComputeResolver.apply(vm.provider());
+            System.err.println("  WARN: no persisted cleanup handle for source '" + vm.sourceName()
+                              + "'; falling back to raw " + vm.provider()
+                              + " env credentials. A token that"
+                              + " provisioned SHOULD be able to reap — a missing handle means bootstrap did not"
+                              + " persist one.");
+
+            return resolvers.cloudComputeFallback()
+                            .apply(vm.provider());
         }
 
-        return ProviderResolver.resolveCloudComputeFromHandle(handle);
+        return resolvers.handleComputeResolver()
+                        .apply(handle);
     }
 
     @SuppressWarnings("JBCT-EX-01")
@@ -188,6 +333,25 @@ sealed interface BootstrapCleanup {
         @Override
         public String message() {
             return "Hetzner credentials missing for SSH key cleanup: set HCLOUD_TOKEN env var";
+        }
+    }
+
+    record HetznerCleanupHandleMissingToken(String provider) implements Cause {
+        @Override
+        public String message() {
+            return "Hetzner SSH-key cleanup: persisted source handle for provider '" + provider
+                 + "' has no '" + API_TOKEN_KEY
+                 + "' credential env-var mapping";
+        }
+    }
+
+    record HetznerCleanupTokenEnvUnset(String envVarName) implements Cause {
+        @Override
+        public String message() {
+            return "Hetzner SSH-key cleanup: credential env var '" + envVarName
+                 + "' (recorded in the persisted"
+                 + " source handle at bootstrap) is unset — a token that provisioned must be able to reap its own"
+                 + " ssh keys";
         }
     }
 }

@@ -23,6 +23,7 @@ import org.pragmatica.cloud.hetzner.api.Server.CreateServerRequest;
 import org.pragmatica.cloud.hetzner.api.SshKey;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Functions.Fn1;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
@@ -214,6 +215,109 @@ class BootstrapCleanupTest {
         assertTrue(result.isSuccess());
         assertTrue(deleteCalls.isEmpty(),
                    "deleteSshKey must NOT be called when state contains no SshKeyResource (pre-existing keys unowned)");
+    }
+
+    private static final String NON_DEFAULT_TOKEN_ENV = "HCLOUD_TOKEN_PROD";
+    private static final String PROD_TOKEN_VALUE = "prod-token-value";
+
+    private static BootstrapState stateWithVmSshKeyAndHandle(String sourceName, SourceCleanupHandle handle) {
+        var phases = new EnumMap<BootstrapPhase, PhaseStatus>(BootstrapPhase.class);
+        for (var phase : BootstrapPhase.values()) {phases.put(phase, PhaseStatus.COMPLETED);}
+        var resources = List.<CreatedResource>of(new ProvisionedVm("hetzner", "vm-1", sourceName, "core"),
+                                                 SshKeyResource.sshKeyResource("hetzner", 42L, "aether-bootstrap-abc12345"));
+        return BootstrapState.bootstrapState(CLUSTER_NAME,
+                                             "hash-1",
+                                             "2026-05-01T00:00:00Z",
+                                             phases,
+                                             resources,
+                                             List.of(),
+                                             List.of(),
+                                             "",
+                                             Map.of(sourceName, handle));
+    }
+
+    private static Fn1<Result<ComputeProvider>, SourceCleanupHandle> recordingHandleComputeResolver(List<SourceCleanupHandle> handleCalls,
+                                                                                                    List<String> terminateCalls) {
+        return handle -> recordHandleResolve(handle, handleCalls, terminateCalls);
+    }
+
+    private static Result<ComputeProvider> recordHandleResolve(SourceCleanupHandle handle,
+                                                               List<SourceCleanupHandle> handleCalls,
+                                                               List<String> terminateCalls) {
+        handleCalls.add(handle);
+        return Result.success(recordingCompute(terminateCalls));
+    }
+
+    private static Fn1<String, String> recordingGetenv(Map<String, String> env, List<String> reads) {
+        return name -> readEnv(name, env, reads);
+    }
+
+    private static String readEnv(String name, Map<String, String> env, List<String> reads) {
+        reads.add(name);
+        return env.get(name);
+    }
+
+    private static Fn1<HetznerClient, String> recordingClientFactory(List<String> tokens, List<Long> deleteCalls) {
+        return token -> recordClientFactory(token, tokens, deleteCalls);
+    }
+
+    private static HetznerClient recordClientFactory(String token, List<String> tokens, List<Long> deleteCalls) {
+        tokens.add(token);
+        return new RecordingHetznerClient(deleteCalls);
+    }
+
+    /// RFC-0016 W4 (#439) — the money path. A timeout-triggered cleanup of a cluster provisioned with a
+    /// token supplied under a NON-default env-var name (`HCLOUD_TOKEN_PROD`) must reap BOTH the VM and its
+    /// ssh key via that name — never raw `HCLOUD_TOKEN`. The getenv stub deliberately omits `HCLOUD_TOKEN`,
+    /// so any read of the raw default would yield a blank token and fail the reap.
+    @Test
+    void cleanup_reapsVmAndSshKey_viaHandleEnvVarName_notRawHcloudToken() {
+        var handleCalls = new ArrayList<SourceCleanupHandle>();
+        var terminateCalls = new ArrayList<String>();
+        var deleteCalls = new ArrayList<Long>();
+        var factoryTokens = new ArrayList<String>();
+        var envReads = new ArrayList<String>();
+
+        var handle = SourceCleanupHandle.sourceCleanupHandle("hetzner",
+                                                             Option.some("eu-central"),
+                                                             Map.of("api_token", NON_DEFAULT_TOKEN_ENV));
+        var state = stateWithVmSshKeyAndHandle("core-source", handle);
+        var env = Map.of(NON_DEFAULT_TOKEN_ENV, PROD_TOKEN_VALUE);
+
+        var result = BootstrapCleanup.cleanup(state,
+                                              recordingHandleComputeResolver(handleCalls, terminateCalls),
+                                              recordingGetenv(env, envReads),
+                                              recordingClientFactory(factoryTokens, deleteCalls));
+
+        assertTrue(result.isSuccess(), () -> "cleanup must succeed via the persisted-handle credential: " + result);
+        assertEquals(List.of("vm-1"), terminateCalls,
+                     "VM must be reaped through the handle-derived compute provider");
+        assertEquals(List.of(handle), handleCalls,
+                     "VM reap must resolve compute from the persisted handle (which names HCLOUD_TOKEN_PROD)");
+        assertEquals(List.of(42L), deleteCalls,
+                     "SSH key must be reaped");
+        assertEquals(List.of(PROD_TOKEN_VALUE), factoryTokens,
+                     "SSH-key HetznerClient must be built from the HCLOUD_TOKEN_PROD-derived token, not raw HCLOUD_TOKEN");
+        assertTrue(envReads.contains(NON_DEFAULT_TOKEN_ENV),
+                   "SSH-key cleanup must read the handle's env-var NAME (HCLOUD_TOKEN_PROD)");
+        assertFalse(envReads.contains("HCLOUD_TOKEN"),
+                    "SSH-key cleanup must NOT read the raw default HCLOUD_TOKEN when a handle exists");
+    }
+
+    /// No persisted handle (pre-W4 fallback path) — the SSH key is still reaped, loudly, via the injected
+    /// default resolver. Guards that W4 kept the raw-env last resort rather than hard-failing.
+    @Test
+    void cleanup_deletesSshKey_viaLoudFallback_whenNoHandlePresent() {
+        var deleteCalls = new ArrayList<Long>();
+        var state = stateWithSshKey(7L);
+
+        var result = BootstrapCleanup.cleanup(state,
+                                              providerName -> new TestCause("unused").result(),
+                                              recordingHetznerResolver(deleteCalls));
+
+        assertTrue(result.isSuccess(), () -> "no-handle fallback must still reap the ssh key: " + result);
+        assertEquals(List.of(7L), deleteCalls,
+                     "no-handle fallback must reap the ssh key via the injected default resolver");
     }
 
     /// Stub used to assert that the only Hetzner call made by SSH-key cleanup

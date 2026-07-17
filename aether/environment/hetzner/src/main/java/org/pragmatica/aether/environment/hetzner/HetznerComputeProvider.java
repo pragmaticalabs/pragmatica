@@ -62,10 +62,12 @@ public record HetznerComputeProvider(HetznerClient client, HetznerEnvironmentCon
     /// Translate a fully-resolved [ProvisionRequest] into a Hetzner create-server call.
     /// [ProvisionRequest#resolve] has already applied the server-type / image / zone / user-data
     /// precedence (#442, #459), so this consumes those fields verbatim — no provider-side
-    /// re-derivation. SSH-key ids stay resolved provider-side (an async account lookup, #442
-    /// option 3B) until the persisted SourceProfile lands (W3). A SPOT request is REJECTED loud:
-    /// Hetzner has no spot product, so honoring it silently would provision an on-demand server —
-    /// the exact silent-downgrade class this surface eliminates.
+    /// re-derivation. SSH-key ids stay resolved provider-side (an async account lookup) but are now
+    /// scoped to THIS cluster (RFC-0016 W3 §3.2–3.3): the lookup filters the cluster-scoped
+    /// `aether-bootstrap-<cluster>` name prefix derived from the persisted cluster name — never the
+    /// old account-wide bare prefix. A SPOT request is REJECTED loud: Hetzner has no spot product, so
+    /// honoring it silently would provision an on-demand server — the exact silent-downgrade class
+    /// this surface eliminates.
     @Override
     public Promise<InstanceInfo> createFrom(ProvisionRequest request) {
         if (request.market() instanceof InstanceType.Spot) {
@@ -83,7 +85,9 @@ public record HetznerComputeProvider(HetznerClient client, HetznerEnvironmentCon
                                                                                                        + "a SPOT request reaching this provider is a bug"));
 
     private Promise<InstanceInfo> createAndConfirm(ProvisionRequest request, Map<String, String> labels) {
-        return resolveSshKeyIds().map(sshKeyIds -> buildCreateRequest(request, sshKeyIds, labels))
+        return resolveSshKeyIds(clusterNameOrDefault(request.context())).map(sshKeyIds -> buildCreateRequest(request,
+                                                                                                             sshKeyIds,
+                                                                                                             labels))
                                .onSuccess(HetznerComputeProvider::logCreateRequest)
                                .flatMap(client::createServer)
                                .map(HetznerComputeProvider::toInstanceInfo)
@@ -203,13 +207,19 @@ public record HetznerComputeProvider(HetznerClient client, HetznerEnvironmentCon
 
     private static final CreateServerRequest.PublicNetSpec IPV4_ONLY = new CreateServerRequest.PublicNetSpec(true, false);
 
-    /// Bootstrap uploads operator SSH keys to Hetzner named with this prefix and passes their ids at
-    /// create time, so bootstrap VMs never get a root password. The ids live only in the bootstrap
-    /// CLI process — so a leader provisioning an auto-heal replacement re-derives them here by listing
-    /// the account's keys and matching this prefix (#442, option 3B: no persisted state, self-healing
-    /// against deleted/recreated keys). Mirrors `BootstrapPhaseSshKey.HETZNER_KEY_NAME_PREFIX` — the
+    /// Bootstrap uploads operator SSH keys to Hetzner named with the cluster-scoped prefix
+    /// `aether-bootstrap-<cluster>` and passes their ids at create time, so bootstrap VMs never get a
+    /// root password. The ids live only in the bootstrap CLI process — so a leader provisioning an
+    /// auto-heal replacement re-derives them here by listing the account's keys and matching the
+    /// prefix scoped to ITS OWN cluster (RFC-0016 W3 §3.2–3.3: no persisted numeric id, self-healing
+    /// against deleted/recreated keys, and — unlike the deleted account-wide bare match — never
+    /// resolving another cluster's keys). Mirrors `BootstrapPhaseSshKey.HETZNER_KEY_NAME_PREFIX` — the
     /// `aether-cli` constant cannot be imported from this provider module.
     static final String BOOTSTRAP_KEY_NAME_PREFIX = "aether-bootstrap";
+    /// Sentinel returned by [#clusterNameOrDefault] when no cluster name resolves. Used to gate the
+    /// ssh-key prefix scope: an unresolved (blank/`unknown`) cluster produces NO cluster-scoped
+    /// prefix, so the resolver falls to the loud keyless branch instead of guessing account-wide.
+    private static final String UNKNOWN_CLUSTER = "unknown";
     /// #459 — Hetzner's stock boot image, supplied to [ProvisionRequest#resolve] as the provider
     /// [ProviderDefaults#fallbackImage] for the LOUD final image fallback: applied only when neither
     /// the source's role `image` nor the node's `[cloud.compute] image` resolves. Unlike the server
@@ -218,7 +228,7 @@ public record HetznerComputeProvider(HetznerClient client, HetznerEnvironmentCon
     /// operator who intended a prepared snapshot sees the stock image was used instead.
     private static final String DEFAULT_IMAGE = "ubuntu-22.04";
 
-    private Promise<List<Long>> resolveSshKeyIds() {
+    private Promise<List<Long>> resolveSshKeyIds(String clusterName) {
         if (!config.sshKeyIds().isEmpty()) {
             log.info("Hetzner provision: SSH key ids resolved from node config (branch=config, count={}) — replacement inherits the cluster's keys",
                      config.sshKeyIds().size());
@@ -226,45 +236,80 @@ public record HetznerComputeProvider(HetznerClient client, HetznerEnvironmentCon
             return Promise.success(config.sshKeyIds());
         }
 
+        return bootstrapKeyPrefix(clusterName).map(this::lookupBootstrapKeyIds)
+                                 .or(HetznerComputeProvider::sshKeyScopeUnresolved);
+    }
+
+    private Promise<List<Long>> lookupBootstrapKeyIds(String prefix) {
         return client.listSshKeys()
-                     .map(HetznerComputeProvider::bootstrapKeyIds)
-                     .onSuccess(HetznerComputeProvider::logPrefixBranch)
+                     .map(keys -> bootstrapKeyIds(keys, prefix))
+                     .onSuccess(ids -> logPrefixBranch(ids, prefix))
                      .recover(HetznerComputeProvider::sshKeyLookupUnavailable);
     }
 
-    private static List<Long> bootstrapKeyIds(List<SshKey> keys) {
+    /// Cluster-scoped ssh-key name prefix `aether-bootstrap-<cluster>` (RFC-0016 W3 §3.2–3.3), or
+    /// empty when the cluster is unresolved (blank/[#UNKNOWN_CLUSTER]) — the empty case gates the
+    /// resolver to the loud keyless branch rather than account-wide guessing. Blank-defensive in the
+    /// same shape as `BootstrapPhaseSshKey.hetznerKeyPrefix`, so the provider's filter and the CLI's
+    /// upload name derive the identical scoped prefix.
+    private static Option<String> bootstrapKeyPrefix(String clusterName) {
+        return Option.option(clusterName)
+                     .map(String::trim)
+                     .filter(name -> !name.isEmpty())
+                     .filter(name -> !UNKNOWN_CLUSTER.equals(name))
+                     .map(name -> BOOTSTRAP_KEY_NAME_PREFIX + "-" + name);
+    }
+
+    private static List<Long> bootstrapKeyIds(List<SshKey> keys, String prefix) {
         return keys.stream()
-                   .filter(HetznerComputeProvider::isBootstrapKey)
+                   .filter(key -> isBootstrapKey(key, prefix))
                    .map(SshKey::id)
                    .toList();
     }
 
-    private static boolean isBootstrapKey(SshKey key) {
+    private static boolean isBootstrapKey(SshKey key, String prefix) {
         return key.name() != null && key.name()
-                                        .startsWith(BOOTSTRAP_KEY_NAME_PREFIX);
+                                        .startsWith(prefix);
     }
 
-    /// #442 — one operator-diagnosable line naming which branch resolved the ssh-key ids the
-    /// replacement was created with. `branch=prefix` when the account carries `aether-bootstrap*`
-    /// keys (the fresh-upload environment), `branch=none` when it carries none — the exact signal
-    /// missing from the field run where a keyless replacement hit the PAM wall and the cause could
-    /// not be told apart from a lookup failure ([#sshKeyLookupUnavailable], `branch=failed`).
-    private static void logPrefixBranch(List<Long> ids) {
+    /// #442 / RFC-0016 W3 — one operator-diagnosable line naming which branch resolved the ssh-key
+    /// ids the replacement was created with. `branch=prefix` when the account carries keys named with
+    /// this cluster's scoped `aether-bootstrap-<cluster>*` prefix (the fresh-upload environment),
+    /// `branch=none` when it carries none — the exact signal missing from the field run where a
+    /// keyless replacement hit the PAM wall and the cause could not be told apart from a lookup
+    /// failure ([#sshKeyLookupUnavailable], `branch=failed`) or an unresolved cluster scope
+    /// ([#sshKeyScopeUnresolved]).
+    private static void logPrefixBranch(List<Long> ids, String prefix) {
         if (ids.isEmpty()) {
-            log.warn("Hetzner provision: no SSH keys named '{}*' on the account (branch=none); replacement created without an "
+            log.warn("Hetzner provision: no SSH keys named '{}*' (cluster-scoped) on the account (branch=none); replacement created without an "
                     + "ssh_keys param (Hetzner sets a root password; key auth via cloud-init still works)",
-                     BOOTSTRAP_KEY_NAME_PREFIX);
+                     prefix);
 
             return;
         }
 
-        log.warn("Hetzner provision: SSH key ids resolved by '{}*' name-prefix match (branch=prefix, count={})",
-                 BOOTSTRAP_KEY_NAME_PREFIX,
+        log.warn("Hetzner provision: SSH key ids resolved by cluster-scoped '{}*' name-prefix match (branch=prefix, count={})",
+                 prefix,
                  ids.size());
     }
 
+    /// RFC-0016 W3 §3.3 — the cluster name is unresolved (blank/`unknown`) AND the node config carries
+    /// no `ssh_key_ids`, so NO cluster-scoped `aether-bootstrap-<cluster>*` prefix exists to resolve.
+    /// Fail-loud posture: rather than fall back to the deleted account-wide bare-prefix guessing (which
+    /// could attach another cluster's keys), create the replacement without an `ssh_keys` param — key
+    /// auth via cloud-init still works, exactly as the `branch=none` path does, though a root password
+    /// will be set.
+    private static Promise<List<Long>> sshKeyScopeUnresolved() {
+        log.warn("Hetzner provision: cluster name unresolved (blank/unknown) and node config carries no ssh_key_ids "
+                + "(branch=none); no cluster-scoped 'aether-bootstrap-<cluster>*' keys could be resolved, so the "
+                + "replacement is created without an ssh_keys param (key auth via cloud-init still works, but a root "
+                + "password will be set)");
+
+        return Promise.success(List.of());
+    }
+
     private static List<Long> sshKeyLookupUnavailable(Cause cause) {
-        log.warn("Hetzner provision: SSH-key lookup failed (branch=failed: {}); creating the replacement without an ssh_keys param "
+        log.warn("Hetzner provision: cluster-scoped SSH-key lookup failed (branch=failed: {}); creating the replacement without an ssh_keys param "
                 + "(key auth via cloud-init still works, but a root password will be set)",
                  cause.message());
 
@@ -343,7 +388,7 @@ public record HetznerComputeProvider(HetznerClient client, HetznerEnvironmentCon
         }
 
         return config.clusterName()
-                     .or("unknown");
+                     .or(UNKNOWN_CLUSTER);
     }
 
     private static Map<String, String> buildLabels(String clusterLabel, String role, String sourceName) {

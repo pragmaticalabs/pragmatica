@@ -6,16 +6,19 @@ package org.pragmatica.aether.config.cluster;
 
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.stream.IntStream;
 
 import org.pragmatica.config.toml.TomlDocument;
 import org.pragmatica.config.toml.TomlParser;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
+import org.pragmatica.lang.parse.Number;
 
 import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Result.success;
@@ -87,16 +90,63 @@ public final class ClusterBootstrapConfigParser {
                                                                               operations));
     }
 
+    /// W6 — document-level format gate (RFC-0016 §3.5). `config_version` is the version of the whole
+    /// persisted cluster-TOML format; every read (bootstrap parse AND the KV-persisted re-parse the
+    /// leader/CTM does) requires an EXACT match with this build's [#REQUIRED_CONFIG_VERSION]. Absent or
+    /// older → re-bootstrap; NEWER → refuse loudly (binary-rollback-after-migration: restore the
+    /// pre-upgrade persisted state). There is no `absent = legacy-baseline` and no migration ladder in
+    /// rc3 (designed in RFC-0016 §3.5, built only when the first real rung exists); a persisted config
+    /// whose format changes (e.g. W3's SourceProfile) bumps this constant.
     private static Result<String> parseConfigVersion(TomlDocument doc) {
         return doc.getString("", "config_version")
-                  .toResult(parseFailed("Missing required field: config_version"))
+                  .toResult(parseFailed("Persisted config has no config_version (document format version); this build requires " + REQUIRED_CONFIG_VERSION
+                                       + " — re-bootstrap the cluster."))
                   .flatMap(ClusterBootstrapConfigParser::validateVersionValue);
     }
 
     private static Result<String> validateVersionValue(String version) {
-        return REQUIRED_CONFIG_VERSION.equals(version)
-               ? success(version)
-               : parseFailed("Unsupported config_version: '" + version + "'. Expected '" + REQUIRED_CONFIG_VERSION + "'").result();
+        if (REQUIRED_CONFIG_VERSION.equals(version)) {
+            return success(version);
+        }
+
+        return isNewerThanRequired(version)
+               ? parseFailed("Persisted config_version '" + version
+                            + "' is NEWER than this build supports (" + REQUIRED_CONFIG_VERSION
+                            + "); restore the pre-upgrade persisted state — this build "
+                            + "cannot read a forward-versioned config.").result()
+               : parseFailed("Persisted config_version '" + version
+                            + "' is not supported by this build (requires " + REQUIRED_CONFIG_VERSION
+                            + ") — re-bootstrap the cluster.").result();
+    }
+
+    private static boolean isNewerThanRequired(String version) {
+        return compareConfigVersion(version, REQUIRED_CONFIG_VERSION) > 0;
+    }
+
+    private static int compareConfigVersion(String left, String right) {
+        var leftParts = versionParts(left);
+        var rightParts = versionParts(right);
+
+        return IntStream.range(0,
+                               Math.max(leftParts.size(),
+                                        rightParts.size()))
+                        .map(i -> Integer.compare(partOrZero(leftParts, i),
+                                                  partOrZero(rightParts, i)))
+                        .filter(cmp -> cmp != 0)
+                        .findFirst()
+                        .orElse(0);
+    }
+
+    private static List<Integer> versionParts(String version) {
+        return Arrays.stream(version.split("\\."))
+                     .map(part -> Number.parseInt(part).or(0))
+                     .toList();
+    }
+
+    private static int partOrZero(List<Integer> parts, int index) {
+        return index < parts.size()
+               ? parts.get(index)
+               : 0;
     }
 
     private static Result<TomlDocument> validateConfigVersion(TomlDocument doc) {

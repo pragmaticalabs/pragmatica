@@ -31,6 +31,11 @@ import static org.pragmatica.lang.Result.success;
 public sealed interface BootstrapPhaseSshKey {
     record unused() implements BootstrapPhaseSshKey {}
 
+    /// Base (cluster-less) Hetzner ssh-key name prefix. RFC-0016 W3 §3.3: the ACTUAL upload
+    /// name is cluster-scoped — `aether-bootstrap-<cluster>-<blob8>` (see [#hetznerKeyPrefix]) —
+    /// so keys never collide across clusters on one account and a leader resolves ONLY its own
+    /// cluster's keys (no account-wide guessing, no dual-accept of the old bare name; Q1: no
+    /// pre-rc3 clusters). Mirrored provider-side by `HetznerComputeProvider.BOOTSTRAP_KEY_NAME_PREFIX`.
     String HETZNER_KEY_NAME_PREFIX = "aether-bootstrap";
 
     static Result<BootstrapContext> execute(BootstrapContext ctx) {
@@ -136,12 +141,25 @@ public sealed interface BootstrapPhaseSshKey {
 
     @SuppressWarnings("JBCT-EX-01")
     private static Result<UploadOutcome> createNewKey(HetznerClient client, SshPublicKey key, BootstrapContext ctx) {
-        var name = key.hetznerKeyName(HETZNER_KEY_NAME_PREFIX);
+        var name = key.hetznerKeyName(hetznerKeyPrefix(ctx.config().cluster().name()));
         var request = SshKey.CreateSshKeyRequest.createSshKeyRequest(name, key.value());
         var promise = client.createSshKey(request);
         var result = promise.await();
 
         return result.map(uploaded -> recordUpload(uploaded, ctx));
+    }
+
+    /// Cluster-scoped Hetzner ssh-key name prefix (RFC-0016 W3 §3.3): `aether-bootstrap-<cluster>`.
+    /// Blank-defensive — a null/blank cluster name collapses to the bare [#HETZNER_KEY_NAME_PREFIX]
+    /// (no trailing dash, no empty cluster segment), mirroring how the provider's
+    /// `HetznerComputeProvider.bootstrapKeyPrefix` defends. Uploaded keys carry this prefix so the
+    /// provider resolves ONLY the cluster's own keys at replacement time.
+    static String hetznerKeyPrefix(String cluster) {
+        return Option.option(cluster)
+                     .map(String::trim)
+                     .filter(name -> !name.isEmpty())
+                     .map(name -> HETZNER_KEY_NAME_PREFIX + "-" + name)
+                     .or(HETZNER_KEY_NAME_PREFIX);
     }
 
     private static UploadOutcome recordUpload(SshKey uploaded, BootstrapContext ctx) {

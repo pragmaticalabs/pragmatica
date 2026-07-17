@@ -118,6 +118,10 @@ class BootstrapPhaseSshKeyTest {
                      "First created key must get id 1 from the stub");
         assertEquals(1, stub.createdKeys.size(), "Should have called createSshKey once");
         assertEquals(VALID_KEY, stub.createdKeys.getFirst().publicKey());
+        // RFC-0016 W3 §3.3 — uploaded key name is cluster-scoped: aether-bootstrap-<cluster>-<blob8>
+        // (cluster identity name = "test"), never the old bare aether-bootstrap prefix.
+        assertTrue(stub.createdKeys.getFirst().name().startsWith("aether-bootstrap-test-"),
+                   () -> "Uploaded key name must be cluster-scoped: " + stub.createdKeys.getFirst().name());
     }
 
     @Test
