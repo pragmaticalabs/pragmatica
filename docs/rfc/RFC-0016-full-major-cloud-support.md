@@ -63,30 +63,34 @@ that surface single and total.
 `:33`) but is **read by no provider**. Verified: Hetzner
 (`HetznerComputeProvider.provision(ProvisionSpec)` at `:66-72` reads
 `instanceSize`, `userData`, `placement` — never `imageId`; image comes from
-`config.image()` at `:308`), AWS (`AwsComputeProvider.java:63-73` reads
-`placement`, `userData`, `context` — image is `config.amiId()` at `:191`,
-instance type is `config.instanceType()` at `:192`), GCP
-(`GcpComputeProvider.java:68-79` — image is `config.sourceImage()` at `:224`,
-machine type is `config.machineType()` at `:150`), Azure
+`config.image()` via `resolveImage()` at `:260-281`), AWS
+(`AwsComputeProvider.java:63-73` reads `placement`, `userData`, `context` —
+image is `config.amiId()` at `:191`, instance type is `config.instanceType()` at
+`:192`), GCP (`GcpComputeProvider.java:68-79` — image is `config.sourceImage()`
+at `:224`, machine type is `config.machineType()` at `:150`), Azure
 (`AzureComputeProvider.java:76-87` — image is `config.image()` at `:141`).
 
-Worse, the field is dropped **upstream of the provider too**: the bootstrap
-builds the spec in `BootstrapPhaseProvision.buildCloudProvisionSpec`
-(`:429-458`) and calls `.withUserData(...)` and `applyZone(...)` but **never
-`.withImage(...)`** — and the config model itself has no image field
-(`RoleSubTable.java:12-16` is `role/count/hosts/instanceType/runtimeRef`;
-`SourceProfile.java:14-30` has no image). So the operator-documented
-`[source.<provider>.<role>] image` key is discarded at parse, long before any
-provider could honor it.
+**Pre-#459** the field was dropped *upstream of the provider* entirely: the
+config model had no image field and the bootstrap never set it on the spec, so
+the documented `[source.<provider>.<role>] image` key was discarded at parse.
+**#459 (b1b9b2820)** added `image` to the config model (`RoleSubTable.java:16`)
+and made Hetzner honor a source-level image — but through a *parallel
+config-overlay path* (`[source...] image` → `[cloud.compute] image` →
+`config.image()` → `HetznerComputeProvider.resolveImage`, `:260-281`), **not**
+through `spec.imageId()`, which remains unread by every provider. So the field
+now works for Hetzner via a *second* mapping path while AWS/GCP/Azure still
+ignore it — the exact per-provider fragmentation this RFC's single surface
+eliminates.
 
-This directly contradicts shipped docs: `vm-snapshot.md:84-85` and `:152-156`
-claim the snapshot id is honored "through the same `image` field … No code
-change is required" and "passed through to the provider's create-server API";
-`feature-catalog.md` row 204 repeats "consumable via every cloud provider's
-existing `image`/`amiId`/`sourceImage` field — no schema change." All three are
-false for the source-level path. (They are true only for the *node-runtime*
-`[cloud.compute] image`, a different key that reaches `config.image()` via
-`HetznerEnvironmentIntegrationFactory.java:69-70`.)
+This is the backdrop for shipped-doc claims: `vm-snapshot.md:84-85` and
+`:152-156` claim the snapshot id is honored "through the same `image` field … No
+code change is required" and "passed through to the provider's create-server
+API"; `feature-catalog.md` row 204 repeats "consumable via every cloud provider's
+existing `image`/`amiId`/`sourceImage` field — no schema change." All three were
+false as written: #459 disproved "no code change" by adding code, and made only
+Hetzner honor the source-level image (via the config overlay, not the shared
+field), while AWS/GCP/Azure still ignore it. (The claim was ever only true for
+the node-runtime `[cloud.compute] image` key — a different field.)
 
 ### Spot: a config surface that silently lies (code-verified)
 
@@ -98,18 +102,22 @@ end-to-end and silently downgrades to on-demand**. Verified:
   support (only Hetzner is named today), rule **PF-14** (`:284`) requires a
   non-spot sub-table when an elected LB is present. The CLI `scale` path accepts
   `role=spot`.
-- But **both** spec-build paths hardcode on-demand:
+- But **all three** spec-build sites hardcode on-demand:
   `CloudProviderSupport.buildProvisionSpec` (`:80-84`,
-  `ProvisionSpec.provisionSpec(InstanceType.ON_DEMAND, …)`) and
-  `BootstrapPhaseProvision.buildCloudProvisionSpec` (`:453`, same literal).
+  `ProvisionSpec.provisionSpec(InstanceType.ON_DEMAND, …)`),
+  `BootstrapPhaseProvision.buildCloudProvisionSpec` (`:453`, same literal), and
+  the **CTM auto-heal path** `ClusterTopologyManagerRecord.java:528`
+  (`ProvisionSpec.provisionSpec(InstanceType.ON_DEMAND, …)`, dispatched via
+  `NodeLifecycleManager.provisionNode` `:60-69` → `provider.provision(spec)`).
 - And `ComputeProvider`/`CloudProvider.provisionSpot` (`CloudProvider.java:16`)
   has **zero production callers** — only the five provider impls (each returning
   `operationNotSupported`) and one Hetzner unit test invoke it.
 
 Net: a configured `spot` role that passes validation is provisioned as an
-on-demand instance, with no operator-visible signal. This RFC makes that
-condition impossible (§2 spot slice) and corrects the marketing (feature-catalog
-row 4 calls auto-heal "spot-first … Battle-tested").
+on-demand instance, with no operator-visible signal — on the bootstrap seed path
+*and* the auto-heal path. This RFC makes that condition impossible (§2 spot
+slice) and corrects the marketing (feature-catalog row 4 calls auto-heal
+"spot-first … Battle-tested").
 
 ### The provisioning-state reconstructibility gap (#444 + #439)
 
@@ -118,7 +126,7 @@ is not reconstructible from KV by an arbitrary leader — violating the
 architectural invariant that cluster state be reconstructible from the KV-Store.
 `#442` shipped option 3B for rc2 (Hetzner re-derives ssh-key ids at provision
 time by listing account keys and filtering the `aether-bootstrap` name prefix —
-`HetznerComputeProvider.java:249-300`), which closed the loss mode with zero
+`HetznerComputeProvider.java:283-307`), which closed the loss mode with zero
 persisted state but is provider-specific and account-wide-greedy, and leaves the
 *class* unfixed. `firewall_ids` has the identical gap (rendered nowhere), and the
 ssh-key upload name (`aether-bootstrap*`) matches **all** clusters on an account.
@@ -176,6 +184,12 @@ provider.
 | FloatingIpProvider | C | — | — | — | S (Noop) |
 | Spot provisioning | **S** | **S** | **S** | **S** | — |
 
+The "spec→request image plumb" row scores the **spec** path (`spec.imageId()` →
+create request), which is `S` everywhere: no provider reads the field. #459
+routes source-level image to Hetzner's create request via a *parallel*
+config-overlay path (`config.image()` → `resolveImage`), which is why the RFC's
+single surface (§2) matters — the field flows, but through a second mapping.
+
 Cell evidence (paths under `aether/environment/`):
 
 - **Compute CRUD = C for all five**: `hetzner/…/HetznerComputeProvider.java`,
@@ -228,11 +242,14 @@ Cell evidence (paths under `aether/environment/`):
    Tier-1 Hetzner.** Hetzner is the only provider that plumbs `instanceSize`;
    AWS and GCP drop both `instanceSize` and `imageId`. "AWS-first" starts from
    behind on the exact axis this RFC generalizes.
-2. **`spec.imageId()` is dead code across the whole fleet**, and the config
-   model has no `image` field — so the operator-facing `[source…] image` is a
-   silent no-op, directly contradicting `vm-snapshot.md` and catalog row 204.
+2. **`spec.imageId()` is dead code across the whole fleet** (no provider reads
+   it). #459 made the operator-facing `[source…] image` work for **Hetzner
+   only**, via a *parallel config-overlay path* (`config.image()` →
+   `resolveImage`), not the shared spec field — so AWS/GCP/Azure still silently
+   ignore it. That per-provider second path is itself the fragmentation §2
+   eliminates.
 3. **Spot doesn't just stub — it silently downgrades.** A validated `spot` role
-   provisions on-demand (both spec-build paths hardcode `ON_DEMAND`;
+   provisions on-demand (all three spec-build paths hardcode `ON_DEMAND`;
    `provisionSpot` has zero callers) while `feature-catalog.md` row 4 markets
    auto-heal as "spot-first … Battle-tested". §2 (spot slice) makes the silent
    downgrade impossible; W9 corrects the wording.
@@ -245,42 +262,54 @@ Cell evidence (paths under `aether/environment/`):
 
 **Root cause.** There is no single place that maps a source/role spec into a
 provider create-request. The mapping is smeared across (a) the config parser
-(which fields even reach `SourceProfile`/`RoleSubTable`), (b)
-`BootstrapPhaseProvision.buildCloudProvisionSpec` (which `with*` calls it makes),
-(c) `ProviderResolver.buildCloudConfig` (which `[cloud.compute]` keys it sets),
-and (d) each provider's `provision(ProvisionSpec)` (which spec fields it reads).
-A field is "plumbed" only if all four agree; `server_type` accidentally does for
-Hetzner, `image` does for nobody, and `InstanceType.SPOT` for no one at all.
+(which fields even reach `SourceProfile`/`RoleSubTable`), (b) the **three**
+spec-build producers (`CloudProviderSupport.buildProvisionSpec`,
+`BootstrapPhaseProvision.buildCloudProvisionSpec`,
+`ClusterTopologyManagerRecord:528` — the CTM heal path), (c)
+`ProviderResolver.buildCloudConfig` (which `[cloud.compute]` keys it sets), and
+(d) each provider's `provision(ProvisionSpec)` (which spec fields it reads).
+A field is "plumbed" only if all agree; `server_type` accidentally does for
+Hetzner, `image` reaches only Hetzner via a second path, and `InstanceType.SPOT`
+reaches no one at all.
 
 **Design: one total mapping surface.** Introduce a single provider-agnostic
 `ProvisionRequest` shape and make every provider consume it exhaustively, so the
 compiler forces every provider to say what it does with every field.
 
-- **2.1 — Complete the config model.** Add `image` (source- and role-level, role
-  overrides source) to the spec model so the documented key parses. Role-level
-  fields become a small typed record (`RoleProvisioning`: `instanceType`,
-  `image`, `count`, `hosts`) rather than the current flat `RoleSubTable`. This is
-  a **persisted/parsed-format change** → gated by the document-level
-  `formatVersion` (§3.5, Q1).
-- **2.2 — Populate the whole `ProvisionSpec`.** `buildCloudProvisionSpec` calls
+- **2.1 — Complete the config model.** #459 already added `image` to
+  `RoleSubTable` (`:16`); generalize it to source- **and** role-level (role
+  overrides source) and fold the role fields into a small typed record
+  (`RoleProvisioning`: `instanceType`, `image`, `count`, `hosts`) rather than the
+  flat `RoleSubTable`. This is a **persisted/parsed-format change** → gated by the
+  document-level `formatVersion` (§3.5, Q1).
+- **2.2 — Populate the whole `ProvisionSpec`.** The producers call
   `.withImage(role.image().or(source.image()))` whenever present, alongside the
-  existing `.withUserData`/placement, and maps `role == SPOT` →
-  `InstanceType.SPOT` (replacing the hardcoded `ON_DEMAND` at
-  `CloudProviderSupport.java:81` and `BootstrapPhaseProvision.java:453`). The
-  bootstrap-time spec becomes total: any field the operator can set is on the
-  spec.
-- **2.3 — Make providers consume it exhaustively.** Replace the free-form
-  `provision(ProvisionSpec)` overrides with a shared, non-overridable resolution
-  step in the SPI: a `ProvisionRequest resolve(ProvisionSpec, ProviderDefaults)`
-  helper (default method on `ComputeProvider`) that computes the *effective*
-  image/instance-type/zone/user-data/tags/market-options with a documented
-  precedence (`spec` field → provider config default → **loud** fallback, never a
-  silent hardcoded default). Each provider implements only
-  `createFrom(ProvisionRequest)` and can no longer forget a field, because the
-  request record has no optional-drop path. `imageId` unset resolves to the
-  provider default *with an INFO line naming the fallback* (mirrors #442's
-  `logCreateRequest` at `HetznerComputeProvider.java:110-116` and demotes the
-  hardcoded `DEFAULT_IMAGE` at `HetznerEnvironmentIntegrationFactory.java:38`).
+  existing `.withUserData`/placement, and map `role == SPOT` →
+  `InstanceType.SPOT` — replacing the hardcoded `ON_DEMAND` at **all three
+  producer sites** (`CloudProviderSupport.java:81`,
+  `BootstrapPhaseProvision.java:453`, and the CTM heal path
+  `ClusterTopologyManagerRecord.java:528`). The spec becomes total: any field the
+  operator can set is on the spec.
+- **2.3 — Make providers consume it exhaustively, at the SPI boundary.** Replace
+  the free-form `provision(ProvisionSpec)` overrides with a shared,
+  non-overridable resolution step: a `ProvisionRequest resolve(ProvisionSpec,
+  ProviderDefaults)` that is a **`static` method on the SPI — NOT a `default`
+  method** (default methods are overridable, so a provider could override
+  `resolve()` and re-open the class; `static` + the abstract
+  `createFrom(ProvisionRequest)` hook is the *only* per-provider surface). It
+  computes the *effective* image/instance-type/zone/user-data/tags/market-options
+  with a documented precedence (`spec` field → provider config default → **loud**
+  fallback, never a silent hardcoded default). **Critically, `resolve()` runs at
+  the `ComputeProvider.provision(spec)` boundary — the single choke every dispatch
+  funnels through (bootstrap seed AND CTM heal, since all three producers end at
+  `provider.provision(spec)` via `NodeLifecycleManager:68`) — NOT inside the
+  `buildCloudProvisionSpec` producers.** Placing it at a producer would leave the
+  CTM heal path (`ClusterTopologyManagerRecord:528`) bypassing it, silently
+  downgrading spot (and any future field) on exactly the path that matters most.
+  `imageId` unset resolves to the provider default *with an INFO/WARN line naming
+  the fallback* (mirrors #442's `logCreateRequest` at
+  `HetznerComputeProvider.java:110-116` and #459's loud `resolveImage` fallback,
+  `HetznerComputeProvider:254,274-281`).
 - **2.4 — CTM parity + per-role image resolution (Q6).** Auto-heal replacements
   must inherit the effective image/instance-type of *their own role*. There is
   **no runtime-kind tag** on the snapshot id (unverifiable metadata on an opaque
@@ -334,7 +363,7 @@ compiler forces every provider to say what it does with every field.
 RFC cannot compile without deciding what it does with image, instance-type
 (incl. spot market-options), zone, user-data, and tags — there is no
 `provision(spec.instanceType())` fall-through left to inherit, and no
-`ON_DEMAND` literal on the spec-build path.
+`ON_DEMAND` literal on any of the three spec-build paths.
 
 ### 3. Provider-agnostic SourceProfile (folds #444 + #439)
 
@@ -349,7 +378,7 @@ invariant that cluster state be reconstructible from KV.
   construction.** A leader that finds no profile for a source **fails loudly,
   naming the missing profile** — it never falls back to account-wide prefix
   guessing. The Hetzner-only 3B prefix-listing fallback
-  (`HetznerComputeProvider.java:249-300`) is **deleted**: with the profile always
+  (`HetznerComputeProvider.java:283-307`) is **deleted**: with the profile always
   present, its only role (reconstruct-from-nothing) no longer exists, and its
   account-wide greediness is a liability.
 - **3.2 — Prefer stable NAMES/selectors over provider-numeric ids.** Numeric ids
@@ -519,9 +548,9 @@ Sizes are rough (S ≤ 1d, M ≈ 2–3d, L ≈ 1w).
 
 | # | Item | Size | Issue | Why here |
 |---|---|---|---|---|
-| W1 | **Generalized spec→request mapping surface** (§2.3): non-overridable resolve + `ProvisionRequest` (incl. `market-options`); providers implement `createFrom` only; `role==SPOT`→`InstanceType.SPOT` + AWS spot arm (§2.5-ii) | **L** | #459 (structural half), #442 | Highest blast-radius: every provision path (bootstrap seed + CTM heal) funnels through it; eliminates the class incl. the silent-spot downgrade. Do first. |
-| W2 | **Complete config model** (§2.1): `image` + typed `RoleProvisioning`; `buildCloudProvisionSpec` populates image; **per-role image resolution** + CTM overlay parity (§2.4) | **M** | #459 | Unblocks documented `[source…] image`; replaces the interim core-stamps-all behavior; touches persisted parse format (gated by W6). |
-| W3 | **Provider-agnostic persisted `SourceProfile`** (§3.1–3.3): atomic-at-bootstrap persistence, ssh-key/firewall selectors, cluster-scoped naming (no dual-accept), **delete 3B prefix fallback** | **L** | #444 | KV-reconstructibility invariant; must precede any bootstrap firewall growth. Interaction-heavy (bootstrap + CTM + reaper). |
+| W1 | **Generalized spec→request mapping surface** (§2.3): `static` non-overridable `resolve()` at the `provision(spec)` boundary + `ProvisionRequest` (incl. `market-options`); providers implement `createFrom` only; `role==SPOT`→`InstanceType.SPOT` + AWS spot arm (§2.5-ii) | **L** | #459 (structural half), #442 | Highest blast-radius: every provision path (bootstrap seed + CTM heal, all funnelling through `provider.provision(spec)`) hits it; eliminates the class incl. the silent-spot downgrade. **Provider migration order:** Hetzner first (its `resolveServerType`/`resolveImage` already embody the precedence `resolve()` centralizes — porting it is the design proof, and it is the only provider with a live cloud gate), then AWS (W5-covered), GCP/Azure in parallel, Docker last (no-op special case). |
+| W2 | **Complete config model** (§2.1): source+role `image` + typed `RoleProvisioning`; producers populate image; **per-role image resolution** + CTM overlay parity (§2.4) | **M** | #459 | Generalizes #459's `RoleSubTable.image`; replaces the interim core-stamps-all behavior; touches persisted parse format (gated by W6). |
+| W3 | **Provider-agnostic persisted `SourceProfile`** (§3.1–3.3): atomic-at-bootstrap persistence, ssh-key/firewall selectors, cluster-scoped naming (no dual-accept), **delete 3B prefix fallback** (`HetznerComputeProvider:283-307`) | **L** | #444 | KV-reconstructibility invariant; must precede any bootstrap firewall growth. Interaction-heavy (bootstrap + CTM + reaper). |
 | W4 | **Cleanup credential unification** (§3.4) + **timeout-path regression test** with non-default env-var name | **M** | #439 | Money-leak path. Small code, but the test is the observability surface that proves it — build the test first, then unify. |
 | W5 | **LocalStack AWS contract suite** (§4.2/4.3) for compute/LB/secrets/discovery (**spot excluded**) | **M** | new (harness) | AWS regression sensor before live creds; cheap, unblocks W1/W2 verification for AWS without a bill. |
 | W6 | **Document-level stored-format versioning** (§3.5): `formatVersion` field + **exact-match gate** + named errors both directions. **No step-runner ladder** (deferred to first real rung) | **S** | #434-related | Gates W2/W3 persisted changes; owner-approved (Q1). Shrunk from the original ladder scope. |
@@ -548,21 +577,21 @@ the primary debug surface.
 ## Alternatives considered
 
 - **A1. Patch `image` per provider like #442 patched `server_type`.** Rejected:
-  that *is* the defect class. It leaves the next field (firewall, spot, placement
-  detail) to be rediscovered as a field-specific outage. W1 pays the structural
-  cost once.
+  that *is* the defect class. #459 already showed the trap — it made image work
+  for Hetzner only, via a second mapping path. W1 pays the structural cost once.
 - **A2. Keep provider-specific provisioning-state re-derivation (3B) as the
-  general mechanism.** Rejected for the class *and now deleted entirely* (§3.1):
-  it is Hetzner-only, prefix-guesses account-wide, and cannot carry firewall refs
-  or labels policy. With the profile persisted atomically at bootstrap,
-  profile-absence is unreachable, so the fallback has no remaining role.
+  general mechanism.** Rejected for the class *and now deleted entirely* (§3.1,
+  `HetznerComputeProvider:283-307`): it is Hetzner-only, prefix-guesses
+  account-wide, and cannot carry firewall refs or labels policy. With the profile
+  persisted atomically at bootstrap, profile-absence is unreachable, so the
+  fallback has no remaining role.
 - **A3. Live AWS as the primary AWS gate from day one.** Rejected per owner
   ruling and cost/latency: LocalStack contract tests are the interim sensor; live
   e2e is one bounded run per release once creds exist.
 - **A4. Defer spot entirely to post-GA.** Rejected: the config surface already
-  exists and *silently lies* (validated spot → on-demand). rc3 must at minimum
-  fail loudly (W10) and ship the AWS arm riding W1 (§2.5); only the *policy* layer
-  is demand-gated post-GA.
+  exists and *silently lies* (validated spot → on-demand, on both seed and heal
+  paths). rc3 must at minimum fail loudly (W10) and ship the AWS arm riding W1
+  (§2.5); only the *policy* layer is demand-gated post-GA.
 - **A5. ~~Dual-accept old + new ssh-key names for back-compat.~~ VOID.** The
   original rejection of cluster-scoped-only naming assumed existing clusters to
   preserve. Per Q1 there are no pre-rc3 persisted clusters (they are refused, not
@@ -578,18 +607,19 @@ the primary debug surface.
 
 ## Migration
 
-- **Config/parse format (W2/W3):** additive fields (`image`, typed role table,
-  persisted `SourceProfile`) behind the **document-level `formatVersion`** (W6,
-  §3.5). Absent or non-current version → named error; operators **re-bootstrap**
-  (release-notes obligation — there are no pre-rc3 production clusters, so this is
-  a doc line, not a migration burden). The step-runner ladder is designed but not
-  built in rc3.
+- **Config/parse format (W2/W3):** additive fields (source+role `image`, typed
+  role table, persisted `SourceProfile`) behind the **document-level
+  `formatVersion`** (W6, §3.5). Absent or non-current version → named error;
+  operators **re-bootstrap** (release-notes obligation — there are no pre-rc3
+  production clusters, so this is a doc line, not a migration burden). The
+  step-runner ladder is designed but not built in rc3.
 - **Providers:** the `provision(ProvisionSpec)` override signature changes to
-  `createFrom(ProvisionRequest)`; all five in-tree providers migrate in W1. This
-  is an SPI change within a BSL module — rebuild-together, no external contract.
-- **Docs:** W9 corrects the three false "no code change / passed through" claims,
-  the spot wording, and the Hetzner-secrets wording; adds the snapshot-matrix
-  naming doc.
+  `createFrom(ProvisionRequest)`; all five in-tree providers migrate in W1
+  (Hetzner first — see the W1 row). This is an SPI change within a BSL module —
+  rebuild-together, no external contract.
+- **Docs:** W9 corrects the false "no code change / passed through" claims, the
+  spot wording, and the Hetzner-secrets wording; adds the snapshot-matrix naming
+  doc.
 
 ## Owner rulings on open questions (2026-07-17)
 
@@ -610,15 +640,15 @@ sections cited.
   fail loudly, never guess). Release-notes: pre-rc3 configs refused; re-bootstrap.
   → §3.1, §3.3, §3.5, §2.1, W6, A5, Migration.
 - **Q2 — Spot. Option A + an rc3 mechanism slice.** Recorded the code-verified
-  fact that the spot surface exists but silently downgrades to on-demand
-  (§Motivation, §1 surprise 3). rc3: (i) loud-fail validation on unimplemented
-  arms (W10); (ii) `role==SPOT`→`InstanceType.SPOT` + AWS spot arm riding W1
-  (§2.5); GCP/Azure arms only if trivially riding Tier-3. Spot is
-  LocalStack-Pro-only → excluded from contract tests, covered by unit + live
-  smoke (§4.2/4.3). Reclamation = node-failure via auto-heal, **no preemption
-  drain** — stated honestly. Policy layer = post-GA demand-gated ticket
-  (placeholder). W9 catalog wording, code-verified. → §2.5, §4.2, §4.3, W1, W9,
-  W10.
+  fact that the spot surface exists but silently downgrades to on-demand on all
+  three spec-build paths (§Motivation, §1 surprise 3). rc3: (i) loud-fail
+  validation on unimplemented arms (W10); (ii) `role==SPOT`→`InstanceType.SPOT` +
+  AWS spot arm riding W1 (§2.5); GCP/Azure arms only if trivially riding Tier-3.
+  Spot is LocalStack-Pro-only → excluded from contract tests, covered by unit +
+  live smoke (§4.2/4.3). Reclamation = node-failure via auto-heal, **no
+  preemption drain** — stated honestly. Policy layer = post-GA demand-gated
+  ticket (placeholder). W9 catalog wording, code-verified. → §2.5, §4.2, §4.3,
+  W1, W9, W10.
 - **Q3 — AWS support DB. PG-on-EC2, per-run** (not RDS, not persistent); same
   container-PG bootstrap shape as Hetzner. → §4.2, §5, A7.
 - **Q4 — AWS networking. One dedicated persistent VPC**, created once via an
@@ -646,9 +676,11 @@ sections cited.
   `EnvironmentIntegration.java` (`:21-39` facets), `CloudProvider.java` (`:16`
   `provisionSpot` — zero callers), `CloudProviderSupport.java` (`:80-84`
   hardcoded `ON_DEMAND`), `CloudCredentials.java` (`:23-36` env resolution)
-- `aether/environment/{hetzner,aws,gcp,azure,docker}/…/*ComputeProvider.java`,
-  `*EnvironmentIntegration.java`, `*CloudProvider.java` (spot stubs),
-  `*LoadBalancerProvider.java`, `*DiscoveryProvider.java`, `*SecretsProvider.java`
+- `aether/environment/hetzner/…/HetznerComputeProvider.java` (`:254,274-281`
+  #459 loud `resolveImage` default; `:283-307` 3B prefix fallback, deleted by W3),
+  and `{aws,gcp,azure,docker}/…/*ComputeProvider.java`, `*EnvironmentIntegration.java`,
+  `*CloudProvider.java` (spot stubs), `*LoadBalancerProvider.java`,
+  `*DiscoveryProvider.java`, `*SecretsProvider.java`
 
 ### Internal — plumbing, config & lifecycle
 - `aether/cli/…/cluster/BootstrapPhaseProvision.java` (`:429-458`
@@ -656,9 +688,12 @@ sections cited.
   `ProviderResolver.java` (`:65-107` cleanup paths, `:146-178` `buildCloudConfig`,
   `:190-192` `coreInstanceType` overlay), `BootstrapCleanup.java` (`:105-139`
   credential dual-path), `SourceCleanupHandle.java`
+- `aether/aether-deployment/…/cluster/ClusterTopologyManagerRecord.java` (`:528`
+  third hardcoded `ON_DEMAND`, CTM heal path), `NodeLifecycleManager.java`
+  (`:60-69` `provisionNode` → `provider.provision(spec)`)
 - `aether/aether-config/…/cluster/SourceProfile.java`, `RoleSubTable.java`
-  (`:12-16` — no image field), `ClusterBootstrapConfigValidator.java` (`:266`
-  PF-16 spot, `:284` PF-14 non-spot-with-LB)
+  (`:16` — `image` field added by #459), `ClusterBootstrapConfigValidator.java`
+  (`:266` PF-16 spot, `:284` PF-14 non-spot-with-LB)
 
 ### Internal — harness & docs
 - `aether/tests/cloud/{deploy-cloud.sh,run-cloud-tests.sh,teardown-cloud.sh}`
