@@ -14,6 +14,9 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../../../" && pwd)"
 CLOUD_ENV="${SCRIPT_DIR}/.cloud-env"
 
+# Provider driver (RFC-0016 §5): all hcloud usage lives behind driver_<op>.
+source "${SCRIPT_DIR}/lib/cloud-driver.sh"
+
 CLUSTER_NAME="cloud-test"
 LABEL="aether-cluster=${CLUSTER_NAME}"
 LOCATION="fsn1"
@@ -76,7 +79,7 @@ if [ -z "${HCLOUD_TOKEN:-}" ]; then
 fi
 log_pass "HCLOUD_TOKEN available"
 
-command -v hcloud >/dev/null 2>&1 || { log_fail "hcloud CLI not installed"; exit 1; }
+driver_require_cli || { log_fail "hcloud CLI not installed"; exit 1; }
 log_pass "hcloud CLI installed"
 
 command -v aether >/dev/null 2>&1 || { log_fail "aether CLI not installed"; exit 1; }
@@ -96,8 +99,8 @@ if [ ! -f "${SSH_KEY_FILE}" ]; then
     log_pass "Generated SSH key pair: ${SSH_KEY_FILE}"
 fi
 
-if ! hcloud ssh-key describe "${SSH_KEY_NAME}" >/dev/null 2>&1; then
-    hcloud ssh-key create --name "${SSH_KEY_NAME}" --public-key-from-file "${SSH_KEY_FILE}.pub" >/dev/null
+if ! driver_sshkey_exists "${SSH_KEY_NAME}"; then
+    driver_create_sshkey "${SSH_KEY_NAME}" "${SSH_KEY_FILE}.pub"
     log_pass "Registered SSH key with Hetzner"
 else
     log_info "SSH key already exists in Hetzner"
@@ -108,17 +111,14 @@ fi
 # =========================================================================
 log_step "Phase 3: Private network"
 
-if ! hcloud network describe "${NETWORK_NAME}" >/dev/null 2>&1; then
-    hcloud network create --name "${NETWORK_NAME}" --ip-range "${NETWORK_RANGE}" \
-        --label "${LABEL}" >/dev/null
-    hcloud network add-subnet "${NETWORK_NAME}" --type cloud \
-        --network-zone eu-central --ip-range "${NETWORK_RANGE}" >/dev/null
+if ! driver_network_exists "${NETWORK_NAME}"; then
+    driver_init_network "${NETWORK_NAME}" "${NETWORK_RANGE}" "${LABEL}"
     log_pass "Created private network ${NETWORK_NAME} (${NETWORK_RANGE})"
 else
     log_info "Network ${NETWORK_NAME} already exists"
 fi
 
-NETWORK_ID=$(hcloud network describe "${NETWORK_NAME}" -o json | python3 -c 'import sys,json;print(json.load(sys.stdin)["id"])')
+NETWORK_ID=$(driver_network_id "${NETWORK_NAME}")
 export CLOUD_NETWORK_ID="${NETWORK_ID}"
 log_info "Network ID: ${NETWORK_ID}"
 
@@ -134,12 +134,12 @@ if [ "$DO_BUILD" = true ]; then
 fi
 
 # Check if nodes already exist
-EXISTING=$(hcloud server list --selector "${LABEL},aether-role=core" -o noheader 2>/dev/null | wc -l | tr -d ' ')
+EXISTING=$(driver_core_node_count "${LABEL}")
 if [ "$EXISTING" -ge 5 ] 2>/dev/null; then
     log_info "5 core nodes already exist — skipping bootstrap"
 else
     log_info "Bootstrapping 5 core nodes via Aether CLI..."
-    aether cluster bootstrap "${SCRIPT_DIR}/aether-cloud.toml" --yes --wait --timeout 600
+    aether cluster bootstrap "$(driver_provider_toml "${SCRIPT_DIR}")" --yes --wait --timeout 600
     log_pass "Bootstrap complete"
 fi
 
@@ -147,8 +147,8 @@ fi
 log_info "Collecting node information..."
 for i in $(seq 1 5); do
     NODE_NAME="${CLUSTER_NAME}-${i}"
-    if hcloud server describe "${NODE_NAME}" >/dev/null 2>&1; then
-        NODE_IP=$(hcloud server describe "${NODE_NAME}" -o json | python3 -c 'import sys,json;d=json.load(sys.stdin);print(d["public_net"]["ipv4"]["ip"])')
+    if driver_node_exists "${NODE_NAME}"; then
+        NODE_IP=$(driver_node_public_ip "${NODE_NAME}")
         PRIVATE_IP="10.0.1.1${i}"
         log_info "  ${NODE_NAME}: public=${NODE_IP} private=${PRIVATE_IP}"
     fi
@@ -160,22 +160,15 @@ done
 log_step "Phase 5: Aether LB VM"
 
 LB_VM_NAME="${CLUSTER_NAME}-lb"
-if ! hcloud server describe "${LB_VM_NAME}" >/dev/null 2>&1; then
-    hcloud server create \
-        --name "${LB_VM_NAME}" \
-        --type "${SERVER_TYPE}" \
-        --image "${IMAGE}" \
-        --location "${LOCATION}" \
-        --ssh-key "${SSH_KEY_NAME}" \
-        --network "${NETWORK_NAME}" \
-        --label "${LABEL}" \
-        --label "aether-role=lb" >/dev/null
+if ! driver_node_exists "${LB_VM_NAME}"; then
+    driver_create_support_vm "${LB_VM_NAME}" "${SERVER_TYPE}" "${IMAGE}" "${LOCATION}" \
+        "${SSH_KEY_NAME}" "${NETWORK_NAME}" "${LABEL}" "aether-role=lb"
     log_pass "Created LB VM: ${LB_VM_NAME}"
 else
     log_info "LB VM already exists"
 fi
 
-BASTION_IP=$(hcloud server describe "${LB_VM_NAME}" -o json | python3 -c 'import sys,json;d=json.load(sys.stdin);print(d["public_net"]["ipv4"]["ip"])')
+BASTION_IP=$(driver_node_public_ip "${LB_VM_NAME}")
 log_info "Bastion/LB public IP: ${BASTION_IP}"
 
 # Set private IP for LB
@@ -221,22 +214,15 @@ log_step "Phase 6: Postgres VM"
 PG_VM_NAME="${CLUSTER_NAME}-postgres"
 PG_PRIVATE_IP="10.0.1.30"
 
-if ! hcloud server describe "${PG_VM_NAME}" >/dev/null 2>&1; then
-    hcloud server create \
-        --name "${PG_VM_NAME}" \
-        --type "${SERVER_TYPE}" \
-        --image "${IMAGE}" \
-        --location "${LOCATION}" \
-        --ssh-key "${SSH_KEY_NAME}" \
-        --network "${NETWORK_NAME}" \
-        --label "${LABEL}" \
-        --label "aether-role=db" >/dev/null
+if ! driver_node_exists "${PG_VM_NAME}"; then
+    driver_create_support_vm "${PG_VM_NAME}" "${SERVER_TYPE}" "${IMAGE}" "${LOCATION}" \
+        "${SSH_KEY_NAME}" "${NETWORK_NAME}" "${LABEL}" "aether-role=db"
     log_pass "Created Postgres VM: ${PG_VM_NAME}"
 else
     log_info "Postgres VM already exists"
 fi
 
-PG_PUBLIC_IP=$(hcloud server describe "${PG_VM_NAME}" -o json | python3 -c 'import sys,json;d=json.load(sys.stdin);print(d["public_net"]["ipv4"]["ip"])')
+PG_PUBLIC_IP=$(driver_node_public_ip "${PG_VM_NAME}")
 
 log_info "Waiting for SSH on Postgres VM..."
 wait_for_ssh "${PG_PUBLIC_IP}" 120
@@ -272,40 +258,25 @@ log_pass "PostgreSQL ready on ${PG_PRIVATE_IP}:5432"
 # =========================================================================
 log_step "Phase 7: Hetzner managed load balancer"
 
-if ! hcloud load-balancer describe "${LB_NAME}" >/dev/null 2>&1; then
-    hcloud load-balancer create \
-        --name "${LB_NAME}" \
-        --type lb11 \
-        --location "${LOCATION}" \
-        --label "${LABEL}" >/dev/null
+if ! driver_lb_exists "${LB_NAME}"; then
+    driver_lb_create "${LB_NAME}" lb11 "${LOCATION}" "${LABEL}"
     log_pass "Created Hetzner LB: ${LB_NAME}"
 
     # Attach to private network
-    hcloud load-balancer attach-to-network "${LB_NAME}" --network "${NETWORK_NAME}" >/dev/null
+    driver_lb_attach_network "${LB_NAME}" "${NETWORK_NAME}"
     log_pass "Attached LB to private network"
 
     # Add app HTTP service (TCP passthrough, port 80 → 8070)
-    hcloud load-balancer add-service "${LB_NAME}" \
-        --protocol tcp \
-        --listen-port 80 \
-        --destination-port 8070 >/dev/null
+    driver_lb_add_service "${LB_NAME}" tcp 80 8070
     log_pass "Added app HTTP service (port 80 → 8070)"
 
     # Add health check
-    hcloud load-balancer update-health-check "${LB_NAME}" \
-        --protocol http \
-        --port 8080 \
-        --http-path /health/live \
-        --interval 10 \
-        --timeout 5 \
-        --retries 3 >/dev/null 2>&1 || log_info "Health check configured via default"
+    driver_lb_health_check "${LB_NAME}" 8080 /health/live 10 5 3 || log_info "Health check configured via default"
 
     # Add core nodes as targets
     for i in $(seq 1 5); do
         NODE_NAME="${CLUSTER_NAME}-${i}"
-        hcloud load-balancer add-target "${LB_NAME}" \
-            --server "${NODE_NAME}" \
-            --use-private-ip >/dev/null 2>&1 || true
+        driver_lb_add_target "${LB_NAME}" "${NODE_NAME}" || true
         log_info "  Added target: ${NODE_NAME}"
     done
     log_pass "All core nodes added as LB targets"
@@ -313,7 +284,7 @@ else
     log_info "Hetzner LB already exists"
 fi
 
-HLB_IP=$(hcloud load-balancer describe "${LB_NAME}" -o json | python3 -c 'import sys,json;d=json.load(sys.stdin);print(d["public_net"]["ipv4"]["ip"])')
+HLB_IP=$(driver_lb_public_ip "${LB_NAME}")
 log_info "Hetzner LB public IP: ${HLB_IP}"
 
 # =========================================================================
