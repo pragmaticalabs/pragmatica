@@ -80,9 +80,21 @@ snapshot id:
 image = "<snapshot-id-from-build>"   # e.g. 174523891
 ```
 
-The Hetzner API accepts either a name (`ubuntu-22.04`) or an integer image id
-through the same `image` field; same shape for AWS `amiId`, GCP `sourceImage`,
-Azure `image`. No code change is required.
+The source role's `image` is not passed straight to the cloud API — it is
+parsed from `[source.<provider>.<role>]` and **threaded** into the provider's
+runtime `[cloud.compute] image`: by `ProviderResolver` for the initial seed
+nodes, and by `BootstrapOverlayGenerator` for the node overlay and CTM auto-heal
+replacements (so a running leader's `config.image()` carries it into replacement
+provisions). At provision time the Hetzner provider's `resolveImage()` uses that
+value when it is concrete, and otherwise logs a **loud warning** and falls back
+to the hardcoded default OS image. Precedence: role-specific `[source…] image` >
+`[cloud.compute] image` > loud default. A Hetzner image id or a name
+(`ubuntu-22.04`) are both accepted in the same field.
+
+> **Interim, until RFC-0016 W2 (epic #463):** the **core role's `image` stamps all roles** —
+> a per-role image override is not yet honored, so set the snapshot on the
+> source's `core` role and every provisioned node (core and worker) boots from
+> it. Per-role snapshot layouts come with W2.
 
 For tests, the easier path is the env-var override exposed by
 `run-tests.sh` — see the test-framework section below.
@@ -110,6 +122,23 @@ tools/build-aether-vm-snapshot.sh destroy --id 174523891
 Snapshots cost a small amount per GB-month at Hetzner. The aether-node image is
 ~200 MB; a snapshot retains the full root volume (typically 20-40 GB
 provisioned). Budget accordingly.
+
+## Snapshot matrix (runtime × architecture)
+
+A snapshot is pinned not just to one Aether version but to one **(runtime,
+architecture)** pair. A container snapshot cannot boot a JVM node (different
+payload), and an `amd64` snapshot cannot boot an `arm64` VM (different base
+image). A cluster that mixes runtimes or CPU architectures therefore needs **one
+snapshot per combination** — on Hetzner, `cx*` server types are `amd64` and
+`cax*` are `arm64`.
+
+Naming convention: **`aether-<version>-<runtime>-<arch>`** — e.g.
+`aether-1.0.0-container-amd64`, `aether-1.0.0-jvm-arm64`. The `aether-runtime`
+label already distinguishes `container` from `jvm`; the **architecture dimension
+is added by #464**, which also covers the container multi-arch publishing check
+and the mixed `cx`/`cax` validation run. Until #464 lands, the build tool tags
+version + runtime only — pick the snapshot whose architecture matches the server
+type you provision.
 
 ## What snapshots do NOT include
 
@@ -151,9 +180,14 @@ cd aether/tests/integration && ./run-tests.sh --env cloud
 
 The `image` / `amiId` / `sourceImage` field exists in every cloud provider's
 config record (`HetznerEnvironmentConfig.image`, `AwsEnvironmentConfig.amiId`,
-`GcpEnvironmentConfig.sourceImage`, `AzureEnvironmentConfig.image`), and each is
-passed through to the provider's create-server API. The mechanism is identical;
-only the prep tooling differs:
+`GcpEnvironmentConfig.sourceImage`, `AzureEnvironmentConfig.image`), and each
+provider consumes that field in its create-server call (`RunInstancesRequest`
+for AWS, the disk `InitializeParams` for GCP, and so on). The
+**source → `[cloud.compute]` → provision threading described above is wired for
+Hetzner today** (`resolveImage`); the other providers consume their native image
+field, and source-path threading parity for them is the provider-parity work of
+RFC-0016 W1 (epic #463). Only the
+prep tooling differs:
 
 - **AWS:** `aws ec2 create-image` from a prepared instance, or build with
   Packer. Reference the resulting AMI id via `amiId`.

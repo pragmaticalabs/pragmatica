@@ -280,8 +280,8 @@ Three storage/persistence concepts that are distinct and must not be conflated:
 | 86 | Core-to-core SWIM health | Complete | `CoreSwimHealthDetector` bridges SWIM `FAULTY`/`LEFT` events to `DisconnectNode`. Detection in 1-2s vs TCP disconnect 15s-2min |
 | 87 | Automatic topology growth | Complete | CDM assigns core vs worker role to joining non-seed nodes. `RabiaEngine` activation gating. `coreMax`/`coreMin` configurable via TOML. Management API and CLI |
 | 93 | DHT node cleanup | Complete | `DhtNodeCleanup` removes dead node's endpoints from DHT maps on SWIM DEAD detection |
-| 94 | SliceNodeKey DHT migration | Complete | SliceNodeKey reads/writes moved from consensus to `slice-nodes` ReplicatedMap |
-| 95 | HttpNodeRouteKey DHT migration | Complete | HttpNodeRouteKey reads/writes moved from consensus to `http-routes` ReplicatedMap |
+| 94 | SliceNodeKey DHT migration | Complete | SliceNodeKey reads/writes moved from consensus to `slice-nodes` ReplicatedMap — now **eventual + not crash-durable** (guarantee downgrade, #384); guarantee in [`guarantees.md`](guarantees.md) §2, scope in [`known-limitations.md`](known-limitations.md) |
+| 95 | HttpNodeRouteKey DHT migration | Complete | HttpNodeRouteKey reads/writes moved from consensus to `http-routes` ReplicatedMap — now **eventual + not crash-durable** (guarantee downgrade, #384); see [`guarantees.md`](guarantees.md) §2 / [`known-limitations.md`](known-limitations.md) |
 | 96 | DHT replication config | Complete | `[dht.replication]` TOML section: `cooldown_delay_ms`, `cooldown_rate`, `target_rf`. Environment-aware defaults |
 | 97 | Multi-group worker topology | Complete | Zone-aware group computation from SWIM membership. `WorkerGroupId`, `GroupAssignment`, `GroupMembershipTracker`. Per-group governor election and Decision relay |
 | 98 | CDM community-aware placement | Complete | `AllocationPool` extended with `workersByCommunity`. CDM tracks `GovernorAnnouncementValue` per community |
@@ -291,7 +291,7 @@ Three storage/persistence concepts that are distinct and must not be conflated:
 | 132 | Role-aware unified node | Complete | Single `aether-node.jar` binary for CORE or WORKER. Consensus observer mode, `ForwardingClusterNode`, `SwitchableClusterNode`. WORKER→CORE promotion via `authorizeActivation()` |
 | 150 | DHT-backed ReplicatedMap | Complete | Generic typed `ReplicatedMap<K,V>` abstraction over `DHTClient` with namespace-prefixed keys, `MapSubscription` event callbacks. Drain loop prevents subscriber re-entrance. `CachedReplicatedMap` adds LRU + TTL caching. `aether/aether-dht/` module |
 | 151 | Community-aware replication | Complete | `ReplicationPolicy` with home-replica rule (1 home + 2 ring replicas = RF=3). `HomeReplicaResolver` for deterministic community-local selection. Spot-node exclusion |
-| 152 | Endpoint DHT migration | Complete | Endpoints moved from consensus KV-Store to DHT `ReplicatedMap`. O(3) write amplification vs O(N) with consensus |
+| 152 | Endpoint DHT migration | Complete | Endpoints moved from consensus KV-Store to DHT `ReplicatedMap`. O(3) write amplification vs O(N) with consensus — the trade also makes endpoint reads **eventual + not crash-durable** (guarantee downgrade, #384); see [`guarantees.md`](guarantees.md) §2 / [`known-limitations.md`](known-limitations.md) |
 | 153 | Replication cooldown | Complete | Startup RF=1 with background push to RF=3 after configurable delay. Rate-limited to prevent boot storm |
 | 156 | Compound KV-Store key types | Complete | `NodeArtifactKey` merges EndpointKey + SliceNodeKey; `NodeRoutesKey` merges HttpNodeRouteKey. ~10x entry count reduction. WorkerNetwork eliminated — inter-worker messaging consolidated into NCN via DelegateRouter |
 
@@ -299,8 +299,8 @@ Three storage/persistence concepts that are distinct and must not be conflated:
 
 | Area | Limitation | Planned Fix |
 |------|-----------|-------------|
-| Security | Node certificates are self-signed (no external CA integration) | External CA provider SPI implementation |
-| Networking | Single-region only; no multi-region deployment | Not yet planned |
+| Security | Self-signed certs / single trust domain — see [`known-limitations.md`](known-limitations.md) (single source for scope) | External CA provider SPI implementation |
+| Networking | Single-region only; no multi-region DR — see [`known-limitations.md`](known-limitations.md) | Not yet planned |
 | Dashboard | Node management dashboard requires significant work | Critical priority (#58) |
 
 ## Planned Features
@@ -340,7 +340,7 @@ Three storage/persistence concepts that are distinct and must not be conflated:
 | 201 | Cloud bootstrap end-to-end (JVM) | Complete | Same as #200 but `type=jvm`: VMs install Temurin 25 from Adoptium, download `aether-node.jar` (default URL derived from `cluster.version`, optional `[runtime.jvm] jar_url` override), start via `nohup java -jar … --node-id= --port= --management-port= --peers= --config=`. SSH-back uses `pkill -f '^java -jar /opt/aether/aether-node.jar' && nohup java -jar …` to inject finalized PEERS. Validated end-to-end on Hetzner via `aether/tests/integration/env/cloud-hetzner-jvm.toml` |
 | 202 | Cloud SSH preflight | Complete | `BootstrapPhaseDeploy` polls each cloud VM with `ssh ... 'cloud-init status --wait'` (180s outer budget, 5s interval, removes successful hosts each iteration) before issuing runtime restart commands. Eliminates the "SSH up but Docker not installed yet" race on slow VMs |
 | 203 | Bootstrap resource ownership labels | Complete | All Hetzner VMs and SSH keys uploaded by `BootstrapPhaseProvision` / `BootstrapPhaseSshKey` are tagged `aether-cluster=<name>`, `aether-source=<sourceName>`, `aether-role=<role>`. `tools/cloud-reaper.sh --cluster <name>` filters by these labels for safe cluster-scoped cleanup independent of bootstrap state files |
-| 204 | Pre-pulled VM snapshot support | Partial | Idempotent cloud-init guards in `UserDataTemplate` (skip `docker pull` when image cached, skip JAR download when present). `tools/build-aether-vm-snapshot.sh` Hetzner snapshot builder with `build` / `list` / `latest` / `destroy` / `prune-old` subcommands. Snapshot id consumable via every cloud provider's existing `image` / `amiId` / `sourceImage` field — no schema change. Test runner env override (`AETHER_VM_SNAPSHOT_ID` / `AETHER_VM_SNAPSHOT_ID_JVM`). Operator doc: [`vm-snapshot.md`](../operator/vm-snapshot.md). **Partial:** builder script is Hetzner-only; AWS/GCP/Azure equivalents pending |
+| 204 | Pre-pulled VM snapshot support | Partial | Idempotent cloud-init guards in `UserDataTemplate` (skip `docker pull` when image cached, skip JAR download when present). `tools/build-aether-vm-snapshot.sh` Hetzner snapshot builder with `build` / `list` / `latest` / `destroy` / `prune-old` subcommands. Snapshot id set via the source role's `image` field (same `image` / `amiId` / `sourceImage` shape — no schema change); the source→provision threading is wired for Hetzner (#459, `resolveImage`), non-Hetzner source-path threading pending. Test runner env override (`AETHER_VM_SNAPSHOT_ID` / `AETHER_VM_SNAPSHOT_ID_JVM`). Operator doc: [`vm-snapshot.md`](../operator/vm-snapshot.md). **Partial:** builder script is Hetzner-only; AWS/GCP/Azure equivalents pending |
 
 ---
 
@@ -365,7 +365,7 @@ Three storage/persistence concepts that are distinct and must not be conflated:
 |---------|---------|
 | TTM predictive scaling (#11) | Disabled by default, no live model training |
 | Aether runtime rolling upgrade (#70) | Phase 1 only — full rolling orchestration deferred |
-| Streaming retention / failover / memory / cursor / tiered-reader (#179/#180/#181/#185/#190) | Prod streaming substrate is all-RAM — `EvictionListener.NOOP` seals nothing, cursors are RAM-only, STRONG stream creation is rejected. Covered by Phase A of [`streaming-persistence-implementation-plan.md`](../internal/progress/streaming-persistence-implementation-plan.md) (failover by Phase A/B) |
+| Streaming retention / failover / memory / cursor / tiered-reader (#179/#180/#181/#185/#190) | Prod streaming substrate is all-RAM — `EvictionListener.NOOP` seals nothing, cursors are RAM-only, STRONG stream creation is rejected. Covered by Phase A of [`streaming-persistence-implementation-plan.md`](../internal/progress/streaming-persistence-implementation-plan.md) (failover by Phase A/B). Guarantee & scope framing (crash-durability, at-most-once, RF=1) lives in [`guarantees.md`](guarantees.md) §4 and [`known-limitations.md`](known-limitations.md) — not restated per-row |
 | Segment compression & encryption (#142/#143) | Codec + AES-GCM encryptor exist and are tested, but the AHSE engine write path applies neither. AHSE-engine write-pipeline gap (no scheduled phase yet) |
 | Durable entity (#217) | Prod factory returns in-memory entity (HA-only, not restart-durable); fenced/persistent variants unwired. Covered by #345 / #349 |
 
