@@ -35,10 +35,11 @@ tense as the record of *why*.
 
 **Landed** tonight (commits `b9ef6c475`, `e472a373f`): **W1** (both stages — the
 spec→request mapping surface + AWS spot arm), **W2** (per-role image), **W10**
-(spot loud-fail validation). **W6** (document-format gate) landed as a checkpoint
-in the working tree. **Pending:** W3 (persisted `SourceProfile`, which deletes the
-3B fallback), W4 (#439 cleanup unification), W5–W8 (LocalStack + AWS harness +
-live gate), W9 (doc/catalog sweep).
+(spot loud-fail validation). **W6** (document-format gate) landed in-tree as a
+checkpoint (commits with the W3/W4 batch — no hash yet). **Pending:** W3
+(persisted `SourceProfile`, which deletes the 3B fallback), W4 (#439 cleanup
+unification), W5–W8 (LocalStack + AWS harness + live gate), W9 (doc/catalog
+sweep).
 
 As-built mechanism (this is the ground truth §2/§3.5 designed toward):
 
@@ -68,12 +69,13 @@ As-built mechanism (this is the ground truth §2/§3.5 designed toward):
   truth — only AWS has a real spot arm (its `createFrom` attaches EC2
   `InstanceMarketOptions`); Hetzner/GCP/Azure/Docker reject `SPOT` loudly at
   `createFrom`, and an unsupported spot sub-table fails validation.
-- W6 (checkpoint, working tree): the document-format gate **reuses the existing
+- W6 (checkpoint, in-tree): the document-format gate **reuses the existing
   top-level `config_version` field** — `ClusterBootstrapConfigParser.parseConfigVersion`
-  (`:100-123`, `REQUIRED_CONFIG_VERSION = "1.0.0"` at `:31`), exact-match-gated
-  with the Q1 named errors (absent/older → re-bootstrap; newer → restore
-  pre-upgrade). W3 bumps the required version when `SourceProfile` joins the
-  format. See §3.5.
+  (`:100-123`), applied at both the bootstrap parse (`:70`) and the KV re-parse a
+  leader/CTM does (`:153`), with `REQUIRED_CONFIG_VERSION = "1.0.0"` (`:31`),
+  exact-match-gated with the Q1 named errors (absent/older → re-bootstrap; newer →
+  restore pre-upgrade). W3 bumps the required version when `SourceProfile` joins
+  the format. See §3.5.
 
 ## Motivation
 
@@ -399,12 +401,13 @@ invariant that cluster state be reconstructible from KV.
   The document formatVersion is the **existing top-level `config_version` field**,
   reused deliberately (not a second version field), one migration ladder with the
   `SourceProfile` addition as **rung 1**. `config_version` was already REQUIRED
-  and exact-match-gated on the same persisted document
-  (`ClusterBootstrapConfigParser.parseConfigVersion`, `:100-123`;
-  `REQUIRED_CONFIG_VERSION = "1.0.0"`, `:31`) — a second `formatVersion` field
-  would have been redundant dual-versioning of one document. W6 upgraded its
-  errors to the Q1 named forms; W3 bumps the required version when `SourceProfile`
-  joins the format. Semantics (as-built, W6 checkpoint):
+  and exact-match-gated on the same persisted document — at both the bootstrap
+  parse (`ClusterBootstrapConfigParser.parseConfigVersion`, `:70,:100-123`) and
+  the KV re-parse a leader/CTM does (`:153`), with `REQUIRED_CONFIG_VERSION = "1.0.0"`
+  (`:31`) — so a second `formatVersion` field would have been redundant
+  dual-versioning of one document. W6 upgraded its errors to the Q1 named forms;
+  W3 bumps the required version when `SourceProfile` joins the format. Semantics
+  (as-built, W6 checkpoint):
   - **Absent OR non-current `config_version` → named error** ("Persisted config
     has no config_version (document format version); this build requires N —
     re-bootstrap"; `ClusterBootstrapConfigParser.java:102,117-118`). No
@@ -533,7 +536,7 @@ harness scope.
 
 Ordered by interaction-risk × blast-radius × observability-gap. Sizes S ≤ 1d,
 M ≈ 2–3d, L ≈ 1w. **W1/W2/W10 landed 2026-07-17 (`b9ef6c475`, `e472a373f`); W6
-gate checkpoint landed in the working tree.**
+gate checkpoint landed in-tree (commits with the W3/W4 batch, no hash yet).**
 
 | # | Item | Size | Issue | Status |
 |---|---|---|---|---|
@@ -542,7 +545,7 @@ gate checkpoint landed in the working tree.**
 | W3 | **Provider-agnostic persisted `SourceProfile`** (§3.1–3.3): atomic-at-bootstrap persistence, ssh-key/firewall selectors, cluster-scoped naming (no dual-accept), **delete 3B prefix fallback**; bumps `config_version` N | **L** | #444 | ⏳ pending; must precede any bootstrap firewall growth. |
 | W4 | **Cleanup credential unification** (§3.4) + **timeout-path regression test** with non-default env-var name | **M** | #439 | ⏳ pending; money-leak path — build the test first. |
 | W5 | **LocalStack AWS contract suite** (§4.2/4.3) for compute/LB/secrets/discovery (**spot excluded**) | **M** | new | ⏳ pending; AWS regression sensor before live creds. |
-| W6 | **Document-level stored-format gate** (§3.5): **reuse the existing top-level `config_version`** (not a new field) + exact-match gate + Q1 named errors both directions (no ladder) | **S** | #434 | ✅ **checkpoint LANDED (working tree)** — `ClusterBootstrapConfigParser.parseConfigVersion:100-123`, Q1 named errors; W3 bumps N. |
+| W6 | **Document-level stored-format gate** (§3.5): **reuse the existing top-level `config_version`** (not a new field) + exact-match gate + Q1 named errors both directions (no ladder) | **S** | #434 | ✅ **LANDED in-tree (checkpoint)** — commits with the W3/W4 batch (no hash yet); `ClusterBootstrapConfigParser.parseConfigVersion:100-123` (bootstrap `:70` + KV re-parse `:153`), Q1 named errors; W3 bumps N. |
 | W7 | **Cloud e2e harness driver abstraction** (§5): Hetzner driver extract + AWS driver (VPC init, PG-on-EC2, ELBv2, reaper) | **L** | new | ⏳ pending; after W5. |
 | W8 | **Live AWS e2e gate** (§4.2) + **live spot smoke** when creds land | **M** | new | ⏳ pending; final gate. |
 | W9 | **Doc/catalog reconciliation**: `vm-snapshot.md` + catalog rows 4/204; spot wording; Hetzner-secrets wording; snapshot-matrix doc `aether-<ver>-<runtime>-<arch>` (§2.6) | **S** | — | ⏳ pending; additive. |
@@ -607,8 +610,8 @@ container multi-arch manifest check (§2.6).
   `config_version` (existing top-level field, reused; one ladder; `SourceProfile`
   = rung 1); absent/non-current → named error; unknown-newer → refuse loudly;
   step-runner ladder designed not built; W6 = reuse `config_version` + exact-match
-  gate + named errors (landed, working tree). Cascade: §3.3 cluster-scoped names
-  only (A5 void); §3.1 deletes 3B. → §3.1, §3.3, §3.5, W6, A5, A10, Migration.
+  gate + named errors (landed in-tree). Cascade: §3.3 cluster-scoped names only
+  (A5 void); §3.1 deletes 3B. → §3.1, §3.3, §3.5, W6, A5, A10, Migration.
 - **Q2 — Spot. Option A + rc3 mechanism slice (LANDED W1-ii/W10).** market from
   role; AWS spot arm; non-AWS loud reject; validator loud-fail. Reclamation =
   node-failure via auto-heal, no preemption drain. Policy layer = post-GA ticket.
@@ -654,10 +657,11 @@ container multi-arch manifest check (§2.6).
   inert `ON_DEMAND`, CTM heal path), `NodeLifecycleManager.java` (`:60-69`
   `provisionNode` → `provider.provision(spec)` boundary)
 - `aether/aether-config/…/cluster/ClusterBootstrapConfigParser.java` (`:31`
-  `REQUIRED_CONFIG_VERSION`, `:100-123` `parseConfigVersion` W6 document-format
-  gate + Q1 named errors), `RoleSubTable.java` (`:16` `image`, #459),
-  `SourceProfile.java`, `ClusterBootstrapConfigValidator.java` (`:264-266` W10
-  spot ground-truth, `:284` PF-14)
+  `REQUIRED_CONFIG_VERSION`, `:70`/`:153` W6 gate call sites — bootstrap parse +
+  KV re-parse, `:100-123` `parseConfigVersion` document-format gate + Q1 named
+  errors), `RoleSubTable.java` (`:16` `image`, #459), `SourceProfile.java`,
+  `ClusterBootstrapConfigValidator.java` (`:264-266` W10 spot ground-truth, `:284`
+  PF-14)
 
 ### Internal — harness & docs
 - `aether/tests/cloud/{deploy-cloud.sh,run-cloud-tests.sh,teardown-cloud.sh}`
