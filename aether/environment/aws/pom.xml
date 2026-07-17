@@ -14,6 +14,12 @@
     <name>Aether AWS Environment Integration</name>
     <description>AWS Cloud implementation of EnvironmentIntegration SPI</description>
 
+    <properties>
+        <!-- Repo-standard testcontainers version (not centrally managed in aether/pom.xml;
+             matches aether-deployment / slice-testkit / e2e-tests / sql-splitter). -->
+        <testcontainers.version>1.21.4</testcontainers.version>
+    </properties>
+
     <dependencies>
         <dependency>
             <groupId>org.pragmatica-lite.aether</groupId>
@@ -42,6 +48,16 @@
         <dependency>
             <groupId>org.assertj</groupId>
             <artifactId>assertj-core</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <!-- LocalStack contract suite (RFC-0016 W5): real AwsClient/providers against a
+             LocalStack testcontainer. Transitively brings testcontainers-core
+             (DockerClientFactory / LocalStackContainer / DockerImageName). Skips cleanly
+             (JUnit5 Assumptions) when no Docker daemon is present. -->
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>localstack</artifactId>
+            <version>${testcontainers.version}</version>
             <scope>test</scope>
         </dependency>
     </dependencies>

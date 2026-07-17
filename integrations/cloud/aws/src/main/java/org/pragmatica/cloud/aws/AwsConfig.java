@@ -16,30 +16,45 @@
  */
 package org.pragmatica.cloud.aws;
 
+import org.pragmatica.lang.Option;
+
 /// Configuration for the AWS Cloud API client.
-public record AwsConfig(String accessKeyId, String secretAccessKey, String region) {
-    /// Creates AWS configuration.
+///
+/// [#endpointOverride] is an optional service endpoint base URL. When present, all three service
+/// URLs resolve to it instead of the region-derived public AWS endpoints — used to retarget the
+/// client at a local emulator (e.g. a LocalStack edge endpoint) for contract testing. It is added
+/// additively: the region-based [#awsConfig] factory and every existing caller are unaffected
+/// (default is [Option#empty]), mirroring the additive `RunInstancesRequest` spot-options change.
+public record AwsConfig(String accessKeyId, String secretAccessKey, String region, Option<String> endpointOverride) {
+    /// Creates AWS configuration targeting the public AWS endpoints for the region.
     public static AwsConfig awsConfig(String accessKeyId, String secretAccessKey, String region) {
-        return new AwsConfig(accessKeyId, secretAccessKey, region);
+        return new AwsConfig(accessKeyId, secretAccessKey, region, Option.empty());
+    }
+
+    /// Returns a copy that routes every service URL to the given endpoint base (e.g. a LocalStack
+    /// edge endpoint) instead of the region-derived public AWS endpoints.
+    public AwsConfig withEndpointOverride(String endpointUrl) {
+        return new AwsConfig(accessKeyId, secretAccessKey, region, Option.some(endpointUrl));
     }
 
     /// EC2 service base URL.
     public String ec2Url() {
-        return "https://ec2." + region + ".amazonaws.com";
+        return endpointOverride.or("https://ec2." + region + ".amazonaws.com");
     }
 
     /// ELBv2 service base URL.
     public String elbv2Url() {
-        return "https://elasticloadbalancing." + region + ".amazonaws.com";
+        return endpointOverride.or("https://elasticloadbalancing." + region + ".amazonaws.com");
     }
 
     /// Secrets Manager service base URL.
     public String secretsManagerUrl() {
-        return "https://secretsmanager." + region + ".amazonaws.com";
+        return endpointOverride.or("https://secretsmanager." + region + ".amazonaws.com");
     }
 
     @Override
     public String toString() {
-        return "AwsConfig[accessKeyId=" + accessKeyId + ", secretAccessKey=REDACTED, region=" + region + "]";
+        return "AwsConfig[accessKeyId=" + accessKeyId + ", secretAccessKey=REDACTED, region=" + region
+             + ", endpointOverride=" + endpointOverride + "]";
     }
 }
