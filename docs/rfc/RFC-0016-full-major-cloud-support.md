@@ -83,9 +83,11 @@ As-built mechanism (this is the ground truth §2/§3 designed toward):
   **negative assertion** that raw `HCLOUD_TOKEN` is never read when a handle
   exists (`BootstrapCleanupTest.java:270-304`, `:303-304`).
 - **W6 (LANDED):** the document-format gate **reuses the existing top-level
-  `config_version` field** — `ClusterBootstrapConfigParser.parseConfigVersion`
-  (`:100-123`), applied at both the bootstrap parse (`:70`) and the KV re-parse a
-  leader/CTM does (`:153`), `REQUIRED_CONFIG_VERSION = "1.0.0"` (`:31`),
+  `config_version` field** — `ClusterBootstrapConfigParser.parseConfigVersion`,
+  one shared gate on the single live `parse(String)` boundary that BOTH readers
+  (bootstrap parse and the KV re-parse a leader/CTM does) flow through (#479
+  deleted the dead `parseFile` second path; #480 ordered the gate before
+  template resolution), `REQUIRED_CONFIG_VERSION = "1.0.0"`,
   exact-match-gated with the Q1 named errors. W3 did not bump N (no new persisted
   field); a future rung bumps it. See §3.5.
 
@@ -419,10 +421,11 @@ credential dual-path).
   `config_version` field**, reused deliberately (not a second version field), one
   migration ladder with a future `SourceProfile`-format change as **rung 1**.
   `config_version` was already REQUIRED and exact-match-gated on the same
-  persisted document — at both the bootstrap parse
-  (`ClusterBootstrapConfigParser.parseConfigVersion`, `:70,:100-123`) and the KV
-  re-parse a leader/CTM does (`:153`), with `REQUIRED_CONFIG_VERSION = "1.0.0"`
-  (`:31`) — so a second `formatVersion` field would have been redundant
+  persisted document — one shared gate (`ClusterBootstrapConfigParser.parseConfigVersion`)
+  on the single live `parse(String)` boundary both readers flow through (the
+  bootstrap parse and the KV re-parse; the apparent second site was dead code,
+  removed by #479), with `REQUIRED_CONFIG_VERSION = "1.0.0"`
+  — so a second `formatVersion` field would have been redundant
   dual-versioning of one document. W6 upgraded its errors to the Q1 named forms;
   W3 did **not** bump N (it added no new persisted field). Semantics (as-built):
   - **Absent OR non-current `config_version` → named error** ("Persisted config
@@ -555,7 +558,7 @@ at `7f9130338`.**
 | W3 | **Provisioning-state pass** (§3.1–3.3) — **rescoped as-built**: `SourceProfile` already provider-agnostic + KV-persisted; delivered = cluster-scoped ssh-key naming (no dual-accept) + 3B fallback deleted + selector derived from cluster name (no new field, no `config_version` bump, A11) | **L** | #444 | ✅ **LANDED** (`7f9130338`); firewall/exact-id/numeric-id remainder rescoped to #444. |
 | W4 | **Cleanup credential unification** (§3.4) + **timeout-path money-test** (negative assertion: raw `HCLOUD_TOKEN` never read) | **M** | #439 | ✅ **LANDED** (`7f9130338`). |
 | W5 | **LocalStack AWS contract suite** (§4.2/4.3) for compute/LB/secrets/discovery (**spot excluded**) | **M** | new | ⏳ pending; AWS regression sensor before live creds. |
-| W6 | **Document-level stored-format gate** (§3.5): **reuse the existing top-level `config_version`** + exact-match gate + Q1 named errors both directions (no ladder) | **S** | #434 | ✅ **LANDED** (`7f9130338`) — `parseConfigVersion:100-123` (bootstrap `:70` + KV re-parse `:153`). |
+| W6 | **Document-level stored-format gate** (§3.5): **reuse the existing top-level `config_version`** + exact-match gate + Q1 named errors both directions (no ladder) | **S** | #434 | ✅ **LANDED** (`7f9130338`) — `parseConfigVersion` — one shared gate on the single live parse boundary (#479/#480). |
 | W7 | **Cloud e2e harness driver abstraction** (§5): Hetzner driver extract + AWS driver (VPC init, PG-on-EC2, ELBv2, reaper) | **L** | new | ⏳ AWS half pending. |
 | W8 | **Live AWS e2e gate** (§4.2) + **live spot smoke** when creds land | **M** | new | ⏳ pending; final gate. |
 | W9 | **Doc/catalog reconciliation**: `vm-snapshot.md` + catalog rows 4/204; spot wording; Hetzner-secrets wording; snapshot-matrix doc `aether-<ver>-<runtime>-<arch>` (§2.6) | **S** | — | ⏳ final sliver pending. |
