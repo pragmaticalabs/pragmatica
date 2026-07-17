@@ -447,8 +447,12 @@ run_cluster_b_suites() {
             dir=$(resolve_suite_dir "$suite")
             local name
             name=$(basename "${dir:-${suite}-unknown}")
-            log_warn "SKIP: ${name} (cluster B unrecoverable)"
-            echo "{\"suite\":\"${name}\",\"status\":\"skipped\",\"pass\":0,\"fail\":0,\"duration\":0}" >> "$RESULTS_FILE"
+            # Distinct status from a benign capability-skip (run_suite's "skipped"):
+            # this suite was NOT run because cluster B is unrecoverable. print_results
+            # tallies "skipped-unrecoverable" separately and FAILS the run (non-zero
+            # exit) so a hard-aborted sweep can never be misread as a clean pass.
+            log_warn "SKIP (unrecoverable): ${name} — cluster B did not recover; suite hard-aborted, not run"
+            echo "{\"suite\":\"${name}\",\"status\":\"skipped-unrecoverable\",\"pass\":0,\"fail\":0,\"duration\":0}" >> "$RESULTS_FILE"
             continue
         fi
 
@@ -526,6 +530,76 @@ rebuild_remote_node_image() {
     # equivalent (build-info.properties may be regenerated on a different cadence than
     # bytecode, so layer-hash collisions ship outdated images into the cluster).
     remote_exec "cd ~/aether-build && docker build --no-cache -q -f docker/aether-node/Dockerfile -t aether-node:local . 2>&1 | tail -5"
+}
+
+# ---------------------------------------------------------------------------
+# CLI / node-image version-parity preflight (#440)
+# ---------------------------------------------------------------------------
+# Incident: the gate silently resolved a STALE rc1 `aether` from ~/.aether/bin
+# (PATH fallback) and ran it against a freshly-built rc2 node image — every node
+# aborted boot on the version mismatch and a full provision cycle burned before
+# anyone noticed. Assert BEFORE any `aether cluster bootstrap` that the `aether`
+# CLI in use reports the SAME Implementation-Version as the node artifact this run
+# deploys (node/target/aether-node.jar — the jar baked into aether-node:local and
+# the reference version for the cloud jar_url). Loud-abort on mismatch.
+#   AETHER_BIN=/path/to/aether  pins an explicit freshly-built CLI (still checked);
+#   its directory is prepended to PATH so every downstream bare-`aether` call
+#   (common.sh aether_failover, `aether cluster bootstrap`, suite subshells) uses it.
+version_parity_preflight() {
+    if [ -n "${AETHER_BIN:-}" ]; then
+        if [ ! -x "$AETHER_BIN" ]; then
+            log_error "version-parity preflight: AETHER_BIN='${AETHER_BIN}' is not an executable file"
+            return 1
+        fi
+        local _bin_dir
+        _bin_dir="$(cd "$(dirname "$AETHER_BIN")" && pwd)"
+        PATH="${_bin_dir}:${PATH}"
+        export PATH
+    fi
+
+    # Banner: always log WHICH binary is in use (post-PATH-repin) so the next
+    # PATH surprise is visible in any captured log.
+    local resolved
+    resolved="$(command -v aether || true)"
+    log_info "version-parity preflight: aether CLI = ${resolved:-<none on PATH>} (AETHER_BIN=${AETHER_BIN:-<unset>})"
+    if [ -z "$resolved" ]; then
+        log_error "version-parity preflight: no 'aether' CLI on PATH (and AETHER_BIN unset/invalid) — cannot bootstrap"
+        return 1
+    fi
+
+    # Expected version = the node artifact this run deploys.
+    local node_jar="${REPO_ROOT}/node/target/aether-node.jar"
+    if [ ! -f "$node_jar" ]; then
+        log_warn "version-parity preflight: node jar not found at ${node_jar} — skipping parity check (run build.sh to enable it)"
+        return 0
+    fi
+    local manifest node_version
+    manifest="$(unzip -p "$node_jar" META-INF/MANIFEST.MF 2>/dev/null | tr -d '\r')" || true
+    node_version="$(printf '%s\n' "$manifest" | sed -n 's/^Implementation-Version:[[:space:]]*//p' | sed -n '1p')"
+    if [ -z "$node_version" ]; then
+        log_warn "version-parity preflight: could not read Implementation-Version from ${node_jar} — skipping parity check"
+        return 0
+    fi
+
+    # CLI version: `aether --version` -> "Aether <version> (built <date>)".
+    local cli_raw cli_version
+    cli_raw="$(aether --version 2>/dev/null)" || true
+    cli_version="$(printf '%s\n' "$cli_raw" | sed -n 's/^Aether[[:space:]]\{1,\}\([^[:space:]]\{1,\}\).*/\1/p' | sed -n '1p')"
+    if [ -z "$cli_version" ]; then
+        log_error "version-parity preflight: could not parse a version from 'aether --version' (got: '${cli_raw}') via ${resolved}"
+        return 1
+    fi
+
+    log_info "version-parity preflight: CLI=${cli_version}  node-image=${node_version}  (jar ${node_jar})"
+    if [ "$cli_version" != "$node_version" ]; then
+        log_error "version-parity preflight: CLI/node-image VERSION MISMATCH — 'aether' reports '${cli_version}' but the node artifact this run deploys is '${node_version}'."
+        log_error "  aether CLI in use: ${resolved}"
+        log_error "  Pin the freshly-built CLI with AETHER_BIN=/path/to/aether, or fix PATH so a stale ~/.aether/bin does not shadow it."
+        log_error "  Aborting BEFORE bootstrap: a stale CLI against a mismatched node image aborts every node's boot and burns a full provision cycle (#440)."
+        return 1
+    fi
+    log_pass "version-parity preflight: CLI and node image agree on ${cli_version}"
+    return 0
 }
 
 deploy_docker() {
@@ -798,7 +872,7 @@ print_results() {
     echo "  INTEGRATION TEST RESULTS"
     echo "========================================"
 
-    local total=0 passed=0 failed=0 skipped=0
+    local total=0 passed=0 failed=0 skipped=0 unrecoverable=0
     while IFS= read -r line; do
         [ -z "$line" ] && continue
         local suite status pass fail dur
@@ -813,11 +887,13 @@ print_results() {
             passed)  passed=$((passed + 1)); printf "  [PASS] %-25s %3dp/%df  (%ds)\n" "$suite" "$pass" "$fail" "$dur" ;;
             failed)  failed=$((failed + 1)); printf "  [FAIL] %-25s %3dp/%df  (%ds)\n" "$suite" "$pass" "$fail" "$dur" ;;
             skipped) skipped=$((skipped + 1)); printf "  [SKIP] %-25s\n" "$suite" ;;
+            skipped-unrecoverable) unrecoverable=$((unrecoverable + 1)); printf "  [ABORT] %-25s (not run — cluster B unrecoverable)\n" "$suite" ;;
         esac
     done < "$results_file"
 
     echo "========================================"
-    printf "  Total: %d | Passed: %d | Failed: %d | Skipped: %d\n" "$total" "$passed" "$failed" "$skipped"
+    printf "  Total: %d | Passed: %d | Failed: %d | Skipped: %d | Unrecoverable: %d\n" \
+        "$total" "$passed" "$failed" "$skipped" "$unrecoverable"
     echo "========================================"
 
     print_timing_report
@@ -838,7 +914,11 @@ print_results() {
     echo "]" >> "$RESULTS_JSON"
     log_info "JSON report: ${RESULTS_JSON}"
 
-    [ "$failed" -eq 0 ]
+    # Non-zero exit on ANY real failure OR a hard-abort: a run that quarantined
+    # remaining suites because cluster B never recovered is NOT a pass, even when
+    # zero suites reported test failures. "Unrecoverable" is tallied above and gates
+    # the exit here so the outcome is visible in both the summary and the exit code.
+    [ "$failed" -eq 0 ] && [ "$unrecoverable" -eq 0 ]
 }
 
 # ===========================================================================
@@ -879,6 +959,15 @@ trap '[ "$SKIP_TEARDOWN" = false ] && teardown' EXIT
 # in-cluster forge-postgres container, not the shared Hetzner PG VM).
 if [ "$ENV_TYPE" = "cloud" ]; then
     "${REPO_ROOT}/../tools/pg-firewall.sh" open 2>&1 | tail -1
+fi
+
+# --- Step 1.5: CLI / node-image version-parity preflight (#440) ---
+# Runs BEFORE any provisioning / `aether cluster bootstrap`: a version-mismatched
+# CLI would otherwise abort every node's boot and burn a full provision cycle.
+log_step "CLI/node-image version-parity preflight"
+if ! version_parity_preflight; then
+    log_error "Aborting before cluster bootstrap — CLI/node-image version parity check failed (see above)."
+    exit 3
 fi
 
 # --- Step 2: Deploy clusters ---

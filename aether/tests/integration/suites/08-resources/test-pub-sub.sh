@@ -29,11 +29,32 @@ test_stream_exists_or_created() {
     fi
 }
 
+# Bounded transient-only retry for a single publish (#460 gap 3). Under parallel
+# deployment churn ~1 of 25 publishes fails at the TRANSPORT level (a transient
+# 503 / NotLeader / connection blip surfaced by stream_publish -> api_post's
+# curl-error rc), not a stream-logic error. Retry the transport call a few times
+# with a short backoff. This CANNOT mask an assertion failure: assertions live in
+# the callers (assert_eq on the success count below), never inside stream_publish,
+# so a publish that genuinely never lands still exhausts its attempts and fails the
+# count. Tunable via PUBLISH_RETRY_ATTEMPTS / PUBLISH_RETRY_BACKOFF.
+_publish_with_retry() {
+    local name="$1" payload="$2"
+    local attempts="${PUBLISH_RETRY_ATTEMPTS:-3}" backoff="${PUBLISH_RETRY_BACKOFF:-1}" i=1
+    while [ "$i" -le "$attempts" ]; do
+        if stream_publish "$name" "$payload" > /dev/null 2>&1; then
+            return 0
+        fi
+        i=$((i + 1))
+        [ "$i" -le "$attempts" ] && sleep "$backoff"
+    done
+    return 1
+}
+
 test_publish_events() {
     local success=0 failure=0
     for i in $(seq 1 "$EVENT_COUNT"); do
         local payload="{\"key\":\"pubsub-${i}\",\"data\":\"event-${i}-$(now_epoch)\",\"timestamp\":$(now_epoch)}"
-        if stream_publish "$STREAM_NAME" "$payload" > /dev/null 2>&1; then
+        if _publish_with_retry "$STREAM_NAME" "$payload"; then
             success=$((success + 1))
         else
             failure=$((failure + 1))
@@ -58,7 +79,7 @@ test_subscriber_receives_events() {
     local success=0
     for i in $(seq 1 $publish_count); do
         local payload="{\"key\":\"sub-${i}\",\"data\":\"sub-event-${i}\",\"timestamp\":$(now_epoch)}"
-        if stream_publish "$STREAM_NAME" "$payload" > /dev/null; then
+        if _publish_with_retry "$STREAM_NAME" "$payload"; then
             success=$((success + 1))
         fi
     done
@@ -96,7 +117,7 @@ test_competing_consumers_multi_instance() {
         local success=0
         for i in $(seq 1 10); do
             local payload="{\"key\":\"compete-${i}\",\"data\":\"compete-${i}\",\"timestamp\":$(now_epoch)}"
-            if stream_publish "$STREAM_NAME" "$payload" > /dev/null 2>&1; then
+            if _publish_with_retry "$STREAM_NAME" "$payload"; then
                 success=$((success + 1))
             fi
         done
