@@ -46,9 +46,11 @@ final class TestAwsClient implements AwsClient {
     List<String> lastDeregisteredIds;
     String lastTargetHealthArn;
     String lastSecretId;
+    RunInstancesRequest lastRunInstancesRequest;
 
     @Override
     public Promise<RunInstancesResponse> runInstances(RunInstancesRequest request) {
+        lastRunInstancesRequest = request;
         return runInstancesResponse;
     }
 

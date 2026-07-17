@@ -24,6 +24,7 @@ import org.pragmatica.aether.environment.InstanceId;
 import org.pragmatica.aether.environment.InstanceInfo;
 import org.pragmatica.aether.environment.InstanceStatus;
 import org.pragmatica.aether.environment.InstanceType;
+import org.pragmatica.aether.environment.ProvisionRequest;
 import org.pragmatica.aether.environment.ProvisionSpec;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
@@ -93,6 +94,10 @@ class BootstrapPhaseProvisionUserDataTest {
 
         @Override public Promise<InstanceInfo> provision(ProvisionSpec spec) {
             calls.add(spec);
+            return Promise.success(makeInfo());
+        }
+
+        @Override public Promise<InstanceInfo> createFrom(ProvisionRequest request) {
             return Promise.success(makeInfo());
         }
 

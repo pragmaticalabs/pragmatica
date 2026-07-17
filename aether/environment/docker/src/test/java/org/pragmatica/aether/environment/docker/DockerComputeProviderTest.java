@@ -12,9 +12,12 @@ import org.pragmatica.aether.environment.EnvironmentError;
 import org.pragmatica.aether.environment.InstanceId;
 import org.pragmatica.aether.environment.InstanceStatus;
 import org.pragmatica.aether.environment.InstanceType;
+import org.pragmatica.aether.environment.MarketOptions;
 import org.pragmatica.aether.environment.ProvisionContext;
+import org.pragmatica.aether.environment.ProvisionRequest;
 import org.pragmatica.aether.environment.ProvisionSpec;
 import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 
@@ -44,6 +47,25 @@ class DockerComputeProviderTest {
     void setUp() {
         testRunner = new TestDockerCommandRunner();
         provider = DockerComputeProvider.dockerComputeProvider(testRunner, CONFIG).unwrap();
+    }
+
+    @Nested
+    class CreateFromTests {
+
+        @Test
+        void createFrom_spotRequest_rejectedLoudBeforeDockerRun() {
+            // Docker has no spot concept; a SPOT request must fail loud, never issue a docker run.
+            var context = ProvisionContext.forBootstrap("c", "spot", "s", "n0");
+            var request = new ProvisionRequest(InstanceType.SPOT, "docker", "", "",
+                                               Option.empty(), MarketOptions.spot(), context);
+
+            provider.createFrom(request)
+                    .await()
+                    .onSuccess(info -> assertThat(info).isNull())
+                    .onFailure(DockerComputeProviderTest::assertProvisionFailedError);
+
+            assertThat(testRunner.allCommands).as("spot request must not issue any docker command").isEmpty();
+        }
     }
 
     @Nested

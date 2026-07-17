@@ -18,7 +18,8 @@ import org.pragmatica.aether.environment.ComputeProvider;
 import org.pragmatica.aether.environment.EnvironmentError;
 import org.pragmatica.aether.environment.InstanceId;
 import org.pragmatica.aether.environment.InstanceInfo;
-import org.pragmatica.aether.environment.InstanceType;
+import org.pragmatica.aether.environment.ProviderDefaults;
+import org.pragmatica.aether.environment.ProvisionRequest;
 import org.pragmatica.aether.node.AetherNode;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Cause;
@@ -383,12 +384,17 @@ class ProvisioningRecoveryAfterFailureBurstProbeTest {
             }
 
             @Override
-            public Promise<InstanceInfo> provision(InstanceType instanceType) {
+            public ProviderDefaults providerDefaults() {
+                return delegate.providerDefaults();
+            }
+
+            @Override
+            public Promise<InstanceInfo> createFrom(ProvisionRequest request) {
                 calls.incrementAndGet();
 
                 return shouldFail()
                        ? injectFailure()
-                       : delegate.provision(instanceType);
+                       : delegate.createFrom(request);
             }
 
             private boolean shouldFail() {

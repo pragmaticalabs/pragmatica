@@ -35,6 +35,8 @@ import org.pragmatica.aether.environment.InstanceId;
 import org.pragmatica.aether.environment.InstanceInfo;
 import org.pragmatica.aether.environment.InstanceStatus;
 import org.pragmatica.aether.environment.InstanceType;
+import org.pragmatica.aether.environment.ProviderDefaults;
+import org.pragmatica.aether.environment.ProvisionRequest;
 import org.pragmatica.aether.slice.SliceState;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.NodeInfo;
@@ -128,7 +130,12 @@ public final class EmberCluster {
 
     private final class EmberComputeProvider implements ComputeProvider {
         @Override
-        public Promise<InstanceInfo> provision(InstanceType instanceType) {
+        public ProviderDefaults providerDefaults() {
+            return ProviderDefaults.providerDefaults("in-jvm", "", "", "", Option.none(), false);
+        }
+
+        @Override
+        public Promise<InstanceInfo> createFrom(ProvisionRequest request) {
             return addNode().map(nodeId -> toInstanceInfo(nodeId.id()));
         }
 

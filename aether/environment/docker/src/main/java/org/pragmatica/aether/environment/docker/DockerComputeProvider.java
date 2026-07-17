@@ -16,8 +16,9 @@ import org.pragmatica.aether.environment.InstanceId;
 import org.pragmatica.aether.environment.InstanceInfo;
 import org.pragmatica.aether.environment.InstanceStatus;
 import org.pragmatica.aether.environment.InstanceType;
-import org.pragmatica.aether.environment.PlacementHint;
+import org.pragmatica.aether.environment.ProviderDefaults;
 import org.pragmatica.aether.environment.ProvisionContext;
+import org.pragmatica.aether.environment.ProvisionRequest;
 import org.pragmatica.aether.environment.ProvisionSpec;
 import org.pragmatica.aether.environment.ReadinessPolicy;
 import org.pragmatica.lang.Cause;
@@ -53,23 +54,32 @@ public record DockerComputeProvider(DockerCommandRunner runner, DockerConfig con
     }
 
     @Override
-    public Promise<InstanceInfo> provision(ProvisionSpec spec) {
-        var preflight = preflightCheck(spec);
+    public ProviderDefaults providerDefaults() {
+        return ProviderDefaults.providerDefaults("docker", "", "", "", Option.empty(), false);
+    }
+
+    /// Docker is a single-image, unsized provider: it ignores the resolved instanceSize/image/zone
+    /// (there is no sizing or image-selection knob on `docker run` beyond the configured image) and
+    /// builds the container from the request context alone. A SPOT request is rejected loud —
+    /// Docker has no spot/preemptible concept and must never silently downgrade.
+    @Override
+    public Promise<InstanceInfo> createFrom(ProvisionRequest request) {
+        if (request.market() instanceof InstanceType.Spot) {
+            return SPOT_UNSUPPORTED.promise();
+        }
+
+        var preflight = preflightCheck(request);
 
         if (preflight.isPresent()) {
             return preflight.unwrap();
         }
-        // Identity: honor a caller-supplied ctx.nodeId() (bootstrap path), otherwise
-        // self-mint a fresh ULID-suffixed id via the canonical IdGenerator path —
-        // exactly as the cloud providers do. The single value is used for BOTH the
-        // container name AND the NodeId, so `NodeId == container_name` holds and
-        // `docker kill <nodeId>` Just Works in the test harness. ULID is k-sortable
-        // and unique, eliminating the slot-number reuse the old max(existing)+1 scheme
-        // suffered when dead containers were swept and the observed max dropped.
-        var identity = resolveIdentity(spec);
 
-        return provisionWithIdentity(spec, identity).mapError(DockerComputeProvider::toProvisionError);
+        var identity = resolveIdentity(request);
+
+        return provisionWithIdentity(request, identity).mapError(DockerComputeProvider::toProvisionError);
     }
+
+    private static final Cause SPOT_UNSUPPORTED = EnvironmentError.provisionFailed(new RuntimeException("Docker has no spot/preemptible product; a SPOT request must not silently downgrade to on-demand"));
 
     /// Resolve the node identity used as both container name and NodeId. Honors a
     /// caller-supplied `ctx.nodeId()` when present (bootstrap supplies it), otherwise
@@ -78,19 +88,19 @@ public record DockerComputeProvider(DockerCommandRunner runner, DockerConfig con
     /// AETHER_CLUSTER_NAME env fallback) so CTM replacements carry the same
     /// `aether-<cluster>-` prefix as their compose-fixed siblings — the orphan sweeper
     /// and `docker kill` prefix-matching keep working.
-    private String resolveIdentity(ProvisionSpec spec) {
-        var cluster = clusterOrDefault(spec.context());
+    private String resolveIdentity(ProvisionRequest request) {
+        var cluster = clusterOrDefault(request.context());
 
-        return spec.context()
-                   .nodeId()
-                   .or(() -> IdGenerator.generate(ProvisionContext.coreNodeNamePrefix(cluster)));
+        return request.context()
+                      .nodeId()
+                      .or(() -> IdGenerator.generate(ProvisionContext.coreNodeNamePrefix(cluster)));
     }
 
-    private Promise<InstanceInfo> provisionWithIdentity(ProvisionSpec spec, String containerName) {
-        var command = buildRunCommand(spec, containerName);
+    private Promise<InstanceInfo> provisionWithIdentity(ProvisionRequest request, String containerName) {
+        var command = buildRunCommand(request, containerName);
 
         return runner.execute(command)
-                     .map(containerId -> toProvisionedInfo(containerId, containerName, spec))
+                     .map(containerId -> toProvisionedInfo(containerId, containerName, request))
                      .flatMap(info -> confirmRunning(info,
                                                      ReadinessPolicy.dockerDefault()))
                      .onFailure(cause -> rollbackOnProvisionFailure(containerName, cause));
@@ -107,8 +117,8 @@ public record DockerComputeProvider(DockerCommandRunner runner, DockerConfig con
     /// — the first node legitimately has no peers and is responsible for forming the
     /// cluster. Future enhancement: also fail when `bootstrap` is observed after
     /// cluster formation (would require a "formed" signal threaded through here).
-    private Option<Promise<InstanceInfo>> preflightCheck(ProvisionSpec spec) {
-        var ctx = spec.context();
+    private Option<Promise<InstanceInfo>> preflightCheck(ProvisionRequest request) {
+        var ctx = request.context();
 
         if (!ProvisionContext.PROVISIONED_BY_CTM.equals(ctx.provisionedBy())) {
             return Option.empty();
@@ -231,8 +241,8 @@ public record DockerComputeProvider(DockerCommandRunner runner, DockerConfig con
         return EnvironmentError.operationNotSupported("applyTags (Docker labels are immutable after creation)").promise();
     }
 
-    private List<String> buildRunCommand(ProvisionSpec spec, String containerName) {
-        var ctx = spec.context();
+    private List<String> buildRunCommand(ProvisionRequest request, String containerName) {
+        var ctx = request.context();
         var role = roleOrDefault(ctx);
         var cluster = clusterOrDefault(ctx);
         // NodeId == container name (the resolved identity: caller-supplied ctx.nodeId()
@@ -350,7 +360,7 @@ public record DockerComputeProvider(DockerCommandRunner runner, DockerConfig con
         }
 
         addSpecLabels(command, ctx.extraTags());
-        addPlacementLabels(command, spec.placement());
+        addPlacementLabels(command, request.zone());
         command.add(config.imageName());
 
         return List.copyOf(command);
@@ -396,16 +406,9 @@ public record DockerComputeProvider(DockerCommandRunner runner, DockerConfig con
         command.add(entry.getKey() + "=" + entry.getValue());
     }
 
-    private static void addPlacementLabels(ArrayList<String> command, Option<PlacementHint> placement) {
-        placement.onPresent(hint -> applyPlacementHint(command, hint));
-    }
-
-    private static void applyPlacementHint(ArrayList<String> command, PlacementHint hint) {
-        switch (hint) {
-            case PlacementHint.ZoneHint zone -> addPlacementLabel(command, "zone", zone.zoneName());
-            case PlacementHint.HostGroupHint group -> addPlacementLabel(command, "host-group", group.groupId());
-            case PlacementHint.AffinityHint ignored -> log.debug("Docker provider ignoring AffinityHint — not supported");
-            case PlacementHint.AntiAffinityHint ignored -> log.debug("Docker provider ignoring AntiAffinityHint — not supported");
+    private static void addPlacementLabels(ArrayList<String> command, String zone) {
+        if (!zone.isBlank()) {
+            addPlacementLabel(command, "zone", zone);
         }
     }
 
@@ -459,26 +462,26 @@ public record DockerComputeProvider(DockerCommandRunner runner, DockerConfig con
         return List.of("docker", "restart", id.value());
     }
 
-    private InstanceInfo toProvisionedInfo(String containerId, String containerName, ProvisionSpec spec) {
+    private InstanceInfo toProvisionedInfo(String containerId, String containerName, ProvisionRequest request) {
         // Provider-minted replacements are reached on the Docker overlay network at
         // the container's own ports (mgmt 8080, app 8070), addressed by container name
         // == NodeId. Host-mapped per-slot ports were a seed-only convenience; ULID
         // replacements carry no slot, so report the overlay-reachable form.
         var addresses = List.of(containerName + ":8080", containerName + ":8070");
-        var tags = buildInstanceTags(spec, containerName);
+        var tags = buildInstanceTags(request, containerName);
         // Created, not yet confirmed live: report PROVISIONING. confirmRunning() polls
         // `docker inspect` and re-stamps this to RUNNING only after the container actually
         // reaches `running`, or FAILS the provision if it never does (no phantom success).
         return new InstanceInfo(new InstanceId(containerId),
                                 InstanceStatus.PROVISIONING,
                                 addresses,
-                                spec.instanceType(),
+                                request.market(),
                                 tags,
                                 Option.some(containerName));
     }
 
-    private static Map<String, String> buildInstanceTags(ProvisionSpec spec, String containerName) {
-        var ctx = spec.context();
+    private static Map<String, String> buildInstanceTags(ProvisionRequest request, String containerName) {
+        var ctx = request.context();
         var role = roleOrDefault(ctx);
         var cluster = clusterOrDefault(ctx);
         // NodeId == container name (see buildRunCommand). Tags expose this to the

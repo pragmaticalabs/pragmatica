@@ -17,9 +17,9 @@ import org.pragmatica.aether.environment.InstanceId;
 import org.pragmatica.aether.environment.InstanceInfo;
 import org.pragmatica.aether.environment.InstanceStatus;
 import org.pragmatica.aether.environment.InstanceType;
-import org.pragmatica.aether.environment.PlacementHint;
+import org.pragmatica.aether.environment.ProviderDefaults;
 import org.pragmatica.aether.environment.ProvisionContext;
-import org.pragmatica.aether.environment.ProvisionSpec;
+import org.pragmatica.aether.environment.ProvisionRequest;
 import org.pragmatica.aether.environment.ReadinessPolicy;
 import org.pragmatica.cloud.azure.AzureClient;
 import org.pragmatica.cloud.azure.api.CreateVmRequest;
@@ -43,7 +43,6 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
-import org.pragmatica.utility.IdGenerator;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -61,30 +60,47 @@ public record AzureComputeProvider(AzureClient client, AzureEnvironmentConfig co
     }
 
     @Override
-    public Promise<InstanceInfo> provision(InstanceType instanceType) {
-        return client.createVm(buildCreateRequest(List.of(),
-                                                  defaultTags(),
-                                                  config.userData()))
-                     .map(AzureComputeProvider::toInstanceInfo)
-                     .flatMap(info -> confirmRunning(info,
-                                                     ReadinessPolicy.cloudDefault()))
-                     .onFailure(AzureComputeProvider::logProvisionFailureRollbackGap)
-                     .mapError(AzureComputeProvider::toProvisionError);
+    public ProviderDefaults providerDefaults() {
+        return ProviderDefaults.providerDefaults(config.vmSize(),
+                                                 config.image(),
+                                                 "",
+                                                 "",
+                                                 option(config.userData()),
+                                                 true);
     }
 
+    /// Translate a fully-resolved [ProvisionRequest] into an Azure create-VM call.
+    /// [ProvisionRequest#resolve] has already applied the vm-size / image / zone / user-data
+    /// precedence (#442, #459), so this consumes those fields verbatim — no provider-side
+    /// re-derivation. The pre-W1 `provision(ProvisionSpec)` path DROPPED the spec's instance size
+    /// and image and always created from `config.vmSize()` / `config.image()`; consuming
+    /// [ProvisionRequest#instanceSize] and [ProvisionRequest#image] here is the fix for that
+    /// silent-drop. A SPOT request is REJECTED loud: Azure's [CreateVmRequest] / [VmRequestProperties]
+    /// carries no priority=Spot / evictionPolicy field, so no spot arm can be built and honoring the
+    /// request silently would provision an on-demand VM — the exact silent-downgrade class this
+    /// surface eliminates.
     @Override
-    public Promise<InstanceInfo> provision(ProvisionSpec spec) {
-        var zones = extractZones(spec.placement());
-        var tags = tagsFor(spec.context());
-        var userData = spec.userData().or(config.userData());
+    public Promise<InstanceInfo> createFrom(ProvisionRequest request) {
+        if (request.market() instanceof InstanceType.Spot) {
+            return SPOT_UNSUPPORTED.promise();
+        }
 
-        return client.createVm(buildCreateRequest(zones, tags, userData))
+        return client.createVm(buildCreateRequest(request.instanceSize(),
+                                                  request.image(),
+                                                  zonesFor(request.zone()),
+                                                  tagsFor(request.context()),
+                                                  request.userData().or("")))
                      .map(AzureComputeProvider::toInstanceInfo)
                      .flatMap(info -> confirmRunning(info,
                                                      ReadinessPolicy.cloudDefault()))
                      .onFailure(AzureComputeProvider::logProvisionFailureRollbackGap)
                      .mapError(AzureComputeProvider::toProvisionError);
     }
+
+    /// Azure has no spot arm on this client — [CreateVmRequest.VmRequestProperties] exposes no
+    /// priority=Spot / evictionPolicy field — so a SPOT request reaching this provider cannot be
+    /// honored and must fail loud rather than silently provision an on-demand VM.
+    private static final Cause SPOT_UNSUPPORTED = EnvironmentError.provisionFailed(new RuntimeException("Azure spot (priority=Spot + evictionPolicy) provisioning is not yet implemented on this client; a SPOT request must not silently downgrade to on-demand"));
 
     /// Rollback acknowledgment for Azure provisions. `createVm` is atomic — failure
     /// returns no resource, success returns a `VirtualMachine` whose tags were bundled
@@ -136,10 +152,14 @@ public record AzureComputeProvider(AzureClient client, AzureEnvironmentConfig co
                      .mapError(AzureComputeProvider::toListInstancesError);
     }
 
-    private CreateVmRequest buildCreateRequest(List<String> zones, Map<String, String> tags, String userData) {
+    private CreateVmRequest buildCreateRequest(String vmSize,
+                                               String image,
+                                               List<String> zones,
+                                               Map<String, String> tags,
+                                               String userData) {
         var name = generateVmName();
-        var imageRef = parseImageUrn(config.image());
-        var hardware = new HardwareProfile(config.vmSize());
+        var imageRef = parseImageUrn(image);
+        var hardware = new HardwareProfile(vmSize);
         var storage = new StorageProfile(imageRef, new OsDisk("FromImage", new ManagedDisk("Standard_LRS")));
         var sshKey = new SshPublicKey("/home/" + config.adminUsername() + "/.ssh/authorized_keys", config.sshPublicKey());
         var linux = new LinuxConfiguration(true, new SshConfiguration(List.of(sshKey)));
@@ -161,10 +181,6 @@ public record AzureComputeProvider(AzureClient client, AzureEnvironmentConfig co
         return userData.isEmpty()
                ? ""
                : Base64.getEncoder().encodeToString(userData.getBytes(StandardCharsets.UTF_8));
-    }
-
-    private static Map<String, String> defaultTags() {
-        return Map.of("aether-managed", "true", NODE_ID_TAG, IdGenerator.generate("aether-node"));
     }
 
     private static Map<String, String> tagsFor(ProvisionContext ctx) {
@@ -203,25 +219,13 @@ public record AzureComputeProvider(AzureClient client, AzureEnvironmentConfig co
                : "";
     }
 
-    private static List<String> extractZones(Option<PlacementHint> placement) {
-        return placement.flatMap(AzureComputeProvider::zoneFromHint)
-                        .map(zone -> List.of(zone))
-                        .or(List.of());
-    }
-
-    private static Option<String> zoneFromHint(PlacementHint hint) {
-        return switch (hint) {
-            case PlacementHint.ZoneHint zone -> Option.some(zone.zoneName());
-            case PlacementHint.HostGroupHint ignored -> logUnsupported("HostGroupHint");
-            case PlacementHint.AffinityHint ignored -> logUnsupported("AffinityHint");
-            case PlacementHint.AntiAffinityHint ignored -> logUnsupported("AntiAffinityHint");
-        };
-    }
-
-    private static Option<String> logUnsupported(String hintType) {
-        log.debug("Azure provider ignoring {} — not yet supported", hintType);
-
-        return Option.empty();
+    /// The resolved zone from a [ProvisionRequest] is already a bare zone name (or `""` for the
+    /// provider default placement — [ProvisionRequest#resolve] flattened the placement hint).
+    /// Azure's `zones` field is omitted (`NON_EMPTY`) for the empty case.
+    private static List<String> zonesFor(String zone) {
+        return zone.isBlank()
+               ? List.of()
+               : List.of(zone);
     }
 
     private static String generateVmName() {

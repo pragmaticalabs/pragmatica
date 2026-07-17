@@ -123,6 +123,11 @@ class CloudProviderSupportTest {
         }
 
         @Override
+        public Promise<InstanceInfo> createFrom(ProvisionRequest request) {
+            return Promise.success(stubInstance("srv-createFrom"));
+        }
+
+        @Override
         public Promise<Unit> terminate(InstanceId instanceId) {
             return Promise.success(Unit.unit());
         }

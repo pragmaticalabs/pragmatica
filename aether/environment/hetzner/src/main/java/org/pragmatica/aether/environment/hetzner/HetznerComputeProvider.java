@@ -21,7 +21,6 @@ import org.pragmatica.aether.environment.InstanceType;
 import org.pragmatica.aether.environment.ProviderDefaults;
 import org.pragmatica.aether.environment.ProvisionContext;
 import org.pragmatica.aether.environment.ProvisionRequest;
-import org.pragmatica.aether.environment.ProvisionSpec;
 import org.pragmatica.aether.environment.ReadinessPolicy;
 import org.pragmatica.cloud.hetzner.HetznerClient;
 import org.pragmatica.cloud.hetzner.HetznerError;
@@ -51,11 +50,6 @@ public record HetznerComputeProvider(HetznerClient client, HetznerEnvironmentCon
     }
 
     @Override
-    public boolean usesProvisionRequest() {
-        return true;
-    }
-
-    @Override
     public ProviderDefaults providerDefaults() {
         return ProviderDefaults.providerDefaults(config.serverType(),
                                                  config.image(),
@@ -63,22 +57,6 @@ public record HetznerComputeProvider(HetznerClient client, HetznerEnvironmentCon
                                                  config.region(),
                                                  option(config.userData()),
                                                  true);
-    }
-
-    /// Seed provisioning (bootstrap host / low-level primitive): build the core-role seed spec and
-    /// route it through the shared [ComputeProvider#provision(ProvisionSpec)] boundary, so server
-    /// type / image / user-data resolution and create-request assembly stay in the one resolved path.
-    @Override
-    public Promise<InstanceInfo> provision(InstanceType instanceType) {
-        return seedSpec().async()
-                       .flatMap(this::provision);
-    }
-
-    private Result<ProvisionSpec> seedSpec() {
-        var cluster = config.clusterName().or("unknown");
-        var context = ProvisionContext.provisionContext(cluster, "core", "", ProvisionContext.PROVISIONED_BY_BOOTSTRAP);
-
-        return ProvisionSpec.provisionSpec(InstanceType.ON_DEMAND, "", "core", context);
     }
 
     /// Translate a fully-resolved [ProvisionRequest] into a Hetzner create-server call.

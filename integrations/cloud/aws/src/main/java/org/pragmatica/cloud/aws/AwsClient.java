@@ -355,8 +355,19 @@ record AwsClientRecord(AwsConfig config, HttpOperations http, JsonMapper jsonMap
         request.availabilityZone()
                .onPresent(az -> sb.append("&Placement.AvailabilityZone=")
                                   .append(AwsSigV4Signer.urlEncode(az)));
+        request.spotMarketOptions()
+               .onPresent(spot -> appendSpotMarketOptions(sb, spot));
 
         return sb.toString();
+    }
+
+    private static void appendSpotMarketOptions(StringBuilder sb, RunInstancesRequest.SpotMarketOptions spot) {
+        sb.append("&InstanceMarketOptions.MarketType=spot");
+        spot.maxPrice()
+            .onPresent(price -> sb.append("&InstanceMarketOptions.SpotOptions.MaxPrice=")
+                                  .append(AwsSigV4Signer.urlEncode(price)));
+        sb.append("&InstanceMarketOptions.SpotOptions.InstanceInterruptionBehavior=")
+          .append(AwsSigV4Signer.urlEncode(spot.interruptionBehavior()));
     }
 
     private static String buildCreateTagsForm(List<String> resourceIds, Map<String, String> tags) {

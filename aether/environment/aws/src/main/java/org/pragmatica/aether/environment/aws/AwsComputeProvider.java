@@ -15,11 +15,13 @@ import org.pragmatica.aether.environment.InstanceId;
 import org.pragmatica.aether.environment.InstanceInfo;
 import org.pragmatica.aether.environment.InstanceStatus;
 import org.pragmatica.aether.environment.InstanceType;
-import org.pragmatica.aether.environment.PlacementHint;
+import org.pragmatica.aether.environment.MarketOptions;
+import org.pragmatica.aether.environment.ProviderDefaults;
 import org.pragmatica.aether.environment.ProvisionContext;
-import org.pragmatica.aether.environment.ProvisionSpec;
+import org.pragmatica.aether.environment.ProvisionRequest;
 import org.pragmatica.aether.environment.ReadinessPolicy;
 import org.pragmatica.cloud.aws.AwsClient;
+import org.pragmatica.cloud.aws.AwsError;
 import org.pragmatica.cloud.aws.api.DescribeInstancesResponse;
 import org.pragmatica.cloud.aws.api.Instance;
 import org.pragmatica.cloud.aws.api.RunInstancesRequest;
@@ -29,7 +31,6 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
-import org.pragmatica.utility.IdGenerator;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -49,23 +50,25 @@ public record AwsComputeProvider(AwsClient client, AwsEnvironmentConfig config) 
     }
 
     @Override
-    public Promise<InstanceInfo> provision(InstanceType instanceType) {
-        return client.runInstances(buildRunRequest(Option.empty(),
-                                                   config.userData()))
-                     .flatMap(response -> tagAndMapFirstInstance(response,
-                                                                 defaultTags()))
-                     .flatMap(info -> confirmRunning(info,
-                                                     ReadinessPolicy.cloudDefault()))
-                     .mapError(AwsComputeProvider::toProvisionError);
+    public ProviderDefaults providerDefaults() {
+        return ProviderDefaults.providerDefaults(config.instanceType(),
+                                                 config.amiId(),
+                                                 "",
+                                                 "",
+                                                 option(config.userData()),
+                                                 true);
     }
 
+    /// Translate a fully-resolved [ProvisionRequest] into an EC2 RunInstances call. resolve() has
+    /// applied the AMI (image) / instance-type / zone / user-data precedence, so this consumes those
+    /// fields verbatim — catching AWS up to Hetzner's plumbing (it previously DROPPED the spec size
+    /// and image, using `config.instanceType()`/`config.amiId()`). A SPOT market attaches EC2
+    /// `InstanceMarketOptions` (RFC-0016 §2.5-ii).
     @Override
-    public Promise<InstanceInfo> provision(ProvisionSpec spec) {
-        var zone = extractAvailabilityZone(spec.placement());
-        var userData = spec.userData().or(config.userData());
-        var tags = tagsFor(spec.context());
+    public Promise<InstanceInfo> createFrom(ProvisionRequest request) {
+        var tags = tagsFor(request.context());
 
-        return client.runInstances(buildRunRequest(zone, userData))
+        return client.runInstances(buildRunRequest(request))
                      .flatMap(response -> tagAndMapFirstInstance(response, tags))
                      .flatMap(info -> confirmRunning(info,
                                                      ReadinessPolicy.cloudDefault()))
@@ -141,10 +144,6 @@ public record AwsComputeProvider(AwsClient client, AwsEnvironmentConfig config) 
               .onSuccess(ignored -> log.info("Rollback terminated partial AWS instance {}", instanceId));
     }
 
-    private static Map<String, String> defaultTags() {
-        return Map.of(MANAGED_TAG_KEY, MANAGED_TAG_VALUE, NODE_ID_TAG, IdGenerator.generate("aether-node"));
-    }
-
     private static Map<String, String> tagsFor(ProvisionContext ctx) {
         var tags = new java.util.HashMap<String, String>();
 
@@ -187,35 +186,42 @@ public record AwsComputeProvider(AwsClient client, AwsEnvironmentConfig config) 
                      .mapError(AwsComputeProvider::toListInstancesError);
     }
 
-    private RunInstancesRequest buildRunRequest(Option<String> availabilityZone, String userData) {
-        return RunInstancesRequest.runInstancesRequest(config.amiId(),
-                                                       config.instanceType(),
-                                                       1,
-                                                       1,
-                                                       config.keyName(),
-                                                       config.securityGroupIds(),
-                                                       Option.some(config.subnetId()),
-                                                       Option.some(userData),
-                                                       availabilityZone);
+    private RunInstancesRequest buildRunRequest(ProvisionRequest request) {
+        var base = RunInstancesRequest.runInstancesRequest(request.image(),
+                                                           request.instanceSize(),
+                                                           1,
+                                                           1,
+                                                           config.keyName(),
+                                                           config.securityGroupIds(),
+                                                           Option.some(config.subnetId()),
+                                                           Option.some(request.userData().or("")),
+                                                           zoneOption(request.zone()));
+
+        return request.market() instanceof InstanceType.Spot
+               ? base.withSpotMarketOptions(spotOptions(request.marketOptions()))
+               : base;
     }
 
-    private static Option<String> extractAvailabilityZone(Option<PlacementHint> placement) {
-        return placement.flatMap(AwsComputeProvider::zoneFromHint);
+    private static Option<String> zoneOption(String zone) {
+        return zone.isBlank()
+               ? Option.empty()
+               : Option.some(zone);
     }
 
-    private static Option<String> zoneFromHint(PlacementHint hint) {
-        return switch (hint) {
-            case PlacementHint.ZoneHint zone -> Option.some(zone.zoneName());
-            case PlacementHint.HostGroupHint ignored -> logUnsupported("HostGroupHint");
-            case PlacementHint.AffinityHint ignored -> logUnsupported("AffinityHint");
-            case PlacementHint.AntiAffinityHint ignored -> logUnsupported("AntiAffinityHint");
+    private static RunInstancesRequest.SpotMarketOptions spotOptions(MarketOptions marketOptions) {
+        return switch (marketOptions) {
+            case MarketOptions.Spot spot -> new RunInstancesRequest.SpotMarketOptions(spot.maxPrice(),
+                                                                                      ec2InterruptionBehavior(spot.interruptionBehavior()));
+            case MarketOptions.OnDemand ignored -> new RunInstancesRequest.SpotMarketOptions(Option.empty(), "terminate");
         };
     }
 
-    private static Option<String> logUnsupported(String hintType) {
-        log.debug("AWS provider ignoring {} — not yet supported", hintType);
-
-        return Option.empty();
+    private static String ec2InterruptionBehavior(MarketOptions.InterruptionBehavior behavior) {
+        return switch (behavior) {
+            case TERMINATE -> "terminate";
+            case STOP -> "stop";
+            case HIBERNATE -> "hibernate";
+        };
     }
 
     static InstanceInfo toInstanceInfo(Instance instance) {
@@ -270,8 +276,21 @@ public record AwsComputeProvider(AwsClient client, AwsEnvironmentConfig config) 
                    .collect(Collectors.toMap(Instance.Tag::key, Instance.Tag::value));
     }
 
+    private static final String INSUFFICIENT_CAPACITY_CODE = "InsufficientInstanceCapacity";
+    private static final String SPOT_MAX_PRICE_TOO_LOW_CODE = "SpotMaxPriceTooLow";
+
+    /// Map EC2 provisioning failures to typed causes. Spot/on-demand capacity exhaustion
+    /// (`InsufficientInstanceCapacity`) becomes the RETRYABLE [EnvironmentError.CapacityUnavailable]
+    /// so the bootstrap/CTM zone rotation can advance (mirrors Hetzner's `resource_unavailable`
+    /// handling); `SpotMaxPriceTooLow` is an operator config error → non-retryable
+    /// [EnvironmentError.ProvisionFailed] with an actionable message.
     private static EnvironmentError toProvisionError(Cause cause) {
-        return EnvironmentError.provisionFailed(new RuntimeException(cause.message()));
+        return switch (cause) {
+            case AwsError.ApiError api when INSUFFICIENT_CAPACITY_CODE.equals(api.code()) -> EnvironmentError.capacityUnavailable("",
+                                                                                                                                  new RuntimeException(api.message()));
+            case AwsError.ApiError api when SPOT_MAX_PRICE_TOO_LOW_CODE.equals(api.code()) -> EnvironmentError.provisionFailed(new RuntimeException("Spot max price is below the current market rate; raise max_price or omit it to accept the on-demand-capped rate. " + api.message()));
+            default -> EnvironmentError.provisionFailed(new RuntimeException(cause.message()));
+        };
     }
 
     private static EnvironmentError toTerminateError(InstanceId instanceId, Cause cause) {

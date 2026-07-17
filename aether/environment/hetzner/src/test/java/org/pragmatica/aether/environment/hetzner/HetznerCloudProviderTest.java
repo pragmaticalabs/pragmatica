@@ -15,6 +15,7 @@ import org.pragmatica.aether.environment.InstanceInfo;
 import org.pragmatica.aether.environment.InstanceStatus;
 import org.pragmatica.aether.environment.InstanceType;
 import org.pragmatica.aether.environment.NodeGroupConfig;
+import org.pragmatica.aether.environment.ProvisionRequest;
 import org.pragmatica.aether.environment.QuotaStatus;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Promise;
@@ -138,7 +139,7 @@ class HetznerCloudProviderTest {
         int terminateCount;
 
         @Override
-        public Promise<InstanceInfo> provision(InstanceType instanceType) {
+        public Promise<InstanceInfo> createFrom(ProvisionRequest request) {
             return Promise.success(stubInstanceInfo("srv-1"));
         }
 

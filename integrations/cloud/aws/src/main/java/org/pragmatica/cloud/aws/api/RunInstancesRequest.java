@@ -30,7 +30,13 @@ public record RunInstancesRequest(String imageId,
                                   List<String> securityGroupIds,
                                   Option<String> subnetId,
                                   Option<String> userData,
-                                  Option<String> availabilityZone) {
+                                  Option<String> availabilityZone,
+                                  Option<SpotMarketOptions> spotMarketOptions) {
+    /// EC2 `InstanceMarketOptions` for a spot request: an optional max price (USD/hour as a
+    /// string; absent = the on-demand-capped market rate) and the interruption behavior EC2 value
+    /// (`terminate` | `stop` | `hibernate`).
+    public record SpotMarketOptions(Option<String> maxPrice, String interruptionBehavior) {}
+
     /// Factory method for creating a RunInstances request.
     public static RunInstancesRequest runInstancesRequest(String imageId,
                                                           String instanceType,
@@ -48,6 +54,7 @@ public record RunInstancesRequest(String imageId,
                                        securityGroupIds,
                                        subnetId,
                                        userData,
+                                       Option.empty(),
                                        Option.empty());
     }
 
@@ -69,6 +76,22 @@ public record RunInstancesRequest(String imageId,
                                        securityGroupIds,
                                        subnetId,
                                        userData,
-                                       availabilityZone);
+                                       availabilityZone,
+                                       Option.empty());
+    }
+
+    /// Attach EC2 spot `InstanceMarketOptions` to an existing request. Used by the AWS spot arm
+    /// (RFC-0016 §2.5-ii) when the resolved market is SPOT.
+    public RunInstancesRequest withSpotMarketOptions(SpotMarketOptions options) {
+        return new RunInstancesRequest(imageId,
+                                       instanceType,
+                                       minCount,
+                                       maxCount,
+                                       keyName,
+                                       securityGroupIds,
+                                       subnetId,
+                                       userData,
+                                       availabilityZone,
+                                       Option.some(options));
     }
 }

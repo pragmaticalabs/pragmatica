@@ -37,9 +37,9 @@ public record ProviderDefaults(String instanceSize,
         return new ProviderDefaults(instanceSize, image, fallbackImage, zone, userData, supportsImage);
     }
 
-    /// Inert defaults for a provider that has not migrated to the [ProvisionRequest] contract.
-    /// Never reached in practice: an unported provider takes the legacy dispatch branch in
-    /// [ComputeProvider#provision(ProvisionSpec)] and so never calls [ProvisionRequest#resolve].
+    /// Empty defaults for providers and test stubs that declare none. With no config tier,
+    /// [ProvisionRequest#resolve] decides from the spec values alone — instance size fails loud
+    /// when the spec carries none, and `supportsImage=false` suppresses the stock-image fallback.
     public static ProviderDefaults none() {
         return new ProviderDefaults("", "", "", "", Option.empty(), false);
     }

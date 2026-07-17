@@ -15,7 +15,13 @@ import org.pragmatica.lang.Unit;
 
 
 public interface ComputeProvider {
-    Promise<InstanceInfo> provision(InstanceType instanceType);
+    /// The single per-provider provisioning surface (RFC-0016 §2): translate a fully-resolved,
+    /// provider-agnostic [ProvisionRequest] into a native create call. [ProvisionRequest#resolve]
+    /// has already applied the precedence (spec field > provider config > loud fallback), so this
+    /// performs NO re-derivation — every field it needs is on the request. This is the ONLY
+    /// provisioning method a provider implements; [#provision(ProvisionSpec)] is a non-overridable
+    /// boundary that resolves then delegates here.
+    Promise<InstanceInfo> createFrom(ProvisionRequest request);
     Promise<Unit> terminate(InstanceId instanceId);
     Promise<List<InstanceInfo>> listInstances();
     Promise<InstanceInfo> instanceStatus(InstanceId instanceId);
@@ -32,43 +38,39 @@ public interface ComputeProvider {
         return listInstances().map(instances -> filterByTags(instances, tagFilter));
     }
 
-    /// The single per-provider provisioning surface (RFC-0016 §2). Providers migrated to the
-    /// [ProvisionRequest] contract translate a fully-resolved, provider-agnostic request into a
-    /// native create call here. [ProvisionRequest#resolve] has already applied the precedence
-    /// (spec field > provider config > loud fallback), so this method performs NO re-derivation:
-    /// every field it needs is on the request. The default reports the provider has not migrated.
-    default Promise<InstanceInfo> createFrom(ProvisionRequest request) {
-        return EnvironmentError.operationNotSupported("createFrom").promise();
-    }
-
-    /// Config-level fallbacks consumed by [ProvisionRequest#resolve]. Only meaningful for a
-    /// provider with [#usesProvisionRequest] `true`; the inert default is never reached for an
-    /// unported provider (it takes the legacy dispatch branch in [#provision(ProvisionSpec)]).
+    /// Config-level fallbacks consumed by [ProvisionRequest#resolve] — the provider's second
+    /// precedence tier (instance size / image / zone / user-data) plus its stock image fallback and
+    /// image capability. A provider that resolves everything from the spec may keep the inert
+    /// [ProviderDefaults#none]; any provider with config-level defaults overrides this.
     default ProviderDefaults providerDefaults() {
         return ProviderDefaults.none();
     }
 
-    /// Transitional bridge (RFC-0016 W1): a provider migrated to the [ProvisionRequest] contract
-    /// overrides this to `true` and implements [#createFrom] + [#providerDefaults]. Until every
-    /// provider is ported, an unported provider keeps the legacy `provision(spec.instanceType())`
-    /// dispatch below. Once all providers are ported this flag and the legacy branch are removed
-    /// and `provision(spec)` unconditionally routes through the static [ProvisionRequest#resolve]
-    /// choke.
-    default boolean usesProvisionRequest() {
-        return false;
+    /// The provisioning boundary every producer (bootstrap seed, `CloudProviderSupport`, CTM
+    /// auto-heal) funnels through: the static, non-overridable [ProvisionRequest#resolve] choke then
+    /// [#createFrom]. Providers implement ONLY createFrom — this method is not overridden by any
+    /// provider, so resolution can never be re-opened per-provider (the #442/#459 defect class).
+    default Promise<InstanceInfo> provision(ProvisionSpec spec) {
+        return ProvisionRequest.resolve(spec,
+                                        providerDefaults())
+                               .async()
+                               .flatMap(this::createFrom);
     }
 
-    /// The provisioning boundary every producer (bootstrap seed, `CloudProviderSupport`, CTM
-    /// auto-heal) funnels through. For a migrated provider it routes through the static,
-    /// non-overridable [ProvisionRequest#resolve] then [#createFrom]; an unported provider keeps
-    /// the legacy dispatch so in-JVM (Ember) and not-yet-ported cloud providers are unaffected.
-    default Promise<InstanceInfo> provision(ProvisionSpec spec) {
-        return usesProvisionRequest()
-               ? ProvisionRequest.resolve(spec,
-                                          providerDefaults())
-                                 .async()
-                                 .flatMap(this::createFrom)
-               : provision(spec.instanceType());
+    /// Convenience seed entry (bootstrap primitive / tests): provision a core-role node from the
+    /// provider's defaults, routed through the [#provision(ProvisionSpec)] boundary. A provider that
+    /// needs a provider-specific seed (e.g. Docker's `default` cluster) overrides this; the rest
+    /// inherit the generic core seed. The seed context carries no cluster name — production
+    /// provisioning flows through `buildCloudProvisionSpec`, which stamps the real cluster.
+    default Promise<InstanceInfo> provision(InstanceType instanceType) {
+        return seedSpec(instanceType).async()
+                       .flatMap(this::provision);
+    }
+
+    private static Result<ProvisionSpec> seedSpec(InstanceType instanceType) {
+        var context = ProvisionContext.provisionContext("", "core", "", ProvisionContext.PROVISIONED_BY_BOOTSTRAP);
+
+        return ProvisionSpec.provisionSpec(instanceType, "", "core", context);
     }
 
     default Promise<List<InstanceInfo>> listInstances(TagSelector selector) {

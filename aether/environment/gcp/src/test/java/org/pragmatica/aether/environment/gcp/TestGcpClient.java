@@ -41,6 +41,7 @@ final class TestGcpClient implements GcpClient {
     Map<String, String> lastSetLabels;
     String lastLabelFilter;
     String lastSecretName;
+    InsertInstanceRequest lastInsertRequest;
     String lastAttachNegName;
     NetworkEndpoint lastAttachEndpoint;
     String lastDetachNegName;
@@ -49,6 +50,7 @@ final class TestGcpClient implements GcpClient {
 
     @Override
     public Promise<Instance> insertInstance(InsertInstanceRequest request) {
+        lastInsertRequest = request;
         return insertInstanceResponse;
     }
 

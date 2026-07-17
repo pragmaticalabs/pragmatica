@@ -12,7 +12,7 @@ import org.pragmatica.aether.cli.cluster.CreatedResource.SshKeyResource;
 import org.pragmatica.aether.environment.ComputeProvider;
 import org.pragmatica.aether.environment.InstanceId;
 import org.pragmatica.aether.environment.InstanceInfo;
-import org.pragmatica.aether.environment.InstanceType;
+import org.pragmatica.aether.environment.ProvisionRequest;
 import org.pragmatica.cloud.hetzner.HetznerClient;
 import org.pragmatica.cloud.hetzner.api.Firewall;
 import org.pragmatica.cloud.hetzner.api.FloatingIp;
@@ -132,7 +132,7 @@ class BootstrapCleanupTest {
      * stubs cannot be expressed as lambdas (multi-method interface).
      */
     record RecordingComputeProvider(List<String> terminateCalls) implements ComputeProvider {
-        @Override public Promise<InstanceInfo> provision(InstanceType instanceType) {
+        @Override public Promise<InstanceInfo> createFrom(ProvisionRequest request) {
             return new TestCause("provision not used").promise();
         }
 

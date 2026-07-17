@@ -12,6 +12,9 @@ import org.pragmatica.aether.environment.EnvironmentError;
 import org.pragmatica.aether.environment.InstanceId;
 import org.pragmatica.aether.environment.InstanceStatus;
 import org.pragmatica.aether.environment.InstanceType;
+import org.pragmatica.aether.environment.MarketOptions;
+import org.pragmatica.aether.environment.ProvisionContext;
+import org.pragmatica.aether.environment.ProvisionRequest;
 import org.pragmatica.cloud.aws.AwsError;
 import org.pragmatica.cloud.aws.api.Instance;
 import org.pragmatica.lang.Cause;
@@ -113,6 +116,71 @@ class AwsComputeProviderTest {
                     .onFailure(cause -> assertThat(cause).isNull());
 
             assertThat(testClient.lastTerminatedIds).isNull();
+        }
+    }
+
+    @Nested
+    class CreateFromTests {
+
+        @Test
+        void createFrom_carriesResolvedImageAndInstanceType_toRunInstances() {
+            // Previously AWS dropped the spec size/image for config.instanceType()/config.amiId();
+            // createFrom now consumes the resolved request fields — AWS catches up to Hetzner.
+            testClient.runInstancesResponse = Promise.success(TestAwsClient.runResponseWith(runningInstance("i-x")));
+            testClient.describeResponse = Promise.success(
+                TestAwsClient.describeResponseWith(List.of(runningInstance("i-x"))));
+
+            provider.createFrom(onDemandRequest("ami-999", "c5.large"))
+                    .await()
+                    .onFailure(cause -> assertThat(cause).isNull());
+
+            assertThat(testClient.lastRunInstancesRequest.imageId()).isEqualTo("ami-999");
+            assertThat(testClient.lastRunInstancesRequest.instanceType()).isEqualTo("c5.large");
+            assertThat(testClient.lastRunInstancesRequest.spotMarketOptions().isEmpty()).isTrue();
+        }
+
+        @Test
+        void createFrom_spotMarket_attachesSpotMarketOptions() {
+            testClient.runInstancesResponse = Promise.success(TestAwsClient.runResponseWith(runningInstance("i-spot")));
+            testClient.describeResponse = Promise.success(
+                TestAwsClient.describeResponseWith(List.of(runningInstance("i-spot"))));
+            var request = new ProvisionRequest(InstanceType.SPOT, "c5.large", "ami-1", "",
+                                               Option.empty(), MarketOptions.spot(),
+                                               ProvisionContext.forBootstrap("c", "spot", "s", "n0"));
+
+            provider.createFrom(request).await().onFailure(cause -> assertThat(cause).isNull());
+
+            assertThat(testClient.lastRunInstancesRequest.spotMarketOptions().isPresent()).isTrue();
+            assertThat(testClient.lastRunInstancesRequest.spotMarketOptions().map(o -> o.interruptionBehavior()).or("")).isEqualTo("terminate");
+            assertThat(testClient.lastRunInstancesRequest.spotMarketOptions().map(o -> o.maxPrice().isEmpty()).or(false)).isTrue();
+        }
+
+        @Test
+        void createFrom_insufficientCapacity_mapsToCapacityUnavailable() {
+            testClient.runInstancesResponse =
+                new AwsError.ApiError(500, "InsufficientInstanceCapacity", "no capacity in az").promise();
+
+            provider.createFrom(onDemandRequest("ami-1", "c5.large"))
+                    .await()
+                    .onSuccess(info -> assertThat(info).isNull())
+                    .onFailure(AwsComputeProviderTest::assertCapacityUnavailable);
+        }
+
+        @Test
+        void createFrom_spotMaxPriceTooLow_mapsToProvisionFailed() {
+            testClient.runInstancesResponse =
+                new AwsError.ApiError(400, "SpotMaxPriceTooLow", "bid below market").promise();
+
+            provider.createFrom(onDemandRequest("ami-1", "c5.large"))
+                    .await()
+                    .onSuccess(info -> assertThat(info).isNull())
+                    .onFailure(AwsComputeProviderTest::assertProvisionFailedError);
+        }
+
+        private ProvisionRequest onDemandRequest(String image, String instanceSize) {
+            return new ProvisionRequest(InstanceType.ON_DEMAND, instanceSize, image, "",
+                                        Option.empty(), MarketOptions.ON_DEMAND,
+                                        ProvisionContext.forBootstrap("c", "core", "s", "n0"));
         }
     }
 
@@ -371,6 +439,10 @@ class AwsComputeProviderTest {
 
     private static void assertProvisionFailedError(Cause cause) {
         assertThat(cause).isInstanceOf(EnvironmentError.ProvisionFailed.class);
+    }
+
+    private static void assertCapacityUnavailable(Cause cause) {
+        assertThat(cause).isInstanceOf(EnvironmentError.CapacityUnavailable.class);
     }
 
     private static void assertTerminateFailedError(Cause cause) {
