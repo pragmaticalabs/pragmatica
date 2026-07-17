@@ -19,7 +19,7 @@ import static org.pragmatica.lang.Option.option;
 
 
 /// Catalog of populated [DialectSpec] descriptors. Ships PostgreSQL, MySQL/MariaDB, DB2,
-/// SQL Server (T-SQL), and Oracle.
+/// SQL Server (T-SQL), Oracle, and H2.
 public sealed interface Dialects {
     record unused() implements Dialects {}
 
@@ -147,6 +147,24 @@ public sealed interface Dialects {
                                          Dialects::isOracleTransactional,
                                          Dialects::isOraclePlsqlBlock);
 
+    /// The fully-populated H2 dialect descriptor.
+    ///
+    /// H2 uses the SQL-standard lexical set: `''`-doubled single-quoted strings with NO backslash
+    /// escapes, double-quoted identifiers (`"…"`) only, and `--` line comments plus flat
+    /// (non-nesting) `/*…*/` block comments. There is no dollar quoting, no redefinable terminator,
+    /// no batch separator, and no `COPY` inline-data mode; a top-level `;` terminates a statement
+    /// (`semicolonTerminates=true`). H2 has no line-terminated PL/SQL block, so it never enters
+    /// block mode. H2 DDL is transactional, so the per-statement classifier reports every statement
+    /// transactional and the executor wraps the whole file in a transaction.
+    DialectSpec H2 = new DialectSpec(new StringRules(true, false, false, false, false, false),
+                                     new IdentifierRules(true, false, false),
+                                     new CommentRules(true, false, true, false, false),
+                                     new DollarQuoteRules(false),
+                                     new BoundaryRules(none(), none(), none(), true),
+                                     new CopyDataRules(false, ""),
+                                     Dialects::isH2Transactional,
+                                     Dialects::neverStartsBlock);
+
     /// Classifies a PostgreSQL statement as transactional or not.
     ///
     /// @param statementText verbatim statement text
@@ -201,6 +219,18 @@ public sealed interface Dialects {
     ///
     /// @return always `true`
     static boolean isOracleTransactional(String statementText) {
+        return true;
+    }
+
+    /// Classifies an H2 statement as transactional.
+    ///
+    /// H2 DDL is transactional, so per-statement classification reports every statement
+    /// transactional; the executor then wraps the whole file in a transaction.
+    ///
+    /// @param statementText verbatim statement text
+    ///
+    /// @return always `true`
+    static boolean isH2Transactional(String statementText) {
         return true;
     }
 

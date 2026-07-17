@@ -102,13 +102,13 @@ class AetherSchemaManagerTest {
     @Nested
     class NonWiredFallback {
 
-        /// H2 is still unmapped in [MigrationDialects#dialectFor], so it must take the legacy
-        /// naive `split(";")` path: the PostgreSQL `$$` body is cut at every internal `;`,
-        /// the whole file runs in a transaction, and behavior is unchanged from before MySQL
-        /// was wired.
+        /// SQLITE is still unmapped in [MigrationDialects#dialectFor] (its `CREATE TRIGGER …
+        /// BEGIN…END;` block needs a `BEGIN…END`-aware terminator the splitter does not yet
+        /// provide), so it must take the legacy naive `split(";")` path: the PostgreSQL `$$` body is
+        /// cut at every internal `;` and the whole file runs in a transaction.
         @Test
-        void migrate_splitsDollarBodyAtInternalSemicolon_forUnwiredH2() {
-            var connector = new RecordingConnector(DatabaseType.H2);
+        void migrate_splitsDollarBodyAtInternalSemicolon_forUnwiredSqlite() {
+            var connector = new RecordingConnector(DatabaseType.SQLITE);
             var sql = """
                       CREATE FUNCTION f() RETURNS void AS $$
                       BEGIN
@@ -262,11 +262,11 @@ class AetherSchemaManagerTest {
             assertThat(tx.migrationStatements.stream().map(String::strip).toList()).containsExactly("CREATE TABLE a (id INT)", "CREATE TABLE b (id INT)");
         }
 
-        /// The legacy naive path (unwired H2) also wraps in a transaction, so its history write
+        /// The legacy naive path (unwired SQLITE) also wraps in a transaction, so its history write
         /// must likewise land on the transaction connector, not the base connector.
         @Test
-        void migrate_writesHistoryOnTransactionConnector_forUnwiredH2() {
-            var connector = new RecordingConnector(DatabaseType.H2);
+        void migrate_writesHistoryOnTransactionConnector_forUnwiredSqlite() {
+            var connector = new RecordingConnector(DatabaseType.SQLITE);
             var sql = "CREATE TABLE t (id INT);";
 
             migrate(connector, "V1__ddl.sql", sql);
