@@ -18,8 +18,9 @@ import org.pragmatica.aether.environment.InstanceId;
 import org.pragmatica.aether.environment.InstanceInfo;
 import org.pragmatica.aether.environment.InstanceStatus;
 import org.pragmatica.aether.environment.InstanceType;
-import org.pragmatica.aether.environment.PlacementHint;
+import org.pragmatica.aether.environment.ProviderDefaults;
 import org.pragmatica.aether.environment.ProvisionContext;
+import org.pragmatica.aether.environment.ProvisionRequest;
 import org.pragmatica.aether.environment.ProvisionSpec;
 import org.pragmatica.aether.environment.ReadinessPolicy;
 import org.pragmatica.cloud.hetzner.HetznerClient;
@@ -33,8 +34,6 @@ import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.parse.Number;
-import org.pragmatica.lang.utils.Causes;
-import org.pragmatica.utility.IdGenerator;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -52,47 +51,61 @@ public record HetznerComputeProvider(HetznerClient client, HetznerEnvironmentCon
     }
 
     @Override
-    public Promise<InstanceInfo> provision(InstanceType instanceType) {
-        var cluster = config.clusterName().or("unknown");
-        var labels = buildLabels(cluster, "core", "");
-
-        labels.put(NODE_ID_LABEL,
-                   IdGenerator.generate(ProvisionContext.coreNodeNamePrefix(cluster)));
-
-        return provisionServer(config.region(), "", labels, config.userData());
+    public boolean usesProvisionRequest() {
+        return true;
     }
 
     @Override
-    public Promise<InstanceInfo> provision(ProvisionSpec spec) {
-        var location = extractLocation(spec.placement());
-        var userData = spec.userData().or(config.userData());
-        var labels = labelsFor(spec.context());
-
-        return provisionServer(location, spec.instanceSize(), labels, userData);
+    public ProviderDefaults providerDefaults() {
+        return ProviderDefaults.providerDefaults(config.serverType(),
+                                                 config.image(),
+                                                 DEFAULT_IMAGE,
+                                                 config.region(),
+                                                 option(config.userData()),
+                                                 true);
     }
 
-    /// Provisions a server, resolving the two params that historically diverged between the CLI
-    /// bootstrap and the CTM auto-heal paths (#442): the server type and the SSH key ids.
-    ///
-    /// Server type honors the caller's [ProvisionSpec#instanceSize] when it is a concrete type
-    /// (the per-role `instance_type` bootstrap threads through), otherwise falls back to the
-    /// provider's [HetznerEnvironmentConfig#serverType] (the leader's runtime `[cloud.compute]
-    /// server_type`, which auto-heal relies on). When NEITHER resolves the provision fails loud —
-    /// there is no hardcoded instance-type default.
-    private Promise<InstanceInfo> provisionServer(String location,
-                                                  String serverTypeHint,
-                                                  Map<String, String> labels,
-                                                  String userData) {
-        return resolveServerType(serverTypeHint).async()
-                                .flatMap(serverType -> createAndConfirm(location, serverType, labels, userData))
-                                .mapError(cause -> toProvisionError(location, cause));
+    /// Seed provisioning (bootstrap host / low-level primitive): build the core-role seed spec and
+    /// route it through the shared [ComputeProvider#provision(ProvisionSpec)] boundary, so server
+    /// type / image / user-data resolution and create-request assembly stay in the one resolved path.
+    @Override
+    public Promise<InstanceInfo> provision(InstanceType instanceType) {
+        return seedSpec().async()
+                       .flatMap(this::provision);
     }
 
-    private Promise<InstanceInfo> createAndConfirm(String location,
-                                                   String serverType,
-                                                   Map<String, String> labels,
-                                                   String userData) {
-        return resolveSshKeyIds().map(sshKeyIds -> buildCreateRequest(location, serverType, sshKeyIds, labels, userData))
+    private Result<ProvisionSpec> seedSpec() {
+        var cluster = config.clusterName().or("unknown");
+        var context = ProvisionContext.provisionContext(cluster, "core", "", ProvisionContext.PROVISIONED_BY_BOOTSTRAP);
+
+        return ProvisionSpec.provisionSpec(InstanceType.ON_DEMAND, "", "core", context);
+    }
+
+    /// Translate a fully-resolved [ProvisionRequest] into a Hetzner create-server call.
+    /// [ProvisionRequest#resolve] has already applied the server-type / image / zone / user-data
+    /// precedence (#442, #459), so this consumes those fields verbatim — no provider-side
+    /// re-derivation. SSH-key ids stay resolved provider-side (an async account lookup, #442
+    /// option 3B) until the persisted SourceProfile lands (W3). A SPOT request is REJECTED loud:
+    /// Hetzner has no spot product, so honoring it silently would provision an on-demand server —
+    /// the exact silent-downgrade class this surface eliminates.
+    @Override
+    public Promise<InstanceInfo> createFrom(ProvisionRequest request) {
+        if (request.market() instanceof InstanceType.Spot) {
+            return SPOT_UNSUPPORTED.promise();
+        }
+
+        return createAndConfirm(request, labelsFor(request.context())).mapError(cause -> toProvisionError(request.zone(),
+                                                                                                          cause));
+    }
+
+    /// Hetzner offers no spot/preemptible product. PF-16 ([ClusterBootstrapConfigValidator]) already
+    /// rejects a spot sub-table on Hetzner at parse, so a SPOT request reaching this provider is a
+    /// bug — the rejection makes the guarantee structural instead of dependent on a distant validator.
+    private static final Cause SPOT_UNSUPPORTED = EnvironmentError.provisionFailed(new RuntimeException("Hetzner offers no spot/preemptible product; spot sub-tables are rejected at validation (PF-16) — "
+                                                                                                       + "a SPOT request reaching this provider is a bug"));
+
+    private Promise<InstanceInfo> createAndConfirm(ProvisionRequest request, Map<String, String> labels) {
+        return resolveSshKeyIds().map(sshKeyIds -> buildCreateRequest(request, sshKeyIds, labels))
                                .onSuccess(HetznerComputeProvider::logCreateRequest)
                                .flatMap(client::createServer)
                                .map(HetznerComputeProvider::toInstanceInfo)
@@ -212,10 +225,6 @@ public record HetznerComputeProvider(HetznerClient client, HetznerEnvironmentCon
 
     private static final CreateServerRequest.PublicNetSpec IPV4_ONLY = new CreateServerRequest.PublicNetSpec(true, false);
 
-    /// Sentinel the upper layers pass in [ProvisionSpec#instanceSize] when they carry no concrete
-    /// type (CTM auto-heal always passes it; bootstrap passes it for roles with no `instance_type`).
-    /// Treated as "unset" so resolution falls through to the provider config.
-    static final String DEFAULT_INSTANCE_SIZE_SENTINEL = "default";
     /// Bootstrap uploads operator SSH keys to Hetzner named with this prefix and passes their ids at
     /// create time, so bootstrap VMs never get a root password. The ids live only in the bootstrap
     /// CLI process — so a leader provisioning an auto-heal replacement re-derives them here by listing
@@ -223,62 +232,13 @@ public record HetznerComputeProvider(HetznerClient client, HetznerEnvironmentCon
     /// against deleted/recreated keys). Mirrors `BootstrapPhaseSshKey.HETZNER_KEY_NAME_PREFIX` — the
     /// `aether-cli` constant cannot be imported from this provider module.
     static final String BOOTSTRAP_KEY_NAME_PREFIX = "aether-bootstrap";
-
-    private static final Cause NO_SERVER_TYPE = Causes.cause("No Hetzner server type resolved: neither the provision spec instance type nor the provider's "
-                                                            + "[cloud.compute] server_type is set. Set instance_type on the source's core role (bootstrap) or "
-                                                            + "server_type in the node cloud config so auto-heal replacements inherit the cluster's type.");
-
-    private Result<String> resolveServerType(String specHint) {
-        if (isConcreteType(specHint)) {
-            return success(specHint);
-        }
-
-        var configured = config.serverType();
-
-        return isConcreteType(configured)
-               ? success(configured)
-               : NO_SERVER_TYPE.result();
-    }
-
-    private static boolean isConcreteType(String value) {
-        return value != null
-               && !value.isBlank()
-               && !DEFAULT_INSTANCE_SIZE_SENTINEL.equals(value);
-    }
-
-    /// #459 — hardcoded VM boot image applied only when neither the source's role `image` nor the
-    /// node's `[cloud.compute] image` resolves. Unlike the server type (which fails loud, because a
-    /// wrong default caused an over-provisioning death spiral), the stock OS image is a SAFE default
-    /// — a VM boots — so the fallback is retained but made LOUD, so an operator who intended a
-    /// prepared snapshot sees that the stock image was used instead.
+    /// #459 — Hetzner's stock boot image, supplied to [ProvisionRequest#resolve] as the provider
+    /// [ProviderDefaults#fallbackImage] for the LOUD final image fallback: applied only when neither
+    /// the source's role `image` nor the node's `[cloud.compute] image` resolves. Unlike the server
+    /// type (which fails loud, because a wrong default caused an over-provisioning death spiral), the
+    /// stock OS image is a SAFE default — a VM boots — so it is retained, but resolve() warns, so an
+    /// operator who intended a prepared snapshot sees the stock image was used instead.
     private static final String DEFAULT_IMAGE = "ubuntu-22.04";
-
-    /// Resolves the VM boot image: the provider's `[cloud.compute] image` (threaded from the source's
-    /// role `image` by `ProviderResolver` for seeds and `BootstrapOverlayGenerator` for the node
-    /// overlay / CTM replacements) when concrete, otherwise the loud hardcoded default. Precedence:
-    /// role-specific `[source...] image` > `[cloud.compute]` image > loud default.
-    private String resolveImage() {
-        var configured = config.image();
-
-        if (isConcreteImage(configured)) {
-            return configured;
-        }
-
-        return warnAndUseDefaultImage();
-    }
-
-    private static boolean isConcreteImage(String value) {
-        return value != null && !value.isBlank();
-    }
-
-    private static String warnAndUseDefaultImage() {
-        log.warn("Hetzner provision: no image resolved from the source's role image or [cloud.compute] image; "
-                + "using the hardcoded default '{}'. Set image on the source's core role (or [cloud.compute] image) "
-                + "to boot from a prepared VM snapshot.",
-                 DEFAULT_IMAGE);
-
-        return DEFAULT_IMAGE;
-    }
 
     private Promise<List<Long>> resolveSshKeyIds() {
         if (!config.sshKeyIds().isEmpty()) {
@@ -333,24 +293,17 @@ public record HetznerComputeProvider(HetznerClient client, HetznerEnvironmentCon
         return List.of();
     }
 
-    private CreateServerRequest buildCreateRequest(String location,
-                                                   String serverType,
+    private CreateServerRequest buildCreateRequest(ProvisionRequest request,
                                                    List<Long> sshKeyIds,
-                                                   Map<String, String> labels,
-                                                   String userData) {
-        var name = generateServerName();
-        var image = resolveImage();
-        var networkIds = config.networkIds();
-        var firewallIds = config.firewallIds();
-
-        return CreateServerRequest.createServerRequest(name,
-                                                       serverType,
-                                                       image,
+                                                   Map<String, String> labels) {
+        return CreateServerRequest.createServerRequest(generateServerName(),
+                                                       request.instanceSize(),
+                                                       request.image(),
                                                        sshKeyIds,
-                                                       networkIds,
-                                                       firewallIds,
-                                                       location,
-                                                       userData,
+                                                       config.networkIds(),
+                                                       config.firewallIds(),
+                                                       request.zone(),
+                                                       request.userData().or(""),
                                                        true,
                                                        IPV4_ONLY,
                                                        labels);
@@ -475,26 +428,6 @@ public record HetznerComputeProvider(HetznerClient client, HetznerEnvironmentCon
         }
 
         return Map.copyOf(merged);
-    }
-
-    private String extractLocation(Option<PlacementHint> placement) {
-        return placement.flatMap(HetznerComputeProvider::locationFromHint)
-                        .or(config.region());
-    }
-
-    private static Option<String> locationFromHint(PlacementHint hint) {
-        return switch (hint) {
-            case PlacementHint.ZoneHint zone -> Option.some(zone.zoneName());
-            case PlacementHint.HostGroupHint ignored -> logUnsupported("HostGroupHint");
-            case PlacementHint.AffinityHint ignored -> logUnsupported("AffinityHint");
-            case PlacementHint.AntiAffinityHint ignored -> logUnsupported("AntiAffinityHint");
-        };
-    }
-
-    private static Option<String> logUnsupported(String hintType) {
-        log.debug("Hetzner provider ignoring {} — not yet supported", hintType);
-
-        return Option.empty();
     }
 
     private static String generateServerName() {

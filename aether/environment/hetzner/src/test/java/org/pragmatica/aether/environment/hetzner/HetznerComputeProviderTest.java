@@ -13,9 +13,11 @@ import org.pragmatica.aether.environment.EnvironmentError;
 import org.pragmatica.aether.environment.InstanceId;
 import org.pragmatica.aether.environment.InstanceStatus;
 import org.pragmatica.aether.environment.InstanceType;
+import org.pragmatica.aether.environment.MarketOptions;
 import org.pragmatica.aether.environment.NodeGroupConfig;
 import org.pragmatica.aether.environment.PlacementHint;
 import org.pragmatica.aether.environment.ProvisionContext;
+import org.pragmatica.aether.environment.ProvisionRequest;
 import org.pragmatica.aether.environment.ProvisionSpec;
 import org.pragmatica.cloud.hetzner.HetznerClient;
 import org.pragmatica.cloud.hetzner.HetznerError;
@@ -28,6 +30,7 @@ import org.pragmatica.cloud.hetzner.api.Server.CreateServerRequest;
 import org.pragmatica.cloud.hetzner.api.SshKey;
 import org.pragmatica.json.JsonMapper;
 import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 
@@ -302,6 +305,67 @@ class HetznerComputeProviderTest {
                                           .withNodeId("aether-core-node-test123");
 
             return ProvisionSpec.provisionSpec(InstanceType.ON_DEMAND, instanceSize, "core", context).unwrap();
+        }
+    }
+
+    @Nested
+    class CreateFromTests {
+
+        @Test
+        void createFrom_carriesAllResolvedFields_toCreateServerRequest() {
+            // The resolved ProvisionRequest is total: createFrom consumes instanceSize/image/zone/
+            // userData verbatim (no provider-side re-derivation) and stamps the context labels.
+            testClient.createServerResponse = Promise.success(runningServer(42, "aether-test"));
+            var context = ProvisionContext.forBootstrap("prod-cluster", "core", "eu-1", "eu-1-core-0");
+            var request = new ProvisionRequest(InstanceType.ON_DEMAND,
+                                               "ccx23",
+                                               "snapshot-42",
+                                               "nbg1",
+                                               Option.some("#!/bin/bash\necho boot"),
+                                               MarketOptions.ON_DEMAND,
+                                               context);
+
+            provider.createFrom(request).await().onFailure(cause -> assertThat(cause).isNull());
+
+            var sent = testClient.lastCreateServerRequest;
+            assertThat(sent.serverType()).isEqualTo("ccx23");
+            assertThat(sent.image()).isEqualTo("snapshot-42");
+            assertThat(sent.location()).isEqualTo("nbg1");
+            assertThat(sent.userData()).isEqualTo("#!/bin/bash\necho boot");
+            assertThat(sent.labels())
+                    .containsEntry("aether-cluster", "prod-cluster")
+                    .containsEntry("aether-role", "core")
+                    .containsEntry(HetznerComputeProvider.NODE_ID_LABEL, "eu-1-core-0");
+        }
+
+        @Test
+        void createFrom_absentUserData_sentAsEmptyString() {
+            testClient.createServerResponse = Promise.success(runningServer(42, "aether-test"));
+            var context = ProvisionContext.forBootstrap("prod", "core", "eu-1", "n0");
+            var request = new ProvisionRequest(InstanceType.ON_DEMAND, "cx22", "ubuntu-24.04", "fsn1",
+                                               Option.empty(), MarketOptions.ON_DEMAND, context);
+
+            provider.createFrom(request).await().onFailure(cause -> assertThat(cause).isNull());
+
+            assertThat(testClient.lastCreateServerRequest.userData()).isEmpty();
+        }
+
+        @Test
+        void createFrom_spotRequest_rejectedLoudBeforeCreate() {
+            // Hetzner has no spot product; a SPOT request (unreachable behind PF-16) must fail loud
+            // rather than silently provision an on-demand server — no createServer call is issued.
+            var context = ProvisionContext.forBootstrap("prod", "spot", "eu-1", "n0");
+            var request = new ProvisionRequest(InstanceType.SPOT, "cx22", "ubuntu-24.04", "fsn1",
+                                               Option.empty(), MarketOptions.spot(), context);
+
+            provider.createFrom(request)
+                    .await()
+                    .onSuccess(info -> assertThat(info).isNull())
+                    .onFailure(HetznerComputeProviderTest::assertProvisionFailedError);
+
+            assertThat(testClient.lastCreateServerRequest)
+                    .as("spot request must fail before createServer")
+                    .isNull();
         }
     }
 
