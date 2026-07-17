@@ -81,15 +81,14 @@ image = "<snapshot-id-from-build>"   # e.g. 174523891
 ```
 
 The source role's `image` is not passed straight to the cloud API — it is
-parsed from `[source.<provider>.<role>]` and **threaded** into the provider's
-runtime `[cloud.compute] image`: by `ProviderResolver` for the initial seed
-nodes, and by `BootstrapOverlayGenerator` for the node overlay and CTM auto-heal
-replacements (so a running leader's `config.image()` carries it into replacement
-provisions). At provision time the Hetzner provider's `resolveImage()` uses that
-value when it is concrete, and otherwise logs a **loud warning** and falls back
-to the hardcoded default OS image. Precedence: role-specific `[source…] image` >
-`[cloud.compute] image` > loud default. A Hetzner image id or a name
-(`ubuntu-22.04`) are both accepted in the same field.
+resolved at the `provision(spec)` boundary by the shared, provider-agnostic
+`ProvisionRequest.resolve(spec, defaults)`. Image precedence: the **per-role
+image** carried on `ProvisionSpec.imageId` (from `[source.<provider>.<role>]`,
+populated by RFC-0016 W2) → the provider's `[cloud.compute] image` default → a
+**loud stock-image fallback** (a warning, #459). The resolved TOTAL request is
+handed to the provider's `createFrom`, which re-derives nothing. A Hetzner image
+id or a name (`ubuntu-22.04`) are both accepted in the same field; a
+single-image provider resolves to an empty image with no warning.
 
 > **Per-role images (RFC-0016 W2):** each role boots from **its own `image`** — a
 > `[source.<provider>.worker] image` provisions workers from that snapshot while
@@ -185,12 +184,10 @@ The `image` / `amiId` / `sourceImage` field exists in every cloud provider's
 config record (`HetznerEnvironmentConfig.image`, `AwsEnvironmentConfig.amiId`,
 `GcpEnvironmentConfig.sourceImage`, `AzureEnvironmentConfig.image`), and each
 provider consumes that field in its create-server call (`RunInstancesRequest`
-for AWS, the disk `InitializeParams` for GCP, and so on). The
-**source → `[cloud.compute]` → provision threading described above is wired for
-Hetzner today** (`resolveImage`); the other providers consume their native image
-field, and source-path threading parity for them is the provider-parity work of
-RFC-0016 W1 (epic #463). Only the
-prep tooling differs:
+for AWS, the disk `InitializeParams` for GCP, and so on). **All five providers
+resolve images through the same `ProvisionRequest.resolve()` path and receive a
+TOTAL request via `createFrom`** (RFC-0016 W1, epic #463) — provider parity is
+landed, not pending. Only the prep tooling differs:
 
 - **AWS:** `aws ec2 create-image` from a prepared instance, or build with
   Packer. Reference the resulting AMI id via `amiId`.
