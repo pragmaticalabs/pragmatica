@@ -1,5 +1,7 @@
 # Incident Response Runbook
 
+> **This runbook is the *procedures* (how to diagnose and act). For the *catalog* of every known failure mode — symptoms, the exact operator surfaces, the automatic recovery behavior and its budget, and when intervention is needed — see the [Failure Almanac](../../reference/failure-almanac.md).**
+
 ## Severity Levels
 
 | Level | Description | Response Time | Example |

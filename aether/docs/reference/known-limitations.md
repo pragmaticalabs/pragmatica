@@ -79,6 +79,7 @@ The precise per-operation consistency, durability, and delivery guarantees — i
 ## Related Documents
 
 - [../architecture/14-consistency-and-partitions.md](../architecture/14-consistency-and-partitions.md) — the consistency & partition-behavior contract (shares terminology with this page)
+- [failure-almanac.md](failure-almanac.md) — operator catalog of failure modes, surfaces, and recovery budgets (companion to this page)
 - [guarantees.md](guarantees.md) — authoritative per-operation guarantees, traced to `file:line`
 - [feature-catalog.md](feature-catalog.md) — capability inventory with Complete/Partial/Planned status
 - [../architecture/10-security.md](../architecture/10-security.md) — trust domain and mTLS mechanism
