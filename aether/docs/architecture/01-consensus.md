@@ -268,3 +268,4 @@ graph LR
 - [02-deployment.md](02-deployment.md) - How KV-Store state drives deployment
 - [05-worker-pools.md](05-worker-pools.md) - SWIM gossip for worker group membership
 - [04-networking.md](04-networking.md) - Transport layer for consensus messages
+- [14-consistency-and-partitions.md](14-consistency-and-partitions.md) - Consistency & partition-behavior contract built on this consensus tier

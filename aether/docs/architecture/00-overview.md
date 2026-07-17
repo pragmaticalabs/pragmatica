@@ -184,6 +184,7 @@ See [05-worker-pools.md](05-worker-pools.md) for details.
 | [11-slice-container.md](11-slice-container.md) | ClassLoader isolation, dependency materialization, lifecycle hooks |
 | [12-management.md](12-management.md) | CLI, Management API, Forge simulator, dashboard |
 | [13-cloud-integration.md](13-cloud-integration.md) | Cloud providers, SPI facets, NodeLifecycleManager, auto-heal |
+| [14-consistency-and-partitions.md](14-consistency-and-partitions.md) | Consistency & partition-behavior contract, per-tier dissolve, per-operation guarantees |
 
 ## Performance Characteristics (v0.20.0)
 
