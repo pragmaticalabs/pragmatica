@@ -169,4 +169,4 @@ Exceptions still exist at the very edges — when you call a JDBC driver or an H
 - [Resource Reference](resource-reference.md) — `@Sql`, `@Http`, streams, pub/sub, and the other resources a slice factory can declare
 - [Testing Slices](testing-slices.md) — testing `Result`/`Promise` code
 - [`docs/rfc/RFC-0000-ecosystem-foundation.md`](../../../docs/rfc/RFC-0000-ecosystem-foundation.md) — the ecosystem structure behind "one vocabulary, three altitudes"
-- The **JBCT methodology** (Pragmatica Core `Result`/`Option`/`Promise`, parse-don't-validate, the six structural patterns) is the design leg of the same vocabulary — the `jbct` skill and `CODING_GUIDE.md` are its full reference.
+- The **JBCT methodology** (Pragmatica Core `Result`/`Option`/`Promise`, parse-don't-validate, the six structural patterns) is the design leg of the same vocabulary — the `jbct` skill and the **JBCT book** ([pragmatica.dev](https://pragmatica.dev)) are its full reference.

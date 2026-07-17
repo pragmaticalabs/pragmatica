@@ -781,6 +781,46 @@ window = "1m"
 burst = 50
 ```
 
+### Rate Guard (author-invoked SPI)
+
+**SPI type:** `RateGuard` (published in `slice-api`)
+**Error:** `RateGuardError` (`slice-api`)
+**Factory:** `RateGuardFactory` → `DefaultRateGuard`
+**Config:** `RateGuardConfig`
+
+`RateGuard` is a **second, distinct** rate limiter — do not conflate it with `[rate-limit.*]` above. Where `[rate-limit.*]` is a **declarative whole-method interceptor**, `RateGuard` is an **imperative SPI** the author calls to wrap one specific operation:
+
+```java
+public interface RateGuard {
+    <T> Promise<T> guard(Supplier<Promise<T>> operation);
+}
+```
+
+`guard(...)` runs the operation when a token is available, otherwise short-circuits with a typed `RateGuardError.LimitExceeded` carrying retry metadata — `retryAfterMs`, `limit`, `remaining`, `resetAtEpochMs`, plus `retryAfterSeconds()` / `resetAtEpochSeconds()` — so the caller can surface a precise `Retry-After`.
+
+**Mechanism:** a local, in-process **token bucket** (`DefaultRateGuard` over Pragmatica Core's `RateLimiter`), scoped per resource instance / per JVM. The config `type` field (`"local"`, the only value today) is the seam for the DHT-backed **distributed** RateGuard tracked by #144 — this SPI is the local half of that story.
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `requestsPerSecond` | `int` | `100` | Sustained rate; must be positive. Fixed 1-second window |
+| `burst` | `int` | `20` | Extra capacity above the base rate; must be non-negative |
+| `type` | `String` | `"local"` | Limiter implementation; only `"local"` (in-process) ships today |
+
+Provisioned by `RateGuardFactory` (`ResourceFactory<RateGuard, RateGuardConfig>`) like any other resource. The slice processor classifies a `RateGuard`-qualified method as reactive category **`rate-guard`** and keeps it **route-coverage-relevant** (a rate guard is an interceptor on an HTTP route, not a transport — `SliceProcessor`), so a rate-guarded HTTP method still needs its declared route.
+
+**Choosing between them:**
+
+| | `[rate-limit.*]` | `RateGuard` |
+|--|------------------|-------------|
+| Style | Declarative method interceptor | Imperative SPI (`guard(...)`) |
+| Granularity | Whole method | A specific operation you wrap |
+| Type | `RateLimitMethodInterceptor` | `RateGuard` (`slice-api`) |
+| Config | `max_requests`, `window`, `burst` | `requestsPerSecond`, `burst`, `type` |
+| On limit | Interceptor rejects the invocation | Returns `RateGuardError.LimitExceeded` with retry metadata |
+| Scope today | Local | Local (`type="local"`); distributed is #144 |
+
+> **Status:** the `RateGuard` / `RateGuardError` SPI ships in author-facing `slice-api` and is unit-tested (`RateGuardTest`), but no bundled slice declares one yet — it is local infrastructure the distributed rate limiter (#144) extends. Treat it as experimental until #144 lands the declaration and distribution surface.
+
 ### Metrics
 
 **Resource type:** `MetricsMethodInterceptor`
