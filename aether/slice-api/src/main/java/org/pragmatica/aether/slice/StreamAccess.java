@@ -33,6 +33,21 @@ public interface StreamAccess<T> {
     Promise<Unit> commit(String consumerGroup, int partition, long offset);
     Promise<Option<Long>> committedOffset(String consumerGroup, int partition);
 
+    /// Framework-driven auto-resume (#478): the first read after a consumer (re)attaches. Resolves the
+    /// committed cursor for `(consumerGroup, partition)` and reads from it, so a consumer picks up where
+    /// it left off without an explicit app re-seek. For the durable app access the committed offset is
+    /// served from the disk-backed cursor store (via {@link #committedOffset}), so resume survives a
+    /// same-node restart with a writable data dir. With no committed cursor the read starts at offset 0
+    /// (create-from-earliest), preserving prior behavior; an explicit {@link #fetch(int, long, int)}
+    /// still overrides with a caller-chosen offset. Cursors are per-partition, so this is a
+    /// single-partition read. The no-cursor default is always offset 0 (earliest): it does not honor a
+    /// stream `latest` start-policy, so a never-committed consumer replays from the beginning (per the
+    /// #478 ruling).
+    default Promise<List<StreamEvent<T>>> fetchFromCommitted(String consumerGroup, int partition, int maxEvents) {
+        return committedOffset(consumerGroup, partition)
+                   .flatMap(committed -> fetch(partition, committed.or(0L), maxEvents));
+    }
+
     Promise<StreamMetadata> metadata();
 
     /// Resolver-side fail-safe: refuse to bind app `StreamAccess` for a system address.
