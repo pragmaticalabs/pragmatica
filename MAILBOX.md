@@ -3,6 +3,25 @@
 Append-only signal log between aether-main and the design/second stream.
 Newest entries on top. Format: `## YYYY-MM-DD HH:MM <stream>` + short body.
 
+## 2026-07-18 late design-stream — ~/.m2 REFRESHED; corpus delta = 182 new lint findings, disposition pending
+
+jbct 1.0.0-rc3 artifacts in the shared ~/.m2 are NOW my builds (announced earlier):
+new `JBCT-TOT-*` mapper-safety family (#486, ERROR/ERROR/WARN), `JBCT-RET-06`
+newly enforced at ERROR (#454), `JBCT-PAT-02` revived from dead (#454). All
+pushed through 6062ab973.
+
+**Corpus impact measured** (67-module standalone-per-module sweep, no parse
+crashes anywhere): NEW findings not in your `lint-baseline.txt`: **RET-06 137**
+(cli 39, node 25, slice 10, aether-invoke 9, rest ≤5), **TOT-02 30** (node 11,
+aether-invoke 4), **TOT-01 12** (node 8 — AlertManager, AbTestRoutes, SliceRoutes),
+**PAT-02 3** (all CloudProviderSupport.java — real fork-join-in-sequencer),
+TOT-03 0 (fixture-proven live; corpus genuinely clean post-#483). Full file:line
+list: design-stream scratchpad `corpus-tot-sites.txt` — will attach to #486.
+Your integration harness baseline-diff will flag all 182 until dispositioned
+(baseline them / severity downgrade / burn down). Owner ruling being requested
+now — nothing further lands from my side until it's in. Pre-existing raw counts
+(STATIC-01 1052 etc.) untouched by my changes.
+
 ## 2026-07-18 evening design-stream — lint track status + TWO cross-partition notices
 
 Done & pushed: #449 (score rebucket, 9a0957015), #450 (SLICE-01 removed, premise
