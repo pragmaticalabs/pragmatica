@@ -69,6 +69,7 @@ import org.pragmatica.serialization.Deserializer;
 import org.pragmatica.serialization.Serializer;
 
 import io.netty.buffer.Unpooled;
+import io.netty.channel.EventLoop;
 import io.netty.handler.codec.quic.QuicSslContext;
 import io.netty.handler.codec.quic.QuicStreamChannel;
 import io.netty.util.concurrent.Future;
@@ -119,6 +120,17 @@ public class QuicClusterNetwork implements ClusterNetwork {
     private volatile QuicSslContext serverSslContext;
     private volatile QuicSslContext clientSslContext;
     private final Map<NodeId, PeerState> peers = new ConcurrentHashMap<>();
+    /// #487 self-loopback lane. A send-to-self is delivered to the local handler on the SAME dispatch
+    /// path real inbound frames use (an event-loop thread), NOT inline on the caller thread — otherwise
+    /// self-delivery would break the per-sender FIFO + event-loop-thread contract every protocol on this
+    /// transport assumes. `peers` never contains self, so before this a self-send was silently DROPPED
+    /// (the #467/#457 root cause). One loop is pinned from the server's group after start, so self is a
+    /// single ordered inbound lane; empty in the pre-start window (a self-send then takes the drop path).
+    private volatile Option<EventLoop> loopbackLoop = Option.empty();
+    /// Per-peer rate-limit gate so a dead-or-never-connected peer cannot flood the log with the
+    /// "no peer state — dropping" WARN: at most one WARN per peer per [#DROP_WARN_INTERVAL_NANOS].
+    private final Map<NodeId, Long> lastDropWarnNanos = new ConcurrentHashMap<>();
+    private static final long DROP_WARN_INTERVAL_NANOS = 30_000_000_000L;
     private final AtomicBoolean isRunning = new AtomicBoolean(false);
     private final QuicTransportMetrics quicMetrics = QuicTransportMetrics.quicTransportMetrics();
     /// Transport-ready callbacks (registered via [#whenReady(Runnable)]) and the latch that
@@ -614,6 +626,7 @@ public class QuicClusterNetwork implements ClusterNetwork {
                                                      this::onMessageReceived);
 
         return server.start(port)
+                     .map(this::captureLoopbackLoop)
                      .onSuccess(_ -> startMissingPeerReconciler())
                      .onSuccess(_ -> startKeepalive())
                      .onSuccess(_ -> fireReadyHooks())
@@ -638,11 +651,27 @@ public class QuicClusterNetwork implements ClusterNetwork {
         readyHooks.clear();
     }
 
+    /// #487: pin ONE event loop from the (now-started) server's group as the self-loopback lane, so a
+    /// send-to-self delivers on the same kind of thread — and in the same FIFO order — as a real inbound
+    /// frame. Threaded via `.map` on the start chain (NOT `.onSuccess`): the loop MUST be pinned before
+    /// the start promise the caller awaits resolves, otherwise a send-to-self racing start-completion
+    /// finds no pinned loop and drops. Re-run after each (re)start: cert rotation ([#rebuildAndStart])
+    /// rebuilds the server and its event loop group, invalidating the previously pinned loop.
+    private Unit captureLoopbackLoop(Unit unit) {
+        loopbackLoop = server.loopbackEventLoop();
+
+        return unit;
+    }
+
     @Override
     public Promise<Unit> stop() {
         if (!isRunning.compareAndSet(true, false)) {
             return Promise.unitPromise();
         }
+
+        // #487: unpin the loopback loop before the server's event loop group shuts down, so a post-stop
+        // self-send takes the drop path rather than executing on a terminating loop.
+        loopbackLoop = Option.empty();
 
         log.debug("Stopping QuicClusterNetwork: notifying view change");
         reconcilerTask.cancel();
@@ -975,6 +1004,11 @@ public class QuicClusterNetwork implements ClusterNetwork {
         // Update client context immediately — new outbound connections use the new cert
         clientSslContext = newClientSsl;
         serverSslContext = newServerSsl;
+        // #487: unpin the loopback loop before the OLD server's event loop group is shut down, so a
+        // self-send during the cert-rotation window takes the drop+WARN fallback (NoPeerState) instead of
+        // a RejectedExecutionException on a terminating loop. `rebuildAndStart` re-pins the new loop.
+        // Invariant: loopbackLoop is empty OR points at a live loop — never a stopped one.
+        loopbackLoop = Option.empty();
         // Stop old server, then immediately create and start new one
         var oldServer = server;
         var stopPromise = oldServer != null
@@ -1004,6 +1038,7 @@ public class QuicClusterNetwork implements ClusterNetwork {
                                                      this::onMessageReceived);
 
         return server.start(port)
+                     .map(this::captureLoopbackLoop)
                      .onSuccess(_ -> log.info("QUIC server restarted on port {} with renewed certificate", port))
                      .onFailure(cause -> log.error("Failed to restart QUIC server after certificate rotation: {}",
                                                    cause.message()))
@@ -1435,6 +1470,10 @@ public class QuicClusterNetwork implements ClusterNetwork {
         // Fix D.1: a successful attach means the peer is no longer livelocking against a tombstone —
         // drop its rejection counter so a future fresh tombstone starts counting from zero.
         tombstoneRejectionCount.remove(peerId);
+        // #487: the peer now has a live PeerState, so sends to it succeed — reset its drop-warn gate so a
+        // LATER disconnect+drop warns immediately, and bound `lastDropWarnNanos` to live/recent peers
+        // (same connect-time lifecycle as the sibling maps above).
+        lastDropWarnNanos.remove(peerId);
         // Event-driven eviction: a genuine channel close now evicts immediately, independent
         // of any outbound traffic (an idle follower<->follower link never writes, so the
         // write-path evictor would never notice). Registered EXACTLY ONCE per successful
@@ -1518,10 +1557,16 @@ public class QuicClusterNetwork implements ClusterNetwork {
     /// The lane is resolved once here (from the message's `streamType()`); the message object is
     /// never threaded past this point.
     private void dispatchPayload(NodeId peerId, Message.Wired message) {
+        if (peerId.equals(self.id())) {
+            var _ = loopbackToSelf(message);
+
+            return;
+        }
+
         var state = peers.get(peerId);
 
         if (state == null) {
-            log.debug("No peer state for {} — dropping message", peerId);
+            warnDroppedToUnknownPeer(peerId);
 
             return;
         }
@@ -1533,15 +1578,69 @@ public class QuicClusterNetwork implements ClusterNetwork {
     /// dispatch flow as `dispatchPayload` but surfaces the synchronous local-transport
     /// verdict so the caller can fail-fast against unreachable replicas.
     private WriteOutcome dispatchPayloadWithOutcome(NodeId peerId, Message.Wired message) {
+        if (peerId.equals(self.id())) {
+            return loopbackToSelf(message);
+        }
+
         var state = peers.get(peerId);
 
         if (state == null) {
-            log.debug("No peer state for {} — refusing tracked send", peerId);
+            warnDroppedToUnknownPeer(peerId);
 
             return new WriteOutcome.NoPeerState(peerId);
         }
 
         return dispatchToPeer(state, message);
+    }
+
+    /// #487 self-loopback: deliver a send-to-self to the local handler on the SAME dispatch path real
+    /// inbound frames use — the pinned server event loop — reusing the full receive funnel
+    /// ([#onMessageReceived]) so self and remote delivery are equivalent (minus the wire). The typed
+    /// record is delivered directly: all `ProtocolMessage` types are immutable records, so skipping
+    /// serialize/deserialize introduces no aliasing. Before the loop is pinned (the pre-start window)
+    /// there is no ordered lane to deliver on, so the message is dropped with a WARN — no queue: a
+    /// self-send cannot legitimately precede start, and `peers` is empty then anyway.
+    private WriteOutcome loopbackToSelf(Message.Wired message) {
+        return loopbackLoop.map(loop -> deliverLoopback(loop, message))
+                           .or(() -> dropLoopbackBeforeStart(message));
+    }
+
+    private WriteOutcome deliverLoopback(EventLoop loop, Message.Wired message) {
+        loop.execute(() -> onMessageReceived(self.id(), message));
+
+        return new WriteOutcome.Sent(self.id());
+    }
+
+    /// Pre-start (or cert-rotation) self-send with no pinned loop: report the drop HONESTLY (#487
+    /// finding 4) rather than a false `Sent` — a tracked `sendOutcome` to self must not claim delivery
+    /// while dropping. Matches the unknown-peer outcome (`NoPeerState`): no delivery happened.
+    private WriteOutcome dropLoopbackBeforeStart(Message.Wired message) {
+        warnLoopbackBeforeStart(message);
+
+        return new WriteOutcome.NoPeerState(self.id());
+    }
+
+    private void warnLoopbackBeforeStart(Message.Wired message) {
+        log.warn("Self-loopback with no pinned event loop (pre-start / cert-rotation window) — dropping {}",
+                 message.getClass().getSimpleName());
+    }
+
+    /// Rate-limited "no peer state — dropping" WARN: at most one per peer per [#DROP_WARN_INTERVAL_NANOS].
+    /// A `null` peer state for a non-self peer means it is dead or was never connected. This was a silent
+    /// `log.debug` whose invisibility hid the #467/#457 self-send drops for months; a WARN makes the path
+    /// visible, and the per-peer gate keeps a dead peer from flooding the log. The metric counts EVERY
+    /// drop (not just the warned ones) so ops see true drop volume. Best-effort (a rare concurrent
+    /// double-WARN is acceptable).
+    private void warnDroppedToUnknownPeer(NodeId peerId) {
+        quicMetrics.onDropToUnknownPeer();
+
+        var now = System.nanoTime();
+        var last = lastDropWarnNanos.get(peerId);
+
+        if (last == null || now - last >= DROP_WARN_INTERVAL_NANOS) {
+            lastDropWarnNanos.put(peerId, now);
+            log.warn("No peer state for {} — dropping message (dead or never-connected peer)", peerId);
+        }
     }
 
     /// Broadcast a typed message to all known peers.

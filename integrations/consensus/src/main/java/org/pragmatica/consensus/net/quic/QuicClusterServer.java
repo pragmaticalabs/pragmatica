@@ -37,6 +37,7 @@ import io.netty.channel.Channel;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.ChannelInitializer;
 import io.netty.channel.ChannelOption;
+import io.netty.channel.EventLoop;
 import io.netty.channel.EventLoopGroup;
 import io.netty.channel.MultiThreadIoEventLoopGroup;
 import io.netty.channel.SimpleChannelInboundHandler;
@@ -71,6 +72,11 @@ public sealed interface QuicClusterServer {
     /// Get the UDP port the server is bound to.
     /// Returns empty if the server is not started.
     Option<Integer> boundPort();
+
+    /// #487 self-loopback: one event loop from this server's group, for delivering a send-to-self on the
+    /// same dispatch path (an event-loop thread) real inbound frames run on. Empty until the server has
+    /// bound.
+    Option<EventLoop> loopbackEventLoop();
 
     /// Callback for new peer connections after Hello handshake completes.
     @FunctionalInterface
@@ -130,6 +136,11 @@ public sealed interface QuicClusterServer {
 
         @Override
         public Option<Integer> boundPort() {
+            return Option.empty();
+        }
+
+        @Override
+        public Option<EventLoop> loopbackEventLoop() {
             return Option.empty();
         }
     }
@@ -200,6 +211,15 @@ final class QuicClusterServerInstance implements QuicClusterServer {
 
         return option(channel).map(Channel::localAddress)
                      .map(addr -> ((InetSocketAddress) addr).getPort());
+    }
+
+    /// #487 self-loopback: one event loop from this server's group, used to deliver a send-to-self on the
+    /// SAME dispatch path (an event-loop thread) that real inbound frames run on. Empty until the server
+    /// has bound (`eventLoopGroup` is assigned in `bindServer`). The caller pins the returned loop once so
+    /// self is a single, ordered inbound lane (per-sender FIFO, matching a real peer channel).
+    @Override
+    public Option<EventLoop> loopbackEventLoop() {
+        return option(eventLoopGroup).map(EventLoopGroup::next);
     }
 
     @SuppressWarnings("JBCT-PAT-01")  // Netty bootstrap pattern with side-effecting handlers
