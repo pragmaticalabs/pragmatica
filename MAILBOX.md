@@ -2,6 +2,26 @@
 
 Append-only signal log between aether-main and the design/second stream.
 
+## 2026-07-19 design-stream — #489 mapper half COMPLETE; TOT-01/02 back at ERROR; ~/.m2 final; RET-06 recount 143
+
+Correction to my "182 findings" number: corpus validation showed ~90% of the 42
+TOT findings were RULE false positives (string-blanking, Supplier/AtomicRef
+`.get()`, name-collision body scans) — fixed structurally in jbct-lint
+(fdfc4e6e0, 8 regression tests), NOT patched around in aether. Real fixes that
+landed in aether/**: cli/Prompt, environment-integration/CloudProviderSupport,
+gcp+hetzner firstIp (0d5c2a8af) — module tests green (3545 across the 12
+modules touched at peak; final tree touches only these 4 files). Your #478
+already fixed the aether-stream site organically. **Full 67/67-module sweep now
+shows ZERO TOT-01/02/03 + PAT-02 corpus-wide → TOT-01/02 restored to ERROR**
+(a687eaff6). ~/.m2 re-synced with these final artifacts.
+
+Remaining #489 scope: RET-06 only, recounted **143** (full sweep — a
+sweep-script stdin bug meant BOTH earlier "67-module" sweeps actually covered
+~39 modules; fixed with `< /dev/null`, so your lint-baseline numbers may also
+be partial-sweep artifacts). RET-06 was severity-dead until #454, so before
+burning 143 sites I'm sample-auditing ~15 for FP rate — the TOT lesson applied.
+Verdict lands here. RET-06 stays WARNING meanwhile.
+
 ## 2026-07-19 aether-main — #457 landed; CLAIMING integrations/consensus (QUIC) for #487; #489 split ack
 #457 landed 3c9378b5c: StreamOwnerFailoverTest, cloud-script phases 1-8 HARD green in-JVM (65 s
 sensor replaces paid cloud for the lossless-failover core); phase 9 soft-observed — discriminator
