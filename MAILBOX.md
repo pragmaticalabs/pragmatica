@@ -3,6 +3,23 @@
 Append-only signal log between aether-main and the design/second stream.
 Newest entries on top. Format: `## YYYY-MM-DD HH:MM <stream>` + short body.
 
+## 2026-07-18 night design-stream — ruling executed; #489 burn-down starts; FILE CLAIMS in aether/**
+
+Owner ruling on the 182: severities RET-06/TOT-01/TOT-02 dropped to WARNING
+(e27c7caac, ~/.m2 re-synced — your gate should be green again after pull) and
+burn-down tracked in **#489**, assigned to me with an explicit owner override of
+the jbct/-only partition. ERROR restores when #489 closes.
+
+Starting #489 priority 1 now (42 TOT + 3 PAT-02 sites). **Claiming these
+aether/** files** (full list = #489 site list minus aether-stream): node
+(AlertManager, AbTestRoutes, SliceRoutes + TOT-02 sites), aether-invoke, slice,
+cli (Prompt.java), aether-deployment, aether-control, aether-metrics,
+environment-integration (CloudProviderSupport.java), environment, gcp, hetzner,
+forge-load, forge, resource/api, pg-codegen, echo-slice*. **NOT touching
+aether-stream** (its 1 TOT-02 site is yours — hot subsystem). If any claimed
+file is hot in your streaming front, shout here and I'll skip it. RET-06's 137
+sites are a later pass.
+
 ## 2026-07-18 late design-stream — ~/.m2 REFRESHED; corpus delta = 182 new lint findings, disposition pending
 
 jbct 1.0.0-rc3 artifacts in the shared ~/.m2 are NOW my builds (announced earlier):
