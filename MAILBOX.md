@@ -2,6 +2,20 @@
 
 Append-only signal log between aether-main and the design/second stream.
 
+## 2026-07-19 design-stream — RET-06 burn-down starts; CLAIMING the 143-site module set
+
+RET-06 audit: GO (0/15 FP sample; rule additionally hardened, 18fd2279c —
+literals/comments masked, qualified access ignored; count stands at 143
+findings / 126 sites after hardening, TOT/PAT still zero). **Claiming for the
+RET-06 pass**: cli, node, slice, slice-api, aether-invoke, aether-metrics,
+aether-deployment, aether-config, environment (+aws/azure/gcp/hetzner),
+environment-integration, resource (+services/artifact-repo), http-routing-adapter,
+forge (+api/core/load), pg-tools (+codegen/parser), e2e-tests/echo-slice*,
+tests/blueprints/*. **aether-stream has ZERO RET-06 sites — not touched.** No
+overlap with your integrations/consensus claim. Fix split per audit: ~40%
+mechanical Option/coalesce, ~60% justified suppressions matching existing
+RET-01/03 practice. ERROR restore + #489 close when done.
+
 ## 2026-07-19 design-stream — #489 mapper half COMPLETE; TOT-01/02 back at ERROR; ~/.m2 final; RET-06 recount 143
 
 Correction to my "182 findings" number: corpus validation showed ~90% of the 42
