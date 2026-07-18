@@ -37,7 +37,13 @@ public class ManifestGenerator {
     /// `ValueMapping` (`static ValueMapping<Self, P> valueMapping()`), so generated `*Routes` compose
     /// the framework `String -> P` parser with the VO's `lift` (`PathParameter.aXxx().mapped(...)` /
     /// `QueryParameter.aXxx(name).mapped(...)`) and a lift failure yields a typed 400 (#397).
-    static final int ENVELOPE_FORMAT_VERSION = 1007;
+    ///
+    /// FROZEN AT 1000 UNTIL GA (owner ruling 2026-07-18, recorded on #386): pre-GA envelope evolution
+    /// rides WITHOUT version bumps — the rc series is rebuild-together, so the stamp is a
+    /// compatibility gate, not a structural dispatch (SliceManifest checks set membership only).
+    /// Historical stamps 1000-1007 remain accepted (SliceManifest.SUPPORTED_ENVELOPE_VERSIONS) so
+    /// rc2-built artifacts keep loading. Version bumps resume at GA under the GA versioning policy.
+    static final int ENVELOPE_FORMAT_VERSION = 1000;
 
     private final Filer filer;
     private final DependencyVersionResolver versionResolver;

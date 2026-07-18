@@ -23,7 +23,18 @@ A simple integer that identifies the **format version** of the generated envelop
 
 ## Current Version
 
-`ENVELOPE_FORMAT_VERSION = 1007` (defined in `ManifestGenerator.java`)
+`ENVELOPE_FORMAT_VERSION = 1000` (defined in `ManifestGenerator.java`)
+
+> **FROZEN AT 1000 UNTIL GA (owner ruling 2026-07-18, recorded on #386).** Pre-GA envelope
+> evolution rides **without** version bumps: the rc series is rebuild-together, and the stamp
+> is a membership-checked compatibility gate (`SliceManifest.SUPPORTED_ENVELOPE_VERSIONS`),
+> not a structural dispatch — no consumer branches on the value. The generator emitted
+> 1001–1007 historically (structural changes recorded below for the "why", each verified at
+> its time); those stamps remain in the runtime accept-set so rc2-built artifacts keep
+> loading, and the emit constant is reset to 1000. **Do not bump for generated-structure
+> changes until GA** — keep recording structural changes in the history table below with a
+> "(no bump — GA freeze)" marker. Version bumps resume at GA under the GA versioning policy
+> (#434-adjacent).
 
 ### Version History
 

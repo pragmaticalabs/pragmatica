@@ -2510,11 +2510,11 @@ class SliceProcessorTest {
         assertThat(manifestFile.isPresent()).isTrue();
         var manifestContent = manifestFile.get().getCharContent(false).toString();
 
-        // Verify envelope version (bumped to 1007: value-object HTTP path/query segments now bind
-        // through the VO's ValueMapping — generated *Routes compose the framework String->P parser
-        // with the VO's lift, a lift failure yielding a typed 400 (#397). Earlier: 1006 typed pub/sub
-        // topicName from Topic<T> (#396); 1005 the full interleaved path with PathParameter.spacer).
-        assertThat(manifestContent).contains("envelope.version=1007");
+        // Verify envelope version: FROZEN at 1000 until GA (owner ruling 2026-07-18, #386) — the rc
+        // series is rebuild-together, so pre-GA envelope evolution rides without version bumps; the
+        // stamp is a membership-checked compatibility gate, not structural dispatch. Historical
+        // structure notes live on ManifestGenerator.ENVELOPE_FORMAT_VERSION.
+        assertThat(manifestContent).contains("envelope.version=1000");
 
         // Verify stream publisher metadata
         assertThat(manifestContent).contains("stream.publishers.count=1");
@@ -3449,7 +3449,7 @@ class SliceProcessorTest {
                                   .get().getCharContent(false).toString();
         assertThat(manifest).contains("publish.topic.0.topicName=order-events");
         assertThat(manifest).contains("publish.topic.0.config=order-events");
-        assertThat(manifest).contains("envelope.version=1007");
+        assertThat(manifest).contains("envelope.version=1000");
     }
 
     @Test
