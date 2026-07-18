@@ -29,8 +29,12 @@ import static org.pragmatica.jbct.parser.CstNodes.*;
 public class CstNullableParameterRule implements CstLintRule {
     private static final String RULE_ID = "JBCT-RET-06";
 
-    // Pattern to find null checks: "paramName == null" or "null == paramName" or "paramName != null"
-    private static final Pattern NULL_CHECK_PATTERN = Pattern.compile("\\b(\\w+)\\s*[!=]=\\s*null\\b|\\bnull\\s*[!=]=\\s*(\\w+)\\b");
+    // Pattern to find null checks: "paramName == null" or "null == paramName" or "paramName != null".
+    // The captured token must be a bare identifier, not member access: the leading (?<![.\w$])
+    // rejects `cfg.timeout == null` (field named like a param) and the trailing (?![.\w$]) rejects
+    // `null == cfg.timeout` — only a null check of the parameter itself counts.
+    private static final Pattern NULL_CHECK_PATTERN =
+        Pattern.compile("(?<![.\\w$])(\\w+)\\s*[!=]=\\s*null\\b|\\bnull\\s*[!=]=\\s*(\\w+)(?![.\\w$])");
 
     private static final Pattern METHOD_NAME_PATTERN = Pattern.compile("\\b([a-zA-Z_$][a-zA-Z0-9_$]*)\\s*\\(");
     // Param shape: optional modifiers/annotations + type tokens + identifier (last word before , or end)
@@ -65,7 +69,9 @@ public class CstNullableParameterRule implements CstLintRule {
             return Stream.empty();
         }
 
-        var bodyText = text(bodyOpt.unwrap());
+        // Blank string literals and comments so a `param == null` written inside a log message or
+        // a comment never counts as a real null check.
+        var bodyText = MapperSafety.blankNonCode(text(bodyOpt.unwrap()));
         // Find parameters checked for null
         var nullCheckedParams = findNullCheckedParams(bodyText, paramNames);
 
