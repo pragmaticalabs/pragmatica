@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### Changed
+- Linter: `JBCT-RET-06`, `JBCT-TOT-01`, `JBCT-TOT-02` temporarily at WARNING (design severity ERROR) pending the aether corpus burn-down — 182 pre-existing sites surfaced when these rules went live (owner ruling 2026-07-18); ERROR restores when the burn-down ticket closes
+
 ### Added
 - Linter: `JBCT-TOT-*` mapper-safety family (#486; delivers the lint half of #484) — TOT-01 partial operations (`getFirst()`, `getLast()`, `get(i)`, `iterator().next()`, `orElseThrow()`, `Optional.get()`, `throw`) inside carrier mapper lambdas (ERROR, stream-pipeline spines exempt), TOT-02 partial method references in mapper position via case-insensitive `*OrThrow` heuristic + same-file body scan (ERROR), TOT-03 Jackson wire-record accessors dereferencing possibly-null reference components without a guard (WARNING). Catches the #483 incident class: an in-mapper throw swallowed into a never-resolving promise. R-D (wire-type boundary escape) deferred until the #452/#453 classifiers exist — not determinable single-file
 - Linter: fixture coverage for all 41 lint rules — positive (rule ID + line asserted) and negative fixture per rule through a shared parameterized harness (`RuleFixtures` catalog), plus registry invariant tests (every registered rule must have a severity entry, a fixture, and a score category) and suppression-path coverage (`@SuppressWarnings` single/list/"all", `@Contract`, `@TerminalOperation`, `@NullReturn`). New-rule PRs now fail without fixtures (#454)

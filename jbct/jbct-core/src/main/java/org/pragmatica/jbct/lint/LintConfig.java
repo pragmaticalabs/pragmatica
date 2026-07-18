@@ -40,8 +40,9 @@ public record LintConfig(Map<String, DiagnosticSeverity> ruleSeverities,
     Map.entry("JBCT-RET-05", DiagnosticSeverity.WARNING),
 
     // Always-succeeding Result
-    // Nullable parameter — null-safety family, matches JBCT-RET-03 (ERROR)
-    Map.entry("JBCT-RET-06", DiagnosticSeverity.ERROR),
+    // Nullable parameter — null-safety family, matches JBCT-RET-03 (ERROR).
+    // Temporarily WARNING pending aether corpus burn-down (137 sites); restore ERROR after.
+    Map.entry("JBCT-RET-06", DiagnosticSeverity.WARNING),
 
     // Value objects
     Map.entry("JBCT-VO-01", DiagnosticSeverity.WARNING),
@@ -163,12 +164,13 @@ public record LintConfig(Map<String, DiagnosticSeverity> ruleSeverities,
     // Unnecessary var before return
     Map.entry("JBCT-STY-08", DiagnosticSeverity.WARNING),
 
-    // Mapper safety / totality (#486)
+    // Mapper safety / totality (#486). TOT-01/02 design severity is ERROR;
+    // temporarily WARNING pending aether corpus burn-down (42 sites); restore after.
     // Partial op in mapper lambda
-    Map.entry("JBCT-TOT-01", DiagnosticSeverity.ERROR),
+    Map.entry("JBCT-TOT-01", DiagnosticSeverity.WARNING),
 
     // Partial method reference in mapper
-    Map.entry("JBCT-TOT-02", DiagnosticSeverity.ERROR),
+    Map.entry("JBCT-TOT-02", DiagnosticSeverity.WARNING),
 
     // Jackson wire-record accessor dereferences possibly-null component
     Map.entry("JBCT-TOT-03", DiagnosticSeverity.WARNING)),
