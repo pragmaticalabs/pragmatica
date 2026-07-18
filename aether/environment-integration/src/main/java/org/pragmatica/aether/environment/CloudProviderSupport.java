@@ -22,7 +22,7 @@ public final class CloudProviderSupport {
     public static Promise<List<ProvisionedNode>> provisionVia(ComputeProvider compute, NodeGroupConfig group) {
         var provisions = IntStream.range(0, group.count()).mapToObj(i -> provisionSingle(compute, group, i)).toList();
 
-        return Promise.allOf(provisions).flatMap(results -> Result.allOf(results).async());
+        return Promise.allOf(provisions).flatMap(CloudProviderSupport::aggregateResults);
     }
 
     public static Promise<ProvisionedNode> provisionOne(ComputeProvider compute, String nodeId, ProvisionSpec spec) {
@@ -34,14 +34,18 @@ public final class CloudProviderSupport {
         var terminations = nodeIds.stream().map(id -> terminateSingle(compute, id)).toList();
 
         return Promise.allOf(terminations)
-                      .flatMap(results -> Result.allOf(results).async())
+                      .flatMap(CloudProviderSupport::aggregateResults)
                       .mapToUnit();
     }
 
     public static Promise<List<NodeAddress>> addressesVia(ComputeProvider compute, List<String> nodeIds) {
         var lookups = nodeIds.stream().map(id -> lookupAddress(compute, id)).toList();
 
-        return Promise.allOf(lookups).flatMap(results -> Result.allOf(results).async());
+        return Promise.allOf(lookups).flatMap(CloudProviderSupport::aggregateResults);
+    }
+
+    private static <T> Promise<List<T>> aggregateResults(List<Result<T>> results) {
+        return Result.allOf(results).async();
     }
 
     public static ProvisionedNode toProvisionedNode(String nodeId, InstanceInfo info) {

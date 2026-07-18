@@ -153,13 +153,11 @@ public final class HetznerDiscoveryProvider implements DiscoveryProvider {
     }
 
     private static Option<String> firstPrivateIp(Server server) {
-        return option(server.privateNet()).filter(nets -> !nets.isEmpty())
-                     .map(HetznerDiscoveryProvider::firstIp);
+        return option(server.privateNet()).flatMap(HetznerDiscoveryProvider::firstIp);
     }
 
-    private static String firstIp(List<Server.PrivateNet> nets) {
-        return nets.getFirst()
-                   .ip();
+    private static Option<String> firstIp(List<Server.PrivateNet> nets) {
+        return Option.from(nets.stream().findFirst()).map(Server.PrivateNet::ip);
     }
 
     private static Option<String> publicIpv4(Server server) {

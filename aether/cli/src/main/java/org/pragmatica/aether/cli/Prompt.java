@@ -12,6 +12,7 @@ import java.io.PrintStream;
 import java.util.List;
 import java.util.function.Function;
 
+import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Result;
 
 
@@ -113,18 +114,17 @@ public class Prompt {
     }
 
     public <T> T promptValidated(String question, String defaultValue, Function<String, Result<T>> validator) {
-        while (true) {
-            var raw = prompt(question, defaultValue);
-            var result = validator.apply(raw);
+        return validator.apply(prompt(question, defaultValue))
+                        .fold(cause -> retryPrompt(question, defaultValue, validator, cause),
+                              value -> value);
+    }
 
-            if (result.isSuccess()) {
-                return result.fold(_ -> {
-                                       throw new AssertionError("isSuccess but fold-failure ran");
-                                   },
-                                   value -> value);
-            }
+    private <T> T retryPrompt(String question,
+                              String defaultValue,
+                              Function<String, Result<T>> validator,
+                              Cause cause) {
+        out.println("  ✗ " + cause.message());
 
-            result.onFailure(cause -> out.println("  ✗ " + cause.message()));
-        }
+        return promptValidated(question, defaultValue, validator);
     }
 }

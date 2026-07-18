@@ -146,13 +146,11 @@ public final class GcpDiscoveryProvider implements DiscoveryProvider {
     }
 
     private static Option<String> firstNetworkIp(Instance instance) {
-        return option(instance.networkInterfaces()).filter(nets -> !nets.isEmpty())
-                     .map(GcpDiscoveryProvider::firstIp);
+        return option(instance.networkInterfaces()).flatMap(GcpDiscoveryProvider::firstIp);
     }
 
-    private static String firstIp(List<Instance.NetworkInterface> interfaces) {
-        return interfaces.getFirst()
-                         .networkIP();
+    private static Option<String> firstIp(List<Instance.NetworkInterface> interfaces) {
+        return Option.from(interfaces.stream().findFirst()).map(Instance.NetworkInterface::networkIP);
     }
 
     private static int extractPort(Instance instance) {
