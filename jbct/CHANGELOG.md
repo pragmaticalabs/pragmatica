@@ -3,7 +3,7 @@
 ## [Unreleased]
 
 ### Changed
-- Linter: `JBCT-RET-06` temporarily at WARNING (design severity ERROR) pending the aether corpus burn-down — 143 nullable-parameter sites tracked in #489; ERROR restores when it closes. `JBCT-TOT-01`/`JBCT-TOT-02` are back at ERROR: their corpus findings were burned down same-day (real sites fixed; the rest were rule false positives — see Fixed)
+- Linter: `JBCT-RET-06`, `JBCT-TOT-01`, `JBCT-TOT-02` all at ERROR — the full aether corpus burn-down (#489) completed same release: 143 RET-06 sites resolved (69 real Option/Verify totalizations, the rest justified parse-don't-validate/framework-boundary suppressions) and all mapper-safety findings cleared (real fixes + rule FP corrections — see Fixed). The interim WARNING window existed only during the burn-down
 
 ### Added
 - Linter: `JBCT-TOT-*` mapper-safety family (#486; delivers the lint half of #484) — TOT-01 partial operations (`getFirst()`, `getLast()`, `get(i)`, `iterator().next()`, `orElseThrow()`, `Optional.get()`, `throw`) inside carrier mapper lambdas (ERROR, stream-pipeline spines exempt), TOT-02 partial method references in mapper position via case-insensitive `*OrThrow` heuristic + same-file body scan (ERROR), TOT-03 Jackson wire-record accessors dereferencing possibly-null reference components without a guard (WARNING). Catches the #483 incident class: an in-mapper throw swallowed into a never-resolving promise. R-D (wire-type boundary escape) deferred until the #452/#453 classifiers exist — not determinable single-file

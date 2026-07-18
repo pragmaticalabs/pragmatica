@@ -40,9 +40,9 @@ public record LintConfig(Map<String, DiagnosticSeverity> ruleSeverities,
     Map.entry("JBCT-RET-05", DiagnosticSeverity.WARNING),
 
     // Always-succeeding Result
-    // Nullable parameter — null-safety family, matches JBCT-RET-03 (ERROR).
-    // Temporarily WARNING pending aether corpus burn-down (143 sites, #489); restore ERROR after.
-    Map.entry("JBCT-RET-06", DiagnosticSeverity.WARNING),
+    // Nullable parameter — null-safety family, matches JBCT-RET-03. Corpus clean at ERROR
+    // since the #489 burn-down (2026-07-19).
+    Map.entry("JBCT-RET-06", DiagnosticSeverity.ERROR),
 
     // Value objects
     Map.entry("JBCT-VO-01", DiagnosticSeverity.WARNING),
