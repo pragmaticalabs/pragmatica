@@ -161,7 +161,17 @@ public record LintConfig(Map<String, DiagnosticSeverity> ruleSeverities,
     Map.entry("JBCT-STY-07", DiagnosticSeverity.WARNING),
 
     // Unnecessary var before return
-    Map.entry("JBCT-STY-08", DiagnosticSeverity.WARNING)),
+    Map.entry("JBCT-STY-08", DiagnosticSeverity.WARNING),
+
+    // Mapper safety / totality (#486)
+    // Partial op in mapper lambda
+    Map.entry("JBCT-TOT-01", DiagnosticSeverity.ERROR),
+
+    // Partial method reference in mapper
+    Map.entry("JBCT-TOT-02", DiagnosticSeverity.ERROR),
+
+    // Jackson wire-record accessor dereferences possibly-null component
+    Map.entry("JBCT-TOT-03", DiagnosticSeverity.WARNING)),
                                                         Set.of(),
                                                         false);
 

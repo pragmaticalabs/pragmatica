@@ -239,6 +239,16 @@ public class CstLinter {
         new CstUnnecessaryVarReturnRule(),
 
         // If/else with return in both branches (JBCT-STY-08)
-        new CstIfElseReturnRule());
+        new CstIfElseReturnRule(),
+
+        // Mapper safety / totality (JBCT-TOT-*, #486)
+        // Partial op in a mapper lambda (JBCT-TOT-01)
+        new CstPartialOperationMapperRule(),
+
+        // Partial method reference in a mapper (JBCT-TOT-02)
+        new CstMapperMethodReferenceRule(),
+
+        // Jackson wire-record accessor dereferences a possibly-null component (JBCT-TOT-03)
+        new CstWireRecordTotalityRule());
     }
 }

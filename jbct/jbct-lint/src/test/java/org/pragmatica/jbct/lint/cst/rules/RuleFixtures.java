@@ -799,5 +799,68 @@ final class RuleFixtures {
                         return Result.success(value);
                     }
                 }
+                """),
+
+        // JBCT-TOT-01: partial accessor inside a carrier mapper lambda (make it total / lift to a Cause).
+        fixture("JBCT-TOT-01", 4,
+                """
+                package org.example;
+                class Foo {
+                    Object run(Result<Wire> r) {
+                        return r.map(wire -> wire.items().getFirst());
+                    }
+                }
+                """,
+                """
+                package org.example;
+                class Foo {
+                    Object run(Result<Wire> r) {
+                        return r.map(wire -> wire.name().trim());
+                    }
+                }
+                """),
+
+        // JBCT-TOT-02: method ref to a same-file method whose body calls getFirst() — the #483 shape.
+        fixture("JBCT-TOT-02", 4,
+                """
+                package org.example;
+                class Handler {
+                    Object run(Result<Wire> r) {
+                        return r.map(Handler::firstItem);
+                    }
+                    static String firstItem(Wire wire) {
+                        return wire.items().getFirst();
+                    }
+                }
+                """,
+                """
+                package org.example;
+                class Handler {
+                    Object run(Result<Wire> r) {
+                        return r.map(Handler::firstItem);
+                    }
+                    static String firstItem(Wire wire) {
+                        return wire.name().trim();
+                    }
+                }
+                """),
+
+        // JBCT-TOT-03: Jackson wire-record accessor derefs a possibly-null component without a guard.
+        fixture("JBCT-TOT-03", 4,
+                """
+                package org.example;
+                record Wire(@JsonProperty("items") java.util.List<String> items) {
+                    String first() {
+                        return items().getFirst();
+                    }
+                }
+                """,
+                """
+                package org.example;
+                record Wire(@JsonProperty("items") java.util.List<String> items) {
+                    String first() {
+                        return items == null ? "" : items().getFirst();
+                    }
+                }
                 """));
 }

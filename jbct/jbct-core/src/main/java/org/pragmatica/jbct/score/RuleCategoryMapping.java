@@ -33,6 +33,7 @@ public sealed interface RuleCategoryMapping permits RuleCategoryMapping.unused {
     // Null Safety (20%) — no null returns, no nullable parameters
     Map.entry("JBCT-RET-03", ScoreCategory.NULL_SAFETY),       // no null return
     Map.entry("JBCT-RET-06", ScoreCategory.NULL_SAFETY),       // no nullable parameter
+    Map.entry("JBCT-TOT-03", ScoreCategory.NULL_SAFETY),       // wire-record accessor derefs possibly-null component
 
     // Exception Hygiene (20%) — no business exceptions, proper typed error handling
     Map.entry("JBCT-EX-01", ScoreCategory.EXCEPTION_HYGIENE),  // no business exceptions
@@ -40,6 +41,8 @@ public sealed interface RuleCategoryMapping permits RuleCategoryMapping.unused {
     Map.entry("JBCT-STY-01", ScoreCategory.EXCEPTION_HYGIENE), // fluent failure (cause.result())
     Map.entry("JBCT-SEAL-01", ScoreCategory.EXCEPTION_HYGIENE),// sealed error interfaces
     Map.entry("JBCT-UTIL-01", ScoreCategory.EXCEPTION_HYGIENE),// Result-returning parse utilities
+    Map.entry("JBCT-TOT-01", ScoreCategory.EXCEPTION_HYGIENE), // partial op in mapper lambda throws
+    Map.entry("JBCT-TOT-02", ScoreCategory.EXCEPTION_HYGIENE), // partial method reference in mapper throws
 
     // Pattern Purity (15%) — single pattern per function, no mixing
     Map.entry("JBCT-PAT-01", ScoreCategory.PATTERN_PURITY),    // no raw loops
