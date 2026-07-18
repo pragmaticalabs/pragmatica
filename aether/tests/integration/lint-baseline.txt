@@ -12,7 +12,6 @@
 [R1] aether/tests/integration/suites/07-cluster-mgmt/test-bootstrap.sh:38 — warn-then-pass-demotion (preceding log_warn at line 37)
 [R1] aether/tests/integration/suites/07-cluster-mgmt/test-destroy.sh:95 — warn-then-pass-demotion (preceding log_warn at line 94)
 [R1] aether/tests/integration/suites/08-resources/test-http-client.sh:12 — warn-then-pass-demotion (preceding log_warn at line 11)
-[R1] aether/tests/integration/suites/08-resources/test-pub-sub.sh:106 — warn-then-pass-demotion (preceding log_warn at line 105)
 [R1] aether/tests/integration/suites/08-resources/test-streaming-resources.sh:33 — warn-then-pass-demotion (preceding log_warn at line 32)
 [R1] aether/tests/integration/suites/08-resources/test-streaming-resources.sh:86 — warn-then-pass-demotion (preceding log_warn at line 81)
 [R1] aether/tests/integration/suites/08-resources/test-streaming-resources.sh:89 — warn-then-pass-demotion (preceding log_warn at line 88)

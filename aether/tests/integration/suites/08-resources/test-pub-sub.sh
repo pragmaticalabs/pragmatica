@@ -123,8 +123,7 @@ test_competing_consumers_multi_instance() {
         done
         assert_eq "$success" "10" "All 10 competing-consumer events published without error"
     else
-        log_warn "Only ${total_instances} instance(s) — competing consumer test requires >= 2"
-        log_pass "Single-instance pub/sub works"
+        skip_test "Competing consumers" "only ${total_instances} instance(s) — requires >= 2"
     fi
 }
 
