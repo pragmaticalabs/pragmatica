@@ -67,7 +67,17 @@ public final class StreamPublisherFactory implements ResourceFactory<StreamPubli
                                                      ProvisioningContext context) {
         var keyExtractor = extractPartitionKeyFunction(context);
         var forwardClient = context.extension(StreamForwardClient.class).option();
-        var governorResolver = context.extension(GovernorResolver.class).option().map(GovernorResolver::resolver);
+        var governor = context.extension(GovernorResolver.class).option();
+        var governorResolver = governor.map(GovernorResolver::resolver);
+        var self = context.extension(NodeId.class).option();
+        // #467: bind the stream name into the partition-aware HRW owner-resolver so app-stream EVENTUAL
+        // publishes route to the SAME HRW owner the ReplicaSetController places the replica set on (one
+        // placement authority) instead of the STREAMING leader. Absent (test / minimal runtime) => the
+        // publish path keeps the arg-less leader resolver, and the self identity gates the self-guard.
+        var streamName = config.name();
+        Option<Function<Integer, Option<NodeId>>> partitionOwnerResolver =
+            governor.flatMap(GovernorResolver::partitionOwnerResolver)
+                    .map(resolver -> partition -> resolver.apply(streamName, partition));
 
         return DefaultStreamPublisher.streamPublisher(manager,
                                                       serializer,
@@ -78,7 +88,9 @@ public final class StreamPublisherFactory implements ResourceFactory<StreamPubli
                                                       Option.none(),
                                                       config.minSyncReplicas(),
                                                       forwardClient,
-                                                      governorResolver);
+                                                      governorResolver,
+                                                      partitionOwnerResolver,
+                                                      self);
     }
 
     @SuppressWarnings({"unchecked", "rawtypes"})

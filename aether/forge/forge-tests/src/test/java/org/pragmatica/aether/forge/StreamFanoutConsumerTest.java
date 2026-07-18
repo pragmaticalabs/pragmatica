@@ -122,6 +122,20 @@ class StreamFanoutConsumerTest {
                .pollInterval(POLL_INTERVAL)
                .failFast(this::failIfSliceFailed)
                .until(this::appHttpReady);
+
+        // appHttpReady only proves the READ path serves. Immediately after deployment a publish can still
+        // land before the partition OWNER has materialized its buffer, so the forwarded append briefly
+        // fails; gate on a warm-up publish actually succeeding so tests start write-ready.
+        //
+        // NOTE: the 5s forward timeouts this gate originally chased were NOT "governor write-readiness
+        // lag" — they were the #467 defect where the app publish path forwarded to the STREAMING leader
+        // instead of the partition owner and could send-to-self (which QUIC silently drops). That is now
+        // fixed at the source (owner-routed publish + self-guard); this gate only smooths genuine
+        // owner-materialization lag.
+        await().atMost(WAIT_TIMEOUT)
+               .pollInterval(POLL_INTERVAL)
+               .failFast(this::failIfSliceFailed)
+               .until(this::publishReady);
     }
 
     @AfterAll
@@ -392,6 +406,22 @@ class StreamFanoutConsumerTest {
         var body = httpPost(ports.getFirst(), "/api/stream/read", "{\"fromOffset\":0,\"maxEvents\":1}");
 
         return !body.contains("\"error\"") && body.contains("events");
+    }
+
+    /// Warm-up publish readiness: immediately after deployment a publish can land before the partition
+    /// OWNER has materialized its buffer (placement / stream-config lag), so the forwarded append briefly
+    /// fails even though the READ path already serves. Returns true once a publish actually succeeds. (The
+    /// prior 5s-timeout symptom was the #467 leader-misroute defect, now fixed — not this materialization lag.)
+    private boolean publishReady() {
+        var ports = cluster.getAvailableAppHttpPorts();
+
+        if (ports.isEmpty()) {
+            return false;
+        }
+
+        var response = httpPost(ports.getFirst(), "/api/stream/publish", "{\"payload\":\"__warmup__\"}");
+
+        return !response.contains("\"error\"") && response.contains("published");
     }
 
     private void failIfSliceFailed() {

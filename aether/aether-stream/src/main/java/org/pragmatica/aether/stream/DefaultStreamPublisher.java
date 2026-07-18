@@ -15,7 +15,6 @@ import org.pragmatica.aether.slice.ConsistencyMode;
 import org.pragmatica.aether.slice.StreamPublisher;
 import org.pragmatica.aether.stream.consensus.ConsensusPublishPath;
 import org.pragmatica.aether.stream.forward.StreamForwardClient;
-import org.pragmatica.aether.stream.forward.StreamForwardError;
 import org.pragmatica.aether.stream.replication.ReplicaPlacement;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Functions.Fn0;
@@ -37,6 +36,8 @@ public final class DefaultStreamPublisher<T> implements StreamPublisher<T> {
     private final int minSyncReplicas;
     private final Option<StreamForwardClient> forwardClient;
     private final Option<Fn0<Option<NodeId>>> governorResolver;
+    private final Option<Function<Integer, Option<NodeId>>> partitionOwnerResolver;
+    private final Option<NodeId> selfNodeId;
 
     private DefaultStreamPublisher(StreamPartitionManager partitionManager,
                                    Serializer serializer,
@@ -47,7 +48,9 @@ public final class DefaultStreamPublisher<T> implements StreamPublisher<T> {
                                    Option<ConsensusPublishPath> consensusPath,
                                    int minSyncReplicas,
                                    Option<StreamForwardClient> forwardClient,
-                                   Option<Fn0<Option<NodeId>>> governorResolver) {
+                                   Option<Fn0<Option<NodeId>>> governorResolver,
+                                   Option<Function<Integer, Option<NodeId>>> partitionOwnerResolver,
+                                   Option<NodeId> selfNodeId) {
         this.partitionManager = partitionManager;
         this.serializer = serializer;
         this.streamName = streamName;
@@ -59,6 +62,8 @@ public final class DefaultStreamPublisher<T> implements StreamPublisher<T> {
         this.minSyncReplicas = minSyncReplicas;
         this.forwardClient = forwardClient;
         this.governorResolver = governorResolver;
+        this.partitionOwnerResolver = partitionOwnerResolver;
+        this.selfNodeId = selfNodeId;
     }
 
     public static <T> DefaultStreamPublisher<T> streamPublisher(StreamPartitionManager partitionManager,
@@ -74,6 +79,8 @@ public final class DefaultStreamPublisher<T> implements StreamPublisher<T> {
                                             ConsistencyMode.EVENTUAL,
                                             Option.none(),
                                             0,
+                                            Option.none(),
+                                            Option.none(),
                                             Option.none(),
                                             Option.none());
     }
@@ -93,6 +100,8 @@ public final class DefaultStreamPublisher<T> implements StreamPublisher<T> {
                                             consistencyMode,
                                             consensusPath,
                                             0,
+                                            Option.none(),
+                                            Option.none(),
                                             Option.none(),
                                             Option.none());
     }
@@ -114,6 +123,8 @@ public final class DefaultStreamPublisher<T> implements StreamPublisher<T> {
                                             consensusPath,
                                             minSyncReplicas,
                                             Option.none(),
+                                            Option.none(),
+                                            Option.none(),
                                             Option.none());
     }
 
@@ -126,7 +137,9 @@ public final class DefaultStreamPublisher<T> implements StreamPublisher<T> {
                                                                 Option<ConsensusPublishPath> consensusPath,
                                                                 int minSyncReplicas,
                                                                 Option<StreamForwardClient> forwardClient,
-                                                                Option<Fn0<Option<NodeId>>> governorResolver) {
+                                                                Option<Fn0<Option<NodeId>>> governorResolver,
+                                                                Option<Function<Integer, Option<NodeId>>> partitionOwnerResolver,
+                                                                Option<NodeId> selfNodeId) {
         return new DefaultStreamPublisher<>(partitionManager,
                                             serializer,
                                             streamName,
@@ -136,7 +149,9 @@ public final class DefaultStreamPublisher<T> implements StreamPublisher<T> {
                                             consensusPath,
                                             minSyncReplicas,
                                             forwardClient,
-                                            governorResolver);
+                                            governorResolver,
+                                            partitionOwnerResolver,
+                                            selfNodeId);
     }
 
     @Override
@@ -229,28 +244,36 @@ public final class DefaultStreamPublisher<T> implements StreamPublisher<T> {
                                                                                     minSyncReplicas - 1));
     }
 
+    /// Non-materialized publish: route to the partition's HRW owner instead of the STREAMING leader. The
+    /// owner is resolved via the partition-aware HRW resolver (the SAME `ReplicaSetController` placement
+    /// that owns the replica set), falling back to the arg-less leader resolver only when no HRW resolver
+    /// is wired (legacy / minimal runtimes). A resolved owner that is THIS node — or the absence of an
+    /// owner or forward client — falls back to a local append rather than a send-to-self (which QUIC
+    /// silently drops, hanging the forward). Mirrors {@link StreamWriteRouter}'s `forwardToOwner` and
+    /// {@link PartitionedStreamAccess}'s owner-routed publish.
     private Promise<Unit> publishRemote(int partition, byte[] bytes, long timestamp) {
-        return resolveForwardClientAndGovernor().flatMap(pair -> pair.client()
-                                                                     .publishRemote(pair.governorId(),
-                                                                                    streamName,
-                                                                                    partition,
-                                                                                    bytes,
-                                                                                    timestamp))
-                                              .mapToUnit();
+        return resolveOwner(partition)
+                   .filter(this::isRemote)
+                   .flatMap(owner -> forwardClient.map(client -> forwardToOwner(client, owner, partition, bytes, timestamp)))
+                   .or(() -> publishLocalEventual(partition, bytes, timestamp));
     }
 
-    private Promise<ForwardTarget> resolveForwardClientAndGovernor() {
-        return forwardClient.async(StreamForwardError.General.GOVERNOR_UNAVAILABLE)
-                            .flatMap(this::resolveGovernorForClient);
+    /// #467: prefer the partition-aware HRW owner-resolver (the placement authority that owns the replica
+    /// set); fall back to the arg-less leader resolver only when no HRW resolver is wired.
+    private Option<NodeId> resolveOwner(int partition) {
+        return partitionOwnerResolver.flatMap(resolver -> resolver.apply(partition))
+                                     .orElse(() -> governorResolver.flatMap(Fn0::apply));
     }
 
-    private Promise<ForwardTarget> resolveGovernorForClient(StreamForwardClient client) {
-        return governorResolver.flatMap(Fn0::apply)
-                               .async(StreamForwardError.General.GOVERNOR_UNAVAILABLE)
-                               .map(governorId -> new ForwardTarget(client, governorId));
+    /// A resolved owner is forwardable only when it is known to differ from this node; a self-owner (or an
+    /// unknown self) never forwards, so the send-to-self QUIC drop cannot occur.
+    private boolean isRemote(NodeId owner) {
+        return !selfNodeId.map(owner::equals).or(true);
     }
 
-    private record ForwardTarget(StreamForwardClient client, NodeId governorId) {}
+    private Promise<Unit> forwardToOwner(StreamForwardClient client, NodeId owner, int partition, byte[] bytes, long timestamp) {
+        return client.publishRemote(owner, streamName, partition, bytes, timestamp).mapToUnit();
+    }
 
     private Promise<Unit> publishStrong(int partition, byte[] bytes, long timestamp) {
         return consensusPath.async(StreamError.General.CONSENSUS_PATH_UNAVAILABLE)
