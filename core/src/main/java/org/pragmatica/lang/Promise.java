@@ -81,6 +81,14 @@ import static org.pragmatica.lang.utils.ResultCollector.resultCollector;
 ///
 /// Rule of thumb: `Promise<Result<T>>` is forbidden — `Promise` IS the asynchronous [Result];
 /// a `Result`-returning operation lifts into a chain via `result.async()`.
+///
+/// **Total-mapper contract.** Functions passed to transformation methods (`map`, `flatMap`,
+/// `fold`, `filter`, `replaceResult` and their arity/`With` variants) must be total: they must
+/// return normally for every input. A throw inside a mapper is NOT converted into a failed
+/// promise — the resolution machinery does not catch it, so the resulting promise may never
+/// resolve and every dependent promise (joins, `await` callers) hangs with it. Partial
+/// operations (`getFirst()`, `orElseThrow()`, `Optional.get()`, …) must be lifted to a typed
+/// `Cause` before entering a chain. Enforced statically by the jbct-lint mapper-safety rules.
 /* Implementation notes: this version of the implementation is heavily inspired by the implementation of
 the CompletableFuture. There are several differences, though:
 - Method naming consistent with widely used Optional and Streams.
