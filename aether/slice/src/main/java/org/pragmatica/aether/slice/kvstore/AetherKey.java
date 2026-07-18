@@ -15,6 +15,7 @@ import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Verify;
 import org.pragmatica.lang.parse.Number;
 import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.serialization.Codec;
@@ -304,7 +305,7 @@ public sealed interface AetherKey extends StructuredKey {
         }
 
         private static String normalizePrefix(String path) {
-            if (path == null || path.isBlank()) {
+            if (!Verify.Is.present(path)) {
                 return "/";
             }
 

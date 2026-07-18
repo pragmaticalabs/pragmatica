@@ -22,6 +22,7 @@ import org.pragmatica.aether.pg.schema.linter.LintConfig;
 import org.pragmatica.aether.pg.schema.linter.LintDiagnostic;
 import org.pragmatica.aether.pg.schema.linter.LintEngine;
 import org.pragmatica.lang.Contract;
+import org.pragmatica.lang.Verify;
 
 
 public sealed interface LintRunner {
@@ -30,7 +31,7 @@ public sealed interface LintRunner {
         WARNING,
         ERROR;
         public static Severity parse(String raw, Severity fallback) {
-            if (raw == null || raw.isBlank()) {
+            if (!Verify.Is.present(raw)) {
                 return fallback;
             }
 
@@ -138,7 +139,7 @@ public sealed interface LintRunner {
         }
 
         private static Set<String> parseDisabled(String raw) {
-            if (raw == null || raw.isBlank()) {
+            if (!Verify.Is.present(raw)) {
                 return DEFAULT_DISABLED;
             }
 

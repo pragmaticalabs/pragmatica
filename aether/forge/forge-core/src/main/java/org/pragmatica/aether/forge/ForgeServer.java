@@ -333,11 +333,13 @@ public final class ForgeServer {
     }
 
     private void parseAndMergeEvents(String json) {
-        if (json == null || json.length() < 3 || !json.startsWith("[")) {
+        var text = Option.option(json).or("");
+
+        if (text.length() < 3 || !text.startsWith("[")) {
             return;
         }
 
-        var content = json.substring(1, json.length() - 1).trim();
+        var content = text.substring(1, text.length() - 1).trim();
 
         if (content.isEmpty()) {
             return;

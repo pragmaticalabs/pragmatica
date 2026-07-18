@@ -165,6 +165,9 @@ class ClusterRotateKeyCommand implements Callable<Integer> {
                      .encodeToString(bytes);
     }
 
+    // RET-06: `duration` is the picocli `--grace-period` option value; the null/empty coalesce to a
+    // default is parse-boundary handling of framework-supplied input.
+    @SuppressWarnings("JBCT-RET-06")
     private static long parseDurationMs(String duration) {
         if (duration == null || duration.isEmpty()) {
             return 300_000;

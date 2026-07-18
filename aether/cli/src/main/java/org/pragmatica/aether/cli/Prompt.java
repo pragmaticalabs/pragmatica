@@ -13,6 +13,7 @@ import java.util.List;
 import java.util.function.Function;
 
 import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 
 
@@ -43,16 +44,15 @@ public class Prompt {
     }
 
     public String prompt(String question, String defaultValue) {
-        var hint = defaultValue == null || defaultValue.isEmpty()
-                   ? ": "
-                   : " [" + defaultValue + "]: ";
+        var fallback = Option.option(defaultValue);
+        var hint = fallback.filter(value -> !value.isEmpty()).map(value -> " [" + value + "]: ").or(": ");
 
         out.print(question + hint);
         out.flush();
         var input = readLine();
 
-        return input.isEmpty() && defaultValue != null
-               ? defaultValue
+        return input.isEmpty()
+               ? fallback.or(input)
                : input;
     }
 

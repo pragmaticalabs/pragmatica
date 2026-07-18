@@ -100,6 +100,9 @@ public final class DhtRoutes implements RouteSource {
                              .flatMap(this::executeInject);
     }
 
+    // RET-06: `req` is the deserialized request body (null when absent); the null check IS the
+    // parse-don't-validate entry validation.
+    @SuppressWarnings("JBCT-RET-06")
     private Result<DhtInjectRequest> validateInject(DhtInjectRequest req) {
         if (req == null) {
             return DhtError.MISSING_BODY.result();

@@ -10,6 +10,7 @@ import java.util.concurrent.atomic.AtomicReference;
 import org.pragmatica.http.websocket.WebSocketHandler;
 import org.pragmatica.http.websocket.WebSocketMessage;
 import org.pragmatica.http.websocket.WebSocketSession;
+import org.pragmatica.lang.Option;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -85,7 +86,7 @@ public class DashboardWebSocketHandler implements WebSocketHandler {
     }
 
     private static void sendIfAuthenticated(WebSocketSession session, String message, WebSocketAuthenticator auth) {
-        if (session.isOpen() && (auth == null || auth.isAuthenticated(session.id()))) {
+        if (session.isOpen() && Option.option(auth).map(a -> a.isAuthenticated(session.id())).or(true)) {
             session.send(message);
         }
     }

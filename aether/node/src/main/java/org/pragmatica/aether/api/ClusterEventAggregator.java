@@ -436,6 +436,9 @@ public final class ClusterEventAggregator {
 
     /// Advance the throttle window for one key: when the previous emit is absent or older than the
     /// window, stamp `now` and record admission; otherwise keep the previous stamp and suppress.
+    // RET-06: `previous` is the nullable prior value supplied by JDK Map.compute (absent key → null) —
+    // a framework boundary, not a business optional.
+    @SuppressWarnings("JBCT-RET-06")
     private static long advanceWindow(Long previous, long now, boolean[] admitted) {
         if (previous != null && now - previous < STREAM_MEMORY_EVENT_THROTTLE_MS) {
             admitted[0] = false;

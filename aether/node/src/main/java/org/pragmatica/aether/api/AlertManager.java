@@ -196,6 +196,9 @@ public class AlertManager {
                                      .map(_ -> stampAndStoreInjection(name, severity, message, metric, value));
     }
 
+    // RET-06: `name`/`message` are raw injection-request fields; the null/blank checks ARE the
+    // parse-don't-validate entry validation.
+    @SuppressWarnings("JBCT-RET-06")
     private Result<Unit> validateInjectionInput(String name, String severity, String message) {
         if (name == null || name.isBlank()) {
             return InjectionError.NAME_REQUIRED.result();
@@ -555,7 +558,9 @@ public class AlertManager {
         return new AlertView(alertId, name, severity, message, "injected", metric, value, null, null, null, timestamp);
     }
 
+    // RET-06: `raw` is a nullable value from a JDK Map.get; the null guard is a framework boundary.
     @NullReturn
+    @SuppressWarnings("JBCT-RET-06")
     private static Double parseDoubleOrNull(String raw) {
         if (raw == null) {
             return null;
@@ -566,7 +571,9 @@ public class AlertManager {
                                                .or((Double) null);
     }
 
+    // RET-06: `raw` is a nullable value from a JDK Map.get; the null guard is a framework boundary.
     @NullReturn
+    @SuppressWarnings("JBCT-RET-06")
     private static Long parseLongOrNull(String raw) {
         if (raw == null) {
             return null;

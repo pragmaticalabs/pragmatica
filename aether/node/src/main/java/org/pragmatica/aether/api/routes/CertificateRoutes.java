@@ -78,6 +78,9 @@ public final class CertificateRoutes implements RouteSource {
         return validateRequest(req).flatMap(this::applyShortValidity);
     }
 
+    // RET-06: `req` is the deserialized request body (null when absent); the null check IS the
+    // parse-don't-validate entry validation.
+    @SuppressWarnings("JBCT-RET-06")
     private Promise<CertConfigureShortValidityRequest> validateRequest(CertConfigureShortValidityRequest req) {
         if (req == null) {
             return CertConfigureError.MISSING_BODY.promise();

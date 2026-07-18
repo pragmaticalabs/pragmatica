@@ -89,6 +89,7 @@ public final class InvocationContext {
         }
     }
 
+    @SuppressWarnings("JBCT-RET-06")  // optional trace-context values bound conditionally into JDK ScopedValue carriers / SLF4J MDC
     public static <T> T runWithContext(String requestId,
                                        String principal,
                                        String originNode,
@@ -117,7 +118,7 @@ public final class InvocationContext {
         }
     }
 
-    @SuppressWarnings("JBCT-RET-01")
+    @SuppressWarnings({"JBCT-RET-01", "JBCT-RET-06"})  // optional trace-context values bound conditionally into JDK ScopedValue carriers / SLF4J MDC
     public static void runWithContext(String requestId,
                                       String principal,
                                       String originNode,
@@ -146,7 +147,7 @@ public final class InvocationContext {
         }
     }
 
-    @SuppressWarnings("JBCT-RET-01")
+    @SuppressWarnings({"JBCT-RET-01", "JBCT-RET-06"})  // SLF4J MDC contract: skip the put when the value is absent
     private static void putIfNotNull(String key, String value) {
         if (value != null) {
             MDC.put(key, value);

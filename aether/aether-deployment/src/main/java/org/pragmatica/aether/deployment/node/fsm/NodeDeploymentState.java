@@ -1551,7 +1551,7 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
         }
 
         private static int parseManifestCount(String raw) {
-            if (raw == null || raw.isEmpty()) {
+            if (Option.option(raw).map(String::isEmpty).or(true)) {
                 return 0;
             }
 

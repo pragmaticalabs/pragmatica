@@ -344,12 +344,8 @@ public final class TypeMapper {
                          new JavaTypeInfo(javaType,
                                           boxedType,
                                           primitive,
-                                          importStmt != null
-                                          ? Option.present(importStmt)
-                                          : Option.empty(),
+                                          Option.option(importStmt),
                                           accessor,
-                                          typeArg != null
-                                          ? Option.present(typeArg)
-                                          : Option.empty()));
+                                          Option.option(typeArg)));
     }
 }

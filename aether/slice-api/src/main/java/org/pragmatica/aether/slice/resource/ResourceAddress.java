@@ -60,6 +60,7 @@ public record ResourceAddress(Namespace namespace, ResourceName name, ResourceVe
     }
 
     /// Parse a canonical three-component address.
+    @SuppressWarnings("JBCT-RET-06")  // parse-don't-validate factory: distinguishes null (NULL_VALUE) from blank (BLANK_VALUE), which Verify.Is.present conflates
     public static Result<ResourceAddress> resourceAddress(String value) {
         if (value == null) {
             return ResourceAddressError.General.NULL_VALUE.result();

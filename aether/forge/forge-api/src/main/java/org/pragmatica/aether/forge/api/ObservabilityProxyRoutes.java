@@ -16,6 +16,7 @@ import org.pragmatica.http.JdkHttpOperations;
 import org.pragmatica.http.routing.Route;
 import org.pragmatica.http.routing.RouteSource;
 import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 
 import static org.pragmatica.http.routing.PathParameter.aString;
@@ -169,9 +170,7 @@ public sealed interface ObservabilityProxyRoutes {
         var request = HttpRequest.newBuilder()
                                  .uri(URI.create("http://localhost:" + port + path))
                                  .header("Content-Type", "application/json")
-                                 .POST(HttpRequest.BodyPublishers.ofString(body != null
-                                                                           ? body
-                                                                           : ""))
+                                 .POST(HttpRequest.BodyPublishers.ofString(Option.option(body).or("")))
                                  .timeout(HTTP_TIMEOUT)
                                  .build();
 

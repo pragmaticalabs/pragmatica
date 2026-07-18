@@ -127,9 +127,7 @@ public sealed interface ClusterHttpClient {
 
     static Result<String> fetch(ManagementRoute route, List<String> params, String queryString) {
         return route.assemble(params)
-                    .map(path -> queryString == null || queryString.isEmpty()
-                                 ? path
-                                 : path + "?" + queryString)
+                    .map(path -> appendQuery(path, queryString))
                     .flatMap(ClusterHttpClient::fetchPath);
     }
 
@@ -144,10 +142,14 @@ public sealed interface ClusterHttpClient {
 
     static Result<String> post(ManagementRoute route, List<String> params, String queryString, String jsonBody) {
         return route.assemble(params)
-                    .map(path -> queryString == null || queryString.isEmpty()
-                                 ? path
-                                 : path + "?" + queryString)
+                    .map(path -> appendQuery(path, queryString))
                     .flatMap(path -> postPath(path, jsonBody));
+    }
+
+    private static String appendQuery(String path, String queryString) {
+        return option(queryString).filter(query -> !query.isEmpty())
+                     .map(query -> path + "?" + query)
+                     .or(path);
     }
 
     static Result<String> put(ManagementRoute route, List<String> params, String jsonBody) {

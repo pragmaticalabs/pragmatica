@@ -363,6 +363,8 @@ sealed interface BootstrapPhaseFormation {
         return "{\"tomlContent\":\"" + escapeJsonString(rawTomlContent) + "\",\"expectedVersion\":0}";
     }
 
+    // RET-06: defensive null-coalescing when serializing possibly-absent TOML content to JSON.
+    @SuppressWarnings("JBCT-RET-06")
     private static String escapeJsonString(String s) {
         if (s == null) {
             return "";

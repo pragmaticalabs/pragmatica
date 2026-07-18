@@ -6,6 +6,7 @@ package org.pragmatica.aether.pg.parser;
 
 import java.util.List;
 
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 
 
@@ -89,9 +90,9 @@ public final class PostgresParser {
     }
 
     private static String ruleName(PgSqlParser.RuleId rule) {
-        return rule != null
-               ? rule.name()
-               : "";
+        return Option.option(rule)
+                     .map(PgSqlParser.RuleId::name)
+                     .or("");
     }
 
     private static List<CstNode> extractStatements(CstNode root) {

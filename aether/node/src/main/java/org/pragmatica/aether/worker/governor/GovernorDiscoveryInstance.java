@@ -45,6 +45,9 @@ final class GovernorDiscoveryInstance implements GovernorDiscovery {
         return Map.copyOf(knownGovernors);
     }
 
+    // RET-06: `previous` is the nullable prior value returned by JDK Map.put (absent key → null) —
+    // a framework boundary, not a business optional.
+    @SuppressWarnings("JBCT-RET-06")
     private static void logGovernorChange(String communityId, NodeId governorId, NodeId previous) {
         if (previous != null && !previous.equals(governorId)) {
             LOG.info("Governor changed for community '{}': {} -> {}",

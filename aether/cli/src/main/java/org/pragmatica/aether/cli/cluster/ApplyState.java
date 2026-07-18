@@ -285,6 +285,8 @@ public record ApplyState(String clusterName,
         sb.append(']');
     }
 
+    // RET-06: defensive null-coalescing when serializing a possibly-absent string field to JSON.
+    @SuppressWarnings("JBCT-RET-06")
     private static String escapeJson(String value) {
         if (value == null) {
             return "";

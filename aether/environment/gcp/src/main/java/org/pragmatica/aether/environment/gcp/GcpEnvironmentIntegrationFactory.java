@@ -14,6 +14,7 @@ import org.pragmatica.aether.environment.EnvironmentIntegrationFactory;
 import org.pragmatica.cloud.gcp.GcpConfig;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Verify;
 
 import static org.pragmatica.aether.environment.gcp.GcpEnvironmentConfig.GcpNegConfig.gcpNegConfig;
 import static org.pragmatica.aether.environment.gcp.GcpEnvironmentConfig.gcpEnvironmentConfig;
@@ -62,7 +63,7 @@ public record GcpEnvironmentIntegrationFactory() implements EnvironmentIntegrati
     }
 
     private static boolean blank(String value) {
-        return value == null || value.isBlank();
+        return ! Verify.Is.present(value);
     }
 
     private static Result<GcpEnvironmentConfig> buildFromValidated(Map<String, String> creds, CloudConfig config) {

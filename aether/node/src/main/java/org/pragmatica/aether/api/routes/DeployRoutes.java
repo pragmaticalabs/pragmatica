@@ -184,6 +184,9 @@ public final class DeployRoutes implements RouteSource {
         };
     }
 
+    // RET-06: `raw` is a deserialized request body (nullable JSON map); the null/empty coalesce is
+    // parse-don't-validate handling of wire input.
+    @SuppressWarnings("JBCT-RET-06")
     private static Result<HealthThresholds> parseThresholds(Map<String, Object> raw) {
         if (raw == null || raw.isEmpty()) {
             return Result.success(HealthThresholds.DEFAULT);
@@ -196,6 +199,8 @@ public final class DeployRoutes implements RouteSource {
         return HealthThresholds.healthThresholds(maxErrorRate, maxLatencyMs, false);
     }
 
+    // RET-06: `raw` is a nullable request field; the null/empty coalesce is parse-don't-validate of wire input.
+    @SuppressWarnings("JBCT-RET-06")
     private static Result<CleanupPolicy> parseCleanupPolicy(String raw) {
         if (raw == null || raw.isEmpty()) {
             return Result.success(CleanupPolicy.GRACE_PERIOD);
@@ -209,6 +214,8 @@ public final class DeployRoutes implements RouteSource {
         };
     }
 
+    // RET-06: `raw` is a nullable boxed Integer from a deserialized request; the coalesce is wire-input handling.
+    @SuppressWarnings("JBCT-RET-06")
     private static int parseInstances(Integer raw) {
         return raw != null
                ? raw
@@ -223,7 +230,8 @@ public final class DeployRoutes implements RouteSource {
         };
     }
 
-    @SuppressWarnings("unchecked")
+    // RET-06: `raw` is a deserialized request body (nullable JSON map); parse-don't-validate of wire input.
+    @SuppressWarnings({"unchecked", "JBCT-RET-06"})
     private static Result<StrategyConfig> parseCanaryConfig(Map<String, Object> raw) {
         if (raw == null) {
             return MISSING_CANARY_STAGES.result();
@@ -246,6 +254,8 @@ public final class DeployRoutes implements RouteSource {
         return CanaryStage.canaryStage(trafficPercent, observationMinutes);
     }
 
+    // RET-06: `raw` is a deserialized request body (nullable JSON map); parse-don't-validate of wire input.
+    @SuppressWarnings("JBCT-RET-06")
     private static Result<StrategyConfig> parseBlueGreenConfig(Map<String, Object> raw) {
         var drainTimeoutMs = raw != null
                              ? toLong(raw.get("drainTimeoutMs"), 30_000L)
@@ -254,6 +264,8 @@ public final class DeployRoutes implements RouteSource {
         return Result.success(new BlueGreenConfig(timeSpan(drainTimeoutMs).millis()));
     }
 
+    // RET-06: `raw` is a deserialized request body (nullable JSON map); parse-don't-validate of wire input.
+    @SuppressWarnings("JBCT-RET-06")
     private static Result<StrategyConfig> parseRollingConfig(Map<String, Object> raw) {
         var requireManualApproval = raw != null && Boolean.TRUE.equals(raw.get("requireManualApproval"));
 

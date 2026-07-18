@@ -430,6 +430,9 @@ public final class MetricsRoutes implements RouteSource {
         return validateBackfillRequest(req).flatMap(this::executeBackfill);
     }
 
+    // RET-06: `req` is the deserialized request body (null when absent); the null check IS the
+    // parse-don't-validate entry validation.
+    @SuppressWarnings("JBCT-RET-06")
     private Promise<BackfillMetricsRequest> validateBackfillRequest(BackfillMetricsRequest req) {
         if (req == null) {
             return BackfillError.MISSING_BODY.promise();
@@ -477,6 +480,9 @@ public final class MetricsRoutes implements RouteSource {
                                                            req.endTimeMs()));
     }
 
+    // RET-06: `valueFn` is a nullable request field; the null/blank coalesce to a default generator
+    // is parse-don't-validate of wire input.
+    @SuppressWarnings("JBCT-RET-06")
     private static ValueGenerator parseValueFn(String valueFn) {
         if (valueFn == null || valueFn.isBlank()) {
             return ValueGenerator.constant(0.0);

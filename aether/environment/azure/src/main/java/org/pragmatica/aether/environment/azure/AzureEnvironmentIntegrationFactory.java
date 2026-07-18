@@ -14,6 +14,7 @@ import org.pragmatica.aether.environment.EnvironmentIntegrationFactory;
 import org.pragmatica.cloud.azure.AzureConfig;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Verify;
 
 import static org.pragmatica.aether.environment.azure.AzureEnvironmentConfig.AzureLbConfig.azureLbConfig;
 import static org.pragmatica.aether.environment.azure.AzureEnvironmentConfig.azureEnvironmentConfig;
@@ -70,7 +71,7 @@ public record AzureEnvironmentIntegrationFactory() implements EnvironmentIntegra
     }
 
     private static boolean blank(String value) {
-        return value == null || value.isBlank();
+        return ! Verify.Is.present(value);
     }
 
     private static Result<AzureEnvironmentConfig> buildFromValidated(Map<String, String> creds, CloudConfig config) {

@@ -54,6 +54,8 @@ public record SshPublicKey(String value) {
         return value.split("\\s+", 3) [1];
     }
 
+    // RET-06: `raw` is raw external public-key input; the null check IS the parse-boundary validation.
+    @SuppressWarnings("JBCT-RET-06")
     private static Result<String> validateNonNull(String raw) {
         if (raw == null) {
             return new InvalidPublicKey("Public key is null").result();

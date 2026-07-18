@@ -182,6 +182,9 @@ public final class MavenProtocolRoutes implements RouteHandler {
                        ContentType.contentType(mavenResponse.contentType(), categoryFor(mavenResponse.contentType())));
     }
 
+    // RET-06: `contentType` is a nullable HTTP response header; the null coalesce to a default
+    // category is parse-don't-validate of wire input.
+    @SuppressWarnings("JBCT-RET-06")
     private ContentCategory categoryFor(String contentType) {
         if (contentType == null) {
             return ContentCategory.BINARY;

@@ -46,6 +46,7 @@ import org.pragmatica.json.JsonMapper;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.Verify;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.Causes;
 
@@ -516,7 +517,7 @@ class HttpRoutePublisherImpl implements HttpRoutePublisher {
     }
 
     private String normalizePath(String path) {
-        if (path == null || path.isBlank()) {
+        if (!Verify.Is.present(path)) {
             return "/";
         }
 

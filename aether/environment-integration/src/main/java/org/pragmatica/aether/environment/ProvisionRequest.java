@@ -6,6 +6,7 @@ package org.pragmatica.aether.environment;
 
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Verify;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -85,9 +86,7 @@ public record ProvisionRequest(InstanceType market,
     }
 
     private static boolean isConcreteSize(String value) {
-        return value != null
-               && !value.isBlank()
-               && !DEFAULT_INSTANCE_SIZE_SENTINEL.equals(value);
+        return Verify.Is.present(value) && !DEFAULT_INSTANCE_SIZE_SENTINEL.equals(value);
     }
 
     /// Image precedence: spec image (per-role, populated by W2) → provider config image → loud
@@ -109,7 +108,7 @@ public record ProvisionRequest(InstanceType market,
     }
 
     private static boolean isConcreteImage(String value) {
-        return value != null && !value.isBlank();
+        return Verify.Is.present(value);
     }
 
     private static String imageFallback(String fallbackImage) {

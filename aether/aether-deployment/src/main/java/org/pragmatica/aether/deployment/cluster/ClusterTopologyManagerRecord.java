@@ -195,15 +195,9 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                                 new AtomicLong(clock.getAsLong()),
                                                 new AtomicBoolean(true),
                                                 clock,
-                                                drainCommandSink == null
-                                                ? _ -> {}
-                                                : drainCommandSink,
-                                                drainCommandClear == null
-                                                ? _ -> {}
-                                                : drainCommandClear,
-                                                resolvedLocalConfig == null
-                                                ? Option::none
-                                                : resolvedLocalConfig);
+                                                Option.option(drainCommandSink).or(_ -> {}),
+                                                Option.option(drainCommandClear).or(_ -> {}),
+                                                Option.option(resolvedLocalConfig).or((Supplier<Option<TomlDocument>>) Option::none));
     }
 
     private long nowMs() {

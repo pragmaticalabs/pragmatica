@@ -13,7 +13,7 @@ public enum MigrationType {
     UNDO,
     BASELINE;
     public static Option<MigrationType> migrationType(String filename) {
-        if (filename == null || filename.isEmpty()) {
+        if (Option.option(filename).map(String::isEmpty).or(true)) {
             return Option.none();
         }
 

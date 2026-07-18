@@ -132,6 +132,9 @@ class KvStoreApiKeyValidator implements SecurityValidator {
         return SecurityContext.securityContext("api-key:" + keyValue.keyId(), Set.of(Role.ADMIN), role);
     }
 
+    // RET-06: `raw` is a stored ApiKeyValue field (null on legacy keys); the null/blank coalesce to a
+    // default is parse-don't-validate of persisted input.
+    @SuppressWarnings("JBCT-RET-06")
     private static AuthorizationRole parseAuthorizationRole(String raw) {
         if (raw == null || raw.isBlank()) {
             return AuthorizationRole.VIEWER;

@@ -11,6 +11,7 @@ import java.util.StringJoiner;
 
 import org.pragmatica.json.JsonMapper;
 import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Option;
 
 import tools.jackson.databind.JsonNode;
 
@@ -53,9 +54,10 @@ public sealed interface OutputFormatter {
     }
 
     private static int printValue(String json, String fieldPath) {
-        if (fieldPath == null) {
-            return printJson(json);
-        }
+        return Option.option(fieldPath).fold(() -> printJson(json), path -> printFieldValue(json, path));
+    }
+
+    private static int printFieldValue(String json, String fieldPath) {
         // Detect server-side error envelope (e.g., `{"error":"..."}` from a forward failure
         // or 4xx/5xx response). Surface the actual error instead of the misleading
         // "Path not found: <fieldPath>" — that message implied the field was renamed
@@ -71,18 +73,18 @@ public sealed interface OutputFormatter {
     }
 
     private static int printTable(String json, TableSpec tableSpec) {
-        if (tableSpec == null) {
-            return printJson(json);
-        }
+        return Option.option(tableSpec).fold(() -> printJson(json), spec -> renderTableJson(json, spec));
+    }
 
+    private static int renderTableJson(String json, TableSpec tableSpec) {
         return MAPPER.readTree(json).fold(OutputFormatter::handleParseError, node -> renderTable(node, tableSpec));
     }
 
     private static int printCsv(String json, TableSpec tableSpec) {
-        if (tableSpec == null) {
-            return printJson(json);
-        }
+        return Option.option(tableSpec).fold(() -> printJson(json), spec -> renderCsvJson(json, spec));
+    }
 
+    private static int renderCsvJson(String json, TableSpec tableSpec) {
         return MAPPER.readTree(json).fold(OutputFormatter::handleParseError, node -> renderCsv(node, tableSpec));
     }
 
@@ -180,9 +182,7 @@ public sealed interface OutputFormatter {
     }
 
     private static List<JsonNode> resolveDataNodes(JsonNode root, String arrayPath) {
-        var target = arrayPath != null
-                     ? navigateToNode(root, arrayPath)
-                     : root;
+        var target = Option.option(arrayPath).map(path -> navigateToNode(root, path)).or(root);
         var nodes = new ArrayList<JsonNode>();
 
         if (target.isArray()) {
@@ -250,6 +250,9 @@ public sealed interface OutputFormatter {
     /// for client classification. Legacy `{"error":"..."}` envelopes do not — those remain
     /// detectable via the `error` field for backward compat with any external endpoint that
     /// hasn't migrated to the canonical envelope.
+    // RET-06: `node` is a Jackson JsonNode; the defensive null guard is a framework boundary,
+    // not a business optional.
+    @SuppressWarnings("JBCT-RET-06")
     private static boolean looksLikeError(JsonNode node) {
         if (node == null || !node.isObject()) {
             return false;

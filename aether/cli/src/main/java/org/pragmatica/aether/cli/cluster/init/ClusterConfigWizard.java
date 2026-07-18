@@ -220,16 +220,14 @@ public class ClusterConfigWizard {
     }
 
     private static StepResult stepCloud(ClusterConfigAnswers state, Prompt prompt) {
-        var existing = state.cloud().or((CloudAnswers) null);
-        var defaultProvider = existing == null
-                              ? CloudProviderName.HETZNER
-                              : existing.provider();
+        var existing = state.cloud();
+        var defaultProvider = existing.map(CloudAnswers::provider).or(CloudProviderName.HETZNER);
         var provider = prompt.choice("Cloud provider",
                                      Arrays.asList(CloudProviderName.values()),
                                      defaultProvider);
-        var defaultRegion = existing != null && existing.provider() == provider
-                            ? existing.region()
-                            : defaultRegionFor(provider);
+        var defaultRegion = existing.filter(cloud -> cloud.provider() == provider)
+                                    .map(CloudAnswers::region)
+                                    .or(defaultRegionFor(provider));
 
         return guardedPrompt(prompt,
                              "Region",
@@ -247,11 +245,11 @@ public class ClusterConfigWizard {
     private static StepResult cloudInstancePrompt(ClusterConfigAnswers state,
                                                   CloudProviderName provider,
                                                   String region,
-                                                  CloudAnswers existing,
+                                                  Option<CloudAnswers> existing,
                                                   Prompt prompt) {
-        var defaultInstance = existing != null && existing.provider() == provider
-                              ? existing.instanceType()
-                              : defaultInstanceFor(provider);
+        var defaultInstance = existing.filter(cloud -> cloud.provider() == provider)
+                                      .map(CloudAnswers::instanceType)
+                                      .or(defaultInstanceFor(provider));
 
         return guardedPrompt(prompt,
                              "Instance type",
@@ -275,11 +273,11 @@ public class ClusterConfigWizard {
                                                     CloudProviderName provider,
                                                     String region,
                                                     String instance,
-                                                    CloudAnswers existing,
+                                                    Option<CloudAnswers> existing,
                                                     Prompt prompt) {
-        var defaultEnvVar = existing != null && existing.provider() == provider
-                            ? existing.credentialEnvVar()
-                            : defaultCredentialEnvVarFor(provider);
+        var defaultEnvVar = existing.filter(cloud -> cloud.provider() == provider)
+                                    .map(CloudAnswers::credentialEnvVar)
+                                    .or(defaultCredentialEnvVarFor(provider));
 
         return guardedPrompt(prompt,
                              "Credential env var name",
@@ -343,10 +341,8 @@ public class ClusterConfigWizard {
     }
 
     private static StepResult stepSsh(ClusterConfigAnswers state, Prompt prompt) {
-        var existing = state.ssh().or((SshAnswers) null);
-        var defaultHosts = existing == null
-                           ? ""
-                           : String.join(",", existing.hosts());
+        var existing = state.ssh();
+        var defaultHosts = existing.map(ssh -> String.join(",", ssh.hosts())).or("");
 
         return guardedPrompt(prompt,
                              "Hosts (comma-separated)",
@@ -356,7 +352,7 @@ public class ClusterConfigWizard {
 
     private static StepResult sshHostsContinue(ClusterConfigAnswers state,
                                                String hostsRaw,
-                                               SshAnswers existing,
+                                               Option<SshAnswers> existing,
                                                Prompt prompt) {
         return parseAndValidateHosts(hostsRaw).fold(cause -> reportAndRetryStep(cause, () -> stepSsh(state, prompt)),
                                                     hosts -> sshUserPrompt(state, hosts, existing, prompt));
@@ -370,11 +366,9 @@ public class ClusterConfigWizard {
 
     private static StepResult sshUserPrompt(ClusterConfigAnswers state,
                                             List<String> hosts,
-                                            SshAnswers existing,
+                                            Option<SshAnswers> existing,
                                             Prompt prompt) {
-        var defaultUser = existing == null
-                          ? "aether"
-                          : existing.user();
+        var defaultUser = existing.map(SshAnswers::user).or("aether");
 
         return guardedPrompt(prompt,
                              "SSH user",
@@ -388,11 +382,10 @@ public class ClusterConfigWizard {
     private static StepResult sshKeyPrompt(ClusterConfigAnswers state,
                                            List<String> hosts,
                                            String user,
-                                           SshAnswers existing,
+                                           Option<SshAnswers> existing,
                                            Prompt prompt) {
-        var defaultKey = existing == null
-                         ? "~/.ssh/id_ed25519"
-                         : existing.keyPath().toString();
+        var defaultKey = existing.map(ssh -> ssh.keyPath()
+                                                .toString()).or("~/.ssh/id_ed25519");
 
         return guardedPrompt(prompt,
                              "SSH private key path",
@@ -404,11 +397,9 @@ public class ClusterConfigWizard {
                                             List<String> hosts,
                                             String user,
                                             Path keyPath,
-                                            SshAnswers existing,
+                                            Option<SshAnswers> existing,
                                             Prompt prompt) {
-        var defaultPort = existing == null
-                          ? "22"
-                          : String.valueOf(existing.port());
+        var defaultPort = existing.map(ssh -> String.valueOf(ssh.port())).or("22");
 
         return guardedPrompt(prompt,
                              "SSH port",
@@ -444,6 +435,8 @@ public class ClusterConfigWizard {
                                         state.secret());
     }
 
+    // RET-06: `raw` is raw user host input; the null/blank coalesce is parse-boundary validation.
+    @SuppressWarnings("JBCT-RET-06")
     private static Result<List<String>> parseAndValidateHosts(String raw) {
         if (raw == null || raw.isBlank()) {
             return new ClusterInitError.InvalidValue("hosts", "", "must not be empty").result();
@@ -584,10 +577,8 @@ public class ClusterConfigWizard {
             return new StepResult.Continue(stateWithDatabase(state, Option.none()));
         }
 
-        var existing = state.database().or((DatabaseAnswers) null);
-        var defaultHost = existing == null
-                          ? "localhost"
-                          : existing.host();
+        var existing = state.database();
+        var defaultHost = existing.map(DatabaseAnswers::host).or("localhost");
 
         return guardedPrompt(prompt,
                              "Database host",
@@ -600,11 +591,9 @@ public class ClusterConfigWizard {
 
     private static StepResult dbPortPrompt(ClusterConfigAnswers state,
                                            String host,
-                                           DatabaseAnswers existing,
+                                           Option<DatabaseAnswers> existing,
                                            Prompt prompt) {
-        var defaultPort = existing == null
-                          ? "5432"
-                          : String.valueOf(existing.port());
+        var defaultPort = existing.map(db -> String.valueOf(db.port())).or("5432");
 
         return guardedPrompt(prompt,
                              "Database port",
@@ -618,11 +607,9 @@ public class ClusterConfigWizard {
     private static StepResult dbNamePrompt(ClusterConfigAnswers state,
                                            String host,
                                            int port,
-                                           DatabaseAnswers existing,
+                                           Option<DatabaseAnswers> existing,
                                            Prompt prompt) {
-        var defaultName = existing == null
-                          ? "aether_app"
-                          : existing.name();
+        var defaultName = existing.map(DatabaseAnswers::name).or("aether_app");
 
         return guardedPrompt(prompt,
                              "Database name",
@@ -637,11 +624,9 @@ public class ClusterConfigWizard {
                                            String host,
                                            int port,
                                            String name,
-                                           DatabaseAnswers existing,
+                                           Option<DatabaseAnswers> existing,
                                            Prompt prompt) {
-        var defaultUser = existing == null
-                          ? "aether"
-                          : existing.user();
+        var defaultUser = existing.map(DatabaseAnswers::user).or("aether");
 
         return guardedPrompt(prompt,
                              "Database user",
@@ -663,15 +648,13 @@ public class ClusterConfigWizard {
                                                int port,
                                                String name,
                                                String user,
-                                               DatabaseAnswers existing,
+                                               Option<DatabaseAnswers> existing,
                                                Prompt prompt) {
         var defaultEnv = defaultPasswordIsEnv(existing);
         var useEnv = prompt.confirm("Use environment variable for password?", defaultEnv);
 
         if (useEnv) {
-            var defaultEnvVar = existing == null
-                                ? "DB_PASSWORD"
-                                : extractEnvVar(existing.password()).or("DB_PASSWORD");
+            var defaultEnvVar = existing.flatMap(db -> extractEnvVar(db.password())).or("DB_PASSWORD");
 
             return guardedPrompt(prompt,
                                  "Password env var name",
@@ -695,9 +678,7 @@ public class ClusterConfigWizard {
 
         System.out.println("  ⚠  WARNING: plaintext passwords are stored in the generated TOML file.");
         System.out.println("              For production, prefer the environment-variable option.");
-        var defaultPlain = existing == null
-                           ? ""
-                           : extractPlaintext(existing.password()).or("");
+        var defaultPlain = existing.flatMap(db -> extractPlaintext(db.password())).or("");
 
         return guardedPrompt(prompt,
                              "Password (plaintext)",
@@ -710,12 +691,9 @@ public class ClusterConfigWizard {
                                                                                                                   new PasswordSource.Plaintext(passRaw))))));
     }
 
-    private static boolean defaultPasswordIsEnv(DatabaseAnswers existing) {
-        if (existing == null) {
-            return true;
-        }
-
-        return existing.password() instanceof PasswordSource.FromEnv;
+    private static boolean defaultPasswordIsEnv(Option<DatabaseAnswers> existing) {
+        return existing.map(db -> db.password() instanceof PasswordSource.FromEnv)
+                       .or(true);
     }
 
     private static Option<String> extractEnvVar(PasswordSource source) {
@@ -1041,6 +1019,8 @@ public class ClusterConfigWizard {
         return onFailure.apply(cause);
     }
 
+    // RET-06: `raw` is raw user input; the null coalesce is parse-boundary validation.
+    @SuppressWarnings("JBCT-RET-06")
     private static Result<String> nonEmpty(String raw) {
         var trimmed = raw == null
                       ? ""

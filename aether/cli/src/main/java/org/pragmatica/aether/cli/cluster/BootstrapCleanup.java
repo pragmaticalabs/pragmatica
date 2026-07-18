@@ -162,7 +162,9 @@ sealed interface BootstrapCleanup {
                                                    .withHetznerClientFactory(hetznerClientFactory));
     }
 
-    @SuppressWarnings("JBCT-PAT-01")
+    // RET-06: `clusterName` may be absent/blank when the bootstrap state never captured it;
+    // the guarded skip is defensive scoping, not a business optional.
+    @SuppressWarnings({"JBCT-PAT-01", "JBCT-RET-06"})
     private static Result<Unit> sweepClusterSshKeys(BootstrapState state,
                                                     String clusterName,
                                                     CleanupResolvers resolvers) {

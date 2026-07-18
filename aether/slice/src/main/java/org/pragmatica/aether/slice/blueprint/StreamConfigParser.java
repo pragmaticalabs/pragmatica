@@ -26,6 +26,7 @@ import org.pragmatica.config.toml.TomlParser;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Verify;
 import org.pragmatica.lang.utils.Causes;
 
 import static org.pragmatica.lang.Option.option;
@@ -103,7 +104,7 @@ public interface StreamConfigParser {
     /// Returns [Result#failure] carrying a [org.pragmatica.lang.utils.Causes.CompositeCause]
     /// when any section fails; [Result#success] with the parsed map otherwise.
     static Result<Map<String, StreamResource>> parseResourcesAggregating(String toml, Map<String, String> roleHints) {
-        if (toml == null || toml.isBlank()) {
+        if (!Verify.Is.present(toml)) {
             return success(Map.of());
         }
 

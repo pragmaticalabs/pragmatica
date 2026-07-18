@@ -9,6 +9,9 @@ import java.util.regex.Pattern;
 import org.pragmatica.lang.Result;
 
 
+/// RET-06: every `validate*` method here is a parse-don't-validate entry validator over raw user
+/// input — the `raw == null` coalesce IS the validation doctrine, not a business optional.
+@SuppressWarnings("JBCT-RET-06")
 public sealed interface InputValidators {
     Pattern CIDR_PATTERN = Pattern.compile("^(\\d{1,3})\\.(\\d{1,3})\\.(\\d{1,3})\\.(\\d{1,3})/(\\d{1,2})$");
     Pattern HOSTNAME_PATTERN = Pattern.compile("^[a-zA-Z0-9]([-a-zA-Z0-9.]*[a-zA-Z0-9])?$");

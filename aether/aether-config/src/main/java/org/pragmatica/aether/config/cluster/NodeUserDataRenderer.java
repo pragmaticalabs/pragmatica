@@ -15,6 +15,7 @@ import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Functions.Fn2;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.Verify;
 
 
 /// Single source of truth for the Aether node cloud-init user-data script.
@@ -41,7 +42,7 @@ public sealed interface NodeUserDataRenderer {
     String JAR_REPO_PATH = "pragmaticalabs/pragmatica";
 
     static String deriveJarTag(String version) {
-        if (version == null || version.isBlank()) {
+        if (!Verify.Is.present(version)) {
             return "vunknown";
         }
 

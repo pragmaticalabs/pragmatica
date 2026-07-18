@@ -16,6 +16,7 @@ import org.pragmatica.aether.environment.EnvironmentIntegrationFactory;
 import org.pragmatica.cloud.aws.AwsConfig;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Verify;
 
 import static org.pragmatica.aether.environment.aws.AwsEnvironmentConfig.AwsLbConfig.awsLbConfig;
 import static org.pragmatica.aether.environment.aws.AwsEnvironmentConfig.awsEnvironmentConfig;
@@ -61,7 +62,7 @@ public record AwsEnvironmentIntegrationFactory() implements EnvironmentIntegrati
     }
 
     private static boolean blank(String value) {
-        return value == null || value.isBlank();
+        return ! Verify.Is.present(value);
     }
 
     private static Result<AwsEnvironmentConfig> buildFromValidated(Map<String, String> creds, CloudConfig config) {

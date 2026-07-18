@@ -8,6 +8,7 @@ import java.util.Set;
 import java.util.regex.Pattern;
 
 import org.pragmatica.aether.slice.resource.ResourceAddress.ResourceAddressError.General;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Verify;
 import org.pragmatica.lang.Verify.Is;
@@ -56,7 +57,7 @@ public record Namespace(String value) {
     }
 
     public static boolean isReserved(String value) {
-        if (value == null) {
+        if (Option.option(value).isEmpty()) {
             return false;
         }
 

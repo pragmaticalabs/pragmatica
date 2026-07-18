@@ -353,6 +353,9 @@ public final class NodeLifecycleRoutes implements RouteSource {
                               .flatMap(plan -> applyPromotion(nodeIdStr, plan));
     }
 
+    // RET-06: `request` is the deserialized request body (null when absent); the null check IS the
+    // parse-don't-validate entry validation.
+    @SuppressWarnings("JBCT-RET-06")
     private static Result<String> validatePromote(PromoteNodeRequest request) {
         if (request == null || request.targetRole() == null || request.targetRole().isBlank()) {
             return PromoteError.MISSING_TARGET_ROLE.result();

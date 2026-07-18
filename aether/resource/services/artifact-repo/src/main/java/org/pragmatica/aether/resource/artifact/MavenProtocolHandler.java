@@ -241,7 +241,7 @@ class MavenProtocolHandlerImpl implements MavenProtocolHandler {
     }
 
     private static String escapeJson(String s) {
-        if (s == null) {
+        if (Option.option(s).isEmpty()) {
             return "";
         }
 
@@ -398,7 +398,7 @@ class MavenProtocolHandlerImpl implements MavenProtocolHandler {
     }
 
     private static String escapeXml(String s) {
-        if (s == null) return "";
+        if (Option.option(s).isEmpty()) return "";
 
         return s.replace("&", "&amp;")
                 .replace("<", "&lt;")

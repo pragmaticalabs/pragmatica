@@ -32,6 +32,7 @@ public record ClusterIdentity(String name, String version) {
         return validateName(newName).map(_ -> new ClusterIdentity(newName, version));
     }
 
+    @SuppressWarnings("JBCT-RET-06")  // parse-don't-validate raw-input validator: the null guard rejects unset cluster names at the factory boundary
     private static Result<Unit> validateName(String candidate) {
         if (candidate == null || candidate.isBlank()) {
             return new InvalidName("Cluster name must not be blank").result();

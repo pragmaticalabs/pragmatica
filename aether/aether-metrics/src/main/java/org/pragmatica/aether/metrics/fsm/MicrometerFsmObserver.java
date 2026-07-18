@@ -87,6 +87,7 @@ public final class MicrometerFsmObserver<S, E> implements FsmObserver<S, E> {
                .increment();
     }
 
+    @SuppressWarnings("JBCT-RET-06")  // observability label over an arbitrary observed Object; null renders as the literal "null" tag
     private static String label(Object value) {
         return value == null
                ? "null"

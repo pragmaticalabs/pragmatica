@@ -105,7 +105,8 @@ sealed interface BootstrapPhaseProvision {
         return state.withSource(sourceName, handle);
     }
 
-    @SuppressWarnings("JBCT-PAT-01")
+    // RET-06: `rawToml` is raw operator TOML content; the null/empty coalesce is parse-boundary handling.
+    @SuppressWarnings({"JBCT-PAT-01", "JBCT-RET-06"})
     static Map<String, String> extractEnvVarNames(String rawToml, String sourceName) {
         if (rawToml == null || rawToml.isEmpty()) {
             return Map.of();

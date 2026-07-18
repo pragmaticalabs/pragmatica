@@ -10,6 +10,7 @@ import java.util.Set;
 
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Verify;
 
 import static org.pragmatica.lang.Result.success;
 
@@ -155,7 +156,7 @@ public record AppHttpConfig(boolean enabled,
     }
 
     private static String normalizeHeaderName(String headerName) {
-        return headerName == null || headerName.isBlank()
+        return ! Verify.Is.present(headerName)
                ? DEFAULT_API_VERSION_HEADER
                : headerName.trim();
     }

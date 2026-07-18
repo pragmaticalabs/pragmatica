@@ -3809,9 +3809,8 @@ public interface AetherNode extends ManageableNode {
 
     private static void attachQuicPeerStateListener(ClusterNetwork network, CoreSwimHealthDetector swimDetector) {
         LOG.debug("attachQuicPeerStateListener: network class={}",
-                  network == null
-                  ? "null"
-                  : network.getClass().getName());
+                  Option.option(network).map(n -> n.getClass()
+                                                   .getName()).or("null"));
         if (! (network instanceof QuicClusterNetwork quicNetwork)) {
             LOG.warn("attachQuicPeerStateListener: network is NOT QuicClusterNetwork — skipping listener attachment");
 
@@ -5177,6 +5176,8 @@ public interface AetherNode extends ManageableNode {
         return list;
     }
 
+    // RET-06: `raw` is a nullable detail-map value; the null coalesce to a default is parse-boundary handling.
+    @SuppressWarnings("JBCT-RET-06")
     private static long parseLongDetail(String raw, long defaultValue) {
         if (raw == null) {
             return defaultValue;

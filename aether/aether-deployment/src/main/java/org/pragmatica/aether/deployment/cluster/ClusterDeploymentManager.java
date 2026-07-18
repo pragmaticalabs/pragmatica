@@ -60,6 +60,7 @@ import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.Verify;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.messaging.Message;
 import org.pragmatica.messaging.MessageReceiver;
@@ -141,7 +142,7 @@ public interface ClusterDeploymentManager {
         BEST_EFFORT,
         ALL_OR_NOTHING;
         public static DeploymentAtomicity parse(String value) {
-            if (value == null || value.isBlank()) {
+            if (!Verify.Is.present(value)) {
                 return ALL_OR_NOTHING;
             }
 

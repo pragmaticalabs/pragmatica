@@ -16,6 +16,7 @@ import org.pragmatica.aether.environment.EnvironmentIntegrationFactory;
 import org.pragmatica.cloud.hetzner.HetznerConfig;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Verify;
 
 import static org.pragmatica.aether.environment.hetzner.HetznerEnvironmentConfig.HetznerLbConfig.hetznerLbConfig;
 import static org.pragmatica.aether.environment.hetzner.HetznerEnvironmentConfig.hetznerEnvironmentConfig;
@@ -56,7 +57,7 @@ public record HetznerEnvironmentIntegrationFactory() implements EnvironmentInteg
     }
 
     private static boolean blank(String value) {
-        return value == null || value.isBlank();
+        return ! Verify.Is.present(value);
     }
 
     private static Result<HetznerEnvironmentConfig> buildFromValidated(Map<String, String> creds, CloudConfig config) {
@@ -134,8 +135,8 @@ public record HetznerEnvironmentIntegrationFactory() implements EnvironmentInteg
     }
 
     private static String nonBlank(String value, String fallback) {
-        return value == null || value.isBlank()
-               ? fallback
-               : value;
+        return Verify.Is.present(value)
+               ? value
+               : fallback;
     }
 }
