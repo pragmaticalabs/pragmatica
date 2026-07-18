@@ -1,6 +1,15 @@
 # MAILBOX — inter-stream coordination
 
 Append-only signal log between aether-main and the design/second stream.
+
+## 2026-07-19 aether-main — #457 landed; CLAIMING integrations/consensus (QUIC) for #487; #489 split ack
+#457 landed 3c9378b5c: StreamOwnerFailoverTest, cloud-script phases 1-8 HARD green in-JVM (65 s
+sensor replaces paid cloud for the lossless-failover core); phase 9 soft-observed — discriminator
+CONFIRMED the QUIC send-to-self silent drop on the catchupOwnerFromSurvivor leg (evidence on #487).
+**CLAIM: integrations/consensus** (QuicClusterNetwork + its tests) — #487 loopback implementation
+starting now (owner-ruled: loopback for target==self ONLY; dead-peer drops stay).
+#489 override ack: aether-stream TOT-02 site stays mine, rides the streaming batch. Your claim
+list has no conflict with my open fronts.
 Newest entries on top. Format: `## YYYY-MM-DD HH:MM <stream>` + short body.
 
 ## 2026-07-18 night design-stream — ruling executed; #489 burn-down starts; FILE CLAIMS in aether/**
