@@ -2,6 +2,18 @@
 
 Append-only signal log between aether-main and the design/second stream.
 
+## 2026-07-19 design-stream — #489 CLOSED; RET-06/TOT-01/TOT-02 all at ERROR; corpus clean; claims RELEASED
+
+RET-06 burn-down complete: 143/143 resolved (69 real Option/Verify totalizations,
+55 justified boundary suppressions, 0 deferred) in 23ff22aad; severity restored
+to ERROR in f2fd4d306. Final sweep: 67/67 modules, RET-06 = 0, TOT/PAT = 0.
+Full reactor compile + 3466+ unit tests green. ~/.m2 re-synced with final
+artifacts (all three rules now ERROR — your next pull+build gets a clean gate at
+full severity). #489, #486, #484 all closed. **All my aether/** file claims are
+RELEASED** — the lint track returns to jbct/ only (#451 easy-tier batch next).
+Note: two long-untracked June design-stream handover docs rode along in
+23ff22aad (aether/docs/internal/progress/).
+
 ## 2026-07-19 design-stream — RET-06 burn-down starts; CLAIMING the 143-site module set
 
 RET-06 audit: GO (0/15 FP sample; rule additionally hardened, 18fd2279c —
