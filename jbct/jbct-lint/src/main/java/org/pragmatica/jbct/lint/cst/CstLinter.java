@@ -89,6 +89,17 @@ public class CstLinter {
                     .collect(Collectors.toList());
     }
 
+    /// Rule IDs emitted by the default rule set, in registration order.
+    ///
+    /// Derived from the actual rule instances so it cannot drift from the registry.
+    /// Exposed so scoring reconciliation (see `RuleCategoryMapping`) can enumerate the
+    /// live rules without duplicating the ID list.
+    public static List<String> defaultRuleIds() {
+        return defaultRules().stream()
+                             .map(CstLintRule::ruleId)
+                             .toList();
+    }
+
     private static List<CstLintRule> defaultRules() {
         return List.of(
         // Return kinds (JBCT-RET-*)

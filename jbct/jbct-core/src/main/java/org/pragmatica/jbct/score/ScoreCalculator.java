@@ -7,6 +7,9 @@ import java.util.Map;
 import org.pragmatica.jbct.lint.Diagnostic;
 import org.pragmatica.jbct.lint.DiagnosticSeverity;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 
 /// Calculates JBCT compliance scores using density + severity weighting.
 ///
@@ -21,12 +24,15 @@ import org.pragmatica.jbct.lint.DiagnosticSeverity;
 public sealed interface ScoreCalculator permits ScoreCalculator.unused {
     record unused() implements ScoreCalculator {}
 
+    Logger log = LoggerFactory.getLogger(ScoreCalculator.class);
+
     double ERROR_MULTIPLIER = 2.5;
     double WARNING_MULTIPLIER = 1.0;
     double INFO_MULTIPLIER = 0.3;
 
     /// Calculate JBCT score from lint diagnostics.
     static ScoreResult calculate(List<Diagnostic> diagnostics, int filesAnalyzed) {
+        warnUnknownRules(diagnostics);
         var categoryViolations = groupByCategory(diagnostics);
         var categoryCheckpoints = countCheckpoints(diagnostics);
         var breakdown = new EnumMap<ScoreCategory, ScoreResult.CategoryScore>(ScoreCategory.class);
@@ -50,9 +56,48 @@ public sealed interface ScoreCalculator permits ScoreCalculator.unused {
         return ScoreResult.scoreResult(overall, breakdown, filesAnalyzed);
     }
 
-    private static Map<ScoreCategory, List<Diagnostic>> groupByCategory(List<Diagnostic> diagnostics) {
+    /// Warn once per distinct unknown rule ID. Unknown diagnostics are excluded from
+    /// scoring rather than silently bucketed into a default category.
+    private static void warnUnknownRules(List<Diagnostic> diagnostics) {
+        unknownRuleIds(diagnostics).forEach(ScoreCalculator::warnUnknownRule);
+    }
+
+    /// Distinct rule IDs in the diagnostics that are unknown to [RuleCategoryMapping]
+    /// (neither categorized nor intentionally uncategorized). Exposed so the warn-once
+    /// behaviour is observable: [#warnUnknownRules] logs exactly one warning per entry.
+    static List<String> unknownRuleIds(List<Diagnostic> diagnostics) {
         return diagnostics.stream()
-                          .collect(java.util.stream.Collectors.groupingBy(d -> RuleCategoryMapping.categoryFor(d.ruleId())));
+                          .map(Diagnostic::ruleId)
+                          .filter(ruleId -> !RuleCategoryMapping.isKnown(ruleId))
+                          .distinct()
+                          .toList();
+    }
+
+    private static void warnUnknownRule(String ruleId) {
+        log.warn("Lint rule '{}' has no score-category mapping and is excluded from the JBCT score; "
+                 + "add it to RuleCategoryMapping (categorized or intentionally uncategorized).", ruleId);
+    }
+
+    private static Map<ScoreCategory, List<Diagnostic>> groupByCategory(List<Diagnostic> diagnostics) {
+        var grouped = new EnumMap<ScoreCategory, List<Diagnostic>>(ScoreCategory.class);
+
+        for (var category : ScoreCategory.values()) {
+            grouped.put(category, violationsIn(category, diagnostics));
+        }
+
+        return grouped;
+    }
+
+    private static List<Diagnostic> violationsIn(ScoreCategory category, List<Diagnostic> diagnostics) {
+        return diagnostics.stream()
+                          .filter(diagnostic -> isInCategory(diagnostic, category))
+                          .toList();
+    }
+
+    private static boolean isInCategory(Diagnostic diagnostic, ScoreCategory category) {
+        return RuleCategoryMapping.categoryFor(diagnostic.ruleId())
+                                  .map(category::equals)
+                                  .or(false);
     }
 
     private static Map<ScoreCategory, Integer> countCheckpoints(List<Diagnostic> diagnostics) {
@@ -61,9 +106,7 @@ public sealed interface ScoreCalculator permits ScoreCalculator.unused {
         var checkpointMap = new EnumMap<ScoreCategory, Integer>(ScoreCategory.class);
 
         for (var category : ScoreCategory.values()) {
-            var violations = diagnostics.stream()
-                                        .filter(d -> RuleCategoryMapping.categoryFor(d.ruleId()) == category)
-                                        .count();
+            var violations = violationsIn(category, diagnostics).size();
             // Estimate: at least violations + 10% (so perfect score is possible)
             checkpointMap.put(category, (int)(violations * 1.1 + 10));
         }

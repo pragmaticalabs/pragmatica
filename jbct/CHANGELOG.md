@@ -7,6 +7,7 @@
 - CLI: `jbct add-slice <name>` command — scaffolds a new slice into an existing project with all required files (interface, test, routes.toml, config, dependency manifest) in a dedicated sub-package, enforcing the one-slice-per-package convention
 
 ### Fixed
+- Score: `RuleCategoryMapping` rebucketed to the live 41-rule registry (30 rules across the 6 score categories, 11 intentionally uncategorized style/log/zone rules) — previously keyed to retired rule IDs, so every diagnostic fell into the Pattern Purity default and the weighted score was meaningless. Unknown rule IDs now warn once per run and are excluded from the score; a registry↔mapping bijection test prevents silent rot (#449)
 - Slice processor: plain interface factory methods with @ResourceQualifier parameters now generate correct resource provisioning and argument passing instead of zero-arg calls
 
 ## [0.6.1] - 2026-02-12
