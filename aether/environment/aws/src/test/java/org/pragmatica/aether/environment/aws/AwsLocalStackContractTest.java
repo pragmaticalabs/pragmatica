@@ -31,6 +31,7 @@ import org.pragmatica.aether.environment.ProvisionRequest;
 import org.pragmatica.aether.environment.RouteChange;
 import org.pragmatica.cloud.aws.AwsClient;
 import org.pragmatica.cloud.aws.AwsConfig;
+import org.pragmatica.cloud.aws.AwsError;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
@@ -58,9 +59,12 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 ///  - Compute: the EC2 mock echoes instance-type / image / tags via DescribeInstances but does NOT
 ///    surface UserData there, and returns instances `running` immediately (no real boot). We assert
 ///    the request fields it echoes and the provider's InstanceInfo mapping — not boot semantics.
-///  - LoadBalancer: the real ELBv2 API is the AWS Query protocol (form + XML); the [AwsClient]
-///    encodes register/deregister/describe as JSON + `X-Amz-Target`. This test is precisely the
-///    sensor for that mismatch — see the first-run note in the parent report.
+///  - LoadBalancer: ELBv2 (ALB/NLB target groups) is a LocalStack **Pro** service — the Community
+///    image returns a Query-protocol error for every elbv2 call, so the register → describe →
+///    deregister happy path is NOT runnable here (it is covered by the [AwsClient] unit tests and a
+///    deferred live/Pro smoke, §4.3). What Community CAN assert is the #483 production-critical
+///    property: the client speaks the Query protocol and every ELBv2 response path resolves
+///    PROMPTLY with a typed [AwsError] — never an unresolved 90 s hang.
 ///  - Secrets: SecretsManager is a JSON protocol; LocalStack Community supports create/get with
 ///    full fidelity for the round-trip asserted here.
 ///  - Discovery: EC2 tag-filter DescribeInstances is faithful; port defaults to 9100 (no
@@ -82,20 +86,9 @@ class AwsLocalStackContractTest {
     private static String securityGroupId;
     private static String contractAmi;
 
-    /// TEMPORARY opt-in gate (2026-07-18): the suite's first CI activation caught real AwsClient
-    /// defects — EC2/ELBv2 requests apparently encoded with the JSON protocol against Query/XML
-    /// services (only the genuinely-JSON SecretsManager surface passes), plus a hang-on-error
-    /// (promise never resolves, 90 s timeout per test) instead of a fast typed failure. Until the
-    /// client protocol + hang fixes land in integrations/cloud/aws, the suite runs only with
-    /// AETHER_LOCALSTACK_TESTS=true so the PR gate stays causal. Flip back to docker-only gating
-    /// when green (the "add to CI" ruling wants this suite blocking, permanently).
-    private static boolean suiteEnabled() {
-        return Boolean.parseBoolean(System.getenv().getOrDefault("AETHER_LOCALSTACK_TESTS", "false")) && dockerAvailable();
-    }
-
     @BeforeAll
     static void startLocalStack() {
-        if (!suiteEnabled()) {
+        if (!dockerAvailable()) {
             return;
         }
         localstack = new LocalStackContainer(LOCALSTACK_IMAGE).withEnv("SERVICES", "ec2,elbv2,secretsmanager");
@@ -106,8 +99,8 @@ class AwsLocalStackContractTest {
 
     @BeforeEach
     void requireDocker() {
-        assumeTrue(suiteEnabled(),
-                   "AWS LocalStack contract suite is opt-in (AETHER_LOCALSTACK_TESTS=true + Docker) until the AwsClient protocol/hang fixes land");
+        assumeTrue(dockerAvailable(),
+                   "AWS LocalStack contract suite requires a Docker daemon (skipped cleanly when absent)");
     }
 
     @AfterAll
@@ -181,26 +174,31 @@ class AwsLocalStackContractTest {
 
     @Nested
     class LoadBalancerContract {
+        /// A syntactically valid target-group ARN — ELBv2 being Pro-only, LocalStack Community
+        /// rejects the call regardless of whether the group exists, so no setup is needed.
+        private static final String DUMMY_TG_ARN =
+            "arn:aws:elasticloadbalancing:" + REGION + ":000000000000:targetgroup/aether-contract/0000000000000000";
+
+        /// ELBv2 is Pro-only in Community (see the class caveat): the happy-path round-trip cannot
+        /// run. This asserts the #483 property that DOES hold on Community — register / describe /
+        /// deregister each resolve promptly with a typed [AwsError] (the Query-protocol XML error
+        /// parsed), never leaving the promise unresolved for 90 s.
         @Test
         @Timeout(120)
-        void register_describeTargetHealth_deregister_roundTrip() {
-            var targetGroupArn = awslocalText("elbv2", "create-target-group",
-                                              "--name", "aether-contract-tg",
-                                              "--protocol", "HTTP", "--port", "8080",
-                                              "--vpc-id", vpcId, "--target-type", "instance",
-                                              "--query", "TargetGroups[0].TargetGroupArn", "--output", "text");
-            var lb = AwsLoadBalancerProvider.awsLoadBalancerProvider(client, targetGroupArn).unwrap();
-            var instanceId = provisionCore("lb-cluster").id().value();
+        void elbv2Operations_boundedAndTyped_neverHang() {
+            var lb = AwsLoadBalancerProvider.awsLoadBalancerProvider(client, DUMMY_TG_ARN).unwrap();
 
-            awaitSuccess(lb.onRouteChanged(new RouteChange("GET", "/", Set.of(instanceId))));
-            var afterRegister = awaitSuccess(lb.loadBalancerInfo());
-            assertThat(afterRegister.targets()).anyMatch(target -> instanceId.equals(target.ip()));
+            assertBoundedTypedFailure(lb.onRouteChanged(new RouteChange("GET", "/", Set.of("i-contract"))));
+            assertBoundedTypedFailure(lb.loadBalancerInfo());
+            assertBoundedTypedFailure(lb.onNodeRemoved("i-contract"));
+        }
 
-            awaitSuccess(lb.onNodeRemoved(instanceId));
-            var afterDeregister = awaitSuccess(lb.loadBalancerInfo());
-            assertThat(afterDeregister.targets()).noneMatch(target -> instanceId.equals(target.ip()));
-
-            terminateQuietly(instanceId);
+        private void assertBoundedTypedFailure(Promise<?> promise) {
+            promise.await(TEST_AWAIT)
+                   .onSuccess(value -> assertThat(value).as("ELBv2 is Pro-only in Community; expected a typed AwsError, not success")
+                                                        .isNull())
+                   .onFailure(cause -> assertThat(cause).as("ELBv2 path must fail fast and typed, never hang: %s", cause.message())
+                                                        .isInstanceOf(AwsError.class));
         }
     }
 

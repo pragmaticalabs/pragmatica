@@ -40,6 +40,7 @@ final class TestAwsClient implements AwsClient {
     Map<String, String> lastTags;
     String lastDescribeTagKey;
     String lastDescribeTagValue;
+    String lastDescribeByIdValue;
     String lastRegisterTargetGroupArn;
     List<String> lastRegisteredIds;
     String lastDeregisterTargetGroupArn;
@@ -69,6 +70,12 @@ final class TestAwsClient implements AwsClient {
     public Promise<DescribeInstancesResponse> describeInstances(String tagKey, String tagValue) {
         lastDescribeTagKey = tagKey;
         lastDescribeTagValue = tagValue;
+        return describeResponse;
+    }
+
+    @Override
+    public Promise<DescribeInstancesResponse> describeInstancesById(String instanceId) {
+        lastDescribeByIdValue = instanceId;
         return describeResponse;
     }
 

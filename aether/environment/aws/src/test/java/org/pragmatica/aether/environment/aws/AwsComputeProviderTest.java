@@ -54,7 +54,7 @@ class AwsComputeProviderTest {
         void provision_success_returnsInstanceInfo() {
             testClient.runInstancesResponse = Promise.success(
                 TestAwsClient.runResponseWith(runningInstance("i-abc123")));
-            // confirmRunning polls describeInstances("instance-id", ...) for infra readiness.
+            // confirmRunning polls describeInstancesById(...) for infra readiness.
             testClient.describeResponse = Promise.success(
                 TestAwsClient.describeResponseWith(List.of(runningInstance("i-abc123"))));
 

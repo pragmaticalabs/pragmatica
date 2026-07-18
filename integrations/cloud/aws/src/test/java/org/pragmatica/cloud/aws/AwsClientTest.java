@@ -80,6 +80,19 @@ class AwsClientTest {
         }
 
         @Test
+        void describeInstancesById_success_parsesXmlResponse() {
+            testHttp.respondWith(200, DESCRIBE_INSTANCES_RESPONSE);
+
+            client.describeInstancesById("i-12345")
+                  .await()
+                  .onFailure(cause -> assertThat(cause).isNull())
+                  .onSuccess(AwsClientTest::assertDescribeInstancesResponse);
+
+            assertThat(capturedRequest.get().method()).isEqualTo("POST");
+            assertThat(capturedRequest.get().uri().toString()).isEqualTo("https://ec2.us-east-1.amazonaws.com");
+        }
+
+        @Test
         void terminateInstances_success_returnsUnit() {
             testHttp.respondWith(200, TERMINATE_INSTANCES_RESPONSE);
 
@@ -116,8 +129,8 @@ class AwsClientTest {
     class Elbv2Operations {
 
         @Test
-        void registerTargets_success_returnsUnit() {
-            testHttp.respondWith(200, "{}");
+        void registerTargets_success_speaksQueryProtocol() {
+            testHttp.respondWith(200, REGISTER_TARGETS_RESPONSE);
 
             client.registerTargets("arn:aws:elasticloadbalancing:us-east-1:123456:targetgroup/tg/abc",
                                    List.of("i-12345"))
@@ -126,12 +139,12 @@ class AwsClientTest {
                   .onSuccess(unit -> assertThat(unit).isNotNull());
 
             assertThat(capturedRequest.get().method()).isEqualTo("POST");
-            assertXAmzTargetHeader("ElasticLoadBalancingv2.RegisterTargets");
+            assertQueryProtocol();
         }
 
         @Test
-        void deregisterTargets_success_returnsUnit() {
-            testHttp.respondWith(200, "{}");
+        void deregisterTargets_success_speaksQueryProtocol() {
+            testHttp.respondWith(200, DEREGISTER_TARGETS_RESPONSE);
 
             client.deregisterTargets("arn:aws:elasticloadbalancing:us-east-1:123456:targetgroup/tg/abc",
                                      List.of("i-12345"))
@@ -139,11 +152,11 @@ class AwsClientTest {
                   .onFailure(cause -> assertThat(cause).isNull())
                   .onSuccess(unit -> assertThat(unit).isNotNull());
 
-            assertXAmzTargetHeader("ElasticLoadBalancingv2.DeregisterTargets");
+            assertQueryProtocol();
         }
 
         @Test
-        void describeTargetHealth_success_parsesResponse() {
+        void describeTargetHealth_success_parsesXmlResponse() {
             testHttp.respondWith(200, DESCRIBE_TARGET_HEALTH_RESPONSE);
 
             client.describeTargetHealth("arn:aws:elasticloadbalancing:us-east-1:123456:targetgroup/tg/abc")
@@ -151,7 +164,7 @@ class AwsClientTest {
                   .onFailure(cause -> assertThat(cause).isNull())
                   .onSuccess(AwsClientTest::assertTargetHealthList);
 
-            assertXAmzTargetHeader("ElasticLoadBalancingv2.DescribeTargetHealth");
+            assertQueryProtocol();
         }
     }
 
@@ -223,9 +236,11 @@ class AwsClientTest {
         assertThat(apiError.code()).isEqualTo("ResourceNotFoundException");
     }
 
-    private void assertXAmzTargetHeader(String expectedTarget) {
-        var targetHeader = capturedRequest.get().headers().firstValue("X-Amz-Target");
-        assertThat(targetHeader).isPresent().hasValue(expectedTarget);
+    private void assertQueryProtocol() {
+        var headers = capturedRequest.get().headers();
+
+        assertThat(headers.firstValue("X-Amz-Target")).isEmpty();
+        assertThat(headers.firstValue("Content-Type")).hasValue("application/x-www-form-urlencoded");
     }
 
     /// Test HTTP operations that captures requests and returns canned responses.
@@ -304,20 +319,42 @@ class AwsClientTest {
         """;
 
     private static final String DESCRIBE_TARGET_HEALTH_RESPONSE = """
-        {
-            "TargetHealthDescriptions": [
-                {
-                    "Target": {
-                        "Id": "i-12345",
-                        "Port": 8080
-                    },
-                    "TargetHealth": {
-                        "State": "healthy",
-                        "Description": "Target is healthy"
-                    }
-                }
-            ]
-        }
+        <?xml version="1.0" encoding="UTF-8"?>
+        <DescribeTargetHealthResponse xmlns="http://elasticloadbalancing.amazonaws.com/doc/2015-12-01/">
+            <DescribeTargetHealthResult>
+                <TargetHealthDescriptions>
+                    <member>
+                        <Target>
+                            <Id>i-12345</Id>
+                            <Port>8080</Port>
+                        </Target>
+                        <TargetHealth>
+                            <State>healthy</State>
+                            <Description>Target is healthy</Description>
+                        </TargetHealth>
+                    </member>
+                </TargetHealthDescriptions>
+            </DescribeTargetHealthResult>
+            <ResponseMetadata>
+                <RequestId>req-health-1</RequestId>
+            </ResponseMetadata>
+        </DescribeTargetHealthResponse>
+        """;
+
+    private static final String REGISTER_TARGETS_RESPONSE = """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <RegisterTargetsResponse xmlns="http://elasticloadbalancing.amazonaws.com/doc/2015-12-01/">
+            <RegisterTargetsResult/>
+            <ResponseMetadata><RequestId>req-reg-1</RequestId></ResponseMetadata>
+        </RegisterTargetsResponse>
+        """;
+
+    private static final String DEREGISTER_TARGETS_RESPONSE = """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <DeregisterTargetsResponse xmlns="http://elasticloadbalancing.amazonaws.com/doc/2015-12-01/">
+            <DeregisterTargetsResult/>
+            <ResponseMetadata><RequestId>req-dereg-1</RequestId></ResponseMetadata>
+        </DeregisterTargetsResponse>
         """;
 
     private static final String GET_SECRET_VALUE_RESPONSE = """

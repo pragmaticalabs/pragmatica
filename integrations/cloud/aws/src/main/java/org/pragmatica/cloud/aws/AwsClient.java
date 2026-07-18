@@ -20,6 +20,7 @@ import java.net.URI;
 import java.net.http.HttpRequest;
 import java.net.http.HttpRequest.BodyPublishers;
 import java.nio.charset.StandardCharsets;
+import java.time.Duration;
 import java.util.List;
 import java.util.Map;
 import java.util.stream.IntStream;
@@ -39,7 +40,11 @@ import org.pragmatica.xml.XmlMapper;
 
 
 /// AWS Cloud API client with Promise-based async operations.
-/// Uses SigV4 signing, XML for EC2, JSON for ELBv2/SecretsManager.
+///
+/// Wire protocol per service family: EC2 and ELBv2 are AWS **Query** services (form-encoded
+/// `Action`/`Version` requests, XML responses); Secrets Manager is a **JSON** service
+/// (`application/x-amz-json-1.1` + `X-Amz-Target`). All requests are SigV4-signed and bounded by
+/// a per-request timeout so no operation can leave its [Promise] unresolved.
 public interface AwsClient {
     // --- EC2 operations ---
     /// Launches new EC2 instances.
@@ -48,8 +53,10 @@ public interface AwsClient {
     Promise<Unit> terminateInstances(List<String> instanceIds);
     /// Describes all EC2 instances.
     Promise<DescribeInstancesResponse> describeInstances();
-    /// Describes EC2 instances matching a tag filter.
+    /// Describes EC2 instances matching a tag filter (`tag:{key}` = value).
     Promise<DescribeInstancesResponse> describeInstances(String tagKey, String tagValue);
+    /// Describes a single EC2 instance by its native instance id (`InstanceId.1`).
+    Promise<DescribeInstancesResponse> describeInstancesById(String instanceId);
     /// Reboots EC2 instances by ID.
     Promise<Unit> rebootInstances(List<String> instanceIds);
     /// Creates tags on EC2 resources.
@@ -79,73 +86,76 @@ public interface AwsClient {
 /// Implementation of AwsClient using HttpOperations, JsonMapper, and XmlMapper.
 record AwsClientRecord(AwsConfig config, HttpOperations http, JsonMapper jsonMapper, XmlMapper xmlMapper) implements AwsClient {
     private static final String EC2_API_VERSION = "2016-11-15";
+    private static final String ELB_API_VERSION = "2015-12-01";
     private static final String EC2_SERVICE = "ec2";
     private static final String ELB_SERVICE = "elasticloadbalancing";
     private static final String SECRETS_SERVICE = "secretsmanager";
     private static final String FORM_CONTENT_TYPE = "application/x-www-form-urlencoded";
     private static final String JSON_CONTENT_TYPE = "application/x-amz-json-1.1";
+    /// Bounds every request so a stalled/unanswered service can never leave a Promise unresolved.
+    private static final Duration REQUEST_TIMEOUT = Duration.ofSeconds(30);
 
     @Override
     public Promise<RunInstancesResponse> runInstances(RunInstancesRequest request) {
-        var formBody = buildRunInstancesForm(request);
-
-        return postEc2(formBody, RunInstancesResponse.class);
+        return postQuery(EC2_SERVICE, config.ec2Url(), buildRunInstancesForm(request), RunInstancesResponse.class);
     }
 
     @Override
     public Promise<Unit> terminateInstances(List<String> instanceIds) {
-        var formBody = buildInstanceIdsForm("TerminateInstances", instanceIds);
-
-        return postEc2Discarding(formBody);
+        return postQueryDiscarding(EC2_SERVICE, config.ec2Url(), buildInstanceIdsForm("TerminateInstances", instanceIds));
     }
 
     @Override
     public Promise<DescribeInstancesResponse> describeInstances() {
-        var formBody = "Action=DescribeInstances&Version=" + EC2_API_VERSION;
-
-        return postEc2(formBody, DescribeInstancesResponse.class);
+        return postQuery(EC2_SERVICE,
+                         config.ec2Url(),
+                         "Action=DescribeInstances&Version=" + EC2_API_VERSION,
+                         DescribeInstancesResponse.class);
     }
 
     @Override
     public Promise<DescribeInstancesResponse> describeInstances(String tagKey, String tagValue) {
-        var formBody = "Action=DescribeInstances&Version=" + EC2_API_VERSION
-                     + "&Filter.1.Name=tag:" + AwsSigV4Signer.urlEncode(tagKey)
-                     + "&Filter.1.Value.1=" + AwsSigV4Signer.urlEncode(tagValue);
+        return postQuery(EC2_SERVICE, config.ec2Url(), buildTagFilterForm(tagKey, tagValue), DescribeInstancesResponse.class);
+    }
 
-        return postEc2(formBody, DescribeInstancesResponse.class);
+    @Override
+    public Promise<DescribeInstancesResponse> describeInstancesById(String instanceId) {
+        var formBody = "Action=DescribeInstances&Version=" + EC2_API_VERSION
+                     + "&InstanceId.1=" + AwsSigV4Signer.urlEncode(instanceId);
+
+        return postQuery(EC2_SERVICE, config.ec2Url(), formBody, DescribeInstancesResponse.class);
     }
 
     @Override
     public Promise<Unit> rebootInstances(List<String> instanceIds) {
-        var formBody = buildInstanceIdsForm("RebootInstances", instanceIds);
-
-        return postEc2Discarding(formBody);
+        return postQueryDiscarding(EC2_SERVICE, config.ec2Url(), buildInstanceIdsForm("RebootInstances", instanceIds));
     }
 
     @Override
     public Promise<Unit> createTags(List<String> resourceIds, Map<String, String> tags) {
-        var formBody = buildCreateTagsForm(resourceIds, tags);
-
-        return postEc2Discarding(formBody);
+        return postQueryDiscarding(EC2_SERVICE, config.ec2Url(), buildCreateTagsForm(resourceIds, tags));
     }
 
     @Override
     public Promise<Unit> registerTargets(String targetGroupArn, List<String> instanceIds) {
-        return postElbv2Action("ElasticLoadBalancingv2.RegisterTargets",
-                               buildTargetGroupJson(targetGroupArn, instanceIds));
+        return postQueryDiscarding(ELB_SERVICE,
+                                   config.elbv2Url(),
+                                   buildTargetsForm("RegisterTargets", targetGroupArn, instanceIds));
     }
 
     @Override
     public Promise<Unit> deregisterTargets(String targetGroupArn, List<String> instanceIds) {
-        return postElbv2Action("ElasticLoadBalancingv2.DeregisterTargets",
-                               buildTargetGroupJson(targetGroupArn, instanceIds));
+        return postQueryDiscarding(ELB_SERVICE,
+                                   config.elbv2Url(),
+                                   buildTargetsForm("DeregisterTargets", targetGroupArn, instanceIds));
     }
 
     @Override
     public Promise<List<TargetHealth>> describeTargetHealth(String targetGroupArn) {
-        var jsonBody = "{\"TargetGroupArn\":\"" + targetGroupArn + "\"}";
-
-        return postElbv2("ElasticLoadBalancingv2.DescribeTargetHealth", jsonBody, DescribeTargetHealthResponse.class).map(DescribeTargetHealthResponse::toTargetHealthList);
+        return postQuery(ELB_SERVICE,
+                         config.elbv2Url(),
+                         buildDescribeTargetHealthForm(targetGroupArn),
+                         DescribeTargetHealthResponse.class).map(DescribeTargetHealthResponse::toTargetHealthList);
     }
 
     @Override
@@ -155,38 +165,32 @@ record AwsClientRecord(AwsConfig config, HttpOperations http, JsonMapper jsonMap
         return postSecretsManager(jsonBody).flatMap(this::extractSecretString);
     }
 
-    // --- EC2 helpers ---
-    private <T> Promise<T> postEc2(String formBody, Class<T> responseType) {
+    // --- Query-protocol (EC2 + ELBv2) helpers: form-encoded request, XML response ---
+    private <T> Promise<T> postQuery(String service, String url, String formBody, Class<T> responseType) {
+        return signAndSendQuery(service, url, formBody).flatMap(result -> parseXmlResponse(result, responseType));
+    }
+
+    private Promise<Unit> postQueryDiscarding(String service, String url, String formBody) {
+        return signAndSendQuery(service, url, formBody).flatMap(this::checkSuccess);
+    }
+
+    private Promise<HttpResult<String>> signAndSendQuery(String service, String url, String formBody) {
         var bodyBytes = formBody.getBytes(StandardCharsets.UTF_8);
 
         return AwsSigV4Signer.sign(config,
-                                   EC2_SERVICE,
+                                   service,
                                    "POST",
-                                   config.ec2Url(),
+                                   url,
                                    Map.of("content-type", FORM_CONTENT_TYPE),
                                    bodyBytes)
                              .async()
-                             .flatMap(signedHeaders -> sendEc2Request(formBody, signedHeaders))
-                             .flatMap(result -> parseXmlResponse(result, responseType));
+                             .flatMap(signedHeaders -> sendFormRequest(url, formBody, signedHeaders));
     }
 
-    private Promise<Unit> postEc2Discarding(String formBody) {
-        var bodyBytes = formBody.getBytes(StandardCharsets.UTF_8);
-
-        return AwsSigV4Signer.sign(config,
-                                   EC2_SERVICE,
-                                   "POST",
-                                   config.ec2Url(),
-                                   Map.of("content-type", FORM_CONTENT_TYPE),
-                                   bodyBytes)
-                             .async()
-                             .flatMap(signedHeaders -> sendEc2Request(formBody, signedHeaders))
-                             .flatMap(this::checkSuccess);
-    }
-
-    private Promise<HttpResult<String>> sendEc2Request(String formBody, Map<String, String> signedHeaders) {
+    private Promise<HttpResult<String>> sendFormRequest(String url, String formBody, Map<String, String> signedHeaders) {
         var builder = HttpRequest.newBuilder()
-                                 .uri(URI.create(config.ec2Url()))
+                                 .uri(URI.create(url))
+                                 .timeout(REQUEST_TIMEOUT)
                                  .POST(BodyPublishers.ofString(formBody))
                                  .header("Content-Type", FORM_CONTENT_TYPE);
 
@@ -195,52 +199,7 @@ record AwsClientRecord(AwsConfig config, HttpOperations http, JsonMapper jsonMap
         return http.sendString(builder.build());
     }
 
-    // --- ELBv2 helpers ---
-    private Promise<Unit> postElbv2Action(String target, String jsonBody) {
-        var bodyBytes = jsonBody.getBytes(StandardCharsets.UTF_8);
-        var headers = Map.of("content-type", JSON_CONTENT_TYPE, "x-amz-target", target);
-
-        return AwsSigV4Signer.sign(config,
-                                   ELB_SERVICE,
-                                   "POST",
-                                   config.elbv2Url(),
-                                   headers,
-                                   bodyBytes)
-                             .async()
-                             .flatMap(signedHeaders -> sendElbv2Request(target, jsonBody, signedHeaders))
-                             .flatMap(this::checkSuccess);
-    }
-
-    private <T> Promise<T> postElbv2(String target, String jsonBody, Class<T> responseType) {
-        var bodyBytes = jsonBody.getBytes(StandardCharsets.UTF_8);
-        var headers = Map.of("content-type", JSON_CONTENT_TYPE, "x-amz-target", target);
-
-        return AwsSigV4Signer.sign(config,
-                                   ELB_SERVICE,
-                                   "POST",
-                                   config.elbv2Url(),
-                                   headers,
-                                   bodyBytes)
-                             .async()
-                             .flatMap(signedHeaders -> sendElbv2Request(target, jsonBody, signedHeaders))
-                             .flatMap(result -> parseJsonResponse(result, responseType));
-    }
-
-    private Promise<HttpResult<String>> sendElbv2Request(String target,
-                                                         String jsonBody,
-                                                         Map<String, String> signedHeaders) {
-        var builder = HttpRequest.newBuilder()
-                                 .uri(URI.create(config.elbv2Url()))
-                                 .POST(BodyPublishers.ofString(jsonBody))
-                                 .header("Content-Type", JSON_CONTENT_TYPE)
-                                 .header("X-Amz-Target", target);
-
-        signedHeaders.forEach(builder::header);
-
-        return http.sendString(builder.build());
-    }
-
-    // --- Secrets Manager helpers ---
+    // --- Secrets Manager helpers (JSON protocol) ---
     private Promise<HttpResult<String>> postSecretsManager(String jsonBody) {
         var bodyBytes = jsonBody.getBytes(StandardCharsets.UTF_8);
         var target = "secretsmanager.GetSecretValue";
@@ -261,6 +220,7 @@ record AwsClientRecord(AwsConfig config, HttpOperations http, JsonMapper jsonMap
                                                            Map<String, String> signedHeaders) {
         var builder = HttpRequest.newBuilder()
                                  .uri(URI.create(config.secretsManagerUrl()))
+                                 .timeout(REQUEST_TIMEOUT)
                                  .POST(BodyPublishers.ofString(jsonBody))
                                  .header("Content-Type", JSON_CONTENT_TYPE)
                                  .header("X-Amz-Target", target);
@@ -293,18 +253,6 @@ record AwsClientRecord(AwsConfig config, HttpOperations http, JsonMapper jsonMap
                        .promise();
     }
 
-    private <T> Promise<T> parseJsonResponse(HttpResult<String> result, Class<T> responseType) {
-        if (result.isSuccess()) {
-            return jsonMapper.readString(result.body(),
-                                         responseType)
-                             .async();
-        }
-
-        return AwsError.fromResponse(result.statusCode(),
-                                     result.body())
-                       .promise();
-    }
-
     private Promise<Unit> checkSuccess(HttpResult<String> result) {
         if (result.isSuccess()) {
             return Promise.success(Unit.unit());
@@ -316,6 +264,12 @@ record AwsClientRecord(AwsConfig config, HttpOperations http, JsonMapper jsonMap
     }
 
     // --- Form body builders ---
+    private static String buildTagFilterForm(String tagKey, String tagValue) {
+        return "Action=DescribeInstances&Version=" + EC2_API_VERSION
+             + "&Filter.1.Name=tag:" + AwsSigV4Signer.urlEncode(tagKey)
+             + "&Filter.1.Value.1=" + AwsSigV4Signer.urlEncode(tagValue);
+    }
+
     private static String buildInstanceIdsForm(String action, List<String> instanceIds) {
         var sb = new StringBuilder("Action=").append(action).append("&Version=").append(EC2_API_VERSION);
 
@@ -391,9 +345,26 @@ record AwsClientRecord(AwsConfig config, HttpOperations http, JsonMapper jsonMap
         sb.append("&Tag.").append(index).append(".Value=").append(AwsSigV4Signer.urlEncode(entry.getValue()));
     }
 
-    private static String buildTargetGroupJson(String targetGroupArn, List<String> instanceIds) {
-        var targets = instanceIds.stream().map(id -> "{\"Id\":\"" + id + "\"}").toList();
+    // --- ELBv2 Query-protocol form builders ---
+    private static String buildTargetsForm(String action, String targetGroupArn, List<String> instanceIds) {
+        var sb = new StringBuilder("Action=").append(action)
+                                             .append("&Version=")
+                                             .append(ELB_API_VERSION)
+                                             .append("&TargetGroupArn=")
+                                             .append(AwsSigV4Signer.urlEncode(targetGroupArn));
 
-        return "{\"TargetGroupArn\":\"" + targetGroupArn + "\"," + "\"Targets\":[" + String.join(",", targets) + "]}";
+        IntStream.range(0,
+                        instanceIds.size())
+                 .forEach(i -> sb.append("&Targets.member.")
+                                 .append(i + 1)
+                                 .append(".Id=")
+                                 .append(AwsSigV4Signer.urlEncode(instanceIds.get(i))));
+
+        return sb.toString();
+    }
+
+    private static String buildDescribeTargetHealthForm(String targetGroupArn) {
+        return "Action=DescribeTargetHealth&Version=" + ELB_API_VERSION
+             + "&TargetGroupArn=" + AwsSigV4Signer.urlEncode(targetGroupArn);
     }
 }

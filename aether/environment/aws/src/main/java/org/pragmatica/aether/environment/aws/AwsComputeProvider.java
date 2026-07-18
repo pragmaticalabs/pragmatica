@@ -100,9 +100,8 @@ public record AwsComputeProvider(AwsClient client, AwsEnvironmentConfig config) 
 
     @Override
     public Promise<InstanceInfo> instanceStatus(InstanceId instanceId) {
-        return client.describeInstances("instance-id",
-                                        instanceId.value())
-                     .map(AwsComputeProvider::firstInstanceOrThrow)
+        return client.describeInstancesById(instanceId.value())
+                     .flatMap(response -> firstInstance(response, instanceId))
                      .mapError(AwsComputeProvider::toProvisionError);
     }
 
@@ -118,13 +117,24 @@ public record AwsComputeProvider(AwsClient client, AwsEnvironmentConfig config) 
     }
 
     private Promise<InstanceInfo> tagAndMapFirstInstance(RunInstancesResponse response, Map<String, String> tags) {
-        var instance = response.instances().getFirst();
+        return response.instances()
+                       .stream()
+                       .findFirst()
+                       .map(instance -> tagAndMap(instance, tags))
+                       .orElseGet(AwsComputeProvider::provisionReturnedNoInstances);
+    }
+
+    private Promise<InstanceInfo> tagAndMap(Instance instance, Map<String, String> tags) {
         var instanceId = instance.instanceId();
 
         return client.createTags(List.of(instanceId),
                                  tags)
                      .onFailure(cause -> rollbackPartialInstance(instanceId, cause))
                      .map(unit -> toInstanceInfo(instance));
+    }
+
+    private static Promise<InstanceInfo> provisionReturnedNoInstances() {
+        return EnvironmentError.provisionFailed(new RuntimeException("RunInstances returned no instances")).promise();
     }
 
     /// Rollback hook for partial provisions. `runInstances` succeeded (we have an
@@ -235,8 +245,13 @@ public record AwsComputeProvider(AwsClient client, AwsEnvironmentConfig config) 
                                 Option.option(tags.get(NODE_ID_TAG)));
     }
 
-    private static InstanceInfo firstInstanceOrThrow(DescribeInstancesResponse response) {
-        return toInstanceInfo(response.allInstances().getFirst());
+    private static Promise<InstanceInfo> firstInstance(DescribeInstancesResponse response, InstanceId instanceId) {
+        return response.allInstances()
+                       .stream()
+                       .findFirst()
+                       .map(AwsComputeProvider::toInstanceInfo)
+                       .map(Promise::success)
+                       .orElseGet(() -> EnvironmentError.instanceNotFound(instanceId).promise());
     }
 
     private static List<InstanceInfo> toInstanceInfoList(DescribeInstancesResponse response) {

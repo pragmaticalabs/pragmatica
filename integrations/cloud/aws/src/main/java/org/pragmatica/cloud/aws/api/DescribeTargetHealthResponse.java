@@ -19,31 +19,50 @@ package org.pragmatica.cloud.aws.api;
 import java.util.List;
 
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
-import com.fasterxml.jackson.annotation.JsonProperty;
+
+import tools.jackson.dataformat.xml.annotation.JacksonXmlElementWrapper;
+import tools.jackson.dataformat.xml.annotation.JacksonXmlProperty;
+import tools.jackson.dataformat.xml.annotation.JacksonXmlRootElement;
 
 
-/// ELBv2 DescribeTargetHealth JSON response.
+/// ELBv2 DescribeTargetHealth XML response (AWS Query protocol, API version 2015-12-01).
+@JacksonXmlRootElement(localName = "DescribeTargetHealthResponse")
 @JsonIgnoreProperties(ignoreUnknown = true)
-public record DescribeTargetHealthResponse(@JsonProperty("TargetHealthDescriptions") List<TargetHealthDescription> targetHealthDescriptions) {
+public record DescribeTargetHealthResponse(@JacksonXmlProperty(localName = "DescribeTargetHealthResult") DescribeTargetHealthResult result) {
+    /// Query-protocol result wrapper.
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public record DescribeTargetHealthResult(@JacksonXmlProperty(localName = "TargetHealthDescriptions") TargetHealthDescriptions targetHealthDescriptions) {}
+
+    /// Container for the repeated `member` target-health entries.
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public record TargetHealthDescriptions(@JacksonXmlElementWrapper(useWrapping = false) @JacksonXmlProperty(localName = "member") List<TargetHealthDescription> members) {}
+
     /// Target health description entry.
     @JsonIgnoreProperties(ignoreUnknown = true)
-    public record TargetHealthDescription(@JsonProperty("Target") Target target,
-                                          @JsonProperty("TargetHealth") TargetHealthState targetHealth) {}
+    public record TargetHealthDescription(@JacksonXmlProperty(localName = "Target") Target target,
+                                          @JacksonXmlProperty(localName = "TargetHealth") TargetHealthState targetHealth) {}
 
     /// Target identifier.
     @JsonIgnoreProperties(ignoreUnknown = true)
-    public record Target(@JsonProperty("Id") String id, @JsonProperty("Port") int port) {}
+    public record Target(@JacksonXmlProperty(localName = "Id") String id, @JacksonXmlProperty(localName = "Port") int port) {}
 
     /// Target health state.
     @JsonIgnoreProperties(ignoreUnknown = true)
-    public record TargetHealthState(@JsonProperty("State") String state,
-                                    @JsonProperty("Description") String description) {}
+    public record TargetHealthState(@JacksonXmlProperty(localName = "State") String state,
+                                    @JacksonXmlProperty(localName = "Description") String description) {}
 
-    /// Extracts flat list of TargetHealth records.
+    /// Extracts a flat list of TargetHealth records, tolerating an absent result or empty target set.
     public List<TargetHealth> toTargetHealthList() {
-        return targetHealthDescriptions.stream()
-                                       .map(DescribeTargetHealthResponse::toTargetHealth)
-                                       .toList();
+        if (result == null || result.targetHealthDescriptions() == null
+            || result.targetHealthDescriptions().members() == null) {
+            return List.of();
+        }
+
+        return result.targetHealthDescriptions()
+                     .members()
+                     .stream()
+                     .map(DescribeTargetHealthResponse::toTargetHealth)
+                     .toList();
     }
 
     private static TargetHealth toTargetHealth(TargetHealthDescription desc) {

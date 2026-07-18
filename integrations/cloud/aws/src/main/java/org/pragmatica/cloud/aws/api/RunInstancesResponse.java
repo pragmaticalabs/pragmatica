@@ -33,8 +33,10 @@ public record RunInstancesResponse(@JacksonXmlProperty(localName = "instancesSet
     @JsonIgnoreProperties(ignoreUnknown = true)
     public record InstancesSet(@JacksonXmlElementWrapper(useWrapping = false) @JacksonXmlProperty(localName = "item") List<Instance> items) {}
 
-    /// Returns the list of launched instances.
+    /// Returns the list of launched instances, tolerating an absent instance set.
     public List<Instance> instances() {
-        return instancesSet.items();
+        return instancesSet == null || instancesSet.items() == null
+               ? List.of()
+               : instancesSet.items();
     }
 }

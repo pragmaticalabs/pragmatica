@@ -42,13 +42,24 @@ public record DescribeInstancesResponse(@JacksonXmlProperty(localName = "reserva
     @JsonIgnoreProperties(ignoreUnknown = true)
     public record InstancesSet(@JacksonXmlElementWrapper(useWrapping = false) @JacksonXmlProperty(localName = "item") List<Instance> items) {}
 
-    /// Flattens all instances across all reservations.
+    /// Flattens all instances across all reservations, tolerating an empty reservation set
+    /// (`<reservationSet />` deserializes with a null item list — a filter that matches nothing).
     public List<Instance> allInstances() {
+        if (reservationSet == null || reservationSet.items() == null) {
+            return List.of();
+        }
+
         return reservationSet.items()
                              .stream()
-                             .flatMap(r -> r.instancesSet()
-                                            .items()
-                                            .stream())
+                             .flatMap(r -> reservationInstances(r).stream())
                              .toList();
+    }
+
+    private static List<Instance> reservationInstances(Reservation reservation) {
+        if (reservation.instancesSet() == null || reservation.instancesSet().items() == null) {
+            return List.of();
+        }
+
+        return reservation.instancesSet().items();
     }
 }

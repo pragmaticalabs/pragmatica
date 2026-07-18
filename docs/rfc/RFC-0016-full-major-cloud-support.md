@@ -480,17 +480,21 @@ credential dual-path).
 |---|---|---|
 | EC2 run/describe/terminate/tags | ✅ | — |
 | Security groups, subnets, key pairs | ✅ | — |
-| ELBv2 target group register/deregister/health | ✅ | — |
+| ELBv2 target group register/deregister/health | — (empirically 501s on Community — corrected 2026-07-18, #483) | ⚠️ Pro → happy-path round-trip deferred to Pro/live smoke; Community asserts the no-hang/typed-error property; protocol guarded by AwsClient unit tests |
 | Secrets Manager get/create | ✅ | — |
 | Route53 record upsert | ✅ | — |
 | EC2 **spot** requests | — | ⚠️ Pro → **excluded from contract suite**; unit + live smoke instead |
 | ACM certificate issuance | — | ⚠️ Pro (cert adapter is contract-mockable) |
 | IAM fine-grained policy eval | partial | ⚠️ Pro |
 
-The entire rc3 AWS provisioning surface (compute + LB + secrets + discovery via
-EC2 tags) is **Community-tier**. Only spot and full ACM issuance would need Pro;
-spot rides unit tests + a live smoke, ACM is contract-mockable. **No LocalStack
-Pro dependency for the rc3 AWS bar.**
+The rc3 AWS provisioning surface is **Community-tier except ELBv2** (corrected
+2026-07-18 after the suite's first live run, #483: Community 501s every elbv2
+call — the original ✅ was doc-sourced, not verified). Compute + secrets +
+discovery round-trip fully on Community; the ELBv2 happy path is unit-guarded
+and rides the Pro/live smoke, while Community asserts its bounded-typed-failure
+property. Spot rides unit tests + a live smoke, ACM is contract-mockable.
+**Still no LocalStack Pro dependency for the rc3 AWS bar** — the bar's ELBv2
+leg is honest about being thinner.
 
 #### 4.4 Tier-3 — GCP / Azure (code-complete + contract/smoke)
 
