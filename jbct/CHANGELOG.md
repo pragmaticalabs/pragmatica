@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 ### Added
+- Linter: fixture coverage for all 41 lint rules — positive (rule ID + line asserted) and negative fixture per rule through a shared parameterized harness (`RuleFixtures` catalog), plus registry invariant tests (every registered rule must have a severity entry, a fixture, and a score category) and suppression-path coverage (`@SuppressWarnings` single/list/"all", `@Contract`, `@TerminalOperation`, `@NullReturn`). New-rule PRs now fail without fixtures (#454)
 - Linter: `@Contract` annotation support — methods or classes annotated with `@Contract` are exempt from JBCT-RET-01 (void return type). Use `@Contract` instead of `@SuppressWarnings("JBCT-RET-01")` to declare that void is intentional for a method's contract (framework callbacks, fire-and-forget mutations, event handlers). Annotation lives in `org.pragmatica.lang.Contract`.
 - CLI: `jbct add-slice <name>` command — scaffolds a new slice into an existing project with all required files (interface, test, routes.toml, config, dependency manifest) in a dedicated sub-package, enforcing the one-slice-per-package convention
 
@@ -10,6 +11,8 @@
 - Linter: `JBCT-SLICE-01` config entry and the dead `slicePackages` / `LintContext` slice-pattern machinery behind it. The rule was declared at ERROR in the default config but had no rule implementation, scorer, or fixture referencing it, and the slice-processor does not check cross-slice import boundaries either — it only generates factories/manifests for `@Slice`-annotated interfaces. Cross-slice import-boundary enforcement is deferred to the layering-rules engine (#452, #450)
 
 ### Fixed
+- Linter: `JBCT-PAT-02` (fork-join inside sequencer lambda) never fired — `isInsideFlatMap` compared the lambda against its own argument-expression node, so no lambda was ever "inside" a flatMap; additionally the lone-transform exclusion swallowed chained fork-joins (`Result.all(...).flatMap(...)`, the rule's own documented example). Both fixed; known text-heuristic limits (string-literal false-trigger, duplicate-lambda blind spot) documented and deferred to the #448 classifier which absorbs this rule (#454)
+- Linter: live rule `JBCT-RET-06` (nullable parameter) had no severity entry in the default config; added at ERROR matching its null-safety sibling RET-03 (#454)
 - Score: `RuleCategoryMapping` rebucketed to the live 41-rule registry (30 rules across the 6 score categories, 11 intentionally uncategorized style/log/zone rules) — previously keyed to retired rule IDs, so every diagnostic fell into the Pattern Purity default and the weighted score was meaningless. Unknown rule IDs now warn once per run and are excluded from the score; a registry↔mapping bijection test prevents silent rot (#449)
 - Slice processor: plain interface factory methods with @ResourceQualifier parameters now generate correct resource provisioning and argument passing instead of zero-arg calls
 

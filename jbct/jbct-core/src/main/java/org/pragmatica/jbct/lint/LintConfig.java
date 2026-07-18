@@ -40,6 +40,9 @@ public record LintConfig(Map<String, DiagnosticSeverity> ruleSeverities,
     Map.entry("JBCT-RET-05", DiagnosticSeverity.WARNING),
 
     // Always-succeeding Result
+    // Nullable parameter — null-safety family, matches JBCT-RET-03 (ERROR)
+    Map.entry("JBCT-RET-06", DiagnosticSeverity.ERROR),
+
     // Value objects
     Map.entry("JBCT-VO-01", DiagnosticSeverity.WARNING),
 

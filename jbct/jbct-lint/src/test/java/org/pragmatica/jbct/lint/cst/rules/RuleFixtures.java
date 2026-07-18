@@ -1,0 +1,803 @@
+package org.pragmatica.jbct.lint.cst.rules;
+
+import java.util.List;
+
+/// Shared fixture catalog for the CST lint-rule coverage harness (#454).
+///
+/// One [RuleFixture] per rule registered in `CstLinter.defaultRules()`. Each entry pairs:
+///   - a POSITIVE snippet that must emit the rule's diagnostic on `positiveLine`, and
+///   - a NEGATIVE snippet of conforming code that must stay clean of that rule.
+///
+/// Adding a future rule's coverage is two snippets: append one [#fixture] entry. The
+/// harness ([RuleFixtureCoverageTest]) and the registry invariant ([RuleRegistryInvariantTest])
+/// consume this list directly, so the marginal cost of a new rule is exactly one row.
+///
+/// Triggering syntax and reported line for every entry are derived from the rule SOURCE
+/// (`org.pragmatica.jbct.lint.cst.rules.*`), not guessed. Line 1 of each snippet is the
+/// `package` declaration.
+final class RuleFixtures {
+    private RuleFixtures() {}
+
+    /// A per-rule fixture pair. `positiveLine` is the 1-based line the rule reports for
+    /// `positiveSource`. `toString` renders the rule ID so parameterized test names read cleanly.
+    record RuleFixture(String ruleId, int positiveLine, String positiveSource, String negativeSource) {
+        @Override
+        public String toString() {
+            return ruleId;
+        }
+    }
+
+    static List<RuleFixture> all() {
+        return FIXTURES;
+    }
+
+    private static RuleFixture fixture(String ruleId, int positiveLine, String positiveSource, String negativeSource) {
+        return new RuleFixture(ruleId, positiveLine, positiveSource, negativeSource);
+    }
+
+    private static final List<RuleFixture> FIXTURES = List.of(
+        // JBCT-RET-01: four return kinds — void (non-private) is forbidden.
+        fixture("JBCT-RET-01", 3,
+                """
+                package org.example;
+                class Foo {
+                    public void run() {}
+                }
+                """,
+                """
+                package org.example;
+                class Foo {
+                    public String run() { return ""; }
+                }
+                """),
+
+        // JBCT-RET-02: no nested wrappers — Promise<Result<T>> forbidden, Result<Option<T>> allowed.
+        fixture("JBCT-RET-02", 3,
+                """
+                package org.example;
+                class Foo {
+                    Promise<Result<String>> run() { return null; }
+                }
+                """,
+                """
+                package org.example;
+                class Foo {
+                    Result<Option<String>> run() { return null; }
+                }
+                """),
+
+        // JBCT-RET-03: never return null.
+        fixture("JBCT-RET-03", 4,
+                """
+                package org.example;
+                class Foo {
+                    String run() {
+                        return null;
+                    }
+                }
+                """,
+                """
+                package org.example;
+                class Foo {
+                    String run() {
+                        return "value";
+                    }
+                }
+                """),
+
+        // JBCT-RET-04: use Unit, not boxed Void.
+        fixture("JBCT-RET-04", 3,
+                """
+                package org.example;
+                class Foo {
+                    Result<Void> run() { return null; }
+                }
+                """,
+                """
+                package org.example;
+                class Foo {
+                    Result<Unit> run() { return null; }
+                }
+                """),
+
+        // JBCT-RET-05: no always-succeeding Result (only Result.success, never a failure).
+        fixture("JBCT-RET-05", 3,
+                """
+                package org.example;
+                class Foo {
+                    Result<String> run(String s) {
+                        return Result.success(s);
+                    }
+                }
+                """,
+                """
+                package org.example;
+                class Foo {
+                    Result<String> run(String s) {
+                        return s.isEmpty() ? cause.result() : Result.success(s);
+                    }
+                }
+                """),
+
+        // JBCT-RET-06: no nullable parameters (parameter null-checked in the body).
+        fixture("JBCT-RET-06", 3,
+                """
+                package org.example;
+                class Foo {
+                    String run(Config other) {
+                        if (other == null) {
+                            return "";
+                        }
+                        return other.toString();
+                    }
+                }
+                """,
+                """
+                package org.example;
+                class Foo {
+                    String run(Config other) {
+                        return other.toString();
+                    }
+                }
+                """),
+
+        // JBCT-VO-01: value-object records need a factory method.
+        fixture("JBCT-VO-01", 2,
+                """
+                package org.example;
+                public record Email(String value) {}
+                """,
+                """
+                package org.example;
+                public record Email(String value) {
+                    public static Result<Email> email(String value) {
+                        return Result.success(new Email(value));
+                    }
+                }
+                """),
+
+        // JBCT-VO-02: direct `new ValueObject(...)` outside a factory bypasses validation.
+        fixture("JBCT-VO-02", 4,
+                """
+                package org.example;
+                class Service {
+                    Email build(String raw) {
+                        return new Email(raw);
+                    }
+                }
+                record Email(String value) {
+                    static Result<Email> email(String v) { return Result.success(new Email(v)); }
+                }
+                """,
+                """
+                package org.example;
+                record Email(String value) {
+                    static Result<Email> email(String v) {
+                        return Result.success(new Email(v));
+                    }
+                }
+                """),
+
+        // JBCT-EX-01: no business exceptions (throw statement forbidden).
+        fixture("JBCT-EX-01", 4,
+                """
+                package org.example;
+                class Foo {
+                    void run() {
+                        throw new RuntimeException("x");
+                    }
+                }
+                """,
+                """
+                package org.example;
+                class Foo {
+                    Result<String> run() {
+                        return cause.result();
+                    }
+                }
+                """),
+
+        // JBCT-EX-02: no orElseThrow().
+        fixture("JBCT-EX-02", 4,
+                """
+                package org.example;
+                class Foo {
+                    String run(Option<String> opt) {
+                        return opt.orElseThrow();
+                    }
+                }
+                """,
+                """
+                package org.example;
+                class Foo {
+                    String run(Option<String> opt) {
+                        return opt.or("default");
+                    }
+                }
+                """),
+
+        // JBCT-NAM-01: factory method must be named after the type (Email.email).
+        fixture("JBCT-NAM-01", 3,
+                """
+                package org.example;
+                record Email(String value) {
+                    static Result<Email> create(String v) {
+                        return Result.success(new Email(v));
+                    }
+                }
+                """,
+                """
+                package org.example;
+                record Email(String value) {
+                    static Result<Email> email(String v) {
+                        return Result.success(new Email(v));
+                    }
+                }
+                """),
+
+        // JBCT-NAM-02: use the Valid prefix, not Validated.
+        fixture("JBCT-NAM-02", 2,
+                """
+                package org.example;
+                record ValidatedRequest(String value) {}
+                """,
+                """
+                package org.example;
+                record ValidRequest(String value) {}
+                """),
+
+        // JBCT-LAM-01: no complex logic (multi-statement block) in a lambda.
+        fixture("JBCT-LAM-01", 4,
+                """
+                package org.example;
+                class Foo {
+                    Object run() {
+                        return items.map(x -> { log(x); return x; });
+                    }
+                }
+                """,
+                """
+                package org.example;
+                class Foo {
+                    Object run() {
+                        return items.map(String::trim);
+                    }
+                }
+                """),
+
+        // JBCT-LAM-02: no block body in a lambda.
+        fixture("JBCT-LAM-02", 4,
+                """
+                package org.example;
+                class Foo {
+                    Object run() {
+                        return items.map(x -> { return x.trim(); });
+                    }
+                }
+                """,
+                """
+                package org.example;
+                class Foo {
+                    Object run() {
+                        return items.map(String::trim);
+                    }
+                }
+                """),
+
+        // JBCT-LAM-03: no ternary inside a lambda.
+        fixture("JBCT-LAM-03", 4,
+                """
+                package org.example;
+                class Foo {
+                    Object run() {
+                        return items.map(x -> x > 0 ? a : b);
+                    }
+                }
+                """,
+                """
+                package org.example;
+                class Foo {
+                    Object run() {
+                        return items.map(String::trim);
+                    }
+                }
+                """),
+
+        // JBCT-UC-01: use-case factory returns a nested record impl instead of a lambda.
+        fixture("JBCT-UC-01", 4,
+                """
+                package org.example;
+                interface UseCase {
+                    String apply(String r);
+                    static UseCase useCase() {
+                        record impl(int x) implements UseCase {
+                            public String apply(String r) { return r; }
+                        }
+                        return new impl(0);
+                    }
+                }
+                """,
+                """
+                package org.example;
+                interface UseCase {
+                    String apply(String r);
+                    static UseCase useCase() {
+                        return r -> r;
+                    }
+                }
+                """),
+
+        // JBCT-PAT-01: raw for/while/do loop instead of functional iteration.
+        fixture("JBCT-PAT-01", 4,
+                """
+                package org.example;
+                class Foo {
+                    void run() {
+                        for (int i = 0; i < 10; i++) {
+                            process(i);
+                        }
+                    }
+                }
+                """,
+                """
+                package org.example;
+                class Foo {
+                    Object run() {
+                        return items.stream().map(String::trim).toList();
+                    }
+                }
+                """),
+
+        // JBCT-SEQ-01: method chain longer than five steps.
+        fixture("JBCT-SEQ-01", 4,
+                """
+                package org.example;
+                class Foo {
+                    Object run() {
+                        return v.a().b().c().d().e().f().g();
+                    }
+                }
+                """,
+                """
+                package org.example;
+                class Foo {
+                    Object run() {
+                        return v.a().b().c();
+                    }
+                }
+                """),
+
+        // JBCT-STY-01: prefer cause.result() over Result.failure(cause).
+        fixture("JBCT-STY-01", 4,
+                """
+                package org.example;
+                class Foo {
+                    Result<String> run() {
+                        return Result.failure(cause);
+                    }
+                }
+                """,
+                """
+                package org.example;
+                class Foo {
+                    Result<String> run() {
+                        return cause.result();
+                    }
+                }
+                """),
+
+        // JBCT-STY-02: prefer a constructor reference over v -> new X(v).
+        fixture("JBCT-STY-02", 4,
+                """
+                package org.example;
+                class Foo {
+                    Object run() {
+                        return items.map(v -> new Email(v));
+                    }
+                }
+                """,
+                """
+                package org.example;
+                class Foo {
+                    Object run() {
+                        return items.map(Email::new);
+                    }
+                }
+                """),
+
+        // JBCT-STY-03: no fully qualified class names in method bodies.
+        fixture("JBCT-STY-03", 3,
+                """
+                package org.example;
+                class Foo {
+                    Object run() {
+                        return java.util.List.of();
+                    }
+                }
+                """,
+                """
+                package org.example;
+                class Foo {
+                    Object run() {
+                        return List.of();
+                    }
+                }
+                """),
+
+        // JBCT-STY-04: final class + private ctor + only static methods → sealed interface.
+        fixture("JBCT-STY-04", 2,
+                """
+                package org.example;
+                public final class Utils {
+                    private Utils() {}
+                    public static String process(String x) { return x; }
+                }
+                """,
+                """
+                package org.example;
+                public sealed interface Utils {
+                    static String process(String x) { return x; }
+                    record unused() implements Utils {}
+                }
+                """),
+
+        // JBCT-STY-05: reducible lambda should be a method reference.
+        fixture("JBCT-STY-05", 4,
+                """
+                package org.example;
+                class Foo {
+                    Object run() {
+                        return items.map(v -> new Email(v));
+                    }
+                }
+                """,
+                """
+                package org.example;
+                class Foo {
+                    Object run() {
+                        return items.map(Email::new);
+                    }
+                }
+                """),
+
+        // JBCT-STY-06: import ordering — org.pragmatica before java is out of order.
+        fixture("JBCT-STY-06", 3,
+                """
+                package com.example.usecase.test;
+                import org.pragmatica.lang.Result;
+                import java.util.List;
+                public class Test {
+                    public Result<String> process(List<String> input) {
+                        return Result.success(input.toString());
+                    }
+                }
+                """,
+                """
+                package com.example.usecase.test;
+                import java.util.List;
+                import org.pragmatica.lang.Result;
+                public class Test {
+                    public Result<String> process(List<String> input) {
+                        return Result.success(input.toString());
+                    }
+                }
+                """),
+
+        // JBCT-STY-07: unnecessary intermediate variable before return.
+        fixture("JBCT-STY-07", 4,
+                """
+                package org.example;
+                class Foo {
+                    String run() {
+                        var result = computeValue();
+                        return result;
+                    }
+                }
+                """,
+                """
+                package org.example;
+                class Foo {
+                    String run() {
+                        return computeValue();
+                    }
+                }
+                """),
+
+        // JBCT-STY-08: if/else with a single return in both branches.
+        fixture("JBCT-STY-08", 4,
+                """
+                package org.example;
+                class Foo {
+                    String run(int x) {
+                        if (x > 0) {
+                            return "a";
+                        } else {
+                            return "b";
+                        }
+                    }
+                }
+                """,
+                """
+                package org.example;
+                class Foo {
+                    String run(int x) {
+                        if (x > 0) {
+                            return "a";
+                        }
+                        return "b";
+                    }
+                }
+                """),
+
+        // JBCT-LOG-01: no conditional logging guarded by isXEnabled().
+        fixture("JBCT-LOG-01", 4,
+                """
+                package org.example;
+                class Foo {
+                    void run() {
+                        if (log.isDebugEnabled()) { log.debug("x"); }
+                    }
+                }
+                """,
+                """
+                package org.example;
+                class Foo {
+                    void run() {
+                        log.debug("x");
+                    }
+                }
+                """),
+
+        // JBCT-LOG-02: no Logger passed as a method parameter.
+        fixture("JBCT-LOG-02", 3,
+                """
+                package org.example;
+                class Foo {
+                    void run(Logger log) {
+                        log.info("x");
+                    }
+                }
+                """,
+                """
+                package org.example;
+                class Foo {
+                    void run(String msg) {
+                        log.info(msg);
+                    }
+                }
+                """),
+
+        // JBCT-MIX-01: no I/O import in a domain package.
+        fixture("JBCT-MIX-01", 2,
+                """
+                package com.example.domain.user;
+                import java.io.File;
+                public class UserData {
+                    File file;
+                }
+                """,
+                """
+                package com.example.domain.user;
+                import org.pragmatica.lang.Result;
+                public class UserData {
+                    Result<String> name() { return name; }
+                }
+                """),
+
+        // JBCT-STATIC-01: prefer static import for Pragmatica factory calls.
+        fixture("JBCT-STATIC-01", 3,
+                """
+                package org.example;
+                class Foo {
+                    Result<String> run() {
+                        return Result.success("x");
+                    }
+                }
+                """,
+                """
+                package org.example;
+                import static org.pragmatica.lang.Result.success;
+                class Foo {
+                    Result<String> run() {
+                        return success("x");
+                    }
+                }
+                """),
+
+        // JBCT-UTIL-01: use Pragmatica parsing utilities, not JDK parseInt.
+        fixture("JBCT-UTIL-01", 3,
+                """
+                package org.example;
+                class Foo {
+                    int run(String s) {
+                        return Integer.parseInt(s);
+                    }
+                }
+                """,
+                """
+                package org.example;
+                class Foo {
+                    Result<Integer> run(String s) {
+                        return Number.parseInt(s);
+                    }
+                }
+                """),
+
+        // JBCT-UTIL-02: use Verify.Is predicates instead of manual checks.
+        fixture("JBCT-UTIL-02", 4,
+                """
+                package org.example;
+                class Foo {
+                    void run(int x) {
+                        if (x > 0) {
+                            process();
+                        }
+                    }
+                }
+                """,
+                """
+                package org.example;
+                class Foo {
+                    Result<Integer> run(int x) {
+                        return Verify.ensure(x, Verify.Is::positive);
+                    }
+                }
+                """),
+
+        // JBCT-NEST-01: no nested monadic operations inside a lambda.
+        fixture("JBCT-NEST-01", 4,
+                """
+                package org.example;
+                class Foo {
+                    Object run() {
+                        return outer.flatMap(x -> inner(x).map(String::trim));
+                    }
+                }
+                """,
+                """
+                package org.example;
+                class Foo {
+                    Object run() {
+                        return outer.flatMap(this::inner);
+                    }
+                }
+                """),
+
+        // JBCT-ZONE-01: step interface uses a Zone 3 (implementation) verb.
+        fixture("JBCT-ZONE-01", 2,
+                """
+                package org.example;
+                interface FetchUser {
+                    Result<String> apply(String id);
+                }
+                """,
+                """
+                package org.example;
+                interface LoadUser {
+                    Result<String> apply(String id);
+                }
+                """),
+
+        // JBCT-ZONE-02: private leaf function uses a Zone 2 (orchestration) verb.
+        fixture("JBCT-ZONE-02", 3,
+                """
+                package org.example;
+                class Foo {
+                    private String validateInput(String x) {
+                        return x.trim();
+                    }
+                }
+                """,
+                """
+                package org.example;
+                class Foo {
+                    private String parseInput(String x) {
+                        return x.trim();
+                    }
+                }
+                """),
+
+        // JBCT-ZONE-03: Zone 3 verb called directly inside a map/flatMap chain.
+        fixture("JBCT-ZONE-03", 3,
+                """
+                package org.example;
+                class Foo {
+                    Object run() {
+                        return value.flatMap(Parser::parseData);
+                    }
+                }
+                """,
+                """
+                package org.example;
+                class Foo {
+                    Object run() {
+                        return value.flatMap(Processor::process);
+                    }
+                }
+                """),
+
+        // JBCT-ACR-01: all-caps acronym in a type name.
+        fixture("JBCT-ACR-01", 2,
+                """
+                package org.example;
+                class HTTPClient {
+                }
+                """,
+                """
+                package org.example;
+                class HttpClient {
+                }
+                """),
+
+        // JBCT-SEAL-01: error interface extends Cause but is not sealed.
+        fixture("JBCT-SEAL-01", 2,
+                """
+                package org.example;
+                interface LoginError extends Cause {
+                    record Failed() implements LoginError {}
+                }
+                """,
+                """
+                package org.example;
+                sealed interface LoginError extends Cause {
+                    record Failed() implements LoginError {}
+                }
+                """),
+
+        // JBCT-PAT-02: Fork-Join (Result.all) nested inside a Sequencer (flatMap) lambda.
+        fixture("JBCT-PAT-02", 4,
+                """
+                package org.example;
+                class Foo {
+                    Object run() {
+                        return validate(req).flatMap(email -> save(Result.all(a, b)));
+                    }
+                }
+                """,
+                """
+                package org.example;
+                class Foo {
+                    Object run() {
+                        return validate(req).flatMap(this::save);
+                    }
+                }
+                """),
+
+        // JBCT-PAT-03: blocking .await() outside a @TerminalOperation method.
+        fixture("JBCT-PAT-03", 4,
+                """
+                package org.example;
+                class Foo {
+                    void run() {
+                        fetchData().await();
+                    }
+                }
+                """,
+                """
+                package org.example;
+                class Foo {
+                    void run() {
+                        fetchData().map(String::trim);
+                    }
+                }
+                """),
+
+        // JBCT-RET-07: discarded Result/Promise/Option value.
+        fixture("JBCT-RET-07", 4,
+                """
+                package org.example;
+                class Foo {
+                    void run() {
+                        Result.success(value);
+                    }
+                }
+                """,
+                """
+                package org.example;
+                class Foo {
+                    Object run() {
+                        return Result.success(value);
+                    }
+                }
+                """));
+}

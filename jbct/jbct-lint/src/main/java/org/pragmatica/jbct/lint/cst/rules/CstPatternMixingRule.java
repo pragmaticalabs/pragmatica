@@ -1,5 +1,6 @@
 package org.pragmatica.jbct.lint.cst.rules;
 
+import java.util.List;
 import java.util.Set;
 import java.util.stream.Stream;
 
@@ -7,7 +8,6 @@ import org.pragmatica.jbct.lint.Diagnostic;
 import org.pragmatica.jbct.lint.LintContext;
 import org.pragmatica.jbct.lint.cst.CstLintRule;
 import org.pragmatica.jbct.parser.Cursor;
-import org.pragmatica.jbct.parser.RuleKind;
 
 import static org.pragmatica.jbct.parser.CstNodes.*;
 
@@ -41,23 +41,34 @@ public class CstPatternMixingRule implements CstLintRule {
     }
 
     private boolean isInsideFlatMap(Cursor lambda, Cursor root) {
-        // Check if this lambda is an argument to flatMap
-        // We look at the text before the lambda to see if it contains .flatMap(
+        // This lambda is a Sequencer step if some enclosing expression places a `.flatMap(` /
+        // `.andThen(` immediately before it. The nearest EXPR ancestor is the lambda's own
+        // argument-expression (its text IS the lambda), so we scan outward until an ancestor's
+        // text reveals the enclosing call.
         var lambdaText = text(lambda);
-        // Find the expression containing this lambda
-        return findAncestor(root, lambda, RuleKind.EXPR).map(expr -> text(expr))
-                           .filter(exprText -> {
-                                       var lambdaStart = exprText.indexOf(lambdaText);
 
-                                       if (lambdaStart > 0) {
-                                       var before = exprText.substring(0, lambdaStart);
+        return findAncestorPath(root, lambda).map(path -> precededBySequencerCall(path, lambdaText))
+                           .or(false);
+    }
 
-                                       return before.contains(".flatMap(") || before.contains(".andThen(");
-                                   }
+    private boolean precededBySequencerCall(List<Cursor> path, String lambdaText) {
+        for (int i = path.size() - 2; i >= 0; i--) {
+            var nodeText = text(path.get(i));
+            var lambdaStart = nodeText.indexOf(lambdaText);
 
-                                       return false;
-                                   })
-                           .isPresent();
+            if (lambdaStart <= 0) {
+                continue;
+            }
+
+            var before = nodeText.substring(0, lambdaStart)
+                                 .stripTrailing();
+
+            if (before.endsWith(".flatMap(") || before.endsWith(".andThen(")) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private boolean containsForkJoinWithLogic(Cursor lambda) {
@@ -79,15 +90,40 @@ public class CstPatternMixingRule implements CstLintRule {
             return false;
         }
 
-        var body = lambdaText.substring(arrowIdx + 2).trim();
-        // Single fork-join call with just the parameter
-        return FORK_JOIN_CALLS.stream().anyMatch(call -> {
-            var callName = call.substring(0, call.length() - 1);
-            // Remove trailing (
-            return body.startsWith(callName)
-                   && body.endsWith(")")
-                   && !body.contains(";");
-        });
+        var body = lambdaText.substring(arrowIdx + 2)
+                             .trim();
+        // A lone fork-join call (`param -> Result.allOf(param)`) is a transformation step, not
+        // pattern mixing. A fork-join that heads a further chain (`Result.all(...).flatMap(...)`)
+        // IS mixing and must fall through to be flagged.
+        return FORK_JOIN_CALLS.stream()
+                              .anyMatch(call -> bodyIsLoneCall(body, call));
+    }
+
+    /// True when `body` is exactly one call to `call` (which includes its trailing `(`) with
+    /// nothing chained after the matching `)`. Balanced-paren scan so argument-internal calls and
+    /// close-parens don't false-trigger.
+    private boolean bodyIsLoneCall(String body, String call) {
+        if (!body.startsWith(call) || body.contains(";")) {
+            return false;
+        }
+
+        var depth = 0;
+
+        for (var i = call.length() - 1; i < body.length(); i++) {
+            var c = body.charAt(i);
+
+            if (c == '(') {
+                depth++;
+            } else if (c == ')') {
+                depth--;
+
+                if (depth == 0) {
+                    return i == body.length() - 1;
+                }
+            }
+        }
+
+        return false;
     }
 
     private Diagnostic createDiagnostic(Cursor node, LintContext ctx) {
