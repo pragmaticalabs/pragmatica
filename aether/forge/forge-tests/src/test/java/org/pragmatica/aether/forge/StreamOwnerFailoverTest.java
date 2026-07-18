@@ -82,8 +82,8 @@ class StreamOwnerFailoverTest {
     private static final Duration FAILOVER_TIMEOUT = Duration.ofSeconds(180);
     private static final Duration DRAIN_TIMEOUT = Duration.ofSeconds(90);
     private static final Duration CONVERGE_TIMEOUT = Duration.ofSeconds(120);
-    /// Phase 9 is a bounded SOFT observation (see the phase-9 comment), so it waits only briefly for
-    /// convergence that Forge cannot currently reach, rather than the full hard-assert budget.
+    /// Phase 9 is a bounded SOFT observation (blocked on #491 — see the phase-9 comment), so it waits
+    /// only briefly for convergence Forge cannot reach, rather than the full hard-assert budget.
     private static final Duration CONVERGE_OBSERVE = Duration.ofSeconds(20);
     private static final long POLL_GAP_NANOS = Duration.ofMillis(20).toNanos();
 
@@ -175,19 +175,20 @@ class StreamOwnerFailoverTest {
             .hasSize(N_EVENTS + K_EVENTS);
         assertInOrder(fullTail);
 
-        // Phase 9 — RF restoration: a bounded SOFT observation, NOT a hard assertion. In single-JVM
-        // Forge the post-failover re-replication cannot converge: the promoted owner's
-        // catch-up-from-survivor leg is a SEND-TO-SELF that QuicClusterNetwork.dispatchPayload silently
-        // drops (the #467/#487 loopback gap — CONFIRMED via QuicClusterNetwork DEBUG: the
-        // stream-partition-backfill thread logs "No peer state for <live survivor> — dropping message"),
-        // so the replacement replica never reaches CAUGHT_UP. Observe + LOG the final replica-set state
-        // without failing. The phase-9 machinery (convergedWithRfRestored / ownerIsCaughtUp /
-        // hasCaughtUpNonOwner) is RETAINED: #487 (loopback-first) hardens this back to a HARD assert and
-        // this test is its acceptance gate. Tracked: #487.
+        // Phase 9 — RF restoration: a bounded SOFT observation, NOT a hard assertion. It cannot converge
+        // in single-JVM Forge until #491 is resolved: post-failover the promoted owner's
+        // catch-up-from-survivor send is DROPPED because the survivor is absent from its QUIC peers map
+        // (a missing/lost peer connection), so the replacement replica never reaches CAUGHT_UP. #487
+        // send-to-self loopback eliminated the SELF-SEND subset of these drops — and the rate-limited
+        // "No peer state — dropping" WARN it added is exactly what exposed #491 (previously invisible at
+        // debug); the earlier discriminator over-attributed this stall to the self-send. Observe + LOG the
+        // final replica-set state without failing. The phase-9 machinery (convergedWithRfRestored /
+        // ownerIsCaughtUp / hasCaughtUpNonOwner) is RETAINED: #491 hardens this back to a HARD assert and
+        // this test is its acceptance gate. Tracked: #491.
         var converged = awaitConvergenceSoft(CONVERGE_OBSERVE);
 
         ownerView().onPresent(view -> LOG.log(System.Logger.Level.INFO,
-                                              "#457 RF-restoration soft-observation (#487 loopback fix pending): "
+                                              "#457 RF-restoration soft-observation (#491 missing-peer-connection pending): "
                                               + "converged={0} ownerCaughtUp={1} caughtUpNonOwner={2} finalView={3}",
                                               converged,
                                               ownerIsCaughtUp(view),
@@ -196,7 +197,7 @@ class StreamOwnerFailoverTest {
     }
 
     /// Bounded, non-throwing convergence wait for the phase-9 soft observation (RF restoration cannot
-    /// converge in single-JVM Forge — see the phase-9 comment). Returns whether it converged.
+    /// converge in single-JVM Forge until #491 — see the phase-9 comment). Returns whether it converged.
     private boolean awaitConvergenceSoft(Duration budget) {
         var deadlineNanos = deadline(budget);
 
