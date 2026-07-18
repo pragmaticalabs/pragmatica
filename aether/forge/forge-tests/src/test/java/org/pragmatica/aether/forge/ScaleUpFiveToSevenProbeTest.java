@@ -111,6 +111,14 @@ class ScaleUpFiveToSevenProbeTest {
 
         await().atMost(FORM_TIMEOUT).pollInterval(POLL).until(() -> cluster.currentLeader().isPresent());
         await().atMost(FORM_TIMEOUT).pollInterval(POLL).until(() -> countedCores() == INITIAL_CORES);
+        // Membership forms BEFORE the bootstrap-seed ClusterConfigKey.CURRENT is committed to KV. On a
+        // fast host the probe otherwise races ahead and POSTs /api/cluster/scale before any config is
+        // stored — the endpoint then 500s "No cluster configuration stored" (and a sentinel
+        // expectedVersion=0 would be rejected as an unfenced overwrite, #289). Gate on the seed config
+        // being durable (configVersion >= 1) so the scale carries the real fencing version.
+        await().atMost(FORM_TIMEOUT)
+               .pollInterval(POLL)
+               .until(() -> cluster.getLeaderManagementPort().map(port -> readConfigVersion(port) >= 1).or(false));
         log.info("SCALE-PROBE: {}-core cluster formed, leader={}, countedCores={}",
                  INITIAL_CORES, cluster.currentLeader().or("none"), countedCores());
     }
