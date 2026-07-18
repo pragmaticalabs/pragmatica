@@ -5,7 +5,6 @@ import java.util.stream.Stream;
 import org.pragmatica.jbct.lint.Diagnostic;
 import org.pragmatica.jbct.lint.LintContext;
 import org.pragmatica.jbct.lint.cst.CstLintRule;
-import org.pragmatica.jbct.parser.CstNodes;
 import org.pragmatica.jbct.parser.Cursor;
 import org.pragmatica.jbct.parser.RuleKind;
 
@@ -55,14 +54,27 @@ public class CstPartialOperationMapperRule implements CstLintRule {
         return MapperSafety.STREAM_SHARED.contains(callName) && MapperSafety.isStreamPipeline(enclosingChain(root, lambda));
     }
 
-    /// Text of the nearest enclosing statement, falling back to the enclosing member for a
-    /// field/static-initializer lambda that has no statement ancestor. Scoping the fallback to the
-    /// member (never the whole file) keeps a Stream marker in some *unrelated* member from
-    /// exempting this mapper. Empty string when neither ancestor exists (never exempt).
+    /// Lambda-free chain spine of the nearest enclosing statement, falling back to the enclosing
+    /// member for a field/static-initializer lambda that has no statement ancestor. Every lambda
+    /// body is blanked so a `.stream()` inside the mapper's own lambda does not exempt the carrier
+    /// — only Stream markers on the pipeline structure count. Scoping the fallback to the member
+    /// (never the whole file) keeps a marker in some *unrelated* member from exempting this mapper.
+    /// Empty string when neither ancestor exists (never exempt).
     private String enclosingChain(Cursor root, Cursor lambda) {
         return findAncestor(root, lambda, RuleKind.BLOCK_STMT).orElse(findAncestor(root, lambda, RuleKind.MEMBER))
-                             .map(CstNodes::text)
+                             .map(this::chainSpine)
                              .or("");
+    }
+
+    private String chainSpine(Cursor scope) {
+        var base = scope.spanStart();
+        var sb = new StringBuilder(text(scope));
+
+        for (var nested : findAllLambdas(scope)) {
+            blankRange(sb, nested.spanStart() - base, nested.spanEnd() - base);
+        }
+
+        return sb.toString();
     }
 
     /// Lambda text with every nested lambda's span blanked, so a partial op belonging to an inner

@@ -172,6 +172,54 @@ class CstPartialOperationMapperRuleTest {
     }
 
     @Test
+    void analyze_mapGetWithStringLiteral_isClean() {
+        assertFalse(hasRule("""
+                package org.example;
+                class Foo {
+                    Object run(Result<String> r) {
+                        return r.map(x -> lookup.get("key"));
+                    }
+                }
+                """));
+    }
+
+    @Test
+    void analyze_supplierGet_isClean() {
+        assertFalse(hasRule("""
+                package org.example;
+                class Foo {
+                    Object run(Result<String> r) {
+                        return r.map(x -> supplier.get());
+                    }
+                }
+                """));
+    }
+
+    @Test
+    void analyze_atomicReferenceGet_isClean() {
+        assertFalse(hasRule("""
+                package org.example;
+                class Foo {
+                    Object run(Result<String> r) {
+                        return r.map(x -> configRef.get());
+                    }
+                }
+                """));
+    }
+
+    @Test
+    void analyze_streamFindFirstGet_flags() {
+        assertTrue(hasRule("""
+                package org.example;
+                class Foo {
+                    Object run(Result<java.util.List<String>> r) {
+                        return r.map(xs -> xs.stream().findFirst().get());
+                    }
+                }
+                """));
+    }
+
+    @Test
     void analyze_suppressWarnings_suppressesRule() {
         assertFalse(hasRule("""
                 package org.example;

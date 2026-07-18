@@ -135,6 +135,79 @@ class CstMapperMethodReferenceRuleTest {
     }
 
     @Test
+    void analyze_crossTypeSameNameCollision_isClean() {
+        assertFalse(hasRule("""
+                package org.example;
+                class X {
+                    Object run(Result<Wire> r) {
+                        return r.map(X::isActive);
+                    }
+                    static boolean isActive(Wire w) {
+                        return w.name().length() > 0;
+                    }
+                }
+                class Y {
+                    static boolean isActive(Wire w) {
+                        return w.items().getFirst() != null;
+                    }
+                }
+                """));
+    }
+
+    @Test
+    void analyze_thisReferenceResolvingToSiblingType_isClean() {
+        assertFalse(hasRule("""
+                package org.example;
+                class X {
+                    Object run(Result<Wire> r) {
+                        return r.map(this::firstName);
+                    }
+                    String firstName(Wire w) {
+                        return w.name();
+                    }
+                }
+                class Y {
+                    String firstName(Wire w) {
+                        return w.items().getFirst();
+                    }
+                }
+                """));
+    }
+
+    @Test
+    void analyze_thisReferenceResolvingToEnclosingType_flags() {
+        assertTrue(hasRule("""
+                package org.example;
+                class X {
+                    Object run(Result<Wire> r) {
+                        return r.map(this::firstName);
+                    }
+                    String firstName(Wire w) {
+                        return w.items().getFirst();
+                    }
+                }
+                """));
+    }
+
+    @Test
+    void analyze_overloadedNameWithinType_isClean() {
+        assertFalse(hasRule("""
+                package org.example;
+                class X {
+                    Object run(Result<Wire> r) {
+                        return r.map(this::pick);
+                    }
+                    String pick(Wire w) {
+                        return w.items().getFirst();
+                    }
+                    String pick(Wire w, int i) {
+                        return w.name();
+                    }
+                }
+                """));
+    }
+
+    @Test
     void analyze_suppressWarnings_suppressesRule() {
         assertFalse(hasRule("""
                 package org.example;

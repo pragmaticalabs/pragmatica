@@ -49,34 +49,47 @@ sealed interface MapperSafety permits MapperSafety.unused {
                                         "DoubleStream.");
 
     /// Partial operations — each can throw on an empty / null / out-of-range container.
-    /// `throw` is the explicit form; the rest are the JDK / carrier partial accessors named in #486.
+    /// `throw` is the explicit form; `getFirst`/`getLast`/indexed `get(<int>)` are the container
+    /// partial accessors; `orElseThrow` and the Optional-evidence `.get()` shapes cover
+    /// `Optional`. A bare `.get()` is NOT listed — it over-matches total getters
+    /// (`Supplier.get`, `AtomicReference.get`); only receivers with Optional evidence
+    /// (`Optional.x(...).get()`, `.findFirst().get()`, `.findAny().get()`) flag. Known false
+    /// negative: an `Optional` held in a plain variable (`opt.get()`) escapes — acceptable; the
+    /// report / `@SuppressWarnings` remain the hatch.
     Pattern PARTIAL_OP = Pattern.compile("\\bthrow\\b"
                                          + "|\\.getFirst\\s*\\(\\s*\\)"
                                          + "|\\.getLast\\s*\\(\\s*\\)"
                                          + "|\\.get\\s*\\(\\s*\\d+\\s*\\)"
-                                         + "|\\.get\\s*\\(\\s*\\)"
+                                         + "|\\.findFirst\\s*\\(\\s*\\)\\s*\\.get\\s*\\(\\s*\\)"
+                                         + "|\\.findAny\\s*\\(\\s*\\)\\s*\\.get\\s*\\(\\s*\\)"
+                                         + "|\\bOptional\\s*\\.\\s*\\w+\\s*\\([^;{}]*\\)\\s*\\.get\\s*\\(\\s*\\)"
                                          + "|\\.orElseThrow\\s*\\("
                                          + "|\\.iterator\\s*\\(\\s*\\)\\s*\\.next\\s*\\(\\s*\\)");
 
-    /// Java single-line and text-block string literals — blanked before scanning so a partial-op
-    /// or stream marker never matches inside a literal.
+    /// Java single-line and text-block string literals — masked before op-scanning so a partial-op
+    /// pattern never matches inside a literal, and so a string argument (`get("key")`) is never
+    /// seen as empty / integer parens.
     Pattern STRING_LITERAL = Pattern.compile("\"\"\"(?:[^\"\\\\]|\\\\.|\"(?!\"\"))*\"\"\"|\"(?:[^\"\\\\\\n]|\\\\.)*\"");
 
     /// Line (`//`) and block (`/* */`) comments — blanked before scanning so a marker or guard
     /// mentioned only in a comment is never mistaken for code.
     Pattern COMMENT = Pattern.compile("//[^\\n]*|/\\*.*?\\*/", Pattern.DOTALL);
 
-    /// True when the given code fragment contains a partial operation (strings / comments ignored).
+    /// True when the given code fragment contains a partial operation.
+    ///
+    /// Op-scanning masks string literals with a NON-space placeholder (not blanks): collapsing a
+    /// string to spaces would turn `get("key")` into `get(   )` and false-match the empty-parens
+    /// shape, so string content is filled with `#` — present but non-empty and non-numeric.
     static boolean containsPartialOperation(String code) {
-        return PARTIAL_OP.matcher(blankNonCode(code))
+        return PARTIAL_OP.matcher(maskForOps(code))
                          .find();
     }
 
-    /// True when the enclosing chain is a `Stream` pipeline (carries a collector / source marker).
-    ///
-    /// Known false negative: a Stream marker anywhere in the scanned fragment exempts even when the
-    /// carrier mapper is a *different* sub-chain of the same statement (markers are matched
-    /// statement-wide, not per-chain). `@SuppressWarnings("JBCT-TOT-01")` is the escape hatch.
+    /// True when the given chain fragment is a `Stream` pipeline (carries a collector / source
+    /// marker). Callers pass the lambda-free chain *spine* (mapper lambda bodies blanked), so a
+    /// `.stream()` inside the mapper's own lambda does not exempt the carrier — only markers on the
+    /// pipeline structure itself count. Residual false negative: an unrelated Stream sub-expression
+    /// sharing the same statement spine still exempts; `@SuppressWarnings` is the hatch.
     static boolean isStreamPipeline(String enclosing) {
         var code = blankNonCode(enclosing);
 
@@ -147,17 +160,24 @@ sealed interface MapperSafety permits MapperSafety.unused {
         return blankComments(blankStrings(code));
     }
 
+    /// Like [#blankNonCode] but string literals are filled with `#` (a non-space, non-numeric
+    /// placeholder) instead of spaces, so op-argument shapes see a string as a present-but-opaque
+    /// argument rather than empty parens.
+    static String maskForOps(String code) {
+        return blankComments(fillMatches(code, STRING_LITERAL.matcher(code), '#'));
+    }
+
     /// Replaces every string-literal character with a space (newlines preserved).
     static String blankStrings(String code) {
-        return blankMatches(code, STRING_LITERAL.matcher(code));
+        return fillMatches(code, STRING_LITERAL.matcher(code), ' ');
     }
 
     /// Replaces every comment character with a space (newlines preserved).
     static String blankComments(String code) {
-        return blankMatches(code, COMMENT.matcher(code));
+        return fillMatches(code, COMMENT.matcher(code), ' ');
     }
 
-    private static String blankMatches(String code, Matcher matcher) {
+    private static String fillMatches(String code, Matcher matcher, char fill) {
         var sb = new StringBuilder(code);
 
         while (matcher.find()) {
@@ -165,7 +185,7 @@ sealed interface MapperSafety permits MapperSafety.unused {
                 var c = sb.charAt(i);
 
                 if (c != '\n' && c != '\r') {
-                    sb.setCharAt(i, ' ');
+                    sb.setCharAt(i, fill);
                 }
             }
         }
