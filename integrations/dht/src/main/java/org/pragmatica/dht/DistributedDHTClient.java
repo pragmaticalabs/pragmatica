@@ -15,7 +15,9 @@
  */
 package org.pragmatica.dht;
 
+import java.util.HexFormat;
 import java.util.List;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
 import org.pragmatica.consensus.NodeId;
@@ -26,6 +28,7 @@ import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.utility.IdGenerator;
 
@@ -35,10 +38,17 @@ import static org.pragmatica.lang.Unit.unit;
 /// Distributed DHT client with quorum-based reads and writes.
 /// Routes operations to responsible nodes via consistent hashing and DHTNetwork.
 public final class DistributedDHTClient implements DHTClient {
+    /// Upper bound on the resolve-time fallback ring probe (issue #428, C2): after an R-set quorum
+    /// MISS, at most this many ring members OUTSIDE the R-set are probed for a stranded copy. Keeps
+    /// the mitigation a bounded, best-effort cache-warmth pass rather than an unbounded ring scan.
+    private static final int DEFAULT_FALLBACK_PROBE_LIMIT = 8;
+    private static final HexFormat HEX = HexFormat.of();
+
     private final DHTNode node;
     private final DHTNetwork network;
     private final DHTConfig config;
     private final OwnerEpochSource ownerEpochSource;
+    private final ResolveFallbackObserver fallbackObserver;
     /// Pending operations indexed by correlation ID.
     private final ConcurrentHashMap<String, PendingOperation<?>> pendingOps = new ConcurrentHashMap<>();
 
@@ -47,11 +57,13 @@ public final class DistributedDHTClient implements DHTClient {
     private DistributedDHTClient(DHTNode node,
                                  DHTNetwork network,
                                  DHTConfig config,
-                                 OwnerEpochSource ownerEpochSource) {
+                                 OwnerEpochSource ownerEpochSource,
+                                 ResolveFallbackObserver fallbackObserver) {
         this.node = node;
         this.network = network;
         this.config = config;
         this.ownerEpochSource = ownerEpochSource;
+        this.fallbackObserver = fallbackObserver;
     }
 
     /// Create a distributed DHT client at the unfenced epoch floor ([OwnerEpochSource#zero]).
@@ -60,7 +72,7 @@ public final class DistributedDHTClient implements DHTClient {
     /// @param network DHT network for inter-node messaging
     /// @param config  DHT configuration (replication factor, quorum sizes)
     public static DistributedDHTClient distributedDHTClient(DHTNode node, DHTNetwork network, DHTConfig config) {
-        return new DistributedDHTClient(node, network, config, OwnerEpochSource.zero());
+        return new DistributedDHTClient(node, network, config, OwnerEpochSource.zero(), ResolveFallbackObserver.noop());
     }
 
     /// Create a distributed DHT client that stamps every put with the node's current owner epoch
@@ -74,12 +86,22 @@ public final class DistributedDHTClient implements DHTClient {
                                                             DHTNetwork network,
                                                             DHTConfig config,
                                                             OwnerEpochSource ownerEpochSource) {
-        return new DistributedDHTClient(node, network, config, ownerEpochSource);
+        return new DistributedDHTClient(node, network, config, ownerEpochSource, ResolveFallbackObserver.noop());
+    }
+
+    /// Return a client that reports resolve-time alternate-target fallback outcomes (issue #428, C2)
+    /// to `observer`. Additive and non-mutating: the base factories default to
+    /// [ResolveFallbackObserver#noop], so existing callers and their R-set quorum contract are
+    /// unaffected; the aether layer wires a real observer to surface fallback hits/misses.
+    ///
+    /// @param observer sink for fallback-resolved and unresolved-after-fallback notifications
+    public DistributedDHTClient withResolveFallbackObserver(ResolveFallbackObserver observer) {
+        return new DistributedDHTClient(node, network, config, ownerEpochSource, observer);
     }
 
     @Override
     public DHTClient scoped(DHTConfig scopedConfig) {
-        return new DistributedDHTClient(node, network, scopedConfig, ownerEpochSource);
+        return new DistributedDHTClient(node, network, scopedConfig, ownerEpochSource, fallbackObserver);
     }
 
     @Override
@@ -114,7 +136,8 @@ public final class DistributedDHTClient implements DHTClient {
             }
         }
 
-        return promise.timeout(config.operationTimeout());
+        return promise.timeout(config.operationTimeout())
+                      .flatMap(quorumResult -> resolveOrFallback(key, quorumResult));
     }
 
     @Override
@@ -298,6 +321,122 @@ public final class DistributedDHTClient implements DHTClient {
         return ringTargets.stream()
                           .filter(live::contains)
                           .toList();
+    }
+
+    /// Route the R-set quorum outcome (issue #428, C2): a present value passes straight through; a
+    /// MISS enters the bounded fallback probe. Pure routing — the resolved value is not transformed.
+    private Promise<Option<byte[]>> resolveOrFallback(byte[] key, Option<byte[]> quorumResult) {
+        return quorumResult.isPresent()
+               ? Promise.success(quorumResult)
+               : fallbackResolve(key);
+    }
+
+    /// Resolve-time alternate-target fallback (issue #428, C2) — staged arm B: a CACHE-WARMTH +
+    /// interim-correctness mitigation invoked only on an R-set quorum MISS, never on the hit path.
+    /// Probes a BOUNDED set of ring members OUTSIDE the R-set for a stranded copy (e.g. one left
+    /// behind by an in-flight rebalance and not yet re-homed). On a hit it read-repairs the value
+    /// back onto the current R-set and returns it; on all-miss it reports loudly (never silent —
+    /// P3/P4) and returns empty. The durable tier is stage 2, out of scope here.
+    ///
+    /// FULL replication naturally no-ops: the R-set already spans every node, so the candidate set
+    /// (`nodes()` minus the R-set) is empty and this returns empty without probing — stranded-copy
+    /// resolution in FULL mode is stage-2 durable-tier territory.
+    private Promise<Option<byte[]>> fallbackResolve(byte[] key) {
+        var fallbackTargets = fallbackTargets(key);
+
+        return fallbackTargets.isEmpty()
+               ? Promise.success(Option.none())
+               : probeAndRepair(key, fallbackTargets);
+    }
+
+    /// Bounded ring-probe candidates: every ring member MINUS the R-set already read by the quorum
+    /// pass, capped at [#DEFAULT_FALLBACK_PROBE_LIMIT]. Self is excluded when it was an R-set member
+    /// (already read via `targetNodes`); when self is NOT in the R-set it stays a candidate and is
+    /// probed locally.
+    private List<NodeId> fallbackTargets(byte[] key) {
+        var rSet = Set.copyOf(targetNodes(key));
+
+        return node.ring()
+                   .nodes()
+                   .stream()
+                   .filter(candidate -> !rSet.contains(candidate))
+                   .limit(DEFAULT_FALLBACK_PROBE_LIMIT)
+                   .toList();
+    }
+
+    private Promise<Option<byte[]>> probeAndRepair(byte[] key, List<NodeId> fallbackTargets) {
+        return Promise.allOf(probeAll(key, fallbackTargets))
+                      .map(DistributedDHTClient::firstPresent)
+                      .flatMap(found -> resolveFallbackOutcome(key, found, fallbackTargets.size()));
+    }
+
+    private List<Promise<Option<byte[]>>> probeAll(byte[] key, List<NodeId> fallbackTargets) {
+        return fallbackTargets.stream()
+                              .map(target -> probeTarget(target, key))
+                              .toList();
+    }
+
+    /// Single-target best-effort read for the fallback probe: reuses the same local/remote get
+    /// primitives as the quorum path but against a lone target (quorum 1 of 1). A transport refusal
+    /// or timeout degrades to an empty result rather than failing, so one dead fallback candidate
+    /// never aborts the probe.
+    private Promise<Option<byte[]>> probeTarget(NodeId target, byte[] key) {
+        Promise<Option<byte[]>> probe = Promise.promise();
+        var collector = QuorumCollector.<Option<byte[]>> quorumCollector(1, 1, probe);
+
+        if (target.equals(node.nodeId())) {
+            handleLocalGet(key, collector);
+        } else {
+            sendRemoteGet(target, key, collector);
+        }
+
+        return probe.timeout(config.operationTimeout()).recover(DistributedDHTClient::degradeToNone);
+    }
+
+    /// First stranded copy in probe order, or empty when every bounded probe missed. Each probe
+    /// already degraded failures to a successful empty, so the results are unwrapped defensively.
+    private static Option<byte[]> firstPresent(List<Result<Option<byte[]>>> probeResults) {
+        return probeResults.stream()
+                           .map(result -> result.or(Option.<byte[]> none()))
+                           .filter(Option::isPresent)
+                           .findFirst()
+                           .orElseGet(Option::none);
+    }
+
+    private Promise<Option<byte[]>> resolveFallbackOutcome(byte[] key, Option<byte[]> found, int probed) {
+        return found.fold(() -> reportUnresolved(key, probed),
+                          value -> repairAndReport(key, value, probed));
+    }
+
+    /// Stranded copy found beyond the R-set: fire the observer, then read-repair it back onto the
+    /// R-set.
+    private Promise<Option<byte[]>> repairAndReport(byte[] key, byte[] value, int probed) {
+        fallbackObserver.onResolvedViaFallback(hex(key), probed);
+
+        return readRepair(key, value);
+    }
+
+    /// Re-home a fallback-resolved value onto the current R-set via the standard quorum [#put].
+    /// Best-effort: the resolved value is returned to the caller whether or not the re-homing write
+    /// reaches quorum, so a repair failure degrades to a plain successful read rather than failing
+    /// the get.
+    private Promise<Option<byte[]>> readRepair(byte[] key, byte[] value) {
+        return put(key, value).map(_ -> Option.some(value)).recover(_ -> Option.some(value));
+    }
+
+    /// All-miss after the bounded probe: report loudly (P3/P4 — never silent) and resolve empty.
+    private Promise<Option<byte[]>> reportUnresolved(byte[] key, int probed) {
+        fallbackObserver.onUnresolvedAfterFallback(hex(key), probed);
+
+        return Promise.success(Option.none());
+    }
+
+    private static Option<byte[]> degradeToNone(Cause ignored) {
+        return Option.none();
+    }
+
+    private static String hex(byte[] key) {
+        return HEX.formatHex(key);
     }
 
     private Option<PendingOperation<?>> removePending(String correlationId) {
