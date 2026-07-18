@@ -52,6 +52,8 @@ failOnWarning = false
 
 Categories: Return Kinds, Value Objects, Exceptions, Naming, Lambda/Composition, Patterns, Style, Logging, Architecture, Static Imports, Utilities, Nesting, Zones, Sealed Types, Acronyms.
 
+> **Cross-slice import boundaries are not enforced.** Neither the linter nor the slice-processor checks imports across slice boundaries — the slice-processor only generates factories and manifests for `@Slice`-annotated interfaces. Layering and cross-slice boundary enforcement is planned as the layering-rules engine (#452).
+
 ## JBCT Specification
 
 The full Java Backend Coding Technology specification — including structural patterns (Leaf, Sequencer, Fork-Join, Condition, Iteration), zone architecture, and BPMN integration guide — lives in the [coding-technology](https://github.com/siy/coding-technology) repository.

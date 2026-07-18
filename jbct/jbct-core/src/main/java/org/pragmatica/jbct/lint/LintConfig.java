@@ -158,11 +158,7 @@ public record LintConfig(Map<String, DiagnosticSeverity> ruleSeverities,
     Map.entry("JBCT-STY-07", DiagnosticSeverity.WARNING),
 
     // Unnecessary var before return
-    Map.entry("JBCT-STY-08", DiagnosticSeverity.WARNING),
-
-    // If/else with return in both branches
-    // Slice
-    Map.entry("JBCT-SLICE-01", DiagnosticSeverity.ERROR)),
+    Map.entry("JBCT-STY-08", DiagnosticSeverity.WARNING)),
                                                         Set.of(),
                                                         false);
 

@@ -21,22 +21,18 @@ public record JbctConfig(FormatterConfig formatter,
                          FilesConfig files,
                          BlueprintConfig blueprint,
                          List<String> sourceDirectories,
-                         List<String> excludePackages,
-                         List<String> slicePackages) {
+                         List<String> excludePackages) {
     public JbctConfig {
         sourceDirectories = List.copyOf(sourceDirectories);
         excludePackages = List.copyOf(excludePackages);
-        slicePackages = List.copyOf(slicePackages);
     }
 
     /// Default configuration.
-    /// Note: slicePackages is empty by default - must be configured for JBCT-SLICE-01 rule.
     public static final JbctConfig DEFAULT = jbctConfig(FormatterConfig.DEFAULT,
                                                         LintConfig.DEFAULT,
                                                         FilesConfig.DEFAULT,
                                                         BlueprintConfig.DEFAULT,
                                                         List.of("src/main/java"),
-                                                        List.of(),
                                                         List.of());
 
     /// Factory method for creating JbctConfig.
@@ -45,9 +41,8 @@ public record JbctConfig(FormatterConfig formatter,
                                         FilesConfig files,
                                         BlueprintConfig blueprint,
                                         List<String> sourceDirectories,
-                                        List<String> excludePackages,
-                                        List<String> slicePackages) {
-        return new JbctConfig(formatter, lint, files, blueprint, sourceDirectories, excludePackages, slicePackages);
+                                        List<String> excludePackages) {
+        return new JbctConfig(formatter, lint, files, blueprint, sourceDirectories, excludePackages);
     }
 
     /// Create config from parsed TOML document.
@@ -99,16 +94,13 @@ public record JbctConfig(FormatterConfig formatter,
         // Project section
         var sourceDirectories = toml.getStringList("project", "sourceDirectories").or(List.of("src/main/java"));
         var excludePackages = toml.getStringList("lint", "excludePackages").or(List.of());
-        // Slice packages - empty by default, must be explicitly configured
-        var slicePackages = toml.getStringList("lint", "slicePackages").or(List.of());
 
         return jbctConfig(formatterConfig,
                           lintConfig,
                           filesConfig,
                           blueprintConfig,
                           sourceDirectories,
-                          excludePackages,
-                          slicePackages);
+                          excludePackages);
     }
 
     /// Merge this config with another, with other taking precedence.
@@ -136,17 +128,13 @@ public record JbctConfig(FormatterConfig formatter,
         var mergedExcludePackages = other.excludePackages.isEmpty()
                                     ? this.excludePackages
                                     : other.excludePackages;
-        var mergedSlicePackages = other.slicePackages.isEmpty()
-                                  ? this.slicePackages
-                                  : other.slicePackages;
 
         return jbctConfig(mergedFormatter,
                           mergedLint,
                           mergedFiles,
                           mergedBlueprint,
                           mergedSourceDirs,
-                          mergedExcludePackages,
-                          mergedSlicePackages);
+                          mergedExcludePackages);
     }
 
     /// Generate TOML representation of this config.
@@ -174,13 +162,6 @@ public record JbctConfig(FormatterConfig formatter,
         sb.append("excludePackages = [");
         sb.append(excludePackages.stream().map(s -> "\"" + s + "\"").collect(Collectors.joining(", ")));
         sb.append("]\n");
-        sb.append("# Slice packages for JBCT-SLICE-01 rule (required for external slice dependency checking)\n");
-        sb.append("# Example: slicePackages = [\"**.usecase.**\"]\n");
-        if (!slicePackages.isEmpty()) {
-            sb.append("slicePackages = [");
-            sb.append(slicePackages.stream().map(s -> "\"" + s + "\"").collect(Collectors.joining(", ")));
-            sb.append("]\n");
-        }
 
         sb.append("\n");
         // Lint rules section
