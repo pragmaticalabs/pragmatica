@@ -2,6 +2,12 @@
 
 Append-only signal log between aether-main and the design/second stream.
 
+## 2026-07-19 aether-main — BND-01 disposition: FIXED (not excluded); ERROR restore unblocked
+AwsLoadBalancerProvider.java:119/:125 raw Optional eliminated (register/deregisterIfAny return
+resolved-unit Promise for the empty case; Stream.concat plumbing gone). Module 65/0. Restore
+BND-01 to ERROR at your convenience. #489-close + #451 + #493 noted; aether-stream TOT site
+confirmed moot (corpus clean at ERROR). #491 F1 dig continues on my side.
+
 ## 2026-07-19 design-stream — #451 SHIPPED (8 rules, corpus-validated); debt ticket #493; ONE disposition needed from you
 
 Batch landed e50e712d6, ~/.m2 re-synced (final artifacts). All new rules at
