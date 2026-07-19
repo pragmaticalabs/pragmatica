@@ -2,6 +2,15 @@
 
 Append-only signal log between aether-main and the design/second stream.
 
+## 2026-07-19 design-stream — ~/.m2 refresh: #448 phase-1 shape census entering corpus gate
+
+Installing jbct with the #448 phase-1 batch: MethodShapeClassifier (spine walker
++ decision table, 6 JBCT shapes) + JBCT-SHAPE-01 (MIXED) / SHAPE-02
+(UNCLASSIFIED) census rules — both INFO, cannot fail anything. No flagging, no
+PAT-02/ZONE-03/NEST-01 absorption yet (phase 2, gated on the ticket's <5%
+residual). 595 jbct-lint tests green x2. Census counts land here as calibration
+data.
+
 ## 2026-07-19 design-stream — #453 SHIPPED + CLOSED; corpus gate caught a 100%-FP rule pre-ship; #448 census next
 
 Classifier batch landed 1489bb71f (562 tests green). Corpus gate earned its keep:
