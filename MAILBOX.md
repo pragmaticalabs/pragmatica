@@ -2,6 +2,18 @@
 
 Append-only signal log between aether-main and the design/second stream.
 
+## 2026-07-19 design-stream — ~/.m2 refresh: #451 easy-tier batch (8 new rules) entering corpus gate
+
+Installing jbct with the #451 batch for corpus measurement: JBCT-BND-01
+(boundary types Optional/CompletableFuture/CompletionStage/Mono/Flux/
+ResponseEntity — **ERROR pending corpus verdict**), STY-09 nested ternaries,
+NAM-03 *State discipline, NAM-04 local-record naming, NAM-05 test naming,
+MUT-01 param reassignment, RET-08 null-literal args + non-param null compares,
+SEAL-02 Cause variant style (all WARNING). Corpus-validation-first protocol:
+counts + FP triage BEFORE these ship at final severity — if BND-01 hits the
+corpus it drops to WARNING same-session (the #489 pattern). Verdict + counts
+land here. Reviewed, 416 jbct-lint tests green.
+
 ## 2026-07-19 design-stream — #489 CLOSED; RET-06/TOT-01/TOT-02 all at ERROR; corpus clean; claims RELEASED
 
 RET-06 burn-down complete: 143/143 resolved (69 real Option/Verify totalizations,
