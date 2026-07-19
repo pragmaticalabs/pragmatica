@@ -1,0 +1,111 @@
+schema_version = "0.1"
+
+# Shopify (pod era, ~2015-2021) — answer sheet in schema form (issue #443 Phase A golden).
+#
+# PROVENANCE: transcribed from derivation-artifacts/runs/shopify/ANSWER-SHEET.md (Grade B).
+# The artifacts repo publishes this run only in PROSE (an 11-item list). Note the F23 discipline:
+# the Feb-2016 blast-radius INCIDENT is an observed failure; it is transcribed as the DEMAND it
+# implies (shard blast-radius isolation, basis = target), never as a target read off the outage.
+
+[meta]
+system = "shopify"
+era    = "2015-2021"
+author = "transcription"
+date   = "2026-07-12"
+mode   = "greenfield"
+
+# ---- Q1 Time budget ----
+[[answers.q1]]
+scope     = "path:storefront"
+statement = "Server processing under 200ms is considered satisfying for the storefront"
+shape     = "system-clock"
+price     = "storefront latency is conversion; slow pages lose merchant sales"
+status    = "answered"
+source    = "Storefront"
+
+# ---- Q2 Failure budget ----
+[[answers.q2]]
+scope     = "operation:checkout"
+statement = "No single merchant's flash sale may take down others; blast radius must be isolated per shard, and merchant downtime is unacceptable"
+basis     = "target"
+price     = "the Feb 2016 celebrity flash sale took down a whole database shard; that outcome is the cost of not isolating"
+status    = "answered"
+source    = "Flash-I; Capacity"
+
+# ---- Q3 Loss budget ----
+[[answers.q3]]
+scope     = "data-class:orders"
+statement = "Orders and payments must not be lost; payments require exactly-once semantics"
+status    = "answered"
+source    = "InfoQ"
+
+# ---- Q4 Consistency contract ----
+[[answers.q4]]
+scope     = "data-class:inventory"
+statement = "Oversell is prevented by reserving inventory during payment; payments are exactly-once"
+status    = "answered"
+source    = "InfoQ; reservations retrospective"
+
+# ---- Q5 Load ----
+[[answers.q5]]
+scope     = "path:storefront"
+statement = "BFCM 2021 hit 32M app-server requests a minute, 11M queries a second, 11 TB/s read I/O; storefront is read-dominant and staleness-tolerant"
+shape     = "volume"
+status    = "answered"
+source    = "BFCM-2021; Storefront"
+
+[[answers.q5]]
+scope     = "operation:checkout"
+statement = "Checkout is write-concentrated — every step in the flow modifies that same record — and a product can sell out in seconds even with thousands in inventory"
+shape     = "contention"
+status    = "answered"
+source    = "Flash-I; InfoQ"
+
+[[answers.q5]]
+scope     = "operation:checkout"
+statement = "Celebrity merchants hurl Super-Bowl-sized traffic without notice; one sale used more than 20% of total compute"
+shape     = "burst"
+status    = "answered"
+source    = "Flash-I; InfoQ"
+
+# ---- Q6 External constraints ----
+[[answers.q6]]
+scope     = "data-class:card-data"
+statement = "PCI — the Shopify monolith is kept out of scope; it never sees any card data"
+kind      = "mandate"
+status    = "answered"
+source    = "InfoQ"
+
+# ---- Q7 Release structure ----
+[[answers.q7]]
+scope     = "system"
+statement = "1000+ developers, 2.8M lines, around 400 commits a day, deployed roughly 40 times a day on one uniform train"
+status    = "answered"
+source    = "Deconstructing; Merging-1000; InfoQ"
+
+# ---- Q8 Cost & capacity envelope ----
+[[answers.q8]]
+scope     = "system"
+statement = "Cannot pre-provision for sales that might not happen"
+status    = "answered"
+source    = "Capacity"
+
+# ---- Q9 Multi-X ----
+[[answers.q9]]
+scope     = "system"
+statement = "Shopify merchants are isolated from each other with no cross-shop actions (a partition gift); active plus recovery datacenter per pod; no residency demands published"
+status    = "answered"
+source    = "Tech Stack"
+
+# ---- Domain-shape facts ----
+[[domain_shape]]
+operation   = "checkout"
+inverse     = "refund or cancel the order"
+decays      = false
+reshapeable = ["idempotent"]
+
+# ---- Change-driver facts ----
+[[change_drivers]]
+scope      = "policy:flash-sale-profile"
+volatility = "every-seven-or-eight-days"
+source     = "Flash-I"

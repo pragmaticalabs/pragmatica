@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>org.pragmatica-lite</groupId>
+        <artifactId>jbct-parent</artifactId>
+        <version>1.0.0-rc3</version>
+    </parent>
+
+    <artifactId>jbct-derive</artifactId>
+    <packaging>jar</packaging>
+
+    <name>JBCT Derive</name>
+    <description>Architecture answer-sheet entry gate and derivation engine (next_step)</description>
+
+    <dependencies>
+        <!-- Core module — reuses TomlParser/ConfigLoader and the generic Diagnostic record.
+             Brings pragmatica-lite core + toml transitively; no jbct-parser/CST dependency. -->
+        <dependency>
+            <groupId>org.pragmatica-lite</groupId>
+            <artifactId>jbct-core</artifactId>
+        </dependency>
+
+        <!-- Testing -->
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.assertj</groupId>
+            <artifactId>assertj-core</artifactId>
+        </dependency>
+
+        <!-- Logging (SLF4J provider for tests) -->
+        <dependency>
+            <groupId>org.pragmatica-lite</groupId>
+            <artifactId>test-logging</artifactId>
+        </dependency>
+    </dependencies>
+</project>

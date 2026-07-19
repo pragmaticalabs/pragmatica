@@ -47,6 +47,7 @@
         <module>jbct-format</module>
         <module>jbct-lint</module>
         <module>jbct-init</module>
+        <module>jbct-derive</module>
         <module>jbct-cli</module>
         <module>jbct-maven-plugin</module>
         <module>slice-processor</module>
@@ -106,6 +107,11 @@
             <dependency>
                 <groupId>org.pragmatica-lite</groupId>
                 <artifactId>jbct-init</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.pragmatica-lite</groupId>
+                <artifactId>jbct-derive</artifactId>
                 <version>${project.version}</version>
             </dependency>
 

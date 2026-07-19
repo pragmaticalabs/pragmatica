@@ -1,0 +1,168 @@
+schema_version = "0.1"
+
+# Companies House — answer sheet in schema form (issue #443 Phase A golden).
+#
+# PROVENANCE: transcribed from derivation-artifacts/runs/companies-house/ANSWER-SHEET.md
+# (Grade A, isolated-operator run). The artifacts repo publishes this run only in PROSE; no TOML
+# schema form existed there (schema/README.md: the four sheets in schema form "arrive together
+# with the derivation engine"). This transcription is that deliverable. Interpretation was applied
+# to map prose demands onto typed scoped rows; genuinely-unknown demands are marked UNKNOWN, never
+# guessed. Sources abbreviated; see the prose sheet for full citations.
+
+[meta]
+system = "companies-house"
+era    = "2017-2025"
+author = "assembler (isolated-operator run)"
+date   = "2026-07-12"
+mode   = "greenfield"
+
+# ---- Q1 Time budget (per operation / path) ----
+[[answers.q1]]
+scope     = "path:company-search"
+statement = "Free public search returns quickly at the register read peak; no statutory turnaround for the read itself, but the register is accessed 16.3bn times a year"
+shape     = "system-clock"
+price     = "read-path engineering against a ~1000:1 read:write ratio; see the Q8 envelope"
+status    = "answered"
+source    = "gov.uk annual report 2024/25"
+
+[[answers.q1]]
+scope     = "operation:incorporate"
+statement = "Online incorporation usually registered within 24 hours; postal applications take 8 to 10 days"
+shape     = "requester-clock"
+price     = "the applicant waits for legal existence; slower formation is economic friction"
+status    = "answered"
+source    = "gov.uk register-your-company"
+
+[[answers.q1]]
+scope     = "operation:accept-filing"
+statement = "Confirmation statement due within 14 days of each 12-month review period; accounts late-filing penalties banded 150 to 1500 pounds"
+shape     = "requester-clock"
+price     = "a missed statutory deadline triggers escalating penalties and enforcement"
+status    = "answered"
+source    = "Companies Act 2006 s.853A; gov.uk penalties"
+
+# ---- Q2 Failure budget (per operation) ----
+[[answers.q2]]
+scope     = "operation:accept-filing"
+statement = "Digital services target a minimum 99.5% availability; FY24/25 actual was 99.98%"
+basis     = "target"
+price     = "a filing-service outage generates missed-deadline penalties (appealable) and ICO/NCSC reporting"
+status    = "answered"
+source    = "gov.uk annual report 2024/25; ICAEW Jun-2026"
+
+[[answers.q2]]
+scope     = "operation:incorporate"
+statement = "No per-operation criticality tiering was found between incorporation and search"
+status    = "UNKNOWN"
+source    = "public record silent"
+
+# ---- Q3 Loss budget (per data class) ----
+[[answers.q3]]
+scope     = "data-class:dissolved-records"
+statement = "Dissolved company records retained 20 years then archived or destroyed (CA2006 s.1084); destruction paused during a retention review as of May 2026"
+status    = "answered"
+source    = "gov.uk retention-review; CA2006 s.1084"
+
+[[answers.q3]]
+scope     = "data-class:live-records"
+statement = "Live-company records retained indefinitely while active; no explicit RPO or backup figure is published"
+status    = "UNKNOWN"
+source    = "public record silent on RPO"
+
+# ---- Q4 Consistency contract ----
+[[answers.q4]]
+scope     = "data-class:filings"
+statement = "Register accepts filings in good faith with limited checks; corrections layer via RP04 rather than overwrite; full removal needs a court order and takes 2 to 3 months"
+status    = "answered"
+source    = "ICO decision notice; mercantilebarristers"
+
+[[answers.q4]]
+scope     = "path:company-search"
+statement = "No public statement on acceptable staleness between an accepted filing and its visibility in public search"
+status    = "UNKNOWN"
+source    = "public record silent"
+
+# ---- Q5 Load (per path / operation; shape = volume|contention|burst|deadline) ----
+[[answers.q5]]
+scope     = "path:company-search"
+statement = "Around 12 billion searches a year against 14.7m filings a year — a read:write ratio on the order of 1000:1"
+shape     = "volume"
+status    = "answered"
+source    = "gov.uk annual report 2024/25"
+
+[[answers.q5]]
+scope     = "operation:accept-filing"
+statement = "December is the accounts-filing peak with 31 December the modal deadline; in 2017, 503 filed in the final hour"
+shape     = "deadline"
+status    = "answered"
+source    = "companieshouse.blog.gov.uk"
+
+# ---- Q6 External constraints (kind = audit|replay|residency|mandate) ----
+[[answers.q6]]
+scope     = "system"
+statement = "Statutory publication and inspection duty — the register must be made available (CA2006 Part 35)"
+kind      = "mandate"
+strikes   = ["substrate:private-only"]
+status    = "answered"
+source    = "legislation.gov.uk CA2006 Part 35"
+
+[[answers.q6]]
+scope     = "data-class:date-of-birth"
+statement = "Registrar must not make date-of-birth information available for public inspection (ECCTA)"
+kind      = "mandate"
+status    = "answered"
+source    = "legislation.gov.uk CA2006 Part 35"
+
+[[answers.q6]]
+scope     = "data-class:public-register"
+statement = "UK GDPR Art.49(1)(g) permits public-register transfers without an adequacy assessment; DPA2018 exempts the registrar from erasure duties for legally-required public data"
+kind      = "residency"
+status    = "answered"
+source    = "UK GDPR; DPA2018 Sch.2"
+
+[[answers.q6]]
+scope     = "data-class:filings"
+statement = "FOI statutory 20-working-day response duty; 755 of 832 requests met the deadline in FY24/25"
+kind      = "audit"
+status    = "answered"
+source    = "FOIA; gov.uk annual report"
+
+# ---- Q7 Release structure ----
+[[answers.q7]]
+scope     = "system"
+statement = "Release cadence is almost entirely unknown from the demand side; only legislative change-dates are public (ECCTA around 50 statutory instruments; ID verification from 18 Nov 2025; iXBRL accounts from 1 Apr 2027)"
+status    = "UNKNOWN"
+source    = "gov.uk ECCTA transition plan"
+
+# ---- Q8 Cost & capacity envelope ----
+[[answers.q8]]
+scope     = "system"
+statement = "FY24/25 income 220.3m, opex 197.9m, staff costs 88.8m pounds, headcount 1,866; fees set on a cost-recovery basis; 4.1% efficiency delivered"
+status    = "answered"
+source    = "gov.uk annual report 2024/25"
+
+# ---- Q9 Multi-X ----
+[[answers.q9]]
+scope     = "system"
+statement = "Three legal jurisdictions and registrars (E&W, Scotland, NI) with distinct number prefixes over one amalgamated public search; four register types including the ROE; ACSPs as a new actor class"
+status    = "answered"
+source    = "CA2006 structure; gov.uk annual report"
+
+# ---- Domain-shape facts (per effectful operation named above) ----
+[[domain_shape]]
+operation   = "incorporate"
+inverse     = "dissolve or strike-off; restoration is administrative or court-ordered, a legal backfill not a data delete"
+decays      = false
+reshapeable = ["none"]
+
+[[domain_shape]]
+operation   = "accept-filing"
+inverse     = "none"
+decays      = false
+reshapeable = ["append-only"]
+
+# ---- Change-driver facts (the PFD seam) ----
+[[change_drivers]]
+scope      = "policy:filing-rules"
+volatility = "per-legislative-cycle"
+source     = "ECCTA statutory-instrument programme"

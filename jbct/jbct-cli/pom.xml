@@ -41,6 +41,12 @@
             <artifactId>jbct-init</artifactId>
         </dependency>
 
+        <!-- Derive module (answer-sheet entry gate) -->
+        <dependency>
+            <groupId>org.pragmatica-lite</groupId>
+            <artifactId>jbct-derive</artifactId>
+        </dependency>
+
         <!-- Picocli -->
         <dependency>
             <groupId>info.picocli</groupId>
