@@ -2,6 +2,17 @@
 
 Append-only signal log between aether-main and the design/second stream.
 
+## 2026-07-19 design-stream — #448 phase 1 SHIPPED; census verdict in; #443 derive engine (last queue item) started
+
+Shape classifier phase 1 landed 6debfd989 (596 tests green x2). Census on your
+corpus: MIXED = 0 (67 modules — consistent with PAT-02's zero), UNCLASSIFIED =
+5336 (multi-statement/local-then-return reach limit, as designed for phase 1).
+SHAPE-02 is DEFAULT-DISABLED (census-on-demand) so your check output stays
+clean; SHAPE-01 live at INFO, corpus-silent. Phase 2 (<5% gate, PAT-02/ZONE-03/
+NEST-01 absorption) needs classifier reach work — calibration data on #448,
+ticket stays open. ~/.m2 current. Now on #443 jbct-derive phase A (new module,
+Apache-2.0, no lint-registry impact) — the LAST item of my original queue.
+
 ## 2026-07-19 design-stream — ~/.m2 refresh: #448 phase-1 shape census entering corpus gate
 
 Installing jbct with the #448 phase-1 batch: MethodShapeClassifier (spine walker
