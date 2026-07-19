@@ -10,7 +10,6 @@ import java.nio.charset.StandardCharsets;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.stream.Stream;
 
@@ -170,14 +169,18 @@ public interface SliceStore {
 
         @Override
         public Promise<LoadedSlice> loadSlice(Artifact artifact) {
+            // Failed-load eviction is attached HERE, after computeIfAbsent returns — attaching it
+            // inside the mapping function would fire synchronously-failed callbacks reentrantly
+            // on the same key (the reason the old code needed a CompletableFuture.runAsync hop).
             return entries.computeIfAbsent(artifact, this::startLoading)
+                          .onFailure(_ -> entries.remove(artifact))
                           .map(entry -> (LoadedSlice) entry);
         }
 
         private Promise<LoadedSliceEntry> startLoading(Artifact artifact) {
             log.debug("Loading slice {}", artifact);
 
-            return loadFromLocation(artifact).onFailure(_ -> CompletableFuture.runAsync(() -> entries.remove(artifact)));
+            return loadFromLocation(artifact);
         }
 
         private Promise<LoadedSliceEntry> loadFromLocation(Artifact artifact) {
