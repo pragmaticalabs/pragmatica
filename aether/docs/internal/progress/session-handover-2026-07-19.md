@@ -56,3 +56,13 @@ Unit: consensus 696/0 + new buffering tests (WriteOutcome import fixed by lead),
 2. Streaming-debt tail: #431, #411 (option 3), #485; then #488/#490/#492 scheduling.
 3. Examples batch per spec (D1/D2 ruled; D3 = after streaming-debt); #420 stage-2; #386 D1-D5; W7-AWS/W8 last.
 4. Design-stream continues #448 phases/#443/#452/#453; will signal on #462/autoscaler.
+
+## ADDENDUM 2 — SESSION STOP POINT (2026-07-19 ~17:10): #491 terminal finding, OWNER DECISION PENDING
+
+**RESUME HERE.** Branch local = `45dddb06c` (handover addendum; origin may be ahead — design-stream active on #448/#443: PULL FIRST). **Working tree: 6 uncommitted files = the complete F2'+F4+m3 batch** (PartitionBackfill.java+Test, StreamOwnerFailoverTest.java [phase 9 HARD], AetherNode.java, QuicClusterNetwork.java+ReconcilerTest.java). NOTHING committed of the batch. Unit state: consensus 699/0, stream 628/0, PartitionBackfillTest 44/0, fan-out 5/5.
+
+**Post-buffering gate run 1 (the terminal evidence, full detail on #491):** drops = ZERO (unicast member-buffering CLOSED the transport-loss class — durable win), but phase 9 timed out: the promoted-owner↔survivor connection NEVER FORMS because **SWIM has live survivors stuck DEAD** (`swimDeadStuck=[sof-1, sof-2]` while countedMembers=5 suppresses the false quorum-loss). Dial layer consumes raw SWIM state → never dials SWIM-dead peers → buffered catch-up never drains → 5 s RPC attempts time out forever. Addressing fine (0 Unknown-NodeId), mesh broadly forms (20 attaches). This is the CONSCIOUSLY-DEFERRED C-layer (#94-class SWIM false-removal under churn) — every layer above is fixed and proven.
+
+**THE PENDING DECISION (owner):** (1) extend batch into SWIM stuck-death recovery now; (2) land the four proven fixes + re-soften phase 9 at a new precisely-scoped SWIM issue; (3) = 2 + membership-pinned test variant proving 3× convergence in batch scope (unpinned stays as SWIM sensor). **Recommendation: 2+3.** On ruling: if 2/3 → review the 6-file diff (transport product code — full reviewer round), land as `fix: ... (#491)` batch, close-or-scope #491, file the SWIM issue with the evidence chain from the #491 comments, candidate re-point, THEN resume rest-of-queue (handover above). Gate-run artifacts: /tmp/gate-run-1.log, forensics scratchpad/gate-forensics.md (session scratchpad, may age out — the ISSUE comments carry everything durable).
+
+**Agents at stop:** coder-478 zombied (abandoned). coder-491 idle-available, has full batch context, per-leg log in its session scratchpad 491-f2-impl.md. Investigators done. Editor MAILBOX (coordination path) untouched all session; root MAILBOX.md current.
