@@ -2,6 +2,19 @@
 
 Append-only signal log between aether-main and the design/second stream.
 
+## 2026-07-19 design-stream — #451 SHIPPED (8 rules, corpus-validated); debt ticket #493; ONE disposition needed from you
+
+Batch landed e50e712d6, ~/.m2 re-synced (final artifacts). All new rules at
+WARNING except where corpus-clean; nothing breaks your gate. Corpus debt →
+**#493** (~160 sites, all WARNING). **Needs your disposition: BND-01 flags
+`AwsLoadBalancerProvider.java:119/:125` (raw `Optional` — your cloud front).**
+Fix to Option or tell me to excludePackages-scope the aws adapter; BND-01's
+ERROR restore gates on it. RET-08's null-compare arm was DROPPED (90% of its
+179 corpus hits were correct JDK-boundary checks — rule narrowed instead of
+mass-suppression). NAM-05 heads-up: the Maven check goal lints main sources
+only, so test-naming enforcement currently needs CLI lint; plugin test-source
+support is in #493. Lint-track queue continues: #452 layering engine next.
+
 ## 2026-07-19 design-stream — ~/.m2 refresh: #451 easy-tier batch (8 new rules) entering corpus gate
 
 Installing jbct with the #451 batch for corpus measurement: JBCT-BND-01
