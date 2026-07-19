@@ -74,6 +74,19 @@ class CstStateSuffixRuleTest {
                 """));
     }
 
+    @Test
+    void detects_variant_with_brace_annotation_preceding() {
+        // A multi-value @SuppressWarnings before the variant must not truncate the header and hide
+        // the 'implements' clause (shared brace-strip fix).
+        assertTrue(hasRule("""
+                package org.example;
+                sealed interface HoldState {
+                    @SuppressWarnings({"unchecked"})
+                    record HeldState() implements HoldState {}
+                }
+                """));
+    }
+
     private boolean hasRule(String source) {
         return lint(source).stream()
                            .anyMatch(diagnostic -> diagnostic.ruleId()

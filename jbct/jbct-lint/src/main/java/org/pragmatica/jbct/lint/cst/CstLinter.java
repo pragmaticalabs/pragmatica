@@ -291,6 +291,25 @@ public class CstLinter {
         new CstNullLiteralRule(),
 
         // Cause variant style: enum vs record (JBCT-SEAL-02)
-        new CstCauseVariantStyleRule());
+        new CstCauseVariantStyleRule(),
+
+        // File-type classifier + structural rules (#453)
+        // Use-case interface structure (JBCT-UC-02)
+        new CstUseCaseStructureRule(),
+
+        // Member ordering per file type (JBCT-ORD-01)
+        new CstMemberOrderingRule(),
+
+        // Constructor/factory injection only (JBCT-INJ-01)
+        new CstInjectionRule(),
+
+        // Boolean validation methods (JBCT-VAL-01)
+        new CstBooleanValidationRule(),
+
+        // Stage-record conventions (JBCT-STAGE-01)
+        new CstStageRecordRule(),
+
+        // Side effects in transformation lambdas (JBCT-SIDE-01, INFO)
+        new CstSideEffectMapperRule());
     }
 }

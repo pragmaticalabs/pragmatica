@@ -59,6 +59,8 @@ public sealed interface RuleCategoryMapping permits RuleCategoryMapping.unused {
     Map.entry("JBCT-ARCH-03", ScoreCategory.PATTERN_PURITY),   // use case must not call another use case
     Map.entry("JBCT-ARCH-04", ScoreCategory.PATTERN_PURITY),   // slice must not import another slice's internals
     Map.entry("JBCT-MUT-01", ScoreCategory.PATTERN_PURITY),    // no parameter reassignment
+    Map.entry("JBCT-INJ-01", ScoreCategory.PATTERN_PURITY),    // constructor/factory injection only
+    Map.entry("JBCT-STAGE-01", ScoreCategory.PATTERN_PURITY),  // stage-record conventions (growing context)
 
     // Factory Methods (10%) — value object factories and naming conventions
     Map.entry("JBCT-VO-01", ScoreCategory.FACTORY_METHODS),    // missing Result factory
@@ -70,13 +72,16 @@ public sealed interface RuleCategoryMapping permits RuleCategoryMapping.unused {
     Map.entry("JBCT-NAM-04", ScoreCategory.FACTORY_METHODS),   // local records lowercase camelCase
     Map.entry("JBCT-ACR-01", ScoreCategory.FACTORY_METHODS),   // acronym naming
     Map.entry("JBCT-UTIL-02", ScoreCategory.FACTORY_METHODS),  // Verify.Is validation predicates
+    Map.entry("JBCT-UC-02", ScoreCategory.FACTORY_METHODS),    // use-case interface structure
+    Map.entry("JBCT-VAL-01", ScoreCategory.FACTORY_METHODS),   // boolean validation vs Result factory
 
     // Lambda Compliance (10%) — simple lambdas, method/constructor references
     Map.entry("JBCT-LAM-01", ScoreCategory.LAMBDA_COMPLIANCE), // lambda complexity
     Map.entry("JBCT-LAM-02", ScoreCategory.LAMBDA_COMPLIANCE), // lambda braces
     Map.entry("JBCT-LAM-03", ScoreCategory.LAMBDA_COMPLIANCE), // lambda ternary
     Map.entry("JBCT-STY-02", ScoreCategory.LAMBDA_COMPLIANCE), // constructor references
-    Map.entry("JBCT-STY-05", ScoreCategory.LAMBDA_COMPLIANCE));// method reference preference
+    Map.entry("JBCT-STY-05", ScoreCategory.LAMBDA_COMPLIANCE), // method reference preference
+    Map.entry("JBCT-SIDE-01", ScoreCategory.LAMBDA_COMPLIANCE));// side effects in transformation lambdas
 
     /// Rule IDs deliberately excluded from scoring: cosmetic formatting, logging
     /// style, and zone-abstraction naming rules that map to none of the six
@@ -87,6 +92,7 @@ public sealed interface RuleCategoryMapping permits RuleCategoryMapping.unused {
                                        "JBCT-STY-07",     // unnecessary var before return
                                        "JBCT-STY-08",     // if/else with return in both branches
                                        "JBCT-STY-09",     // nested ternaries
+                                       "JBCT-ORD-01",     // member ordering per file type (structural convention)
                                        "JBCT-STATIC-01",  // static imports for Pragmatica
                                        "JBCT-LOG-01",     // conditional logging
                                        "JBCT-LOG-02",     // logger as parameter

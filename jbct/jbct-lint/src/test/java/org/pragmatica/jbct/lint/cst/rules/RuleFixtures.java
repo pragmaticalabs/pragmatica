@@ -1068,5 +1068,141 @@ final class RuleFixtures {
                 sealed interface RegError extends Cause {
                     record HashingFailed(Throwable cause) implements RegError {}
                 }
+                """),
+
+        // JBCT-UC-02: use-case interface with nested Request/Response + execute but no static factory.
+        fixture("JBCT-UC-02", 2,
+                """
+                package org.example;
+                public interface RegisterUser {
+                    record Request(String email) {}
+                    record Response(String id) {}
+                    Result<Response> execute(Request request);
+                }
+                """,
+                """
+                package org.example;
+                public interface RegisterUser {
+                    record Request(String email) {}
+                    record Response(String id) {}
+                    static RegisterUser registerUser() {
+                        return request -> null;
+                    }
+                    Result<Response> execute(Request request);
+                }
+                """),
+
+        // JBCT-ORD-01: value object with the static factory declared before a constant (out of order).
+        fixture("JBCT-ORD-01", 6,
+                """
+                package org.example;
+                record Money(long cents) {
+                    static Result<Money> money(long cents) {
+                        return Result.success(new Money(cents));
+                    }
+                    static final Money ZERO = new Money(0);
+                }
+                """,
+                """
+                package org.example;
+                record Money(long cents) {
+                    static final Money ZERO = new Money(0);
+                    static Result<Money> money(long cents) {
+                        return Result.success(new Money(cents));
+                    }
+                    long doubled() {
+                        return cents * 2;
+                    }
+                }
+                """),
+
+        // JBCT-INJ-01: an implementation of an in-file step interface with a non-final instance field.
+        fixture("JBCT-INJ-01", 6,
+                """
+                package org.example;
+                interface CheckEmail {
+                    Result<String> apply(String email);
+                }
+                class CheckEmailImpl implements CheckEmail {
+                    private Repo repo;
+                    public Result<String> apply(String email) {
+                        return repo.find(email);
+                    }
+                }
+                """,
+                """
+                package org.example;
+                interface CheckEmail {
+                    Result<String> apply(String email);
+                }
+                class CheckEmailImpl implements CheckEmail {
+                    private final Repo repo;
+                    CheckEmailImpl(Repo repo) {
+                        this.repo = repo;
+                    }
+                    public Result<String> apply(String email) {
+                        return repo.find(email);
+                    }
+                }
+                """),
+
+        // JBCT-VAL-01: a boolean isValid() on a value object (parse-don't-validate violation).
+        fixture("JBCT-VAL-01", 6,
+                """
+                package org.example;
+                record Email(String value) {
+                    static Result<Email> email(String raw) {
+                        return Result.success(new Email(raw));
+                    }
+                    boolean isValid() {
+                        return value.contains("@");
+                    }
+                }
+                """,
+                """
+                package org.example;
+                record Email(String value) {
+                    static Result<Email> email(String raw) {
+                        return Result.success(new Email(raw));
+                    }
+                }
+                """),
+
+        // JBCT-STAGE-01: a three-hop request().request().request() previous-stage chain.
+        fixture("JBCT-STAGE-01", 4,
+                """
+                package org.example;
+                class Foo {
+                    Object run() {
+                        return ctx.request().request().request().userId();
+                    }
+                }
+                """,
+                """
+                package org.example;
+                class Foo {
+                    Object run() {
+                        return ctx.request().userId();
+                    }
+                }
+                """),
+
+        // JBCT-SIDE-01: a side-effect call (log.info) inside a map lambda.
+        fixture("JBCT-SIDE-01", 4,
+                """
+                package org.example;
+                class Foo {
+                    Object run() {
+                        return items.map(x -> log.info(x));
+                    }
+                }
+                """,
+                """
+                package org.example;
+                class Foo {
+                    Object run() {
+                        return items.map(String::trim);
+                    }
+                }
                 """));
 }

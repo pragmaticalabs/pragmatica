@@ -15,9 +15,9 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.fail;
 
-/// JBCT-SEAL-02 cause-variant-style rule.
-class CstCauseVariantStyleRuleTest {
-    private static final String RULE_ID = "JBCT-SEAL-02";
+/// JBCT-STAGE-01 stage-record deep-chain rule.
+class CstStageRecordRuleTest {
+    private static final String RULE_ID = "JBCT-STAGE-01";
 
     private CstLinter linter;
 
@@ -27,66 +27,63 @@ class CstCauseVariantStyleRuleTest {
     }
 
     @Test
-    void detects_empty_record_cause() {
+    void flags_three_hop_chain() {
         assertTrue(hasRule("""
                 package org.example;
-                sealed interface RegError extends Cause {
-                    record TokenFailed() implements RegError {}
-                }
-                """));
-    }
-
-    @Test
-    void detects_class_cause() {
-        assertTrue(hasRule("""
-                package org.example;
-                sealed interface RegError extends Cause {
-                    final class TokenFailed implements RegError {}
-                }
-                """));
-    }
-
-    @Test
-    void no_false_positive_on_data_carrying_record_cause() {
-        assertFalse(hasRule("""
-                package org.example;
-                sealed interface RegError extends Cause {
-                    record HashingFailed(Throwable cause) implements RegError {}
-                }
-                """));
-    }
-
-    @Test
-    void no_false_positive_on_enum_cause() {
-        assertFalse(hasRule("""
-                package org.example;
-                sealed interface RegError extends Cause {
-                    enum General implements RegError {
-                        EMAIL_ALREADY_REGISTERED
+                class Foo {
+                    Object run() {
+                        return ctx.request().request().request().userId();
                     }
                 }
                 """));
     }
 
     @Test
-    void no_false_positive_on_record_implementing_non_cause_interface() {
+    void clean_on_two_hop_chain() {
         assertFalse(hasRule("""
                 package org.example;
-                sealed interface Shape {
-                    record Point() implements Shape {}
+                class Foo {
+                    Object run() {
+                        return ctx.request().request().userId();
+                    }
                 }
                 """));
     }
 
     @Test
-    void detects_empty_record_cause_with_brace_annotation() {
-        // A multi-value @SuppressWarnings before the variant must not truncate the header and hide
-        // the 'implements' clause (shared brace-strip fix).
-        assertTrue(hasRule("""
+    void ignores_chain_in_comment() {
+        assertFalse(hasRule("""
                 package org.example;
-                sealed interface RegError extends Cause {
-                    @SuppressWarnings({"unchecked"})
-                    record TokenFailed() implements RegError {}
+                class Foo {
+                    Object run() {
+                        // request().request().request() is the smell
+                        return ctx.request().userId();
+                    }
+                }
+                """));
+    }
+
+    @Test
+    void ignores_chain_in_string_literal() {
+        assertFalse(hasRule("""
+                package org.example;
+                class Foo {
+                    String run() {
+                        return "request().request().request()";
+                    }
+                }
+                """));
+    }
+
+    @Test
+    void suppressed_by_annotation() {
+        assertFalse(hasRule("""
+                package org.example;
+                class Foo {
+                    @SuppressWarnings("JBCT-STAGE-01")
+                    Object run() {
+                        return ctx.request().request().request().userId();
+                    }
                 }
                 """));
     }

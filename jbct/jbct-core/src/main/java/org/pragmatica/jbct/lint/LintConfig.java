@@ -212,7 +212,28 @@ public record LintConfig(Map<String, DiagnosticSeverity> ruleSeverities,
     Map.entry("JBCT-RET-08", DiagnosticSeverity.WARNING),
 
     // Cause variant style: enum vs record
-    Map.entry("JBCT-SEAL-02", DiagnosticSeverity.WARNING)),
+    Map.entry("JBCT-SEAL-02", DiagnosticSeverity.WARNING),
+
+    // File-type classifier + structural rules (#453). All provisional WARNING pending a corpus
+    // calibration gate (design severity to be fixed after the aether corpus run); SIDE-01 ships at
+    // INFO as an expected false-positive surface, promote-after-calibration.
+    // Use-case interface structure
+    Map.entry("JBCT-UC-02", DiagnosticSeverity.WARNING),
+
+    // Member ordering per file type
+    Map.entry("JBCT-ORD-01", DiagnosticSeverity.WARNING),
+
+    // Constructor/factory injection only
+    Map.entry("JBCT-INJ-01", DiagnosticSeverity.WARNING),
+
+    // Boolean validation methods
+    Map.entry("JBCT-VAL-01", DiagnosticSeverity.WARNING),
+
+    // Stage-record conventions
+    Map.entry("JBCT-STAGE-01", DiagnosticSeverity.WARNING),
+
+    // Side effects in transformation lambdas (INFO — expected FP surface, promote after calibration)
+    Map.entry("JBCT-SIDE-01", DiagnosticSeverity.INFO)),
                                                         Set.of(),
                                                         false);
 
