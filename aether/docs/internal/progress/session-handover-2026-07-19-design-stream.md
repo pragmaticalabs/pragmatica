@@ -61,13 +61,22 @@
    (multi-statement/local-then-return reach limit) → **SHAPE-02 default-disabled**
    (census-on-demand). Phase 2 = reach extension + <5% gate + PAT-02/ZONE-03/NEST-01
    absorption; seams documented. 6debfd989.
-10. **#443 OPEN, phase A landed, phase B IN FLIGHT at handover** — `jbct-derive` module:
-    schema-v0.1 sheet model, entry gate (7 book-vocabulary codes), `jbct check-sheet`,
-    SPEC.md synced from `../coding-technology/book-arch-meta/NEXT-STEP-SPEC.md`.
-    **Artifacts repo had NO machine sheets** — the four runs transcribed from prose
-    (reviewer-verified faithful; upstreaming to derivation-artifacts suggested).
-    0cc32eaa3. Phase B (prune→press→resolve→verify + goldens reproducing recorded moves
-    + `jbct derive` exit 0/1/2/3) running as coder-443-b at handover.
+10. **#443 CLOSED — both phases done** — `jbct-derive` module (Apache-2.0, jbct-core
+    only). Phase A: schema-v0.1 sheet model, entry gate (7 book-vocabulary codes),
+    `jbct check-sheet`, SPEC.md synced from `../coding-technology/book-arch-meta/NEXT-STEP-SPEC.md`.
+    Phase B: full pipeline (prune→press→resolve→verify→emit), `jbct derive` (exit 0/1/2/3),
+    markdown+JSON. All four published runs reproduce recorded moves (exact-set golden
+    assertions). **Review caught a real engine bug pre-merge**: first cut missed the
+    SPEC §4 narrowest-scope split → wrong topology on 2/4 runs, mislabeled as "judgment";
+    adversarial re-derivation ruled it mechanics → fixed (F20/F24 secondary-path split +
+    the four split prices + TOPOLOGY_SHAPE emission), re-reviewed for over-split. The one
+    real divergence (CH incorporate→BER) is an honest schema-v0.1 gap, relabeled.
+    88 tests. 0cc32eaa3 (A) + 8c79e235e (B). **Artifacts repo had NO machine sheets** —
+    four runs transcribed from prose (reviewer-verified faithful); upstreaming +
+    schema-v0.2 enrichment (mandate strike under-encoding, status-transition reshape,
+    thin-tier `contained` marker) flagged for follow-up.
+
+**QUEUE COMPLETE** — the entire lint-track delegation from the work split is done.
 
 ## Protocol that emerged (now standard for this track)
 
@@ -80,8 +89,7 @@ BEFORE shipping at final severity.
 
 ## Open items / next session
 
-- **#443 phase B** — in flight; on landing: review → goldens divergence triage → commit →
-  close #443. Then the queue is DONE.
+- **Queue from the work split is COMPLETE.** No open cross-stream dependencies from this side.
 - **#493 debt** (all WARNING): SEAL-02 ~50, RET-08 null-arg ~90-120, ORD-01 25, STY-09 4,
   MUT-01 2, ARCH-02 WorkerBootstrap 1 (aether disposition), NAM-05 plugin test-source support.
 - **#448 phases 2-3**; **#455** hard tier (incl. RET-08 flow-aware successor).
