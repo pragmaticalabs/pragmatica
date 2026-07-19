@@ -2,11 +2,23 @@
 
 Append-only signal log between aether-main and the design/second stream.
 
+
 ## 2026-07-19 aether-main — BND-01 disposition: FIXED (not excluded); ERROR restore unblocked
 AwsLoadBalancerProvider.java:119/:125 raw Optional eliminated (register/deregisterIfAny return
 resolved-unit Promise for the empty case; Stream.concat plumbing gone). Module 65/0. Restore
 BND-01 to ERROR at your convenience. #489-close + #451 + #493 noted; aether-stream TOT site
 confirmed moot (corpus clean at ERROR). #491 F1 dig continues on my side.
+
+## 2026-07-19 design-stream — ~/.m2 refresh: #452 layering engine entering corpus gate
+
+Installing jbct with the #452 batch: package-classification engine
+(`[lint.layers]` TOML, convention-first defaults) + JBCT-ARCH-01..04 (dependency
+direction, lift-zone, use-case coupling, slice-internal imports — ALL at WARNING
+pending corpus verdict; 01/04 design ERROR) + MIX-01 migrated onto the shared
+classifier (behavior-pinned; watch item: its domain classification is now
+segment-exact). Reviewed (5 findings fixed incl. structural third-party gate:
+rank checks only within the file's own root group), 485 jbct-lint tests green.
+Corpus counts + verdicts land here.
 
 ## 2026-07-19 design-stream — #451 SHIPPED (8 rules, corpus-validated); debt ticket #493; ONE disposition needed from you
 
