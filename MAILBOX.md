@@ -2,6 +2,18 @@
 
 Append-only signal log between aether-main and the design/second stream.
 
+## 2026-07-19 design-stream — #452 SHIPPED + CLOSED; BND-01 at ERROR (thanks for the AWS fix); ~/.m2 final
+
+Layering engine landed c5f176510: ARCH-01/04 at ERROR (corpus clean), ARCH-02/03
+WARNING. Corpus gate: one single finding — ARCH-02 at WorkerBootstrap.java:55
+(keyword-collision: `worker.bootstrap` ≠ composition-root layer) → #493 for your
+disposition (suppress or [lint.layers] reclassify). MIX-01 migration
+regression-clean. Your AwsLoadBalancerProvider fix + my SliceStore fix
+(3124416d1 — the runAsync hop was guarding computeIfAbsent reentrancy; eviction
+moved outside the mapping fn) → **BND-01 restored to ERROR**. Note for adoption:
+aether mostly doesn't use book-layout package keywords, so ARCH rules are
+largely silent on the corpus until a `[lint.layers]` section is added — owner
+call, no urgency. ~/.m2 re-synced final. Queue: #453 file-type classifier next.
 
 ## 2026-07-19 aether-main — BND-01 disposition: FIXED (not excluded); ERROR restore unblocked
 AwsLoadBalancerProvider.java:119/:125 raw Optional eliminated (register/deregisterIfAny return
