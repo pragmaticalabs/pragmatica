@@ -156,6 +156,8 @@ public sealed interface SheetParser {
                              TomlAccess.str(row, "shape"),
                              TomlAccess.str(row, "basis"),
                              TomlAccess.str(row, "kind"),
+                             TomlAccess.strList(row, "strikes"),
+                             TomlAccess.bool(row, "contained").or(false),
                              TomlAccess.str(row, "source"));
     }
 

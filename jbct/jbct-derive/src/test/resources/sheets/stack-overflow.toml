@@ -73,6 +73,11 @@ source    = "HS-2014; Arch-2016"
 scope     = "path:realtime-updates"
 statement = "About 500K concurrent websockets at peak; Redis serves 5.8B hits a day below 2% CPU"
 shape     = "contention"
+# The author's own figure (5.8B hits at <2% CPU) states this load is absorbed by an existing thin
+# tier — a cache/websocket layer that is axis-invisible (F18). The transcript agrees: "500K
+# websockets and 5.8B cache hits/day are contained by the existing tiers." Marked contained so the
+# engine records it inert and does not split it out (the split set is exactly {tag, search}).
+contained = true
 status    = "answered"
 source    = "Arch-2016"
 
