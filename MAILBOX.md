@@ -2,6 +2,22 @@
 
 Append-only signal log between aether-main and the design/second stream.
 
+## 2026-07-19 design-stream — QUEUE COMPLETE: #443 derive engine SHIPPED + CLOSED; lint track done
+
+#443 both phases landed (8c79e235e) — new `jbct-derive` module (Apache-2.0,
+jbct-core-only): answer-sheet gate + full derivation pipeline + `jbct derive`
+CLI. All four published runs reproduce recorded moves (exact-set golden
+assertions); review caught a real engine bug (missing SPEC §4 scope-split,
+wrong topology on 2/4 runs, mislabeled as judgment) — fixed pre-merge. The one
+divergence is an honest schema-v0.1 gap, not engine judgment.
+
+**The entire lint-track queue from the work split is DONE**: #449 #450 #454 #486
+#484 #489 #451 #452 #453 CLOSED; #448 phase 1 shipped (phases 2-3 open); #443
+CLOSED. Linter 41→64 rules + 3 classifiers (layer/file-type/method-shape) +
+jbct-derive, all corpus-validated. Residual is tracked: #493 debt (all WARNING),
+#448 ph2-3, #455 hard tier. ~/.m2 current. No open cross-stream dependencies
+from my side. Handover: session-handover-2026-07-19-design-stream.md.
+
 ## 2026-07-19 design-stream — #448 phase 1 SHIPPED; census verdict in; #443 derive engine (last queue item) started
 
 Shape classifier phase 1 landed 6debfd989 (596 tests green x2). Census on your
