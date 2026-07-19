@@ -249,6 +249,31 @@ public class CstLinter {
         new CstMapperMethodReferenceRule(),
 
         // Jackson wire-record accessor dereferences a possibly-null component (JBCT-TOT-03)
-        new CstWireRecordTotalityRule());
+        new CstWireRecordTotalityRule(),
+
+        // Easy-tier batch (#451)
+        // Forbidden boundary types in business logic (JBCT-BND-01)
+        new CstBoundaryTypeRule(),
+
+        // Nested ternaries (JBCT-STY-09)
+        new CstNestedTernaryRule(),
+
+        // *State suffix reserved for lifecycle-sum interfaces (JBCT-NAM-03)
+        new CstStateSuffixRule(),
+
+        // Local records use lowercase camelCase (JBCT-NAM-04)
+        new CstLocalRecordNamingRule(),
+
+        // Test method naming (JBCT-NAM-05)
+        new CstTestMethodNamingRule(),
+
+        // Parameter reassignment (JBCT-MUT-01)
+        new CstParameterReassignmentRule(),
+
+        // Null literal argument / defensive null comparison (JBCT-RET-08)
+        new CstNullLiteralRule(),
+
+        // Cause variant style: enum vs record (JBCT-SEAL-02)
+        new CstCauseVariantStyleRule());
     }
 }

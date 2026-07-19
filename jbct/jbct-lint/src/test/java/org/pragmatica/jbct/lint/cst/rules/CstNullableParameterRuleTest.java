@@ -11,6 +11,7 @@ import org.pragmatica.jbct.shared.SourceFile;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.fail;
@@ -111,10 +112,37 @@ class CstNullableParameterRuleTest {
                 """));
     }
 
+    @Test
+    void analyze_nullCheckInNestedTypeMethod_reportsOnce() {
+        var diagnostics = ruleDiagnostics("""
+                package org.example;
+                class Foo {
+                    String outer(Timeout q) {
+                        Object o = new Object() {
+                            String go(Config p) {
+                                if (p == null) {
+                                    return "";
+                                }
+                                return p.toString();
+                            }
+                        };
+                        return q.toString();
+                    }
+                }
+                """);
+
+        assertEquals(1, diagnostics.size());
+    }
+
     private boolean hasRule(String source) {
+        return !ruleDiagnostics(source).isEmpty();
+    }
+
+    private List<Diagnostic> ruleDiagnostics(String source) {
         return lint(source).stream()
-                           .anyMatch(diagnostic -> diagnostic.ruleId()
-                                                             .equals(RULE_ID));
+                           .filter(diagnostic -> diagnostic.ruleId()
+                                                           .equals(RULE_ID))
+                           .toList();
     }
 
     private List<Diagnostic> lint(String source) {

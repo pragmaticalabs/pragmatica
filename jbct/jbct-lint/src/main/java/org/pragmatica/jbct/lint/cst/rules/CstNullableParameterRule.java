@@ -1,6 +1,7 @@
 package org.pragmatica.jbct.lint.cst.rules;
 
 import java.util.HashSet;
+import java.util.List;
 import java.util.Set;
 import java.util.regex.Pattern;
 import java.util.stream.Stream;
@@ -70,8 +71,10 @@ public class CstNullableParameterRule implements CstLintRule {
         }
 
         // Blank string literals and comments so a `param == null` written inside a log message or
-        // a comment never counts as a real null check.
-        var bodyText = MapperSafety.blankNonCode(text(bodyOpt.unwrap()));
+        // a comment never counts as a real null check. Nested type bodies (local / anonymous-class
+        // methods) are also blanked so an inner method's null check is not re-attributed to this
+        // method — the inner method gets its own scan pass.
+        var bodyText = ScopeScan.bodyTextExcludingNestedTypes(bodyOpt.unwrap());
         // Find parameters checked for null
         var nullCheckedParams = findNullCheckedParams(bodyText, paramNames);
 
@@ -86,7 +89,10 @@ public class CstNullableParameterRule implements CstLintRule {
 
     private Set<String> extractParameterNames(Cursor method) {
         var names = new HashSet<String>();
-        var params = findAll(method, RuleKind.PARAM);
+        // Only this method's own (direct) parameters — not parameters of nested local/anonymous
+        // type methods, whose bodies are scanned separately.
+        var params = methodParams(method).map(node -> childrenByRule(node, RuleKind.PARAM))
+                                         .or(List.of());
 
         for (var param : params) {
             // Parameter name is a token (Identifier) in v6; recover it from param text:

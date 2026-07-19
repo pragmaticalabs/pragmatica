@@ -173,7 +173,32 @@ public record LintConfig(Map<String, DiagnosticSeverity> ruleSeverities,
     Map.entry("JBCT-TOT-02", DiagnosticSeverity.ERROR),
 
     // Jackson wire-record accessor dereferences possibly-null component
-    Map.entry("JBCT-TOT-03", DiagnosticSeverity.WARNING)),
+    Map.entry("JBCT-TOT-03", DiagnosticSeverity.WARNING),
+
+    // Easy-tier batch (#451). Severities provisional pending corpus validation.
+    // Forbidden boundary types in business logic
+    Map.entry("JBCT-BND-01", DiagnosticSeverity.WARNING),
+
+    // Nested ternaries
+    Map.entry("JBCT-STY-09", DiagnosticSeverity.WARNING),
+
+    // *State suffix discipline
+    Map.entry("JBCT-NAM-03", DiagnosticSeverity.WARNING),
+
+    // Local records lowercase camelCase
+    Map.entry("JBCT-NAM-04", DiagnosticSeverity.WARNING),
+
+    // Test method naming
+    Map.entry("JBCT-NAM-05", DiagnosticSeverity.WARNING),
+
+    // Parameter reassignment
+    Map.entry("JBCT-MUT-01", DiagnosticSeverity.WARNING),
+
+    // Null literal argument / defensive null comparison
+    Map.entry("JBCT-RET-08", DiagnosticSeverity.WARNING),
+
+    // Cause variant style: enum vs record
+    Map.entry("JBCT-SEAL-02", DiagnosticSeverity.WARNING)),
                                                         Set.of(),
                                                         false);
 

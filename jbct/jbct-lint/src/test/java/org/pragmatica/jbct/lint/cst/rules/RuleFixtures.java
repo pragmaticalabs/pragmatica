@@ -862,5 +862,147 @@ final class RuleFixtures {
                         return items == null ? "" : items().getFirst();
                     }
                 }
+                """),
+
+        // JBCT-BND-01: forbidden boundary type (java.util.Optional) in an import / type position.
+        fixture("JBCT-BND-01", 2,
+                """
+                package org.example;
+                import java.util.Optional;
+                class Foo {
+                    Optional<String> run() { return Optional.empty(); }
+                }
+                """,
+                """
+                package org.example;
+                import org.pragmatica.lang.Option;
+                class Foo {
+                    Option<String> run() { return Option.none(); }
+                }
+                """),
+
+        // JBCT-STY-09: a ternary nested inside another ternary.
+        fixture("JBCT-STY-09", 4,
+                """
+                package org.example;
+                class Foo {
+                    Object run(int x) {
+                        return x > 0 ? (x > 5 ? "a" : "b") : "c";
+                    }
+                }
+                """,
+                """
+                package org.example;
+                class Foo {
+                    Object run(int x) {
+                        return x > 0 ? "a" : "b";
+                    }
+                }
+                """),
+
+        // JBCT-NAM-03: a variant named *State implementing a *State sealed interface.
+        fixture("JBCT-NAM-03", 3,
+                """
+                package org.example;
+                sealed interface HoldState {
+                    record HeldState() implements HoldState {}
+                }
+                """,
+                """
+                package org.example;
+                sealed interface HoldState {
+                    record Held() implements HoldState {}
+                }
+                """),
+
+        // JBCT-NAM-04: a local record with a PascalCase name.
+        fixture("JBCT-NAM-04", 4,
+                """
+                package org.example;
+                class Foo {
+                    Object run() {
+                        record Cache(int x) {}
+                        return new Cache(0);
+                    }
+                }
+                """,
+                """
+                package org.example;
+                class Foo {
+                    Object run() {
+                        record cache(int x) {}
+                        return new cache(0);
+                    }
+                }
+                """),
+
+        // JBCT-NAM-05: a @Test method not named methodName_scenario_expectation.
+        fixture("JBCT-NAM-05", 3,
+                """
+                package org.example;
+                class FooTest {
+                    @Test void run() {}
+                }
+                """,
+                """
+                package org.example;
+                class FooTest {
+                    @Test void run_returns_value() {}
+                }
+                """),
+
+        // JBCT-MUT-01: reassignment of a method parameter.
+        fixture("JBCT-MUT-01", 4,
+                """
+                package org.example;
+                class Foo {
+                    int run(int count) {
+                        count = count + 1;
+                        return count;
+                    }
+                }
+                """,
+                """
+                package org.example;
+                class Foo {
+                    int run(int count) {
+                        var total = count + 1;
+                        return total;
+                    }
+                }
+                """),
+
+        // JBCT-RET-08: a literal null passed as a call argument (the .or(null) adapter is exempt).
+        fixture("JBCT-RET-08", 4,
+                """
+                package org.example;
+                class Foo {
+                    Object run() {
+                        return compute(null);
+                    }
+                }
+                """,
+                """
+                package org.example;
+                class Foo {
+                    Object run(Option<String> opt) {
+                        return opt.or(null);
+                    }
+                }
+                """),
+
+        // JBCT-SEAL-02: a fixed-message (zero-component) cause modelled as a record, not an enum.
+        fixture("JBCT-SEAL-02", 3,
+                """
+                package org.example;
+                sealed interface RegError extends Cause {
+                    record TokenFailed() implements RegError {}
+                }
+                """,
+                """
+                package org.example;
+                sealed interface RegError extends Cause {
+                    record HashingFailed(Throwable cause) implements RegError {}
+                }
                 """));
 }

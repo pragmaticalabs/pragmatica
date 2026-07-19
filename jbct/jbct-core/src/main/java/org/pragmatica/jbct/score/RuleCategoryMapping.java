@@ -29,10 +29,12 @@ public sealed interface RuleCategoryMapping permits RuleCategoryMapping.unused {
     Map.entry("JBCT-RET-04", ScoreCategory.RETURN_TYPES),      // no Void type parameter
     Map.entry("JBCT-RET-05", ScoreCategory.RETURN_TYPES),      // no always-succeeding Result
     Map.entry("JBCT-RET-07", ScoreCategory.RETURN_TYPES),      // no discarded Result/Promise/Option
+    Map.entry("JBCT-BND-01", ScoreCategory.RETURN_TYPES),      // no forbidden boundary types (Optional/CompletableFuture/…)
 
     // Null Safety (20%) — no null returns, no nullable parameters
     Map.entry("JBCT-RET-03", ScoreCategory.NULL_SAFETY),       // no null return
     Map.entry("JBCT-RET-06", ScoreCategory.NULL_SAFETY),       // no nullable parameter
+    Map.entry("JBCT-RET-08", ScoreCategory.NULL_SAFETY),       // no null argument / defensive null comparison
     Map.entry("JBCT-TOT-03", ScoreCategory.NULL_SAFETY),       // wire-record accessor derefs possibly-null component
 
     // Exception Hygiene (20%) — no business exceptions, proper typed error handling
@@ -40,6 +42,7 @@ public sealed interface RuleCategoryMapping permits RuleCategoryMapping.unused {
     Map.entry("JBCT-EX-02", ScoreCategory.EXCEPTION_HYGIENE),  // no orElseThrow
     Map.entry("JBCT-STY-01", ScoreCategory.EXCEPTION_HYGIENE), // fluent failure (cause.result())
     Map.entry("JBCT-SEAL-01", ScoreCategory.EXCEPTION_HYGIENE),// sealed error interfaces
+    Map.entry("JBCT-SEAL-02", ScoreCategory.EXCEPTION_HYGIENE),// cause variant style (enum vs record)
     Map.entry("JBCT-UTIL-01", ScoreCategory.EXCEPTION_HYGIENE),// Result-returning parse utilities
     Map.entry("JBCT-TOT-01", ScoreCategory.EXCEPTION_HYGIENE), // partial op in mapper lambda throws
     Map.entry("JBCT-TOT-02", ScoreCategory.EXCEPTION_HYGIENE), // partial method reference in mapper throws
@@ -51,6 +54,7 @@ public sealed interface RuleCategoryMapping permits RuleCategoryMapping.unused {
     Map.entry("JBCT-SEQ-01", ScoreCategory.PATTERN_PURITY),    // sequencer chain length
     Map.entry("JBCT-NEST-01", ScoreCategory.PATTERN_PURITY),   // no nested monadic operations
     Map.entry("JBCT-MIX-01", ScoreCategory.PATTERN_PURITY),    // no I/O mixed into domain
+    Map.entry("JBCT-MUT-01", ScoreCategory.PATTERN_PURITY),    // no parameter reassignment
 
     // Factory Methods (10%) — value object factories and naming conventions
     Map.entry("JBCT-VO-01", ScoreCategory.FACTORY_METHODS),    // missing Result factory
@@ -58,6 +62,8 @@ public sealed interface RuleCategoryMapping permits RuleCategoryMapping.unused {
     Map.entry("JBCT-UC-01", ScoreCategory.FACTORY_METHODS),    // nested record factory
     Map.entry("JBCT-NAM-01", ScoreCategory.FACTORY_METHODS),   // factory naming
     Map.entry("JBCT-NAM-02", ScoreCategory.FACTORY_METHODS),   // Valid not Validated
+    Map.entry("JBCT-NAM-03", ScoreCategory.FACTORY_METHODS),   // *State suffix discipline
+    Map.entry("JBCT-NAM-04", ScoreCategory.FACTORY_METHODS),   // local records lowercase camelCase
     Map.entry("JBCT-ACR-01", ScoreCategory.FACTORY_METHODS),   // acronym naming
     Map.entry("JBCT-UTIL-02", ScoreCategory.FACTORY_METHODS),  // Verify.Is validation predicates
 
@@ -76,9 +82,11 @@ public sealed interface RuleCategoryMapping permits RuleCategoryMapping.unused {
                                        "JBCT-STY-06",     // import ordering
                                        "JBCT-STY-07",     // unnecessary var before return
                                        "JBCT-STY-08",     // if/else with return in both branches
+                                       "JBCT-STY-09",     // nested ternaries
                                        "JBCT-STATIC-01",  // static imports for Pragmatica
                                        "JBCT-LOG-01",     // conditional logging
                                        "JBCT-LOG-02",     // logger as parameter
+                                       "JBCT-NAM-05",     // test method naming
                                        "JBCT-ZONE-01",    // zone 2 verbs for steps
                                        "JBCT-ZONE-02",    // zone 3 verbs for leaves
                                        "JBCT-ZONE-03");   // no zone mixing
