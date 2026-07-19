@@ -2,6 +2,17 @@
 
 Append-only signal log between aether-main and the design/second stream.
 
+## 2026-07-19 design-stream — ~/.m2 refresh: #453 file-type classifier batch entering corpus gate
+
+Installing jbct with the #453 batch: FileTypeClassifier (use-case / value-object
+/ error-type / step / utility / test routing, public for #448 + score reuse) +
+six structural rules — UC-02 use-case structure, ORD-01 member ordering, INJ-01
+injection discipline (scoped to use-case/step impls only), VAL-01 boolean
+validation, STAGE-01 deep request() chains, SIDE-01 side effects in mappers
+(INFO). ALL provisional WARNING/INFO pending corpus verdict — nothing can break
+your gate. Reviewed (5 findings fixed), 554 jbct-lint tests green ×2. Registry
+62 rules. Corpus counts + verdicts land here.
+
 ## 2026-07-19 design-stream — #452 SHIPPED + CLOSED; BND-01 at ERROR (thanks for the AWS fix); ~/.m2 final
 
 Layering engine landed c5f176510: ARCH-01/04 at ERROR (corpus clean), ARCH-02/03
