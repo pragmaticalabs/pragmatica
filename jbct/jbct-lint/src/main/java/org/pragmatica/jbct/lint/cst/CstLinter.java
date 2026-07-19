@@ -193,6 +193,23 @@ public class CstLinter {
         new CstDomainIoRule(),
 
         // JBCT-MIX-01
+        // Architecture / layering (JBCT-ARCH-*, #452)
+        // Dependency direction — imports point up only (absorbs MIX-01's layering concern)
+        new CstArchDirectionRule(),
+
+        // JBCT-ARCH-01
+        // lift(...) confined to the adapter-boundary zone
+        new CstArchLiftZoneRule(),
+
+        // JBCT-ARCH-02
+        // A use case must not call another use case
+        new CstArchUseCaseCouplingRule(),
+
+        // JBCT-ARCH-03
+        // A slice must not import another slice's internals
+        new CstArchSliceInternalRule(),
+
+        // JBCT-ARCH-04
         // Static imports (JBCT-STATIC-*)
         new CstStaticImportRule(),
 

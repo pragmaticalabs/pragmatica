@@ -584,6 +584,70 @@ final class RuleFixtures {
                 }
                 """),
 
+        // JBCT-ARCH-01: dependency direction — a domain file importing an adapter package.
+        fixture("JBCT-ARCH-01", 2,
+                """
+                package com.example.domain.user;
+                import com.example.adapter.persistence.Row;
+                class User {
+                }
+                """,
+                """
+                package com.example.application.register;
+                import com.example.domain.user.User;
+                class RegisterService {
+                }
+                """),
+
+        // JBCT-ARCH-02: lift(...) in a business-zone (domain) file; legal only in the adapter zone.
+        fixture("JBCT-ARCH-02", 3,
+                """
+                package com.example.domain.pricing;
+                class Pricing {
+                    Object run() { return Result.lift(Err::new, () -> compute()); }
+                }
+                """,
+                """
+                package com.example.adapter.pricing;
+                class PricingRepo {
+                    Object run() { return Result.lift(Err::new, () -> compute()); }
+                }
+                """),
+
+        // JBCT-ARCH-03: a use case importing another *UseCase type.
+        fixture("JBCT-ARCH-03", 2,
+                """
+                package com.example.usecase.registeruser;
+                import com.example.usecase.loginuser.LoginUseCase;
+                interface RegisterUseCase {
+                    Result<String> execute(String r);
+                }
+                """,
+                """
+                package com.example.usecase.registeruser;
+                interface RegisterUseCase {
+                    interface CheckEmail {
+                        Result<String> apply(String r);
+                    }
+                    Result<String> execute(String r);
+                }
+                """),
+
+        // JBCT-ARCH-04: importing another slice's internal package (a different slice's non-root).
+        fixture("JBCT-ARCH-04", 2,
+                """
+                package com.example.usecase.registeruser;
+                import com.example.usecase.loginuser.internal.Token;
+                class RegisterUser {
+                }
+                """,
+                """
+                package com.example.usecase.registeruser;
+                import com.example.usecase.registeruser.internal.Token;
+                class RegisterUser {
+                }
+                """),
+
         // JBCT-STATIC-01: prefer static import for Pragmatica factory calls.
         fixture("JBCT-STATIC-01", 3,
                 """

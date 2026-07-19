@@ -92,7 +92,8 @@ public class LintCommand implements Callable<Integer> {
 
         return LintContext.defaultContext()
                           .withConfig(lintConfig)
-                          .withExcludePackages(jbctConfig.excludePackages());
+                          .withExcludePackages(jbctConfig.excludePackages())
+                          .withLayers(jbctConfig.layers());
     }
 
     private void processFile(Path file, JbctLinter linter, List<Diagnostic> allDiagnostics, int[] counters) {

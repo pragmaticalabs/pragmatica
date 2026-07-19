@@ -1359,6 +1359,36 @@ class CstLinterTest {
                 """);
             assertNoRule(diagnostics, "JBCT-MIX-01");
         }
+
+        // #452 migration pinning: 'domain' as a substring of a segment ('mydomain') is NOT a domain
+        // segment. The classifier is segment-based, unlike the old '.domain.' substring check, so
+        // MIX-01 stays clean here. This delta is intentional per #452.
+        @Test
+        void allowsIoWhenDomainIsSubstringOfSegment() {
+            var diagnostics = lint("""
+                package com.x.mydomain;
+                import java.io.File;
+                public class Data {
+                    File f;
+                }
+                """);
+            assertNoRule(diagnostics, "JBCT-MIX-01");
+        }
+
+        // #452 migration pinning: the old '.domain.' substring flagged this package; the classifier
+        // resolves the deepest layer segment ('adapter'), so it is not a domain package and MIX-01
+        // stays clean. This delta is intentional per #452.
+        @Test
+        void allowsIoWhenDeepestLayerSegmentIsAdapter() {
+            var diagnostics = lint("""
+                package com.x.domain.adapter;
+                import java.io.File;
+                public class Data {
+                    File f;
+                }
+                """);
+            assertNoRule(diagnostics, "JBCT-MIX-01");
+        }
     }
 
     // ========== JBCT-STATIC-* Static Import Rules ==========

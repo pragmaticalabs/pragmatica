@@ -65,7 +65,8 @@ public class ScoreCommand implements Callable<Integer> {
     private LintContext createContext(JbctConfig jbctConfig) {
         return LintContext.defaultContext()
                           .withConfig(jbctConfig.lint())
-                          .withExcludePackages(jbctConfig.excludePackages());
+                          .withExcludePackages(jbctConfig.excludePackages())
+                          .withLayers(jbctConfig.layers());
     }
 
     private List<Diagnostic> lintFiles(List<Path> files, JbctLinter linter) {

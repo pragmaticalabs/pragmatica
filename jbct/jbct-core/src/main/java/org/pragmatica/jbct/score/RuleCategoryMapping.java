@@ -54,6 +54,10 @@ public sealed interface RuleCategoryMapping permits RuleCategoryMapping.unused {
     Map.entry("JBCT-SEQ-01", ScoreCategory.PATTERN_PURITY),    // sequencer chain length
     Map.entry("JBCT-NEST-01", ScoreCategory.PATTERN_PURITY),   // no nested monadic operations
     Map.entry("JBCT-MIX-01", ScoreCategory.PATTERN_PURITY),    // no I/O mixed into domain
+    Map.entry("JBCT-ARCH-01", ScoreCategory.PATTERN_PURITY),   // dependency direction (imports point up only)
+    Map.entry("JBCT-ARCH-02", ScoreCategory.PATTERN_PURITY),   // lift(...) confined to adapter-boundary zone
+    Map.entry("JBCT-ARCH-03", ScoreCategory.PATTERN_PURITY),   // use case must not call another use case
+    Map.entry("JBCT-ARCH-04", ScoreCategory.PATTERN_PURITY),   // slice must not import another slice's internals
     Map.entry("JBCT-MUT-01", ScoreCategory.PATTERN_PURITY),    // no parameter reassignment
 
     // Factory Methods (10%) — value object factories and naming conventions

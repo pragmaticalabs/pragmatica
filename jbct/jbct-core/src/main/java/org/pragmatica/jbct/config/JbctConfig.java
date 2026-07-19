@@ -11,6 +11,7 @@ import org.pragmatica.config.toml.TomlDocument;
 import org.pragmatica.jbct.format.FormatterConfig;
 import org.pragmatica.jbct.lint.DiagnosticSeverity;
 import org.pragmatica.jbct.lint.LintConfig;
+import org.pragmatica.jbct.lint.layer.LayerConfig;
 import org.pragmatica.lang.Option;
 
 
@@ -21,10 +22,14 @@ public record JbctConfig(FormatterConfig formatter,
                          FilesConfig files,
                          BlueprintConfig blueprint,
                          List<String> sourceDirectories,
-                         List<String> excludePackages) {
+                         List<String> excludePackages,
+                         LayerConfig layers) {
     public JbctConfig {
         sourceDirectories = List.copyOf(sourceDirectories);
         excludePackages = List.copyOf(excludePackages);
+        layers = layers == null
+                 ? LayerConfig.DEFAULT
+                 : layers;
     }
 
     /// Default configuration.
@@ -33,7 +38,8 @@ public record JbctConfig(FormatterConfig formatter,
                                                         FilesConfig.DEFAULT,
                                                         BlueprintConfig.DEFAULT,
                                                         List.of("src/main/java"),
-                                                        List.of());
+                                                        List.of(),
+                                                        LayerConfig.DEFAULT);
 
     /// Factory method for creating JbctConfig.
     public static JbctConfig jbctConfig(FormatterConfig formatter,
@@ -41,8 +47,9 @@ public record JbctConfig(FormatterConfig formatter,
                                         FilesConfig files,
                                         BlueprintConfig blueprint,
                                         List<String> sourceDirectories,
-                                        List<String> excludePackages) {
-        return new JbctConfig(formatter, lint, files, blueprint, sourceDirectories, excludePackages);
+                                        List<String> excludePackages,
+                                        LayerConfig layers) {
+        return new JbctConfig(formatter, lint, files, blueprint, sourceDirectories, excludePackages, layers);
     }
 
     /// Create config from parsed TOML document.
@@ -94,13 +101,20 @@ public record JbctConfig(FormatterConfig formatter,
         // Project section
         var sourceDirectories = toml.getStringList("project", "sourceDirectories").or(List.of("src/main/java"));
         var excludePackages = toml.getStringList("lint", "excludePackages").or(List.of());
+        // Layering section (issue #452) — per-layer package globs + slice-root globs.
+        var layerConfig = LayerConfig.layerConfig(toml.getStringList("lint.layers", "domain").or(List.of()),
+                                                  toml.getStringList("lint.layers", "application").or(List.of()),
+                                                  toml.getStringList("lint.layers", "adapter").or(List.of()),
+                                                  toml.getStringList("lint.layers", "bootstrap").or(List.of()),
+                                                  toml.getStringList("lint.layers", "slices").or(List.of()));
 
         return jbctConfig(formatterConfig,
                           lintConfig,
                           filesConfig,
                           blueprintConfig,
                           sourceDirectories,
-                          excludePackages);
+                          excludePackages,
+                          layerConfig);
     }
 
     /// Merge this config with another, with other taking precedence.
@@ -128,13 +142,17 @@ public record JbctConfig(FormatterConfig formatter,
         var mergedExcludePackages = other.excludePackages.isEmpty()
                                     ? this.excludePackages
                                     : other.excludePackages;
+        var mergedLayers = other.layers.isEmpty()
+                           ? this.layers
+                           : other.layers;
 
         return jbctConfig(mergedFormatter,
                           mergedLint,
                           mergedFiles,
                           mergedBlueprint,
                           mergedSourceDirs,
-                          mergedExcludePackages);
+                          mergedExcludePackages,
+                          mergedLayers);
     }
 
     /// Generate TOML representation of this config.
@@ -180,7 +198,29 @@ public record JbctConfig(FormatterConfig formatter,
         sb.append("sourceDirectories = [");
         sb.append(sourceDirectories.stream().map(s -> "\"" + s + "\"").collect(Collectors.joining(", ")));
         sb.append("]\n");
+        // Layering section (issue #452) — omitted when unconfigured (conventions apply).
+        if (!layers.isEmpty()) {
+            sb.append("\n[lint.layers]\n");
+            appendGlobList(sb, "domain", layers.domainGlobs());
+            appendGlobList(sb, "application", layers.applicationGlobs());
+            appendGlobList(sb, "adapter", layers.adapterGlobs());
+            appendGlobList(sb, "bootstrap", layers.bootstrapGlobs());
+            appendGlobList(sb, "slices", layers.sliceGlobs());
+        }
 
         return sb.toString();
+    }
+
+    private static void appendGlobList(StringBuilder sb, String key, List<String> globs) {
+        if (globs.isEmpty()) {
+            return;
+        }
+
+        sb.append(key)
+          .append(" = [")
+          .append(globs.stream()
+                       .map(s -> "\"" + s + "\"")
+                       .collect(Collectors.joining(", ")))
+          .append("]\n");
     }
 }
