@@ -233,8 +233,24 @@ public record LintConfig(Map<String, DiagnosticSeverity> ruleSeverities,
     Map.entry("JBCT-STAGE-01", DiagnosticSeverity.WARNING),
 
     // Side effects in transformation lambdas (INFO — expected FP surface, promote after calibration)
-    Map.entry("JBCT-SIDE-01", DiagnosticSeverity.INFO)),
-                                                        Set.of(),
+    Map.entry("JBCT-SIDE-01", DiagnosticSeverity.INFO),
+
+    // Method-shape classifier census (#448, phase 1). Both INFO — census-only, no build gate; the
+    // shape distribution + residual rate is measured on the aether corpus before phase 2 promotes
+    // MIXED/UNCLASSIFIED to WARNING (precedent SIDE-01).
+    // Method blends two patterns at one altitude (MIXED)
+    Map.entry("JBCT-SHAPE-01", DiagnosticSeverity.INFO),
+
+    // Method has no single pattern (UNCLASSIFIED)
+    Map.entry("JBCT-SHAPE-02", DiagnosticSeverity.INFO)),
+                                                        // JBCT-SHAPE-02 ships DEFAULT-DISABLED: the aether corpus census
+                                                        // returned 5336 UNCLASSIFIED methods (multi-statement / local-var-then-
+                                                        // return domination across node/cli/deployment), so leaving it on would
+                                                        // spam every `jbct:check` run. It stays a registered rule (severity +
+                                                        // fixture + category invariants hold) and is run on demand — enable it in
+                                                        // config for a shape census. JBCT-SHAPE-01 (MIXED) stays enabled: it is
+                                                        // corpus-zero and silent, the real-time single-pattern signal worth having.
+                                                        Set.of("JBCT-SHAPE-02"),
                                                         false);
 
     /// Factory method for default config.

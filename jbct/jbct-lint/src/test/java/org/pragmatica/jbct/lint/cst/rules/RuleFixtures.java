@@ -1204,5 +1204,46 @@ final class RuleFixtures {
                         return items.map(String::trim);
                     }
                 }
+                """),
+
+        // JBCT-SHAPE-01: MIXED — a fork-join head and a stream pipeline at the same altitude. The
+        // verdict is anchored on the method declaration line (3). Negative: a clean fork-join.
+        fixture("JBCT-SHAPE-01", 3,
+                """
+                package org.example;
+                class Foo {
+                    Object run() {
+                        return Result.all(base(), limit()).map(this::ctx).stream().map(this::apply).toList();
+                    }
+                }
+                """,
+                """
+                package org.example;
+                class Foo {
+                    Object run() {
+                        return Promise.all(fetchA(id), fetchB(id)).map(this::merge);
+                    }
+                }
+                """),
+
+        // JBCT-SHAPE-02: UNCLASSIFIED — imperative residue (a two-statement body, no single
+        // composition root), anchored on the method declaration line (3). Negative: a clean sequencer.
+        fixture("JBCT-SHAPE-02", 3,
+                """
+                package org.example;
+                class Foo {
+                    Object run() {
+                        var x = compute();
+                        return x.transform();
+                    }
+                }
+                """,
+                """
+                package org.example;
+                class Foo {
+                    Object run() {
+                        return compute().map(this::finish).flatMap(this::save);
+                    }
+                }
                 """));
 }

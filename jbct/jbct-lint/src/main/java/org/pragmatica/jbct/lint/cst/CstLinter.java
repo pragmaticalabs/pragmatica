@@ -310,6 +310,13 @@ public class CstLinter {
         new CstStageRecordRule(),
 
         // Side effects in transformation lambdas (JBCT-SIDE-01, INFO)
-        new CstSideEffectMapperRule());
+        new CstSideEffectMapperRule(),
+
+        // Method-shape classifier census (#448, phase 1, INFO)
+        // Method blends two patterns at one altitude (JBCT-SHAPE-01, MIXED)
+        new CstShapeMixedRule(),
+
+        // Method has no single pattern (JBCT-SHAPE-02, UNCLASSIFIED)
+        new CstShapeUnclassifiedRule());
     }
 }

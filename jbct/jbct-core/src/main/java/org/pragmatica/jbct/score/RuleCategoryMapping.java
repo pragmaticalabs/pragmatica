@@ -61,6 +61,8 @@ public sealed interface RuleCategoryMapping permits RuleCategoryMapping.unused {
     Map.entry("JBCT-MUT-01", ScoreCategory.PATTERN_PURITY),    // no parameter reassignment
     Map.entry("JBCT-INJ-01", ScoreCategory.PATTERN_PURITY),    // constructor/factory injection only
     Map.entry("JBCT-STAGE-01", ScoreCategory.PATTERN_PURITY),  // stage-record conventions (growing context)
+    Map.entry("JBCT-SHAPE-01", ScoreCategory.PATTERN_PURITY),  // method blends two patterns at one altitude (#448 census)
+    Map.entry("JBCT-SHAPE-02", ScoreCategory.PATTERN_PURITY),  // method has no single pattern (#448 census)
 
     // Factory Methods (10%) — value object factories and naming conventions
     Map.entry("JBCT-VO-01", ScoreCategory.FACTORY_METHODS),    // missing Result factory

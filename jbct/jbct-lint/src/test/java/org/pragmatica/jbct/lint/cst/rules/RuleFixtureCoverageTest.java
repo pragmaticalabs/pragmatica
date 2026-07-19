@@ -2,8 +2,10 @@ package org.pragmatica.jbct.lint.cst.rules;
 
 import java.nio.file.Path;
 import java.util.List;
+import java.util.Set;
 
 import org.pragmatica.jbct.lint.Diagnostic;
+import org.pragmatica.jbct.lint.LintConfig;
 import org.pragmatica.jbct.lint.LintContext;
 import org.pragmatica.jbct.lint.cst.CstLinter;
 import org.pragmatica.jbct.lint.cst.rules.RuleFixtures.RuleFixture;
@@ -23,12 +25,23 @@ import static org.junit.jupiter.api.Assertions.fail;
 /// diagnostic on the expected line (rule ID AND line asserted — no vacuous "some diagnostic
 /// exists" checks), and the NEGATIVE snippet must stay clean of that rule. Adding a future
 /// rule's coverage costs one [RuleFixtures] row, not a new test class.
+///
+/// The harness runs with ALL registered rules force-enabled (empty `disabledRules`) so a
+/// default-disabled census rule (JBCT-SHAPE-02) is still exercised by its fixture — fixture
+/// coverage is about rule behaviour, independent of default enablement.
 class RuleFixtureCoverageTest {
     private static CstLinter linter;
 
     @BeforeAll
     static void setUp() {
-        linter = CstLinter.cstLinter(LintContext.defaultContext());
+        linter = CstLinter.cstLinter(allRulesEnabled());
+    }
+
+    private static LintContext allRulesEnabled() {
+        return LintContext.defaultContext()
+                          .withConfig(LintConfig.lintConfig(LintConfig.DEFAULT.ruleSeverities(),
+                                                            Set.of(),
+                                                            LintConfig.DEFAULT.failOnWarning()));
     }
 
     static List<RuleFixture> fixtures() {
