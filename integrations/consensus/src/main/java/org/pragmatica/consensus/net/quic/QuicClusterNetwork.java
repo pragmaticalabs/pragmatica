@@ -760,10 +760,27 @@ public class QuicClusterNetwork implements ClusterNetwork {
             return;
         }
 
+        // #491 Q3: never dial a peer whose PeerState is REMOVED — a killed/decommissioned node is a
+        // terminal departure, and retrying it forever spammed "NOT dialing <dead peer>" every second (the
+        // sof-3 case). A genuine transient-partition survivor is readmitted REMOVED->INIT by the
+        // missing-peer reconciler (incarnation-fenced) and never arrives here still REMOVED.
+        if (isRemovedPeer(connectNode.node())) {
+            log.debug("connect({}) skipped — PeerState is REMOVED (terminal departure); reconciler owns any re-admit",
+                      connectNode.node());
+
+            return;
+        }
+
         topologyManager.get(connectNode.node())
                        .onPresent(this::connectPeer)
                        .onEmpty(() -> log.error("Unknown {}",
                                                 connectNode.node()));
+    }
+
+    private boolean isRemovedPeer(NodeId peerId) {
+        return Option.option(peers.get(peerId))
+                     .map(state -> state.phase() == PeerState.Phase.REMOVED)
+                     .or(false);
     }
 
     @Override
@@ -2242,9 +2259,27 @@ public class QuicClusterNetwork implements ClusterNetwork {
     }
 
     private boolean higherIdGracePeriodElapsed(NodeId peerId, long nowMs) {
+        // #491: the 60s higher-id grace exists ONLY to avoid the cold-boot dual-Hello race for a
+        // NEVER-connected peer. A peer that has EVER reached CONNECTED and is now EVICTED is a LOST link
+        // to a known-live member — there is no dual-Hello race to avoid — so it bypasses the grace and is
+        // force-dialed on the next reconcile tick (gated by the `beginConnecting` single-in-flight dedup).
+        // Without this, an asymmetrically-evicted live member had no connection for up to 60s (the #491
+        // stream catch-up stall); the strict lower-id-first ordering still governs the never-connected case.
+        if (previouslyConnectedNowEvicted(peerId)) {
+            return true;
+        }
+
         var firstMissed = firstObservedMissingMs.get(peerId);
 
         return firstMissed != null && (nowMs - firstMissed) >= RECONCILE_BACKOFF_CAP_MS;
+    }
+
+    /// #491: a peer whose PeerState is EVICTED but which has EVER reached CONNECTED — a lost link to a
+    /// member that already completed its Hello handshake (not a hung cold-boot `CONNECTING→EVICTED` dial).
+    private boolean previouslyConnectedNowEvicted(NodeId peerId) {
+        return Option.option(peers.get(peerId))
+                     .map(state -> state.phase() == PeerState.Phase.EVICTED && state.hasEverConnected())
+                     .or(false);
     }
 
     /// Staleness escape hatch for the in-flight-dial dedup guard. A peer is normally skipped while

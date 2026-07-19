@@ -16,6 +16,7 @@
 
 package org.pragmatica.consensus.net.quic;
 
+import io.netty.handler.codec.quic.QuicChannel;
 import io.netty.handler.codec.quic.QuicSslContext;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -51,6 +52,8 @@ import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.fail;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 
 /// Verifies the periodic missing-peer reconciler in [`QuicClusterNetwork`]: every tick walks
@@ -400,6 +403,96 @@ class QuicClusterNetworkReconcilerTest {
             .isGreaterThanOrEqualTo(1L);
     }
 
+    @Test
+    void reconcileMissingPeersTick_higherSelfId_previouslyConnectedEvictedPeer_forceDialsWithinGrace() {
+        // #491 F1: the 60s higher-id grace exists ONLY to avoid the cold-boot dual-Hello race for a
+        // NEVER-connected peer. A LIVE authoritative member that reached CONNECTED and is now EVICTED
+        // (an asymmetrically-dropped link) is a lost connection to a known-live node — there is no
+        // dual-Hello race to avoid — so the higher-id side MUST force-dial it on the NEXT tick, WITHIN
+        // the grace window. Direct contrast with reconcileMissingPeersTick_higherSelfIdBeforeGrace_
+        // doesNotForceDial: an INIT (never-connected) peer under the SAME higher-id ordering stays
+        // un-dialed (lookups == 0) until the 60s grace elapses. The clock is frozen at T=0 (deep inside
+        // grace) so only the previously-CONNECTED bypass can explain a dial here.
+        var self = new NodeId("zzz-self");
+        var lowerPeer = new NodeId("aaa-lower");
+        var peerInfo = NodeInfo.nodeInfo(lowerPeer, addressOf("127.0.0.1", 1));
+        var stub = countingTopology(self, List.of(peerInfo), Set.of(self, lowerPeer));
+        var clock = new AtomicLong(0L);
+        var network = createNetwork(self, List.of(peerInfo), MessageRouter.mutable(), stub);
+        network.overrideWallClockForTests(clock::get);
+        // Seed the peer as a member that CONNECTED then lost its link (EVICTED, ever-connected).
+        var seeded = network.seedPeerForTests(lowerPeer, evictedAfterConnected(lowerPeer));
+        assertThat(seeded.hasEverConnected())
+            .as("precondition: seeded peer completed a Hello handshake before eviction")
+            .isTrue();
+        assertThat(seeded.phase())
+            .as("precondition: seeded peer is EVICTED (lost link to a known-live member)")
+            .isEqualTo(PeerState.Phase.EVICTED);
+
+        network.reconcileMissingPeersTick();
+
+        assertThat(stub.lookups.getOrDefault(lowerPeer, 0L))
+            .as("#491: a previously-CONNECTED evicted live member is force-dialed within grace (grace bypassed)")
+            .isEqualTo(1L);
+    }
+
+    @Test
+    void reconcileMissingPeersTick_previouslyConnectedEvictedPeer_repeatTickWithinBackoff_deduped() {
+        // #491 F1 dedup: the grace bypass fires the force-dial ONCE, then the per-peer reconcile
+        // backoff (and the in-flight beginConnecting guard) suppress redundant dials while the first
+        // attempt is outstanding. With the clock frozen at T=0, every subsequent tick — this test's
+        // extra manual ticks AND any concurrent scheduler tick — shares the same backoff window and is
+        // suppressed, so the topology lookup count stays at exactly one. reconcileBackoffAllows is
+        // synchronized, so the check-and-set is atomic under the concurrent scheduler.
+        var self = new NodeId("zzz-self");
+        var lowerPeer = new NodeId("aaa-lower");
+        var peerInfo = NodeInfo.nodeInfo(lowerPeer, addressOf("127.0.0.1", 1));
+        var stub = countingTopology(self, List.of(peerInfo), Set.of(self, lowerPeer));
+        var clock = new AtomicLong(0L);
+        var network = createNetwork(self, List.of(peerInfo), MessageRouter.mutable(), stub);
+        network.overrideWallClockForTests(clock::get);
+        network.seedPeerForTests(lowerPeer, evictedAfterConnected(lowerPeer));
+
+        network.reconcileMissingPeersTick();
+        network.reconcileMissingPeersTick();
+        network.reconcileMissingPeersTick();
+
+        assertThat(stub.lookups.getOrDefault(lowerPeer, 0L))
+            .as("#491: repeated ticks within the backoff window force-dial the evicted peer exactly once (deduped)")
+            .isEqualTo(1L);
+    }
+
+    @Test
+    void connect_removedPeer_isSkipped() {
+        // #491 Q3: connect(ConnectNode) must NOT dial a peer whose PeerState is REMOVED — a
+        // killed/decommissioned node is a terminal departure, and retrying it forever spammed the dial
+        // path (the sof-3 case). Any genuine transient-partition survivor is readmitted REMOVED->INIT
+        // by the incarnation-fenced missing-peer reconciler and never reaches connect() still REMOVED.
+        // The peer is absent from coreNodes() so the concurrent reconciler leaves it terminal on its
+        // own — the ONLY thing that could dial it here is connect(), and the Q3 gate must stop it
+        // BEFORE the topology lookup (lookups == 0 discriminates the gate from a plain shouldInitiate skip).
+        var self = new NodeId("aaa-self");
+        var removedPeer = new NodeId("zzz-removed");
+        var peerInfo = NodeInfo.nodeInfo(removedPeer, addressOf("127.0.0.1", 1));
+        var stub = countingTopology(self, List.of(peerInfo), Set.of(self));
+        var clock = new AtomicLong(1_000_000L);
+        var network = createNetwork(self, List.of(peerInfo), MessageRouter.mutable(), stub);
+        network.overrideWallClockForTests(clock::get);
+
+        var removedState = PeerState.peerState(removedPeer, 1L);
+        removedState.authoritativeRemove(2L);
+        network.seedPeerForTests(removedPeer, removedState);
+
+        network.connect(new NetworkServiceMessage.ConnectNode(removedPeer));
+
+        assertThat(removedState.phase())
+            .as("#491 Q3: connect(ConnectNode) leaves a REMOVED peer terminal")
+            .isEqualTo(PeerState.Phase.REMOVED);
+        assertThat(stub.lookups.getOrDefault(removedPeer, 0L))
+            .as("#491 Q3: connect(ConnectNode) performs no topology lookup / dial for a REMOVED peer")
+            .isEqualTo(0L);
+    }
+
     private static NodeAddress addressOf(String host, int port) {
         return NodeAddress.nodeAddress(host, port).fold(_ -> fail("bad address"), a -> a);
     }
@@ -421,6 +514,25 @@ class QuicClusterNetworkReconcilerTest {
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
         }
+    }
+
+    /// Builds a `PeerState` for a member that CONNECTED then lost its link: INIT → CONNECTING →
+    /// CONNECTED (via a live-channel attach, marking it ever-connected) → EVICTED. This is the exact
+    /// shape `previouslyConnectedNowEvicted` keys the #491 grace bypass off — distinct from a hung
+    /// cold-boot dial (CONNECTING → EVICTED) which never connected. The mocked channel only needs to
+    /// report active so the attach is ACCEPTED; the connection is dropped by `evict`.
+    private static PeerState evictedAfterConnected(NodeId peerId) {
+        var state = PeerState.peerState(peerId, 1L);
+        state.beginConnecting(2L);
+        state.attach(liveConnectionFor(peerId), 3L);
+        state.evict(4L);
+        return state;
+    }
+
+    private static QuicPeerConnection liveConnectionFor(NodeId peerId) {
+        var channel = mock(QuicChannel.class);
+        when(channel.isActive()).thenReturn(true);
+        return QuicPeerConnection.quicPeerConnection(peerId, channel);
     }
 
     private QuicClusterNetwork createNetwork(NodeId nodeId,

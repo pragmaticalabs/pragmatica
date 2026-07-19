@@ -238,6 +238,15 @@ public final class PeerState {
         return phase;
     }
 
+    /// #491: has this peer EVER reached CONNECTED (completed the Hello handshake) since creation or the
+    /// last readmit? Backed by `announcedUpstream`, which is set only on `attach` (CONNECTED) and reset on
+    /// `readmit`. The missing-peer reconciler uses this to distinguish a LOST link to a known-live member
+    /// (was CONNECTED, now EVICTED — no cold-boot dual-Hello race, so the higher-id grace does not apply)
+    /// from a never-connected cold-boot peer.
+    public synchronized boolean hasEverConnected() {
+        return announcedUpstream;
+    }
+
     /// Returns the live connection if the peer is CONNECTED. Empty otherwise.
     public synchronized Option<QuicPeerConnection> activeConnection() {
         return phase == Phase.CONNECTED
