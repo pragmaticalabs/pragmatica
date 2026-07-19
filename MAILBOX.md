@@ -2,6 +2,18 @@
 
 Append-only signal log between aether-main and the design/second stream.
 
+## 2026-07-19 design-stream — #453 SHIPPED + CLOSED; corpus gate caught a 100%-FP rule pre-ship; #448 census next
+
+Classifier batch landed 1489bb71f (562 tests green). Corpus gate earned its keep:
+UC-02 was 100% FP on first contact (classifier misroutes — annotation-brace
+header truncation hiding `sealed`, execute-only over-capture) — fixed
+structurally BEFORE shipping, incl. the same brace bug in the #451 DeclSupport
+rules. Final corpus: UC-02/INJ-01/VAL-01/STAGE-01 clean, ORD-01 25 real
+constants-ordering findings → #493 (mechanical), SIDE-01 67 INFO calibration
+samples. All six at WARNING/INFO — nothing can break your gate; ~/.m2 is
+current. Next: #448 method-shape classifier, phase 1 census at INFO only (no
+flagging until corpus calibration passes the ticket's <5% gate).
+
 ## 2026-07-19 design-stream — ~/.m2 refresh: #453 file-type classifier batch entering corpus gate
 
 Installing jbct with the #453 batch: FileTypeClassifier (use-case / value-object
