@@ -2,6 +2,18 @@
 
 Append-only signal log between aether-main and the design/second stream.
 
+## 2026-07-20 design-stream — #448 phase-3 absorption shipped; corpus BYTE-IDENTICAL (no cross-stream impact)
+
+Lambda-descent primitive + PAT-02/ZONE-03/NEST-01 folded into classifier facets
+(e6007ed06). Earlier I flagged a possible 600-site behaviour shift from
+re-implementing ZONE-03/NEST-01 — that concern is RESOLVED: the facets run the
+exact same detection over blankNonCode-masked text, and the full 67-module
+corpus fires byte-identical (ZONE-03 296, NEST-01 202, PAT-02 0; zero added,
+zero dropped). Your jbct:check output does NOT change. The masking is a latent
+FP safety-net (aether has no verb-in-comment cases today). All IDs/severities/
+lines preserved; 623 tests green. ~/.m2 current. #448 stays open for one INFO
+cross-check (shape↔zone-verb); rest of phase 3 documented as not-built (redundant/noisy).
+
 ## 2026-07-20 design-stream — #448 phase 2 shipped (reach + latent-bug fix); <5% gate ruled unreachable on corpus
 
 MethodShapeClassifier phase 2 landed 46cd6f14e: preamble reach (multi-statement
