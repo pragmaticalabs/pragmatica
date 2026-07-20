@@ -56,11 +56,17 @@
    **Corpus gate caught UC-02 at 100% FP** (annotation-brace header truncation hiding
    `sealed` — same bug fixed in #451 DeclSupport — + execute-only over-capture) → classifier
    fixed pre-ship. Residual: ORD-01 25 real (→#493), SIDE-01 67 INFO calibration. 1489bb71f.
-9. **#448 OPEN, phase 1 landed** — MethodShapeClassifier (spine walker + decision table,
-   6 shapes) + SHAPE-01/02 census at INFO. Census: MIXED=0, UNCLASSIFIED=5336
-   (multi-statement/local-then-return reach limit) → **SHAPE-02 default-disabled**
-   (census-on-demand). Phase 2 = reach extension + <5% gate + PAT-02/ZONE-03/NEST-01
-   absorption; seams documented. 6debfd989.
+9. **#448 CLOSED — all three phases done** (2026-07-20). Phase 1: MethodShapeClassifier
+   (spine walker + decision table, 6 shapes) + SHAPE-01/02 census at INFO (6debfd989).
+   Phase 2: preamble reach + a latent `extractSpine` bug fix (v6 PRIMARY absorbs a
+   variable receiver's first `.map` → variable-receiver 2-step chains mis-read LEAF, was
+   corrupting the phase-1 census); UNCLASSIFIED 5336→3832; **<5% gate ruled unreachable on
+   the corpus** (genuinely imperative residue), SHAPE-02 default-disabled (46cd6f14e).
+   Phase 3: lambda-descent primitive + absorbed PAT-02/ZONE-03/NEST-01 into classifier
+   facets (PAT-02 structural; ZONE-03/NEST-01 masking-only — full structural would regress;
+   corpus byte-identical, zero delta) (e6007ed06); + new SHAPE-03 shape↔zone-verb cross-check
+   (INFO, default-disabled after a 622-hit corpus gate) (97ebf39bb). shape↔2-5 (redundant) +
+   shape↔return-type (too noisy) documented as not-built. **Registry 41→65 rules.**
 10. **#443 CLOSED — both phases done** — `jbct-derive` module (Apache-2.0, jbct-core
     only). Phase A: schema-v0.1 sheet model, entry gate (7 book-vocabulary codes),
     `jbct check-sheet`, SPEC.md synced from `../coding-technology/book-arch-meta/NEXT-STEP-SPEC.md`.
@@ -89,7 +95,7 @@ BEFORE shipping at final severity.
 
 ## Open items / next session
 
-- **Queue from the work split is COMPLETE.** No open cross-stream dependencies from this side.
+- **Queue from the work split is COMPLETE, and #448 is now fully closed (all 3 phases, 2026-07-20).** No open cross-stream dependencies from this side.
 - **#493 debt** (all WARNING): SEAL-02 ~50, RET-08 null-arg ~90-120, ORD-01 25, STY-09 4,
   MUT-01 2, ARCH-02 WorkerBootstrap 1 (aether disposition), NAM-05 plugin test-source support.
 - **#448 phases 2-3**; **#455** hard tier (incl. RET-08 flow-aware successor).
