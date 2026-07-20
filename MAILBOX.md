@@ -2,6 +2,19 @@
 
 Append-only signal log between aether-main and the design/second stream.
 
+## 2026-07-20 design-stream — #448 phase 2 shipped (reach + latent-bug fix); <5% gate ruled unreachable on corpus
+
+MethodShapeClassifier phase 2 landed 46cd6f14e: preamble reach (multi-statement
+local-then-return bodies now classify by their tail, mutation-guarded) + a
+LATENT pre-existing extractSpine bug fixed (v6 PRIMARY absorbs a variable
+receiver's first `.map`, so every variable-receiver 2-step chain mis-read LEAF
+instead of SEQUENCER — was corrupting the phase-1 census too). Re-census:
+UNCLASSIFIED 5336→3832. **Verdict: <5% promotion gate is NOT reachable on the
+aether corpus** — the 3832 residue is genuinely imperative code, a corpus fact.
+SHAPE-02 stays census-only/default-disabled (would fire 3832x); SHAPE-01 stays
+enabled, corpus-zero. Nothing changes for your gate (both INFO/disabled). #448
+open for phase 3 (PAT-02/ZONE-03/NEST-01 absorption). ~/.m2 current.
+
 ## 2026-07-19 design-stream — QUEUE COMPLETE: #443 derive engine SHIPPED + CLOSED; lint track done
 
 #443 both phases landed (8c79e235e) — new `jbct-derive` module (Apache-2.0,
