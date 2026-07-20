@@ -35,8 +35,8 @@ import static org.pragmatica.jbct.parser.CstNodes.*;
 /// **Legal composition does not flag.** A Fork-Join extracted to its own method and *called* as a
 /// sequencer step reads as a plain `flatMap` link (the join is hidden behind the reference), so it
 /// classifies as [MethodShape#SEQUENCER], never [MethodShape#MIXED]. The violation the book targets
-/// is a join nested *inside a lambda*, which is owned for now by `JBCT-PAT-02` — see the phase-2
-/// seam note below.
+/// is a join nested *inside a lambda*, which is owned by `JBCT-PAT-02` — see the phase-3 descent
+/// note below.
 ///
 /// **MIXED is stream-specific in phase 1, by design.** The only two-feature blend flagged is a
 /// fork-join head *and* a stream pipeline at the same top-level altitude. A join head followed by
@@ -48,12 +48,17 @@ import static org.pragmatica.jbct.parser.CstNodes.*;
 /// richer same-altitude blends (a join nested in a sequencer lambda) are `JBCT-PAT-02`'s until
 /// phase 2 revisits MIXED and folds that rule in.
 ///
-/// **Phase-2 seams (do not wire yet).** `JBCT-PAT-02` (fork-join nested in a sequencer lambda),
-/// `JBCT-ZONE-03` (flatMap-text zone mixing), and `JBCT-NEST-01` (nested monadic ops) are
-/// string-heuristic shadows of this classifier. When phase 2 folds them in, they become facets that
-/// consult a per-method [Spine] descended into lambda arguments rather than only the top-level
-/// return chain; [#extractSpine] is the shared primitive they will reuse. Nothing here reads inside
-/// lambda arguments yet, by design — phase 1 classifies the top-level composition root only.
+/// **Phase-3 lambda-argument descent (#448, now wired).** `JBCT-PAT-02` (fork-join nested in a
+/// sequencer lambda), `JBCT-ZONE-03` (Zone-3 verb inside a `map`/`flatMap` lambda), and
+/// `JBCT-NEST-01` (nested monadic ops in a lambda) were string-heuristic shadows of this classifier;
+/// they are now facets that descend into a chain's lambda arguments — the descent [#extractSpine]
+/// deliberately discards — instead of scanning raw method text. The shared primitive is
+/// [#chainLambdaLinks] (the lambda-argument bodies of a chain, paired with their link names) plus
+/// [#classifyLambdaBody] (a lambda body run through this same decision table). The rules become thin
+/// delegators; their token/verb detection is unchanged in substance but now runs over
+/// `MapperSafety.blankNonCode`-masked, CST-scoped text, so a verb / operator / join token spelled
+/// inside a string or comment no longer fires. Phase 1's own verdicts still read the top-level
+/// composition root only — the descent is a facet capability, not a change to [#classify].
 ///
 /// **Known misclassification surface (documented, not worked around).**
 /// - No type resolution: `Stream.map` vs `Result.map` is disambiguated by contextual heuristics
@@ -378,6 +383,72 @@ public final class MethodShapeClassifier {
                                            .or(new ShapeVerdict(MethodShape.UNCLASSIFIED, "multi-statement lambda body"));
     }
 
+    // ===== Phase-3 argument-lambda descent primitive (#448) =====
+    //
+    // The phase-1 classifier reads only a chain's top-level composition root; [#extractSpine]
+    // sees the `(… -> …)` argument lists but discards their lambda bodies. Phase 3 exposes those
+    // discarded lambda-argument bodies ([#chainLambdaLinks]) and classifies a lambda body through
+    // the same decision table used for method bodies ([#classifyLambdaBody]). The absorbed rules
+    // JBCT-ZONE-03 / JBCT-NEST-01 / JBCT-PAT-02 are facets built on this descent — see their
+    // rule classes. This ARGUMENT-lambda descent is distinct from [#classifyLambda], which owns
+    // the separate factory-returns-a-lambda ASPECT case at a method's own top level.
+
+    /// One lambda passed to a chain link: the link's method name (`map`, `flatMap`, `andThen`, …)
+    /// and the LAMBDA cursor it received. The name lets a facet restrict itself to a link family
+    /// (`map`/`flatMap` for zone mixing, `flatMap`/`andThen` for pattern mixing).
+    public record LambdaLink(String link, Cursor lambda) {}
+
+    /// The lambda arguments attached to the top-level links of a postfix call chain, each paired
+    /// with the name of the link it is passed to. Reads only the chain's own direct `POST_OP`
+    /// children (mirroring [#extractSpine]), so a lambda nested inside a deeper sub-chain is not
+    /// reported here — it surfaces when that sub-chain is read as its own postfix. The
+    /// absorbed-head-call link (`value.flatMap(x -> …)`, whose `flatMap` the v6 PRIMARY folds into
+    /// the head text) is recovered so its lambda pairs with `flatMap`, never lost. A `POST_OP` with
+    /// no lambda argument (`.async()`, `.map(this::f)`) contributes nothing. Non-postfix input
+    /// yields an empty list. Documented edge: when a link's direct argument is a *call* that itself
+    /// wraps a lambda (`.flatMap(save(x -> …))`), the inner lambda is attributed to the outer link —
+    /// accepted, since the only consumer (JBCT-PAT-02, corpus baseline 0) reasons about lambda-body
+    /// content, not attachment depth.
+    public static List<LambdaLink> chainLambdaLinks(Cursor postfix) {
+        if (!postfix.kindIs(RuleKind.POSTFIX)) {
+            return List.of();
+        }
+
+        var kids = children(postfix);
+        var headText = kids.isEmpty() ? "" : text(kids.getFirst()).trim();
+        var out = new ArrayList<LambdaLink>();
+
+        for (var i = 1; i < kids.size(); i++) {
+            var op = kids.get(i);
+            var opText = text(op).trim();
+            var linkName = opText.startsWith("(")
+                           ? absorbedHeadCallLink(headText, true).or("")
+                           : methodLinkName(opText).or("");
+
+            firstArgLambda(op).onPresent(lambda -> out.add(new LambdaLink(linkName, lambda)));
+        }
+
+        return out;
+    }
+
+    /// The first LAMBDA in a `POST_OP`'s argument subtree, or none for a non-lambda argument.
+    private static Option<Cursor> firstArgLambda(Cursor postOp) {
+        return findFirst(postOp, RuleKind.LAMBDA);
+    }
+
+    /// Recursively classify a lambda body through the same decision table used for method bodies —
+    /// the phase-3 argument-lambda descent (#448). A block body (`x -> { … }`) runs through the
+    /// full [#classifyBody] preamble/tail reach; a single-expression body (`x -> expr`) runs through
+    /// [#classifyExpression] with the in-lambda flag set. An empty body, or a multi-statement block
+    /// with no composition-root tail, is UNCLASSIFIED. Distinct from [#classifyLambda] (the
+    /// top-level factory-returns-a-lambda ASPECT case): this descends into an *argument* lambda and
+    /// never applies the method-name `with*` aspect heuristic.
+    public static ShapeVerdict classifyLambdaBody(Cursor methodMember, Cursor lambda) {
+        return childByRule(lambda, RuleKind.BLOCK).flatMap(block -> classifyBody(methodMember, block))
+                                                  .orElse(() -> lambdaBodyExpression(lambda).map(body -> classifyExpression(methodMember, body, true)))
+                                                  .or(new ShapeVerdict(MethodShape.UNCLASSIFIED, "empty or multi-statement lambda body"));
+    }
+
     private static ShapeVerdict classifyChain(Cursor methodMember, Spine spine, boolean viaLambda) {
         if (isAspectShape(methodMember, spine, viaLambda)) {
             return new ShapeVerdict(MethodShape.ASPECT, "applies an injected functional parameter and decorates it");
@@ -659,5 +730,220 @@ public final class MethodShapeClassifier {
         var matcher = LEADING_WORD.matcher(text);
 
         return matcher.find() ? matcher.group(1) : "";
+    }
+
+    // ===== Phase-3 absorbed-rule facets (#448) =====
+    //
+    // JBCT-ZONE-03 / JBCT-NEST-01 / JBCT-PAT-02 were regex shadows of this classifier; their
+    // detection now lives here as facets and the rule classes are thin delegators. Every facet reads
+    // `MapperSafety.blankNonCode`-masked text (strings and comments blanked, offsets and line numbers
+    // preserved), so a verb / operator / join token spelled inside a string or comment no longer fires
+    // — the ONLY behavioural change from the regex originals. Because the facets return CST cursors
+    // (the offending method or lambda) and the rules report at those cursors' own line/column, reported
+    // locations are byte-identical to the regex era. Completeness vs. the regex is stated per facet.
+
+    /// Zone-3 (implementation-level) verbs that must be wrapped in a Zone-2 step, not called inline in
+    /// a carrier chain. Absorbed from `CstZoneMixingRule`.
+    private static final Set<String> ZONE_THREE_VERBS = Set.of("get", "set", "fetch", "parse", "calculate",
+                                                               "convert", "hash", "format", "encode", "decode",
+                                                               "extract", "split", "join", "log", "send",
+                                                               "receive", "read", "write", "add", "remove",
+                                                               "find", "query", "insert", "update", "delete");
+
+    /// A `.map`/`.flatMap` whose lambda argument calls `receiver.verb(` — verb captured in group 2.
+    private static final Pattern ZONE_CHAIN_CALL =
+        Pattern.compile("\\.(map|flatMap)\\s*\\([^)]*->\\s*[^)]*\\.([a-z][a-zA-Z]*)\\s*\\(");
+
+    /// A `.map`/`.flatMap` whose argument is a method reference `Type::verb` — verb captured in group 2.
+    private static final Pattern ZONE_METHOD_REF =
+        Pattern.compile("\\.(map|flatMap)\\s*\\([^:]*::([a-z][a-zA-Z]*)\\s*\\)");
+
+    /// A monadic-operation call (`.map(`, `.flatMap(`, …) inside a lambda body — two or more mark
+    /// NEST-01. Absorbed from `CstNestedOperationsRule`; precompiled as one alternation (counting
+    /// every match is equivalent to the former per-op scan) so it is not rebuilt per lambda.
+    private static final Pattern NEST_MONADIC_OP_CALL =
+        Pattern.compile("\\.(map|flatMap|fold|recover|filter|mapFailure|onSuccess|onFailure)\\s*\\(");
+
+    /// A monadic op chained directly onto a closing paren (`).map(`) inside a lambda body — a re-chain.
+    private static final Pattern NEST_RECHAIN = Pattern.compile("\\)\\s*\\.(map|flatMap|fold|recover|filter)\\s*\\(");
+
+    /// Fork-Join call heads whose presence inside a `flatMap`/`andThen` lambda body marks PAT-02.
+    /// Absorbed from `CstPatternMixingRule`.
+    private static final Set<String> FORK_JOIN_CALLS = Set.of("Result.all(", "Promise.all(", "Option.all(",
+                                                             "Result.allOf(", "Promise.allOf(", "Option.allOf(");
+
+    /// Chain-link names whose lambda argument is a Sequencer step (PAT-02's nesting site).
+    private static final Set<String> SEQUENCER_LAMBDA_LINKS = Set.of("flatMap", "andThen");
+
+    /// One JBCT-ZONE-03 hit: the method whose carrier chain mixes in Zone-3 verbs, and the distinct
+    /// verbs found (first-seen order). Empty verb lists are never returned.
+    public record ZoneMixing(Cursor method, List<String> verbs) {}
+
+    /// JBCT-ZONE-03 facet: methods whose `map`/`flatMap` lambda- or method-reference arguments call a
+    /// Zone-3 verb directly. The two regexes are preserved verbatim — the method-reference form and the
+    /// regex's paren-non-crossing `[^)]*` reach cannot be reproduced by structural lambda descent
+    /// without changing the hit set — and only the input changes: masked method text, so a verb spelled
+    /// inside a string or comment no longer fires. Completeness: every real site the regex caught, minus
+    /// exactly the string/comment false positives.
+    public static List<ZoneMixing> mapperChainZoneMixings(Cursor root) {
+        var out = new ArrayList<ZoneMixing>();
+
+        for (var method : findAllMethods(root)) {
+            var masked = MapperSafety.blankNonCode(text(method));
+
+            if (!masked.contains(".flatMap(") && !masked.contains(".map(")) {
+                continue;
+            }
+
+            var verbs = zoneThreeVerbs(masked);
+
+            if (!verbs.isEmpty()) {
+                out.add(new ZoneMixing(method, verbs));
+            }
+        }
+
+        return out;
+    }
+
+    /// The distinct Zone-3 verbs (first-seen order) found in the masked method text's `map`/`flatMap`
+    /// lambda-call and method-reference arguments.
+    private static List<String> zoneThreeVerbs(String masked) {
+        var verbs = new ArrayList<String>();
+
+        for (var pattern : List.of(ZONE_CHAIN_CALL, ZONE_METHOD_REF)) {
+            var matcher = pattern.matcher(masked);
+
+            while (matcher.find()) {
+                firstWord(matcher.group(2)).filter(verb -> ZONE_THREE_VERBS.contains(verb.toLowerCase()))
+                                           .filter(verb -> !verbs.contains(verb))
+                                           .onPresent(verbs::add);
+            }
+        }
+
+        return verbs;
+    }
+
+    /// The leading camelCase word of a method name (`fetchData` -> `fetch`), or none when blank.
+    private static Option<String> firstWord(String methodName) {
+        return Option.option(methodName)
+                     .filter(name -> !name.isEmpty())
+                     .flatMap(MethodShapeClassifier::splitLeadingWord);
+    }
+
+    private static Option<String> splitLeadingWord(String name) {
+        var sb = new StringBuilder();
+
+        for (var c : name.toCharArray()) {
+            if (Character.isUpperCase(c) && !sb.isEmpty()) {
+                break;
+            }
+
+            sb.append(c);
+        }
+
+        return sb.isEmpty() ? Option.none() : Option.some(sb.toString());
+    }
+
+    /// JBCT-NEST-01 facet: lambda bodies that nest two or more monadic operations, or re-chain a
+    /// combinator onto a call result (`inner(x).map(f)`). The original per-lambda body analysis (a
+    /// re-chain regex plus an op-count of 2+) is preserved; only the input changes: masked lambda text,
+    /// so a combinator name inside a string or comment no longer counts. The single-combinator re-chain
+    /// is why structural [#classifyLambdaBody] alone cannot replace this (it reads that shape as LEAF).
+    /// Completeness: every real site the regex caught, minus the string/comment false positives.
+    public static List<Cursor> nestedOperationLambdas(Cursor root) {
+        return findAllLambdas(root).stream()
+                                   .filter(MethodShapeClassifier::lambdaBodyNestsOperations)
+                                   .toList();
+    }
+
+    private static boolean lambdaBodyNestsOperations(Cursor lambda) {
+        var masked = MapperSafety.blankNonCode(text(lambda));
+        var arrow = masked.indexOf("->");
+
+        if (arrow < 0) {
+            return false;
+        }
+
+        var body = masked.substring(arrow + 2);
+
+        return NEST_RECHAIN.matcher(body).find() || monadicOpCount(body) > 1;
+    }
+
+    private static int monadicOpCount(String body) {
+        var matcher = NEST_MONADIC_OP_CALL.matcher(body);
+        var count = 0;
+
+        while (matcher.find()) {
+            count++;
+
+            if (count > 1) {
+                return count;
+            }
+        }
+
+        return count;
+    }
+
+    /// JBCT-PAT-02 facet: the lambda argument of a `flatMap`/`andThen` link whose body nests a Fork-Join
+    /// call (`Result.all(...)`, `Promise.all(...)`, …) that is not the body's lone call. The sequencer-step
+    /// lambda is located structurally through the [#chainLambdaLinks] descent (replacing the former
+    /// ancestor-text scan), and its body is masked before the join-token check, so a join token inside a
+    /// string or comment no longer fires. Corpus baseline 0; the fixture violation still fires.
+    public static List<Cursor> forkJoinInSequencerLambdas(Cursor root) {
+        var out = new ArrayList<Cursor>();
+
+        for (var postfix : findAll(root, RuleKind.POSTFIX)) {
+            for (var link : chainLambdaLinks(postfix)) {
+                if (SEQUENCER_LAMBDA_LINKS.contains(link.link()) && bodyNestsForkJoin(link.lambda())) {
+                    out.add(link.lambda());
+                }
+            }
+        }
+
+        return out;
+    }
+
+    private static boolean bodyNestsForkJoin(Cursor lambda) {
+        var masked = MapperSafety.blankNonCode(text(lambda)).trim();
+
+        return !isLoneForkJoinCall(masked) && FORK_JOIN_CALLS.stream().anyMatch(masked::contains);
+    }
+
+    private static boolean isLoneForkJoinCall(String lambdaText) {
+        var arrow = lambdaText.indexOf("->");
+
+        if (arrow < 0) {
+            return false;
+        }
+
+        var body = lambdaText.substring(arrow + 2).trim();
+
+        return FORK_JOIN_CALLS.stream().anyMatch(call -> bodyIsLoneCall(body, call));
+    }
+
+    /// True when `body` is exactly one call to `call` (which includes its trailing `(`) with nothing
+    /// chained after the matching `)`. Balanced-paren scan so argument-internal parens don't false-trigger.
+    private static boolean bodyIsLoneCall(String body, String call) {
+        if (!body.startsWith(call) || body.contains(";")) {
+            return false;
+        }
+
+        var depth = 0;
+
+        for (var i = call.length() - 1; i < body.length(); i++) {
+            var c = body.charAt(i);
+
+            if (c == '(') {
+                depth++;
+            } else if (c == ')') {
+                depth--;
+
+                if (depth == 0) {
+                    return i == body.length() - 1;
+                }
+            }
+        }
+
+        return false;
     }
 }

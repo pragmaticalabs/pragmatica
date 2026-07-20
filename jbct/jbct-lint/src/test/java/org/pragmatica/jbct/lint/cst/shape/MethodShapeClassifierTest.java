@@ -6,6 +6,7 @@ import java.util.List;
 import org.pragmatica.jbct.lint.cst.shape.MethodShapeClassifier.ShapeVerdict;
 import org.pragmatica.jbct.parser.Cursor;
 import org.pragmatica.jbct.parser.Java25Parser;
+import org.pragmatica.jbct.parser.RuleKind;
 import org.pragmatica.jbct.shared.SourceFile;
 import org.pragmatica.lang.Option;
 
@@ -16,6 +17,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.within;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.fail;
+import static org.pragmatica.jbct.parser.CstNodes.findAll;
+import static org.pragmatica.jbct.parser.CstNodes.findAllLambdas;
 import static org.pragmatica.jbct.parser.CstNodes.findAllMethods;
 import static org.pragmatica.jbct.parser.CstNodes.findFirstMethod;
 
@@ -185,6 +188,75 @@ class MethodShapeClassifierTest {
         @Test
         void classify_factoryReturningLambdaChain_isSequencer() {
             assertShape(MethodShape.SEQUENCER, "static UC uc(Check c, Save s) { return request -> validate(request).flatMap(c).flatMap(s); }");
+        }
+    }
+
+    /// Phase-3 argument-lambda descent primitive (#448): [MethodShapeClassifier#classifyLambdaBody]
+    /// runs a lambda body through the same decision table as a method body, and
+    /// [MethodShapeClassifier#chainLambdaLinks] exposes the lambda arguments of a chain paired with
+    /// their link names — the descent [MethodShapeClassifier#extractSpine] discards. These are the
+    /// shared primitive the absorbed JBCT-ZONE-03 / JBCT-NEST-01 / JBCT-PAT-02 facets build on.
+    @Nested
+    class LambdaDescent {
+        private static ShapeVerdict descendFirstLambda(String methodSrc) {
+            var root = parse("class C {\n" + methodSrc + "\n}");
+
+            return MethodShapeClassifier.classifyLambdaBody(findAllMethods(root).getFirst(),
+                                                            findAllLambdas(root).getFirst());
+        }
+
+        private static Cursor topChain(String methodSrc) {
+            return findAll(parse("class C {\n" + methodSrc + "\n}"), RuleKind.POSTFIX).getFirst();
+        }
+
+        @Test
+        void classifyLambdaBody_multiStepChain_isSequencer() {
+            assertEquals(MethodShape.SEQUENCER,
+                         descendFirstLambda("Object m() { return outer.flatMap(x -> a(x).map(f).flatMap(g)); }").shape());
+        }
+
+        @Test
+        void classifyLambdaBody_singleCall_isLeaf() {
+            assertEquals(MethodShape.LEAF, descendFirstLambda("Object m() { return outer.map(x -> x.trim()); }").shape());
+        }
+
+        @Test
+        void classifyLambdaBody_nestedForkJoin_isForkJoin() {
+            assertEquals(MethodShape.FORK_JOIN,
+                         descendFirstLambda("Object m() { return outer.flatMap(x -> Result.all(a(x), b(x)).map(this::merge)); }").shape());
+        }
+
+        @Test
+        void classifyLambdaBody_rootTernaryBody_isCondition() {
+            assertEquals(MethodShape.CONDITION,
+                         descendFirstLambda("Object m() { return outer.map(x -> x.ok() ? p(x) : q(x)); }").shape());
+        }
+
+        @Test
+        void classifyLambdaBody_blockBodyWithComposedTail_isSequencer() {
+            assertEquals(MethodShape.SEQUENCER,
+                         descendFirstLambda("Object m() { return outer.flatMap(x -> { var y = seed(x); return y.map(f).flatMap(g); }); }").shape());
+        }
+
+        @Test
+        void chainLambdaLinks_pairsFlatMapWithArgumentLambda() {
+            var links = MethodShapeClassifier.chainLambdaLinks(topChain("Object m(R r) { return validate(r).flatMap(x -> a(x).map(f)); }"));
+
+            assertEquals(1, links.size());
+            assertEquals("flatMap", links.getFirst().link());
+        }
+
+        @Test
+        void chainLambdaLinks_recoversAbsorbedHeadCallLinkName() {
+            var links = MethodShapeClassifier.chainLambdaLinks(topChain("Object m() { return value.map(x -> x.trim()); }"));
+
+            assertEquals(1, links.size());
+            assertEquals("map", links.getFirst().link());
+        }
+
+        @Test
+        void chainLambdaLinks_ignoresMethodReferenceArguments() {
+            assertThat(MethodShapeClassifier.chainLambdaLinks(topChain("Object m(R r) { return validate(r).flatMap(this::save).map(X::wrap); }"))).isEmpty();
         }
     }
 

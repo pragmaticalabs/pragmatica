@@ -1,12 +1,11 @@
 package org.pragmatica.jbct.lint.cst.rules;
 
-import java.util.Set;
-import java.util.regex.Pattern;
 import java.util.stream.Stream;
 
 import org.pragmatica.jbct.lint.Diagnostic;
 import org.pragmatica.jbct.lint.LintContext;
 import org.pragmatica.jbct.lint.cst.CstLintRule;
+import org.pragmatica.jbct.lint.cst.shape.MethodShapeClassifier;
 import org.pragmatica.jbct.parser.Cursor;
 
 import static org.pragmatica.jbct.parser.CstNodes.*;
@@ -16,24 +15,12 @@ import static org.pragmatica.jbct.parser.CstNodes.*;
 ///
 /// Detects nested .map(), .flatMap(), .fold() calls inside lambda bodies,
 /// which indicate complexity that should be extracted to a named method.
+///
+/// Thin delegator (#448): detection is the [MethodShapeClassifier#nestedOperationLambdas] facet —
+/// the same per-lambda body analysis (a re-chain regex plus a monadic-op count of 2+) run over
+/// `MapperSafety.blankNonCode`-masked lambda text. This rule owns only the gate and the diagnostic.
 public class CstNestedOperationsRule implements CstLintRule {
     private static final String RULE_ID = "JBCT-NEST-01";
-
-    // Monadic operations that shouldn't be nested
-    private static final Set<String> MONADIC_OPS = Set.of("map",
-                                                          "flatMap",
-                                                          "fold",
-                                                          "recover",
-                                                          "filter",
-                                                          "mapFailure",
-                                                          "onSuccess",
-                                                          "onFailure");
-
-    // Pattern to find lambda with nested operations
-    private static final Pattern LAMBDA_PATTERN = Pattern.compile("->\\s*\\{?[^}]*\\.(map|flatMap|fold|recover|filter|mapFailure)\\s*\\(");
-
-    // Pattern to find nested chain inside lambda
-    private static final Pattern NESTED_CHAIN_PATTERN = Pattern.compile("\\)\\s*\\.(map|flatMap|fold|recover|filter)\\s*\\(");
 
     @Override
     public String ruleId() {
@@ -45,48 +32,10 @@ public class CstNestedOperationsRule implements CstLintRule {
         if (!ctx.shouldLint(packageName(root))) {
             return Stream.empty();
         }
-        // Find lambdas with nested operations
-        return findAllLambdas(root).stream()
-                             .filter(this::hasNestedOperations)
-                             .map(lambda -> createDiagnostic(lambda, ctx));
-    }
 
-    private boolean hasNestedOperations(Cursor lambda) {
-        var lambdaText = text(lambda);
-        // Skip simple lambdas (single expression without chains)
-        if (!lambdaText.contains("->")) {
-            return false;
-        }
-        // Get the body part after ->
-        var arrowIndex = lambdaText.indexOf("->");
-
-        if (arrowIndex < 0) {
-            return false;
-        }
-
-        var body = lambdaText.substring(arrowIndex + 2);
-        // Check for nested monadic operations in the body
-        var matcher = NESTED_CHAIN_PATTERN.matcher(body);
-
-        if (matcher.find()) {
-            return true;
-        }
-        // Count monadic operations - more than 1 indicates nesting
-        var opCount = 0;
-
-        for (var op : MONADIC_OPS) {
-            var opPattern = Pattern.compile("\\." + op + "\\s*\\(");
-            var opMatcher = opPattern.matcher(body);
-
-            while (opMatcher.find()) {
-                opCount++;
-                if (opCount > 1) {
-                    return true;
-                }
-            }
-        }
-
-        return false;
+        return MethodShapeClassifier.nestedOperationLambdas(root)
+                                    .stream()
+                                    .map(lambda -> createDiagnostic(lambda, ctx));
     }
 
     private Diagnostic createDiagnostic(Cursor lambda, LintContext ctx) {
