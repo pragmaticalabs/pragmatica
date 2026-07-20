@@ -22,8 +22,10 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
+import org.pragmatica.consensus.net.WriteOutcome;
 import org.pragmatica.consensus.ConsensusCodecs;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.consensus.ProtocolMessage;
 import org.pragmatica.consensus.net.ClusterFormationConfig;
 import org.pragmatica.consensus.net.NetCodecs;
 import org.pragmatica.consensus.net.NetworkMessage;
@@ -37,6 +39,7 @@ import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.messaging.MessageRouter;
+import org.pragmatica.messaging.StreamType;
 import org.pragmatica.net.tcp.NodeAddress;
 import org.pragmatica.net.tcp.TlsConfig;
 import org.pragmatica.serialization.FrameworkCodecs;
@@ -493,6 +496,159 @@ class QuicClusterNetworkReconcilerTest {
             .isEqualTo(0L);
     }
 
+    @Test
+    void reconcileMissingPeersTick_higherSelfId_memberBeforeGrace_eagerlyCreatesPeerStateWithoutDial() {
+        // #491 m3(i): a higher-id self does NOT dial a lower-id member before the grace window, but the
+        // authoritative desired/topology set means the member should still receive an eager INIT
+        // PeerState — so outbound to it BUFFERS (offline buffer) instead of hard-dropping on a null
+        // state. No dial happens (single-dialer ordering honoured): the topology lookup stays 0, yet
+        // the PeerState now exists in INIT.
+        var self = new NodeId("zzz-self");
+        var lowerPeer = new NodeId("aaa-lower");
+        var peerInfo = NodeInfo.nodeInfo(lowerPeer, addressOf("127.0.0.1", 1));
+        var stub = countingTopology(self, List.of(peerInfo), Set.of(self, lowerPeer));
+        var clock = new AtomicLong(1_000_000L);
+        var network = createNetwork(self, List.of(peerInfo), MessageRouter.mutable(), stub);
+        network.overrideWallClockForTests(clock::get);
+
+        network.reconcileMissingPeersTick();
+
+        network.peerPhaseForTests(lowerPeer)
+               .onEmpty(() -> fail("#491 m3(i): a member peer we are not yet dialing must get an eager INIT PeerState"))
+               .onPresent(phase -> assertThat(phase)
+                   .as("eagerly-created PeerState is INIT (never dialed) so outbound buffers")
+                   .isEqualTo(PeerState.Phase.INIT));
+        assertThat(stub.lookups.getOrDefault(lowerPeer, 0L))
+            .as("#491 m3(i): eager PeerState creation performs NO dial (single-dialer ordering preserved)")
+            .isEqualTo(0L);
+    }
+
+    @Test
+    void send_toEagerlyCreatedMemberPeer_buffersInsteadOfDroppingToUnknown() {
+        // #491 m3(i): once the reconciler has eagerly created the INIT PeerState, an outbound send to
+        // that not-yet-connected member BUFFERS (offline buffer) rather than hard-dropping. The
+        // drop-to-unknown metric stays flat; the backpressure-queued metric advances by one.
+        var self = new NodeId("zzz-self");
+        var lowerPeer = new NodeId("aaa-lower");
+        var peerInfo = NodeInfo.nodeInfo(lowerPeer, addressOf("127.0.0.1", 1));
+        var stub = countingTopology(self, List.of(peerInfo), Set.of(self, lowerPeer));
+        var clock = new AtomicLong(1_000_000L);
+        var network = createNetwork(self, List.of(peerInfo), MessageRouter.mutable(), stub);
+        network.overrideWallClockForTests(clock::get);
+        network.reconcileMissingPeersTick();
+
+        var dropsBefore = network.quicMetrics().dropToUnknownPeerCount();
+        var queuedBefore = network.quicMetrics().backpressureQueuedCount();
+
+        network.send(lowerPeer, stubProtocolMessage(self));
+
+        assertThat(network.quicMetrics().dropToUnknownPeerCount() - dropsBefore)
+            .as("send to an eagerly-created INIT member buffers — no drop-to-unknown")
+            .isEqualTo(0L);
+        assertThat(network.quicMetrics().backpressureQueuedCount() - queuedBefore)
+            .as("the buffered send advances the offline-buffer (backpressure-queued) metric")
+            .isEqualTo(1L);
+    }
+
+    @Test
+    void reconcileMissingPeersTick_higherSelfId_nonMemberPeer_staysNullAndHardDrops() {
+        // #491 m3(i): eager PeerState creation is MEMBERSHIP-gated. A peer ABSENT from coreNodes()
+        // (departed / not a member) is NOT eagerly materialised — it stays null and outbound to it
+        // still HARD-DROPS with the drop-to-unknown metric. Only genuine members earn the buffer.
+        var self = new NodeId("zzz-self");
+        var lowerPeer = new NodeId("aaa-lower");
+        var peerInfo = NodeInfo.nodeInfo(lowerPeer, addressOf("127.0.0.1", 1));
+        // coreNodes() OMITS the peer — not a member of the authoritative membership.
+        var stub = countingTopology(self, List.of(peerInfo), Set.of(self));
+        var clock = new AtomicLong(1_000_000L);
+        var network = createNetwork(self, List.of(peerInfo), MessageRouter.mutable(), stub);
+        network.overrideWallClockForTests(clock::get);
+
+        network.reconcileMissingPeersTick();
+
+        assertThat(network.peerPhaseForTests(lowerPeer).isEmpty())
+            .as("#491 m3(i): a non-member peer is NOT eagerly created — stays null")
+            .isTrue();
+
+        var dropsBefore = network.quicMetrics().dropToUnknownPeerCount();
+        network.send(lowerPeer, stubProtocolMessage(self));
+        assertThat(network.quicMetrics().dropToUnknownPeerCount() - dropsBefore)
+            .as("outbound to a null (non-member) peer still hard-drops to the unknown-peer metric")
+            .isEqualTo(1L);
+    }
+
+    @Test
+    void send_toNullMemberPeer_createsPeerStateAndBuffersInsteadOfDropping() {
+        // #491 unicast buffering: a send to an authoritative MEMBER with NO PeerState (the backfill-unicast
+        // race — the catch-up send from the backfill thread can precede the missing-peer reconciler's eager
+        // creation) must EAGERLY create an INIT PeerState and BUFFER the message in its offline buffer (the
+        // exact Queued path broadcast uses), NOT hard-drop. The drop-to-unknown metric stays flat; the
+        // buffered message is delivered on the next attach via the shared drain (PeerStateTest-proven).
+        var self = new NodeId("zzz-self");
+        var member = new NodeId("aaa-member");
+        var peerInfo = NodeInfo.nodeInfo(member, addressOf("127.0.0.1", 1));
+        var stub = countingTopology(self, List.of(peerInfo), Set.of(self, member));
+        var network = createNetwork(self, List.of(peerInfo), MessageRouter.mutable(), stub);
+
+        var dropsBefore = network.quicMetrics().dropToUnknownPeerCount();
+
+        network.send(member, stubProtocolMessage(self));
+
+        network.peerPhaseForTests(member)
+               .onEmpty(() -> fail("#491: a unicast to a null-state member must eagerly create its PeerState"))
+               .onPresent(phase -> assertThat(phase)
+                   .as("the eagerly-created PeerState buffers (INIT/CONNECTING/EVICTED — never a null hard-drop)")
+                   .isIn(PeerState.Phase.INIT, PeerState.Phase.CONNECTING, PeerState.Phase.EVICTED));
+        assertThat(network.offlineBufferSizeForTests(member))
+            .as("#491: the message is buffered in the member's offline buffer, not dropped")
+            .isEqualTo(1);
+        assertThat(network.quicMetrics().dropToUnknownPeerCount() - dropsBefore)
+            .as("a buffered unicast to a member does not increment the drop-to-unknown metric")
+            .isEqualTo(0L);
+    }
+
+    @Test
+    void sendOutcome_toNullMemberPeer_buffersAndReportsSent() {
+        // #491: the outcome-tracking sendOutcome variant must ALSO buffer (not NoPeerState-drop) a unicast to
+        // a null-state member, and report Sent per the offline-buffer convention so the DHT caller treats it
+        // as enqueued for eventual delivery.
+        var self = new NodeId("zzz-self");
+        var member = new NodeId("aaa-member");
+        var peerInfo = NodeInfo.nodeInfo(member, addressOf("127.0.0.1", 1));
+        var stub = countingTopology(self, List.of(peerInfo), Set.of(self, member));
+        var network = createNetwork(self, List.of(peerInfo), MessageRouter.mutable(), stub);
+
+        var outcome = network.sendOutcome(member, stubProtocolMessage(self)).await(AWAIT_TIMEOUT);
+
+        outcome.onFailure(cause -> fail("sendOutcome should resolve: " + cause.message()))
+               .onSuccess(result -> assertThat(result)
+                   .as("#491: sendOutcome to a null-state member buffers and reports Sent")
+                   .isInstanceOf(WriteOutcome.Sent.class));
+        assertThat(network.offlineBufferSizeForTests(member))
+            .as("the sendOutcome message is buffered in the member's offline buffer")
+            .isEqualTo(1);
+    }
+
+    @Test
+    void send_toNullMemberPeer_offlineBufferBoundHolds() {
+        // #491: buffering a unicast to a null-state member uses the SAME bounded offline buffer as broadcast —
+        // OFFLINE_BUFFER_MAX-capped, oldest-evicted on overflow. Spot-check the bound: sending past the cap
+        // holds the buffer at OFFLINE_BUFFER_MAX (never unbounded growth).
+        var self = new NodeId("zzz-self");
+        var member = new NodeId("aaa-member");
+        var peerInfo = NodeInfo.nodeInfo(member, addressOf("127.0.0.1", 1));
+        var stub = countingTopology(self, List.of(peerInfo), Set.of(self, member));
+        var network = createNetwork(self, List.of(peerInfo), MessageRouter.mutable(), stub);
+
+        for (var i = 0; i < PeerState.OFFLINE_BUFFER_MAX + 2; i++) {
+            network.send(member, stubProtocolMessage(self));
+        }
+
+        assertThat(network.offlineBufferSizeForTests(member))
+            .as("#491: the offline buffer is bounded at OFFLINE_BUFFER_MAX on overflow (oldest evicted)")
+            .isEqualTo(PeerState.OFFLINE_BUFFER_MAX);
+    }
+
     private static NodeAddress addressOf(String host, int port) {
         return NodeAddress.nodeAddress(host, port).fold(_ -> fail("bad address"), a -> a);
     }
@@ -533,6 +689,17 @@ class QuicClusterNetworkReconcilerTest {
         var channel = mock(QuicChannel.class);
         when(channel.isActive()).thenReturn(true);
         return QuicPeerConnection.quicPeerConnection(peerId, channel);
+    }
+
+    private static StubProtocolMessage stubProtocolMessage(NodeId sender) {
+        return new StubProtocolMessage(sender);
+    }
+
+    private record StubProtocolMessage(NodeId sender) implements ProtocolMessage {
+        @Override
+        public StreamType streamType() {
+            return StreamType.CONSENSUS;
+        }
     }
 
     private QuicClusterNetwork createNetwork(NodeId nodeId,

@@ -1583,7 +1583,7 @@ public class QuicClusterNetwork implements ClusterNetwork {
         var state = peers.get(peerId);
 
         if (state == null) {
-            warnDroppedToUnknownPeer(peerId);
+            var _ = dispatchToAbsentPeer(peerId, message);
 
             return;
         }
@@ -1602,12 +1602,29 @@ public class QuicClusterNetwork implements ClusterNetwork {
         var state = peers.get(peerId);
 
         if (state == null) {
+            return dispatchToAbsentPeer(peerId, message);
+        }
+
+        return dispatchToPeer(state, message);
+    }
+
+    /// #491: a unicast to a peer with NO PeerState. An authoritative MEMBER ([#swimMembershipAllows]) gets an
+    /// eager INIT PeerState and the message is BUFFERED in its offline buffer — the exact `Queued` path
+    /// `broadcast` uses ([#dispatchToPeer] → [PeerState#offerOutbound], `OFFLINE_BUFFER_MAX`-bounded, drained
+    /// on attach), reported as `Sent` per the offline-buffer convention. This closes the #491 backfill-unicast
+    /// race: the catch-up send from the backfill thread can precede the missing-peer reconciler's eager
+    /// creation, and without this the null-state unicast hard-dropped forever while `broadcast` alone buffered.
+    /// A NON-member null peer is genuinely gone (departed / never a member): drop with the rate-limited WARN +
+    /// metric, unchanged. Only the previously-dropping branch pays this — the connected-peer hot path is
+    /// untouched.
+    private WriteOutcome dispatchToAbsentPeer(NodeId peerId, Message.Wired message) {
+        if (!swimMembershipAllows(peerId)) {
             warnDroppedToUnknownPeer(peerId);
 
             return new WriteOutcome.NoPeerState(peerId);
         }
 
-        return dispatchToPeer(state, message);
+        return dispatchToPeer(getOrCreatePeer(peerId), message);
     }
 
     /// #487 self-loopback: deliver a send-to-self to the local handler on the SAME dispatch path real
@@ -2213,6 +2230,15 @@ public class QuicClusterNetwork implements ClusterNetwork {
             var graceElapsed = higherIdGracePeriodElapsed(peerId, nowMs);
 
             if (!shouldInitiate && !graceElapsed) {
+                // #491 m3(i): eagerly materialise an INIT PeerState for a MEMBER peer we are not yet
+                // dialing, so outbound to it BUFFERS (offline buffer, drained on attach) instead of
+                // hard-dropping on a null state. Gated on swimMembershipAllows — a departed peer stays
+                // null and still hard-drops. No dial here; the higher-id side keeps waiting for inbound
+                // (an INIT peer is not EVICTED, so it does not trip the grace bypass).
+                if (swimMembershipAllows(peerId)) {
+                    var _ = getOrCreatePeer(peerId);
+                }
+
                 continue;
             }
 
@@ -2249,6 +2275,12 @@ public class QuicClusterNetwork implements ClusterNetwork {
             var graceElapsed = higherIdGracePeriodElapsed(peerId, nowMs);
 
             if (!shouldInitiate && !graceElapsed) {
+                // #491 m3(i): the FSM desired-set is authoritative, so eagerly materialise an INIT
+                // PeerState for a peer we are not yet dialing — outbound BUFFERS instead of hard-dropping
+                // on a null state. No dial here; the higher-id side keeps waiting for inbound (an INIT
+                // peer is not EVICTED, so it does not trip the grace bypass).
+                var _ = getOrCreatePeer(peerId);
+
                 continue;
             }
 
@@ -2575,6 +2607,13 @@ public class QuicClusterNetwork implements ClusterNetwork {
     /// in CONNECTING nor marked REMOVED after an unresolvable dial.
     Option<PeerState.Phase> peerPhaseForTests(NodeId peerId) {
         return Option.option(peers.get(peerId)).map(PeerState::phase);
+    }
+
+    /// Package-private test seam — the offline-buffer occupancy of a peer's PeerState (0 when the peer has
+    /// no state). Lets the #491 unicast-buffering tests assert a message landed in the offline buffer
+    /// (the exact `Queued` path `broadcast` uses) rather than being hard-dropped.
+    int offlineBufferSizeForTests(NodeId peerId) {
+        return Option.option(peers.get(peerId)).map(PeerState::offlineBufferSize).or(0);
     }
 
     /// Package-private test seam — drives the inbound funnel `onMessageReceived` directly so tests

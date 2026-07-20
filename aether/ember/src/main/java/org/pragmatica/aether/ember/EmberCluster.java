@@ -46,6 +46,8 @@ import org.pragmatica.consensus.topology.TopologyManagementMessage;
 import org.pragmatica.aether.config.AppHttpConfig;
 import org.pragmatica.aether.config.RollbackConfig;
 import org.pragmatica.aether.config.StorageConfig;
+import org.pragmatica.aether.config.TimeoutsConfig;
+import org.pragmatica.aether.deployment.membership.MembershipConfig;
 import org.pragmatica.dht.DHTConfig;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
@@ -127,6 +129,11 @@ public final class EmberCluster {
     /// JUnit `@TempDir`) via [#withDataBaseDir] BEFORE [#start] to turn the disk tier and the
     /// per-partition stream WAL on; see [#perNodeStorageConfig].
     private final AtomicReference<Option<Path>> dataBaseDir = new AtomicReference<>(Option.none());
+
+    /// #491 pinned convergence variant — when set (via [#withRaisedSwimTimeouts]) every node is created
+    /// with raised SWIM / transport / membership timeouts so a single graceful owner-kill does not trip
+    /// the transient QuorumLost→PASSIVE false-removal cascade that falsely marks LIVE survivors DEAD.
+    private final AtomicBoolean raisedSwimTimeouts = new AtomicBoolean(false);
 
     private final class EmberComputeProvider implements ComputeProvider {
         @Override
@@ -225,6 +232,19 @@ public final class EmberCluster {
     @Contract
     public void withDataBaseDir(Path baseDir) {
         dataBaseDir.set(Option.option(baseDir));
+    }
+
+    /// TEST SEAM (#491 pinned convergence variant) — raise the SWIM suspect timeout, the transport
+    /// hello timeout, and the membership split timeout for EVERY node in this cluster so a single
+    /// graceful owner-kill does not trip the transient QuorumLost→PASSIVE window's false-removal
+    /// cascade (LIVE survivors evicted as stale links → SWIM-DEAD-stuck → quorum-loss self-fence).
+    /// MUST be called before [#start]. The killed owner still departs via graceful SWIM leave
+    /// (`handlePeerLeft`), NOT suspect-timeout, so raising these does NOT slow the real failover — it
+    /// only keeps LIVE survivors from being falsely evicted/FAULTY during the transient. Harness-scoped
+    /// (Ember is the in-JVM test harness, not shipped runtime); production paths never call this.
+    @Contract
+    public void withRaisedSwimTimeouts() {
+        raisedSwimTimeouts.set(true);
     }
 
     private EnvironmentIntegration emberEnvironment() {
@@ -641,17 +661,51 @@ public final class EmberCluster {
                                                .unwrap();
     }
 
+    // #491 pinned convergence variant — raised timeouts applied when [#withRaisedSwimTimeouts] was set.
+    // hello ×10 (5s→50s) so the transport stale-link eviction (staleness ~ helloTimeout×3) cannot fire
+    // inside the transient PASSIVE window; SWIM suspect 10s→60s so LIVE survivors are not marked DEAD;
+    // membership split 15s→60s so the minority does not self-fence during the same window.
+    private static final TimeSpan RAISED_HELLO_TIMEOUT = timeSpan(50).seconds();
+    private static final TimeoutsConfig RAISED_TIMEOUTS = raisedSwimTimeoutsConfig();
+    private static final Option<MembershipConfig> RAISED_MEMBERSHIP = Option.some(new MembershipConfig(timeSpan(60).seconds()));
+
+    private static TimeoutsConfig raisedSwimTimeoutsConfig() {
+        var defaults = TimeoutsConfig.timeoutsConfig();
+        var swim = new TimeoutsConfig.SwimTimeouts(defaults.swim().period(),
+                                                   defaults.swim().probeTimeout(),
+                                                   timeSpan(60).seconds());
+
+        return new TimeoutsConfig(defaults.invocation(),
+                                  defaults.forwarding(),
+                                  defaults.deployment(),
+                                  defaults.rollingUpdate(),
+                                  defaults.cluster(),
+                                  defaults.consensus(),
+                                  defaults.election(),
+                                  swim,
+                                  defaults.observability(),
+                                  defaults.dht(),
+                                  defaults.worker(),
+                                  defaults.security(),
+                                  defaults.repository(),
+                                  defaults.scaling());
+    }
+
     private AetherNode createNode(NodeId nodeId,
                                   int port,
                                   int mgmtPort,
                                   int appHttpPort,
                                   List<NodeInfo> coreNodes,
                                   boolean activationGated) {
+        var raised = raisedSwimTimeouts.get();
+        var helloTimeout = raised ? RAISED_HELLO_TIMEOUT : TopologyConfig.DEFAULT_HELLO_TIMEOUT;
+        var nodeTimeouts = raised ? RAISED_TIMEOUTS : TimeoutsConfig.timeoutsConfig();
+        Option<MembershipConfig> membership = raised ? RAISED_MEMBERSHIP : Option.empty();
         var topology = new TopologyConfig(nodeId,
                                           targetClusterSize,
                                           timeSpan(1).seconds(),
                                           timeSpan(10).seconds(),
-                                          TopologyConfig.DEFAULT_HELLO_TIMEOUT,
+                                          helloTimeout,
                                           coreNodes,
                                           Option.empty(),
                                           org.pragmatica.consensus.topology.BackoffConfig.DEFAULT,
@@ -679,16 +733,17 @@ public final class EmberCluster {
                                           observability,
                                           ClusterDeploymentManager.DeploymentAtomicity.ALL_OR_NOTHING,
                                           activationGated,
-                                          org.pragmatica.aether.config.TimeoutsConfig.timeoutsConfig(),
+                                          nodeTimeouts,
                                           Option.empty(),
                                           Option.empty(),
                                           AetherNodeConfig.DeploymentDefaults.DEFAULT,
                                           org.pragmatica.aether.config.HttpProtocol.H1,
                                           perNodeStorageConfig(nodeId),
                                           Option.empty(),
-                                          Option.empty(),
+                                          membership,
 
-        // membership-config override: none — in-process forge nodes use MembershipConfig defaults
+        // membership-config override: raised split-timeout ONLY for the #491 pinned convergence variant
+        // (via withRaisedSwimTimeouts); otherwise none — forge nodes use MembershipConfig defaults
         org.pragmatica.aether.config.StreamingConfig.streamingConfig(),
                                           org.pragmatica.consensus.net.ClusterFormationConfig.defaults());
         // Single-JVM hosting: when this node's SelfDrainCoordinator completes its drain

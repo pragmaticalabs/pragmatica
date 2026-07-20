@@ -3049,6 +3049,10 @@ public interface AetherNode extends ManageableNode {
                                                                                                             partition)
                                                                                              .map(StreamPartitionManager.PartitionInfo::headOffset)
                                                                                              .or(-1L);
+        // #491 F4: the committed StreamPartitionOwnershipValue.owner source, hoisted here so the backfill
+        // orchestrator can gate HRW self-election on it (a diverged/empty-ring node must not self-promote
+        // while a DIFFERENT node is the committed owner). Reused by the #265 owner-release guard below.
+        var streamCommittedOwnerSource = KvCommittedStreamOwnerSource.kvCommittedStreamOwnerSource(kvStore);
         var streamPartitionBackfill = PartitionBackfill.partitionBackfill(streamReplicaRegistry,
                                                                           streamPartitionRecovery,
                                                                           streamCatchupTransport,
@@ -3058,7 +3062,8 @@ public interface AetherNode extends ManageableNode {
                                                                           config.self(),
                                                                           streamingConfig.backfillSourceWaitBound(),
                                                                           () -> streamPlacementMembers(clusterEventsControllerRef,
-                                                                                                       clusterTopologyManager));
+                                                                                                       clusterTopologyManager),
+                                                                          streamCommittedOwnerSource);
         var streamBackfillExecutor = Executors.newSingleThreadExecutor(runnable -> daemonThread(runnable,
                                                                                                 "stream-partition-backfill"));
         // A2: per-node controller that reconciles the (previously never-populated) ReplicaRegistry
@@ -3132,8 +3137,8 @@ public interface AetherNode extends ManageableNode {
         // #265 increment 5: reshuffle lifecycle. The release catch-up gate reads the live replica registry
         // (self-excluded CAUGHT_UP count + self caught-up flag); the owner rule reads the committed
         // StreamPartitionOwnershipValue (release only once ownership names a DIFFERENT node than self). Both
-        // are bound through static helpers so the supplier lambdas stay single-expression.
-        var streamCommittedOwnerSource = KvCommittedStreamOwnerSource.kvCommittedStreamOwnerSource(kvStore);
+        // are bound through static helpers so the supplier lambdas stay single-expression. The committed
+        // owner source is the one hoisted above for the #491 F4 backfill self-election gate.
 
         streamPartitionManager.replicaCatchupSource((stream, partition) -> streamCatchupView(streamReplicaRegistry,
                                                                                              config.self(),
