@@ -242,7 +242,13 @@ public record LintConfig(Map<String, DiagnosticSeverity> ruleSeverities,
     Map.entry("JBCT-SHAPE-01", DiagnosticSeverity.INFO),
 
     // Method has no single pattern (UNCLASSIFIED)
-    Map.entry("JBCT-SHAPE-02", DiagnosticSeverity.INFO)),
+    Map.entry("JBCT-SHAPE-02", DiagnosticSeverity.INFO),
+
+    // Method's composition shape disagrees with its name-verb's zone (mis-leveled). INFO — naming
+    // zone and composition shape are orthogonal axes. DEFAULT-DISABLED after the corpus gate (622
+    // hits: 460 orchestration-verb-on-LEAF one-liners are legitimate naming, the noise the FP doc
+    // predicted); census-on-demand like SHAPE-02.
+    Map.entry("JBCT-SHAPE-03", DiagnosticSeverity.INFO)),
                                                         // JBCT-SHAPE-02 ships DEFAULT-DISABLED: after the phase-2 preamble reach
                                                         // the aether corpus census returned 3832 UNCLASSIFIED methods (down from
                                                         // 5336; the residue is genuinely imperative code — loops, multi-branch
@@ -250,9 +256,12 @@ public record LintConfig(Map<String, DiagnosticSeverity> ruleSeverities,
                                                         // would spam every `jbct:check` run and the <5% promotion gate is not
                                                         // reachable on this corpus. It stays a registered rule (severity +
                                                         // fixture + category invariants hold) and is run on demand — enable it in
-                                                        // config for a shape census. JBCT-SHAPE-01 (MIXED) stays enabled: it is
-                                                        // corpus-zero and silent, the real-time single-pattern signal worth having.
-                                                        Set.of("JBCT-SHAPE-02"),
+                                                        // config for a shape census. JBCT-SHAPE-03 is likewise DEFAULT-DISABLED
+                                                        // (622 corpus hits, mostly orchestration-verb-on-LEAF one-liners — a
+                                                        // census signal, not an enforceable rule on this corpus). JBCT-SHAPE-01
+                                                        // (MIXED) stays enabled: it is corpus-zero and silent, the real-time
+                                                        // single-pattern signal worth having.
+                                                        Set.of("JBCT-SHAPE-02", "JBCT-SHAPE-03"),
                                                         false);
 
     /// Factory method for default config.

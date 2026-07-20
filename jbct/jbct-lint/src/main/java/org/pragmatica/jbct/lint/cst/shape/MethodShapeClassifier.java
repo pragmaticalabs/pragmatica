@@ -60,6 +60,14 @@ import static org.pragmatica.jbct.parser.CstNodes.*;
 /// inside a string or comment no longer fires. Phase 1's own verdicts still read the top-level
 /// composition root only — the descent is a facet capability, not a change to [#classify].
 ///
+/// **Phase-3 shape<->zone cross-check (JBCT-SHAPE-03, #448).** A NEW facet built directly on
+/// [#classify] (not an absorbed regex shadow): [#shapeZoneMismatches] compares a method's composition
+/// shape against the abstraction zone of its NAME verb and flags the two clear disagreements — a
+/// Zone-3 implementation verb heading a SEQUENCER / FORK_JOIN (mis-leveled up), and a Zone-2
+/// orchestration verb heading a LEAF (mis-leveled down). Naming zone and composition shape are
+/// orthogonal axes, so this ships INFO for corpus calibration; its documented false-positive surface
+/// lives on the facet.
+///
 /// **Known misclassification surface (documented, not worked around).**
 /// - No type resolution: `Stream.map` vs `Result.map` is disambiguated by contextual heuristics
 ///   (a `.stream()`/`.parallelStream()` source plus a `toList`/`collect` terminal marks Iteration);
@@ -743,12 +751,27 @@ public final class MethodShapeClassifier {
     // locations are byte-identical to the regex era. Completeness vs. the regex is stated per facet.
 
     /// Zone-3 (implementation-level) verbs that must be wrapped in a Zone-2 step, not called inline in
-    /// a carrier chain. Absorbed from `CstZoneMixingRule`.
+    /// a carrier chain. Absorbed from `CstZoneMixingRule`; also the name-verb table for the
+    /// JBCT-SHAPE-03 "mis-leveled up" arm ([#shapeZoneMismatches]).
     private static final Set<String> ZONE_THREE_VERBS = Set.of("get", "set", "fetch", "parse", "calculate",
                                                                "convert", "hash", "format", "encode", "decode",
                                                                "extract", "split", "join", "log", "send",
                                                                "receive", "read", "write", "add", "remove",
                                                                "find", "query", "insert", "update", "delete");
+
+    /// Zone-2 (orchestration-level) verbs — the abstraction altitude of a step interface or use-case
+    /// orchestration, too abstract to head a bare Leaf. The name-verb table for the JBCT-SHAPE-03
+    /// "mis-leveled down" arm ([#shapeZoneMismatches]). COPIED VERBATIM from
+    /// `CstZoneThreeVerbsRule.ZONE_2_VERBS` (the "orchestration verb too abstract for a leaf" set, the
+    /// exact sibling concern) rather than consolidated to one shared set: `CstZoneTwoVerbsRule` and
+    /// `CstZoneThreeVerbsRule` carry DIFFERENT Zone-2 tables — the former additionally lists
+    /// `create`/`build` — so a single shared constant would silently change one of JBCT-ZONE-01/02's
+    /// behaviour. Copying keeps those two rules untouched; the divergence is a pre-existing corpus
+    /// fact, not this rule's to reconcile.
+    private static final Set<String> ZONE_TWO_VERBS = Set.of("validate", "process", "handle", "transform",
+                                                             "apply", "check", "load", "save",
+                                                             "manage", "configure", "initialize", "execute",
+                                                             "prepare", "complete", "resolve", "verify");
 
     /// A `.map`/`.flatMap` whose lambda argument calls `receiver.verb(` — verb captured in group 2.
     private static final Pattern ZONE_CHAIN_CALL =
@@ -945,5 +968,74 @@ public final class MethodShapeClassifier {
         }
 
         return false;
+    }
+
+    // ===== Phase-3 shape<->zone cross-check facet (JBCT-SHAPE-03, #448) =====
+    //
+    // Not an absorbed regex shadow (unlike the ZONE-03/NEST-01/PAT-02 facets above): a NEW rule
+    // built directly on [#classify]. It compares two orthogonal axes of a method — its composition
+    // shape ([#classify]) and the abstraction zone of its NAME verb — and flags the two clear
+    // disagreements. The verb tables are [#ZONE_THREE_VERBS] / [#ZONE_TWO_VERBS]; the name verb is
+    // the leading camelCase word of [FileTypeClassifier#methodName], run through the same
+    // [#firstWord] split the ZONE-03 facet uses.
+
+    /// One JBCT-SHAPE-03 hit: a method whose composition [MethodShape] disagrees with the abstraction
+    /// zone of its name verb. `misLeveledUp` true means a Zone-3 implementation verb heads an
+    /// orchestration shape (SEQUENCER / FORK_JOIN) — an implementation-named method doing
+    /// orchestration; false means a Zone-2 orchestration verb heads a LEAF — an orchestration-named
+    /// method that is a bare leaf. `verb` is the lower-cased leading name verb; `shape` the classified
+    /// shape.
+    public record ShapeZoneMismatch(Cursor method, MethodShape shape, String verb, boolean misLeveledUp) {}
+
+    /// JBCT-SHAPE-03 facet: methods whose composition shape and name-verb zone disagree. Only the two
+    /// unambiguous disagreements are reported — a Zone-3 (implementation) verb on a multi-step
+    /// SEQUENCER / FORK_JOIN, and a Zone-2 (orchestration) verb on a LEAF. MIXED / CONDITION /
+    /// ITERATION / ASPECT / UNCLASSIFIED shapes are not cross-checked (no clear altitude signal), and
+    /// a method whose leading verb is in neither table is skipped. Abstract / bodiless methods yield no
+    /// verdict from [#classify] and never appear here.
+    ///
+    /// **False-positive surface — the two axes are orthogonal, agreement is a heuristic not a rule.**
+    /// Mis-leveled-DOWN over-flags most: a Zone-2 verb legitimately heads a one-line LEAF delegate —
+    /// notably `apply` (the step-interface SAM) and `execute` (the use-case SAM) forwarding to a single
+    /// call, `validate`/`check` one-liners, and `load`/`save` leaf delegates — so this arm is expected
+    /// high-volume noise (622 corpus hits at introduction, ~460 of them this arm). Mis-leveled-UP
+    /// over-flags a Zone-3 verb (`get`/`find`/…) on a small two-combinator getter that reads as SEQUENCER
+    /// (`return raw.map(f).filter(p)`). FN surface: the four non-cross-checked shapes, and any verb outside
+    /// the two tables (a same-altitude blend hidden inside a lambda is `JBCT-PAT-02`'s, not this rule's).
+    /// Because this reproduces neither an existing regex nor a build gate, it ships INFO for corpus
+    /// calibration (precedent JBCT-SIDE-01 / JBCT-SHAPE-01/02).
+    public static List<ShapeZoneMismatch> shapeZoneMismatches(Cursor root) {
+        var out = new ArrayList<ShapeZoneMismatch>();
+
+        for (var method : findAllMethods(root)) {
+            shapeZoneMismatch(method).onPresent(out::add);
+        }
+
+        return out;
+    }
+
+    private static Option<ShapeZoneMismatch> shapeZoneMismatch(Cursor method) {
+        return classify(method).flatMap(verdict -> mismatchForShape(method, verdict.shape()));
+    }
+
+    private static Option<ShapeZoneMismatch> mismatchForShape(Cursor method, MethodShape shape) {
+        return firstWord(FileTypeClassifier.methodName(method)).map(String::toLowerCase)
+                                                               .flatMap(verb -> mismatchForVerb(method, shape, verb));
+    }
+
+    private static Option<ShapeZoneMismatch> mismatchForVerb(Cursor method, MethodShape shape, String verb) {
+        if (isOrchestrationShape(shape) && ZONE_THREE_VERBS.contains(verb)) {
+            return Option.some(new ShapeZoneMismatch(method, shape, verb, true));
+        }
+
+        if (shape == MethodShape.LEAF && ZONE_TWO_VERBS.contains(verb)) {
+            return Option.some(new ShapeZoneMismatch(method, shape, verb, false));
+        }
+
+        return Option.none();
+    }
+
+    private static boolean isOrchestrationShape(MethodShape shape) {
+        return shape == MethodShape.SEQUENCER || shape == MethodShape.FORK_JOIN;
     }
 }

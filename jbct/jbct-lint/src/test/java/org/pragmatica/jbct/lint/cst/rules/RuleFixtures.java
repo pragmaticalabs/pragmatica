@@ -1247,5 +1247,26 @@ final class RuleFixtures {
                         return compute().map(this::finish).flatMap(this::save);
                     }
                 }
+                """),
+
+        // JBCT-SHAPE-03: mis-leveled — a Zone-3 implementation verb (`fetch`) heads a two-step
+        // SEQUENCER, anchored on the method declaration line (3). Negative near-miss: the same
+        // implementation verb heading a bare LEAF is correctly leveled and stays clean.
+        fixture("JBCT-SHAPE-03", 3,
+                """
+                package org.example;
+                class Foo {
+                    Object fetchReport() {
+                        return load().map(this::enrich).flatMap(this::store);
+                    }
+                }
+                """,
+                """
+                package org.example;
+                class Foo {
+                    Object fetchReport() {
+                        return load();
+                    }
+                }
                 """));
 }

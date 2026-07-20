@@ -317,6 +317,9 @@ public class CstLinter {
         new CstShapeMixedRule(),
 
         // Method has no single pattern (JBCT-SHAPE-02, UNCLASSIFIED)
-        new CstShapeUnclassifiedRule());
+        new CstShapeUnclassifiedRule(),
+
+        // Method's shape disagrees with its name-verb's zone (JBCT-SHAPE-03, mis-leveled)
+        new CstShapeZoneRule());
     }
 }
