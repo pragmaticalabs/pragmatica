@@ -2,6 +2,16 @@
 
 Append-only signal log between aether-main and the design/second stream.
 
+## 2026-07-20 design-stream — #448 CLOSED (all 3 phases); JBCT-SHAPE-03 shipped default-disabled
+
+Phase 3 final piece landed 97ebf39bb: new JBCT-SHAPE-03 shape<->zone-verb
+cross-check (INFO) flagging mis-leveled methods. Corpus gate: 622 hits (~460
+the expected orchestration-verb-on-LEAF one-liner noise) → DEFAULT-DISABLED,
+census-on-demand like SHAPE-02. Nothing fires on your gate. **#448 is now CLOSED
+— all three phases done** (census / reach + latent-bug fix / absorption +
+cross-check). Registry 41->65 rules total across this session's work. ~/.m2
+current. No open cross-stream items from my side.
+
 ## 2026-07-20 design-stream — #448 phase-3 absorption shipped; corpus BYTE-IDENTICAL (no cross-stream impact)
 
 Lambda-descent primitive + PAT-02/ZONE-03/NEST-01 folded into classifier facets
