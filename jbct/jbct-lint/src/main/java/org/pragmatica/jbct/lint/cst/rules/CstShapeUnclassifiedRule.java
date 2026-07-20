@@ -19,17 +19,21 @@ import static org.pragmatica.jbct.parser.CstNodes.*;
 /// recognisable composition root. Such a method has no single one of the book's six patterns and is
 /// the primary target of the < 5% corpus gate.
 ///
-/// **DEFAULT-DISABLED.** The aether corpus census returned 5336 UNCLASSIFIED methods — the
-/// multi-statement / local-var-then-return idiom dominates real code, so at INFO this rule would add
-/// thousands of lines to every `jbct:check`. It is disabled in [org.pragmatica.jbct.lint.LintConfig]'s
-/// default `disabledRules` and run on demand (enable it in config for a shape census); the sibling
-/// [CstShapeMixedRule] (JBCT-SHAPE-01) stays enabled because it is corpus-zero and silent.
+/// **DEFAULT-DISABLED.** The phase-1 aether corpus census returned thousands of UNCLASSIFIED methods
+/// — at INFO this rule would add that many lines to every `jbct:check`. The phase-2 reach (#448) cuts
+/// the residual substantially (a pure local-var-then-return body now reads by its tail, not
+/// UNCLASSIFIED), but a large genuinely-imperative remainder is a corpus fact, so the rule stays
+/// disabled in [org.pragmatica.jbct.lint.LintConfig]'s default `disabledRules` and is run on demand
+/// (enable it in config for a shape census); the sibling [CstShapeMixedRule] (JBCT-SHAPE-01) stays
+/// enabled because it is corpus-zero and silent.
 ///
 /// **Severity: INFO — phase-1 census, promote after corpus calibration.** Syntax-only classification
-/// deliberately marks anything it cannot reduce to a single composition root rather than guessing; a
-/// method built from local variables feeding a return, or an adapter with a lifted try, will read
-/// UNCLASSIFIED (accepted — the calibration signal, not a silent verdict). INFO never fails a build
-/// (precedent JBCT-SIDE-01). See [MethodShapeClassifier] for the full misclassification surface.
+/// deliberately marks anything it cannot reduce to a single composition root rather than guessing.
+/// After the phase-2 reach a body whose leading statements are all skippable preamble (pure locals,
+/// narrow guards, a single logger call) classifies by its tail; only a genuinely imperative body (a
+/// side effect, a reassignment, a mutating-initializer local, a lifted try) reads UNCLASSIFIED
+/// (accepted — the calibration signal, not a silent verdict). INFO never fails a build (precedent
+/// JBCT-SIDE-01). See [MethodShapeClassifier] for the full misclassification surface.
 public class CstShapeUnclassifiedRule implements CstLintRule {
     private static final String RULE_ID = "JBCT-SHAPE-02";
 

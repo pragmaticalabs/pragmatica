@@ -1226,15 +1226,17 @@ final class RuleFixtures {
                 }
                 """),
 
-        // JBCT-SHAPE-02: UNCLASSIFIED — imperative residue (a two-statement body, no single
-        // composition root), anchored on the method declaration line (3). Negative: a clean sequencer.
+        // JBCT-SHAPE-02: UNCLASSIFIED — imperative residue (a leading side-effect statement before
+        // the tail, no single composition root), anchored on the method declaration line (3). A pure
+        // local-then-tail body is NOT residue after the phase-2 reach (#448) — it reads by its tail.
+        // Negative: a clean sequencer.
         fixture("JBCT-SHAPE-02", 3,
                 """
                 package org.example;
                 class Foo {
                     Object run() {
-                        var x = compute();
-                        return x.transform();
+                        audit();
+                        return compute().transform();
                     }
                 }
                 """,

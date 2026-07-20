@@ -243,10 +243,12 @@ public record LintConfig(Map<String, DiagnosticSeverity> ruleSeverities,
 
     // Method has no single pattern (UNCLASSIFIED)
     Map.entry("JBCT-SHAPE-02", DiagnosticSeverity.INFO)),
-                                                        // JBCT-SHAPE-02 ships DEFAULT-DISABLED: the aether corpus census
-                                                        // returned 5336 UNCLASSIFIED methods (multi-statement / local-var-then-
-                                                        // return domination across node/cli/deployment), so leaving it on would
-                                                        // spam every `jbct:check` run. It stays a registered rule (severity +
+                                                        // JBCT-SHAPE-02 ships DEFAULT-DISABLED: after the phase-2 preamble reach
+                                                        // the aether corpus census returned 3832 UNCLASSIFIED methods (down from
+                                                        // 5336; the residue is genuinely imperative code — loops, multi-branch
+                                                        // side effects — a corpus fact, not a classifier gap), so leaving it on
+                                                        // would spam every `jbct:check` run and the <5% promotion gate is not
+                                                        // reachable on this corpus. It stays a registered rule (severity +
                                                         // fixture + category invariants hold) and is run on demand — enable it in
                                                         // config for a shape census. JBCT-SHAPE-01 (MIXED) stays enabled: it is
                                                         // corpus-zero and silent, the real-time single-pattern signal worth having.

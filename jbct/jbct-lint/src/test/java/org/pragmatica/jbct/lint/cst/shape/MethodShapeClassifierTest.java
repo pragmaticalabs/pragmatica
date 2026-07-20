@@ -95,12 +95,79 @@ class MethodShapeClassifierTest {
 
         @Test
         void classify_multiStatementBody_isUnclassified() {
-            assertShape(MethodShape.UNCLASSIFIED, "Object m() { var x = compute(); return x.transform(); }");
+            assertShape(MethodShape.UNCLASSIFIED, "Object m() { audit(x); return notify(x); }");
         }
 
         @Test
         void classify_loopStatement_isUnclassified() {
             assertShape(MethodShape.UNCLASSIFIED, "void m(List xs) { for (var x : xs) { process(x); } }");
+        }
+    }
+
+    /// Phase-2 reach (#448): a multi-statement body classifies by its composition-root tail when every
+    /// leading statement is skippable preamble (a pure local declaration, a narrow guard, or a single
+    /// logger call). The FP guard keeps a mutating-initializer local UNCLASSIFIED; a genuinely
+    /// imperative leading statement (side effect / reassignment) stays UNCLASSIFIED with a precise reason.
+    @Nested
+    class PreambleReach {
+        @Test
+        void classify_localsThenForkJoin_isForkJoin() {
+            assertShape(MethodShape.FORK_JOIN, "Object m(Id id) { var a = fetchA(id); var b = fetchB(id); return Result.all(a, b).map(this::merge); }");
+        }
+
+        @Test
+        void classify_localThenMapChain_isSequencer() {
+            assertShape(MethodShape.SEQUENCER, "Object m(R r) { var valid = validate(r); return valid.map(this::enrich).flatMap(this::save); }");
+        }
+
+        /// Locks the absorbed-head-call recovery ([MethodShapeClassifier#extractSpine]): a three-link
+        /// chain on a variable receiver (`a.map(f).map(g).flatMap(h)`) — whose leading `.map` the v6
+        /// PRIMARY folds into the head text — counts all three combinators and reads SEQUENCER both as
+        /// a single-statement body and as a preamble tail, not LEAF.
+        @Test
+        void classify_threeLinkChainOnVariableReceiver_isSequencer() {
+            assertShape(MethodShape.SEQUENCER, "Object m(A a) { return a.map(f).map(g).flatMap(h); }");
+            assertShape(MethodShape.SEQUENCER, "Object m(R r) { var a = seed(r); return a.map(f).map(g).flatMap(h); }");
+        }
+
+        @Test
+        void classify_localThenSingleCall_isLeaf() {
+            assertShape(MethodShape.LEAF, "Object m() { var x = compute(); return x.transform(); }");
+        }
+
+        @Test
+        void classify_mutatingInitializerLocal_isUnclassified() {
+            assertShape(MethodShape.UNCLASSIFIED, "Object m(Id id) { var seen = cache.put(id, id); return lookup(id).map(this::render); }");
+        }
+
+        @Test
+        void classify_guardThenComposedTail_isSequencer() {
+            assertShape(MethodShape.SEQUENCER, "Object m(R r) { if (r.bad()) return fail(); return validate(r).flatMap(a).flatMap(b); }");
+        }
+
+        @Test
+        void classify_guardThrowThenComposedTail_isForkJoin() {
+            assertShape(MethodShape.FORK_JOIN, "Object m(Id id) { if (id == null) throw new E(); return Promise.all(fetchA(id), fetchB(id)).map(this::merge); }");
+        }
+
+        @Test
+        void classify_leadingLogThenComposedTail_isSequencer() {
+            assertShape(MethodShape.SEQUENCER, "Object m(R r) { log.info(\"start\"); return validate(r).flatMap(a).flatMap(b); }");
+        }
+
+        @Test
+        void classify_twoSideEffectStatements_isUnclassified() {
+            assertShape(MethodShape.UNCLASSIFIED, "void m(X x) { audit(x); notify(x); }");
+        }
+
+        @Test
+        void classify_reassignmentBeforeTail_isUnclassified() {
+            assertShape(MethodShape.UNCLASSIFIED, "Object m(R r) { var acc = seed(r); acc = acc.plus(delta()); return acc.build(); }");
+        }
+
+        @Test
+        void classify_bodyEndingInLocalDeclaration_isUnclassified() {
+            assertShape(MethodShape.UNCLASSIFIED, "void m() { var a = compute(); var b = enrich(a); }");
         }
     }
 
@@ -140,7 +207,7 @@ class MethodShapeClassifierTest {
                 class Foo {
                     Object leaf() { return compute(); }
                     Object seq() { return validate().flatMap(a).flatMap(b); }
-                    Object bad() { var x = f(); return x.y(); }
+                    Object bad() { audit(x); return notify(x); }
                 }
                 """);
             var report = ShapeCensus.census(root);

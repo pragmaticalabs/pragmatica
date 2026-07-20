@@ -16,7 +16,11 @@ import org.pragmatica.lang.Option;
 ///
 /// Two rules share this catalog: [CstPartialOperationMapperRule] (R-A, inline lambdas) and
 /// [CstMapperMethodReferenceRule] (R-B, method references resolved within the compilation unit).
-sealed interface MapperSafety permits MapperSafety.unused {
+///
+/// Public because the generic source-masking helpers ([#blankNonCode] and friends) are reused
+/// outside this package by [org.pragmatica.jbct.lint.cst.shape.MethodShapeClassifier]'s phase-2
+/// mutation-signal guard (#448); the rule catalog itself stays internal to this package.
+public sealed interface MapperSafety permits MapperSafety.unused {
     record unused() implements MapperSafety {}
 
     /// Carrier combinators whose lambda / method-ref argument sits in "mapper position".

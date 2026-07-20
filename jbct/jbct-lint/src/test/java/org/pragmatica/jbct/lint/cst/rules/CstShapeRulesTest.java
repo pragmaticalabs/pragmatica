@@ -73,7 +73,7 @@ class CstShapeRulesTest {
 
         @Test
         void flags_multiStatementBody() {
-            assertTrue(hasRule(RULE_ID, method("var x = compute(); return x.transform();")));
+            assertTrue(hasRule(RULE_ID, method("audit(x); return notify(x);")));
         }
 
         @Test
@@ -83,10 +83,15 @@ class CstShapeRulesTest {
 
         @Test
         void severity_is_info() {
-            var diagnostics = only(RULE_ID, method("var x = compute(); return x.transform();"));
+            var diagnostics = only(RULE_ID, method("audit(x); return notify(x);"));
 
             assertEquals(1, diagnostics.size());
             assertEquals(DiagnosticSeverity.INFO, diagnostics.getFirst().severity());
+        }
+
+        @Test
+        void clean_on_preambleThenComposedTail() {
+            assertFalse(hasRule(RULE_ID, method("var valid = validate(r); return valid.flatMap(check).flatMap(save);")));
         }
 
         @Test
@@ -101,7 +106,7 @@ class CstShapeRulesTest {
 
         @Test
         void suppressed_by_annotation() {
-            assertFalse(hasRule(RULE_ID, suppressed(RULE_ID, "var x = compute(); return x.transform();")));
+            assertFalse(hasRule(RULE_ID, suppressed(RULE_ID, "audit(x); return notify(x);")));
         }
     }
 

@@ -7,6 +7,7 @@ import java.util.Set;
 import java.util.regex.Pattern;
 
 import org.pragmatica.jbct.lint.cst.filetype.FileTypeClassifier;
+import org.pragmatica.jbct.lint.cst.rules.MapperSafety;
 import org.pragmatica.jbct.parser.Cursor;
 import org.pragmatica.jbct.parser.RuleKind;
 import org.pragmatica.lang.Option;
@@ -14,7 +15,7 @@ import org.pragmatica.lang.Option;
 import static org.pragmatica.jbct.parser.CstNodes.*;
 
 
-/// Method-shape classification engine (issue #448, phase 1 census).
+/// Method-shape classification engine (issue #448, phase 1 census + phase 2 reach extension).
 ///
 /// Assigns every concrete method exactly one [MethodShape] from the syntax of its returned
 /// expression alone — no cross-file type resolution. The book's "single pattern per function" rule
@@ -69,9 +70,31 @@ import static org.pragmatica.jbct.parser.CstNodes.*;
 ///   (`step.apply(x).flatMap(next)`) reads as ASPECT rather than Sequencer. Aspects are the least
 ///   syntactically distinct pattern; both directions are accepted (histogram-only impact — the six
 ///   pure shapes are never diagnosed, so a shape↔shape swap changes only the census counts).
-/// - Instance-style joins (`promise.all(f1, f2)`) and multi-statement bodies (a local var feeding a
-///   return) read as Sequencer / [MethodShape#UNCLASSIFIED] respectively; both are accepted and are
-///   the calibration signal, not silent guesses.
+/// - Instance-style joins (`promise.all(f1, f2)`) read as Sequencer; accepted, the calibration
+///   signal, not a silent guess.
+/// - Multi-statement bodies are handled by the phase-2 preamble reach (see below): a body whose
+///   leading statements are all skippable preamble (pure local declarations, narrow guard clauses,
+///   or single logger calls) classifies by its composition-root tail; only a body with a genuinely
+///   imperative leading statement (a side effect, a reassignment, a mutating-initializer local, a
+///   loop / `if` / `try`) stays [MethodShape#UNCLASSIFIED].
+///
+/// **Phase-2 preamble reach (#448).** [#classifyBody] no longer bails on ANY multi-statement body.
+/// A method's body is reduced to its single composition-root tail (the last statement — a `return`
+/// or a trailing void expression) when every leading statement is *skippable preamble*: (a) a pure
+/// local-variable declaration — a named sub-expression feeding the root, (b) a narrow guard clause
+/// `if (cond) return …;` / `if (cond) throw …;` (single-branch, no `else`), or (c) a single logger
+/// statement (`log.*(…)` / `LOG.*(…)`). The tail is then run through the same [#classifyStatement]
+/// spine as a one-statement body, so `locals-then-Result.all(...)` reads FORK_JOIN and
+/// `locals-then-map-chain` reads SEQUENCER. **Mutation-signal FP guard** (the real risk): a local
+/// whose initializer text — masked via `MapperSafety.blankNonCode` so a token inside a string or
+/// comment cannot match — contains a mutation token ([#MUTATION_SIGNALS]) is NOT pure; the method is
+/// genuinely imperative and stays UNCLASSIFIED. Reassignment / shadowing is excluded structurally (an
+/// assignment statement is not a `LOCAL_VAR` node, so it is never skippable preamble and falls
+/// through). FP of the guard (flagging a pure `BigDecimal.add(…)` / no-arg `.start()` getter as
+/// mutating) only *withholds* a reclassification — conservative. FN of the guard (a custom-named
+/// mutator, a direct field write, `StringBuilder.append`) can promote an imperative method to a
+/// shape — accepted, INFO census. This reach is expected to roughly halve the residual, not eliminate
+/// it: a corpus of genuinely-imperative methods is a corpus fact, not a classifier defect.
 public final class MethodShapeClassifier {
     private MethodShapeClassifier() {}
 
@@ -80,9 +103,12 @@ public final class MethodShapeClassifier {
     public record ShapeVerdict(MethodShape shape, String reason) {}
 
     /// Top-level links of a postfix call chain: the head expression text (`Promise.all`, `validate`,
-    /// `raw.stream`) and the ordered names of the `.name(...)` method-call links after it. The
+    /// `raw.stream`) and the ordered names of the `.name(...)` method-call links along it. The
     /// `headInvoked` flag records whether the head itself is called (`foo(...)`), distinguishing a
-    /// bare reference (a getter leaf) from an invoked leaf.
+    /// bare reference (a getter leaf) from an invoked leaf. When the head is an *invoked dotted call
+    /// target* (`valid.map(...)`) the v6 PRIMARY node absorbs the leading `.method` into `headText`,
+    /// so that method-call segment is recovered into `linkMethods` (see [#extractSpine]) while the
+    /// full dotted `headText` is retained for the join / aggregator / stream / aspect head patterns.
     private record Spine(String headText, List<String> linkMethods, boolean headInvoked) {}
 
     /// Fork-Join heads: the varargs / multi-carrier join forms. Collection aggregation (`allOf`) is
@@ -160,6 +186,41 @@ public final class MethodShapeClassifier {
                                                                   "yield",
                                                                   "assert");
 
+    /// Mutation tokens marking a local-variable initializer as impure (phase-2 FP guard, #448). Their
+    /// presence in an initializer (masked via `MapperSafety.blankNonCode` first, so a token inside a
+    /// string or comment cannot match) means the declaration performs a side effect — the method is
+    /// genuinely imperative and must not be reclassified by its tail. Curated in the token-heuristic
+    /// style of [#SEQ_COMBINATORS]: collection / map / queue / stack mutators and atomic
+    /// read-modify-write forms. Documented FP surface (over-flags, only withholding a
+    /// reclassification — conservative): pure value-returning `.add(` / `.remove(` on `BigDecimal` /
+    /// immutable collections, and a no-argument `.start(` getter. Documented FN surface (under-flags,
+    /// can promote an imperative method — accepted at INFO): custom-named mutators, direct field
+    /// writes, and `StringBuilder.append`.
+    private static final Set<String> MUTATION_SIGNALS = Set.of(".set(",
+                                                              ".put(",
+                                                              ".putIfAbsent(",
+                                                              ".add(",
+                                                              ".addAll(",
+                                                              ".remove(",
+                                                              ".removeAll(",
+                                                              ".incrementAndGet(",
+                                                              ".decrementAndGet(",
+                                                              ".getAndIncrement(",
+                                                              ".getAndDecrement(",
+                                                              ".getAndSet(",
+                                                              ".compareAndSet(",
+                                                              ".start(",
+                                                              ".offer(",
+                                                              ".poll(",
+                                                              ".push(",
+                                                              ".pop(");
+
+    /// A leading logger statement (phase-2 skippable preamble, #448): a `log` / `LOG` / `logger` /
+    /// `LOGGER` receiver calling any method. Matched against the masked statement text so a logger
+    /// mention inside a string / comment cannot match. Logging is cross-cutting noise with no
+    /// data-flow role, so it is skipped before the tail is classified.
+    private static final Pattern LOGGER_STATEMENT = Pattern.compile("^\\s*(log|LOG|logger|LOGGER)\\s*\\.\\s*\\w+\\s*\\(");
+
     private static final Pattern LEADING_WORD = Pattern.compile("^\\s*([A-Za-z]+)");
     private static final Pattern PARAM_NAME_TAIL = Pattern.compile("([A-Za-z_$][A-Za-z0-9_$]*)\\s*$");
 
@@ -176,11 +237,107 @@ public final class MethodShapeClassifier {
             return Option.none();
         }
 
-        if (statements.size() > 1) {
-            return verdict(MethodShape.UNCLASSIFIED, statements.size() + " statements — no single composition root");
+        if (statements.size() == 1) {
+            return Option.some(classifyStatement(methodMember, statements.getFirst()));
         }
 
-        return Option.some(classifyStatement(methodMember, statements.getFirst()));
+        return Option.some(classifyPreambleThenTail(methodMember, statements));
+    }
+
+    /// Phase-2 reach (#448): a multi-statement body classifies by its composition-root tail (the last
+    /// statement) when every leading statement is skippable preamble (a pure local declaration, a
+    /// narrow guard clause, or a single logger call). The first non-skippable leading statement makes
+    /// the body imperative residue with a precise reason; a body that ends with a local declaration
+    /// has no composition tail and is likewise residue.
+    private static ShapeVerdict classifyPreambleThenTail(Cursor methodMember, List<Cursor> statements) {
+        for (var leading : statements.subList(0, statements.size() - 1)) {
+            if (!isSkippablePreamble(leading)) {
+                return residueVerdict(leading);
+            }
+        }
+
+        var tail = statements.getLast();
+
+        if (isLocalVarDecl(tail)) {
+            return new ShapeVerdict(MethodShape.UNCLASSIFIED, "body ends with a local declaration — no composition tail");
+        }
+
+        return classifyStatement(methodMember, tail);
+    }
+
+    /// True when a leading statement carries no data-flow weight of its own and can be skipped before
+    /// the tail is classified: a pure local declaration, a narrow guard clause, or a single logger call.
+    private static boolean isSkippablePreamble(Cursor statement) {
+        return isPureLocalVarDecl(statement) || isGuardClause(statement) || isLoggerStatement(statement);
+    }
+
+    /// A local-variable declaration all of whose initializers are pure (carry no [#MUTATION_SIGNALS]).
+    /// A declaration with no initializer is not pure — it produces no value to feed the root.
+    private static boolean isPureLocalVarDecl(Cursor statement) {
+        return childByRule(statement, RuleKind.LOCAL_VAR)
+            .map(local -> contains(local, RuleKind.VAR_INIT) && !containsMutationSignal(text(local)))
+            .or(false);
+    }
+
+    /// True when the masked declaration text carries any mutation token. Masking blanks strings and
+    /// comments so a token spelled inside a literal cannot match; identifiers and type names cannot
+    /// produce a `.name(` token, so scanning the whole declaration is equivalent to scanning the
+    /// initializer for these tokens.
+    private static boolean containsMutationSignal(String declarationText) {
+        var masked = MapperSafety.blankNonCode(declarationText);
+
+        return MUTATION_SIGNALS.stream().anyMatch(masked::contains);
+    }
+
+    /// A narrow guard clause: `if (cond) return …;` or `if (cond) throw …;` with a single branch and
+    /// no `else`. Anything richer (an `else`, a braced body, a non-return/throw branch) is not a guard
+    /// and falls through to imperative residue.
+    private static boolean isGuardClause(Cursor statement) {
+        return childByRule(statement, RuleKind.STMT)
+            .map(MethodShapeClassifier::isGuardStmt)
+            .or(false);
+    }
+
+    private static boolean isGuardStmt(Cursor stmt) {
+        if (!leadingWord(text(stmt)).equals("if")) {
+            return false;
+        }
+
+        var branches = childrenByRule(stmt, RuleKind.STMT);
+
+        return branches.size() == 1 && isReturnOrThrow(leadingWord(text(branches.getFirst())));
+    }
+
+    private static boolean isReturnOrThrow(String keyword) {
+        return keyword.equals("return") || keyword.equals("throw");
+    }
+
+    /// A single logger call statement (`log.*(…)` / `LOG.*(…)`), matched against masked statement text.
+    private static boolean isLoggerStatement(Cursor statement) {
+        return childByRule(statement, RuleKind.STMT)
+            .map(stmt -> LOGGER_STATEMENT.matcher(MapperSafety.blankNonCode(text(stmt))).find())
+            .or(false);
+    }
+
+    private static boolean isLocalVarDecl(Cursor statement) {
+        return hasChildOfRule(statement, RuleKind.LOCAL_VAR);
+    }
+
+    /// Precise reason for a leading statement that is not skippable preamble: an imperative keyword
+    /// (`for` / non-guard `if` / `try` / …), a local with a mutating initializer, or a bare
+    /// side-effect statement (a discarded call or a reassignment).
+    private static ShapeVerdict residueVerdict(Cursor statement) {
+        var keyword = leadingWord(text(statement));
+
+        if (IMPERATIVE_KEYWORDS.contains(keyword)) {
+            return new ShapeVerdict(MethodShape.UNCLASSIFIED, "leading imperative statement (" + keyword + ")");
+        }
+
+        if (isLocalVarDecl(statement)) {
+            return new ShapeVerdict(MethodShape.UNCLASSIFIED, "leading local with a mutating initializer");
+        }
+
+        return new ShapeVerdict(MethodShape.UNCLASSIFIED, "leading side-effect statement — no single composition root");
     }
 
     private static ShapeVerdict classifyStatement(Cursor methodMember, Cursor statement) {
@@ -298,6 +455,21 @@ public final class MethodShapeClassifier {
 
     /// Read the top-level links of a postfix chain: the head node's text plus, for each `POST_OP`,
     /// either a `.name(...)` method-call link (recorded) or the head's own `(...)` invocation.
+    ///
+    /// **Absorbed head-call recovery.** The v6 grammar folds a dotted call target into one `PRIMARY`
+    /// leaf: `valid.map(this::enrich)` parses as `PRIMARY [valid.map]` + `POST_OP [(this::enrich)]`,
+    /// not `PRIMARY [valid]` + `POST_OP [.map]` + `POST_OP [(…)]`. Without recovery the leading
+    /// combinator link is lost and a two-step chain reads as a one-step Leaf (`valid.map(f).flatMap(g)`
+    /// → seq 1 → LEAF instead of SEQUENCER). When the head is a dotted name *and* it is invoked (a
+    /// following `(...)`), the segment after its last `.` is that call's method name: it is recovered
+    /// as the chain's first link. The full dotted `headText` is kept unchanged so the join
+    /// (`Promise.all`), aggregator (`Result.allOf`), stream-source (`raw.stream`) and aspect
+    /// (`step.apply`) head patterns still match — those segments simply aren't sequencing combinators,
+    /// so recovering them is inert for the decision table. One second-order effect (histogram-only,
+    /// accepted): recovery makes `linkMethods` non-empty for an invoked bare `param.apply(x)` body, so
+    /// it now reads ASPECT rather than LEAF via [#isAspectShape]'s non-empty-links path — the
+    /// reclassifications this fix produces are therefore mostly LEAF→SEQUENCER but include this
+    /// LEAF→ASPECT edge. Both are within the accepted aspect/leaf census tolerance.
     private static Spine extractSpine(Cursor postfix) {
         var kids = children(postfix);
         var headText = kids.isEmpty() ? "" : text(kids.getFirst()).trim();
@@ -314,7 +486,41 @@ public final class MethodShapeClassifier {
             }
         }
 
+        absorbedHeadCallLink(headText, headInvoked).onPresent(link -> links.add(0, link));
+
         return new Spine(headText, links, headInvoked);
+    }
+
+    /// The method-call segment the v6 PRIMARY absorbed from an invoked dotted head — the identifier
+    /// after the head's last `.`, or none when the head carries no `.` or is not invoked. A bare
+    /// dotted field access (`a.b` with no following `(...)`) contributes no call link; an empty or
+    /// non-identifier trailing segment (an explicit type witness such as `Result.<X>all`) is skipped.
+    private static Option<String> absorbedHeadCallLink(String headText, boolean headInvoked) {
+        if (!headInvoked) {
+            return Option.none();
+        }
+
+        var dot = headText.lastIndexOf('.');
+
+        if (dot < 0) {
+            return Option.none();
+        }
+
+        var segment = leadingIdentifier(headText, dot + 1);
+
+        return segment.isEmpty() ? Option.none() : Option.some(segment);
+    }
+
+    /// The maximal run of Java identifier characters in `text` starting at `start` (empty when the
+    /// character at `start` is not an identifier part).
+    private static String leadingIdentifier(String text, int start) {
+        var i = start;
+
+        while (i < text.length() && Character.isJavaIdentifierPart(text.charAt(i))) {
+            i++;
+        }
+
+        return text.substring(start, i);
     }
 
     /// The method name of a `.name(...)` post-op, or none for a field access (`.name` with no call).
@@ -453,9 +659,5 @@ public final class MethodShapeClassifier {
         var matcher = LEADING_WORD.matcher(text);
 
         return matcher.find() ? matcher.group(1) : "";
-    }
-
-    private static Option<ShapeVerdict> verdict(MethodShape shape, String reason) {
-        return Option.some(new ShapeVerdict(shape, reason));
     }
 }
