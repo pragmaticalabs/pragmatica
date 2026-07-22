@@ -70,14 +70,14 @@ public class ClusterConfigWizard {
                     var previousIndex = previousApplicableIndex(steps, index, history);
 
                     if (previousIndex < 0) {
-                        return new ClusterInitError.Aborted().result();
+                        return ClusterInitError.Aborted.INSTANCE.result();
                     }
 
                     state = history.pop();
                     index = previousIndex;
                 }
                 case StepResult.Abort _ -> {
-                    return new ClusterInitError.Aborted().result();
+                    return ClusterInitError.Aborted.INSTANCE.result();
                 }
             }
         }

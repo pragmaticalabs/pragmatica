@@ -45,7 +45,8 @@ public sealed interface ClusterInitError extends Cause {
         }
     }
 
-    record Aborted() implements ClusterInitError {
+    enum Aborted implements ClusterInitError {
+        INSTANCE;
         @Override
         public String message() {
             return "Wizard aborted by operator.";

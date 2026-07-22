@@ -453,20 +453,21 @@ final class DefaultAetherSchemaManager implements AetherSchemaManager {
                                                String nodeId,
                                                long startNanos,
                                                MigrationProgress checkpoint) {
-        return checkpoint.checksum() != migration.entry()
-                                                 .checksum()
-               ? checksumMismatch(datasource,
-                                  migration.version(),
-                                  checkpoint.checksum(),
-                                  migration.entry().checksum()).promise()
-               : MigrationStatus.SUCCESS.equals(checkpoint.status())
-                 ? Promise.unitPromise()
-                 : runAutocommitResume(migration,
-                                       connector,
-                                       statements,
-                                       nodeId,
-                                       startNanos,
-                                       checkpoint.statementsCompleted());
+        if (checkpoint.checksum() != migration.entry().checksum()) {
+            return checksumMismatch(datasource,
+                                    migration.version(),
+                                    checkpoint.checksum(),
+                                    migration.entry().checksum()).promise();
+        }
+
+        return MigrationStatus.SUCCESS.equals(checkpoint.status())
+               ? Promise.unitPromise()
+               : runAutocommitResume(migration,
+                                     connector,
+                                     statements,
+                                     nodeId,
+                                     startNanos,
+                                     checkpoint.statementsCompleted());
     }
 
     /// Fresh autocommit run: record the `IN_PROGRESS` checkpoint row, then apply every statement

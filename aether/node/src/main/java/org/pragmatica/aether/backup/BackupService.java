@@ -30,7 +30,8 @@ public interface BackupService {
             }
         }
 
-        record RestoreNotAllowed() implements BackupError {
+        enum RestoreNotAllowed implements BackupError {
+            INSTANCE;
             @Override
             public String message() {
                 return "Restore not allowed while cluster is active";
@@ -44,7 +45,8 @@ public interface BackupService {
             }
         }
 
-        record BackupDisabled() implements BackupError {
+        enum BackupDisabled implements BackupError {
+            INSTANCE;
             @Override
             public String message() {
                 return "Backup is not enabled";
@@ -56,7 +58,7 @@ public interface BackupService {
         }
 
         static BackupError restoreNotAllowed() {
-            return new RestoreNotAllowed();
+            return RestoreNotAllowed.INSTANCE;
         }
 
         static BackupError commitNotFound(String id) {
@@ -64,7 +66,7 @@ public interface BackupService {
         }
 
         static BackupError backupDisabled() {
-            return new BackupDisabled();
+            return BackupDisabled.INSTANCE;
         }
     }
 

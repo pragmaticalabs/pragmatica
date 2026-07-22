@@ -60,7 +60,7 @@ class ClusterScaleCommand implements Callable<Integer> {
 
     private Result<String> confirmAndScale(EffectiveScale pair) {
         if (!confirmScale(pair)) {
-            return new ScaleError.Aborted().result();
+            return ScaleError.Aborted.INSTANCE.result();
         }
 
         return validateCount(pair.count(),
@@ -86,7 +86,7 @@ class ClusterScaleCommand implements Callable<Integer> {
             return Result.success(new EffectiveScale(count, roleName));
         }
 
-        return new ScaleError.MissingCount().result();
+        return ScaleError.MissingCount.INSTANCE.result();
     }
 
     private record EffectiveScale(int count, String role) {}
@@ -178,14 +178,16 @@ class ClusterScaleCommand implements Callable<Integer> {
             }
         }
 
-        record MissingCount() implements ScaleError {
+        enum MissingCount implements ScaleError {
+            INSTANCE;
             @Override
             public String message() {
                 return "Either --count or --core must be specified";
             }
         }
 
-        record Aborted() implements ScaleError {
+        enum Aborted implements ScaleError {
+            INSTANCE;
             @Override
             public String message() {
                 return "Scale aborted by operator";

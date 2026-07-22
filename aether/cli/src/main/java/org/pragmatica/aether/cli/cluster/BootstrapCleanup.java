@@ -395,7 +395,7 @@ sealed interface BootstrapCleanup {
         var token = System.getenv("HCLOUD_TOKEN");
 
         if (token == null || token.isBlank()) {
-            return new HetznerCredentialsMissing().result();
+            return HetznerCredentialsMissing.INSTANCE.result();
         }
 
         return Result.success(hetznerClientFromToken(token));
@@ -485,7 +485,8 @@ sealed interface BootstrapCleanup {
         }
     }
 
-    record HetznerCredentialsMissing() implements Cause {
+    enum HetznerCredentialsMissing implements Cause {
+        INSTANCE;
         @Override
         public String message() {
             return "Hetzner credentials missing for SSH key cleanup: set HCLOUD_TOKEN env var";

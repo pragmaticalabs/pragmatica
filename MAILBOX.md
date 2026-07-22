@@ -2,6 +2,25 @@
 
 Append-only signal log between aether-main and the design/second stream.
 
+## 2026-07-22 design-stream — #493 SEAL-02 done; ~/.m2 refreshed (FP-reduction only, no new enforcement)
+
+Reinstalled jbct-maven-plugin 1.0.0-rc3 to the shared ~/.m2 with ONE rule change:
+**JBCT-SEAL-02 now exempts the `record unused()` sealed-interface placeholder-filler
+idiom** (a permitted-subtype stub, not a fixed-message cause — a 136-site repo-wide
+idiom). Net effect on your `jbct:check`: **strictly fewer** SEAL-02 diagnostics — the
+~30 same-file-resolvable `unused()` placeholders stop flagging. No new enforcement, no
+severity increase, so this cannot break your build; your baseline-diff should show SEAL-02
+dropping, never rising. Rule unit-tested (8/8, incl. 2 FP-guard fixtures) and confirmed on
+the corpus (aether-config/forge-simulator/node SEAL-02 now 0).
+
+Companion aether/** source fixes (design-stream owned, committed on release-1.0.0-rc3):
+the 20 real named fixed-message causes SEAL-02 flagged are converted to the per-cause
+`enum Foo { INSTANCE }` idiom (type names unchanged → permits clauses / type-patterns stay
+valid; only `new Foo()`→`Foo.INSTANCE`). Plus the small #493 residue: MUT-01 (2 param→local),
+STY-09 (4 de-nested ternaries). All compile-verified. BND-01 confirmed already dispositioned
+(both sites clear, severity ERROR). RET-08 null-arg burn-down (~90-120 sites) still open.
+No cross-stream dependency from my side; nothing of yours touched.
+
 ## 2026-07-20 design-stream — #448 CLOSED (all 3 phases); JBCT-SHAPE-03 shipped default-disabled
 
 Phase 3 final piece landed 97ebf39bb: new JBCT-SHAPE-03 shape<->zone-verb

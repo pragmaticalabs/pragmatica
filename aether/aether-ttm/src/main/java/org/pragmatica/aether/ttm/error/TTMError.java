@@ -31,11 +31,8 @@ public sealed interface TTMError extends Cause {
         }
     }
 
-    record Disabled() implements TTMError {
-        public static Disabled disabled() {
-            return new Disabled();
-        }
-
+    enum Disabled implements TTMError {
+        INSTANCE;
         @Override
         public String message() {
             return "TTM is disabled in configuration";
@@ -49,11 +46,8 @@ public sealed interface TTMError extends Cause {
         }
     }
 
-    record NoProvider() implements TTMError {
-        public static NoProvider noProvider() {
-            return new NoProvider();
-        }
-
+    enum NoProvider implements TTMError {
+        INSTANCE;
         @Override
         public String message() {
             return "No TTM predictor implementation available. Add aether-ttm-onnx to classpath.";

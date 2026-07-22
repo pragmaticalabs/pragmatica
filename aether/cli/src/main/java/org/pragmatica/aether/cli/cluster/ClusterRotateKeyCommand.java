@@ -89,7 +89,7 @@ class ClusterRotateKeyCommand implements Callable<Integer> {
             }
         }
 
-        return new RotateKeyError.NoActiveKey().result();
+        return RotateKeyError.NoActiveKey.INSTANCE.result();
     }
 
     private static Result<String> createNewKey(String keyId,
@@ -185,7 +185,8 @@ class ClusterRotateKeyCommand implements Callable<Integer> {
     }
 
     sealed interface RotateKeyError extends Cause {
-        record NoActiveKey() implements RotateKeyError {
+        enum NoActiveKey implements RotateKeyError {
+            INSTANCE;
             @Override
             public String message() {
                 return "No active API key found in cluster. Bootstrap or create a key first.";
