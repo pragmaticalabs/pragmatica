@@ -65,6 +65,45 @@ class CstNullLiteralRuleTest {
     }
 
     @Test
+    void exempts_orElse_null_jdk_bridge() {
+        assertFalse(hasRule("""
+                package org.example;
+                class Foo {
+                    String run(java.util.Optional<String> opt) {
+                        return opt.orElse(null);
+                    }
+                }
+                """));
+    }
+
+    @Test
+    void exempts_atomic_compareAndSet_and_getAndSet_sentinels() {
+        assertFalse(hasRule("""
+                package org.example;
+                class Foo {
+                    void run(java.util.concurrent.atomic.AtomicReference<String> ref) {
+                        ref.compareAndSet(null, "x");
+                        var prev = ref.getAndSet(null);
+                    }
+                }
+                """));
+    }
+
+    @Test
+    void still_flags_null_arg_to_common_named_setter() {
+        // Common JDK-boundary names are deliberately NOT exempted — a real business null argument
+        // to a method named `set` must still be flagged.
+        assertTrue(hasRule("""
+                package org.example;
+                class Foo {
+                    void run(Config c) {
+                        c.set(null);
+                    }
+                }
+                """));
+    }
+
+    @Test
     void no_false_positive_on_return_null() {
         assertFalse(hasRule("""
                 package org.example;

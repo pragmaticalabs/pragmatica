@@ -1,5 +1,6 @@
 package org.pragmatica.jbct.lint.cst.rules;
 
+import java.util.Set;
 import java.util.regex.Pattern;
 import java.util.stream.Stream;
 
@@ -15,8 +16,9 @@ import static org.pragmatica.jbct.parser.CstNodes.*;
 ///
 /// Passing `null` as a call argument (`compute(null)`, `new Email(a, null)`) leaks absence
 /// through the boundary into business logic; pass an empty `Option`, or restructure so the value
-/// is always present. The one sanctioned null argument is the documented `.or(null)` adapter,
-/// which converts an `Option` back to a nullable database column.
+/// is always present. Sanctioned null arguments are the distinctive boundary-adapter calls
+/// (`.or(null)`, `.orElse(null)`, and the `java.util.concurrent.atomic` `compareAndSet`/`getAndSet`
+/// sentinels) — see [#NULLABLE_ADAPTER_CALLS].
 ///
 /// Detection scans string- and comment-blanked source (so a `null` inside a literal or comment is
 /// never matched) for a `null` token that stands alone as a call argument — its nearest
@@ -37,8 +39,17 @@ public class CstNullLiteralRule implements CstLintRule {
     private static final String RULE_ID = "JBCT-RET-08";
     private static final Pattern NULL_WORD = Pattern.compile("\\bnull\\b");
 
-    /// Method whose single `null` argument is the sanctioned Option-to-nullable-column adapter.
-    private static final String NULLABLE_ADAPTER_CALL = "or";
+    /// Calls whose lone/positional `null` argument is a sanctioned boundary adapter, not absence
+    /// leaking into business logic, and so are exempt:
+    ///   - `or` — the Pragmatica `Option`-to-nullable-column adapter (`opt.or(null)`);
+    ///   - `orElse` — the JDK `Optional`/`Stream` nullable bridge (`opt.orElse(null)`);
+    ///   - `compareAndSet` / `getAndSet` — `java.util.concurrent.atomic` primitives whose empty
+    ///     sentinel is a raw `null` that cannot be `Option`-wrapped.
+    /// These four are distinctive names with no business-method homonyms, so exempting by name has
+    /// negligible false-negative surface. Common JDK-boundary names (`set`, `init`, `load`,
+    /// `invoke`) are intentionally NOT exempted here — their nulls are dispositioned by explicit
+    /// suppression instead, to avoid masking real business null arguments.
+    private static final Set<String> NULLABLE_ADAPTER_CALLS = Set.of("or", "orElse", "compareAndSet", "getAndSet");
 
     @Override
     public String ruleId() {
@@ -75,7 +86,7 @@ public class CstNullLiteralRule implements CstLintRule {
         var callName = MapperSafety.enclosingCallName(masked, start)
                                    .or("");
 
-        if (callName.isEmpty() || NULLABLE_ADAPTER_CALL.equals(callName)) {
+        if (callName.isEmpty() || NULLABLE_ADAPTER_CALLS.contains(callName)) {
             return;
         }
 
