@@ -91,15 +91,17 @@ public sealed interface MavenLocalRepoLocator {
     }
 
     private static String expandPath(String path, String userHome) {
-        if (path.startsWith("~" + File.separator) || path.equals("~")) {
-            path = userHome + path.substring(1);
+        var expanded = path;
+
+        if (expanded.startsWith("~" + File.separator) || expanded.equals("~")) {
+            expanded = userHome + expanded.substring(1);
         }
 
-        if (path.contains("${user.home}")) {
-            path = path.replace("${user.home}", userHome);
+        if (expanded.contains("${user.home}")) {
+            expanded = expanded.replace("${user.home}", userHome);
         }
 
-        return path;
+        return expanded;
     }
 
     record unused() implements MavenLocalRepoLocator {}

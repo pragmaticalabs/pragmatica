@@ -137,7 +137,7 @@ class ClusterBootstrapCommand implements Callable<Integer> {
         if (!skipConfirmation && !confirmBootstrap(config.cluster().name())) {
             System.out.println("Aborted.");
 
-            return new AbortedError().result();
+            return AbortedError.INSTANCE.result();
         }
 
         return SshKeyResolver.resolveOrFailIfCloud(config, option(sshPublicKeyPath)).flatMap(keys -> ClusterBootstrapOrchestrator.bootstrap(config,
@@ -289,7 +289,8 @@ class ClusterBootstrapCommand implements Callable<Integer> {
         return ExitCode.ERROR;
     }
 
-    private record AbortedError() implements Cause {
+    private enum AbortedError implements Cause {
+        INSTANCE;
         @Override
         public String message() {
             return "Bootstrap aborted by user.";

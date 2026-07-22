@@ -210,7 +210,7 @@ public sealed interface BootstrapPhaseSshKey {
         var token = source.credentials().or(System.getenv("HCLOUD_TOKEN"));
 
         if (token == null || token.isBlank()) {
-            return new HetznerCredentialsMissing().result();
+            return HetznerCredentialsMissing.INSTANCE.result();
         }
 
         return success(HetznerClient.hetznerClient(HetznerConfig.hetznerConfig(token)));
@@ -225,7 +225,8 @@ public sealed interface BootstrapPhaseSshKey {
         }
     }
 
-    record HetznerCredentialsMissing() implements Cause {
+    enum HetznerCredentialsMissing implements Cause {
+        INSTANCE;
         @Override
         public String message() {
             return "Hetzner credentials missing: set HCLOUD_TOKEN env var or source.credentials";

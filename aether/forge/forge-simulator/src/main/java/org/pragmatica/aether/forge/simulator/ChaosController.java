@@ -266,13 +266,8 @@ public final class ChaosController {
     }
 
     public sealed interface ChaosError extends Cause {
-        record ExecutionFailed() implements ChaosError {
-            private static final ExecutionFailed INSTANCE = executionFailed().unwrap();
-
-            public static Result<ExecutionFailed> executionFailed() {
-                return success(new ExecutionFailed());
-            }
-
+        enum ExecutionFailed implements ChaosError {
+            INSTANCE;
             @Override
             public String message() {
                 return "Failed to execute chaos event";

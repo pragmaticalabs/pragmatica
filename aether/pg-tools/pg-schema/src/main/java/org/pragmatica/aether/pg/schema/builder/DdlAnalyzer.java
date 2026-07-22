@@ -727,11 +727,7 @@ public final class DdlAnalyzer {
 
         if (strategy.isEmpty()) return Option.empty();
 
-        var strategyType = strategy.unwrap().has("ListKW")
-                           ? Table.PartitionStrategy.LIST
-                           : strategy.unwrap().has("HashKW")
-                             ? Table.PartitionStrategy.HASH
-                             : Table.PartitionStrategy.RANGE;
+        var strategyType = partitionStrategyOf(strategy.unwrap());
         var keys = partClause.findAll("ColId")
                              .stream()
                              .map(CstExtractor::extractIdentifier)
@@ -739,5 +735,17 @@ public final class DdlAnalyzer {
                              .toList();
 
         return Option.present(new Table.PartitionBy(strategyType, keys));
+    }
+
+    private static Table.PartitionStrategy partitionStrategyOf(CstNavigator strategy) {
+        if (strategy.has("ListKW")) {
+            return Table.PartitionStrategy.LIST;
+        }
+
+        if (strategy.has("HashKW")) {
+            return Table.PartitionStrategy.HASH;
+        }
+
+        return Table.PartitionStrategy.RANGE;
     }
 }

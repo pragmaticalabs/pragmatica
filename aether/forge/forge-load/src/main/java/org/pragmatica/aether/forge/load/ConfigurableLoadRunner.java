@@ -798,11 +798,13 @@ public final class ConfigurableLoadRunner {
             var hasBody = !body.isEmpty();
             var isDeletePath = path.contains("/delete") || path.endsWith("/cancel");
 
-            return hasBody
-                   ? "POST"
-                   : isDeletePath
-                     ? "DELETE"
-                     : "GET";
+            if (hasBody) {
+                return "POST";
+            }
+
+            return isDeletePath
+                   ? "DELETE"
+                   : "GET";
         }
 
         TargetMetrics collectTargetMetrics() {

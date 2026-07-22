@@ -35,7 +35,7 @@ public sealed interface ManagementRouteError extends Cause {
     }
 
     static NoLeaderElected noLeaderElected() {
-        return new NoLeaderElected();
+        return NoLeaderElected.INSTANCE;
     }
 
     static LeaderDisconnected leaderDisconnected(String leaderNodeId) {
@@ -43,7 +43,7 @@ public sealed interface ManagementRouteError extends Cause {
     }
 
     static NotLeader notLeader() {
-        return new NotLeader();
+        return NotLeader.INSTANCE;
     }
 
     static NotLocalTarget notLocalTarget(String nodeId) {
@@ -96,7 +96,8 @@ public sealed interface ManagementRouteError extends Cause {
         }
     }
 
-    record NoLeaderElected() implements ManagementRouteError {
+    enum NoLeaderElected implements ManagementRouteError {
+        INSTANCE;
         @Override
         public String message() {
             return "No leader elected for leader-bound management route";
@@ -110,7 +111,8 @@ public sealed interface ManagementRouteError extends Cause {
         }
     }
 
-    record NotLeader() implements ManagementRouteError {
+    enum NotLeader implements ManagementRouteError {
+        INSTANCE;
         @Override
         public String message() {
             return "Target handler requires the cluster leader";

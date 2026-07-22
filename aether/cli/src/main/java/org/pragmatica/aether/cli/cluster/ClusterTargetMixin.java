@@ -109,7 +109,7 @@ public class ClusterTargetMixin {
 
     private static Result<String> ensureNonBlank(String content) {
         return content.isBlank()
-               ? new ClusterTargetError.ApiKeyEmpty().result()
+               ? ClusterTargetError.ApiKeyEmpty.INSTANCE.result()
                : Result.success(content);
     }
 
@@ -147,7 +147,8 @@ public class ClusterTargetMixin {
             }
         }
 
-        record ApiKeyEmpty() implements ClusterTargetError {
+        enum ApiKeyEmpty implements ClusterTargetError {
+            INSTANCE;
             @Override
             public String message() {
                 return "API key file is empty.";

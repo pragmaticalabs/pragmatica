@@ -62,12 +62,12 @@ public sealed interface ManagementServerError extends Cause, HttpStatusAware {
         }
     }
 
-    record StrategyChangeNotSupported() implements ManagementServerError {
+    enum StrategyChangeNotSupported implements ManagementServerError {
+        INSTANCE;
         @Override
         public String message() {
             return "Runtime strategy change not supported. Strategy must be set at node startup.";
         }
-
         @Override
         public HttpStatus httpStatus() {
             return HttpStatus.NOT_IMPLEMENTED;

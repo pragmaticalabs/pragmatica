@@ -76,7 +76,8 @@ public sealed interface ClusterConfigError extends Cause, HttpStatusAware {
         }
     }
 
-    record MissingContainerImage() implements ClusterConfigError {
+    enum MissingContainerImage implements ClusterConfigError {
+        INSTANCE;
         @Override
         public String message() {
             return "Missing container image. deployment.runtime.image is required when runtime.type = 'container'";
@@ -317,7 +318,8 @@ public sealed interface ClusterConfigError extends Cause, HttpStatusAware {
         }
     }
 
-    record MissingSshKeyPath() implements ClusterConfigError {
+    enum MissingSshKeyPath implements ClusterConfigError {
+        INSTANCE;
         @Override
         public String message() {
             return "deployment.ssh.key_path must be specified";
