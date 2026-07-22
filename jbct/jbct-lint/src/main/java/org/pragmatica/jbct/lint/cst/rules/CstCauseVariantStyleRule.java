@@ -27,16 +27,19 @@ import static org.pragmatica.jbct.parser.CstNodes.*;
 ///   - a **class** (neither record nor enum) — use a record (data) or an enum constant (fixed).
 ///
 /// A data-carrying record (one or more components) and an enum constant are both correct and are
-/// never flagged.
+/// never flagged. The `record unused()` sealed-interface placeholder filler is exempt (see
+/// [#isPlaceholderFiller]) — it is a permitted-subtype stub, not a fixed-message cause.
 ///
 /// FN surface: cause hierarchies whose `extends Cause` link is cross-file or transitive
 /// (`extends AnotherError`) are not resolved, so their variants are not checked; and a declaration
 /// annotation containing a brace truncates the parsed header (see [DeclSupport]), so its
-/// `implements` clause is missed. FP surface: a zero-component record that implements a
-/// `Cause`-extending interface for a reason other than being a fixed-message cause (rare).
+/// `implements` clause is missed. FP surface: a zero-component record (other than the exempt
+/// `unused` filler) that implements a `Cause`-extending interface for a reason other than being a
+/// fixed-message cause (rare).
 public class CstCauseVariantStyleRule implements CstLintRule {
     private static final String RULE_ID = "JBCT-SEAL-02";
     private static final String CAUSE = "Cause";
+    private static final String PLACEHOLDER_FILLER = "unused";
     private static final Pattern EXTENDS_CAUSE = Pattern.compile("\\bextends\\b[^{]*\\bCause\\b");
     private static final Pattern INTERFACE_NAME = Pattern.compile("\\binterface\\s+([A-Za-z_$][A-Za-z0-9_$]*)");
 
@@ -55,6 +58,7 @@ public class CstCauseVariantStyleRule implements CstLintRule {
         var recordDiagnostics = findAllRecords(root).stream()
                                               .filter(record -> isCauseVariant(record, causeInterfaces))
                                               .filter(this::hasNoComponents)
+                                              .filter(record -> !isPlaceholderFiller(record))
                                               .map(record -> createRecordDiagnostic(record, ctx));
         var classDiagnostics = findAllClasses(root).stream()
                                              .filter(cls -> isCauseVariant(cls, causeInterfaces))
@@ -103,6 +107,13 @@ public class CstCauseVariantStyleRule implements CstLintRule {
         return childByRule(record, RuleKind.RECORD_DECL).flatMap(rd -> childByRule(rd, RuleKind.RECORD_COMPONENTS))
                           .map(rc -> childrenByRule(rc, RuleKind.RECORD_COMP).isEmpty())
                           .or(true);
+    }
+
+    /// The `record unused()` sealed-interface placeholder filler — a permitted-subtype stub for a
+    /// sealed cause hierarchy that has no fixed-message variants of its own — is a structural
+    /// placeholder, not a fixed-message cause, and is exempt (a documented, widely-used idiom).
+    private boolean isPlaceholderFiller(Cursor record) {
+        return PLACEHOLDER_FILLER.equals(DeclSupport.declName(record));
     }
 
     private Diagnostic createRecordDiagnostic(Cursor record, LintContext ctx) {

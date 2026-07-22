@@ -91,6 +91,31 @@ class CstCauseVariantStyleRuleTest {
                 """));
     }
 
+    @Test
+    void no_false_positive_on_unused_placeholder_filler() {
+        // `record unused()` is the sealed-interface placeholder-filler idiom — a permitted-subtype
+        // stub, not a fixed-message cause — and must not be flagged.
+        assertFalse(hasRule("""
+                package org.example;
+                sealed interface RegError extends Cause {
+                    record unused() implements RegError {}
+                }
+                """));
+    }
+
+    @Test
+    void still_detects_named_empty_record_cause_alongside_unused_filler() {
+        // The exemption is name-scoped to the filler only; a real named empty-record cause in the
+        // same hierarchy is still flagged.
+        assertTrue(hasRule("""
+                package org.example;
+                sealed interface RegError extends Cause {
+                    record TokenFailed() implements RegError {}
+                    record unused() implements RegError {}
+                }
+                """));
+    }
+
     private boolean hasRule(String source) {
         return lint(source).stream()
                            .anyMatch(diagnostic -> diagnostic.ruleId()

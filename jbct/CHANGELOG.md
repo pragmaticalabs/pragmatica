@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 ### Changed
+- Linter: `JBCT-SEAL-02` now exempts the `record unused()` sealed-interface placeholder-filler idiom — a permitted-subtype stub for a sealed cause hierarchy that has no fixed-message variants of its own is a structural placeholder, not a fixed-message cause. Corpus contact showed the 50 same-file-resolvable hits split into 20 real named fixed-message causes (converted to the per-cause `enum … { INSTANCE }` idiom in aether/**) + 30 `unused()` fillers (part of a 136-site repo-wide idiom); the exemption removes the FP class rather than churning the idiom, keeping named-cause detection intact. Two FP-guard fixtures added (#493)
 - Linter: `JBCT-BND-01` restored to its design ERROR severity — all three corpus sites dispositioned same-day (AwsLoadBalancerProvider fixed by aether-main, SliceStore CompletableFuture eviction hop removed; #493)
 - Linter: `JBCT-RET-06`, `JBCT-TOT-01`, `JBCT-TOT-02` all at ERROR — the full aether corpus burn-down (#489) completed same release: 143 RET-06 sites resolved (69 real Option/Verify totalizations, the rest justified parse-don't-validate/framework-boundary suppressions) and all mapper-safety findings cleared (real fixes + rule FP corrections — see Fixed). The interim WARNING window existed only during the burn-down
 
