@@ -34,6 +34,8 @@ public sealed interface SliceRuntime {
         return success(unit());
     }
 
+    // JBCT-RET-08: AtomicReference clear — null is the JDK sentinel, not Option-wrappable
+    @SuppressWarnings("JBCT-RET-08")
     static Result<Unit> clear() {
         SliceRuntimeHolder.INVOKER_REF.set(null);
 

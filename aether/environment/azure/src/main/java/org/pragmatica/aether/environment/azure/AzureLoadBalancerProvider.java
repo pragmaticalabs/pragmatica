@@ -95,6 +95,8 @@ public record AzureLoadBalancerProvider(AzureClient client,
         return buildPoolFromIps(state.activeNodeIps()).flatMap(this::updatePool);
     }
 
+    // JBCT-RET-08: provider request DTO — null = optional Azure field
+    @SuppressWarnings("JBCT-RET-08")
     private Promise<BackendPool> buildPoolFromIps(Set<String> ips) {
         var addresses = ips.stream().map(this::toBackendAddress).toList();
         var pool = new BackendPool(null, backendPoolName, new PoolProperties(addresses));

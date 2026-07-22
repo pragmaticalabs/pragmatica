@@ -106,6 +106,8 @@ public class AlertManager {
         return manager;
     }
 
+    // JBCT-RET-08: standalone (no-cluster) construction — clusterNode absent by design
+    @SuppressWarnings("JBCT-RET-08")
     public static AlertManager readOnly(KVStore<AetherKey, AetherValue> kvStore) {
         var manager = new AlertManager(null, kvStore);
 
@@ -475,6 +477,8 @@ public class AlertManager {
     /// a list. Replaces the JSON-as-String `thresholdsAsJson` path.
     public record ThresholdView(String metric, double warning, double critical) {}
 
+    // JBCT-RET-08: Jackson view DTO — null is the absent-JSON-field representation, wire-contract-fixed
+    @SuppressWarnings("JBCT-RET-08")
     public Promise<List<AlertView>> activeAlertsAsList() {
         var list = new java.util.ArrayList<AlertView>(activeAlerts.size() + injectedAlerts.size());
         var seenInjectedIds = new java.util.HashSet<String>();
@@ -538,7 +542,9 @@ public class AlertManager {
                                                              }));
     }
 
+    // JBCT-RET-08: Jackson view DTO — null is the absent-JSON-field representation, wire-contract-fixed
     @NullReturn
+    @SuppressWarnings("JBCT-RET-08")
     private static AlertView projectClusterEventToAlertView(ClusterEvent event) {
         var details = event.details();
         var alertId = details.get("alertId");

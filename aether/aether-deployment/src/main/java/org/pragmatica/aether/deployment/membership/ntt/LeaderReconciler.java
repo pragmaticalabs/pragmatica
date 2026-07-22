@@ -131,6 +131,8 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 /// [`AtomicBoolean`]s; `activationFutureRef` is an [`AtomicReference`];
 /// `inFlightProvisioning` is a [`ConcurrentHashMap`]. The listener reference is
 /// `volatile`. `activate` and `deactivate` are guarded by CAS on `isLeader`.
+// JBCT-RET-08: AtomicReference clear — null is the JDK sentinel, not Option-wrappable
+@SuppressWarnings("JBCT-RET-08")
 public final class LeaderReconciler {
     private static final Logger log = LoggerFactory.getLogger(LeaderReconciler.class);
 

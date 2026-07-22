@@ -235,7 +235,8 @@ public class AetherCli implements Runnable {
         }
     }
 
-    @SuppressWarnings({"JBCT-PAT-01", "JBCT-EX-01"})
+    // JBCT-RET-08: SSLContext.init(null keyManagers, …) — null is the JDK TLS contract (trust-only context)
+    @SuppressWarnings({"JBCT-PAT-01", "JBCT-EX-01", "JBCT-RET-08"})
     private static SSLContext createTrustAllSslContext() throws NoSuchAlgorithmException, KeyManagementException {
         var trustAll = new TrustManager[]{new TrustAllManager()};
         var sslContext = SSLContext.getInstance("TLS");
@@ -708,6 +709,8 @@ public class AetherCli implements Runnable {
                                                                                                                                            16)),
                                                                                                         "nodes");
 
+        // JBCT-RET-08: no array-path for this table (optional field); Option-ifying TableSpec.arrayPath globally is disproportionate
+        @SuppressWarnings("JBCT-RET-08")
         private static final OutputFormatter.TableSpec RESOLVE_TABLE = new OutputFormatter.TableSpec("Endpoint",
                                                                                                      List.of(new OutputFormatter.Column("NODE ID",
                                                                                                                                         "nodeId",

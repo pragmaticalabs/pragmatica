@@ -55,7 +55,8 @@ public final class GCMetricsCollector {
         return new GCMetricsCollector();
     }
 
-    @SuppressWarnings("JBCT-EX-01")
+    // JBCT-RET-08: JMX NotificationEmitter API — null filter/handback is the JDK contract
+    @SuppressWarnings({"JBCT-EX-01", "JBCT-RET-08"})
     public Result<Unit> start() {
         if (started) {
             return unitResult();

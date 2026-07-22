@@ -38,7 +38,7 @@ public sealed interface ClusterHttpClient {
     AtomicReference<HttpOperations> HTTP_OPS_REF = new AtomicReference<>(JdkHttpOperations.jdkHttpOperations());
 
     @Contract
-    @SuppressWarnings({"JBCT-EX-01", "JBCT-PAT-01"})
+    @SuppressWarnings({"JBCT-EX-01", "JBCT-PAT-01", "JBCT-RET-08"})
     static void enableTlsSkipVerify() {
         try {
             var trustAll = new TrustManager[]{new TrustAllManager()};

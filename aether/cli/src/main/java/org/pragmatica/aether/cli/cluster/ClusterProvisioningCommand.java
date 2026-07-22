@@ -23,6 +23,8 @@ import static org.pragmatica.aether.management.route.ManagementRoute.CLUSTER_PRO
 @Command(name = "provisioning", description = "Show leader provisioning diagnostics (why a core-membership deficit is or is not being filled)")
 @SuppressWarnings("JBCT-RET-01")
 class ClusterProvisioningCommand implements Callable<Integer> {
+    // JBCT-RET-08: no array-path for this table (optional field); Option-ifying TableSpec.arrayPath globally is disproportionate
+    @SuppressWarnings("JBCT-RET-08")
     private static final TableSpec TABLE_SPEC = new TableSpec("Provisioning Diagnostics",
                                                               List.of(new Column("LEADER", "leader", 7),
                                                                       new Column("CONFIGURED", "configuredCoreCount", 10),
