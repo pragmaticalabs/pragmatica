@@ -27,6 +27,8 @@ sealed interface ResourceProviderHolder {
         return unitResult();
     }
 
+    // JBCT-RET-08: AtomicReference clear — null is the JDK sentinel, not Option-wrappable
+    @SuppressWarnings("JBCT-RET-08")
     static Result<Unit> clear() {
         INSTANCE.set(null);
 

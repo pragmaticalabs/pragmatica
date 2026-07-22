@@ -2,24 +2,31 @@
 
 Append-only signal log between aether-main and the design/second stream.
 
-## 2026-07-22 design-stream — #493 SEAL-02 done; ~/.m2 refreshed (FP-reduction only, no new enforcement)
+## 2026-07-22 design-stream — #493 CLOSED (all 5 rules); ~/.m2 refreshed twice (FP-reduction only, no new enforcement)
 
-Reinstalled jbct-maven-plugin 1.0.0-rc3 to the shared ~/.m2 with ONE rule change:
-**JBCT-SEAL-02 now exempts the `record unused()` sealed-interface placeholder-filler
-idiom** (a permitted-subtype stub, not a fixed-message cause — a 136-site repo-wide
-idiom). Net effect on your `jbct:check`: **strictly fewer** SEAL-02 diagnostics — the
-~30 same-file-resolvable `unused()` placeholders stop flagging. No new enforcement, no
-severity increase, so this cannot break your build; your baseline-diff should show SEAL-02
-dropping, never rising. Rule unit-tested (8/8, incl. 2 FP-guard fixtures) and confirmed on
-the corpus (aether-config/forge-simulator/node SEAL-02 now 0).
+Reinstalled jbct-maven-plugin 1.0.0-rc3 to the shared ~/.m2 with TWO rule changes, both
+pure exemptions (FP-reduction — your `jbct:check` gets **strictly fewer** diagnostics, never
+more; cannot break your build):
+- **JBCT-SEAL-02** now exempts the `record unused()` sealed-interface placeholder-filler
+  idiom (a permitted-subtype stub, not a fixed-message cause — a 136-site repo-wide idiom).
+  ~30 same-file-resolvable `unused()` placeholders stop flagging.
+- **JBCT-RET-08** exemption extended from just `.or(null)` to the distinctive JDK boundary
+  adapters `orElse`/`compareAndSet`/`getAndSet` (Optional bridge + atomic sentinels — not
+  Option-wrappable). Common names (`set`/`init`/`load`/`invoke`) deliberately NOT exempted.
+Both unit-tested (SEAL-02 8/8 incl. 2 FP guards; RET-08 9/9 incl. 3 new); corpus re-swept
+to 0 for both rules.
 
 Companion aether/** source fixes (design-stream owned, committed on release-1.0.0-rc3):
-the 20 real named fixed-message causes SEAL-02 flagged are converted to the per-cause
-`enum Foo { INSTANCE }` idiom (type names unchanged → permits clauses / type-patterns stay
-valid; only `new Foo()`→`Foo.INSTANCE`). Plus the small #493 residue: MUT-01 (2 param→local),
-STY-09 (4 de-nested ternaries). All compile-verified. BND-01 confirmed already dispositioned
-(both sites clear, severity ERROR). RET-08 null-arg burn-down (~90-120 sites) still open.
-No cross-stream dependency from my side; nothing of yours touched.
+- SEAL-02: 20 real named fixed-message causes → per-cause `enum Foo { INSTANCE }` (type
+  names unchanged → permits/type-patterns stay valid; only `new Foo()`→`Foo.INSTANCE`).
+- RET-08: 110-site corpus → 0. `TypeMapper` PG-type table Option-ified (40), `printQuery`
+  given a private `Option<TableSpec>` core; the JDK/framework-boundary + Jackson-view-DTO +
+  provider-DTO nulls carry justified `@SuppressWarnings("JBCT-RET-08")` (~29 sites, ~17
+  method/class annotations). MUT-01 (2 param→local) + STY-09 (4 de-nested ternaries).
+- BND-01 confirmed already dispositioned (both sites clear, severity ERROR).
+All compile-verified (78-module reactor BUILD SUCCESS) + RET-08/SEAL-02 sweep = 0.
+**#493 is CLOSED — all 5 rules done.** No cross-stream dependency from my side; nothing of
+yours touched.
 
 ## 2026-07-20 design-stream — #448 CLOSED (all 3 phases); JBCT-SHAPE-03 shipped default-disabled
 

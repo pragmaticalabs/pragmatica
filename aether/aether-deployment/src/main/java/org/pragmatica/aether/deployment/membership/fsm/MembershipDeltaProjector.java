@@ -273,6 +273,8 @@ public final class MembershipDeltaProjector {
     /// Flush-retry tick: clear the ref, then re-poke the drainer iff undrained work remains.
     /// If the node is STILL non-quorate the drain attempt re-arms the retry ([`#drainLoop`]);
     /// once quorum is observed the queue drains fully, in order, and no further retry is armed.
+    // JBCT-RET-08: AtomicReference clear — null is the JDK sentinel, not Option-wrappable
+    @SuppressWarnings("JBCT-RET-08")
     @Contract
     private void runFlushRetry() {
         flushRetryFutureRef.set(null);

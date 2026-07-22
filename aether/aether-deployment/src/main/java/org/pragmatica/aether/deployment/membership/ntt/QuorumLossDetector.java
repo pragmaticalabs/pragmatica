@@ -79,6 +79,8 @@ import static org.pragmatica.lang.Option.some;
 /// must never self-drain — that is normal cold-start, not quorum loss. Only a node that WAS
 /// quorate and then dropped below quorum should drain; `armed` captures exactly "has the
 /// cluster ever been quorate from this node's view".
+// JBCT-RET-08: AtomicReference clear — null is the JDK sentinel, not Option-wrappable
+@SuppressWarnings("JBCT-RET-08")
 public final class QuorumLossDetector {
     private static final Logger log = LoggerFactory.getLogger(QuorumLossDetector.class);
 

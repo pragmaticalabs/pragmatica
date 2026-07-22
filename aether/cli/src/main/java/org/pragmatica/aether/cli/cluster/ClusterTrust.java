@@ -45,7 +45,8 @@ public sealed interface ClusterTrust {
         return Result.lift(Causes::fromThrowable, () -> buildSslContext(caPem));
     }
 
-    @SuppressWarnings("JBCT-EX-01")
+    // JBCT-RET-08: KeyStore.load(null,null) and SSLContext.init(null,…) — nulls are the JDK contract
+    @SuppressWarnings({"JBCT-EX-01", "JBCT-RET-08"})
     private static SSLContext buildSslContext(byte[] caPem) throws Exception {
         var factory = CertificateFactory.getInstance("X.509");
         var caCert = (X509Certificate) factory.generateCertificate(new ByteArrayInputStream(caPem));

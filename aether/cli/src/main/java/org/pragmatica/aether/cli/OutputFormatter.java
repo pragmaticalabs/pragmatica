@@ -20,10 +20,14 @@ public sealed interface OutputFormatter {
     JsonMapper MAPPER = JsonMapper.defaultJsonMapper();
 
     static int printQuery(String json, OutputOptions options) {
-        return printQuery(json, options, null);
+        return printQuery(json, options, Option.<TableSpec> empty());
     }
 
     static int printQuery(String json, OutputOptions options, TableSpec tableSpec) {
+        return printQuery(json, options, Option.option(tableSpec));
+    }
+
+    private static int printQuery(String json, OutputOptions options, Option<TableSpec> tableSpec) {
         if (options.isQuiet()) {
             return ExitCode.SUCCESS;
         }
@@ -72,16 +76,16 @@ public sealed interface OutputFormatter {
                                                          OutputFormatter::printToStdout);
     }
 
-    private static int printTable(String json, TableSpec tableSpec) {
-        return Option.option(tableSpec).fold(() -> printJson(json), spec -> renderTableJson(json, spec));
+    private static int printTable(String json, Option<TableSpec> tableSpec) {
+        return tableSpec.fold(() -> printJson(json), spec -> renderTableJson(json, spec));
     }
 
     private static int renderTableJson(String json, TableSpec tableSpec) {
         return MAPPER.readTree(json).fold(OutputFormatter::handleParseError, node -> renderTable(node, tableSpec));
     }
 
-    private static int printCsv(String json, TableSpec tableSpec) {
-        return Option.option(tableSpec).fold(() -> printJson(json), spec -> renderCsvJson(json, spec));
+    private static int printCsv(String json, Option<TableSpec> tableSpec) {
+        return tableSpec.fold(() -> printJson(json), spec -> renderCsvJson(json, spec));
     }
 
     private static int renderCsvJson(String json, TableSpec tableSpec) {

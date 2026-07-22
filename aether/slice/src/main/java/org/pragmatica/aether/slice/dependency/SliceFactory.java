@@ -141,7 +141,8 @@ public interface SliceFactory {
         return success(method);
     }
 
-    @SuppressWarnings({"unchecked", "JBCT-RET-03"})
+    // JBCT-RET-08: reflective static invoke — null receiver is the JDK Method.invoke contract
+    @SuppressWarnings({"unchecked", "JBCT-RET-03", "JBCT-RET-08"})
     private static Promise<Slice> invokeFactory(Method method,
                                                 SliceCreationContext creationContext,
                                                 List<Slice> dependencies) {
