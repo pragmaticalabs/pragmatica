@@ -31,6 +31,7 @@ public interface StreamAccess<T> {
     Promise<List<StreamEvent<T>>> fetch(long fromOffset, int maxEvents);
     Promise<List<StreamEvent<T>>> fetch(int partition, long fromOffset, int maxEvents);
     Promise<Unit> commit(String consumerGroup, int partition, long offset);
+
     Promise<Option<Long>> committedOffset(String consumerGroup, int partition);
 
     /// Framework-driven auto-resume (#478): the first read after a consumer (re)attaches. Resolves the
@@ -44,8 +45,9 @@ public interface StreamAccess<T> {
     /// stream `latest` start-policy, so a never-committed consumer replays from the beginning (per the
     /// #478 ruling).
     default Promise<List<StreamEvent<T>>> fetchFromCommitted(String consumerGroup, int partition, int maxEvents) {
-        return committedOffset(consumerGroup, partition)
-                   .flatMap(committed -> fetch(partition, committed.or(0L), maxEvents));
+        return committedOffset(consumerGroup, partition).flatMap(committed -> fetch(partition,
+                                                                                    committed.or(0L),
+                                                                                    maxEvents));
     }
 
     Promise<StreamMetadata> metadata();

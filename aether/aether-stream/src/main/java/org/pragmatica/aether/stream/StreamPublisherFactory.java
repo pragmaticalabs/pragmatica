@@ -75,9 +75,9 @@ public final class StreamPublisherFactory implements ResourceFactory<StreamPubli
         // placement authority) instead of the STREAMING leader. Absent (test / minimal runtime) => the
         // publish path keeps the arg-less leader resolver, and the self identity gates the self-guard.
         var streamName = config.name();
-        Option<Function<Integer, Option<NodeId>>> partitionOwnerResolver =
-            governor.flatMap(GovernorResolver::partitionOwnerResolver)
-                    .map(resolver -> partition -> resolver.apply(streamName, partition));
+        Option<Function<Integer, Option<NodeId>>> partitionOwnerResolver = governor.flatMap(GovernorResolver::partitionOwnerResolver)
+                                                                                   .map(resolver -> partition -> resolver.apply(streamName,
+                                                                                                                                partition));
 
         return DefaultStreamPublisher.streamPublisher(manager,
                                                       serializer,

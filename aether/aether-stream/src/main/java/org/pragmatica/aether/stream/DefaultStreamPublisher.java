@@ -252,10 +252,13 @@ public final class DefaultStreamPublisher<T> implements StreamPublisher<T> {
     /// silently drops, hanging the forward). Mirrors {@link StreamWriteRouter}'s `forwardToOwner` and
     /// {@link PartitionedStreamAccess}'s owner-routed publish.
     private Promise<Unit> publishRemote(int partition, byte[] bytes, long timestamp) {
-        return resolveOwner(partition)
-                   .filter(this::isRemote)
-                   .flatMap(owner -> forwardClient.map(client -> forwardToOwner(client, owner, partition, bytes, timestamp)))
-                   .or(() -> publishLocalEventual(partition, bytes, timestamp));
+        return resolveOwner(partition).filter(this::isRemote)
+                           .flatMap(owner -> forwardClient.map(client -> forwardToOwner(client,
+                                                                                        owner,
+                                                                                        partition,
+                                                                                        bytes,
+                                                                                        timestamp)))
+                           .or(() -> publishLocalEventual(partition, bytes, timestamp));
     }
 
     /// #467: prefer the partition-aware HRW owner-resolver (the placement authority that owns the replica
@@ -268,11 +271,17 @@ public final class DefaultStreamPublisher<T> implements StreamPublisher<T> {
     /// A resolved owner is forwardable only when it is known to differ from this node; a self-owner (or an
     /// unknown self) never forwards, so the send-to-self QUIC drop cannot occur.
     private boolean isRemote(NodeId owner) {
-        return !selfNodeId.map(owner::equals).or(true);
+        return ! selfNodeId.map(owner::equals)
+                           .or(true);
     }
 
-    private Promise<Unit> forwardToOwner(StreamForwardClient client, NodeId owner, int partition, byte[] bytes, long timestamp) {
-        return client.publishRemote(owner, streamName, partition, bytes, timestamp).mapToUnit();
+    private Promise<Unit> forwardToOwner(StreamForwardClient client,
+                                         NodeId owner,
+                                         int partition,
+                                         byte[] bytes,
+                                         long timestamp) {
+        return client.publishRemote(owner, streamName, partition, bytes, timestamp)
+                     .mapToUnit();
     }
 
     private Promise<Unit> publishStrong(int partition, byte[] bytes, long timestamp) {

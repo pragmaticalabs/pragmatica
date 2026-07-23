@@ -129,7 +129,6 @@ public final class EmberCluster {
     /// JUnit `@TempDir`) via [#withDataBaseDir] BEFORE [#start] to turn the disk tier and the
     /// per-partition stream WAL on; see [#perNodeStorageConfig].
     private final AtomicReference<Option<Path>> dataBaseDir = new AtomicReference<>(Option.none());
-
     /// #491 pinned convergence variant — when set (via [#withRaisedSwimTimeouts]) every node is created
     /// with raised SWIM / transport / membership timeouts so a single graceful owner-kill does not trip
     /// the transient QuorumLost→PASSIVE false-removal cascade that falsely marks LIVE survivors DEAD.
@@ -667,6 +666,7 @@ public final class EmberCluster {
     // membership split 15s→60s so the minority does not self-fence during the same window.
     private static final TimeSpan RAISED_HELLO_TIMEOUT = timeSpan(50).seconds();
     private static final TimeoutsConfig RAISED_TIMEOUTS = raisedSwimTimeoutsConfig();
+
     private static final Option<MembershipConfig> RAISED_MEMBERSHIP = Option.some(new MembershipConfig(timeSpan(60).seconds()));
 
     private static TimeoutsConfig raisedSwimTimeoutsConfig() {
@@ -698,9 +698,15 @@ public final class EmberCluster {
                                   List<NodeInfo> coreNodes,
                                   boolean activationGated) {
         var raised = raisedSwimTimeouts.get();
-        var helloTimeout = raised ? RAISED_HELLO_TIMEOUT : TopologyConfig.DEFAULT_HELLO_TIMEOUT;
-        var nodeTimeouts = raised ? RAISED_TIMEOUTS : TimeoutsConfig.timeoutsConfig();
-        Option<MembershipConfig> membership = raised ? RAISED_MEMBERSHIP : Option.empty();
+        var helloTimeout = raised
+                           ? RAISED_HELLO_TIMEOUT
+                           : TopologyConfig.DEFAULT_HELLO_TIMEOUT;
+        var nodeTimeouts = raised
+                           ? RAISED_TIMEOUTS
+                           : TimeoutsConfig.timeoutsConfig();
+        Option<MembershipConfig> membership = raised
+                                              ? RAISED_MEMBERSHIP
+                                              : Option.empty();
         var topology = new TopologyConfig(nodeId,
                                           targetClusterSize,
                                           timeSpan(1).seconds(),
