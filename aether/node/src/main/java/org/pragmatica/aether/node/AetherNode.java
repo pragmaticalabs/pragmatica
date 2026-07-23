@@ -15,6 +15,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.Executor;
 import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BooleanSupplier;
@@ -1061,6 +1062,11 @@ public interface AetherNode extends ManageableNode {
                 return live;
             }
         };
+        // #499 zombie fix: every periodic SharedScheduler task this node arms is retained here and
+        // cancelled first in stop(). SharedScheduler is JVM-global, so an uncancelled fixed-rate task
+        // outlives the node and keeps operating against torn-down state — the in-JVM killed-node
+        // zombie backfill loop that mimicked the #499 RF-restoration deadlock in the forge harness.
+        var periodicTasks = new ArrayList<ScheduledFuture<?>>();
         var dhtClient = DistributedDHTClient.distributedDHTClient(dhtNode,
                                                                   dhtNetwork,
                                                                   config.artifactRepo(),
@@ -1177,7 +1183,8 @@ public interface AetherNode extends ManageableNode {
                           Option<DHTNode> dhtNode,
                           Supplier<AetherValue.ClusterPhase> clusterPhaseSupplier,
                           Supplier<Epoch> currentGenerationEpochSupplier,
-                          long startTimeMs) implements AetherNode {
+                          long startTimeMs,
+                          List<ScheduledFuture<?>> periodicTasks) implements AetherNode {
             private static final Logger log = LoggerFactory.getLogger(aetherNode.class);
 
             @Override
@@ -1228,6 +1235,11 @@ public interface AetherNode extends ManageableNode {
             @Override
             public Promise<Unit> stop() {
                 log.info("Stopping Aether node {}", self());
+                // #499 zombie fix: cancel this node's periodic SharedScheduler tasks FIRST — the
+                // scheduler is JVM-global, so anything left armed keeps firing against torn-down
+                // state after stop (the killed-node zombie backfill loop). cancel(false): an
+                // in-flight tick finishes benignly; no new tick starts.
+                periodicTasks.forEach(task -> task.cancel(false));
                 router.route(ClusterStateNotification.passive());
                 router.quiesce();
                 controlLoop.stop();
@@ -1751,9 +1763,9 @@ public interface AetherNode extends ManageableNode {
         // The map is leader-only (fanIfLeader-gated), so the sweep is a no-op on followers.
         var readinessSweepMaxAgeNanos = config.timeouts().cluster().pingInterval().nanos() * 3;
 
-        SharedScheduler.scheduleAtFixedRate(() -> pongSignalFan.sweepStale(readinessSweepMaxAgeNanos),
-                                            config.timeouts().cluster().pingInterval(),
-                                            config.timeouts().cluster().pingInterval());
+        periodicTasks.add(SharedScheduler.scheduleAtFixedRate(() -> pongSignalFan.sweepStale(readinessSweepMaxAgeNanos),
+                                                              config.timeouts().cluster().pingInterval(),
+                                                              config.timeouts().cluster().pingInterval()));
         Supplier<Long> rabiaTermSupplier = leaderTerm::get;
         // #114 W1: the cluster-sync ping carries a monotonic generation counter. Each node bumps its
         // OWN counter only while it is leader (leader-gated, per-ping-interval). The supplier merely
@@ -1763,9 +1775,10 @@ public interface AetherNode extends ManageableNode {
         var generationCounter = new AtomicLong(0L);
         Supplier<Epoch> leaderEpochSupplier = () -> Epoch.epoch(leaderTerm.get(), generationCounter.get());
 
-        SharedScheduler.scheduleAtFixedRate(() -> bumpGenerationIfLeader(isLeaderSupplier, generationCounter),
-                                            config.timeouts().cluster().pingInterval(),
-                                            config.timeouts().cluster().pingInterval());
+        periodicTasks.add(SharedScheduler.scheduleAtFixedRate(() -> bumpGenerationIfLeader(isLeaderSupplier,
+                                                                                           generationCounter),
+                                                              config.timeouts().cluster().pingInterval(),
+                                                              config.timeouts().cluster().pingInterval()));
         // B4 (membership v2 §7.5): bind the CDM readiness supplier now that the pong fan + self-state
         // holder exist (READY peers from the leader view + self when locally READY).
         cdmReadyNodesRef.set(() -> nodesReporting(pongSignalFan,
@@ -1890,7 +1903,7 @@ public interface AetherNode extends ManageableNode {
         // detection and the §8 unified drain handles surplus dissolution. Membership v2 finale:
         // the leader-pinned `LifecycleReconciler` (and the FSM it wrote through) are gone — the
         // NTT-side `LeaderReconciler` (wired below) is the sole provisioning driver.
-        schedulePhaseChangeWatcher(effectivePhaseSupplier, clusterTopologyManager);
+        periodicTasks.add(schedulePhaseChangeWatcher(effectivePhaseSupplier, clusterTopologyManager));
         var controller = DecisionTreeController.decisionTreeController(config.controllerConfig());
         var blueprintService = BlueprintService.blueprintService(clusterNode, kvStore, repository, artifactStore);
         var mavenProtocolHandler = MavenProtocolHandler.mavenProtocolHandler(artifactStore);
@@ -2723,10 +2736,10 @@ public interface AetherNode extends ManageableNode {
         // TopologyObserver previousCoreMembers diff baseline) vs the FSM core-member set vs
         // the presence-sampler view. Diag-only cadence; log-level-gated (DEBUG), no
         // control-flow effect.
-        SharedScheduler.scheduleAtFixedRate(() -> logMembershipBaselineTrace(membershipDeltaProjector,
-                                                                             membershipFsm,
-                                                                             presenceSampler),
-                                            MEMBERSHIP_BASELINE_TRACE_INTERVAL);
+        periodicTasks.add(SharedScheduler.scheduleAtFixedRate(() -> logMembershipBaselineTrace(membershipDeltaProjector,
+                                                                                               membershipFsm,
+                                                                                               presenceSampler),
+                                                              MEMBERSHIP_BASELINE_TRACE_INTERVAL));
         var topologyForSwim = clusterNode.topologyManager();
         // P1 fix: prefer the transport-supplied `NodeInfo` (QUIC/Netty Hello handshake)
         // over the static-topology lookup. CTM-replaced or topology-forgotten peers are
@@ -3139,7 +3152,6 @@ public interface AetherNode extends ManageableNode {
         // StreamPartitionOwnershipValue (release only once ownership names a DIFFERENT node than self). Both
         // are bound through static helpers so the supplier lambdas stay single-expression. The committed
         // owner source is the one hoisted above for the #491 F4 backfill self-election gate.
-
         streamPartitionManager.replicaCatchupSource((stream, partition) -> streamCatchupView(streamReplicaRegistry,
                                                                                              config.self(),
                                                                                              stream,
@@ -3161,29 +3173,31 @@ public interface AetherNode extends ManageableNode {
         // SYNCING forever (the system:cluster-events GET /api/events -> 200 [] deadlock). Re-drive every
         // STREAM_BACKFILL_REDRIVE_INTERVAL onto the SAME backfill executor so the owner-immediate /
         // bounded-wait cold-start promotion is actually reached; CAUGHT_UP partitions are skipped.
-        SharedScheduler.scheduleAtFixedRate(() -> redriveIncompleteBackfills(streamPartitionBackfill,
-                                                                             streamBackfillExecutor),
-                                            STREAM_BACKFILL_REDRIVE_INTERVAL);
+        periodicTasks.add(SharedScheduler.scheduleAtFixedRate(() -> redriveIncompleteBackfills(streamPartitionBackfill,
+                                                                                               streamBackfillExecutor),
+                                                              STREAM_BACKFILL_REDRIVE_INTERVAL));
         // A3b snapshot driver: `SnapshotManager.maybeSnapshot()` has no other caller — without this tick
         // no metadata snapshot is ever taken and nothing survives a restart. Iterate ALL storage setups
         // (streams + artifacts/content), so every MetadataStore's refs are persisted; maybeSnapshot
         // self-gates on its mutation-count / interval trigger, so a 10s tick is cheap when not due.
-        SharedScheduler.scheduleAtFixedRate(() -> snapshotAllSetups(storageSetups), METADATA_SNAPSHOT_INTERVAL);
+        periodicTasks.add(SharedScheduler.scheduleAtFixedRate(() -> snapshotAllSetups(storageSetups),
+                                                              METADATA_SNAPSHOT_INTERVAL));
         // W5 WAL disk-reclamation driver: truncate every partition's write-ahead log up to its DURABLE
         // last-sealed offset so the WAL does not grow unbounded. Records <= lastSealedOffset are already in
         // durable cold segments (served post-restart by the tiered reader), so dropping them from the WAL
         // loses nothing; the un-sealed tail stays in the WAL. truncate is threshold-lazy, so this tick is
         // cheap when nothing new has sealed. Driven off the durable sealed bound (not the void
         // eviction->seal listener) to avoid any truncated-before-durable window.
-        SharedScheduler.scheduleAtFixedRate(streamPartitionManager::truncateWalsToSealed, WAL_TRUNCATE_INTERVAL);
+        periodicTasks.add(SharedScheduler.scheduleAtFixedRate(streamPartitionManager::truncateWalsToSealed,
+                                                              WAL_TRUNCATE_INTERVAL));
         // #265 increment 5 reshuffle-lifecycle driver: each tick frees reshuffle-concurrency slots for
         // finished (self CAUGHT_UP) / owner / role-lost partitions, evaluates release candidates (role-loss
         // debounce → catch-up + owner gate → release, freeing ring memory + budget while KEEPING the WAL on
         // disk), then drains the materialization queue (system first) so budget a release just freed admits a
         // queued partition in the same tick. 5s cadence → the 2-tick flap debounce is ≈10s; a steady-state
         // tick is a cheap sweep of materialized partitions over empty queues.
-        SharedScheduler.scheduleAtFixedRate(streamPartitionManager::reconcileReshuffle,
-                                            STREAM_RESHUFFLE_RECONCILE_INTERVAL);
+        periodicTasks.add(SharedScheduler.scheduleAtFixedRate(streamPartitionManager::reconcileReshuffle,
+                                                              STREAM_RESHUFFLE_RECONCILE_INTERVAL));
         var streamingCoordinator = StreamingCoordinator.streamingCoordinator(streamFailoverHandler,
                                                                              streamRetentionEnforcer,
                                                                              streamPartitionManager,
@@ -3378,7 +3392,8 @@ public interface AetherNode extends ManageableNode {
                                   Option.some(dhtNode),
                                   effectivePhaseSupplier,
                                   currentGenerationEpochSupplier,
-                                  startTimeMs);
+                                  startTimeMs,
+                                  periodicTasks);
 
         nodeDeploymentManager.setShutdownCallback(node::stop);
         nodeDeploymentManager.setSelfReadySignal(() -> markSubsystemsReady(nodeLifecycle::signalReady,
@@ -3388,8 +3403,9 @@ public interface AetherNode extends ManageableNode {
         // stuck in Dormant (self-ready/subsystemsReady never fire) so the node reports SYNCING forever.
         // This tick re-dispatches QuorumEstablished only while still Dormant AND consensus is live —
         // a dropped edge self-heals within one interval; a no-op on every healthy node thereafter.
-        SharedScheduler.scheduleAtFixedRate(() -> reconcileNodeActivation(clusterNode::isActive, nodeDeploymentManager),
-                                            NDM_ACTIVATION_RECONCILE_INTERVAL);
+        periodicTasks.add(SharedScheduler.scheduleAtFixedRate(() -> reconcileNodeActivation(clusterNode::isActive,
+                                                                                            nodeDeploymentManager),
+                                                              NDM_ACTIVATION_RECONCILE_INTERVAL));
         nodeLifecycle.subsystemsReady();
 
         return RabiaNode.buildAndWireRouter(delegateRouter, allEntries).map(_ -> {
@@ -3497,7 +3513,8 @@ public interface AetherNode extends ManageableNode {
                                       Option.some(dhtNode),
                                       effectivePhaseSupplier,
                                       currentGenerationEpochSupplier,
-                                      startTimeMs);
+                                      startTimeMs,
+                                      periodicTasks);
             }
 
             return node;
@@ -3617,15 +3634,15 @@ public interface AetherNode extends ManageableNode {
 
     /// Post-E.8 phase-change publisher. Polls `phaseSupplier` at `PHASE_WATCH_INTERVAL` and
     /// dispatches `ctm.onClusterPhaseChanged(newPhase)` on every observed transition.
-    /// Replaces the legacy `AetherNode.schedulePhaseChangeWatcher` wiring.
-    @Contract
-    private static void schedulePhaseChangeWatcher(Supplier<AetherValue.ClusterPhase> phaseSupplier,
-                                                   ClusterTopologyManager ctm) {
+    /// Replaces the legacy `AetherNode.schedulePhaseChangeWatcher` wiring. Returns the armed task so
+    /// the node retains it for cancellation on stop (#499 zombie fix).
+    private static ScheduledFuture<?> schedulePhaseChangeWatcher(Supplier<AetherValue.ClusterPhase> phaseSupplier,
+                                                                 ClusterTopologyManager ctm) {
         var lastPhase = new AtomicReference<>(phaseSupplier.get());
 
-        SharedScheduler.scheduleAtFixedRate(() -> publishPhaseChange(phaseSupplier, ctm, lastPhase),
-                                            PHASE_WATCH_INTERVAL,
-                                            PHASE_WATCH_INTERVAL);
+        return SharedScheduler.scheduleAtFixedRate(() -> publishPhaseChange(phaseSupplier, ctm, lastPhase),
+                                                   PHASE_WATCH_INTERVAL,
+                                                   PHASE_WATCH_INTERVAL);
     }
 
     @Contract
