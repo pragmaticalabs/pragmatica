@@ -63,6 +63,21 @@ class EntryGateTest {
     }
 
     @Test
+    void check_rejectsUnscoped_whenQ4RowAtSystemScope() {
+        // The consistency contract is a per-data-class/path property (sibling of Q3); a system-wide
+        // one-size-fits-all answer is the smell the gate surfaces.
+        var finding = only("""
+            [[answers.q4]]
+            scope     = "system"
+            statement = "strict consistency everywhere"
+            status    = "answered"
+            """);
+
+        assertThat(finding.ruleId()).isEqualTo(GateErrorCode.UNSCOPED.name());
+        assertThat(finding.message()).isEqualTo(GateErrorCode.UNSCOPED.summary());
+    }
+
+    @Test
     void check_rejectsUndecomposed_whenQ6RowLacksKind() {
         var finding = only("""
             [[answers.q6]]

@@ -81,7 +81,7 @@ status     = "answered"
 
 [[answers.q2]]   # Failure budget — per operation: error budget + criticality
 [[answers.q3]]   # Loss budget — per data class: rpo, retention, never_lose
-[[answers.q4]]   # Consistency contract — strict | bounded(named) | eventual; ryw scope
+[[answers.q4]]   # Consistency contract — per data class/path: strict | bounded(named) | eventual; ryw scope
 [[answers.q5]]   # Load — magnitude steady/peak, shape = volume|contention|burst|deadline,
                  #        concentration, window   (shape is the second-copy triage, Card 3)
 [[answers.q6]]   # External constraints — kind = audit|replay|residency|mandate;
