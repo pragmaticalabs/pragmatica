@@ -196,7 +196,7 @@ public sealed interface EntryGate permits EntryGate.unused {
 
     private static boolean requiresNarrowScope(QuestionId question) {
         return switch (question) {
-            case Q1, Q2, Q3, Q5 -> true;
+            case Q1, Q2, Q3, Q4, Q5 -> true;
             default -> false;
         };
     }
