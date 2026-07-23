@@ -152,6 +152,14 @@ public enum ManagementRoute {
     // a `RouteTarget` variant (the owner is computed from name+partition, not a path param), so the
     // response is owner-aware rather than owner-forwarded.
     STREAM_REPLICAS(GET, "/api/streams/replicas", List.of("name", "partition"), taskGroup(STREAMING)),
+    // #490 per-node LOCAL variant of STREAM_REPLICAS (the membership-endpoint pattern): the RECEIVING
+    // node answers from its OWN ReplicaRegistry/owner resolver — never delegate-routed — so querying a
+    // specific node's management port observes THAT node's view, and `servedByOwner=true` is actually
+    // reachable over HTTP by querying the resolved owner's port. The delegate-routed variant above
+    // structurally cannot return it unless the delegate happens to be the owner (probe-proven: all 5
+    // ports answered with one identical delegate view). Static prefix `/api/streams/replicas/local` is
+    // matched before `/api/streams/replicas/{name}/{partition}` by the longest-static-prefix rule.
+    STREAM_REPLICAS_LOCAL(GET, "/api/streams/replicas/local", List.of("name", "partition"), LOCAL),
     // #265 increment 0 per-node hydration observability. Static prefix `/api/streams/hydration` (0
     // params) is matched before `/api/streams/{name}` (STREAM_GET, 1 param) by the longest-static-prefix
     // rule in RouteMatcher, so there is no collision. taskGroup(STREAMING) lands it on a STREAMING-capable

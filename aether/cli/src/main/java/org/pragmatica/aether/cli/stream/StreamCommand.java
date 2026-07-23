@@ -90,9 +90,13 @@ public class StreamCommand implements Runnable {
         @Parameters(index = "1", description = "Partition number")
         private int partition;
 
+        @CommandLine.Option(names = "--local", description = "Ask the ADDRESSED node for its OWN view (never delegate-routed; #490) — "
+                                                           + "query the resolved owner's management port to see servedByOwner=true")
+        private boolean local;
+
         @Override
         public Integer call() {
-            return fetchReplicas(stream, partition, streamParent.parent());
+            return fetchReplicas(stream, partition, local, streamParent.parent());
         }
     }
 
@@ -253,8 +257,11 @@ public class StreamCommand implements Runnable {
                                                                                new Column("HRW-OWNER", "isHrwOwner", 9)),
                                                                        "replicas");
 
-    private static int fetchReplicas(String stream, int partition, AetherCli cli) {
-        var response = cli.fetch(ManagementRoute.STREAM_REPLICAS,
+    private static int fetchReplicas(String stream, int partition, boolean local, AetherCli cli) {
+        var route = local
+                    ? ManagementRoute.STREAM_REPLICAS_LOCAL
+                    : ManagementRoute.STREAM_REPLICAS;
+        var response = cli.fetch(route,
                                  List.of(stream, Integer.toString(partition)));
         var errorCode = OutputFormatter.checkResponseError(response, cli.outputOptions(), "Failed to load replica state");
 

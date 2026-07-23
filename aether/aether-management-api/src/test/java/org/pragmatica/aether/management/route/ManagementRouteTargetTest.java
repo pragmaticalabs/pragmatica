@@ -33,4 +33,15 @@ class ManagementRouteTargetTest {
                 .as("EVENTS must be served from ANY core node so it stays available during leader churn")
                 .isEqualTo(RouteTarget.ANY);
     }
+
+    @Test
+    void streamReplicasLocal_routesToLocalTarget() {
+        // #490: the per-node replica-view variant must be answered by the RECEIVING node — any
+        // delegation makes `servedByOwner` structurally unobservable over HTTP (the delegate answers
+        // from ITS registry, so the response is identical on every port unless the delegate happens
+        // to be the owner).
+        assertThat(ManagementRoute.STREAM_REPLICAS_LOCAL.target())
+                .as("STREAM_REPLICAS_LOCAL must be LOCAL so each node reports its own replica view")
+                .isEqualTo(RouteTarget.LOCAL);
+    }
 }

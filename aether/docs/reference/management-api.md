@@ -4187,7 +4187,17 @@ GET /api/streams/replicas/{name}/{partition}
 
 Replication/backfill-health sensor for the stream-replication class (#260/#261/#333). Returns the partition's replica set as seen by the answering node's `ReplicaRegistry`, with the deterministic HRW owner resolved via the read path's owner resolver. Each replica entry carries its replication `state` (`SYNCING` / `CAUGHT_UP` / `LAGGING`), its acked `confirmedOffset`, and whether it `isHrwOwner`. To detect the #333 write-idle residual, compare a `CAUGHT_UP` replica's `confirmedOffset` against the response's `ownerHeadOffset`.
 
-**Owner authority (read this):** the per-peer confirmed-watermark view is advanced by the owner's `DefaultReplicationManager.handleAck`, so the `ReplicaRegistry` is **authoritative only on the partition's HRW owner** — a non-owner mostly knows only itself. The response is therefore **owner-aware, not owner-forwarded**: per-partition-owner forwarding is not a management `RouteTarget` variant (the owner is computed from `name`+`partition`, not a path param), and the stream forward transport carries only event reads. `servedByOwner` is `true` when the answering node IS the resolved owner (then `replicas` is the complete, authoritative set); when `false`, `hrwOwner` names the node to re-query. `name` is the partition manager's local stream name (e.g. `system:cluster-events:1.0.0`).
+**Owner authority (read this):** the per-peer confirmed-watermark view is advanced by the owner's `DefaultReplicationManager.handleAck`, so the `ReplicaRegistry` is **authoritative only on the partition's HRW owner** — a non-owner mostly knows only itself. The response is therefore **owner-aware, not owner-forwarded**: per-partition-owner forwarding is not a management `RouteTarget` variant (the owner is computed from `name`+`partition`, not a path param), and the stream forward transport carries only event reads. `servedByOwner` is `true` when the answering node IS the resolved owner (then `replicas` is the complete, authoritative set). **Routing caveat (#490):** this route is delegate-routed (STREAMING task group), so the answering node is an arbitrary streaming-capable delegate — re-querying a different management port still lands on a delegate, and `servedByOwner=true` is generally unobservable here. To reach the owner's authoritative view over HTTP, query the **local variant below** against the `hrwOwner` node's own management port. `name` is the partition manager's local stream name (e.g. `system:cluster-events:1.0.0`).
+
+### Partition Replica State (per-node local view)
+
+```
+GET /api/streams/replicas/local/{name}/{partition}
+```
+
+**Auth:** ALL_AUTHENTICATED · **Routing:** LOCAL (answered by the receiving node, never delegated)
+
+#490 per-node variant of the endpoint above, following the `/api/cluster/membership` pattern: the node whose management port you query answers **from its own** `ReplicaRegistry` and owner resolver. Same response shape. Use it to (a) obtain the owner-authoritative view — query the `hrwOwner` node's port and expect `servedByOwner: true` — or (b) sweep every node's port to compare per-node replica views during failover diagnosis (each node reports what IT believes; divergent views are themselves the operator-meaningful signal). Snapshot read, no hot-path cost.
 
 **Response (served by the owner — authoritative):**
 ```json

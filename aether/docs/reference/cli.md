@@ -1594,13 +1594,16 @@ Show per-node replica state for a stream partition — the replication/backfill-
 
 `<stream>` is the partition manager's local stream name (for the replicated cluster-event stream this is `system:cluster-events:1.0.0`), not a `namespace:stream:version` address — replica placement is keyed on that name.
 
-**Owner authority:** the answering node's `ReplicaRegistry` holds the complete per-peer watermark view only when that node IS the partition's HRW owner (`servedByOwner: true`). Query is served from a STREAMING-capable node and is owner-aware but **not** owner-forwarded: when `servedByOwner` is `false`, re-query the node named in `hrwOwner` for the authoritative full set. Wraps `GET /api/streams/replicas/{name}/{partition}`.
+**Owner authority:** the answering node's `ReplicaRegistry` holds the complete per-peer watermark view only when that node IS the partition's HRW owner (`servedByOwner: true`). By default the query is served from an arbitrary STREAMING-capable delegate and is owner-aware but **not** owner-forwarded — and because of that delegation, re-querying another port still lands on a delegate. Pass **`--local`** (#490) to make the ADDRESSED node answer from its OWN registry: point the CLI at the `hrwOwner` node's management port with `--local` to get the authoritative full set (`servedByOwner: true`), or sweep each node's port with `--local` to compare per-node views during failover diagnosis. Wraps `GET /api/streams/replicas/{name}/{partition}` (default) or `GET /api/streams/replicas/local/{name}/{partition}` (`--local`).
 
 ```bash
 aether stream replicas system:cluster-events:1.0.0 0
 
 # Machine-readable (includes hrwOwner / servedByOwner / ownerHeadOffset)
 aether stream replicas system:cluster-events:1.0.0 0 --format json
+
+# Owner-authoritative view: address the hrwOwner node's management port + --local (#490)
+aether stream replicas system:cluster-events:1.0.0 0 --local
 ```
 
 Example output (table):

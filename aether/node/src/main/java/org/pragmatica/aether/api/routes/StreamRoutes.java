@@ -143,6 +143,14 @@ public final class StreamRoutes implements RouteSource {
                                                    PathParameter.aInteger())
                                          .toResult(this::replicaDetails)
                                          .asJson(),
+
+        // #490: LOCAL variant — same handler, but the route target makes the RECEIVING
+        // node answer from its own registry (see ManagementRoute.STREAM_REPLICAS_LOCAL).
+        ManagementRoutes.<StreamReplicasResponse> route(ManagementRoute.STREAM_REPLICAS_LOCAL)
+                        .withPath(PathParameter.aString(),
+                                  PathParameter.aInteger())
+                        .toResult(this::replicaDetails)
+                        .asJson(),
                          ManagementRoutes.<StreamHydrationResponse> route(ManagementRoute.STREAM_HYDRATION).toJson(this::streamHydration),
                          ManagementRoutes.<PublishResponse> route(ManagementRoute.STREAM_PUBLISH)
                                          .withPath(PathParameter.aString())
