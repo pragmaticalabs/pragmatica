@@ -59,6 +59,55 @@ class CstMemberOrderingRuleTest {
         }
 
         @Test
+        void clean_on_accessor_before_static_factory() {
+            // Serialization-pair idiom: an instance method before a static factory. Factory and
+            // accessors share one rank, so their relative order is not order-breaking.
+            assertFalse(hasRule("""
+                    package org.example;
+                    record BootstrapState(String phase) {
+                        String toJson() {
+                            return phase;
+                        }
+                        static Result<BootstrapState> fromJson(String json) {
+                            return Result.success(new BootstrapState(json));
+                        }
+                    }
+                    """));
+        }
+
+        @Test
+        void ignores_private_constant_at_bottom() {
+            // Private static-final constants (validation patterns, formatters) are implementation
+            // details, conventionally at the bottom — exempt from the constants-first rule.
+            assertFalse(hasRule("""
+                    package org.example;
+                    record ArtifactId(String id) {
+                        static Result<ArtifactId> artifactId(String id) {
+                            return Result.success(new ArtifactId(id));
+                        }
+                        public String toString() {
+                            return id;
+                        }
+                        private static final Pattern PATTERN = Pattern.compile("^[a-z]+$");
+                    }
+                    """));
+        }
+
+        @Test
+        void still_flags_public_constant_after_factory() {
+            // A PUBLIC constant is API surface and must still come first.
+            assertTrue(hasRule("""
+                    package org.example;
+                    record Money(long cents) {
+                        static Result<Money> money(long cents) {
+                            return Result.success(new Money(cents));
+                        }
+                        public static final Money ZERO = new Money(0);
+                    }
+                    """));
+        }
+
+        @Test
         void ignores_nested_type_after_factory() {
             // Nested type declarations are absent from the value-object table — never order-breaking.
             assertFalse(hasRule("""
@@ -95,45 +144,45 @@ class CstMemberOrderingRuleTest {
     @Nested
     class UseCase {
         @Test
-        void flags_execute_before_factory() {
+        void flags_factory_before_execute() {
             assertTrue(hasRule("""
                     package org.example;
                     public interface RegisterUser {
                         record Request(String email) {}
-                        Result<Request> execute(Request request);
                         static RegisterUser registerUser() {
                             return request -> null;
                         }
+                        Result<Request> execute(Request request);
                     }
                     """));
         }
 
         @Test
-        void clean_on_records_steps_factory_execute_order() {
+        void clean_on_records_execute_steps_factory_order() {
             assertFalse(hasRule("""
                     package org.example;
                     public interface RegisterUser {
                         record Request(String email) {}
+                        Result<Request> execute(Request request);
                         interface CheckEmail { Result<Request> apply(Request request); }
                         static RegisterUser registerUser() {
                             return request -> null;
                         }
-                        Result<Request> execute(Request request);
                     }
                     """));
         }
 
         @Test
-        void ignores_constant_after_execute() {
+        void ignores_trailing_constant() {
             // Interface constants are absent from the use-case table — never order-breaking.
             assertFalse(hasRule("""
                     package org.example;
                     public interface RegisterUser {
                         record Request(String email) {}
+                        Result<Request> execute(Request request);
                         static RegisterUser registerUser() {
                             return request -> null;
                         }
-                        Result<Request> execute(Request request);
                         String TAG = "reg";
                     }
                     """));
