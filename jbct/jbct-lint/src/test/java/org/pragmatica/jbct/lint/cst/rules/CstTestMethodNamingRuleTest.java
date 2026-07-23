@@ -37,8 +37,9 @@ class CstTestMethodNamingRuleTest {
     }
 
     @Test
-    void detects_two_segment_test_name() {
-        assertTrue(hasRule("""
+    void no_false_positive_on_two_segment_test_name() {
+        // Two-segment method_expectation / scenario_expectation names are the accepted convention.
+        assertFalse(hasRule("""
                 package org.example;
                 class FooTest {
                     @Test void run_works() {}
