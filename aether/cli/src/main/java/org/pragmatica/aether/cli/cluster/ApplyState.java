@@ -89,8 +89,8 @@ public record ApplyState(String clusterName,
         FAILED
     }
 
-    static final Path AETHER_DIR = Path.of(System.getProperty("user.home"), ".aether", "clusters");
-    static final String STATE_FILE_NAME = "apply-state.json";
+    private static final Path AETHER_DIR = Path.of(System.getProperty("user.home"), ".aether", "clusters");
+    private static final String STATE_FILE_NAME = "apply-state.json";
 
     static Result<Unit> save(ApplyState state) {
         return Result.lift(PersistenceError::new, () -> doSave(state));
