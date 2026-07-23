@@ -5,7 +5,6 @@
 
 package org.pragmatica.aether.forge;
 
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.TestInstance;
 import org.junit.jupiter.api.parallel.Execution;
@@ -26,20 +25,23 @@ import org.pragmatica.aether.ember.EmberCluster;
 /// into a self-fence); the raised timeouts keep swimDeadStuck EMPTY through the failover — this suppresses
 /// #498 (SWIM false-removal).
 ///
-/// @Disabled until #499: with #498 suppressed, RF-restoration STILL stalls (0/3 in the acceptance gate) —
-/// HRW re-resolves ownership to an empty non-replica node that cannot catch up from the data-bearing
-/// survivor (watermark stuck at -1), so phase 9 never converges. The batch's above-transport layers
-/// (unicast-to-absent buffering + probe-first re-verify + committed-owner gate) close the transport-loss
-/// class (drops=0, phases 1–8) but do not resolve that placement divergence. This class is the ready-made
-/// HARD regression gate for the #499 fix: when #499 closes, remove @Disabled and the pinned failover must
-/// converge 3×.
+/// ACTIVE #499 regression gate (closed 2026-07-23, converged 3×). The long-standing phase-9
+/// non-convergence was NOT the "HRW re-resolves to an empty node that cannot catch up" mechanism this
+/// class originally described — instrumented reproduces showed that loop belonged to the KILLED node's
+/// zombie backfill executor (periodic SharedScheduler tasks were never cancelled on `node.stop()`,
+/// #501) logging into the shared forge console, while the live cluster replicated correctly. The real
+/// product defect was a FIRE-ONCE backfill-completion ack: a fresh replacement promotes CAUGHT_UP
+/// milliseconds after its transport Hello, before its member view populates, so the one-shot #336
+/// `ReplicateAck` resolved no owner and was silently skipped — on a write-idle partition nothing ever
+/// re-sent it, freezing the owner's replicas-view at SYNCING@-1 over fully-replicated data. Fixed by
+/// (a) cancelling node-scoped periodic tasks in `AetherNode.stop()` and (b) re-sending the idempotent
+/// completion ack from the reverify no-op arm (`PartitionBackfill#reverifyNoOp`). This gate now proves
+/// owner-kill → lossless reads (phases 1–8) AND RF-restoration convergence (phase 9) on every run.
 ///
 /// Distinct base ports vs the default variant so both concrete classes can run in one JVM without TCP
 /// contention; a separate class also guarantees a separate [EmberCluster] (a second kill-test in the
 /// SAME `@TestInstance(PER_CLASS)` class would run on the already-degraded cluster).
 @Tag("Heavy")
-@Disabled("blocked on #499 — HRW-divergence stalls RF-restoration even with membership pinned (#498 "
-          + "suppressed, swimDeadStuck empty); ready-made HARD regression gate, re-enable when #499 closes")
 @Execution(ExecutionMode.SAME_THREAD)
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 class StreamOwnerFailoverPinnedTest extends AbstractStreamOwnerFailover {

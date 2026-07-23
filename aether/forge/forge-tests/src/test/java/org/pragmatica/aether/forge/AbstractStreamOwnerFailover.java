@@ -8,6 +8,7 @@ package org.pragmatica.aether.forge;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
+import org.awaitility.core.ConditionTimeoutException;
 import org.pragmatica.aether.stream.StreamReadRouter.ReplicaSetView;
 import org.pragmatica.config.ConfigurationProvider;
 import org.pragmatica.http.HttpOperations;
@@ -218,19 +219,24 @@ abstract class AbstractStreamOwnerFailover {
         }
     }
 
-    /// Phase 9 (pinned) — RF restoration HARD assertion (the #457 acceptance gate), currently @Disabled on
-    /// [StreamOwnerFailoverPinnedTest] until #499 closes. Pinning membership (auto-heal off + raised
-    /// SWIM/hello/split timeouts) suppresses #498 — the gate confirmed `swimDeadStuck` stays empty through
-    /// the failover — but RF-rebuild still stalls on #499: HRW re-resolves ownership to an empty node that
-    /// cannot catch up from the data-bearing survivor (watermark stuck at -1). The batch's above-transport
-    /// layers (F1 grace-scope + F4 committed-owner gate + m2 promotion gate + m3 eager-PeerState /
-    /// unicast-buffering + probe-first re-verify) close the transport-loss class (drops=0, phases 1–8) but
-    /// do not by themselves resolve the placement divergence. When #499 closes, re-enable this test: the
-    /// promoted owner's catch-up must reach the survivor tail and RF must restore.
+    /// Phase 9 (pinned) — RF restoration HARD assertion (the #457 acceptance gate), ACTIVE on
+    /// [StreamOwnerFailoverPinnedTest] since #499 closed (2026-07-23, converged 3×). Pinning membership
+    /// (auto-heal off + raised SWIM/hello/split timeouts) suppresses #498 — the gate confirmed
+    /// `swimDeadStuck` stays empty through the failover. The long-standing phase-9 stall was a
+    /// FIRE-ONCE backfill-completion ack lost during the replacement's member-view bootstrap window
+    /// (masked in the console by a killed-node zombie scheduler, #501) — see the pinned test's class doc
+    /// for the full mechanism. On timeout this dumps every live node's replica view before rethrowing.
     private void assertRfRestorationConverges() {
-        await().atMost(CONVERGE_TIMEOUT)
-               .pollInterval(POLL_INTERVAL)
-               .until(this::convergedWithRfRestored);
+        try {
+            await().atMost(CONVERGE_TIMEOUT)
+                   .pollInterval(POLL_INTERVAL)
+                   .until(this::convergedWithRfRestored);
+        } catch (ConditionTimeoutException timeout) {
+            // Failure-path observability: the assertion otherwise dies blind — dump EVERY live
+            // node's replica snapshot so the non-converged view is diagnosable from the log.
+            dumpAllReplicaViews();
+            throw timeout;
+        }
 
         ownerView().onPresent(view -> LOG.log(System.Logger.Level.INFO,
                                               "#491 RF-restoration converged: "
@@ -238,6 +244,18 @@ abstract class AbstractStreamOwnerFailover {
                                               ownerIsCaughtUp(view),
                                               hasCaughtUpNonOwner(view),
                                               view));
+    }
+
+    /// Per-node replica-view dump on phase-9 failure: one WARNING line per LIVE node (killed nodes are
+    /// removed from [EmberCluster#allNodes]), each tagged with the reporting node's own id so the
+    /// failing view is attributable in the shared forge console.
+    private void dumpAllReplicaViews() {
+        for (var node : cluster.allNodes()) {
+            LOG.log(System.Logger.Level.WARNING,
+                    "phase-9 FAIL view self={0}: {1}",
+                    node.self(),
+                    node.streamReadRouter().replicaSnapshot(STREAM_NAME, PARTITION));
+        }
     }
 
     /// Phase 9 (default) — non-failing sensor for #498 (SWIM false-removal) + #499 (HRW-divergence):
