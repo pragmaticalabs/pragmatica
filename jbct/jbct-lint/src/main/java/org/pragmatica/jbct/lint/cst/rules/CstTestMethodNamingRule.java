@@ -13,12 +13,13 @@ import org.pragmatica.jbct.parser.RuleKind;
 import static org.pragmatica.jbct.parser.CstNodes.*;
 
 
-/// JBCT-NAM-05: Test methods use `methodName_scenario_expectation` naming.
+/// JBCT-NAM-05: Test methods use underscore-separated `method_[scenario_]expectation` naming.
 ///
-/// A `@Test` method name must have at least three underscore-separated, non-empty segments —
-/// the project standard `methodName_scenario_expectation` (`register_succeeds_forNewEmail`). The
-/// rule only fires on `@Test`-annotated methods, so files without tests are untouched and
-/// non-test methods are never checked.
+/// A `@Test` method name must have at least two underscore-separated, non-empty segments — the
+/// method or scenario under test and the expected outcome, optionally with a scenario segment in
+/// between (`validate_rejectsEmpty`, `register_succeeds_forNewEmail`). A single-word name with no
+/// underscore (`testFoo`, `shouldWork`) is flagged. The rule only fires on `@Test`-annotated
+/// methods, so files without tests are untouched and non-test methods are never checked.
 ///
 /// The `@Test` annotation is carried on the method's enclosing `ClassMember` holder (a sibling of
 /// the method `Member`, per the grammar `Annotation* Modifier* Member`), so detection reads the
@@ -75,7 +76,7 @@ public class CstTestMethodNamingRule implements CstLintRule {
     private boolean matchesTestNaming(String name) {
         var parts = name.split("_", -1);
 
-        if (parts.length < 3) {
+        if (parts.length < 2) {
             return false;
         }
 
@@ -96,9 +97,10 @@ public class CstTestMethodNamingRule implements CstLintRule {
                                      ctx.fileName(),
                                      startLine(method),
                                      startColumn(method),
-                                     "Test method '" + name + "' should be named methodName_scenario_expectation",
-                                     "Test names use three underscore-separated segments: the method under test, the "
-                                    + "scenario, and the expected outcome (e.g. register_succeeds_forNewEmail).");
+                                     "Test method '" + name + "' should be named method_[scenario_]expectation",
+                                     "Test names use at least two underscore-separated segments — the method or "
+                                    + "scenario under test and the expected outcome, optionally with a scenario in "
+                                    + "between (e.g. validate_rejectsEmpty or register_succeeds_forNewEmail).");
     }
 
     private static String extractMethodName(String memberText) {
