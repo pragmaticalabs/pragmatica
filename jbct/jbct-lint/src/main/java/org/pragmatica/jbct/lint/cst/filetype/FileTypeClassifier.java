@@ -114,6 +114,11 @@ public final class FileTypeClassifier {
         return modifiersText(root, method).contains("static ");
     }
 
+    /// Whether a member declaration carries the `private` modifier.
+    public static boolean isPrivate(Cursor root, Cursor member) {
+        return modifiersText(root, member).contains("private ");
+    }
+
     /// Whether a method member is an abstract interface method — no `static`/`default` modifier and
     /// no body.
     public static boolean isAbstractMethod(Cursor root, Cursor method) {

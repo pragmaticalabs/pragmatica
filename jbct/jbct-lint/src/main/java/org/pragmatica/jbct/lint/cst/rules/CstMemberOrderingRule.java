@@ -21,8 +21,13 @@ import static org.pragmatica.jbct.parser.CstNodes.*;
 /// Encodes the book's project-structure member-ordering tables for the two file kinds the ticket
 /// names, gating on [FileTypeClassifier]:
 ///
-///   - **value object** ([FileType#VALUE_OBJECT]): constants -> constructor -> factory -> accessors;
-///   - **use case** ([FileType#USE_CASE]): nested records -> step interfaces -> factory -> `execute`.
+///   - **value object** ([FileType#VALUE_OBJECT]): public constants -> constructor -> methods, where
+///     the static factory and the accessors share one rank so their relative order is not enforced
+///     (serialization pairs like `toJson`/`fromJson`, and private factory helpers near their use, are
+///     not order-breaking). Private static-final constants (validation patterns, formatters, private
+///     pre-built instances) are exempt from constants-first — they are implementation details,
+///     conventionally placed at the bottom;
+///   - **use case** ([FileType#USE_CASE]): nested records -> `execute` -> step interfaces -> factory.
 ///
 /// Members of the principal type are read in source order and assigned an ordinal by role; the FIRST
 /// member whose ordinal is lower than a preceding member's (the first out-of-order member) is
@@ -30,10 +35,10 @@ import static org.pragmatica.jbct.parser.CstNodes.*;
 /// declarations in a value object, constants in a use-case interface — are ignored entirely: never
 /// ranked, never counted, never treated as order-breaking. Other file types are not ordering-checked.
 ///
-/// Provisional WARNING pending corpus calibration. Note: the book's use-case member table is stated
-/// two ways across the manuscript (this rule follows the ticket's `records -> steps -> factory ->
-/// execute`; the skill summary lists `execute` earlier). Which ordering is canonical is a
-/// calibration question the corpus gate resolves before the severity is fixed.
+/// The use-case order follows the manuscript's canonical `project-structure.md` list and every
+/// worked code example: the entry method (`execute`) comes early (right after the Request/Response
+/// records) and the static factory is last. (An earlier draft encoded the #453 ticket's inverted
+/// `records -> steps -> factory -> execute`; the book was reconciled to execute-early.)
 public class CstMemberOrderingRule implements CstLintRule {
     private static final String RULE_ID = "JBCT-ORD-01";
 
@@ -43,13 +48,12 @@ public class CstMemberOrderingRule implements CstLintRule {
 
     private static final int RANK_CONSTANT = 0;
     private static final int RANK_CONSTRUCTOR = 1;
-    private static final int RANK_FACTORY = 2;
-    private static final int RANK_ACCESSOR = 3;
+    private static final int RANK_METHOD = 2;
 
     private static final int RANK_UC_RECORD = 0;
-    private static final int RANK_UC_STEP = 1;
-    private static final int RANK_UC_FACTORY = 2;
-    private static final int RANK_UC_ENTRY = 3;
+    private static final int RANK_UC_ENTRY = 1;
+    private static final int RANK_UC_STEP = 2;
+    private static final int RANK_UC_FACTORY = 3;
 
     @Override
     public String ruleId() {
@@ -121,9 +125,9 @@ public class CstMemberOrderingRule implements CstLintRule {
 
     private int valueObjectRank(Cursor root, Cursor member, String ownName) {
         return switch (member.kind()) {
-            case FIELD_DECL -> RANK_CONSTANT;
+            case FIELD_DECL -> FileTypeClassifier.isPrivate(root, member) ? IGNORED : RANK_CONSTANT;
             case CONSTRUCTOR_DECL, COMPACT_CONSTRUCTOR -> RANK_CONSTRUCTOR;
-            case MEMBER -> memberRank(root, member, ownName, RANK_FACTORY, RANK_ACCESSOR);
+            case MEMBER -> memberRank(root, member, ownName, RANK_METHOD, RANK_METHOD);
             default -> IGNORED;
         };
     }
@@ -177,7 +181,7 @@ public class CstMemberOrderingRule implements CstLintRule {
 
     private String expectedOrder(FileType fileType) {
         return fileType == FileType.USE_CASE
-               ? "Use-case interface order: nested records -> step interfaces -> static factory -> execute."
-               : "Value object order: constants -> constructor -> static factory -> accessors.";
+               ? "Use-case interface order: nested records -> execute -> step interfaces -> static factory."
+               : "Value object order: public constants -> constructor -> methods (private constants exempt; static factory and accessors unordered).";
     }
 }
