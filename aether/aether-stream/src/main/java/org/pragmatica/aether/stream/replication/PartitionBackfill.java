@@ -325,7 +325,10 @@ public final class PartitionBackfill {
     /// real hole to fill. An already-CAUGHT_UP replica takes the cheaper probe-first {@link #reverifyFromOwner}:
     /// it re-checks the owner's head and pulls ONLY when the owner is genuinely ahead, so a periodic
     /// re-verify of a complete replica costs one probe, not a full catch-up request.
-    private Promise<Long> backfillOrReverify(String streamName, int partition, NodeId owner, List<ReplicaDescriptor> replicas) {
+    private Promise<Long> backfillOrReverify(String streamName,
+                                             int partition,
+                                             NodeId owner,
+                                             List<ReplicaDescriptor> replicas) {
         return selfIsCaughtUp(replicas)
                ? reverifyFromOwner(streamName, partition, owner, replicas)
                : backfillFromOwner(streamName, partition, owner, replicas);
@@ -459,19 +462,24 @@ public final class PartitionBackfill {
     /// interval and the re-verify cannot spin) and probes the CURRENT HRW owner's head via
     /// {@link ReplicaWatermarkProbe}. When the owner is genuinely ahead (`ownerHead > selfConfirmed`) it pulls
     /// the missing suffix through the usual {@link #backfillFromOwner} gate (apply → promote → re-quiesce
-    /// {@link #reverifiedAtOffset}). When the owner is NOT ahead (`ownerHead <= selfConfirmed`) it is a PURE
-    /// no-op — no catch-up request, no {@link #handleNoSource}, no {@link #firstNoSourceMs} touch — so an
+    /// {@link #reverifiedAtOffset}). When the owner is NOT ahead (`ownerHead <= selfConfirmed`) it is a
+    /// no-op apart from the idempotent completion re-ack (#499, see {@link #reverifyNoOp}) — no catch-up
+    /// request, no {@link #handleNoSource}, no {@link #firstNoSourceMs} touch — so an
     /// already-complete replica is never demoted and the periodic re-verify stays a single cheap probe.
     private Promise<Long> reverifyFromOwner(String streamName,
                                             int partition,
                                             NodeId owner,
                                             List<ReplicaDescriptor> replicas) {
         lastReverifyMs.put(partitionKey(streamName, partition), clock.getAsLong());
-
         var selfConfirmed = selfConfirmedOffset(replicas);
 
         return probe.probe(owner, streamName, partition)
-                    .flatMap(ownerHead -> decideReverify(streamName, partition, owner, replicas, selfConfirmed, ownerHead));
+                    .flatMap(ownerHead -> decideReverify(streamName,
+                                                         partition,
+                                                         owner,
+                                                         replicas,
+                                                         selfConfirmed,
+                                                         ownerHead));
     }
 
     /// Route the probed owner head: pull via {@link #backfillFromOwner} when the owner is strictly ahead, else
@@ -487,7 +495,7 @@ public final class PartitionBackfill {
                : reverifyNoOp(streamName, partition, selfConfirmed, ownerHead);
     }
 
-    /// Pure no-op arm of the probe-first re-verify: the HRW owner's head is not ahead of self, so the CAUGHT_UP
+    /// No-op arm of the probe-first re-verify: the HRW owner's head is not ahead of self, so the CAUGHT_UP
     /// replica is already complete. Nothing is pulled and self stays CAUGHT_UP. Stamps {@link #reverifiedAtOffset}
     /// at `selfConfirmed` (alongside the dispatch-time {@link #lastReverifyMs}): a replica that reached CAUGHT_UP
     /// with NO prior pull (cold-start self-promote) has no {@link #reverifiedAtOffset} record, so WITHOUT this
@@ -495,14 +503,24 @@ public final class PartitionBackfill {
     /// {@link #staleCaughtUpNonOwner} would redrive an owner probe EVERY tick. With the stamp `offsetMoved` reads
     /// false for the offset-stable replica, so the re-verify quiesces to at most once per interval
     /// ({@link #reverifyIntervalElapsed}) — honoring the "never a per-tick probe once genuinely complete" contract.
+    ///
+    /// #499: additionally RE-SENDS the idempotent backfill-completion ack ({@link #ackBackfillToOwner}).
+    /// The #336 completion ack is otherwise fired exactly ONCE, inside {@link #promote} — and a replica
+    /// that promotes while its member view is still populating (a fresh replacement backfills within
+    /// milliseconds of its transport Hello) resolves {@link #hrwOwner} to none and silently skips it.
+    /// With no live writes on the partition nothing else ever advances the owner's row, so the owner's
+    /// replicas-view stays SYNCING@-1 forever over a fully-replicated partition and RF-restoration never
+    /// reads as converged. Re-acking here is quiesced to once per re-verify interval, resolves the
+    /// CURRENT (now-populated) owner, and is idempotent on the owner (`handleAck` re-applying the same
+    /// tail is a no-op) — a lost one-shot ack self-heals instead of freezing the operator view.
     private Promise<Long> reverifyNoOp(String streamName, int partition, long selfConfirmed, long ownerHead) {
         log.debug("Reverify {}[{}]: HRW owner head {} not ahead of self {} — already complete, no-op",
                   streamName,
                   partition,
                   ownerHead,
                   selfConfirmed);
-
         reverifiedAtOffset.put(partitionKey(streamName, partition), selfConfirmed);
+        ackBackfillToOwner(streamName, partition, selfConfirmed);
 
         return Promise.success(0L);
     }
@@ -725,8 +743,8 @@ public final class PartitionBackfill {
     /// is PERMISSIVE — with no committed record (cold start / legacy) it is a no-op, so pure-HRW behavior and
     /// the cold-start deadlock-break are preserved; only a divergent committed owner blocks self-election.
     private boolean isSelfOwner(String streamName, int partition) {
-        return hrwOwner(streamName, partition).map(self::equals).or(false)
-               && !committedOwnerIsOther(streamName, partition);
+        return hrwOwner(streamName, partition).map(self::equals)
+                       .or(false) && !committedOwnerIsOther(streamName, partition);
     }
 
     /// #491 F4: PERMISSIVE committed-ownership guard on HRW self-election. Returns true ONLY when a committed
@@ -739,7 +757,8 @@ public final class PartitionBackfill {
     /// Strict equality (blocking whenever committed != self) would starve a just-promoted owner by one commit.
     private boolean committedOwnerIsOther(String streamName, int partition) {
         return committedOwnerSource.committedOwner(streamName, partition)
-                                   .map(committed -> !committed.owner().equals(self))
+                                   .map(committed -> !committed.owner()
+                                                               .equals(self))
                                    .or(false);
     }
 
@@ -1035,7 +1054,6 @@ public final class PartitionBackfill {
 
             return NO_SOURCE_REPLICA.promise();
         }
-
         // #491 m2: the cold-start self-promote is a DEADLOCK-BREAK for a GENUINE cold start where NO owner
         // can exist (every replica SYNCING). When a committed owner EXISTS this is a FAILOVER, not a
         // deadlock — the owner is authoritative and the redrive's owner re-pull will catch self up once the
