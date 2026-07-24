@@ -327,7 +327,12 @@ class ManagementServerImpl implements ManagementServer {
         routeSources.add(org.pragmatica.aether.api.routes.VersionRoutes.versionRoutes(nodeSupplier));
         dynamicConfigManager.onPresent(dcm -> routeSources.add(ConfigRoutes.configRoutes(dcm, nodeSupplier)));
         this.router = ManagementRouter.managementRouter(routeSources.toArray(RouteSource[]::new));
-        this.legacyRoutes = List.of(MavenProtocolRoutes.mavenProtocolRoutes(nodeSupplier));
+        // #520 — the publication gate inside MavenProtocolRoutes must see the SAME posture this
+        // server gates management auth on. `securityEnabled` is `config.appHttp().securityEnabled()`
+        // (see AetherNode), so `false` means app-HTTP `security_mode = NONE`: no SecurityContext is
+        // ever bound and OPERATOR is structurally unholdable. Passing it here unifies the two
+        // half-overlapping dev switches instead of leaving the route with its own env-only bypass.
+        this.legacyRoutes = List.of(MavenProtocolRoutes.mavenProtocolRoutes(nodeSupplier, () -> securityEnabled));
         installVersioningMetricsSink(nodeSupplier, observability);
     }
 

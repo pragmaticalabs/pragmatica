@@ -25,6 +25,9 @@ import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.io.CoreError;
 import org.pragmatica.lang.io.TimeSpan;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import static org.pragmatica.http.HttpMethod.GET;
 import static org.pragmatica.http.HttpMethod.POST;
 import static org.pragmatica.http.HttpMethod.PUT;
@@ -32,6 +35,7 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 
 public final class MavenProtocolRoutes implements RouteHandler {
+    private static final Logger log = LoggerFactory.getLogger(MavenProtocolRoutes.class);
     private static final String DEV_MODE_ENV = "AETHER_INSECURE_DEV_MODE";
     private static final String REPOSITORY_PREFIX = ManagementRoute.ARTIFACT_GET.prefix() + "/";
     private static final String REPOSITORY_INFO_PREFIX = ManagementRoute.ARTIFACT_INFO.prefix() + "/";
@@ -43,28 +47,62 @@ public final class MavenProtocolRoutes implements RouteHandler {
     /// non-keep-alive close path), rather than the request leaving the socket open forever (the
     /// observed 3h Hetzner hang). Generous relative to the store's own resolve ceiling.
     private static final TimeSpan REQUEST_TIMEOUT = timeSpan(150).seconds();
+    /// Default posture for the factories that do not carry the node's app-HTTP security mode
+    /// (timeout tests, dev-mode tests). SECURE by default: the #520 relaxation must be opted into
+    /// explicitly, never inherited by a caller that simply did not know about it.
+    private static final BooleanSupplier SECURITY_ENABLED = () -> true;
+
+    /// Security-relevant bypass notices (#520). Both name the artifact, the posture that admitted it,
+    /// and what an operator must change — a WARN nobody can read past without understanding it.
+    private static final String DEV_MODE_PUSH_WARNING = "SECURITY: accepted UNAUTHENTICATED artifact publication "
+                                                      + "of {} — {}=true. Anyone who can reach the management port "
+                                                      + "can load code into this cluster. Never use this posture "
+                                                      + "in production.";
+
+    private static final String SECURITY_DISABLED_PUSH_WARNING = "SECURITY: accepted UNAUTHENTICATED artifact "
+                                                               + "publication of {} — app-HTTP security is disabled "
+                                                               + "(security_mode=NONE), so no caller can hold "
+                                                               + "OPERATOR and publication is unauthenticated. "
+                                                               + "Anyone who can reach the management port can load "
+                                                               + "code into this cluster. Set security_mode=api-key "
+                                                               + "for anything but dev/eval.";
 
     private final Supplier<ManageableNode> nodeSupplier;
     private final TimeSpan requestTimeout;
     private final BooleanSupplier devModeEnabled;
+    private final BooleanSupplier appHttpSecurityEnabled;
 
     private MavenProtocolRoutes(Supplier<ManageableNode> nodeSupplier,
                                 TimeSpan requestTimeout,
-                                BooleanSupplier devModeEnabled) {
+                                BooleanSupplier devModeEnabled,
+                                BooleanSupplier appHttpSecurityEnabled) {
         this.nodeSupplier = nodeSupplier;
         this.requestTimeout = requestTimeout;
         this.devModeEnabled = devModeEnabled;
+        this.appHttpSecurityEnabled = appHttpSecurityEnabled;
     }
 
-    public static MavenProtocolRoutes mavenProtocolRoutes(Supplier<ManageableNode> nodeSupplier) {
-        return new MavenProtocolRoutes(nodeSupplier, REQUEST_TIMEOUT, MavenProtocolRoutes::devModeFromEnv);
+    /// Production factory. `appHttpSecurityEnabled` MUST be the node's EFFECTIVE app-HTTP security
+    /// posture — `AppHttpConfig.securityEnabled()`, i.e. `security_mode != NONE` — which is the very
+    /// value `ManagementServer` gates its own management auth on (`AetherNode` derives both from
+    /// `config.appHttp()`). Supplied rather than re-read from the environment or re-parsed from TOML
+    /// so the route and the server can never disagree about the node's posture.
+    public static MavenProtocolRoutes mavenProtocolRoutes(Supplier<ManageableNode> nodeSupplier,
+                                                          BooleanSupplier appHttpSecurityEnabled) {
+        return new MavenProtocolRoutes(nodeSupplier,
+                                       REQUEST_TIMEOUT,
+                                       MavenProtocolRoutes::devModeFromEnv,
+                                       appHttpSecurityEnabled);
     }
 
     /// Variant with an explicit per-request deadline. Used by tests that drive the 504-on-expiry
     /// path with a short `TimeSpan` against a never-resolving handler promise.
     public static MavenProtocolRoutes mavenProtocolRoutes(Supplier<ManageableNode> nodeSupplier,
                                                           TimeSpan requestTimeout) {
-        return new MavenProtocolRoutes(nodeSupplier, requestTimeout, MavenProtocolRoutes::devModeFromEnv);
+        return new MavenProtocolRoutes(nodeSupplier,
+                                       requestTimeout,
+                                       MavenProtocolRoutes::devModeFromEnv,
+                                       SECURITY_ENABLED);
     }
 
     /// Test-friendly factory: callers (unit tests) inject the dev-mode flag directly rather than
@@ -72,7 +110,16 @@ public final class MavenProtocolRoutes implements RouteHandler {
     public static MavenProtocolRoutes mavenProtocolRoutes(Supplier<ManageableNode> nodeSupplier,
                                                           TimeSpan requestTimeout,
                                                           BooleanSupplier devModeEnabled) {
-        return new MavenProtocolRoutes(nodeSupplier, requestTimeout, devModeEnabled);
+        return new MavenProtocolRoutes(nodeSupplier, requestTimeout, devModeEnabled, SECURITY_ENABLED);
+    }
+
+    /// Test-friendly factory carrying BOTH dev switches, so the #520 unification can be exercised
+    /// in every combination without touching the process environment or the node's config.
+    public static MavenProtocolRoutes mavenProtocolRoutes(Supplier<ManageableNode> nodeSupplier,
+                                                          TimeSpan requestTimeout,
+                                                          BooleanSupplier devModeEnabled,
+                                                          BooleanSupplier appHttpSecurityEnabled) {
+        return new MavenProtocolRoutes(nodeSupplier, requestTimeout, devModeEnabled, appHttpSecurityEnabled);
     }
 
     private static boolean devModeFromEnv() {
@@ -95,13 +142,7 @@ public final class MavenProtocolRoutes implements RouteHandler {
         }
 
         if (method == POST || method == PUT) {
-            if (!isAuthorizedForPush()) {
-                rejectUnauthorizedPush(response, path);
-
-                return true;
-            }
-
-            handlePut(response, path, ctx.body());
+            handlePush(response, path, ctx.body());
 
             return true;
         }
@@ -109,20 +150,77 @@ public final class MavenProtocolRoutes implements RouteHandler {
         return false;
     }
 
-    /// Defense-in-depth authorization for artifact publication (#282). Artifact PUT/POST place code
-    /// the cluster will resolve and load, so an unauthenticated push is an RCE. The management gate in
-    /// `ManagementServer.handleRequest` already enforces OPERATOR+ on `/repository/` mutations when
-    /// management security is enabled; this in-route check guarantees the same posture even if an
-    /// operator has explicitly disabled management security (`SecurityMode.NONE`) — in that case no
-    /// `SecurityContext` is bound and the push is rejected rather than silently accepted.
+    /// Why an artifact publication was admitted — or refused. Drives BOTH the HTTP outcome and the
+    /// security-relevant warning: every value other than [#AUTHENTICATED_OPERATOR] means code was
+    /// accepted into the cluster without anyone proving they were allowed to put it there.
+    enum PushAdmission {
+        /// A bound `SecurityContext` carrying OPERATOR or ADMIN. The only silent acceptance.
+        AUTHENTICATED_OPERATOR,
+        /// `AETHER_INSECURE_DEV_MODE=true` in the node's environment.
+        INSECURE_DEV_MODE,
+        /// The node's app-HTTP `security_mode` is `NONE`, so no caller can hold any role (#520).
+        SECURITY_DISABLED,
+        /// Security is on and the caller is anonymous or below OPERATOR.
+        DENIED
+    }
+
+    @Contract
+    private void handlePush(ResponseWriter response, String path, byte[] content) {
+        var admission = admitPush();
+
+        if (admission == PushAdmission.DENIED) {
+            rejectUnauthorizedPush(response, path);
+
+            return;
+        }
+
+        warnUnauthenticatedPush(admission, path);
+        handlePut(response, path, content);
+    }
+
+    /// Defense-in-depth authorization for artifact publication (#282, #520). Artifact PUT/POST place
+    /// code the cluster will resolve and load, so an unauthenticated push is an RCE. The management
+    /// gate in `ManagementServer.handleRequest` already enforces OPERATOR+ on `/repository/`
+    /// mutations when management security is enabled; this in-route check guarantees the same posture
+    /// independently.
     ///
-    /// Insecure dev mode (`AETHER_INSECURE_DEV_MODE=true`) is the one exception: the operator has
-    /// explicitly opted out of all management security, so the push gate relaxes consistently with
-    /// that posture (the integration-test harness runs `security_mode=NONE`). Outside dev mode the
-    /// behavior is unchanged — an authenticated OPERATOR+ context is required. Reads (GET) are
-    /// intentionally not gated here: artifact resolution is also driven by internal cluster paths.
-    private boolean isAuthorizedForPush() {
-        return devModeEnabled.getAsBoolean() || hasAuthenticatedOperator();
+    /// TWO postures relax it, and they are deliberately unified (#520). Insecure dev mode
+    /// (`AETHER_INSECURE_DEV_MODE=true`) is the explicit opt-out used by the integration-test harness.
+    /// App-HTTP `security_mode = NONE` is the documented dev/eval posture set from bootstrap config:
+    /// under it no `SecurityContext` is ever bound and API keys are ignored, so OPERATOR is
+    /// structurally unholdable — gating publication behind a role nobody can hold made a NONE-mode
+    /// cluster unable to receive artifacts at all (401 on `aether artifacts push`), which is the worst
+    /// of both worlds: no security AND no function. A node that has declared "no security" accepts
+    /// publication, loudly. Under `API_KEY`/`JWT` the gate is unchanged — anonymous and VIEWER callers
+    /// are still refused. Reads (GET) are intentionally not gated: artifact resolution is also driven
+    /// by internal cluster paths.
+    PushAdmission admitPush() {
+        if (hasAuthenticatedOperator()) {
+            return PushAdmission.AUTHENTICATED_OPERATOR;
+        }
+
+        if (devModeEnabled.getAsBoolean()) {
+            return PushAdmission.INSECURE_DEV_MODE;
+        }
+
+        if (!appHttpSecurityEnabled.getAsBoolean()) {
+            return PushAdmission.SECURITY_DISABLED;
+        }
+
+        return PushAdmission.DENIED;
+    }
+
+    /// One WARN per accepted UNAUTHENTICATED publish, naming the artifact and the posture that
+    /// admitted it. Not throttled and not demoted to a startup-only notice: publication is an
+    /// operator-initiated control-plane action (a handful of PUTs per push), not a hot path, and
+    /// suppressing occurrences would hide WHICH code entered the cluster unauthenticated.
+    @Contract
+    private static void warnUnauthenticatedPush(PushAdmission admission, String path) {
+        switch (admission) {
+            case INSECURE_DEV_MODE -> log.warn(DEV_MODE_PUSH_WARNING, path, DEV_MODE_ENV);
+            case SECURITY_DISABLED -> log.warn(SECURITY_DISABLED_PUSH_WARNING, path);
+            case AUTHENTICATED_OPERATOR, DENIED -> {}
+        }
     }
 
     private static boolean hasAuthenticatedOperator() {
