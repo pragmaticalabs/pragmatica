@@ -284,11 +284,9 @@ aether cluster bootstrap my-cluster.toml --wait
 
 This asks for a typed `Continue? [y/N]` confirmation before it spends any
 money — expected when you're running it by hand. Scripting it (CI, a piped
-shell) needs `--yes` to skip the prompt; without it, the run currently exits
-0 without provisioning anything rather than failing loudly
-([#521](https://github.com/pragmaticalabs/pragmatica/issues/521)) — always
-pass `--yes` explicitly in non-interactive contexts, and don't trust a bare
-exit-code check to mean the cluster came up.
+shell) needs `--yes` to skip the prompt; without it the prompt reads EOF and
+the run aborts, exiting non-zero so a scripted caller notices rather than
+sailing on believing a cluster exists.
 
 Bootstrap runs seven phases (validate → upload SSH keys → provision → collect
 addresses → deploy runtime → cluster formation → post-bootstrap), persisting
@@ -377,25 +375,26 @@ aether -c <a-node-ip>:8080 blueprints deploy org.example:hello:1.0.0-SNAPSHOT --
 
 `artifacts push` reads the blueprint jar from your local `~/.m2/repository`,
 discovers every slice artifact it references, and pushes all of them to the
-cluster's artifact repository in one shot. `blueprints deploy --wait` blocks
-until the deployment actually settles instead of returning as soon as it's
-accepted — worth keeping so you know it landed, not just that it was
-submitted.
+cluster's artifact repository in one shot.
 
-> **Known gap, currently blocking this on a `security_mode = "NONE"`
-> cluster** ([#520](https://github.com/pragmaticalabs/pragmatica/issues/520),
-> filed from this tutorial's own live leg-4 run): `NONE` ignores API keys
-> entirely — `aether whoami` with a valid, freshly-minted key still comes
-> back anonymous / `VIEWER` / `authenticated: false` — while `artifacts push`
-> hard-requires `OPERATOR`/`ADMIN`. On the exact cluster this tutorial builds
-> above, `artifacts push` currently returns 403. Confirmed by a live run;
-> not yet fixed. Until #520 lands, the working path is a cluster bootstrapped
-> with `security_mode = "API_KEY"` instead, which pre-seeds an operator key —
-> see the production-alternative example in the
-> [Bootstrap Configuration Reference](reference/bootstrap-config.md). That
-> path is code-verified, not yet confirmed against a live cluster in this
-> pass — treat it as the documented direction, not a proven command
-> sequence, until it's actually been run end-to-end.
+Then call it, exactly like you did against Forge — only the address changes:
+
+```bash
+curl http://<a-node-ip>:8070/api/hello/World
+# {"greeting":"Hello, World!"}
+```
+
+That is the same slice, the same code, and the same request you ran on your
+laptop in Stage 3, now answered by a five-node cluster in a German datacenter.
+Nothing about the slice changed to get here.
+
+> **One rough edge** ([#522](https://github.com/pragmaticalabs/pragmatica/issues/522)):
+> `blueprints deploy --wait` currently keeps reporting `PENDING` and then
+> declares a 300s timeout even when the deployment has in fact completed.
+> If you hit that, don't assume it failed — check
+> `aether -c <a-node-ip>:8080 slices status`; if the slice reads `ACTIVE` /
+> `HEALTHY`, it deployed and the `curl` above will answer. Drop `--wait` and
+> poll `slices status` yourself if you're scripting this.
 
 For zero-downtime updates to an already-running slice, see `aether deploy`
 (canary/blue-green/rolling) in the [CLI reference](reference/cli.md#deploy).
@@ -409,16 +408,14 @@ done with it:
 aether cluster destroy --cluster=<name> --yes
 ```
 
-> **Known gap** ([#521](https://github.com/pragmaticalabs/pragmatica/issues/521),
-> filed from this tutorial's own live leg-4 run): `destroy` can fail to
-> clean up one or more VMs — a credential-mapping loss during teardown —
-> while still exiting 0. A script or CI job that only checks the exit code
-> will believe the cluster is gone when it isn't. **Always verify in your
-> cloud provider's console that every server is actually terminated** before
-> assuming you've stopped being billed. From a repo checkout,
-> `tools/cloud-reaper.sh --cluster <name> --destroy` is a safety net that
-> double-checks and force-cleans anything `destroy` missed — it's what
-> actually cleaned up this tutorial's own test cluster.
+It drains and shuts down the nodes, terminates the cloud resources, and
+removes the local registry entry, printing a summary that names each VM it
+cleaned up. If cloud cleanup *does* fail, the command now says so, exits
+non-zero, and deliberately **keeps** the registry entry so you can simply
+re-run it — a summary line reading `Registry entry: KEPT` means resources may
+still be billing. From a repo checkout,
+`tools/cloud-reaper.sh --cluster <name>` (add `--destroy` to delete) is a
+label-driven safety net that finds anything a failed teardown left behind.
 
 ---
 
@@ -469,28 +466,37 @@ FINAL MARKER TABLE:
    bootstrap green, quorum 3/5, all nodes READY, ~12-15 min wall clock,
    ~€0.10 total; cleaned up via tools/cloud-reaper.sh).
 
-NEW FINDINGS FROM THE LIVE LEG-4 RUN, folded into the tutorial as honest
-caveats rather than silently worked around:
-- #520 (filed): under security_mode = "NONE" (this tutorial's own default
-  cluster config), `artifacts push`/`blueprints deploy` 403 — NONE ignores
-  API keys entirely (whoami with a valid key still comes back anonymous/
-  VIEWER/authenticated:false) while artifacts push hard-requires
-  OPERATOR/ADMIN. Added a caveat box to "Ship a slice to it" naming the
-  exact failure and pointing at the API_KEY-mode alternative in
-  bootstrap-config.md as the code-verified-but-not-live-verified path. Did
-  NOT fabricate a working "curl the deployed hello" step — it could not
-  happen on this run, so the tutorial doesn't claim it did.
-- #521 (filed): `aether cluster destroy` can fail VM cleanup (credential-
-  mapping loss) while exiting 0. Added a new required "Tear it down"
-  subsection (didn't exist before — a real-money tutorial needs one) with
-  the destroy command, the #521 caveat, a "verify in your provider console"
-  instruction, and tools/cloud-reaper.sh as the safety net that actually
-  cleaned this run's cluster.
-- Bootstrap is interactive (`Continue? [y/N]`) and scripted/piped runs
-  without `--yes` currently exit 0 without provisioning anything (also
-  #521) — added a note in the bootstrap intro telling readers to pass
-  --yes explicitly in non-interactive contexts and not trust a bare
-  exit-code check.
+NEW FINDINGS FROM THE LIVE LEG-4 RUN — both were filed, FIXED, and re-verified
+live the same day (2026-07-24); the tutorial text now describes the fixed
+behavior, and this note records the history:
+- #520 (filed, FIXED, CLOSED): under security_mode = "NONE" (this tutorial's
+  own default cluster config), `artifacts push` 401'd — NONE ignores API keys
+  entirely (whoami with a valid key still comes back anonymous/VIEWER/
+  authenticated:false) while artifact publication hard-required OPERATOR/ADMIN,
+  a role structurally unholdable in that mode. Root cause: two half-overlapping
+  dev switches (security_mode vs AETHER_INSECURE_DEV_MODE); the publication
+  gate consulted only the latter. Fixed by unifying them — NONE now implies the
+  dev-mode posture for that gate, loudly (a WARN per unauthenticated publish).
+  RE-VERIFIED LIVE on cluster gs-revalidate: push succeeded, slice went
+  ACTIVE/HEALTHY on 3 nodes, and `curl /api/hello/World` returned
+  {"greeting":"Hello, World!"} — so the "call it" step in Stage 4 is now a real
+  executed command, not a reconstruction.
+- #521 (filed, FIXED, CLOSED): `aether cluster destroy` failed VM cleanup while
+  exiting 0 and dropping the registry entry. Root cause: the CLI mined the
+  bootstrap TOML for a PLURAL `[sources.X]` header while the canonical section
+  is SINGULAR `[source.X]`, so every persisted cleanup handle carried an empty
+  credential map (all five clusters on the dev machine, back to 2026-07-11).
+  Fixed at three levels; RE-VERIFIED LIVE: fresh state file carries
+  "api_token": "HCLOUD_TOKEN", destroy exited 0 having actually terminated all
+  5 VMs, registry entry removed, zero fallback warnings.
+- Bootstrap's interactive `Continue? [y/N]` abort also exited 0 (same #521
+  batch) — now exits non-zero; the tutorial's bootstrap note reflects that.
+- #522 (filed, OPEN): `blueprints deploy --wait` reported a 300s PENDING
+  timeout while the deployment had actually completed (slice ACTIVE/HEALTHY,
+  DEPLOYMENT_COMPLETED events, endpoint serving). Stage 4 carries this as its
+  one remaining rough-edge caveat with the `slices status` workaround.
+- #523 (filed, OPEN): `aether artifacts list` returns HTTP 400; not referenced
+  in the tutorial since the tutorial never needs it.
 
 WHAT WAS ACTUALLY RUN, LEGS 1-3 (gs-writer, sandbox: scratchpad/p2-home,
 HOME override; real ~/.m2 shared on purpose — rc3 artifacts aren't on Maven

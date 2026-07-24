@@ -2202,11 +2202,12 @@ aether cluster destroy --cluster=my-cluster --yes
 | `--keep-resources` | Skip cloud resource termination — remove the registry entry only |
 | `-q`, `--no-color`, `-o <format>`, `--field <field>` | Standard output controls |
 
-> **⚠️ Verify cleanup (issue #521):** destroy can currently fail VM termination (persisted
-> credential-mapping loss) while still exiting 0 and removing the registry entry — always confirm
-> in your cloud provider's console that the servers are actually gone. From a repo checkout,
-> `tools/cloud-reaper.sh --cluster <name>` (dry-run; add `--destroy` to delete) is the
-> label-driven safety net.
+> **Cleanup failure is loud (#521).** If cloud resource termination fails, `destroy` exits
+> non-zero (`ExitCode.CLEANUP_FAILED`) and deliberately **keeps** the registry entry — the
+> summary prints `Registry entry: KEPT` with the retry command — so the cluster stays
+> addressable while its VMs may still be billing. Just re-run the command. From a repo
+> checkout, `tools/cloud-reaper.sh --cluster <name>` (dry-run; add `--destroy` to delete)
+> is the label-driven safety net that finds resources no local state knows about.
 
 ### `aether cluster apply`
 
