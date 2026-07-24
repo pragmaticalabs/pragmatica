@@ -2158,7 +2158,9 @@ Already at version 0.26.0. No upgrade needed.
 
 ### `aether cluster bootstrap`
 
-Bootstrap a new cluster from a configuration file.
+Bootstrap a new cluster from a configuration file. For the full bootstrap-config TOML schema, a
+minimal validated Hetzner example, and the tribal-knowledge traps (security mode, jar_url pinning,
+database section naming), see the [Bootstrap Config Reference](bootstrap-config.md).
 
 ```bash
 aether cluster bootstrap <config-file> [--cluster <name>] [--yes] [--resume] [--full-check] \
@@ -2181,7 +2183,7 @@ Seven-phase flow: Validate → Upload SSH Keys → Provision → Collect Address
 
 **Runtime modes** (`[runtime.default] type = "container" | "jvm"`):
 - **container** — VMs install Docker, pull `ghcr.io/.../aether-node:<tag>` (from `[runtime.default] image`), run with the composed `aether.toml` bind-mounted over `/app/aether.toml`. Restart via `--restart unless-stopped`.
-- **jvm** — VMs install Eclipse Temurin 25 from Adoptium, download `aether-node.jar` from `[runtime.jvm] jar_url` (or auto-derived `https://github.com/pragmaticalabs/pragmatica/releases/download/v<version>{-candidate?}/aether-node.jar`), run via `nohup java -jar … & disown`. No process supervision (consider auto-heal for crash recovery).
+- **jvm** — VMs install Eclipse Temurin 25 from Adoptium, download `aether-node.jar` from `[runtime.default] jar_url` (or auto-derived `https://github.com/pragmaticalabs/pragmatica/releases/download/v<version>{-candidate?}/aether-node.jar` — pin `jar_url` explicitly whenever that derivation doesn't match a published release tag, see [Bootstrap Config Reference](bootstrap-config.md#b-jar_url-pinning)), run via `nohup java -jar … & disown`. No process supervision (consider auto-heal for crash recovery).
 
 After provisioning, the deploy phase SSHes each cloud node (via `cloud-init status --wait` preflight) and restarts the runtime with the finalized 3-part PEERS list (`nodeId:host:port`). On default (`--keep-on-failure` not set), all tracked resources (VMs, SSH keys, firewall rules, floating IPs) are cleaned up automatically on failure.
 

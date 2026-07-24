@@ -1,5 +1,11 @@
 # Cloud Infrastructure Management Design
 
+> **⚠️ DESIGN DOCUMENT — NOT IMPLEMENTED.** The configuration schema described below
+> (including `[cloud.aws]` and related sections) **never shipped** and does not match the
+> current product. For the real, working cloud provisioning reference, see
+> [Bootstrap Config Reference](../reference/bootstrap-config.md) and
+> `aether cluster bootstrap` in the [CLI Reference](../reference/cli.md#aether-cluster-bootstrap).
+
 Status: **PLANNED** (not yet implemented)
 
 ## Overview
