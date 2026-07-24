@@ -15,6 +15,7 @@ import org.pragmatica.aether.slice.ConsistencyMode;
 import org.pragmatica.aether.slice.StreamPublisher;
 import org.pragmatica.aether.stream.consensus.ConsensusPublishPath;
 import org.pragmatica.aether.stream.forward.StreamForwardClient;
+import org.pragmatica.aether.stream.forward.StreamForwardError;
 import org.pragmatica.aether.stream.replication.ReplicaPlacement;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Functions.Fn0;
@@ -275,13 +276,24 @@ public final class DefaultStreamPublisher<T> implements StreamPublisher<T> {
                            .or(true);
     }
 
+    /// Forward the publish to the partition's HRW owner with the shared BOUNDED forward-retry (#485): the
+    /// app publish path previously forwarded exactly once, so a transient owner-config-lag race — the
+    /// owner's committed-config view not yet caught up to the config this sender just committed and
+    /// forwarded — surfaced to the app as a permanent failure. The forge warm-up gate hides this in-JVM,
+    /// but real deployments must absorb it the same way the management/API write path does; the retry
+    /// policy lives once in {@link StreamForwardRetry} (parity with {@link StreamWriteRouter} and
+    /// {@link PartitionedStreamAccess}). Only the owner's explicit retryable signal
+    /// ({@link StreamForwardError.RemotePublishRetryable}) is retried; every other failure stays permanent.
     private Promise<Unit> forwardToOwner(StreamForwardClient client,
                                          NodeId owner,
                                          int partition,
                                          byte[] bytes,
                                          long timestamp) {
-        return client.publishRemote(owner, streamName, partition, bytes, timestamp)
-                     .mapToUnit();
+        return StreamForwardRetry.withBoundedRetry(() -> client.publishRemote(owner,
+                                                                              streamName,
+                                                                              partition,
+                                                                              bytes,
+                                                                              timestamp)).mapToUnit();
     }
 
     private Promise<Unit> publishStrong(int partition, byte[] bytes, long timestamp) {
