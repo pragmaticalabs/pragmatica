@@ -44,6 +44,15 @@
             <artifactId>http-client</artifactId>
             <scope>test</scope>
         </dependency>
+
+        <!-- Scaffold generator (jbct init) — the getting-started gate builds the very slice a
+             cold user gets and deploys it by coordinates (issues #511 / #513 / #515). -->
+        <dependency>
+            <groupId>org.pragmatica-lite</groupId>
+            <artifactId>jbct-init</artifactId>
+            <version>${project.version}</version>
+            <scope>test</scope>
+        </dependency>
     </dependencies>
 
     <build>

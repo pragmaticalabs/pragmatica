@@ -242,9 +242,7 @@ public final class SliceProjectInitializer {
                             createFile("deploy-test.sh.template",
                                        projectDir.resolve("deploy-test.sh")),
                             createFile("deploy-prod.sh.template",
-                                       projectDir.resolve("deploy-prod.sh")),
-                            createFile("generate-blueprint.sh.template",
-                                       projectDir.resolve("generate-blueprint.sh")))
+                                       projectDir.resolve("deploy-prod.sh")))
                      .onSuccess(scripts -> scripts.forEach(SliceProjectInitializer::makeExecutable));
     }
 
@@ -338,7 +336,6 @@ public final class SliceProjectInitializer {
             case "deploy-forge.sh.template" -> Option.some(DEPLOY_FORGE_TEMPLATE);
             case "deploy-test.sh.template" -> Option.some(DEPLOY_TEST_TEMPLATE);
             case "deploy-prod.sh.template" -> Option.some(DEPLOY_PROD_TEMPLATE);
-            case "generate-blueprint.sh.template" -> Option.some(GENERATE_BLUEPRINT_TEMPLATE);
             case "slice.toml.template" -> Option.some(SLICE_CONFIG_TEMPLATE);
             case "forge.toml.template" -> Option.some(FORGE_TOML_TEMPLATE);
             case "aether.toml.template" -> Option.some(AETHER_TOML_TEMPLATE);
@@ -581,39 +578,46 @@ public final class SliceProjectInitializer {
         import org.pragmatica.lang.Result;
         import org.pragmatica.lang.Verify;
 
+
         /// {{sliceName}} slice.
         @Slice
         public interface {{sliceName}} {
             record ValidGreetRequest(String name) {
                 public static Result<ValidGreetRequest> validGreetRequest(String name) {
-                    return Verify.ensure(name,
-                                         Verify.Is::present,
-                                         GreetError.invalidName())
-                                 .map(ValidGreetRequest::new);
+                    return Verify.ensure(name, Verify.Is::present, GreetError.General.INVALID_NAME).map(ValidGreetRequest::new);
                 }
             }
 
             record GreetResponse(String greeting) {}
 
             sealed interface GreetError extends Cause {
-                record InvalidName() implements GreetError {
+                enum General implements GreetError {
+                    INVALID_NAME("Name cannot be empty");
+                    private final String message;
+                    General(String message) {
+                        this.message = message;
+                    }
                     @Override
                     public String message() {
-                        return "Name cannot be empty";
+                        return message;
                     }
-                }
-
-                static GreetError invalidName() {
-                    return new InvalidName();
                 }
             }
 
             Promise<GreetResponse> greet(String name);
 
             static {{sliceName}} {{factoryMethodName}}() {
-                return name -> ValidGreetRequest.validGreetRequest(name)
-                                                .map(request -> new GreetResponse("Hello, " + request.name() + "!"))
-                                                .async();
+                return {{sliceName}}::doGreet;
+            }
+
+            private static Promise<GreetResponse> doGreet(String name) {
+                return ValidGreetRequest.validGreetRequest(name)
+                                        .map({{sliceName}}::toGreeting)
+                                        .async();
+            }
+
+            private static GreetResponse toGreeting(ValidGreetRequest request) {
+                return new GreetResponse("Hello, " + request.name() + "!");
             }
         }
         """;
@@ -626,8 +630,8 @@ public final class SliceProjectInitializer {
         import static org.assertj.core.api.Assertions.assertThat;
         import static org.junit.jupiter.api.Assertions.fail;
 
-        class {{sliceName}}Test {
 
+        class {{sliceName}}Test {
             private final {{sliceName}} slice = {{sliceName}}.{{factoryMethodName}}();
 
             @Test
@@ -666,32 +670,44 @@ public final class SliceProjectInitializer {
 
     private static final String DEPLOY_TEST_TEMPLATE = """
         #!/bin/bash
-        # Deploy slice to test Aether cluster
-        # Requires: aether CLI configured for test environment
+        # Deploy this slice to a test Aether cluster.
+        #
+        # Requires the `aether` CLI on PATH, pointed at your test cluster with either
+        #   -c <host:port>            (per invocation), or
+        #   AETHER_ENDPOINT=<host:port>  (environment).
         set -e
 
-        echo "Building and installing..."
+        COORDS="{{groupId}}:{{artifactId}}:1.0.0-SNAPSHOT"
+
+        echo "Building and installing to local Maven repository..."
         mvn clean install -DskipTests
 
-        BLUEPRINT="target/blueprint.toml"
-        if [ ! -f "$BLUEPRINT" ]; then
-            echo "ERROR: Blueprint not found. Run: mvn package jbct:generate-blueprint"
-            exit 1
-        fi
+        echo ""
+        echo "Pushing blueprint + slice artifacts to the cluster repository..."
+        aether artifacts push "$COORDS"
 
         echo ""
-        echo "Pushing artifacts to test cluster..."
-        aether artifact push --env test
+        echo "Deploying blueprint $COORDS..."
+        aether blueprints deploy "$COORDS" --wait
 
         echo ""
-        echo "Deployed to test environment."
+        echo "Deployed to test cluster."
         """;
 
     private static final String DEPLOY_PROD_TEMPLATE = """
         #!/bin/bash
-        # Deploy slice to production Aether cluster
-        # Requires: aether CLI configured for production environment
+        # Deploy this slice to a PRODUCTION Aether cluster.
+        #
+        # Prerequisites:
+        #   1. A provisioned cluster. To create one, use `aether cluster bootstrap`
+        #      with a bootstrap TOML — see `aether cluster bootstrap --help` and the
+        #      bootstrap configuration reference in the Aether docs (docs/reference/).
+        #   2. The `aether` CLI on PATH, pointed at your cluster with either
+        #        -c <host:port>              (per invocation), or
+        #        AETHER_ENDPOINT=<host:port>    (environment).
         set -e
+
+        COORDS="{{groupId}}:{{artifactId}}:1.0.0-SNAPSHOT"
 
         echo "WARNING: Deploying to PRODUCTION"
         echo ""
@@ -706,15 +722,13 @@ public final class SliceProjectInitializer {
         echo "Building and verifying..."
         mvn clean verify
 
-        BLUEPRINT="target/blueprint.toml"
-        if [ ! -f "$BLUEPRINT" ]; then
-            echo "ERROR: Blueprint not found."
-            exit 1
-        fi
+        echo ""
+        echo "Pushing blueprint + slice artifacts to the cluster repository..."
+        aether artifacts push "$COORDS"
 
         echo ""
-        echo "Pushing artifacts to production cluster..."
-        aether artifact push --env prod
+        echo "Deploying blueprint $COORDS..."
+        aether blueprints deploy "$COORDS" --wait
 
         echo ""
         echo "Deployed to production."
@@ -727,27 +741,6 @@ public final class SliceProjectInitializer {
         [blueprint]
         # Number of instances to deploy (default: 3)
         instances = 3
-        """;
-
-    private static final String GENERATE_BLUEPRINT_TEMPLATE = """
-        #!/bin/bash
-        # Generate blueprint.toml from slice manifests
-        set -e
-
-        echo "Generating blueprint..."
-        mvn package jbct:generate-blueprint -DskipTests
-
-        BLUEPRINT="target/blueprint.toml"
-
-        if [ -f "$BLUEPRINT" ]; then
-            echo ""
-            echo "Blueprint generated: $BLUEPRINT"
-            echo ""
-            cat "$BLUEPRINT"
-        else
-            echo "ERROR: Blueprint generation failed"
-            exit 1
-        fi
         """;
 
     private static final String LOG4J2_TEST_XML_TEMPLATE = """
@@ -784,6 +777,15 @@ public final class SliceProjectInitializer {
 
     private static final String AETHER_TOML_TEMPLATE = """
         # Aether runtime configuration
+        #
+        # --- Cloud provisioning (production) ---
+        # `./run-forge.sh` runs a local, in-JVM simulator and needs nothing here. To provision a
+        # real cluster, use `aether cluster bootstrap` with a bootstrap TOML — see
+        # `aether cluster bootstrap --help` and the bootstrap configuration reference in the Aether
+        # docs (docs/reference/) for a minimal, provider-specific example. `./deploy-prod.sh`
+        # then pushes and deploys this slice to that cluster.
+        #
+        # --- Database (optional) ---
         # Uncomment to enable database access (requires running PostgreSQL):
         # [database]
         # async_url = "postgresql://postgres:postgres@localhost:5432/forge"
@@ -828,7 +830,10 @@ public final class SliceProjectInitializer {
         echo "Test: curl http://localhost:8070/api/hello/World"
         echo ""
 
-        exec $FORGE_CMD --config "$SCRIPT_DIR/forge.toml" --blueprint "$SCRIPT_DIR/target/blueprint.toml"
+        # Forge resolves the blueprint (and its slices) by artifact coordinates from the local
+        # Maven repository the build above installed to. The coordinates are
+        # groupId:artifactId:version:blueprint — NOT a file path.
+        exec $FORGE_CMD --config "$SCRIPT_DIR/forge.toml" --blueprint "{{groupId}}:{{artifactId}}:1.0.0-SNAPSHOT:blueprint"
         """;
 
     private static final String START_POSTGRES_SH_TEMPLATE = """
