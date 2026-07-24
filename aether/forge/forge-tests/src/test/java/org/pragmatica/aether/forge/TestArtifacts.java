@@ -35,5 +35,16 @@ final class TestArtifacts {
     /// suite `02-chaos/test-stream-replica-failover.sh` deploys.
     static final String STREAM_REPL_SLICE = "org.pragmatica.aether.test:test-stream-repl-stream-slice:1.0.0";
 
+    /// partitions=4 / RF=2 / min-sync-replicas=2 replicated stream blueprint (`test-stream-multipart`),
+    /// used by `MultiPartitionStreamTest` for the #429 multi-partition e2e fixture (partition→owner
+    /// distribution, per-partition ordering, local/forwarded reads + read-preference arms) and by
+    /// `StreamPublishReshuffleTest` for the #430 publish-under-ownership-reshuffle chaos test. Four
+    /// partitions give HRW placement room to spread owners across the 5-node cluster; RF=2 +
+    /// synchronous replication (min-sync-2) is the only topology whose ACKED writes survive a single
+    /// owner kill. Mirrors the [#STREAM_REPL_SLICE] coordinate (the `-stream-slice` artifact, fixed
+    /// `1.0.0` blueprint version, resolved from the local Maven repo) — the sibling
+    /// `aether/tests/blueprints/test-stream-multipart` module.
+    static final String STREAM_MULTIPART_SLICE = "org.pragmatica.aether.test:test-stream-multipart-stream-slice:1.0.0";
+
     private TestArtifacts() {}
 }
