@@ -19,6 +19,7 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.parse.Number;
 
+import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Result.success;
 
@@ -205,7 +206,7 @@ public final class ClusterBootstrapConfigParser {
     private static Result<SourceProfile> parseOneSource(TomlDocument doc, String name) {
         var parentSection = SOURCE_PREFIX + name;
 
-        return parseSourceType(doc, parentSection).map(type -> buildSourceProfile(doc, name, parentSection, type));
+        return parseSourceType(doc, parentSection).flatMap(type -> buildSourceProfile(doc, name, parentSection, type));
     }
 
     private static Result<SourceType> parseSourceType(TomlDocument doc, String section) {
@@ -215,9 +216,38 @@ public final class ClusterBootstrapConfigParser {
                   .mapError(cause -> parseFailed(cause.message()));
     }
 
-    private static SourceProfile buildSourceProfile(TomlDocument doc, String name, String section, SourceType type) {
-        var provider = doc.getString(section, "provider")
-                          .flatMap(raw -> CloudProviderName.cloudProviderName(raw).option());
+    private static Result<SourceProfile> buildSourceProfile(TomlDocument doc,
+                                                            String name,
+                                                            String section,
+                                                            SourceType type) {
+        return parseProvider(doc, section).map(provider -> assembleSourceProfile(doc, name, section, type, provider));
+    }
+
+    /// `provider` is optional (SSH / forge / docker sources have none) but must NOT be silently
+    /// dropped on a typo. Absent → `Success(None)`; present + valid → `Success(Some)`; present +
+    /// invalid → a loud `ParseFailed` naming the bad value and the valid provider names, matching
+    /// how `type` fails loudly at [#parseSourceType]. Before this, an invalid provider resolved to
+    /// `Option.empty()`, dropping cloud-provider identity from the source profile without a word.
+    private static Result<Option<CloudProviderName>> parseProvider(TomlDocument doc, String section) {
+        return doc.getString(section, "provider")
+                  .fold(() -> success(none()),
+                        raw -> resolveProvider(section, raw));
+    }
+
+    private static Result<Option<CloudProviderName>> resolveProvider(String section, String raw) {
+        return CloudProviderName.cloudProviderName(raw)
+                                .map(Option::some)
+                                .mapError(cause -> parseFailed(section
+                                                              + ".provider: " + cause.message()
+                                                              + " (was '" + raw
+                                                              + "')"));
+    }
+
+    private static SourceProfile assembleSourceProfile(TomlDocument doc,
+                                                       String name,
+                                                       String section,
+                                                       SourceType type,
+                                                       Option<CloudProviderName> provider) {
         var credentials = doc.getString(section, "credentials");
         var region = doc.getString(section, "region");
         var zone = doc.getString(section, "zone");

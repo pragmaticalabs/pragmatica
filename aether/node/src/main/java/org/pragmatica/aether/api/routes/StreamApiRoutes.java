@@ -511,7 +511,7 @@ public final class StreamApiRoutes implements RouteSource {
         return Result.allOf(leaveResults).map(_ -> new GroupResponse(addr.asString(), group, "deleted"));
     }
 
-    private Result<DeleteResponse> deleteStream(String namespace, String stream, String version) {
+    Result<DeleteResponse> deleteStream(String namespace, String stream, String version) {
         return ResourceAddress.resourceAddress(namespace, stream, version).flatMap(this::destroyAtAddress);
     }
 
@@ -519,7 +519,6 @@ public final class StreamApiRoutes implements RouteSource {
         var streamName = addr.asString();
 
         return streamManager().destroyStream(streamName)
-                            .recover(_ -> org.pragmatica.lang.Unit.unit())
                             .map(_ -> new DeleteResponse(addr.asString(),
                                                          "deleted"));
     }

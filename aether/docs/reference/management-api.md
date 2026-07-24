@@ -281,7 +281,7 @@ No authentication required.
   "components": [
     {"name": "consensus", "status": "UP", "detail": "Cluster active"},
     {"name": "routes", "status": "UP", "detail": "Route sync received"},
-    {"name": "quorum", "status": "UP", "detail": "Connected peers: 2"}
+    {"name": "quorum", "status": "UP", "detail": "Counted core members: 3 / required: 2"}
   ]
 }
 ```
@@ -289,7 +289,9 @@ No authentication required.
 Components checked:
 - **consensus** — Is the node participating in consensus? DOWN during initial cluster formation.
 - **routes** — Has the node received its initial route synchronization from the KV-Store?
-- **quorum** — Does the node have a quorum (at least 2 nodes total)?
+- **quorum** — Does the node hold quorum? True iff its counted strict core-member set meets the
+  consensus simple-majority threshold (`coreCount / 2 + 1`), sourced from the same per-node
+  quorum-loss signal the minority self-drain uses. A minority partition (e.g. 2 of 5) reports DOWN.
 
 ### GET /health/ready/{id}
 
