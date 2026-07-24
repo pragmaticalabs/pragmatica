@@ -218,6 +218,14 @@ authorization_role="ADMIN"` table under `node_config.app-http` in the bootstrap-
 lets the bootstrap POST authenticate immediately, with `security_mode` left at its secure `API_KEY`
 default.
 
+> **⚠️ Known dead-end under `NONE` (issue #520, live-verified 2026-07-24):** with
+> `security_mode = "NONE"` the server ignores API keys entirely — every caller is
+> `anonymous`/`VIEWER` (`aether whoami` shows `authenticated: false` even with the
+> bootstrap-minted admin key) — while **artifact publication requires OPERATOR or ADMIN**.
+> A NONE-mode cluster therefore bootstraps successfully but rejects `aether artifacts push`
+> with 403: you cannot ship a slice to it via the CLI until #520 lands. If you need to deploy
+> artifacts today, use the pre-seeded `API_KEY` path above instead of `NONE`.
+
 ### (b) `jar_url` pinning
 
 For the `jvm` runtime, an unset `jar_url` is auto-derived from `cluster.version` as

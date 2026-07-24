@@ -2187,6 +2187,27 @@ Seven-phase flow: Validate → Upload SSH Keys → Provision → Collect Address
 
 After provisioning, the deploy phase SSHes each cloud node (via `cloud-init status --wait` preflight) and restarts the runtime with the finalized 3-part PEERS list (`nodeId:host:port`). On default (`--keep-on-failure` not set), all tracked resources (VMs, SSH keys, firewall rules, floating IPs) are cleaned up automatically on failure.
 
+### `aether cluster destroy`
+
+Destroy the active cluster: drain and shut down all nodes, terminate its cloud resources (VMs, SSH keys), and remove the local registry entry. Symmetric counterpart to `aether cluster bootstrap`.
+
+```bash
+aether cluster destroy --cluster=my-cluster --yes
+```
+
+| Flag | Description |
+|------|-------------|
+| `--cluster <name>` | Destroy the named cluster instead of the active-context one (CLI > active-context) |
+| `--yes` | Skip the interactive confirmation prompt |
+| `--keep-resources` | Skip cloud resource termination — remove the registry entry only |
+| `-q`, `--no-color`, `-o <format>`, `--field <field>` | Standard output controls |
+
+> **⚠️ Verify cleanup (issue #521):** destroy can currently fail VM termination (persisted
+> credential-mapping loss) while still exiting 0 and removing the registry entry — always confirm
+> in your cloud provider's console that the servers are actually gone. From a repo checkout,
+> `tools/cloud-reaper.sh --cluster <name>` (dry-run; add `--destroy` to delete) is the
+> label-driven safety net.
+
 ### `aether cluster apply`
 
 Apply cluster configuration changes with desired-state reconciliation.
