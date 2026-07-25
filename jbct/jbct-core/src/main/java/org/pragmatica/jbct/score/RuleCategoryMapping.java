@@ -1,7 +1,6 @@
 package org.pragmatica.jbct.score;
 
 import java.util.Map;
-import java.util.Set;
 
 import org.pragmatica.lang.Option;
 
@@ -9,15 +8,14 @@ import org.pragmatica.lang.Option;
 /// Maps live lint rule IDs to scoring categories.
 ///
 /// The mapping is keyed to the rule registry that actually feeds the scorer —
-/// `CstLinter.defaultRules()`. Every rule the registry emits is either assigned an
-/// explicit [ScoreCategory] in [#MAPPING] (by rule semantics) or listed in
-/// [#UNCATEGORIZED]. The uncategorized set holds rules that enforce cosmetic
-/// formatting, logging style, or zone-abstraction naming conventions — concerns with
-/// no home among the six principle categories — so they are deliberately excluded
-/// from the weighted score rather than distorting it.
+/// `CstLinter.defaultRules()`. Every rule the registry emits is assigned an explicit
+/// [ScoreCategory] in [#MAPPING], chosen by rule semantics. Rules enforcing cosmetic
+/// formatting, logging style, member ordering or zone-abstraction naming — concerns with
+/// no home among the six principle categories — land in [ScoreCategory#STYLE], which
+/// carries weight 0: they are counted and reported without distorting the weighted score.
 ///
-/// Nothing falls through silently: a rule ID that is neither categorized nor
-/// uncategorized is unknown, and [ScoreCalculator] reports it loudly.
+/// Nothing falls through silently: a rule ID absent from [#MAPPING] is unknown, and
+/// [ScoreCalculator] reports it loudly.
 public sealed interface RuleCategoryMapping permits RuleCategoryMapping.unused {
     record unused() implements RuleCategoryMapping {}
 
@@ -84,43 +82,37 @@ public sealed interface RuleCategoryMapping permits RuleCategoryMapping.unused {
     Map.entry("JBCT-LAM-03", ScoreCategory.LAMBDA_COMPLIANCE), // lambda ternary
     Map.entry("JBCT-STY-02", ScoreCategory.LAMBDA_COMPLIANCE), // constructor references
     Map.entry("JBCT-STY-05", ScoreCategory.LAMBDA_COMPLIANCE), // method reference preference
-    Map.entry("JBCT-SIDE-01", ScoreCategory.LAMBDA_COMPLIANCE));// side effects in transformation lambdas
+    Map.entry("JBCT-SIDE-01", ScoreCategory.LAMBDA_COMPLIANCE),// side effects in transformation lambdas
 
-    /// Rule IDs deliberately excluded from scoring: cosmetic formatting, logging
-    /// style, and zone-abstraction naming rules that map to none of the six
-    /// principle categories. Listed explicitly so they never fall through silently.
-    Set<String> UNCATEGORIZED = Set.of("JBCT-STY-03",     // fully-qualified names in method bodies
-                                       "JBCT-STY-04",     // utility class → sealed interface
-                                       "JBCT-STY-06",     // import ordering
-                                       "JBCT-STY-07",     // unnecessary var before return
-                                       "JBCT-STY-08",     // if/else with return in both branches
-                                       "JBCT-STY-09",     // nested ternaries
-                                       "JBCT-ORD-01",     // member ordering per file type (structural convention)
-                                       "JBCT-STATIC-01",  // static imports for Pragmatica
-                                       "JBCT-LOG-01",     // conditional logging
-                                       "JBCT-LOG-02",     // logger as parameter
-                                       "JBCT-NAM-05",     // test method naming
-                                       "JBCT-ZONE-01",    // zone 2 verbs for steps
-                                       "JBCT-ZONE-02",    // zone 3 verbs for leaves
-                                       "JBCT-ZONE-03");   // no zone mixing
+    // Style (0%, advisory) — formatting, logging, ordering and zone-naming conventions
+    Map.entry("JBCT-STY-03", ScoreCategory.STYLE),             // fully-qualified names in method bodies
+    Map.entry("JBCT-STY-04", ScoreCategory.STYLE),             // utility class → sealed interface
+    Map.entry("JBCT-STY-06", ScoreCategory.STYLE),             // import ordering
+    Map.entry("JBCT-STY-07", ScoreCategory.STYLE),             // unnecessary var before return
+    Map.entry("JBCT-STY-08", ScoreCategory.STYLE),             // if/else with return in both branches
+    Map.entry("JBCT-STY-09", ScoreCategory.STYLE),             // nested ternaries
+    Map.entry("JBCT-ORD-01", ScoreCategory.STYLE),             // member ordering per file type
+    Map.entry("JBCT-STATIC-01", ScoreCategory.STYLE),          // static imports for Pragmatica
+    Map.entry("JBCT-LOG-01", ScoreCategory.STYLE),             // conditional logging
+    Map.entry("JBCT-LOG-02", ScoreCategory.STYLE),             // logger as parameter
+    Map.entry("JBCT-NAM-05", ScoreCategory.STYLE),             // test method naming
+    Map.entry("JBCT-ZONE-01", ScoreCategory.STYLE),            // zone 2 verbs for steps
+    Map.entry("JBCT-ZONE-02", ScoreCategory.STYLE),            // zone 3 verbs for leaves
+    Map.entry("JBCT-ZONE-03", ScoreCategory.STYLE));           // no zone mixing
 
-    /// Scoring category for a rule ID, or [Option#none()] when the rule is
-    /// intentionally uncategorized or unknown to the mapping.
+    /// Scoring category for a rule ID, or [Option#none()] when the rule is unknown to
+    /// the mapping.
     static Option<ScoreCategory> categoryFor(String ruleId) {
         return Option.option(MAPPING.get(ruleId));
     }
 
-    /// Whether a rule ID is known to the mapping — either categorized or
-    /// intentionally uncategorized. Unknown IDs are reported by [ScoreCalculator].
+    /// Whether a rule ID is known to the mapping. Unknown IDs are reported by
+    /// [ScoreCalculator].
     static boolean isKnown(String ruleId) {
-        return MAPPING.containsKey(ruleId) || UNCATEGORIZED.contains(ruleId);
+        return MAPPING.containsKey(ruleId);
     }
 
     static Map<String, ScoreCategory> mapping() {
         return MAPPING;
-    }
-
-    static Set<String> uncategorized() {
-        return UNCATEGORIZED;
     }
 }

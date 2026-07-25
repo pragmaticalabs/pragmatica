@@ -11,7 +11,7 @@ import org.pragmatica.jbct.lint.Diagnostic;
 import org.pragmatica.jbct.lint.JbctLinter;
 import org.pragmatica.jbct.lint.LintContext;
 import org.pragmatica.jbct.score.ScoreCalculator;
-import org.pragmatica.jbct.score.ScoreCategory;
+import org.pragmatica.jbct.score.ScoreReport;
 import org.pragmatica.jbct.score.ScoreResult;
 import org.pragmatica.jbct.shared.FileCollector;
 import org.pragmatica.jbct.shared.SourceFile;
@@ -91,52 +91,11 @@ public class ScoreCommand implements Callable<Integer> {
     }
 
     private void outputTerminal(ScoreResult score) {
-        System.out.println("╔═══════════════════════════════════════════════════╗");
-        System.out.printf("║     JBCT COMPLIANCE SCORE: %d/100            ║%n", score.overall());
-        System.out.println("╠═══════════════════════════════════════════════════╣");
-        for (var category : ScoreCategory.values()) {
-            var categoryScore = score.breakdown().get(category);
-            var percent = categoryScore.score();
-            var bar = createProgressBar(percent);
-
-            System.out.printf("║  %-18s %s %3d%%    ║%n",
-                              category.name().replace('_', ' '),
-                              bar,
-                              percent);
-        }
-
-        System.out.println("╚═══════════════════════════════════════════════════╝");
-    }
-
-    private String createProgressBar(int percent) {
-        var filled = percent / 5;
-        // 20 chars = 100%
-        var empty = 20 - filled;
-
-        return "█".repeat(filled) + "░".repeat(empty);
+        ScoreReport.terminalLines(score).forEach(System.out::println);
     }
 
     private void outputJson(ScoreResult score) {
-        System.out.println("{");
-        System.out.printf("  \"score\": %d,%n", score.overall());
-        System.out.println("  \"breakdown\": {");
-        var categories = ScoreCategory.values();
-
-        for (int i = 0; i < categories.length; i++) {
-            var category = categories[i];
-            var categoryScore = score.breakdown().get(category);
-
-            System.out.printf("    \"%s\": %d%s%n",
-                              category.name().toLowerCase(),
-                              categoryScore.score(),
-                              i < categories.length - 1
-                              ? ","
-                              : "");
-        }
-
-        System.out.println("  },");
-        System.out.printf("  \"filesAnalyzed\": %d%n", score.filesAnalyzed());
-        System.out.println("}");
+        ScoreReport.jsonLines(score).forEach(System.out::println);
     }
 
     private void outputBadge(ScoreResult score) {
