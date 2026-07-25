@@ -5,9 +5,14 @@ import java.util.regex.Pattern;
 
 import org.pragmatica.jbct.lint.layer.LayerClassifier;
 import org.pragmatica.jbct.lint.layer.LayerConfig;
+import org.pragmatica.jbct.shared.PackageGlob;
 
 
 /// Context for lint analysis providing configuration.
+///
+/// `excludePackages` entries are [PackageGlob] globs: `*` matches one package segment, `**` matches
+/// zero or more, so `com.example.generated.**` excludes `com.example.generated` itself along with
+/// everything beneath it.
 public record LintContext(List<Pattern> excludedPackagePatterns,
                           LintConfig config,
                           String fileName,
@@ -46,18 +51,9 @@ public record LintContext(List<Pattern> excludedPackagePatterns,
 
     /// Factory method with custom excluded package patterns.
     public static LintContext lintContext(List<String> excludePackages) {
-        var patterns = excludePackages.stream().map(LintContext::globToRegex).map(Pattern::compile).toList();
+        var patterns = excludePackages.stream().map(PackageGlob::compile).toList();
 
         return new LintContext(patterns, LintConfig.defaultConfig(), "Unknown.java", LayerClassifier.conventionsOnly());
-    }
-
-    private static String globToRegex(String glob) {
-        // Use placeholder to avoid ** being affected by * replacement; escape literal dots so a
-        // glob segment separator matches only a real '.'.
-        return glob.replace("**", "\0DOTSTAR\0")
-                   .replace("*", "[^.]*")
-                   .replace(".", "\\.")
-                   .replace("\0DOTSTAR\0", ".*");
     }
 
     /// Builder-style method to set config.
@@ -72,7 +68,7 @@ public record LintContext(List<Pattern> excludedPackagePatterns,
 
     /// Builder-style method to set excluded package patterns from glob strings.
     public LintContext withExcludePackages(List<String> patterns) {
-        var compiledPatterns = patterns.stream().map(LintContext::globToRegex).map(Pattern::compile).toList();
+        var compiledPatterns = patterns.stream().map(PackageGlob::compile).toList();
 
         return new LintContext(compiledPatterns, config, fileName, layers);
     }
