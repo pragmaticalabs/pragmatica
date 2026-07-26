@@ -1248,7 +1248,7 @@ public class AetherCli implements Runnable {
                     return ExitCode.SUCCESS;
                 }
 
-                System.out.printf("  Current instances: %d / %d%n", currentInstances, instances);
+                System.out.printf("  Current instances: %s / %d%n", ScaleWait.describe(currentInstances), instances);
                 sleepQuietly();
             }
 
@@ -1260,30 +1260,10 @@ public class AetherCli implements Runnable {
             return ExitCode.TIMEOUT;
         }
 
+        /// Counts instances the cluster reports as ACTIVE for this artifact — the same
+        /// per-instance state `aether slices status` shows.
         private int queryCurrentInstances() {
-            var response = parent.fetch(SLICES_LIST);
-
-            return parseInstanceCount(response);
-        }
-
-        private int parseInstanceCount(String response) {
-            if (response.contains("\"error\"")) {
-                return -1;
-            }
-
-            return countMatchingInstances(response);
-        }
-
-        private int countMatchingInstances(String response) {
-            var index = 0;
-            var count = 0;
-
-            while ((index = response.indexOf(artifact, index)) >= 0) {
-                count++;
-                index += artifact.length();
-            }
-
-            return count;
+            return ScaleWait.activeInstances(parent.fetch(SLICES_LIST), artifact);
         }
 
         @SuppressWarnings("JBCT-EX-01")
@@ -2233,7 +2213,7 @@ public class AetherCli implements Runnable {
         }
 
         @Command(name = "deploy", description = "Deploy a blueprint from an artifact in the cluster repository")
-        @SuppressWarnings({"JBCT-PAT-01", "JBCT-SEQ-01"})
+        @SuppressWarnings("JBCT-SEQ-01")
         static class DeployArtifactCommand implements Callable<Integer> {
             private static final int POLL_INTERVAL_MS = 2000;
 
@@ -2271,55 +2251,48 @@ public class AetherCli implements Runnable {
                     return printResult;
                 }
 
-                return pollUntilDeployed();
+                return DeploymentWait.blueprintId(response)
+                                     .map(this::pollUntilDeployed)
+                                     .or(DeployArtifactCommand::reportUnknownBlueprintId);
             }
 
-            @SuppressWarnings("JBCT-EX-01")
-            private int pollUntilDeployed() {
-                System.out.printf("Waiting for %s deployment to complete (timeout: %ds)...%n", coords, timeoutSeconds);
-                var deadline = System.currentTimeMillis() + (long) timeoutSeconds * 1000;
+            private int pollUntilDeployed(String blueprintId) {
+                System.out.printf("Waiting for %s deployment to complete (timeout: %ds)...%n",
+                                  blueprintId,
+                                  timeoutSeconds);
+                var exitCode = DeploymentWait.awaitCompletion(() -> queryOverallStatus(blueprintId),
+                                                              System.currentTimeMillis() + (long) timeoutSeconds * 1000,
+                                                              POLL_INTERVAL_MS);
 
-                while (System.currentTimeMillis() < deadline) {
-                    var status = queryDeploymentStatus();
+                return exitCode == ExitCode.SUCCESS
+                       ? reportComplete(blueprintId)
+                       : reportTimeout(blueprintId);
+            }
 
-                    if (isDeploymentComplete(status)) {
-                        System.out.printf("Deployment complete: %s is active.%n", coords);
+            /// Reads the blueprint deployment status the node derives from its replicated
+            /// `DeploymentMap` — the same state `aether slices status` reports.
+            private String queryOverallStatus(String blueprintId) {
+                return DeploymentWait.overallStatus(blueprintParent.parent.fetch(BLUEPRINT_STATUS, List.of(blueprintId)));
+            }
 
-                        return ExitCode.SUCCESS;
-                    }
+            private static int reportComplete(String blueprintId) {
+                System.out.printf("Deployment complete: %s is active.%n", blueprintId);
 
-                    System.out.printf("  Deployment status: %s%n", status);
-                    sleepQuietly();
-                }
+                return ExitCode.SUCCESS;
+            }
 
-                System.err.printf("Timeout: %s deployment did not complete within %ds.%n", coords, timeoutSeconds);
+            private int reportTimeout(String blueprintId) {
+                System.err.printf("Timeout: %s deployment did not complete within %ds.%n", blueprintId, timeoutSeconds);
 
                 return ExitCode.TIMEOUT;
             }
 
-            private static boolean isDeploymentComplete(String status) {
-                return "ACTIVE".equalsIgnoreCase(status) || "DEPLOYED".equalsIgnoreCase(status);
-            }
+            /// The deploy call succeeded but the response carried no blueprint id, so there is
+            /// nothing to poll. Fail loudly rather than waiting on an unidentified deployment.
+            private static int reportUnknownBlueprintId() {
+                System.err.println("Cannot wait: deploy response did not report a blueprint id.");
 
-            private String queryDeploymentStatus() {
-                var response = blueprintParent.parent.fetch(SLICES_LIST);
-
-                if (response.contains("\"error\"")) {
-                    return "UNKNOWN";
-                }
-
-                return response.contains(coords)
-                       ? "ACTIVE"
-                       : "PENDING";
-            }
-
-            @SuppressWarnings("JBCT-EX-01")
-            private static void sleepQuietly() {
-                try {
-                    Thread.sleep(POLL_INTERVAL_MS);
-                } catch (InterruptedException _) {
-                    Thread.currentThread().interrupt();
-                }
+                return ExitCode.ERROR;
             }
         }
 
