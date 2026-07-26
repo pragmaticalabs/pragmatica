@@ -589,7 +589,7 @@ aether blueprints validate <file.toml>
 aether blueprints delete <blueprintId> [-f|--force]
 
 # Deploy a blueprint from an artifact in the cluster repository
-aether blueprints deploy <coords>
+aether blueprints deploy <coords> [--wait] [--timeout <seconds>]
 
 # Publish a blueprint already present in the artifact repository
 aether blueprints publish <coords>

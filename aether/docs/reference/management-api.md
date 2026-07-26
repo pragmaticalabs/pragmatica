@@ -763,9 +763,16 @@ Get blueprint details including slices and dependencies.
 }
 ```
 
-### GET /api/blueprints/{id}/status
+### GET /api/blueprints/status/{id}
 
-Get deployment status of a blueprint and each of its slices.
+Get deployment status of a blueprint and each of its slices. `{id}` is the
+blueprint id, which is artifact-shaped (`group:artifact:version`), so its
+colons are percent-encoded in the path segment.
+
+This is the surface `aether blueprints deploy --wait` polls. `activeInstances`
+is counted from the same replicated deployment map that backs
+`GET /api/slices/status`, so the two endpoints cannot disagree about whether a
+deployment finished.
 
 **Response:**
 ```json
@@ -812,8 +819,8 @@ Deploy a blueprint from an artifact in the cluster's artifact repository.
 ```json
 {
   "status": "deployed",
-  "blueprintId": "org.example:my-app:1.0.0",
-  "sliceCount": 5
+  "blueprint": "org.example:my-app:1.0.0",
+  "slices": 5
 }
 ```
 

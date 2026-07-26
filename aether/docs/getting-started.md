@@ -388,13 +388,15 @@ That is the same slice, the same code, and the same request you ran on your
 laptop in Stage 3, now answered by a five-node cluster in a German datacenter.
 Nothing about the slice changed to get here.
 
-> **One rough edge** ([#522](https://github.com/pragmaticalabs/pragmatica/issues/522)):
-> `blueprints deploy --wait` currently keeps reporting `PENDING` and then
-> declares a 300s timeout even when the deployment has in fact completed.
-> If you hit that, don't assume it failed — check
+> **If you are on an rc3 build older than the #522 fix**
+> ([#522](https://github.com/pragmaticalabs/pragmatica/issues/522)):
+> `blueprints deploy --wait` kept reporting `PENDING` and then declared a 300s
+> timeout even when the deployment had in fact completed — it matched the
+> blueprint coordinates against the slice list, which only ever carries the
+> derived slice artifacts, so it could never observe completion. If you hit
+> that, don't assume the deploy failed — check
 > `aether -c <a-node-ip>:8080 slices status`; if the slice reads `ACTIVE` /
-> `HEALTHY`, it deployed and the `curl` above will answer. Drop `--wait` and
-> poll `slices status` yourself if you're scripting this.
+> `HEALTHY`, it deployed and the `curl` above will answer.
 
 For zero-downtime updates to an already-running slice, see `aether deploy`
 (canary/blue-green/rolling) in the [CLI reference](reference/cli.md#deploy).
@@ -491,10 +493,17 @@ behavior, and this note records the history:
   5 VMs, registry entry removed, zero fallback warnings.
 - Bootstrap's interactive `Continue? [y/N]` abort also exited 0 (same #521
   batch) — now exits non-zero; the tutorial's bootstrap note reflects that.
-- #522 (filed, OPEN): `blueprints deploy --wait` reported a 300s PENDING
-  timeout while the deployment had actually completed (slice ACTIVE/HEALTHY,
-  DEPLOYMENT_COMPLETED events, endpoint serving). Stage 4 carries this as its
-  one remaining rough-edge caveat with the `slices status` workaround.
+- #522 (filed, FIXED — live re-verification still pending): `blueprints deploy
+  --wait` reported a 300s PENDING timeout while the deployment had actually
+  completed (slice ACTIVE/HEALTHY, DEPLOYMENT_COMPLETED events, endpoint
+  serving). Root cause: the wait gate never queried a deployment-status
+  surface at all — it fetched the slice list and substring-matched the
+  BLUEPRINT coordinates against it, which cannot match the derived SLICE
+  artifacts, so it emitted a hardcoded "PENDING" forever. Fixed by polling
+  `GET /api/blueprints/status/{id}` (`overallStatus`), which the node derives
+  from the same replicated DeploymentMap that backs `slices status`. Covered
+  by unit tests in both directions; NOT yet re-run against a live cluster, so
+  Stage 4 keeps the caveat scoped to pre-fix builds.
 - #523 (filed, OPEN): `aether artifacts list` returns HTTP 400; not referenced
   in the tutorial since the tutorial never needs it.
 
