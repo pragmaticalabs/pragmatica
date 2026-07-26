@@ -529,6 +529,8 @@ public final class KVStoreSerializer {
             case "storage-block" -> parseStorageBlockEntry(identity, rawValue);
             case "storage-ref" -> parseStorageRefEntry(identity, rawValue);
             case "stream-config" -> parseStreamConfigEntry(identity, rawValue);
+            case "stream-cursor" -> parseStreamCursorCheckpointEntry(identity, rawValue);
+            case "stream-reg" -> parseStreamRegistrationEntry(identity, rawValue);
             case "stream-registry" -> parseStreamRegistryEntry(identity, rawValue);
             case "blueprint-stream-bindings" -> parseBlueprintStreamBindingsEntry(identity, rawValue);
             case "cloud-credentials" -> parseCloudCredentialsEntry(identity, rawValue);
@@ -1343,6 +1345,42 @@ public final class KVStoreSerializer {
 
     /// Inverse of [#serializeStreamRegistry]. Wire form (8 fields, pipe-delimited):
     /// `address|refCount|registeredAtEpochMillis|registeredBy|maxCount|maxBytes|maxAgeMs|retentionMode`.
+    /// Mirror of [#serializeStreamCursorCheckpoint]. Consensus-visible consumer checkpoints (#488):
+    /// a declarative consumer resumes from the cluster cursor when a partition's owner changes, so
+    /// the entry MUST survive a snapshot round-trip.
+    private static Result<Map.Entry<AetherKey, AetherValue>> parseStreamCursorCheckpointEntry(String identity,
+                                                                                              String raw) {
+        var parts = raw.split("\\|", -1);
+
+        if (parts.length != 2) {
+            return parseFailure("stream-cursor value requires 2 fields, got " + parts.length);
+        }
+
+        return StreamCursorCheckpointKey.streamCursorCheckpointKey("stream-cursor/" + identity).map(key -> entry(key,
+                                                                                                                 new StreamCursorCheckpointValue(Long.parseLong(parts[0]),
+                                                                                                                                                 Long.parseLong(parts[1]))));
+    }
+
+    /// Mirror of [#serializeStreamRegistration]. Declarative stream-consumer registrations have been
+    /// WRITTEN on every deployment since the declarative surface landed, but had no parse case — so a
+    /// snapshot containing them failed with `UnknownKeyType`. Added with #488, which makes the
+    /// registration load-bearing (it is what drives the delivery loop).
+    private static Result<Map.Entry<AetherKey, AetherValue>> parseStreamRegistrationEntry(String identity, String raw) {
+        var parts = raw.split("\\|", -1);
+
+        if (parts.length != 4) {
+            return parseFailure("stream-reg value requires 4 fields, got " + parts.length);
+        }
+
+        return StreamRegistrationKey.streamRegistrationKey("stream-reg/" + identity).flatMap(key -> NodeId.nodeId(parts[0])
+                                                                                                          .map(nodeId -> new StreamRegistrationValue(nodeId,
+                                                                                                                                                     parts[1],
+                                                                                                                                                     Boolean.parseBoolean(parts[2]),
+                                                                                                                                                     parts[3]))
+                                                                                                          .map(val -> entry(key,
+                                                                                                                            val)));
+    }
+
     /// `tierAwareRetention` is reconstructed as `none()` (not persisted in the snapshot form), matching
     /// the stream-config convention.
     private static Result<Map.Entry<AetherKey, AetherValue>> parseStreamRegistryEntry(String identity, String raw) {

@@ -143,6 +143,9 @@ import org.pragmatica.aether.stream.CommittedStreamOwnerSource;
 import org.pragmatica.aether.stream.LinearizableBarrier;
 import org.pragmatica.aether.stream.LinearizableOwnerServe;
 import org.pragmatica.aether.stream.OffHeapRingBuffer;
+import org.pragmatica.aether.node.stream.ClusterCursorStore;
+import org.pragmatica.aether.node.stream.StreamConsumerManager;
+import org.pragmatica.aether.node.stream.StreamConsumerRegistry;
 import org.pragmatica.aether.stream.StreamPartitionManager;
 import org.pragmatica.aether.stream.StreamReadRouter;
 import org.pragmatica.aether.stream.StreamWriteRouter;
@@ -160,6 +163,8 @@ import org.pragmatica.aether.stream.replication.ForwardCatchupTransport;
 import org.pragmatica.aether.stream.replication.PartitionBackfill;
 import org.pragmatica.aether.stream.replication.PartitionKey;
 import org.pragmatica.aether.stream.replication.ReplicaRegistry;
+import org.pragmatica.aether.stream.DeadLetterHandler;
+import org.pragmatica.aether.stream.StreamConsumerRuntime;
 import org.pragmatica.aether.stream.replication.ReplicaSetController;
 import org.pragmatica.aether.stream.replication.StreamPartitionOwnershipWriter;
 import org.pragmatica.aether.stream.replication.ReplicaWatermarkProbe;
@@ -720,6 +725,10 @@ public interface AetherNode extends ManageableNode {
     /// {@code RELEASE_DEBOUNCE_TICKS = 2} flap-debounce window is ≈10s wall-clock (spec §5.4). A no-op tick is
     /// cheap (a sweep of the materialized partitions + empty queues) so a steady-state node pays almost nothing.
     TimeSpan STREAM_RESHUFFLE_RECONCILE_INTERVAL = TimeSpan.timeSpan(5).seconds();
+    /// Declarative stream-consumer ownership poll (#488). No role-change callback is available to a
+    /// third party, so partition ownership is polled; matching the reshuffle cadence keeps the
+    /// handover window (during which the old and new owner may both deliver) at one tick.
+    TimeSpan STREAM_CONSUMER_RECONCILE_INTERVAL = TimeSpan.timeSpan(5).seconds();
 
     /// Per-node, restart-stable data dir for the disk-backed stream storage. Derived as a sibling of
     /// the node's artifact disk path (the artifacts/content convention, `StorageConfig.diskPath()`)
@@ -848,6 +857,36 @@ public interface AetherNode extends ManageableNode {
                                                                      .equals(self) && descriptor.state() == ReplicationState.CAUGHT_UP);
 
         return new StreamPartitionManager.ReplicaCatchupSource.CatchupView(caughtUpOthers, selfCaughtUp);
+    }
+
+    /// Partition ownership as the declarative stream-consumer manager sees it (#488).
+    ///
+    /// `partitionCount` reads the replica catalog, which is hydrated from committed `StreamConfig`; an
+    /// absent stream yields none() and the manager consumes nothing for it — the transient state before
+    /// a stream's config reaches this node, not an error. `ownedLocally` is the HRW owner test, the same
+    /// pure placement function the partition manager itself gates materialization on.
+    private static StreamConsumerManager.PartitionOwnership streamConsumerOwnership(StreamPartitionManager manager,
+                                                                                    ReplicaSetController controller) {
+        record ownership(StreamPartitionManager manager, ReplicaSetController controller) implements StreamConsumerManager.PartitionOwnership {
+            @Override
+            public Option<Integer> partitionCount(String streamName) {
+                return manager.replicaCatalog()
+                              .streams()
+                              .stream()
+                              .filter(spec -> spec.name()
+                                                  .equals(streamName))
+                              .findFirst()
+                              .map(spec -> Option.some(spec.partitions()))
+                              .orElseGet(Option::none);
+            }
+
+            @Override
+            public boolean ownedLocally(String streamName, int partition) {
+                return controller.roleFor(streamName, partition) == ReplicaSetController.Role.OWNER;
+            }
+        }
+
+        return new ownership(manager, controller);
     }
 
     /// #265 increment 5: the committed-ownership release guard. Safe to release (on the ownership axis) when
@@ -1161,6 +1200,7 @@ public interface AetherNode extends ManageableNode {
                           StreamWriteRouter streamWriteRouter,
                           ConsumerGroupCoordinator consumerGroupCoordinator,
                           ConsumerGroupRegistry consumerGroupRegistry,
+                          StreamConsumerManager streamConsumerManager,
                           StreamNamespacesService streamNamespacesService,
                           Map<String, StorageFactory.StorageSetup> storageSetups,
                           ClusterTopologyManager clusterTopologyManagerInstance,
@@ -1250,6 +1290,9 @@ public interface AetherNode extends ManageableNode {
                 scheduledTaskManager.stop();
                 snapshotCollector.stop();
                 SliceRuntime.clear();
+                // #488: detach declarative stream consumers BEFORE the partition manager closes, so
+                // each one flushes its cursor while its ring buffer and cursor store are still alive.
+                streamConsumerManager.stop();
                 streamPartitionManager.close();
                 certRenewalScheduler.onPresent(CertificateRenewalScheduler::stop);
                 swimHealthDetector.stop();
@@ -1699,6 +1742,10 @@ public interface AetherNode extends ManageableNode {
         var endpointRegistry = EndpointRegistry.endpointRegistry();
         var topicSubscriptionRegistry = TopicSubscriptionRegistry.topicSubscriptionRegistry();
         var scheduledTaskRegistry = ScheduledTaskRegistry.scheduledTaskRegistry();
+        // #488: constructed here (not next to the consumer manager further down) because the KV
+        // notification routes are collected before the stream subsystem is built. The registry only
+        // accumulates declarations; StreamConsumerManager attaches itself as its change listener.
+        var streamConsumerRegistry = StreamConsumerRegistry.streamConsumerRegistry();
         var scheduledTaskStateRegistry = ScheduledTaskStateRegistry.scheduledTaskStateRegistry();
         var httpRouteRegistry = HttpRouteRegistry.httpRouteRegistry();
         var metricsCollector = ClusterSyncCollector.clusterSyncCollector(config.self(),
@@ -2134,6 +2181,7 @@ public interface AetherNode extends ManageableNode {
                                                 clusterDeploymentManager,
                                                 endpointRegistry,
                                                 topicSubscriptionRegistry,
+                                                streamConsumerRegistry,
                                                 scheduledTaskRegistry,
                                                 scheduledTaskStateRegistry,
                                                 scheduledTaskManager,
@@ -3198,6 +3246,34 @@ public interface AetherNode extends ManageableNode {
         // tick is a cheap sweep of materialized partitions over empty queues.
         periodicTasks.add(SharedScheduler.scheduleAtFixedRate(streamPartitionManager::reconcileReshuffle,
                                                               STREAM_RESHUFFLE_RECONCILE_INTERVAL));
+        // #488: declarative `[streams.X]` consumer delivery. `NodeDeploymentState` writes a
+        // StreamRegistrationKey per deployment; that key is NOT node-scoped, so it is a cluster-wide
+        // DECLARATION, never an assignment. Which node consumes which partition is decided locally:
+        // a node consumes exactly the partitions it OWNS whose slice is also deployed here. Owner-gating
+        // is what keeps delivery single — REPLICA nodes also materialize rings (shouldMaterialize admits
+        // OWNER and REPLICA), so gating on "the ring is local" would deliver every event once per replica.
+        // No role-change callback is available (onBecameReplica / onReconcilePassComplete are
+        // single-consumer seams already bound above), hence the poll.
+        var streamClusterCursorStore = ClusterCursorStore.clusterCursorStore(streamCursorStore,
+                                                                             cursorKey -> kvStore.getTyped(cursorKey,
+                                                                                                           AetherValue.StreamCursorCheckpointValue.class)
+                                                                                                 .map(AetherValue.StreamCursorCheckpointValue::committedOffset),
+                                                                             command -> clusterNode.apply(List.of(command))
+                                                                                                   .mapToUnit());
+        var streamConsumerRuntime = StreamConsumerRuntime.streamConsumerRuntime(streamPartitionManager,
+                                                                                DeadLetterHandler.deadLetterHandler(),
+                                                                                streamClusterCursorStore);
+        var streamConsumerManager = StreamConsumerManager.streamConsumerManager(streamConsumerRegistry,
+                                                                                streamConsumerRuntime,
+                                                                                sliceInvoker,
+                                                                                invocationHandler,
+                                                                                nodeCodec,
+                                                                                streamConsumerOwnership(streamPartitionManager,
+                                                                                                        streamReplicaSetController));
+        // #499: the handle is retained in `periodicTasks`, which stop() cancels wholesale. A declarative
+        // consumer that outlived its node would deliver into a torn-down slice.
+        periodicTasks.add(SharedScheduler.scheduleAtFixedRate(streamConsumerManager::reconcile,
+                                                              STREAM_CONSUMER_RECONCILE_INTERVAL));
         var streamingCoordinator = StreamingCoordinator.streamingCoordinator(streamFailoverHandler,
                                                                              streamRetentionEnforcer,
                                                                              streamPartitionManager,
@@ -3370,6 +3446,7 @@ public interface AetherNode extends ManageableNode {
                                   streamWriteRouter,
                                   consumerGroupCoordinator,
                                   consumerGroupRegistry,
+                                  streamConsumerManager,
                                   streamNamespacesService,
                                   storageSetups,
                                   clusterTopologyManager,
@@ -3491,6 +3568,7 @@ public interface AetherNode extends ManageableNode {
                                       streamWriteRouter,
                                       consumerGroupCoordinator,
                                       consumerGroupRegistry,
+                                      streamConsumerManager,
                                       streamNamespacesService,
                                       storageSetups,
                                       clusterTopologyManager,
@@ -4544,6 +4622,7 @@ public interface AetherNode extends ManageableNode {
                                                                     ClusterDeploymentManager clusterDeploymentManager,
                                                                     EndpointRegistry endpointRegistry,
                                                                     TopicSubscriptionRegistry topicSubscriptionRegistry,
+                                                                    StreamConsumerRegistry streamConsumerRegistry,
                                                                     ScheduledTaskRegistry scheduledTaskRegistry,
                                                                     ScheduledTaskStateRegistry scheduledTaskStateRegistry,
                                                                     ScheduledTaskManager scheduledTaskManager,
@@ -4614,6 +4693,12 @@ public interface AetherNode extends ManageableNode {
                                                          topicSubscriptionRegistry::onSubscriptionPut)
                                                   .onRemove(AetherKey.TopicSubscriptionKey.class,
                                                             topicSubscriptionRegistry::onSubscriptionRemove)
+                                                  // #488: declarative stream-consumer declarations. Put/remove
+                                                  // drives StreamConsumerManager's subscribe/unsubscribe.
+                                                  .onPut(AetherKey.StreamRegistrationKey.class,
+                                                         streamConsumerRegistry::onStreamRegistrationPut)
+                                                  .onRemove(AetherKey.StreamRegistrationKey.class,
+                                                            streamConsumerRegistry::onStreamRegistrationRemove)
                                                   .onPut(AetherKey.ScheduledTaskKey.class,
                                                          scheduledTaskRegistry::onScheduledTaskPut)
                                                   .onRemove(AetherKey.ScheduledTaskKey.class,

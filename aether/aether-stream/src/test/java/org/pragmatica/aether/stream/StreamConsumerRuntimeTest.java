@@ -323,4 +323,105 @@ class StreamConsumerRuntimeTest {
                    .onFailure(cause -> assertThat(cause).isEqualTo(StreamError.General.CONSUMER_RUNTIME_CLOSED));
         }
     }
+
+    /// #488. The reaper measures time since the last `pollPartition`, which for a PUSH-listener
+    /// consumer advances only when events arrive. On a quiet partition a perfectly healthy
+    /// deployment-declared consumer therefore looks "idle" and, before the IdlePolicy split, was
+    /// silently unsubscribed after 60s — reintroducing the exact silent-no-delivery defect #488 fixes,
+    /// one layer down. This logic had never run in a cluster, so it is pinned here.
+    ///
+    /// Time is injected rather than waited on: the threshold is 60s.
+    @Nested
+    class IdleReaping {
+        private static final long WELL_PAST_TIMEOUT_MS = 120_000;
+
+        @Test
+        void reapIdleConsumers_unsubscribesClientConsumer_whenIdlePastTimeout() {
+            createTestStream("orders");
+            runtime.subscribe("orders", 0, ConsumerConfig.consumerConfig("client-group"),
+                              (offset, payload, ts) -> Promise.unitPromise());
+
+            reapAt(System.currentTimeMillis() + WELL_PAST_TIMEOUT_MS);
+
+            assertThat(runtime.subscriptions())
+                    .describedAs("a client-driven consumer that stopped polling is still reaped")
+                    .isEmpty();
+        }
+
+        @Test
+        void reapIdleConsumers_keepsDeclarativeConsumer_whenIdlePastTimeout() {
+            createTestStream("orders");
+            runtime.subscribe("orders", 0, ConsumerConfig.consumerConfig("declared-group"),
+                              (offset, payload, ts) -> Promise.unitPromise(),
+                              StreamConsumerRuntime.IdlePolicy.KEEP_UNTIL_UNSUBSCRIBED);
+
+            reapAt(System.currentTimeMillis() + WELL_PAST_TIMEOUT_MS);
+
+            assertThat(runtime.subscriptions())
+                    .describedAs("a deployment-declared consumer survives an arbitrarily quiet partition")
+                    .hasSize(1);
+            assertThat(runtime.subscriptions().getFirst().consumerGroup()).isEqualTo("declared-group");
+        }
+
+        @Test
+        void reapIdleConsumers_reapsOnlyTheClientConsumer_whenBothAreIdle() {
+            createTestStream("orders");
+            runtime.subscribe("orders", 0, ConsumerConfig.consumerConfig("client-group"),
+                              (offset, payload, ts) -> Promise.unitPromise());
+            runtime.subscribe("orders", 1, ConsumerConfig.consumerConfig("declared-group"),
+                              (offset, payload, ts) -> Promise.unitPromise(),
+                              StreamConsumerRuntime.IdlePolicy.KEEP_UNTIL_UNSUBSCRIBED);
+
+            reapAt(System.currentTimeMillis() + WELL_PAST_TIMEOUT_MS);
+
+            assertThat(runtime.subscriptions())
+                    .extracting(StreamConsumerRuntime.SubscriptionSnapshot::consumerGroup)
+                    .containsExactly("declared-group");
+        }
+
+        @Test
+        void reapIdleConsumers_keepsBoth_whenNeitherIsIdle() {
+            createTestStream("orders");
+            runtime.subscribe("orders", 0, ConsumerConfig.consumerConfig("client-group"),
+                              (offset, payload, ts) -> Promise.unitPromise());
+            runtime.subscribe("orders", 1, ConsumerConfig.consumerConfig("declared-group"),
+                              (offset, payload, ts) -> Promise.unitPromise(),
+                              StreamConsumerRuntime.IdlePolicy.KEEP_UNTIL_UNSUBSCRIBED);
+
+            reapAt(System.currentTimeMillis());
+
+            assertThat(runtime.subscriptions()).hasSize(2);
+        }
+
+        private void reapAt(long now) {
+            ((ConsumerRuntimeState) runtime).reapIdleConsumers(now);
+        }
+    }
+
+    /// #488 operator surface: the subscription snapshot backing `GET /api/streams/declarative-consumers`.
+    @Nested
+    class SubscriptionSnapshots {
+
+        @Test
+        void subscriptions_reportsStreamPartitionAndGroup_forEachSubscription() {
+            createTestStream("orders");
+            runtime.subscribe("orders", 2, ConsumerConfig.consumerConfig("group-a"),
+                              (offset, payload, ts) -> Promise.unitPromise());
+
+            assertThat(runtime.subscriptions()).singleElement()
+                                               .satisfies(snapshot -> {
+                                                   assertThat(snapshot.streamName()).isEqualTo("orders");
+                                                   assertThat(snapshot.partition()).isEqualTo(2);
+                                                   assertThat(snapshot.consumerGroup()).isEqualTo("group-a");
+                                                   assertThat(snapshot.stalled()).isFalse();
+                                               });
+        }
+
+        @Test
+        void subscriptions_isEmpty_whenNothingSubscribed() {
+            createTestStream("orders");
+
+            assertThat(runtime.subscriptions()).isEmpty();
+        }
+    }
 }

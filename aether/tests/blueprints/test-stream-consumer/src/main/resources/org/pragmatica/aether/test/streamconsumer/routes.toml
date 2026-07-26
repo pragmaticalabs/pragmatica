@@ -1,0 +1,16 @@
+prefix = "/api/stream-consumer"
+
+[security]
+# Test fixture: public routes so the forge proof can drive publish/received without auth setup.
+default = "public"
+override_policy = "strengthen_only"
+
+# onConsumerEvent is deliberately absent — it is a declarative stream consumer, reachable only via
+# the framework's delivery path, never over HTTP. If it were routable the proof would be vacuous.
+[routes]
+publish = "POST /publish"
+received = "POST /received"
+
+[errors]
+default = 500
+HTTP_400 = ["*Invalid*"]

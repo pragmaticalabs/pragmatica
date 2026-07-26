@@ -1010,6 +1010,83 @@ class KVStoreSerializerTest {
         }
     }
 
+    /// Serialize/parse SYMMETRY (#488).
+    ///
+    /// `toToml` and `fromToml` are two hand-maintained switches, and nothing structurally ties them
+    /// together: a key type can gain a serialize case and never gain a parse case. That is not
+    /// hypothetical — `stream-reg` was written to consensus KV on every deployment since the
+    /// declarative-consumer surface landed and had NO parse case, so any snapshot containing one
+    /// failed with `UnknownKeyType`. Nothing noticed because nothing read it back.
+    ///
+    /// These pin the two types the declarative stream-consumer path depends on. A sweep of the
+    /// serialize switch found nine further key types with the same asymmetry; they are reported
+    /// separately rather than fixed here.
+    @Nested
+    class RoundTripSymmetry {
+
+        @Test
+        void fromToml_streamCursorCheckpoint_recoversKeyAndOffset() {
+            var key = StreamCursorCheckpointKey.streamCursorCheckpointKey("orders", 2, "orders-onOrderEvent");
+            var value = new StreamCursorCheckpointValue(4321L, 1710072000000L);
+
+            KVStoreSerializer.toToml(Map.of(key, value), TEST_PHASE, TEST_TIMESTAMP)
+                             .flatMap(KVStoreSerializer::fromToml)
+                             .onFailureRun(Assertions::fail)
+                             .onSuccess(entries -> {
+                                 assertThat(entries).containsKey(key);
+                                 assertThat(entries.get(key)).isInstanceOfSatisfying(StreamCursorCheckpointValue.class,
+                                                                                     recovered -> assertThat(recovered.committedOffset()).isEqualTo(4321L));
+                             });
+        }
+
+        @Test
+        void fromToml_streamRegistration_recoversKeyAndDeclaration() {
+            var artifact = Artifact.artifact("org.example:orders:1.0.0").unwrap();
+            var method = MethodName.methodName("onOrderEvent").unwrap();
+            var key = StreamRegistrationKey.streamRegistrationKey("orders", "streams.orders", artifact, method);
+            var value = StreamRegistrationValue.streamRegistrationValue(NodeId.nodeId("node-1").unwrap(),
+                                                                        "orders-onOrderEvent",
+                                                                        true,
+                                                                        "java.lang.String");
+
+            KVStoreSerializer.toToml(Map.of(key, value), TEST_PHASE, TEST_TIMESTAMP)
+                             .flatMap(KVStoreSerializer::fromToml)
+                             .onFailureRun(Assertions::fail)
+                             .onSuccess(entries -> {
+                                 assertThat(entries).containsKey(key);
+                                 assertThat(entries.get(key)).isInstanceOfSatisfying(StreamRegistrationValue.class,
+                                                                                     recovered -> {
+                                                                                         assertThat(recovered.consumerGroup()).isEqualTo("orders-onOrderEvent");
+                                                                                         assertThat(recovered.batchMode()).isTrue();
+                                                                                         assertThat(recovered.eventType()).isEqualTo("java.lang.String");
+                                                                                     });
+                             });
+        }
+
+        /// A registration written by one node must survive the snapshot a JOINING node restores from —
+        /// otherwise a late joiner never learns the declaration and never consumes.
+        @Test
+        void fromToml_streamRegistrationAmongOtherEntries_doesNotFailWholeSnapshot() {
+            var artifact = Artifact.artifact("org.example:orders:1.0.0").unwrap();
+            var method = MethodName.methodName("onOrderEvent").unwrap();
+            var registration = StreamRegistrationKey.streamRegistrationKey("orders", "streams.orders", artifact, method);
+            var cursor = StreamCursorCheckpointKey.streamCursorCheckpointKey("orders", 0, "orders-onOrderEvent");
+            var entries = new LinkedHashMap<AetherKey, AetherValue>();
+
+            entries.put(registration,
+                        StreamRegistrationValue.streamRegistrationValue(NodeId.nodeId("node-1").unwrap(),
+                                                                        "orders-onOrderEvent",
+                                                                        false,
+                                                                        "java.lang.String"));
+            entries.put(cursor, new StreamCursorCheckpointValue(7L, 1710072000000L));
+
+            KVStoreSerializer.toToml(entries, TEST_PHASE, TEST_TIMESTAMP)
+                             .flatMap(KVStoreSerializer::fromToml)
+                             .onFailureRun(Assertions::fail)
+                             .onSuccess(recovered -> assertThat(recovered).containsOnlyKeys(registration, cursor));
+        }
+    }
+
     private static int countOccurrences(String text, String substring) {
         var count = 0;
         var index = 0;

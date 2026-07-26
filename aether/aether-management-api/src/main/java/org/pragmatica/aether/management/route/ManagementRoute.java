@@ -166,6 +166,15 @@ public enum ManagementRoute {
     // node; the handler assembles the snapshot from that node's local StreamPartitionManager (per-node
     // materialized-ring / floor-byte / placement-role view — the §6 regression sensor).
     STREAM_HYDRATION(GET, "/api/streams/hydration", List.of(), taskGroup(STREAMING)),
+    // #488 declarative-consumer observability: which `[streams.X]` consumers this node has actually
+    // attached, on which partitions, at which committed offsets — plus the two ways a declared consumer
+    // ends up receiving nothing (this node owns partitions whose slice is not deployed here, or the
+    // event type is unpublishable per #526). LOCAL, not taskGroup: subscriptions are per-node truth,
+    // since a node consumes exactly the partitions it owns. Static prefix
+    // `/api/streams/declarative-consumers` (0 params) is matched before `/api/streams/{name}`
+    // (STREAM_GET) by the longest-static-prefix rule, and shares no segment with
+    // `/api/streams/consumers/{name}` (STREAM_CONSUMERS), so neither collides.
+    STREAM_DECLARATIVE_CONSUMERS(GET, "/api/streams/declarative-consumers", List.of(), LOCAL),
     CONSUMER_GROUP_JOIN(POST, "/api/streams/groups/join", List.of(), taskGroup(STREAMING)),
     CONSUMER_GROUP_LEAVE(POST, "/api/streams/groups/leave", List.of(), taskGroup(STREAMING)),
     CONSUMER_GROUP_STATUS(GET, "/api/streams/groups", List.of("id"), taskGroup(STREAMING)),

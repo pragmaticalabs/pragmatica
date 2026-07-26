@@ -697,6 +697,35 @@ public sealed interface ManagementApiResponses {
                                    long materializeQueueDepth,
                                    List<StreamHydrationDetail> streams) {}
 
+    /// #488 declarative-consumer view for THIS node. `attachedSubscriptions` is the count actually
+    /// subscribed here, which for a correctly gated consumer equals the number of partitions this node
+    /// owns — not the stream's partition count.
+    record DeclarativeConsumersResponse(int attachedSubscriptions, List<DeclarativeConsumerDetail> consumers) {}
+
+    /// One declared `[streams.X]` consumer as this node sees it.
+    ///
+    /// `sliceDeployedLocally` false with a non-empty `unconsumedOwnedPartitions` is the loud gap: this
+    /// node owns those partitions and a consumer is declared for them, but the slice is not deployed
+    /// here, so NOBODY consumes them. `eventTypePublishable` false means the event type is absent from
+    /// the node codec, so it cannot be published to the stream at all (#526) and this consumer will
+    /// receive nothing however healthy it otherwise looks. `diagnostic` carries the operator-facing
+    /// explanation for whichever of those applies, and is empty when the consumer is healthy.
+    record DeclarativeConsumerDetail(String stream,
+                                     String configSection,
+                                     String artifact,
+                                     String method,
+                                     String consumerGroup,
+                                     boolean batchMode,
+                                     String eventType,
+                                     boolean sliceDeployedLocally,
+                                     boolean eventTypePublishable,
+                                     List<DeclarativeConsumerPartition> assignedPartitions,
+                                     List<Integer> unconsumedOwnedPartitions,
+                                     String diagnostic) {}
+
+    /// `committedOffset` is the next offset this consumer will read — one past the last delivered event.
+    record DeclarativeConsumerPartition(int partition, long committedOffset, boolean stalled) {}
+
     /// Per-stream hydration row: `partitionsDeclared` the configured partition count,
     /// `ringsMaterialized` the rings actually built on this node (gated below declared on non-replicas),
     /// `partitionsDeferred` (#265 increment 3) the held partitions not yet materialized (budget-deferred

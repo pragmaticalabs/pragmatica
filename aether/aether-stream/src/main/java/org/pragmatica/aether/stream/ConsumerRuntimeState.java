@@ -15,7 +15,8 @@ import java.util.function.LongConsumer;
 import org.pragmatica.aether.slice.ConsumerConfig;
 import org.pragmatica.aether.slice.ConsumerConfig.ErrorStrategy;
 import org.pragmatica.aether.stream.consumer.TransactionalCursorCommit;
-import org.pragmatica.aether.stream.segment.CursorStore;
+import org.pragmatica.aether.stream.segment.ConsumerCursorStore;
+import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
@@ -44,7 +45,7 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
 
     private final StreamPartitionManager partitionManager;
     private final DeadLetterHandler dlHandler;
-    private final Option<CursorStore> cursorStore;
+    private final Option<ConsumerCursorStore> cursorStore;
     private final Option<TransactionalCursorCommit> transactionalCommit;
     private final ConcurrentHashMap<ConsumerKey, ConsumerState> consumers = new ConcurrentHashMap<>();
     private final AtomicBoolean closed = new AtomicBoolean(false);
@@ -56,13 +57,13 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
 
     ConsumerRuntimeState(StreamPartitionManager partitionManager,
                          DeadLetterHandler dlHandler,
-                         Option<CursorStore> cursorStore) {
+                         Option<ConsumerCursorStore> cursorStore) {
         this(partitionManager, dlHandler, cursorStore, none());
     }
 
     ConsumerRuntimeState(StreamPartitionManager partitionManager,
                          DeadLetterHandler dlHandler,
-                         Option<CursorStore> cursorStore,
+                         Option<ConsumerCursorStore> cursorStore,
                          Option<TransactionalCursorCommit> transactionalCommit) {
         this.partitionManager = partitionManager;
         this.dlHandler = dlHandler;
@@ -72,15 +73,24 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
                                                                        TimeSpan.timeSpan(IDLE_CHECK_INTERVAL_MS).millis());
     }
 
-    @SuppressWarnings("JBCT-NULL-01")
     @Override
     public Result<Unit> subscribe(String streamName, int partition, ConsumerConfig config, ConsumerCallback callback) {
+        return subscribe(streamName, partition, config, callback, IdlePolicy.REAP_WHEN_IDLE);
+    }
+
+    @SuppressWarnings("JBCT-NULL-01")
+    @Override
+    public Result<Unit> subscribe(String streamName,
+                                  int partition,
+                                  ConsumerConfig config,
+                                  ConsumerCallback callback,
+                                  IdlePolicy idlePolicy) {
         if (closed.get()) {
             return StreamError.General.CONSUMER_RUNTIME_CLOSED.result();
         }
 
         var key = ConsumerKey.consumerKey(streamName, partition, config.groupId());
-        var state = ConsumerState.consumerState(config, callback, 0L);
+        var state = ConsumerState.consumerState(config, callback, 0L, idlePolicy);
 
         if (consumers.putIfAbsent(key, state) != null) {
             return StreamError.General.CONSUMER_ALREADY_SUBSCRIBED.result();
@@ -89,6 +99,24 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
         loadCursorAndStart(key, state, config.groupId(), streamName, partition);
 
         return success(unit());
+    }
+
+    @Override
+    public List<SubscriptionSnapshot> subscriptions() {
+        return consumers.entrySet()
+                        .stream()
+                        .map(entry -> toSnapshot(entry.getKey(),
+                                                 entry.getValue()))
+                        .toList();
+    }
+
+    private static SubscriptionSnapshot toSnapshot(ConsumerKey key, ConsumerState state) {
+        return new SubscriptionSnapshot(key.streamName(),
+                                        key.partition(),
+                                        key.groupId(),
+                                        state.cursor(),
+                                        state.isStalled(),
+                                        state.idlePolicy());
     }
 
     @Override
@@ -136,16 +164,25 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
     }
 
     private void reapIdleConsumers() {
+        reapIdleConsumers(System.currentTimeMillis());
+    }
+
+    /// Time-injected seam: the reap threshold is 60s, so a test that waited for wall-clock would be
+    /// both slow and flaky. Package-private for [StreamConsumerRuntimeTest].
+    @Contract
+    void reapIdleConsumers(long now) {
         if (closed.get()) {
             return;
         }
-
-        var now = System.currentTimeMillis();
 
         consumers.forEach((key, state) -> reapIfIdleConsumer(key, state, now));
     }
 
     private void reapIfIdleConsumer(ConsumerKey key, ConsumerState state, long now) {
+        if (state.idlePolicy() == IdlePolicy.KEEP_UNTIL_UNSUBSCRIBED) {
+            return;
+        }
+
         var elapsed = now - state.lastPollTime();
 
         if (elapsed <= CONSUMER_TIMEOUT_MS) {
@@ -245,12 +282,25 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
                                    fromOffset,
                                    MAX_POLL_BATCH)
                         .onSuccess(events -> handlePollSuccess(key, state, events))
-                        .onFailure(cause -> logPollFailure(key, cause));
+                        .onFailure(cause -> handlePollFailure(key, state, cause));
     }
 
     private void handlePollSuccess(ConsumerKey key, ConsumerState state, List<OffHeapRingBuffer.RawEvent> events) {
         state.adjustPollInterval(!events.isEmpty());
         deliverEvents(key, state, events);
+    }
+
+    /// Back off on failure too, not just on an empty successful read.
+    ///
+    /// `currentPollMs` starts at `MIN_POLL_MS` (1ms) and previously only ever grew inside
+    /// [#handlePollSuccess], so a consumer whose partition is not materialized locally — `readLocal`
+    /// fails with `PARTITION_NOT_LOCAL` — rescheduled every millisecond forever, ~1000 wakeups/s per
+    /// consumer, each on its own virtual thread. The declarative path (#488) can enter that window
+    /// legitimately: HRW can name this node OWNER of a partition whose ring is still materializing, so
+    /// the poll path is reachable before the push listener exists.
+    private void handlePollFailure(ConsumerKey key, ConsumerState state, Cause cause) {
+        state.adjustPollInterval(false);
+        logPollFailure(key, cause);
     }
 
     private void deliverEvents(ConsumerKey key, ConsumerState state, List<OffHeapRingBuffer.RawEvent> events) {
@@ -396,7 +446,7 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
         return JitterUtil.applyJitter(base, JitterUtil.MIN_FACTOR_DEFAULT, JitterUtil.MAX_FACTOR_DEFAULT);
     }
 
-    private static void logPollFailure(ConsumerKey key, org.pragmatica.lang.Cause cause) {
+    private static void logPollFailure(ConsumerKey key, Cause cause) {
         LOG.log(System.Logger.Level.DEBUG,
                 "Poll failed for {0}[{1}]: {2}",
                 key.streamName(),
@@ -416,6 +466,7 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
 
         private final ConsumerConfig config;
         private final ConsumerCallback callback;
+        private final IdlePolicy idlePolicy;
         private final AtomicLong cursor;
         private final AtomicLong eventsSinceCheckpoint = new AtomicLong(0);
         private final AtomicInteger retryCount = new AtomicInteger(0);
@@ -428,14 +479,25 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
         private final AtomicLong lastCheckpointTime = new AtomicLong(System.currentTimeMillis());
         private final AtomicLong lastPollTime = new AtomicLong(System.currentTimeMillis());
 
-        private ConsumerState(ConsumerConfig config, ConsumerCallback callback, long initialCursor) {
+        private ConsumerState(ConsumerConfig config,
+                              ConsumerCallback callback,
+                              long initialCursor,
+                              IdlePolicy idlePolicy) {
             this.config = config;
             this.callback = callback;
+            this.idlePolicy = idlePolicy;
             this.cursor = new AtomicLong(initialCursor);
         }
 
-        static ConsumerState consumerState(ConsumerConfig config, ConsumerCallback callback, long initialCursor) {
-            return new ConsumerState(config, callback, initialCursor);
+        static ConsumerState consumerState(ConsumerConfig config,
+                                           ConsumerCallback callback,
+                                           long initialCursor,
+                                           IdlePolicy idlePolicy) {
+            return new ConsumerState(config, callback, initialCursor, idlePolicy);
+        }
+
+        IdlePolicy idlePolicy() {
+            return idlePolicy;
         }
 
         ConsumerCallback callback() {

@@ -46,5 +46,16 @@ final class TestArtifacts {
     /// `aether/tests/blueprints/test-stream-multipart` module.
     static final String STREAM_MULTIPART_SLICE = "org.pragmatica.aether.test:test-stream-multipart-stream-slice:1.0.0";
 
+    /// partitions=1 declarative-consumer blueprint (`test-stream-consumer`), the first
+    /// `StreamSubscriber` fixture in the repository, used for the #488 declarative-delivery proof.
+    /// The slice declares a `@ConsumerEventSubscriber` method and reports back whatever the runtime
+    /// actually delivered to it, so delivery is asserted directly rather than inferred from logs.
+    /// A single partition is the ownership-gating discriminator: with every node running the slice,
+    /// correct partition-ownership gating delivers each event ONCE cluster-wide, while ungated
+    /// delivery would deliver it once per node. Mirrors the [#STREAM_SLICE] coordinate (fixed
+    /// `1.0.0` blueprint version, resolved from the local Maven repo) — the sibling
+    /// `aether/tests/blueprints/test-stream-consumer` module.
+    static final String STREAM_CONSUMER_SLICE = "org.pragmatica.aether.test:test-stream-consumer-consumer-slice:1.0.0";
+
     private TestArtifacts() {}
 }
