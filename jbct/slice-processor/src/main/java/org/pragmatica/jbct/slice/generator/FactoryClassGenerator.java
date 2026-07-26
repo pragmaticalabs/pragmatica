@@ -26,6 +26,7 @@ import java.util.Set;
 import java.util.stream.Collectors;
 
 import org.pragmatica.jbct.slice.BuildInfo;
+import org.pragmatica.jbct.slice.model.AnnotatedComponent;
 import org.pragmatica.jbct.slice.model.DependencyModel;
 import org.pragmatica.jbct.slice.model.KeyExtractorInfo;
 import org.pragmatica.jbct.slice.model.MethodModel;
@@ -1593,7 +1594,7 @@ public class FactoryClassGenerator {
         var provideCall = resource.isPublisher() || resource.isStreamResource()
                           ? "ctx.resources().provide(" + typeName
                            + ".class, \"" + configSection
-                           + "\", ProvisioningContext.provisioningContext())"
+                           + "\", " + streamProvisioningContext(resource, importTracker) + ")"
                           : "ctx.resources().provide(" + typeName + ".class, \"" + configSection + "\")";
         // Typed-topic publisher: wrap the provisioned Publisher in a TypedPublisher bound to the
         // single-source Topic<T> constant named by @ResourceQualifier(config = "<CONSTANT>") (#396),
@@ -1613,6 +1614,30 @@ public class FactoryClassGenerator {
         }
 
         return provideCall;
+    }
+
+    /// The provisioning context handed to a publisher / stream resource.
+    ///
+    /// A stream event type that declares a `@PartitionKey` component contributes the key extractor
+    /// the stream runtime hashes to pick a partition (#507) — without it `DefaultStreamPublisher` /
+    /// `PartitionedStreamAccess` fall back to round-robin and every multi-partition stream loses
+    /// per-key ordering. Resources with no partition key (all topic publishers, and stream event
+    /// types that declare none) keep the bare context.
+    private String streamProvisioningContext(DependencyModel resource, ImportTracker importTracker) {
+        return resource.partitionKey()
+                       .map(component -> partitionKeyContext(component, importTracker))
+                       .or("ProvisioningContext.provisioningContext()");
+    }
+
+    private String partitionKeyContext(AnnotatedComponent component, ImportTracker importTracker) {
+        var keyType = importTracker.use(component.boxedComponentTypeName());
+        var eventType = importTracker.use(component.ownerQualifiedName());
+
+        return "ProvisioningContext.provisioningContext()"
+             + ".withKeyExtractor((Fn1<" + keyType
+             + ", " + eventType
+             + ">) " + component.methodReference(eventType)
+             + ")";
     }
 
     /// Provisioning call for a typed-topic publisher: provisions by the topic NAME resolved from the
