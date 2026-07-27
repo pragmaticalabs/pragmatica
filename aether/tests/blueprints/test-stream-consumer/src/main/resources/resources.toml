@@ -24,3 +24,18 @@ partitions = 1
 retention = "count"
 retention-value = "100000"
 max-event-size = "64KB"
+
+# The MULTI-PARTITION stream (#535). Its whole purpose is the pigeonhole: with 5 partitions and a
+# deployment restricted to 1 instance, the single slice-bearing node can own AT MOST one of them, so
+# at least four partitions are guaranteed to have an owner that cannot run the consumer. That is the
+# case the #488 fixture structurally could not express — it ran the slice on every node, making
+# `owner INTERSECT slice-bearing` non-empty by construction — and it is exactly the case that
+# delivered nothing on the live 5-node cluster.
+#
+# Deterministic by counting, not by luck: no placement control is needed and there is no arrangement
+# of 1 host over 5 partitions in which every owner hosts the slice.
+[streams.spread-events]
+partitions = 5
+retention = "count"
+retention-value = "100000"
+max-event-size = "64KB"

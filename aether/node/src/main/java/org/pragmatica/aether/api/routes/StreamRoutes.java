@@ -11,6 +11,7 @@ import java.util.Map;
 import java.util.function.Supplier;
 import java.util.stream.Stream;
 
+import org.pragmatica.aether.api.ManagementApiResponses.DeclarativeConsumerAssignment;
 import org.pragmatica.aether.api.ManagementApiResponses.DeclarativeConsumerDetail;
 import org.pragmatica.aether.api.ManagementApiResponses.DeclarativeConsumerPartition;
 import org.pragmatica.aether.api.ManagementApiResponses.DeclarativeConsumersResponse;
@@ -19,6 +20,7 @@ import org.pragmatica.aether.api.ManagementApiResponses.StreamHydrationDetail;
 import org.pragmatica.aether.api.ManagementApiResponses.StreamHydrationResponse;
 import org.pragmatica.aether.api.ManagementApiResponses.StreamReplicasResponse;
 import org.pragmatica.aether.node.stream.StreamConsumerManager.ConsumerStatus;
+import org.pragmatica.aether.node.stream.StreamConsumerManager.PartitionAssignment;
 import org.pragmatica.aether.node.stream.StreamConsumerManager.PartitionCursor;
 import org.pragmatica.aether.management.route.ManagementRoute;
 import org.pragmatica.aether.node.ManageableNode;
@@ -275,8 +277,18 @@ public final class StreamRoutes implements RouteSource {
                                                    .stream()
                                                    .map(StreamRoutes::toConsumerPartition)
                                                    .toList(),
-                                             status.unconsumedOwnedPartitions(),
+                                             status.unassignedPartitions(),
+                                             status.partitionAssignments()
+                                                   .stream()
+                                                   .map(StreamRoutes::toConsumerAssignment)
+                                                   .toList(),
                                              status.diagnostic().or(""));
+    }
+
+    private static DeclarativeConsumerAssignment toConsumerAssignment(PartitionAssignment assignment) {
+        return new DeclarativeConsumerAssignment(assignment.partition(),
+                                                 assignment.consumerNode().map(NodeId::id),
+                                                 assignment.ownerNode().map(NodeId::id));
     }
 
     private static DeclarativeConsumerPartition toConsumerPartition(PartitionCursor cursor) {

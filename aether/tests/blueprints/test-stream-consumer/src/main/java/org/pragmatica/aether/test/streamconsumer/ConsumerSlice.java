@@ -31,7 +31,7 @@ import static org.pragmatica.lang.Result.success;
 /// Non-vacuity: before #488 is wired, nothing reads the `StreamRegistrationKey` this slice's
 /// deployment writes, so `received` reports zero no matter how many events are published.
 ///
-/// The slice carries TWO independent streams on purpose:
+/// The slice carries THREE independent streams on purpose:
 ///
 ///   - `streams.consumer-events` is `String`-typed and proves declarative delivery (#488).
 ///   - `streams.order-events` is [OrderPlaced]-typed and proves codec scoping (#526): an
@@ -40,8 +40,12 @@ import static org.pragmatica.lang.Result.success;
 ///     publish threw "No codec registered for class" before routing was ever reached. Every other
 ///     stream blueprint in the corpus is `String`-typed, which is exactly why nothing caught it;
 ///     this stream is the control's counterpart.
+///   - `streams.spread-events` has FIVE partitions and proves placement independence (#535). Deployed
+///     with `instances = 1`, its single host can own at most one of the five, so the rest must be
+///     consumed by reading through their owners. Before #535 those partitions were consumed by
+///     nobody: delivery required the owner to host the slice, and at default placement it does not.
 ///
-/// Keeping them separate means a regression in either mechanism cannot mask the other.
+/// Keeping them separate means a regression in any one mechanism cannot mask the others.
 @Slice
 public interface ConsumerSlice {
     record PublishRequest(String payload) {
@@ -90,6 +94,8 @@ public interface ConsumerSlice {
     Promise<ReceivedResponse> received(ReceivedRequest request);
     Promise<PublishResponse> publishOrder(PublishOrderRequest request);
     Promise<ReceivedOrdersResponse> receivedOrders(ReceivedRequest request);
+    Promise<PublishResponse> publishSpread(PublishRequest request);
+    Promise<ReceivedResponse> receivedSpread(ReceivedRequest request);
 
     /// The declarative consumer. Not an HTTP route — it is absent from `routes.toml` on purpose;
     /// the only thing that may call it is the framework's stream-delivery path.
@@ -100,15 +106,29 @@ public interface ConsumerSlice {
     @OrderEventSubscriber
     Promise<Unit> onOrderPlaced(OrderPlaced event);
 
+    /// The multi-partition declarative consumer (#535). Also deliberately unroutable. Under a
+    /// placement-restricted deployment most of its partitions are owned by nodes that cannot run this
+    /// method, so anything arriving here arrived via a read forwarded to the owner.
+    @SpreadEventSubscriber
+    Promise<Unit> onSpreadEvent(String event);
+
     static ConsumerSlice consumerSlice(@EventStreamPublisher StreamPublisher<String> publisher,
-                                       @OrderStreamPublisher StreamPublisher<OrderPlaced> orderPublisher) {
-        return new consumerSlice(publisher, orderPublisher, new ConcurrentLinkedQueue<>(), new ConcurrentLinkedQueue<>());
+                                       @OrderStreamPublisher StreamPublisher<OrderPlaced> orderPublisher,
+                                       @SpreadStreamPublisher StreamPublisher<String> spreadPublisher) {
+        return new consumerSlice(publisher,
+                                 orderPublisher,
+                                 spreadPublisher,
+                                 new ConcurrentLinkedQueue<>(),
+                                 new ConcurrentLinkedQueue<>(),
+                                 new ConcurrentLinkedQueue<>());
     }
 
     record consumerSlice(StreamPublisher<String> publisher,
                          StreamPublisher<OrderPlaced> orderPublisher,
+                         StreamPublisher<String> spreadPublisher,
                          Queue<String> delivered,
-                         Queue<OrderPlaced> deliveredOrders) implements ConsumerSlice {
+                         Queue<OrderPlaced> deliveredOrders,
+                         Queue<String> deliveredSpread) implements ConsumerSlice {
         @Override
         public Promise<PublishResponse> publish(PublishRequest request) {
             return publisher.publish(request.payload())
@@ -132,6 +152,17 @@ public interface ConsumerSlice {
         }
 
         @Override
+        public Promise<PublishResponse> publishSpread(PublishRequest request) {
+            return spreadPublisher.publish(request.payload())
+                                  .map(_ -> PublishResponse.published());
+        }
+
+        @Override
+        public Promise<ReceivedResponse> receivedSpread(ReceivedRequest request) {
+            return Promise.success(ReceivedResponse.receivedResponse(List.copyOf(deliveredSpread)));
+        }
+
+        @Override
         public Promise<Unit> onConsumerEvent(String event) {
             return Promise.success(delivered.add(event))
                           .mapToUnit();
@@ -140,6 +171,12 @@ public interface ConsumerSlice {
         @Override
         public Promise<Unit> onOrderPlaced(OrderPlaced event) {
             return Promise.success(deliveredOrders.add(event))
+                          .mapToUnit();
+        }
+
+        @Override
+        public Promise<Unit> onSpreadEvent(String event) {
+            return Promise.success(deliveredSpread.add(event))
                           .mapToUnit();
         }
     }

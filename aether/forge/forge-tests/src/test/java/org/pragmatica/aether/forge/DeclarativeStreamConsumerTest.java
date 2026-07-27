@@ -24,6 +24,8 @@ import java.net.http.HttpRequest;
 import java.time.Duration;
 import java.util.Arrays;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.IntSupplier;
 import java.util.regex.Pattern;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -60,13 +62,20 @@ import static org.pragmatica.http.JdkHttpOperations.jdkHttpOperations;
 /// the #526 proof: until stream resources were provisioned with the deployed SLICE's codec instead of
 /// the node-wide one, publishing it threw "No codec registered for class" before routing was even
 /// reached. The two are deliberately independent so a regression in either cannot mask the other.
+///
+/// **A third stream, deployed here at full coverage.** The fixture also carries the five-partition
+/// `streams.spread-events` added for #535. This suite runs it with the slice on EVERY node, so each
+/// partition's owner is itself a candidate and owner-preference keeps every read local — that is the
+/// control. [DeclarativeConsumerPlacementTest] deploys the SAME stream at `instances = 1`, where the
+/// owners cannot run the consumer and reads must be forwarded. Having both means a change that fixes
+/// the uncovered case by breaking the co-located one cannot pass.
 @Tag("Heavy")
 @Execution(ExecutionMode.SAME_THREAD)
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 class DeclarativeStreamConsumerTest {
-    private static final int BASE_PORT = 14000;
-    private static final int BASE_MGMT_PORT = 14100;
-    private static final int BASE_APP_HTTP_PORT = 14200;
+    private static final int BASE_PORT = 18000;
+    private static final int BASE_MGMT_PORT = 18100;
+    private static final int BASE_APP_HTTP_PORT = 18200;
     private static final int NODES = 5;
     private static final int INSTANCES = 5;
     private static final int EVENT_COUNT = 30;
@@ -74,6 +83,13 @@ class DeclarativeStreamConsumerTest {
 
     private static final String CONSUMER_EVENTS_STREAM = "consumer-events";
     private static final String ORDER_EVENTS_STREAM = "order-events";
+    private static final String SPREAD_EVENTS_STREAM = "spread-events";
+
+    /// Attachments expected cluster-wide once settled: one partition each for consumer-events and
+    /// order-events, plus the five of spread-events. With the slice on EVERY node each partition's own
+    /// owner is a candidate, so owner-preference assigns every partition to its owner and the total is
+    /// the stream's partition count summed — never more, which is what a duplicate attach looks like.
+    private static final int EXPECTED_ATTACHMENTS = 7;
 
     private static final Duration WAIT_TIMEOUT = Duration.ofSeconds(240);
     private static final Duration DELIVERY_TIMEOUT = Duration.ofSeconds(90);
@@ -141,7 +157,9 @@ class DeclarativeStreamConsumerTest {
         await().atMost(WAIT_TIMEOUT)
                .pollInterval(POLL_INTERVAL)
                .failFast(this::failIfSliceFailed)
-               .until(() -> consumerAttachedFor(CONSUMER_EVENTS_STREAM) && consumerAttachedFor(ORDER_EVENTS_STREAM));
+               .until(() -> consumerAttachedFor(CONSUMER_EVENTS_STREAM)
+                            && consumerAttachedFor(ORDER_EVENTS_STREAM)
+                            && consumerAttachedFor(SPREAD_EVENTS_STREAM));
     }
 
     @AfterAll
@@ -159,37 +177,41 @@ class DeclarativeStreamConsumerTest {
     class Delivery {
 
         /// The headline #488 assertion: events published to the stream reach the declared method.
+        ///
+        /// Counted by this test's OWN payload prefix rather than by a delta against a baseline. A
+        /// baseline delta cannot distinguish this test's events from a `__warmup__` publish or a
+        /// sibling test's leftovers, and a single stray delivery then reads as duplication — which is
+        /// exactly how "expected 30 but was 31" arose while the consumer had in fact attached once and
+        /// never moved.
         @Test
         void declaredConsumer_receivesPublishedEvents_withoutAnyExplicitSubscribe() {
-            var baseline = totalReceived();
-
-            publishBatch(EVENT_COUNT);
+            publishBatch("first-batch", EVENT_COUNT);
 
             await().atMost(DELIVERY_TIMEOUT)
                    .pollInterval(POLL_INTERVAL)
-                   .untilAsserted(() -> assertThat(totalReceived() - baseline)
+                   .untilAsserted(() -> assertThat(receivedMatching("first-batch"))
                            .describedAs("declarative consumer must receive every published event — before #488 this stayed at 0 forever")
                            .isEqualTo(EVENT_COUNT));
         }
 
         /// Ownership gating: with one partition and the slice on every node, exactly one node consumes.
-        /// An ungated implementation would multiply this by the number of nodes holding a materialized ring.
+        /// An ungated implementation would multiply this by the number of nodes holding a materialized
+        /// ring. Prefix-scoped for the same reason as above, which is also what keeps the EXACT count a
+        /// trustworthy duplication sensor rather than a flake.
         @Test
         void declaredConsumer_deliversEachEventExactlyOnceClusterWide() {
-            var baseline = totalReceived();
-
-            publishBatch(EVENT_COUNT);
+            publishBatch("once-batch", EVENT_COUNT);
 
             await().atMost(DELIVERY_TIMEOUT)
                    .pollInterval(POLL_INTERVAL)
-                   .untilAsserted(() -> assertThat(totalReceived() - baseline).isEqualTo(EVENT_COUNT));
+                   .untilAsserted(() -> assertThat(receivedMatching("once-batch")).isEqualTo(EVENT_COUNT));
 
             // Hold past several reconcile ticks: a second node attaching late would push the total above
             // EVENT_COUNT, which a single sampled assertion would miss.
             sleep(Duration.ofSeconds(12));
 
-            assertThat(totalReceived() - baseline)
-                    .describedAs("no duplicate delivery — only the partition OWNER consumes, and it stays the only one")
+            assertThat(receivedMatching("once-batch"))
+                    .describedAs("no duplicate delivery — exactly one node is assigned, and it stays the only one")
                     .isEqualTo(EVENT_COUNT);
         }
     }
@@ -197,14 +219,14 @@ class DeclarativeStreamConsumerTest {
     @Nested
     class Observability {
 
-        /// The operator surface must agree with reality: one attached subscription per declared
-        /// consumer, each on a single-partition stream, so two cluster-wide for the fixture's two
-        /// streams — never more, which is what a duplicate attach would look like.
+        /// The operator surface must agree with reality: one attached subscription per PARTITION of
+        /// each declared consumer's stream. With the slice on every node, owner-preference puts each
+        /// partition on its own owner — never more, which is what a duplicate attach would look like.
         @Test
-        void declarativeConsumersEndpoint_reportsOneAttachedSubscriptionPerStream() {
+        void declarativeConsumersEndpoint_reportsOneAttachedSubscriptionPerPartition() {
             assertThat(totalAttachedSubscriptions())
-                    .describedAs("two streams, one partition each, one owner each")
-                    .isEqualTo(2);
+                    .describedAs("one partition each for consumer-events and order-events, five for spread-events")
+                    .isEqualTo(EXPECTED_ATTACHMENTS);
         }
 
         /// Every node knows the declaration (it is cluster-wide KV), and the endpoint answers on all of
@@ -259,7 +281,7 @@ class DeclarativeStreamConsumerTest {
         /// and the consumer's reader to DECODE it. Delivery proves both halves at once.
         @Test
         void declaredConsumer_receivesApplicationTypedEvents_endToEnd() {
-            var baseline = totalOrdersReceived();
+            var baseline = settledCount(DeclarativeStreamConsumerTest.this::totalOrdersReceived);
 
             publishOrderBatch(ORDER_COUNT);
 
@@ -306,12 +328,35 @@ class DeclarativeStreamConsumerTest {
 
     // --- publish / receive ---------------------------------------------------
 
-    private void publishBatch(int count) {
+    private void publishBatch(String prefix, int count) {
         for (var i = 0; i < count; i++) {
-            var response = httpPost(appPort(), "/api/stream-consumer/publish", "{\"payload\":\"event-" + i + "\"}");
+            var response = httpPost(appPort(), "/api/stream-consumer/publish", "{\"payload\":\"" + prefix + "-" + i + "\"}");
 
             assertThat(response).describedAs("publish must succeed").contains("published");
         }
+    }
+
+    /// How many events carrying `prefix` the slice instances actually received, cluster-wide. Counts
+    /// occurrences in the returned event lists rather than trusting a running total, so warmup
+    /// publishes and other tests' events cannot be miscounted as this test's duplicates.
+    private int receivedMatching(String prefix) {
+        return cluster.getAvailableAppHttpPorts()
+                      .stream()
+                      .map(port -> httpPost(port, "/api/stream-consumer/received", "{}"))
+                      .mapToInt(body -> countOccurrences(body, "\"" + prefix + "-"))
+                      .sum();
+    }
+
+    private static int countOccurrences(String body, String needle) {
+        var count = 0;
+        var index = body.indexOf(needle);
+
+        while (index >= 0) {
+            count++;
+            index = body.indexOf(needle, index + needle.length());
+        }
+
+        return count;
     }
 
     private void publishOrderBatch(int count) {
@@ -343,14 +388,23 @@ class DeclarativeStreamConsumerTest {
                       .orElse("{\"count\":0,\"orders\":[]}");
     }
 
-    /// Sum of what every node's slice instance actually received. Only the owner's queue is non-empty,
-    /// but summing keeps the assertion independent of WHICH node owns the partition.
-    private int totalReceived() {
-        return cluster.getAvailableAppHttpPorts()
-                      .stream()
-                      .map(port -> httpPost(port, "/api/stream-consumer/received", "{}"))
-                      .mapToInt(body -> firstInt(COUNT_FIELD, body))
-                      .sum();
+    /// The delivered count once it has stopped moving — two consecutive samples equal.
+    ///
+    /// A baseline captured while the PREVIOUS test's delivery is still in flight makes this test's
+    /// exact-count assertion off by one, which reads exactly like a duplicate-delivery bug. That is
+    /// what "expected 30 but was 31" was: test isolation, not delivery.
+    private int settledCount(IntSupplier counter) {
+        var lastSample = new AtomicInteger(-1);
+
+        await().atMost(DELIVERY_TIMEOUT)
+               .pollInterval(POLL_INTERVAL)
+               .until(() -> isRepeatSample(lastSample, counter.getAsInt()));
+
+        return lastSample.get();
+    }
+
+    private static boolean isRepeatSample(AtomicInteger lastSample, int current) {
+        return lastSample.getAndSet(current) == current;
     }
 
     private int totalAttachedSubscriptions() {

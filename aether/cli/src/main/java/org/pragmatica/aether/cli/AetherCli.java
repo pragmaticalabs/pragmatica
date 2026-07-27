@@ -4058,7 +4058,7 @@ public class AetherCli implements Runnable {
         }
     }
 
-    @Command(name = "streams", description = "Manage event streams", subcommands = {StreamCommand.ListCommand.class, StreamCommand.StatusCommand.class, StreamCommand.PublishCommand.class, StreamCommand.ReadCommand.class, StreamCommand.CreateCommand.class, StreamCommand.DeleteCommand.class, StreamCommand.ConsumerGroupCommand.class})
+    @Command(name = "streams", description = "Manage event streams", subcommands = {StreamCommand.ListCommand.class, StreamCommand.StatusCommand.class, StreamCommand.ConsumersCommand.class, StreamCommand.PublishCommand.class, StreamCommand.ReadCommand.class, StreamCommand.CreateCommand.class, StreamCommand.DeleteCommand.class, StreamCommand.ConsumerGroupCommand.class})
     static class StreamCommand implements Runnable {
         @CommandLine.ParentCommand
         private AetherCli parent;
@@ -4093,6 +4093,24 @@ public class AetherCli implements Runnable {
             @Override
             public Integer call() {
                 var response = streamParent.parent.fetch(STREAM_GET, List.of(name));
+
+                return OutputFormatter.printQuery(response, streamParent.parent.outputOptions());
+            }
+        }
+
+        /// #488/#535 operator surface: which declarative `[streams.X]` consumers this node knows about,
+        /// which partitions it consumes, and — since #535 — which node consumes each partition and which
+        /// owns it. LOCAL scope: the answer describes the node you asked, so `unassignedPartitions` and
+        /// the diagnostic are that node's view. Every node computes the same assignment, so one call is
+        /// enough to answer "who consumes partition 3".
+        @Command(name = "consumers", description = "Show declarative stream consumers on the target node")
+        static class ConsumersCommand implements Callable<Integer> {
+            @CommandLine.ParentCommand
+            private StreamCommand streamParent;
+
+            @Override
+            public Integer call() {
+                var response = streamParent.parent.fetch(STREAM_DECLARATIVE_CONSUMERS);
 
                 return OutputFormatter.printQuery(response, streamParent.parent.outputOptions());
             }
