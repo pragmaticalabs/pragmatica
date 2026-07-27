@@ -1,8 +1,10 @@
 package org.pragmatica.jbct.score;
 
+import java.util.Arrays;
 import java.util.EnumMap;
 import java.util.List;
 import java.util.Map;
+import java.util.stream.IntStream;
 
 import org.junit.jupiter.api.Test;
 
@@ -10,16 +12,22 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 /// Output-surface gate for [ScoreReport]. A category rendered as a bare number that
 /// silently does not count toward the total is the defect class the advisory category was
-/// introduced to remove, so both formats must mark advisory categories as such.
+/// introduced to remove, so both breakdown formats must mark advisory categories as such.
+/// The badge is pinned as a golden document: it is a published artifact, so its bytes are
+/// part of the contract.
 class ScoreReportTest {
     private static ScoreResult scoreResult() {
+        return scoreResult(60);
+    }
+
+    private static ScoreResult scoreResult(int overall) {
         var breakdown = new EnumMap<ScoreCategory, ScoreResult.CategoryScore>(ScoreCategory.class);
 
         for (var category : ScoreCategory.values()) {
             breakdown.put(category, ScoreResult.CategoryScore.categoryScore(60, 10, 4, 4.0));
         }
 
-        return ScoreResult.scoreResult(60, breakdown, 7);
+        return ScoreResult.scoreResult(overall, breakdown, 7);
     }
 
     private static String lineFor(List<String> lines, String fragment) {
@@ -121,5 +129,81 @@ class ScoreReportTest {
         var lines = ScoreReport.terminalLines(ScoreResult.scoreResult(35, Map.copyOf(breakdown), 1));
 
         assertThat(lineFor(lines, "STYLE")).contains(" 35%");
+    }
+
+    /// Golden badge document. The badge is a published artifact — README-embedded, committed
+    /// to repositories — so every byte of it is pinned here: a silent change to the SVG is a
+    /// regression for every consumer, not a rendering detail.
+    @Test
+    void badgeLines_document_matchesTheShieldsBadgeByteForByte() {
+        var expected = """
+            <svg xmlns="http://www.w3.org/2000/svg" width="100" height="20">
+              <linearGradient id="b" x2="0" y2="100%">
+                <stop offset="0" stop-color="#bbb" stop-opacity=".1"/>
+                <stop offset="1" stop-opacity=".1"/>
+              </linearGradient>
+              <mask id="a">
+                <rect width="100" height="20" rx="3" fill="#fff"/>
+              </mask>
+              <g mask="url(#a)">
+                <path fill="#555" d="M0 0h45v20H0z"/>
+                <path fill="yellow" d="M45 0h55v20H45z"/>
+                <path fill="url(#b)" d="M0 0h100v20H0z"/>
+              </g>
+              <g fill="#fff" text-anchor="middle" font-family="DejaVu Sans,Verdana,Geneva,sans-serif" font-size="11">
+                <text x="22.5" y="15" fill="#010101" fill-opacity=".3">JBCT</text>
+                <text x="22.5" y="14">JBCT</text>
+                <text x="71.5" y="15" fill="#010101" fill-opacity=".3">60/100</text>
+                <text x="71.5" y="14">60/100</text>
+              </g>
+            </svg>
+            """;
+
+        assertThat(String.join("\n", ScoreReport.badgeLines(scoreResult()))).isEqualTo(expected);
+    }
+
+    @Test
+    void badgeLines_trailingBlankLine_closesTheDocument() {
+        var lines = ScoreReport.badgeLines(scoreResult());
+
+        assertThat(lines.getFirst()).startsWith("<svg ");
+        assertThat(lines.get(lines.size() - 2)).isEqualTo("</svg>");
+        assertThat(lines.getLast())
+                  .as("the template closes with a newline, so a redirected badge file keeps its trailing blank line")
+                  .isEmpty();
+    }
+
+    @Test
+    void badgeLines_fillColor_followsTheScoreBand() {
+        assertThat(lineFor(ScoreReport.badgeLines(scoreResult(95)), "M45 0h55v20H45z")).contains("fill=\"brightgreen\"");
+        assertThat(lineFor(ScoreReport.badgeLines(scoreResult(20)), "M45 0h55v20H45z")).contains("fill=\"red\"");
+    }
+
+    @Test
+    void badgeColor_bandBoundaries_matchShieldsThresholds() {
+        assertThat(ScoreReport.badgeColor(100)).isEqualTo("brightgreen");
+        assertThat(ScoreReport.badgeColor(90)).isEqualTo("brightgreen");
+        assertThat(ScoreReport.badgeColor(89)).isEqualTo("green");
+        assertThat(ScoreReport.badgeColor(75)).isEqualTo("green");
+        assertThat(ScoreReport.badgeColor(74)).isEqualTo("yellow");
+        assertThat(ScoreReport.badgeColor(60)).isEqualTo("yellow");
+        assertThat(ScoreReport.badgeColor(59)).isEqualTo("orange");
+        assertThat(ScoreReport.badgeColor(50)).isEqualTo("orange");
+        assertThat(ScoreReport.badgeColor(49)).isEqualTo("red");
+        assertThat(ScoreReport.badgeColor(0)).isEqualTo("red");
+    }
+
+    @Test
+    void badgeColor_everyScore_getsExactlyOneBandColor() {
+        var bandColors = Arrays.stream(ScoreReport.BadgeColor.values())
+                               .map(ScoreReport.BadgeColor::color)
+                               .toList();
+
+        assertThat(IntStream.rangeClosed(0, 100)
+                            .mapToObj(ScoreReport::badgeColor)
+                            .distinct()
+                            .toList())
+                  .as("every band must be reachable from a real score, and no colour may come from outside the table")
+                  .containsExactlyInAnyOrderElementsOf(bandColors);
     }
 }
