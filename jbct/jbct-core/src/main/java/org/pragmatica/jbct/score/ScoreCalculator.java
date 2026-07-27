@@ -11,57 +11,56 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 
-/// Calculates JBCT compliance scores using density + severity weighting.
+/// Measures JBCT violation density from lint diagnostics.
 ///
 /// Formula:
-/// weighted_violations = Σ(count[severity] × multiplier[severity])
-///   error:    × 2.5
-///   warning:  × 1.0
-///   info:     × 0.3
+/// ```
+/// category_density = 1000 × violations[category] / lines_of_code
+/// total_density    = 1000 × Σ violations[counted categories] / lines_of_code
+/// ```
 ///
-/// category_score = 100 × (1 - weighted_violations / checkpoints)
-/// overall_score = Σ(category_score[i] × weight[i])
+/// where `lines_of_code` is the physical non-blank line count of the analyzed files
+/// ([org.pragmatica.jbct.shared.SourceFile#nonBlankLines()]). The unit is violations per 1000
+/// lines; **lower is better** and the value is unbounded above, so there is no ceiling, no
+/// percentage and no average to take.
 ///
-/// Every category is measured the same way, but only the weighted ones reach
-/// `overall_score`: advisory categories ([ScoreCategory#advisory()], weight 0) are
-/// reported in the breakdown and contribute nothing to the total.
+/// This replaces a 0-100 "compliance score" whose denominator was derived from the violation
+/// count itself (`checkpoints = violations × 1.1 + 10`), which made it degenerate: a
+/// WARNING-only category asymptotically approached `100 × (1 - 1/1.1)` = 9 no matter how many
+/// findings there were (2,272 warnings and 1,000,000 warnings both reported 9), and an ERROR-only
+/// category saturated at 0 after ten violations. Density has a denominator that is independent of
+/// the numerator, which is the whole point.
+///
+/// Two deliberate absences: there is no severity multiplier and no category weight. Both were
+/// invisible judgements baked into one number. ERROR / WARNING / INFO are reported as raw counts
+/// beside each density, and the total is a plain sum, not a weighted average. Advisory categories
+/// ([ScoreCategory#advisory()]) are measured the same way and reported separately, so style
+/// findings cannot inflate the headline.
 public sealed interface ScoreCalculator permits ScoreCalculator.unused {
     record unused() implements ScoreCalculator {}
 
     Logger log = LoggerFactory.getLogger(ScoreCalculator.class);
 
-    double ERROR_MULTIPLIER = 2.5;
-    double WARNING_MULTIPLIER = 1.0;
-    double INFO_MULTIPLIER = 0.3;
+    /// Lines per KLOC: the density denominator scale.
+    double LINES_PER_KLOC = 1000.0;
 
-    /// Calculate JBCT score from lint diagnostics.
-    static ScoreResult calculate(List<Diagnostic> diagnostics, int filesAnalyzed) {
-        warnUnknownRules(diagnostics);
-        var categoryViolations = groupByCategory(diagnostics);
-        var categoryCheckpoints = countCheckpoints(diagnostics);
+    /// Measure violation density from a source scan.
+    static ScoreResult calculate(SourceScan scan) {
+        warnUnknownRules(scan.diagnostics());
         var breakdown = new EnumMap<ScoreCategory, ScoreResult.CategoryScore>(ScoreCategory.class);
 
         for (var category : ScoreCategory.values()) {
-            var violations = categoryViolations.getOrDefault(category, List.of());
-            var checkpoints = categoryCheckpoints.getOrDefault(category, 1);
-            // Avoid division by zero
-            var weightedViolations = calculateWeightedViolations(violations);
-            var score = calculateCategoryScore(weightedViolations, checkpoints);
-
-            breakdown.put(category,
-                          ScoreResult.CategoryScore.categoryScore(score,
-                                                                  checkpoints,
-                                                                  violations.size(),
-                                                                  weightedViolations));
+            breakdown.put(category, categoryScore(violationsIn(category, scan.diagnostics()), scan.linesOfCode()));
         }
 
-        var overall = calculateOverallScore(breakdown);
-
-        return ScoreResult.scoreResult(overall, breakdown, filesAnalyzed);
+        return ScoreResult.scoreResult(totalDensity(breakdown, scan.linesOfCode()),
+                                       breakdown,
+                                       scan.filesAnalyzed(),
+                                       scan.linesOfCode());
     }
 
-    /// Warn once per distinct unknown rule ID. Unknown diagnostics are excluded from
-    /// scoring rather than silently bucketed into a default category.
+    /// Warn once per distinct unknown rule ID. Unknown diagnostics are excluded from the
+    /// measurement rather than silently bucketed into a default category.
     private static void warnUnknownRules(List<Diagnostic> diagnostics) {
         unknownRuleIds(diagnostics).forEach(ScoreCalculator::warnUnknownRule);
     }
@@ -78,18 +77,8 @@ public sealed interface ScoreCalculator permits ScoreCalculator.unused {
     }
 
     private static void warnUnknownRule(String ruleId) {
-        log.warn("Lint rule '{}' has no score-category mapping and is excluded from the JBCT score; "
+        log.warn("Lint rule '{}' has no score-category mapping and is excluded from the JBCT density report; "
                  + "add it to RuleCategoryMapping (categorized or intentionally uncategorized).", ruleId);
-    }
-
-    private static Map<ScoreCategory, List<Diagnostic>> groupByCategory(List<Diagnostic> diagnostics) {
-        var grouped = new EnumMap<ScoreCategory, List<Diagnostic>>(ScoreCategory.class);
-
-        for (var category : ScoreCategory.values()) {
-            grouped.put(category, violationsIn(category, diagnostics));
-        }
-
-        return grouped;
     }
 
     private static List<Diagnostic> violationsIn(ScoreCategory category, List<Diagnostic> diagnostics) {
@@ -104,50 +93,40 @@ public sealed interface ScoreCalculator permits ScoreCalculator.unused {
                                   .or(false);
     }
 
-    private static Map<ScoreCategory, Integer> countCheckpoints(List<Diagnostic> diagnostics) {
-        // For now, use violation count as proxy for checkpoints
-        // TODO: Get actual checkpoint counts from linter
-        var checkpointMap = new EnumMap<ScoreCategory, Integer>(ScoreCategory.class);
-
-        for (var category : ScoreCategory.values()) {
-            var violations = violationsIn(category, diagnostics).size();
-            // Estimate: at least violations + 10% (so perfect score is possible)
-            checkpointMap.put(category, (int)(violations * 1.1 + 10));
-        }
-
-        return checkpointMap;
+    private static ScoreResult.CategoryScore categoryScore(List<Diagnostic> violations, int linesOfCode) {
+        return ScoreResult.CategoryScore.categoryScore(densityPerKloc(violations.size(), linesOfCode),
+                                                       violations.size(),
+                                                       countOf(violations, DiagnosticSeverity.ERROR),
+                                                       countOf(violations, DiagnosticSeverity.WARNING),
+                                                       countOf(violations, DiagnosticSeverity.INFO));
     }
 
-    private static double calculateWeightedViolations(List<Diagnostic> violations) {
-        return violations.stream()
-                         .mapToDouble(d -> switch (d.severity()) {
-            case ERROR -> ERROR_MULTIPLIER;
-            case WARNING -> WARNING_MULTIPLIER;
-            case INFO -> INFO_MULTIPLIER;
-        })
-                         .sum();
+    private static int countOf(List<Diagnostic> violations, DiagnosticSeverity severity) {
+        return (int) violations.stream()
+                               .filter(diagnostic -> diagnostic.severity() == severity)
+                               .count();
     }
 
-    private static int calculateCategoryScore(double weightedViolations, int checkpoints) {
-        if (checkpoints == 0) {
-            return 100;
-        }
-
-        var score = 100.0 * (1.0 - weightedViolations / checkpoints);
-
-        return Math.max(0,
-                        Math.min(100, (int) Math.round(score)));
+    private static double totalDensity(Map<ScoreCategory, ScoreResult.CategoryScore> breakdown, int linesOfCode) {
+        return densityPerKloc(ScoreCategory.countedCategories()
+                                           .stream()
+                                           .mapToInt(category -> breakdown.get(category).violations())
+                                           .sum(),
+                              linesOfCode);
     }
 
-    private static int calculateOverallScore(Map<ScoreCategory, ScoreResult.CategoryScore> breakdown) {
-        var weightedSum = 0.0;
-
-        for (var category : ScoreCategory.weightedCategories()) {
-            var categoryScore = breakdown.get(category);
-
-            weightedSum += categoryScore.score() * category.weightFraction();
+    /// Violations per 1000 non-blank lines, rounded to one decimal — the same value the report
+    /// prints and the density gate compares, so what an operator reads is exactly what fails a
+    /// build.
+    ///
+    /// With no lines there is no denominator and the density is 0.0; the raw violation count, the
+    /// LOC and the file count are reported next to every density, so that degenerate case is
+    /// visible rather than mistaken for a clean measurement.
+    static double densityPerKloc(int violations, int linesOfCode) {
+        if (linesOfCode == 0) {
+            return 0.0;
         }
 
-        return (int) Math.round(weightedSum);
+        return Math.round(violations * LINES_PER_KLOC * 10.0 / linesOfCode) / 10.0;
     }
 }

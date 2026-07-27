@@ -41,4 +41,17 @@ public record SourceFile(Path path, String content) {
         return path.getFileName()
                    .toString();
     }
+
+    /// Physical non-blank lines — the single definition of LOC used across JBCT.
+    ///
+    /// "Physical" means source lines as written: comments, javadoc, annotations and braces all
+    /// count, because they are all lines a rule can fire on. Only lines that are empty or pure
+    /// whitespace are dropped, so the count never depends on parsing and cannot disagree between
+    /// the CLI and the Maven goal. This is the denominator of violation density, so it lives here
+    /// once rather than being re-derived per call site.
+    public int nonBlankLines() {
+        return (int) content.lines()
+                            .filter(line -> !line.isBlank())
+                            .count();
+    }
 }

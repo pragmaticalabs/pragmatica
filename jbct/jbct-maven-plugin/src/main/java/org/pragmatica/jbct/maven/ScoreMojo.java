@@ -1,15 +1,11 @@
 package org.pragmatica.jbct.maven;
 
-import java.nio.file.Path;
-import java.util.ArrayList;
-import java.util.List;
-
-import org.pragmatica.jbct.lint.Diagnostic;
 import org.pragmatica.jbct.lint.JbctLinter;
+import org.pragmatica.jbct.score.DensityGate;
 import org.pragmatica.jbct.score.ScoreCalculator;
 import org.pragmatica.jbct.score.ScoreReport;
 import org.pragmatica.jbct.score.ScoreResult;
-import org.pragmatica.jbct.shared.SourceFile;
+import org.pragmatica.jbct.score.SourceScan;
 
 import org.apache.maven.plugin.MojoExecutionException;
 import org.apache.maven.plugin.MojoFailureException;
@@ -18,9 +14,16 @@ import org.apache.maven.plugins.annotations.Mojo;
 import org.apache.maven.plugins.annotations.Parameter;
 
 
-/// Maven goal for calculating JBCT compliance score.
+/// Maven goal reporting JBCT violation density.
 @Mojo(name = "score", defaultPhase = LifecyclePhase.VERIFY)
 public class ScoreMojo extends AbstractJbctMojo {
+    @Parameter(property = DensityGate.MAX_DENSITY_PROPERTY)
+    Double maxDensity;
+
+    /// The removed 0-100 score gate, still bound so a POM or command line that still sets it fails
+    /// loudly with migration guidance. Density fails ABOVE its threshold where the baseline failed
+    /// below it, so a silently ignored — or silently re-read — `baseline` would leave a build
+    /// asserting the opposite of what its configuration says.
     @Parameter(property = "jbct.score.baseline")
     Integer baseline;
 
@@ -28,6 +31,10 @@ public class ScoreMojo extends AbstractJbctMojo {
     public void execute() throws MojoExecutionException, MojoFailureException {
         if (shouldSkip("score")) {
             return;
+        }
+
+        if (baseline != null) {
+            throw new MojoExecutionException(DensityGate.REMOVED_BASELINE_MESSAGE);
         }
 
         var jbctConfig = loadConfig();
@@ -41,27 +48,16 @@ public class ScoreMojo extends AbstractJbctMojo {
             return;
         }
 
-        getLog().info("Scoring " + filesToProcess.size() + " Java file(s)");
-        var allDiagnostics = lintFiles(filesToProcess, linter);
-        var score = ScoreCalculator.calculate(allDiagnostics, filesToProcess.size());
+        getLog().info("Measuring " + filesToProcess.size() + " Java file(s)");
+        var scan = SourceScan.sourceScan(filesToProcess,
+                                         linter::lint,
+                                         message -> getLog().error("Parse error in " + message));
+        var score = ScoreCalculator.calculate(scan);
 
         outputScore(score);
-        if (baseline != null && score.overall() < baseline) {
-            throw new MojoFailureException("Score " + score.overall() + " below baseline " + baseline);
+        if (maxDensity != null && DensityGate.exceeds(score.totalDensityPerKloc(), maxDensity)) {
+            throw new MojoFailureException(DensityGate.breachMessage(score.totalDensityPerKloc(), maxDensity));
         }
-    }
-
-    private List<Diagnostic> lintFiles(List<Path> files, JbctLinter linter) {
-        var diagnostics = new ArrayList<Diagnostic>();
-
-        for (var file : files) {
-            SourceFile.sourceFile(file)
-                      .flatMap(linter::lint)
-                      .onSuccess(diagnostics::addAll)
-                      .onFailure(cause -> getLog().error("Parse error in " + file + ": " + cause.message()));
-        }
-
-        return diagnostics;
     }
 
     private void outputScore(ScoreResult score) {

@@ -7,12 +7,12 @@ import org.pragmatica.lang.Option;
 
 /// Maps live lint rule IDs to scoring categories.
 ///
-/// The mapping is keyed to the rule registry that actually feeds the scorer —
+/// The mapping is keyed to the rule registry that actually feeds the report —
 /// `CstLinter.defaultRules()`. Every rule the registry emits is assigned an explicit
 /// [ScoreCategory] in [#MAPPING], chosen by rule semantics. Rules enforcing cosmetic
 /// formatting, logging style, member ordering or zone-abstraction naming — concerns with
-/// no home among the six principle categories — land in [ScoreCategory#STYLE], which
-/// carries weight 0: they are counted and reported without distorting the weighted score.
+/// no home among the six principle categories — land in [ScoreCategory#STYLE], which is
+/// advisory: they are counted and reported separately, outside the total density.
 ///
 /// Nothing falls through silently: a rule ID absent from [#MAPPING] is unknown, and
 /// [ScoreCalculator] reports it loudly.
@@ -21,7 +21,7 @@ public sealed interface RuleCategoryMapping permits RuleCategoryMapping.unused {
 
     /// Rule IDs assigned to a scoring category, chosen by rule semantics.
     Map<String, ScoreCategory> MAPPING = Map.ofEntries(
-    // Return Types (25%) — correct use of the four return kinds
+    // Return Types — correct use of the four return kinds
     Map.entry("JBCT-RET-01", ScoreCategory.RETURN_TYPES),      // four return kinds
     Map.entry("JBCT-RET-02", ScoreCategory.RETURN_TYPES),      // no Promise<Result<T>> nesting
     Map.entry("JBCT-RET-04", ScoreCategory.RETURN_TYPES),      // no Void type parameter
@@ -29,13 +29,13 @@ public sealed interface RuleCategoryMapping permits RuleCategoryMapping.unused {
     Map.entry("JBCT-RET-07", ScoreCategory.RETURN_TYPES),      // no discarded Result/Promise/Option
     Map.entry("JBCT-BND-01", ScoreCategory.RETURN_TYPES),      // no forbidden boundary types (Optional/CompletableFuture/…)
 
-    // Null Safety (20%) — no null returns, no nullable parameters
+    // Null Safety — no null returns, no nullable parameters
     Map.entry("JBCT-RET-03", ScoreCategory.NULL_SAFETY),       // no null return
     Map.entry("JBCT-RET-06", ScoreCategory.NULL_SAFETY),       // no nullable parameter
     Map.entry("JBCT-RET-08", ScoreCategory.NULL_SAFETY),       // no null argument / defensive null comparison
     Map.entry("JBCT-TOT-03", ScoreCategory.NULL_SAFETY),       // wire-record accessor derefs possibly-null component
 
-    // Exception Hygiene (20%) — no business exceptions, proper typed error handling
+    // Exception Hygiene — no business exceptions, proper typed error handling
     Map.entry("JBCT-EX-01", ScoreCategory.EXCEPTION_HYGIENE),  // no business exceptions
     Map.entry("JBCT-EX-02", ScoreCategory.EXCEPTION_HYGIENE),  // no orElseThrow
     Map.entry("JBCT-STY-01", ScoreCategory.EXCEPTION_HYGIENE), // fluent failure (cause.result())
@@ -45,7 +45,7 @@ public sealed interface RuleCategoryMapping permits RuleCategoryMapping.unused {
     Map.entry("JBCT-TOT-01", ScoreCategory.EXCEPTION_HYGIENE), // partial op in mapper lambda throws
     Map.entry("JBCT-TOT-02", ScoreCategory.EXCEPTION_HYGIENE), // partial method reference in mapper throws
 
-    // Pattern Purity (15%) — single pattern per function, no mixing
+    // Pattern Purity — single pattern per function, no mixing
     Map.entry("JBCT-PAT-01", ScoreCategory.PATTERN_PURITY),    // no raw loops
     Map.entry("JBCT-PAT-02", ScoreCategory.PATTERN_PURITY),    // no pattern mixing
     Map.entry("JBCT-PAT-03", ScoreCategory.PATTERN_PURITY),    // no blocking await
@@ -63,7 +63,7 @@ public sealed interface RuleCategoryMapping permits RuleCategoryMapping.unused {
     Map.entry("JBCT-SHAPE-02", ScoreCategory.PATTERN_PURITY),  // method has no single pattern (#448 census)
     Map.entry("JBCT-SHAPE-03", ScoreCategory.PATTERN_PURITY),  // method shape disagrees with name-verb zone (#448 mis-leveled)
 
-    // Factory Methods (10%) — value object factories and naming conventions
+    // Factory Methods — value object factories and naming conventions
     Map.entry("JBCT-VO-01", ScoreCategory.FACTORY_METHODS),    // missing Result factory
     Map.entry("JBCT-VO-02", ScoreCategory.FACTORY_METHODS),    // constructor bypass
     Map.entry("JBCT-UC-01", ScoreCategory.FACTORY_METHODS),    // nested record factory
@@ -76,7 +76,7 @@ public sealed interface RuleCategoryMapping permits RuleCategoryMapping.unused {
     Map.entry("JBCT-UC-02", ScoreCategory.FACTORY_METHODS),    // use-case interface structure
     Map.entry("JBCT-VAL-01", ScoreCategory.FACTORY_METHODS),   // boolean validation vs Result factory
 
-    // Lambda Compliance (10%) — simple lambdas, method/constructor references
+    // Lambda Compliance — simple lambdas, method/constructor references
     Map.entry("JBCT-LAM-01", ScoreCategory.LAMBDA_COMPLIANCE), // lambda complexity
     Map.entry("JBCT-LAM-02", ScoreCategory.LAMBDA_COMPLIANCE), // lambda braces
     Map.entry("JBCT-LAM-03", ScoreCategory.LAMBDA_COMPLIANCE), // lambda ternary
@@ -84,7 +84,7 @@ public sealed interface RuleCategoryMapping permits RuleCategoryMapping.unused {
     Map.entry("JBCT-STY-05", ScoreCategory.LAMBDA_COMPLIANCE), // method reference preference
     Map.entry("JBCT-SIDE-01", ScoreCategory.LAMBDA_COMPLIANCE),// side effects in transformation lambdas
 
-    // Style (0%, advisory) — formatting, logging, ordering and zone-naming conventions
+    // Style (advisory) — formatting, logging, ordering and zone-naming conventions
     Map.entry("JBCT-STY-03", ScoreCategory.STYLE),             // fully-qualified names in method bodies
     Map.entry("JBCT-STY-04", ScoreCategory.STYLE),             // utility class → sealed interface
     Map.entry("JBCT-STY-06", ScoreCategory.STYLE),             // import ordering

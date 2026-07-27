@@ -1,10 +1,10 @@
 # JBCT CLI and Maven Plugin
 
-Code formatting, linting, and compliance scoring for Java Backend Coding Technology (JBCT).
+Code formatting, linting, and violation-density reporting for Java Backend Coding Technology (JBCT).
 
 ## Overview
 
-Provides a CLI tool and Maven plugin for enforcing JBCT coding standards. Features include source code formatting with method chain alignment, a linter with 40 rules across 14 categories, compliance scoring (0-100), project scaffolding, slice project verification, and AI tooling integration.
+Provides a CLI tool and Maven plugin for enforcing JBCT coding standards. Features include source code formatting with method chain alignment, a linter with 40 rules across 14 categories, violation-density reporting (violations per KLOC), project scaffolding, slice project verification, and AI tooling integration.
 
 ## Usage
 
@@ -15,7 +15,7 @@ jbct format src/main/java          # Format in-place
 jbct format --check src/main/java  # Check formatting (CI)
 jbct lint src/main/java            # Check JBCT compliance
 jbct check src/main/java           # Combined format-check + lint
-jbct score src/main/java           # Calculate compliance score (0-100)
+jbct score src/main/java           # Report violation density (violations per KLOC)
 jbct init my-project               # Create new JBCT project
 jbct init --slice my-service       # Create Aether slice project
 jbct upgrade                       # Self-update to latest version
@@ -33,6 +33,27 @@ jbct verify-slice                  # Validate slice configuration
 ```
 
 Goals: `jbct:format`, `jbct:format-check`, `jbct:lint`, `jbct:check`, `jbct:score`, `jbct:collect-slice-deps`, `jbct:verify-slice`.
+
+### Violation density
+
+`jbct score` / `jbct:score` reports **violations per 1000 non-blank source lines** — an unbounded
+metric where **lower is better**. Every ratio is printed next to the raw counts it came from
+(violations, ERROR/WARNING/INFO split, LOC, file count), because a small denominator turns a single
+violation into a large ratio: one finding in a 90-line module is `11.1/KLOC`.
+
+`STYLE` is an *advisory* category — formatting, logging, ordering and zone-naming rules are measured
+and reported, but excluded from the total so they cannot inflate the headline number.
+
+Gate the build with a maximum, which fails when density is **above** it:
+
+```bash
+jbct score --max-density 25 src/main/java     # CLI
+mvn jbct:score -Djbct.density.maxPerKloc=25   # Maven
+```
+
+The previous 0-100 compliance score and its `--baseline` / `jbct.score.baseline` gate (which failed
+*below* a threshold) are gone. Both names are rejected with migration guidance rather than
+re-interpreted, since carrying a threshold across the inversion would silently assert its opposite.
 
 ### Configuration
 

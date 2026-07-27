@@ -5,10 +5,13 @@ import java.io.IOException;
 import java.io.PrintStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.Locale;
 import java.util.regex.Pattern;
 
+import org.pragmatica.jbct.score.DensityGate;
 import org.pragmatica.jbct.score.ScoreReport;
 
+import org.apache.maven.plugin.MojoExecutionException;
 import org.apache.maven.plugin.MojoFailureException;
 import org.apache.maven.plugin.logging.SystemStreamLog;
 import org.apache.maven.project.MavenProject;
@@ -23,14 +26,16 @@ import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 
-/// Gate for the `jbct:score` goal: the report reaches the Maven log, and `jbct.score.baseline`
-/// fails the build in one direction only.
+/// Gate for the `jbct:score` goal: the report reaches the Maven log, and `jbct.density.maxPerKloc`
+/// fails the build in one direction only — ABOVE the threshold, since density is lower-is-better.
 ///
-/// The goal is the half of the scoring surface that can break a build, and it shares its renderer
+/// The goal is the half of the reporting surface that can break a build, and it shares its renderer
 /// with the CLI — so it is checked against the same [ScoreReport] output the CLI emits, with the
-/// baseline derived from the reported score instead of hard-coded.
+/// threshold derived from the reported density instead of hard-coded.
 class ScoreMojoTest {
-    private static final Pattern SCORE = Pattern.compile("JBCT COMPLIANCE SCORE: (\\d+)/100");
+    private static final Pattern TOTAL_DENSITY = Pattern.compile(ScoreReport.TOTAL_LABEL
+                                                                 + "\\s+([\\d.]+)"
+                                                                 + Pattern.quote(ScoreReport.DENSITY_UNIT));
 
     @TempDir
     Path projectDir;
@@ -65,7 +70,7 @@ class ScoreMojoTest {
         System.setOut(originalOut);
     }
 
-    private ScoreMojo scoreMojo(Integer baseline) {
+    private ScoreMojo scoreMojo(Double maxDensity) {
         var project = new MavenProject();
 
         project.setFile(projectDir.resolve("pom.xml")
@@ -75,7 +80,7 @@ class ScoreMojoTest {
         mojo.project = project;
         mojo.sourceDirectory = projectDir.resolve("src/main/java")
                                          .toFile();
-        mojo.baseline = baseline;
+        mojo.maxDensity = maxDensity;
         mojo.setLog(new SystemStreamLog());
 
         return mojo;
@@ -85,61 +90,89 @@ class ScoreMojoTest {
         return out.toString(UTF_8);
     }
 
-    /// Score of the fixture as the goal itself reports it, read back from the logged report box.
-    private int reportedScore() throws Exception {
+    /// Total density of the fixture as the goal itself reports it, read back from the logged box.
+    private double reportedDensity() throws Exception {
         out.reset();
         scoreMojo(null).execute();
-        var matcher = SCORE.matcher(log());
+        var matcher = TOTAL_DENSITY.matcher(log());
 
-        assertThat(matcher.find()).as("score header in the Maven log")
+        assertThat(matcher.find()).as("TOTAL row in the Maven log")
                                   .isTrue();
 
-        return Integer.parseInt(matcher.group(1));
+        return Double.parseDouble(matcher.group(1));
+    }
+
+    private static double threshold(double density) {
+        return Double.parseDouble(String.format(Locale.ROOT, "%.1f", density));
     }
 
     @Test
     void execute_report_reachesTheMavenLog() throws Exception {
-        var score = reportedScore();
+        var density = reportedDensity();
 
-        assertThat(log()).contains(ScoreReport.TOP_BORDER)
-                         .contains(ScoreReport.BOTTOM_BORDER)
+        assertThat(log()).contains(ScoreReport.HEADER_LABEL)
                          .contains(ScoreReport.ADVISORY_LEGEND)
-                         .contains("JBCT COMPLIANCE SCORE: " + score + "/100");
+                         .contains(ScoreReport.TOTAL_LABEL)
+                         .contains(String.format(Locale.ROOT, "%.1f", density) + ScoreReport.DENSITY_UNIT);
+        assertThat(density).isPositive();
     }
 
     @Test
-    void execute_noBaseline_succeeds() {
+    void execute_noMaxDensity_succeeds() {
         assertThatCode(scoreMojo(null)::execute).doesNotThrowAnyException();
     }
 
     @Test
-    void execute_baselineAtScore_succeeds() throws Exception {
-        var baseline = reportedScore();
+    void execute_maxDensityAtDensity_succeeds() throws Exception {
+        var maximum = threshold(reportedDensity());
 
-        assertThatCode(scoreMojo(baseline)::execute).doesNotThrowAnyException();
+        assertThatCode(scoreMojo(maximum)::execute).doesNotThrowAnyException();
     }
 
     @Test
-    void execute_baselineBelowScore_succeeds() {
-        assertThatCode(scoreMojo(0)::execute).doesNotThrowAnyException();
+    void execute_maxDensityAboveDensity_succeeds() throws Exception {
+        var maximum = threshold(reportedDensity()) + 10.0;
+
+        assertThatCode(scoreMojo(maximum)::execute).doesNotThrowAnyException();
+    }
+
+    /// Lower is better, so the build fails ABOVE the threshold — the opposite of the removed
+    /// `jbct.score.baseline`.
+    @Test
+    void execute_maxDensityBelowDensity_failsTheBuild() throws Exception {
+        var maximum = threshold(reportedDensity() - 0.1);
+
+        assertThatThrownBy(scoreMojo(maximum)::execute).isInstanceOf(MojoFailureException.class)
+                                                       .hasMessageContaining("exceeds maximum");
     }
 
     @Test
-    void execute_baselineAboveScore_failsTheBuild() throws Exception {
-        var baseline = reportedScore() + 1;
+    void execute_zeroMaxDensity_failsForAnyViolation() {
+        assertThatThrownBy(scoreMojo(0.0)::execute).isInstanceOf(MojoFailureException.class)
+                                                   .hasMessageContaining("exceeds maximum");
+    }
 
-        assertThatThrownBy(scoreMojo(baseline)::execute).isInstanceOf(MojoFailureException.class)
-                                                        .hasMessageContaining("below baseline " + baseline);
+    /// A stale `baseline` must not be silently ignored: it meant "fail below", so a build that
+    /// still carries one is asserting the opposite of what the density gate would do.
+    @Test
+    void execute_removedBaselineProperty_failsWithMigrationGuidance() {
+        var mojo = scoreMojo(null);
+
+        mojo.baseline = 70;
+
+        assertThatThrownBy(mojo::execute).isInstanceOf(MojoExecutionException.class)
+                                         .hasMessageContaining(DensityGate.MAX_DENSITY_PROPERTY)
+                                         .hasMessageContaining("inverted");
     }
 
     @Test
     void execute_skip_producesNoReport() {
-        var mojo = scoreMojo(1000);
+        var mojo = scoreMojo(0.0);
 
         mojo.skip = true;
         out.reset();
 
         assertThatCode(mojo::execute).doesNotThrowAnyException();
-        assertThat(log()).doesNotContain(ScoreReport.TOP_BORDER);
+        assertThat(log()).doesNotContain(ScoreReport.HEADER_LABEL);
     }
 }
