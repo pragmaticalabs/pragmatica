@@ -1468,6 +1468,23 @@ Show detailed stream info including per-partition details.
 aether streams status my-events
 ```
 
+### `aether streams consumers`
+
+Show the declarative `[streams.X]` consumers this node knows about — slice methods the runtime invokes
+for every event on the partitions assigned to them.
+
+```bash
+aether streams consumers
+```
+
+Per-node: the declarations are cluster-wide, but `attachedSubscriptions` and `assignedPartitions`
+describe the node you asked. `partitionAssignments` names which node consumes each partition and which
+owns it — reads are forwarded to the owner whenever those differ — and is computed identically on every
+node, so one call answers "who consumes partition 3". `unassignedPartitions` is the gap worth alerting
+on: partitions no node can consume because the declaring slice is `ACTIVE` nowhere.
+
+See [Management API — Declarative Stream Consumers](management-api.md#declarative-stream-consumers).
+
 ### `aether streams publish <name> <message>`
 
 Publish a text message to a stream. The message is base64-encoded automatically.

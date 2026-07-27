@@ -4245,6 +4245,80 @@ Materialization is placement-gated (increment 2): `ringsMaterialized` drops belo
 | `streams[].replicaPartitions` | Partitions this node is a non-owner REPLICA of |
 | `streams[].nonePartitions` | Partitions this node neither owns nor replicates |
 
+### Declarative Stream Consumers
+
+```
+GET /api/streams/declarative-consumers
+```
+
+**Auth:** ALL_AUTHENTICATED · **Routing:** LOCAL (per-node)
+
+**CLI:** `aether streams consumers`
+
+What this node knows about declarative `[streams.X]` consumers — slice methods annotated with a `@ResourceQualifier(type = StreamSubscriber.class)` qualifier, which the runtime invokes for every event on the partitions assigned to them (#488). The declaration itself is cluster-wide committed KV, so **every node answers with the same declarations**; what differs per node is which partitions that node has actually attached.
+
+**Which node consumes which partition (#535).** Exactly one node is assigned per `(stream, partition, consumer group)`. Given the candidate set — nodes where the declaring artifact is `ACTIVE`, intersected with the live member view — the assignee is the partition's HRW owner when the owner is in that set, otherwise the HRW pick over the set itself. An assignee that is not the owner holds no ring for the partition and reads THROUGH the owner. Before #535 the rule was owner-gating alone, which meant a slice deployed at default replication frequently had no node that both owned a partition and hosted the consumer, and such partitions were consumed by nobody while every node truthfully reported `attachedSubscriptions: 0`.
+
+`partitionAssignments` is computed identically on every node, so a single call to any node answers "who consumes partition 3, and does it read locally?" — reads are forwarded whenever `consumerNode` differs from `ownerNode`.
+
+`eventTypePublishable` is absent when this node cannot know: the probe needs the slice's own codec registry, which only a node hosting the slice has, so reporting `false` there would fabricate a value. A deployment still activating produces the same empty candidate set as a slice that is nowhere, so the two are reported differently — "not being consumed YET" (normal, logged at INFO) versus the `unassignedPartitions` gap (logged at ERROR).
+
+**Guarantee.** At-least-once delivery per partition, conditional on the slice being `ACTIVE` on at least one live node. Duplicates arise from redelivery after a handler failure under `RETRY`, from the reconcile-tick window during an ownership or placement change (old and new assignee may both deliver), and from resuming at the last checkpoint (≤1000 events or ≤30s of progress) rather than the last delivered offset after an ungraceful move — a graceful detach flushes the exact cursor. Not effectively-once: there is no fencing token on delivery, and two transiently-divergent assignment views can both deliver and both write the cursor, last write winning.
+
+**Response:**
+```json
+{
+  "attachedSubscriptions": 2,
+  "consumers": [
+    {
+      "stream": "orders",
+      "configSection": "streams.orders",
+      "artifact": "com.example:order-slice:1.0.0",
+      "method": "onOrderPlaced",
+      "consumerGroup": "orders-onOrderPlaced",
+      "batchMode": false,
+      "eventType": "com.example.OrderPlaced",
+      "sliceDeployedLocally": true,
+      "eventTypePublishable": true,
+      "assignedPartitions": [
+        {"partition": 0, "committedOffset": 42, "stalled": false},
+        {"partition": 2, "committedOffset": 17, "stalled": false}
+      ],
+      "partitionAssignments": [
+        {"partition": 0, "consumerNode": "node-1", "ownerNode": "node-1"},
+        {"partition": 1, "consumerNode": "node-3", "ownerNode": "node-2"},
+        {"partition": 2, "consumerNode": "node-1", "ownerNode": "node-4"}
+      ],
+      "diagnostic": "consuming partitions [2] of stream orders whose owner is another node — reads for them are forwarded to the owner"
+    }
+  ]
+}
+```
+
+> **Empty fields are omitted.** The serializer drops empty collections and absent optionals, so a healthy
+> consumer carries no `unassignedPartitions` key at all rather than `[]`, and `eventTypePublishable` is
+> absent (not `false`) on a node that cannot determine it. Check for the field's PRESENCE, not for an
+> empty value.
+
+| Field | Description |
+|-------|-------------|
+| `attachedSubscriptions` | Subscriptions actually attached ON THIS NODE — the number of partitions assigned here, not the stream's partition count |
+| `consumers[].stream` | Stream the consumer is declared against |
+| `consumers[].configSection` | The `[streams.X]` section in the slice's `resources.toml` |
+| `consumers[].artifact` | Artifact declaring the consumer |
+| `consumers[].method` | The slice method the runtime invokes |
+| `consumers[].consumerGroup` | Derived consumer group owning the durable cursor |
+| `consumers[].batchMode` | Whether the method takes `List<T>` (delivered as singleton batches in this release) |
+| `consumers[].eventType` | Declared event type |
+| `consumers[].sliceDeployedLocally` | Whether the declaring slice is loaded on THIS node |
+| `consumers[].eventTypePublishable` | Whether the slice's own codec registry knows the event type (#526). **Absent when this node cannot know** — the probe needs the slice's codec, which only a node hosting the slice has |
+| `consumers[].assignedPartitions` | Live subscriptions on this node: `partition`, `committedOffset` (next offset to read — one past the last delivered), `stalled` |
+| `consumers[].unassignedPartitions` | **The loud gap:** partitions no node can consume because the slice is `ACTIVE` nowhere. Absent when there is no gap. It is NOT a gap for this node to lack the slice — since #535 the owner need not host it. During a deploy the same emptiness is reported as "not being consumed YET" in `diagnostic` rather than as a gap |
+| `consumers[].partitionAssignments` | Full partition→node map: `consumerNode` (who consumes it), `ownerNode` (who owns it). Reads are forwarded whenever they differ. Either is `null` during the bootstrap window; `consumerNode` is also `null` when nothing can consume |
+| `consumers[].diagnostic` | Operator-facing explanation of whichever condition applies; empty when the consumer is healthy and reading locally |
+
+An empty `consumers` list means no slice in the cluster declares a `[streams.X]` consumer — the honest answer; rows are never fabricated.
+
 ### Create Stream
 
 ```
