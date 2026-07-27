@@ -234,19 +234,24 @@ public interface StreamConsumerManager {
             recordDiagnosis(declaration, Diagnosis.deployed(declaration, owned, publishable(declaration, bridge)));
         }
 
-        /// Exact test of the #526 publish-side gap: `StreamAccess`/`StreamPublisher` are provisioned
-        /// with the node-wide codec, so an event type absent from it cannot be PUBLISHED at all and
-        /// this consumer will never see an event no matter how healthy it looks.
+        /// Can this event type actually be PUBLISHED to the stream? Answered against the codec the
+        /// slice's own stream resources use — its slice codec, which layers the application's
+        /// declared types over the node codec (#526). Before slice-scoped codecs this had to consult
+        /// the node codec, which knew framework types only and therefore reported every
+        /// application-defined event as unpublishable. A bridge carrying no codec of its own falls
+        /// back to the node codec, which is then genuinely the codec in play.
         private boolean publishable(ConsumerDeclaration declaration, SliceBridge bridge) {
             return Result.lift(() -> Class.forName(declaration.eventType(),
                                                    false,
                                                    bridge.classLoader()))
-                         .map(this::knownToNodeCodec)
+                         .map(eventClass -> knownToCodec(bridge, eventClass))
                          .or(false);
         }
 
-        private boolean knownToNodeCodec(Class<?> eventClass) {
-            return Result.lift(() -> nodeCodec.lookupByClass(eventClass)).isSuccess();
+        private boolean knownToCodec(SliceBridge bridge, Class<?> eventClass) {
+            return Result.lift(() -> bridge.sliceCodec()
+                                           .or(nodeCodec)
+                                           .lookupByClass(eventClass)).isSuccess();
         }
 
         private void recordDiagnosis(ConsumerDeclaration declaration, Diagnosis diagnosis) {
@@ -474,8 +479,8 @@ public interface StreamConsumerManager {
                                  publishable
                                  ? Option.none()
                                  : Option.some("event type " + declaration.eventType()
-                                              + " is not registered in the node codec, so it cannot be PUBLISHED to the stream at all"
-                                              + " — this consumer will receive nothing until #526 (slice-scoped stream serializer) lands"));
+                                              + " has no codec in the slice's own codec registry, so it cannot be PUBLISHED to the stream at all"
+                                              + " — this consumer will receive nothing until the slice registers a codec for it"));
         }
 
         static Diagnosis ownedButUndeployed(ConsumerDeclaration declaration, List<Integer> owned) {

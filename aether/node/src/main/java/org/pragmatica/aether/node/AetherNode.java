@@ -1139,7 +1139,8 @@ public interface AetherNode extends ManageableNode {
                                                deferredInvoker,
                                                resourceProviderSetup.facade(),
                                                config.sliceAction(),
-                                               resourceProviderSetup.nodeComposite());
+                                               resourceProviderSetup.nodeComposite(),
+                                               Option.some(nodeCodec));
         var dhtRebalancer = DHTRebalancer.dhtRebalancer(dhtNode, dhtNetwork, config.artifactRepo());
         var dhtTopologyListener = DHTTopologyListener.dhtTopologyListener(dhtNode, dhtRebalancer);
         var dhtAntiEntropy = DHTAntiEntropy.dhtAntiEntropy(dhtNode, dhtNetwork, config.artifactRepo());

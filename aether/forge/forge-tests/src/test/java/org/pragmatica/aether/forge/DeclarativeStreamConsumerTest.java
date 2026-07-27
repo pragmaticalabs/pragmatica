@@ -22,6 +22,7 @@ import org.pragmatica.lang.Option;
 import java.net.URI;
 import java.net.http.HttpRequest;
 import java.time.Duration;
+import java.util.Arrays;
 import java.util.List;
 import java.util.regex.Pattern;
 
@@ -52,9 +53,13 @@ import static org.pragmatica.http.JdkHttpOperations.jdkHttpOperations;
 ///
 /// **Honest scope.** Forge is a single-JVM Ember cluster: this proves dispatch, ownership gating,
 /// registration-driven attach, and the observability surface. It does NOT prove cross-node owner
-/// failover or cursor resume across a real node death — that needs the cluster harness. The event
-/// type is `String` because app-defined types cannot be published to a stream at all until #526
-/// lands (`StreamAccess` is provisioned with the node-wide codec).
+/// failover or cursor resume across a real node death — that needs the cluster harness.
+///
+/// **Two streams, two mechanisms.** `streams.consumer-events` is `String`-typed and carries the #488
+/// proof. `streams.order-events` is `OrderPlaced`-typed — an application-defined record — and carries
+/// the #526 proof: until stream resources were provisioned with the deployed SLICE's codec instead of
+/// the node-wide one, publishing it threw "No codec registered for class" before routing was even
+/// reached. The two are deliberately independent so a regression in either cannot mask the other.
 @Tag("Heavy")
 @Execution(ExecutionMode.SAME_THREAD)
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
@@ -65,6 +70,10 @@ class DeclarativeStreamConsumerTest {
     private static final int NODES = 5;
     private static final int INSTANCES = 5;
     private static final int EVENT_COUNT = 30;
+    private static final int ORDER_COUNT = 10;
+
+    private static final String CONSUMER_EVENTS_STREAM = "consumer-events";
+    private static final String ORDER_EVENTS_STREAM = "order-events";
 
     private static final Duration WAIT_TIMEOUT = Duration.ofSeconds(240);
     private static final Duration DELIVERY_TIMEOUT = Duration.ofSeconds(90);
@@ -124,6 +133,15 @@ class DeclarativeStreamConsumerTest {
                .pollInterval(POLL_INTERVAL)
                .failFast(this::failIfSliceFailed)
                .until(() -> totalAttachedSubscriptions() > 0);
+
+        // Gate on EACH stream separately. A subscription attaches at the stream TAIL, so an event
+        // published before its consumer attached is skipped, not queued — and with two streams the
+        // aggregate gate above is satisfied by whichever attaches first. Waiting per stream is what
+        // makes the delivery assertions measure delivery rather than attach timing.
+        await().atMost(WAIT_TIMEOUT)
+               .pollInterval(POLL_INTERVAL)
+               .failFast(this::failIfSliceFailed)
+               .until(() -> consumerAttachedFor(CONSUMER_EVENTS_STREAM) && consumerAttachedFor(ORDER_EVENTS_STREAM));
     }
 
     @AfterAll
@@ -179,13 +197,14 @@ class DeclarativeStreamConsumerTest {
     @Nested
     class Observability {
 
-        /// The operator surface must agree with reality: exactly one attached subscription cluster-wide
-        /// for a single-partition stream.
+        /// The operator surface must agree with reality: one attached subscription per declared
+        /// consumer, each on a single-partition stream, so two cluster-wide for the fixture's two
+        /// streams — never more, which is what a duplicate attach would look like.
         @Test
-        void declarativeConsumersEndpoint_reportsExactlyOneAttachedSubscription() {
+        void declarativeConsumersEndpoint_reportsOneAttachedSubscriptionPerStream() {
             assertThat(totalAttachedSubscriptions())
-                    .describedAs("one partition, one owner, one subscription")
-                    .isEqualTo(1);
+                    .describedAs("two streams, one partition each, one owner each")
+                    .isEqualTo(2);
         }
 
         /// Every node knows the declaration (it is cluster-wide KV), and the endpoint answers on all of
@@ -214,6 +233,77 @@ class DeclarativeStreamConsumerTest {
         }
     }
 
+    /// #526 — an APPLICATION-DEFINED record survives the full stream round trip.
+    ///
+    /// Every other stream fixture in the corpus is `String`-typed, a type the node-wide codec already
+    /// knows, which is exactly why nothing caught the defect. `OrderPlaced` is known only to the
+    /// slice's own codec, so these assertions fail against the pre-fix runtime at the PUBLISH call
+    /// with "No codec registered for class" — before delivery is ever reached.
+    @Nested
+    class ApplicationTypedDelivery {
+
+        /// The headline #526 assertion: publishing an app-defined record succeeds at all.
+        @Test
+        void publishOrder_succeeds_forApplicationDefinedEventType() {
+            var response = httpPost(appPort(),
+                                    "/api/stream-consumer/publish-order",
+                                    "{\"orderId\":\"order-probe\",\"customer\":\"acme\",\"amount\":7}");
+
+            assertThat(response).describedAs("app-typed publish must succeed — before #526 this threw "
+                                             + "'No codec registered for class' because the publisher held the node codec")
+                                .doesNotContain("\"error\"")
+                                .contains("published");
+        }
+
+        /// Both ends of the stream must resolve the slice codec: the publisher to ENCODE the record
+        /// and the consumer's reader to DECODE it. Delivery proves both halves at once.
+        @Test
+        void declaredConsumer_receivesApplicationTypedEvents_endToEnd() {
+            var baseline = totalOrdersReceived();
+
+            publishOrderBatch(ORDER_COUNT);
+
+            await().atMost(DELIVERY_TIMEOUT)
+                   .pollInterval(POLL_INTERVAL)
+                   .untilAsserted(() -> assertThat(totalOrdersReceived() - baseline)
+                           .describedAs("every app-typed event must round-trip through the slice codec")
+                           .isEqualTo(ORDER_COUNT));
+        }
+
+        /// The record's fields must survive encode/decode intact — delivery of a corrupted or
+        /// default-constructed value would still satisfy a bare count assertion.
+        @Test
+        void declaredConsumer_preservesEveryRecordComponent_throughTheStream() {
+            publishOrderBatch(ORDER_COUNT);
+
+            await().atMost(DELIVERY_TIMEOUT)
+                   .pollInterval(POLL_INTERVAL)
+                   .untilAsserted(() -> assertThat(receivedOrdersBody())
+                           .describedAs("the decoded record must carry the published field values, not defaults")
+                           .contains("\"orderId\":\"order-0\"")
+                           .contains("\"customer\":\"customer-0\"")
+                           .contains("\"amount\":100"));
+        }
+
+        /// The operator surface must stop warning about app types now that they genuinely publish.
+        @Test
+        void declarativeConsumersEndpoint_reportsEventTypePublishable_forApplicationType() {
+            var fragments = mgmtPorts().stream()
+                                       .map(port -> consumerFragment(httpGet(port, "/api/streams/declarative-consumers"),
+                                                                     ORDER_EVENTS_STREAM))
+                                       .filter(fragment -> !fragment.isEmpty())
+                                       .toList();
+
+            assertThat(fragments).describedAs("every node knows the app-typed declaration — it is cluster-wide KV")
+                                 .isNotEmpty();
+            assertThat(fragments).allSatisfy(fragment -> {
+                assertThat(fragment).describedAs("the slice's own codec registers OrderPlaced, so it IS publishable")
+                                    .contains("\"eventTypePublishable\":true");
+                assertThat(fragment).doesNotContain("cannot be PUBLISHED");
+            });
+        }
+    }
+
     // --- publish / receive ---------------------------------------------------
 
     private void publishBatch(int count) {
@@ -222,6 +312,35 @@ class DeclarativeStreamConsumerTest {
 
             assertThat(response).describedAs("publish must succeed").contains("published");
         }
+    }
+
+    private void publishOrderBatch(int count) {
+        for (var i = 0; i < count; i++) {
+            var body = "{\"orderId\":\"order-" + i + "\",\"customer\":\"customer-" + i + "\",\"amount\":" + (100 + i) + "}";
+            var response = httpPost(appPort(), "/api/stream-consumer/publish-order", body);
+
+            assertThat(response).describedAs("app-typed publish must succeed").contains("published");
+        }
+    }
+
+    /// Sum of app-typed deliveries across every node. Only the partition owner's queue is non-empty;
+    /// summing keeps the assertion independent of WHICH node owns it.
+    private int totalOrdersReceived() {
+        return cluster.getAvailableAppHttpPorts()
+                      .stream()
+                      .map(port -> httpPost(port, "/api/stream-consumer/received-orders", "{}"))
+                      .mapToInt(body -> firstInt(COUNT_FIELD, body))
+                      .sum();
+    }
+
+    /// The one node that actually received app-typed events, so field assertions read real deliveries.
+    private String receivedOrdersBody() {
+        return cluster.getAvailableAppHttpPorts()
+                      .stream()
+                      .map(port -> httpPost(port, "/api/stream-consumer/received-orders", "{}"))
+                      .filter(body -> firstInt(COUNT_FIELD, body) > 0)
+                      .findFirst()
+                      .orElse("{\"count\":0,\"orders\":[]}");
     }
 
     /// Sum of what every node's slice instance actually received. Only the owner's queue is non-empty,
@@ -239,6 +358,24 @@ class DeclarativeStreamConsumerTest {
                           .map(port -> httpGet(port, "/api/streams/declarative-consumers"))
                           .mapToInt(body -> firstInt(ATTACHED_FIELD, body))
                           .sum();
+    }
+
+    /// True once SOME node reports a live subscription for `stream`. Per-stream, because the
+    /// aggregate count cannot distinguish "both consumers attached" from "one attached twice".
+    private boolean consumerAttachedFor(String stream) {
+        return mgmtPorts().stream()
+                          .map(port -> consumerFragment(httpGet(port, "/api/streams/declarative-consumers"), stream))
+                          .anyMatch(fragment -> fragment.contains("\"assignedPartitions\""));
+    }
+
+    /// The slice of the declarative-consumers JSON describing one stream. Substring-scoped rather than
+    /// parsed: the response carries one object per declared consumer and a whole-body `contains` would
+    /// happily match a field belonging to the OTHER stream.
+    private static String consumerFragment(String body, String stream) {
+        return Arrays.stream(body.split("\\{\"stream\":\""))
+                     .filter(fragment -> fragment.startsWith(stream + "\""))
+                     .findFirst()
+                     .orElse("");
     }
 
     private int ownerMgmtPort() {

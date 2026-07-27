@@ -15,3 +15,12 @@ partitions = 1
 retention = "count"
 retention-value = "100000"
 max-event-size = "64KB"
+
+# The APPLICATION-TYPED stream (#526). Same shape as consumer-events on purpose — the only variable
+# under test is the event TYPE. It carries `OrderPlaced`, a record only the slice's own codec knows,
+# so a resource provisioned with the node-wide codec fails here and passes on consumer-events.
+[streams.order-events]
+partitions = 1
+retention = "count"
+retention-value = "100000"
+max-event-size = "64KB"

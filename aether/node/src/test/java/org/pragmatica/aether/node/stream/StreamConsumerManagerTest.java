@@ -35,6 +35,7 @@ import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.serialization.FrameworkCodecs;
+import org.pragmatica.serialization.SliceCodec;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
@@ -49,9 +50,22 @@ import static org.mockito.Mockito.when;
 /// deliver every event once per node that has the slice.
 ///
 /// The node codec here is the REAL [FrameworkCodecs], so the `eventTypePublishable` assertions
-/// exercise the actual #526 condition rather than a mocked stand-in: `java.lang.String` is registered,
-/// an app-defined record is not.
+/// exercise the actual condition rather than a mocked stand-in: `java.lang.String` is registered in
+/// it, [AppEvent] is not — and after #526 the probe consults the SLICE's codec, where it can be.
 class StreamConsumerManagerTest {
+    /// A real, loadable application-defined event type. Real matters: the publishability probe does
+    /// `Class.forName` first, so a fictional name would report "unpublishable" for the wrong reason
+    /// and the codec half of the check would never run.
+    record AppEvent(String id) {}
+
+    private static final String APP_EVENT_TYPE = AppEvent.class.getName();
+
+    private static final SliceCodec.TypeCodec<AppEvent> APP_EVENT_CODEC =
+        new SliceCodec.TypeCodec<>(AppEvent.class,
+                                   SliceCodec.deterministicTag(APP_EVENT_TYPE),
+                                   (codec, buf, value) -> codec.write(buf, value.id()),
+                                   (codec, buf) -> new AppEvent(codec.read(buf)));
+
     private static final Artifact ARTIFACT = Artifact.artifact("org.example:orders:1.0.0").unwrap();
     private static final MethodName METHOD = MethodName.methodName("onOrderEvent").unwrap();
     private static final NodeId SELF = NodeId.nodeId("node-1").unwrap();
@@ -103,7 +117,15 @@ class StreamConsumerManagerTest {
     }
 
     private void deploySliceLocally() {
-        when(invocationHandler.localSlice(ARTIFACT)).thenReturn(Option.some(new StubBridge()));
+        when(invocationHandler.localSlice(ARTIFACT)).thenReturn(Option.some(new StubBridge(Option.none())));
+    }
+
+    /// Deploy a slice whose OWN codec knows [AppEvent] — what a real deployed slice looks like once
+    /// its resources are provisioned with the slice codec rather than the node codec (#526).
+    private void deploySliceLocallyWithAppCodec() {
+        var sliceCodec = SliceCodec.sliceCodec(FrameworkCodecs.frameworkCodecs(), List.of(APP_EVENT_CODEC));
+
+        when(invocationHandler.localSlice(ARTIFACT)).thenReturn(Option.some(new StubBridge(Option.some(sliceCodec))));
     }
 
     @Nested
@@ -249,8 +271,8 @@ class StreamConsumerManagerTest {
         }
 
         @Test
-        void statuses_reportEventTypeUnpublishable_forAppDefinedType() {
-            declare("com.example.OrderPlaced", false);
+        void statuses_reportEventTypeUnpublishable_whenNoCodecKnowsTheAppType() {
+            declare(APP_EVENT_TYPE, false);
             deploySliceLocally();
             ownership.own(0);
             var manager = manager();
@@ -260,11 +282,33 @@ class StreamConsumerManagerTest {
             assertThat(manager.statuses()).singleElement()
                                           .satisfies(status -> {
                                               assertThat(status.eventTypePublishable())
-                                                      .describedAs("an app-defined type is absent from the node codec, so it cannot be published at all")
+                                                      .describedAs("no codec anywhere knows this type, so it cannot be published at all")
                                                       .isFalse();
                                               assertThat(status.diagnostic().or(""))
-                                                      .describedAs("the operator must learn the real reason, and #526 by name")
-                                                      .contains("#526");
+                                                      .describedAs("the operator must learn the real reason, naming the type")
+                                                      .contains(APP_EVENT_TYPE)
+                                                      .contains("cannot be PUBLISHED");
+                                          });
+        }
+
+        /// The #526 payoff on the operator surface: once a slice's resources are provisioned with the
+        /// SLICE's codec, an application-defined event type is genuinely publishable — and the
+        /// diagnostic must stop crying wolf about it.
+        @Test
+        void statuses_reportEventTypePublishable_whenSliceCodecKnowsTheAppType() {
+            declare(APP_EVENT_TYPE, false);
+            deploySliceLocallyWithAppCodec();
+            ownership.own(0);
+            var manager = manager();
+
+            manager.reconcile();
+
+            assertThat(manager.statuses()).singleElement()
+                                          .satisfies(status -> {
+                                              assertThat(status.eventTypePublishable())
+                                                      .describedAs("the slice's own codec registers this type, so publishing works")
+                                                      .isTrue();
+                                              assertThat(status.diagnostic()).isEqualTo(Option.none());
                                           });
         }
 
@@ -409,8 +453,15 @@ class StreamConsumerManagerTest {
     }
 
     /// Bridge stub whose classLoader resolves the declared event type, so the #526 publishability
-    /// probe runs against a real class lookup.
-    private static final class StubBridge implements SliceBridge {
+    /// probe runs against a real class lookup. `sliceCodec` mirrors what a deployed slice carries:
+    /// present means the slice has its own codec registry, absent means the probe falls back to the
+    /// node codec.
+    private record StubBridge(Option<SliceCodec> codec) implements SliceBridge {
+        @Override
+        public Option<SliceCodec> sliceCodec() {
+            return codec;
+        }
+
         @Override
         public Promise<byte[]> invoke(String methodName, byte[] input) {
             return Promise.success(input);
