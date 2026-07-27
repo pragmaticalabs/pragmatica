@@ -176,42 +176,46 @@ class DeclarativeStreamConsumerTest {
     @Nested
     class Delivery {
 
-        /// The headline #488 assertion: events published to the stream reach the declared method.
+        /// The headline #488 assertion, stated as the guarantee actually promises it: every published
+        /// payload arrives AT LEAST once.
         ///
-        /// Counted by this test's OWN payload prefix rather than by a delta against a baseline. A
-        /// baseline delta cannot distinguish this test's events from a `__warmup__` publish or a
-        /// sibling test's leftovers, and a single stray delivery then reads as duplication — which is
-        /// exactly how "expected 30 but was 31" arose while the consumer had in fact attached once and
-        /// never moved.
+        /// Coverage over DISTINCT payloads is the property that matters and the previous
+        /// count-delta assertion did not even check it — 30 arrivals could have been 29 distinct plus
+        /// one duplicate, i.e. a silent loss. Counted by this test's own payload prefix, so a
+        /// `__warmup__` publish or a sibling test's events cannot be miscounted as this test's.
         @Test
         void declaredConsumer_receivesPublishedEvents_withoutAnyExplicitSubscribe() {
             publishBatch("first-batch", EVENT_COUNT);
 
             await().atMost(DELIVERY_TIMEOUT)
                    .pollInterval(POLL_INTERVAL)
-                   .untilAsserted(() -> assertThat(receivedMatching("first-batch"))
-                           .describedAs("declarative consumer must receive every published event — before #488 this stayed at 0 forever")
+                   .untilAsserted(() -> assertThat(distinctReceivedMatching("first-batch"))
+                           .describedAs("every published event must arrive at least once — before #488 this stayed at 0 forever")
                            .isEqualTo(EVENT_COUNT));
         }
 
-        /// Ownership gating: with one partition and the slice on every node, exactly one node consumes.
-        /// An ungated implementation would multiply this by the number of nodes holding a materialized
-        /// ring. Prefix-scoped for the same reason as above, which is also what keeps the EXACT count a
-        /// trustworthy duplication sensor rather than a flake.
+        /// The duplication sensor, and the reason the count assertion stays EXACT.
+        ///
+        /// At-least-once permits duplicates under handler retry, an assignment move, or checkpoint
+        /// resume — none of which occur in a clean forge run, so the observed count here is exactly the
+        /// published count and a change that makes duplication routine fails this test. A bare
+        /// `>= EVENT_COUNT` would pass on 5x delivery, which is precisely the regression worth
+        /// catching. If this ever fails HIGH, read the delta as the duplicate count, not as a bug in
+        /// the assertion.
         @Test
         void declaredConsumer_deliversEachEventExactlyOnceClusterWide() {
             publishBatch("once-batch", EVENT_COUNT);
 
             await().atMost(DELIVERY_TIMEOUT)
                    .pollInterval(POLL_INTERVAL)
-                   .untilAsserted(() -> assertThat(receivedMatching("once-batch")).isEqualTo(EVENT_COUNT));
+                   .untilAsserted(() -> assertThat(distinctReceivedMatching("once-batch")).isEqualTo(EVENT_COUNT));
 
             // Hold past several reconcile ticks: a second node attaching late would push the total above
             // EVENT_COUNT, which a single sampled assertion would miss.
             sleep(Duration.ofSeconds(12));
 
             assertThat(receivedMatching("once-batch"))
-                    .describedAs("no duplicate delivery — exactly one node is assigned, and it stays the only one")
+                    .describedAs("no duplicate observed — exactly one node is assigned, and it stays the only one")
                     .isEqualTo(EVENT_COUNT);
         }
     }
@@ -336,15 +340,29 @@ class DeclarativeStreamConsumerTest {
         }
     }
 
-    /// How many events carrying `prefix` the slice instances actually received, cluster-wide. Counts
-    /// occurrences in the returned event lists rather than trusting a running total, so warmup
-    /// publishes and other tests' events cannot be miscounted as this test's duplicates.
+    /// How many events carrying `prefix` the slice instances received in total, cluster-wide —
+    /// DUPLICATES INCLUDED. Compared against the distinct count, this is what bounds duplication.
     private int receivedMatching(String prefix) {
         return cluster.getAvailableAppHttpPorts()
                       .stream()
                       .map(port -> httpPost(port, "/api/stream-consumer/received", "{}"))
                       .mapToInt(body -> countOccurrences(body, "\"" + prefix + "-"))
                       .sum();
+    }
+
+    /// How many DISTINCT payloads carrying `prefix` arrived. This is the at-least-once guarantee
+    /// itself: a duplicate cannot inflate it, so it cannot mask a lost event the way a raw arrival
+    /// count can.
+    private int distinctReceivedMatching(String prefix) {
+        var pattern = Pattern.compile("\"(" + Pattern.quote(prefix) + "-\\d+)\"");
+
+        return (int) cluster.getAvailableAppHttpPorts()
+                            .stream()
+                            .map(port -> httpPost(port, "/api/stream-consumer/received", "{}"))
+                            .flatMap(body -> pattern.matcher(body).results())
+                            .map(match -> match.group(1))
+                            .distinct()
+                            .count();
     }
 
     private static int countOccurrences(String body, String needle) {
