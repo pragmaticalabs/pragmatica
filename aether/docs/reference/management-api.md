@@ -115,7 +115,7 @@ This is distinct from the authentication 403 (invalid API key). The authorizatio
 
 A management request may land on any core node, but where it is ultimately served depends on the route:
 
-- **Control-plane read/write routes forward to the leader** (the control plane is leader-only). This covers cluster/node/slice status, topology, lifecycle, scheduled-task control-plane reads, config, controller, thresholds, observability depth, routes, workers, and audit endpoints. A request received by a follower is transparently forwarded to the current leader.
+- **Control-plane read/write routes forward to the leader** (the control plane is leader-only). This covers cluster/node/slice status, topology, lifecycle, scheduled-task control-plane reads, config, controller, thresholds, observability depth, routes, and workers. A request received by a follower is transparently forwarded to the current leader.
 - **Per-node diagnostic routes are served node-locally** (metrics, traces, alerts, logs, storage, TTM, DHT replication map, certificates). These report the receiving node's own view and are not forwarded.
 - **Per-node addressed routes** (those with an `{id}` node parameter) are forwarded to the named node.
 
@@ -2972,19 +2972,22 @@ List all API keys with status.
 
 **RBAC:** ADMIN
 
-**Response:**
+**Response:** a JSON array of key records. Each record carries its own `status`
+(`ACTIVE`, `REVOKED`, or `EXPIRED`) — clients must read the per-record field rather than matching
+a status token against the whole document.
+
 ```json
-{
-  "keys": [
-    {
-      "keyId": "ak_1a2b3c4d",
-      "status": "ACTIVE",
-      "createdAt": 1712000000000,
-      "expiresAt": -1,
-      "revokedAt": -1
-    }
-  ]
-}
+[
+  {
+    "keyId": "ak_1a2b3c4d",
+    "status": "ACTIVE",
+    "createdAt": 1712000000000,
+    "expiresAt": -1,
+    "revokedAt": -1,
+    "gracePeriodMs": 300000,
+    "authorizationRole": "ADMIN"
+  }
+]
 ```
 
 ### POST /api/cluster/keys/{id}/revoke
@@ -3312,50 +3315,53 @@ When no API keys are configured, WebSocket connections are immediately authorize
 
 ### GET /api/workers
 
-List all known worker nodes across all worker groups.
+List worker nodes across all communities, read from committed consensus state (the governor
+announcements written by each community's `GovernorAnnouncer`). One row per worker; a worker that is
+also its community's governor is flagged with `isGovernor`. Members of dissolved communities are
+omitted. Rows are ordered by community, then node id.
 
-**Response:**
-```json
-[
-  {
-    "nodeId": "worker-1",
-    "groupId": "default"
-  },
-  {
-    "nodeId": "worker-2",
-    "groupId": "default"
-  }
-]
-```
-
-### GET /api/workers/health
-
-Get worker pool health summary.
+This is the per-worker projection of the same announcements that `/api/cluster/governors` projects
+per-community.
 
 **Response:**
 ```json
 {
-  "totalWorkers": 5,
-  "totalGroups": 1,
-  "isEmpty": false
+  "workers": [
+    {
+      "nodeId": "governor-1",
+      "community": "east",
+      "governorId": "governor-1",
+      "isGovernor": true,
+      "communityTerm": 7,
+      "announcedAt": 1700000000000
+    },
+    {
+      "nodeId": "worker-a",
+      "community": "east",
+      "governorId": "governor-1",
+      "isGovernor": false,
+      "communityTerm": 7,
+      "announcedAt": 1700000000000
+    }
+  ]
 }
 ```
 
+A cluster running no workers returns `{"workers":[]}`.
+
+### GET /api/workers/health
+
+**Not implemented — returns HTTP 501.** Workers publish only their community roster to consensus
+(`GovernorAnnouncementValue`); no per-worker health fact is replicated, so the leader has nothing to
+report. Use `GET /api/workers` for the roster and `GET /api/cluster/membership` for per-node SWIM
+state. The corresponding `aether workers health` CLI subcommand was removed in #525.
+
 ### GET /api/workers/endpoints
 
-List all worker-hosted slice endpoints across all groups.
-
-**Response:**
-```json
-[
-  {
-    "artifact": "org.example:my-slice:1.0.0",
-    "methodName": "processOrder",
-    "workerNodeId": "worker-1",
-    "instanceNumber": 0
-  }
-]
-```
+**Not implemented — returns HTTP 501.** Only the *governor's* `tcpAddress` is recorded in consensus,
+never per-worker endpoints, so a cluster-wide worker endpoint table cannot be assembled. Use
+`GET /api/routes` for the cluster HTTP route table. The corresponding `aether workers endpoints` CLI
+subcommand was removed in #525.
 
 ---
 
@@ -3586,7 +3592,6 @@ Conclude the A/B test and promote the winning variant. Requires leader node.
 | GET | `/api/nodes/lifecycle/{id}` | Node Lifecycle |
 | POST | `/api/nodes/drain/{id}` | Node Lifecycle |
 | POST | `/api/nodes/shutdown/{id}` | Node Lifecycle |
-| GET | `/api/audit/commands` | Observability |
 | GET | `/api/scheduled-tasks` | Scheduled Tasks |
 | GET | `/api/scheduled-tasks/{configSection}` | Scheduled Tasks |
 | POST | `/api/scheduled-tasks/{configSection}/{artifact}/{method}/pause` | Scheduled Tasks |
@@ -3597,8 +3602,10 @@ Conclude the A/B test and promote the winning variant. Requires leader node.
 | GET | `/api/scheduled-tasks/executions-by-node/{configSection}/{artifact}/{method}` | Scheduled Tasks |
 | POST | `/api/certificates/configure-short-validity` | Certificates (dev-mode only) |
 | GET | `/api/workers` | Worker Pools |
-| GET | `/api/workers/health` | Worker Pools |
-| GET | `/api/workers/endpoints` | Worker Pools |
+| GET | `/api/workers/health` | Worker Pools (501 — not implemented) |
+| GET | `/api/workers/endpoints` | Worker Pools (501 — not implemented) |
+| POST | `/api/cluster/migrate` | Cluster Migration (501 — not implemented) |
+| POST | `/api/cluster/migrate/plan` | Cluster Migration (501 — not implemented) |
 
 ---
 
@@ -3712,68 +3719,6 @@ Accepted values for `targetRole` (case-insensitive): `"CORE"`, `"WORKER"`. Promo
   "message": "Promoted node from CORE to WORKER"
 }
 ```
-
----
-
-## Audit
-
-### GET /api/audit/commands
-
-**Phase 3 PR-C (lifecycle reconciler):** operator inspection surface for the `audit.lifecycle.commands` stream — surfaces the most recent `CommandReceived` / `CommandApplied` events the local node has emitted (via `DirectLifecycleWriter`).
-
-**Scope note:** the backing store is a per-node in-memory ring buffer (capacity 1024 by default), not a full stream subscription. Events survive the lifetime of the JVM only. For cluster-wide audit visibility operators should target the leader (`-c <leader-host>`); a follower will only surface events emitted via writers running on this same node. RC2 follow-up: replace with a proper `StreamReadRouter`-backed subscription so audit history survives node restarts.
-
-**Authorization:** ADMIN (audit channel — operational observability).
-
-**Query parameters (all optional):**
-- `since` — time window. Accepts epoch-millis (e.g., `1700000000000`), ISO-8601 (`2026-05-23T10:00:00Z`), or relative duration with unit suffix:
-  - `<N>s` — N seconds ago
-  - `<N>m` — N minutes ago
-  - `<N>h` — N hours ago
-  - `<N>d` — N days ago
-- `source` — case-insensitive emitter discriminator: `operator`, `reconciler`, `ctm`, `drain_coordinator`, `bootstrap`, `unknown`, or `all` (default).
-- `limit` — most-recent N entries (default 100; capped at buffer capacity).
-
-**Response:**
-```json
-{
-  "events": [
-    {
-      "commandType": "ForceDecommission",
-      "peerId": "node-2",
-      "reasonTag": "FORCED",
-      "justificationMessage": "Operator FORCE_DECOMMISSION: stuck JOINING",
-      "source": "OPERATOR",
-      "timestampMs": 1700000000123
-    },
-    {
-      "commandType": "ForceDecommission",
-      "peerId": "node-2",
-      "reasonTag": "FORCED",
-      "justificationMessage": "Operator FORCE_DECOMMISSION: stuck JOINING",
-      "source": "OPERATOR",
-      "timestampMs": 1700000000125,
-      "accepted": true
-    }
-  ]
-}
-```
-
-Each `LifecycleCommand` that flows through `DirectLifecycleWriter.applyCommand(...)` produces a pair of entries: `CommandReceived` on entry, `CommandApplied` after the underlying KV write resolves (carrying the `accepted` boolean).
-
-**Examples:**
-```bash
-# All events seen by this node in the last 5 minutes
-curl 'http://localhost:8080/api/audit/commands?since=5m'
-
-# Only operator-emitted events
-curl 'http://localhost:8080/api/audit/commands?source=operator'
-
-# Reconciler-emitted events since a specific ISO-8601 timestamp, limit 50
-curl 'http://localhost:8080/api/audit/commands?source=reconciler&since=2026-05-23T10:00:00Z&limit=50'
-```
-
----
 
 ## Scheduled Tasks
 

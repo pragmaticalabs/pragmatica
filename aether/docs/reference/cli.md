@@ -1273,30 +1273,23 @@ aether nodes promote node-4 --role WORKER
 
 #### workers
 
-Manage worker pool nodes:
+Inspect worker nodes:
 
 ```bash
-# List all worker nodes
+# List worker nodes and the community each belongs to
 aether workers list
-
-# Show worker pool health summary
-aether workers health
-
-# List worker endpoints
-aether workers endpoints
 ```
 
-Example:
-```bash
-# Check worker pool status
-aether workers list
+`workers list` reads the roster from committed consensus state (the per-community governor
+announcements). Each row carries the worker's node id, its community, that community's governor, and
+whether the worker IS the governor. Workers belonging to a dissolved community are omitted; a cluster
+running no workers reports an empty list.
 
-# Verify worker health
-aether workers health
-
-# See all deployed endpoints across workers
-aether workers endpoints
-```
+> **Removed in #525:** `aether workers health` and `aether workers endpoints`. Neither could ever be
+> answered — workers publish only their community roster to consensus, so no per-worker health fact
+> and no per-worker endpoint is replicated for the leader to report. The underlying routes remain
+> declared and return an honest `501 Not Implemented`. Use `aether cluster membership` for per-node
+> SWIM state and `aether routes` for the cluster HTTP route table.
 
 #### scheduled-tasks
 
@@ -2232,14 +2225,22 @@ Computes diff against stored config, presents terraform-style plan (`[+]`/`[~]`/
 Rotate the cluster API key with zero-downtime grace period.
 
 ```bash
-aether cluster rotate-key [--grace-period <duration>]
+aether cluster rotate-key [--grace-period <duration>] [--role <role>] [--key-id <keyId>]
 ```
 
 | Option | Description |
 |--------|-------------|
 | `--grace-period` | Grace period for old key (default: `5m`). Accepts `s`, `m`, `h` suffixes |
+| `--role` | Authorization role for the new key: `ADMIN`, `OPERATOR`, or `VIEWER` (default: `VIEWER`) |
+| `--key-id` | Key ID to retire. Required when the cluster has more than one `ACTIVE` key |
 
 Generates new key, pushes to cluster, marks old key REVOKED with grace period, updates local `~/.aether/clusters/<name>/api-key`.
+
+The key to retire is chosen by reading each record's own `status` in `GET /api/cluster/keys`, so
+listing order never decides which credential is revoked. With exactly one `ACTIVE` key the command
+retires it and names it in the output. With several, it refuses and lists the candidates — re-run
+with `--key-id` naming the one to retire. A key listing that cannot be read fails the rotation
+rather than resolving to some key.
 
 ### `aether cluster revoke-key`
 
