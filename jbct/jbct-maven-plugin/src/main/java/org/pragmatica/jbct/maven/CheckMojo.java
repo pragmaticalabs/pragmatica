@@ -8,6 +8,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import org.pragmatica.jbct.format.JbctFormatter;
 import org.pragmatica.jbct.lint.Diagnostic;
 import org.pragmatica.jbct.lint.JbctLinter;
+import org.pragmatica.jbct.lint.layer.LayerCoverage;
 import org.pragmatica.jbct.shared.SourceFile;
 
 import org.apache.maven.plugin.MojoExecutionException;
@@ -51,6 +52,10 @@ public class CheckMojo extends AbstractJbctMojo {
             checkFormat(file, formatter, needsFormatting, formatErrors);
             checkLint(file, linter, allDiagnostics, lintErrors, warnings, parseErrors);
         }
+
+        LayerCoverage.coverage(filesToProcess, context)
+                     .map(LayerCoverage::render)
+                     .onPresent(getLog()::info);
         // Report format issues
         if (!needsFormatting.isEmpty()) {
             getLog().error("Files not properly formatted:");

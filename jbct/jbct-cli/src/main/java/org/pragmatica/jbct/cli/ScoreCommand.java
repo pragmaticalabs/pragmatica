@@ -10,6 +10,7 @@ import org.pragmatica.jbct.config.JbctConfig;
 import org.pragmatica.jbct.lint.Diagnostic;
 import org.pragmatica.jbct.lint.JbctLinter;
 import org.pragmatica.jbct.lint.LintContext;
+import org.pragmatica.jbct.lint.layer.LayerCoverage;
 import org.pragmatica.jbct.score.ScoreCalculator;
 import org.pragmatica.jbct.score.ScoreCategory;
 import org.pragmatica.jbct.score.ScoreResult;
@@ -52,6 +53,9 @@ public class ScoreCommand implements Callable<Integer> {
         var diagnostics = lintFiles(filesToProcess, linter);
         var score = ScoreCalculator.calculate(diagnostics, filesToProcess.size());
 
+        LayerCoverage.coverage(filesToProcess, context)
+                     .map(LayerCoverage::render)
+                     .onPresent(System.err::println);
         outputScore(score);
         if (baseline != null && score.overall() < baseline) {
             System.err.println("\nScore " + score.overall() + " below baseline " + baseline);

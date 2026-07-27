@@ -8,6 +8,8 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /// Unit tests for the #452 package-classification engine.
 class LayerClassifierTest {
@@ -112,6 +114,44 @@ class LayerClassifierTest {
 
             assertEquals(Option.some(Layer.ADAPTER), classifier.layerOf("com.x.adapter.db"));
             assertEquals(Option.some(Layer.DOMAIN), classifier.layerOf("com.x.core.User"));
+        }
+    }
+
+    @Nested
+    class Provenance {
+        @Test
+        void isExplicitlyConfigured_conventionsOnly_isFalse() {
+            assertFalse(conventions.isExplicitlyConfigured());
+        }
+
+        @Test
+        void isExplicitlyConfigured_emptyConfig_isFalse() {
+            assertFalse(LayerClassifier.from(LayerConfig.DEFAULT)
+                                       .isExplicitlyConfigured());
+        }
+
+        @Test
+        void isExplicitlyConfigured_layerGlob_isTrue() {
+            var config = LayerConfig.layerConfig(List.of(),
+                                                 List.of(),
+                                                 List.of("com.example.cloud.**"),
+                                                 List.of(),
+                                                 List.of());
+
+            assertTrue(LayerClassifier.from(config)
+                                      .isExplicitlyConfigured());
+        }
+
+        @Test
+        void isExplicitlyConfigured_sliceGlobOnly_isTrue() {
+            var config = LayerConfig.layerConfig(List.of(),
+                                                 List.of(),
+                                                 List.of(),
+                                                 List.of(),
+                                                 List.of("com.example.svc.*"));
+
+            assertTrue(LayerClassifier.from(config)
+                                      .isExplicitlyConfigured());
         }
     }
 
