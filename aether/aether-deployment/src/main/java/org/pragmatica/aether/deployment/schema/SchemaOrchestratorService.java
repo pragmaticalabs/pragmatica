@@ -39,6 +39,7 @@ import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.Verify;
 import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.lang.utils.SharedScheduler;
 import org.pragmatica.messaging.MessageRouter;
@@ -306,6 +307,14 @@ class SchemaOrchestratorServiceInstance implements SchemaOrchestratorService {
             return FailureClassification.PERMANENT;
         }
 
+        if (cause instanceof SchemaError.MigrationArtifactUnresolved) {
+            return FailureClassification.PERMANENT;
+        }
+
+        if (cause instanceof SchemaError.MigrationSetUnavailable) {
+            return FailureClassification.PERMANENT;
+        }
+
         return FailureClassification.UNKNOWN;
     }
 
@@ -398,17 +407,19 @@ class SchemaOrchestratorServiceInstance implements SchemaOrchestratorService {
 
     private Promise<Unit> resolveAndParseMigrations(String datasourceName, SchemaVersionValue value) {
         return Option.option(value.artifactCoords())
-                     .filter(s -> !s.isEmpty())
-                     .map(coords -> resolveArtifactAndLog(datasourceName, coords))
-                     .or(logNoArtifactCoords(datasourceName));
+                     .filter(Verify.Is::present)
+                     .map(coords -> resolveDeclaredMigrations(datasourceName, value, coords))
+                     .or(() -> unresolvedArtifactCoords(datasourceName, value));
     }
 
-    private Promise<Unit> resolveArtifactAndLog(String datasourceName, String artifactCoords) {
+    private Promise<Unit> resolveDeclaredMigrations(String datasourceName,
+                                                    SchemaVersionValue value,
+                                                    String artifactCoords) {
         return Artifact.artifact(artifactCoords)
                        .async()
                        .flatMap(this::resolveArtifactBytes)
                        .flatMap(jarBytes -> BlueprintArtifactParser.parse(jarBytes).async())
-                       .flatMap(artifact -> executeMigrationsFromArtifact(datasourceName, artifact));
+                       .flatMap(artifact -> executeMigrationsFromArtifact(datasourceName, value, artifact));
     }
 
     private Promise<byte[]> resolveArtifactBytes(Artifact artifact) {
@@ -431,17 +442,57 @@ class SchemaOrchestratorServiceInstance implements SchemaOrchestratorService {
         }
     }
 
-    private Promise<Unit> logNoArtifactCoords(String datasourceName) {
-        log.warn("No artifact coordinates for datasource: {}, skipping migration", datasourceName);
+    /// A schema version record exists only because the deploying blueprint artifact declared
+    /// migrations for this datasource (`BlueprintService.buildSchemaMigrationCommands`), and every
+    /// writer of the record carries the coordinates forward. Absent coordinates on a record that
+    /// declares a migration set therefore mean the declared scripts can no longer be located — not
+    /// "this datasource has no migrations", which is expressed by the *absence* of the record and
+    /// short-circuits in `migrateIfNeeded`.
+    private static Promise<Unit> unresolvedArtifactCoords(String datasourceName, SchemaVersionValue value) {
+        return declaresMigrations(value)
+               ? SchemaError.MigrationArtifactUnresolved.migrationArtifactUnresolved(datasourceName,
+                                                                                     value.currentVersion(),
+                                                                                     declaredMigration(value))
+                                                        .promise()
+               : noDeclaredMigrations(datasourceName);
+    }
+
+    /// The recorded coordinates resolved and parsed, but the artifact holds no scripts for a
+    /// datasource that declared them — the resolved artifact is not the one the deploy declared
+    /// against (republished coordinates, or a fallback that located a different jar).
+    private static Promise<Unit> unavailableMigrationSet(String datasourceName, SchemaVersionValue value) {
+        return declaresMigrations(value)
+               ? SchemaError.MigrationSetUnavailable.migrationSetUnavailable(datasourceName,
+                                                                             value.artifactCoords(),
+                                                                             value.currentVersion())
+                                                    .promise()
+               : noDeclaredMigrations(datasourceName);
+    }
+
+    private static Promise<Unit> noDeclaredMigrations(String datasourceName) {
+        log.debug("Datasource '{}' declares no schema migrations — nothing to apply", datasourceName);
 
         return Promise.success(unit());
     }
 
-    private Promise<Unit> executeMigrationsFromArtifact(String datasourceName, BlueprintArtifact artifact) {
+    /// The migration set recorded at deploy time: `currentVersion` is the highest `V<n>__` script
+    /// found in the artifact and `lastMigration` its filename, so either being populated means the
+    /// deploy expected scripts to run.
+    private static boolean declaresMigrations(SchemaVersionValue value) {
+        return value.currentVersion() > 0 || Verify.Is.present(value.lastMigration());
+    }
+
+    private static String declaredMigration(SchemaVersionValue value) {
+        return Option.option(value.lastMigration()).or("");
+    }
+
+    private Promise<Unit> executeMigrationsFromArtifact(String datasourceName,
+                                                        SchemaVersionValue value,
+                                                        BlueprintArtifact artifact) {
         return Option.option(artifact.schemaMigrations().get(datasourceName))
                      .filter(list -> !list.isEmpty())
                      .map(scripts -> provisionAndMigrate(datasourceName, scripts))
-                     .or(logNoMigrationsInArtifact(datasourceName));
+                     .or(() -> unavailableMigrationSet(datasourceName, value));
     }
 
     private Promise<Unit> provisionAndMigrate(String datasourceName, List<MigrationEntry> scripts) {
@@ -476,12 +527,6 @@ class SchemaOrchestratorServiceInstance implements SchemaOrchestratorService {
                           .onFailure(c -> log.warn("Failed to release connector for '{}': {}",
                                                    datasourceName,
                                                    c.message()));
-    }
-
-    private static Promise<Unit> logNoMigrationsInArtifact(String datasourceName) {
-        log.info("No migrations for datasource '{}' in artifact", datasourceName);
-
-        return Promise.success(unit());
     }
 
     private Promise<Unit> markCompleted(String datasourceName, SchemaVersionValue value, long startTime) {

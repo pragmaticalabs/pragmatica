@@ -78,6 +78,46 @@ public sealed interface SchemaError extends Cause {
         }
     }
 
+    /// The schema version record declares a migration set but carries no blueprint artifact
+    /// coordinates, so the declared scripts cannot be located. Permanent: nothing about a retry
+    /// changes the recorded coordinates.
+    record MigrationArtifactUnresolved(String datasource, int declaredVersion, String declaredMigration) implements SchemaError {
+        public static MigrationArtifactUnresolved migrationArtifactUnresolved(String datasource,
+                                                                              int declaredVersion,
+                                                                              String declaredMigration) {
+            return new MigrationArtifactUnresolved(datasource, declaredVersion, declaredMigration);
+        }
+
+        @Override
+        public String message() {
+            return "Datasource '" + datasource
+                 + "' declares schema migrations up to version " + declaredVersion
+                 + " (last: '" + declaredMigration
+                 + "') but its schema version record carries no blueprint artifact coordinates"
+                 + " — the declared migrations were NOT applied";
+        }
+    }
+
+    /// The blueprint artifact resolved from the recorded coordinates contains no migration scripts
+    /// for a datasource that declared them, meaning the resolved artifact is not the one the deploy
+    /// declared against. Permanent: a retry resolves the same coordinates.
+    record MigrationSetUnavailable(String datasource, String artifactCoords, int declaredVersion) implements SchemaError {
+        public static MigrationSetUnavailable migrationSetUnavailable(String datasource,
+                                                                      String artifactCoords,
+                                                                      int declaredVersion) {
+            return new MigrationSetUnavailable(datasource, artifactCoords, declaredVersion);
+        }
+
+        @Override
+        public String message() {
+            return "Datasource '" + datasource
+                 + "' declares schema migrations up to version " + declaredVersion
+                 + " but blueprint artifact '" + artifactCoords
+                 + "' contains no migration scripts for it"
+                 + " — the declared migrations were NOT applied";
+        }
+    }
+
     record InvalidMigrationFormat(String filename, String detail) implements SchemaError {
         public static InvalidMigrationFormat invalidMigrationFormat(String filename, String detail) {
             return new InvalidMigrationFormat(filename, detail);
