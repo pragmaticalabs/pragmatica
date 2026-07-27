@@ -132,6 +132,15 @@ public sealed interface ManagementApiResponses {
 
     record RouteInfo(String method, String path, List<String> nodes, String security) {}
 
+    record WorkersResponse(List<WorkerInfo> workers) {}
+
+    record WorkerInfo(String nodeId,
+                      String community,
+                      String governorId,
+                      boolean isGovernor,
+                      long communityTerm,
+                      long announcedAt) {}
+
     record ScaleResponse(String status, String artifact, int instances) {}
 
     record BlueprintResponse(String status, String blueprint, int slices) {}
@@ -706,9 +715,9 @@ public sealed interface ManagementApiResponses {
     ///
     /// `sliceDeployedLocally` false with a non-empty `unconsumedOwnedPartitions` is the loud gap: this
     /// node owns those partitions and a consumer is declared for them, but the slice is not deployed
-    /// here, so NOBODY consumes them. `eventTypePublishable` false means the event type is absent from
-    /// the node codec, so it cannot be published to the stream at all (#526) and this consumer will
-    /// receive nothing however healthy it otherwise looks. `diagnostic` carries the operator-facing
+    /// here, so NOBODY consumes them. `eventTypePublishable` false means the event type has no codec in
+    /// the slice's own codec registry, so it cannot be published to the stream at all and this consumer
+    /// will receive nothing however healthy it otherwise looks. `diagnostic` carries the operator-facing
     /// explanation for whichever of those applies, and is empty when the consumer is healthy.
     record DeclarativeConsumerDetail(String stream,
                                      String configSection,

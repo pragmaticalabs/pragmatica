@@ -3781,7 +3781,11 @@ public class AetherCli implements Runnable {
         }
     }
 
-    @Command(name = "workers", description = "Manage worker nodes", subcommands = {WorkersCommand.ListCommand.class, WorkersCommand.HealthCommand.class, WorkersCommand.EndpointsCommand.class})
+    /// #525: `health` and `endpoints` subcommands removed. Per-worker health and per-worker
+    /// endpoints are never published to consensus, so those commands could only ever fail. The
+    /// routes remain declared and answer an honest 501 (see NotImplementedRoutes) for anyone
+    /// calling the HTTP API directly; the CLI simply stops offering what it cannot deliver.
+    @Command(name = "workers", description = "Inspect worker nodes", subcommands = {WorkersCommand.ListCommand.class})
     static class WorkersCommand implements Runnable {
         @CommandLine.ParentCommand
         private AetherCli parent;
@@ -3792,7 +3796,7 @@ public class AetherCli implements Runnable {
             CommandLine.usage(this, System.out);
         }
 
-        @Command(name = "list", description = "List worker nodes")
+        @Command(name = "list", description = "List worker nodes and the community each belongs to")
         static class ListCommand implements Callable<Integer> {
             @CommandLine.ParentCommand
             private WorkersCommand workersParent;
@@ -3800,32 +3804,6 @@ public class AetherCli implements Runnable {
             @Override
             public Integer call() {
                 var response = workersParent.parent.fetch(WORKERS_LIST);
-
-                return OutputFormatter.printQuery(response, workersParent.parent.outputOptions());
-            }
-        }
-
-        @Command(name = "health", description = "Show worker pool health summary")
-        static class HealthCommand implements Callable<Integer> {
-            @CommandLine.ParentCommand
-            private WorkersCommand workersParent;
-
-            @Override
-            public Integer call() {
-                var response = workersParent.parent.fetch(WORKERS_HEALTH);
-
-                return OutputFormatter.printQuery(response, workersParent.parent.outputOptions());
-            }
-        }
-
-        @Command(name = "endpoints", description = "List worker endpoints")
-        static class EndpointsCommand implements Callable<Integer> {
-            @CommandLine.ParentCommand
-            private WorkersCommand workersParent;
-
-            @Override
-            public Integer call() {
-                var response = workersParent.parent.fetch(WORKERS_ENDPOINTS);
 
                 return OutputFormatter.printQuery(response, workersParent.parent.outputOptions());
             }
