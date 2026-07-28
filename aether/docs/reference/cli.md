@@ -641,6 +641,18 @@ aether blueprints publish org.example:my-app:1.0.0
 aether blueprints upload my-app-1.0.0-blueprint.jar -g org.example -a my-app -v 1.0.0
 ```
 
+**Single-migrator gate.** `deploy` and `publish` (the artifact-based paths) are refused with
+HTTP 409 when the artifact declares migrations for a datasource that a **different** blueprint
+already migrates; a refused request writes nothing. Republishing the *same* blueprint at a newer
+version is fine (ownership matches on `group:artifact`, version stripped), and a blueprint that
+declares no migrations is unaffected: only duplicate migration *ownership* is refused. `apply`
+(raw TOML) is not subject to the gate, because migrations are read from the artifact jar's
+`schema/` directory. The check runs at deploy time on the node owning the deployment task group
+(requests are forwarded there), and it is a read-then-write, not an atomic compare-and-swap: two
+publishes issued *concurrently* for the same unclaimed datasource can both get through. Sequential
+publishes are reliably refused. See [`aether schema status`](#schema) for who currently owns a
+datasource.
+
 #### deploy
 
 Unified deployment management for zero-downtime deployments. Supports immediate, canary, blue-green, and rolling strategies through a single command.
@@ -1415,6 +1427,9 @@ aether schema migrate <datasource>
 # Undo migrations to a target version
 aether schema undo <datasource> -v <version>
 
+# Retry a failed migration
+aether schema retry <datasource>
+
 # Baseline a datasource at a version
 aether schema baseline <datasource> -v <version>
 ```
@@ -1425,7 +1440,73 @@ aether schema baseline <datasource> -v <version>
 | `history <datasource>` | Show migration history |
 | `migrate <datasource>` | Trigger manual migration |
 | `undo <datasource> -v N` | Undo to target version |
+| `retry <datasource>` | Retry a failed migration (clears the activation hold) |
 | `baseline <datasource> -v N` | Baseline at version |
+
+#### `aether schema status` output
+
+`status` and `history` render as a table under the default `--format table`, and honor
+`--format json`, `--format csv`, and `--format value --field <path>` like every other query
+command.
+
+| Column | JSON field | Meaning |
+|--------|-----------|---------|
+| `DATASOURCE` | `datasource` | Datasource name (cluster-global, not per-blueprint) |
+| `STATUS` | `status` | `PENDING`, `MIGRATING`, `COMPLETED`, `FAILED` |
+| `VERSION` | `currentVersion` | Highest version recorded |
+| `LAST MIGRATION` | `lastMigration` | Filename of the last migration recorded |
+| `OWNING BLUEPRINT` | `owningBlueprint` | Blueprint that declared the migrations — **whose slices this record holds** while `status` is not `COMPLETED` |
+
+```bash
+# Just the owning blueprint of one datasource
+aether schema status orders_db --format value --field owningBlueprint
+
+# Machine-readable sweep of every datasource
+aether schema status --format csv
+```
+
+#### Recovering from a FAILED activation hold
+
+A slice is withheld from activation **if and only if its own blueprint owns a datasource whose
+migration is in `PENDING`, `MIGRATING` or `FAILED`**. A failed or in-flight migration owned by any
+*other* blueprint does not affect it. `COMPLETED` is the only status that releases activation.
+
+So when a blueprint's slices sit in `LOADED` and never activate, the `OWNING BLUEPRINT` column is
+the diagnostic: find the row whose owner is the stuck blueprint and whose status is not
+`COMPLETED`. Rows owned by other blueprints are irrelevant no matter how broken they look.
+
+```bash
+# 1. Find the record that is holding this blueprint
+aether schema status
+
+# 2. Recover — pick ONE:
+aether schema retry orders_db              # FAILED -> PENDING -> COMPLETED (re-runs the migration)
+aether schema baseline orders_db -v 3      # -> COMPLETED (marks V001..V003 applied WITHOUT running them)
+aether blueprints deploy org.example:my-app:1.0.1   # redeploy the owning blueprint
+
+# 3. Confirm the hold is gone
+aether schema status orders_db
+```
+
+`retry` only applies to a record in `FAILED`; against any other status it fails with `409 Conflict`
+and ``Schema for datasource '<name>' is not in FAILED state (currently <STATUS>) — retry only
+applies to failed migrations``, naming the status it actually observed. `baseline` requires an
+existing record — it inherits that record's owning blueprint rather than inventing one, so
+baselining a datasource that has never been published fails with `404 Not Found` and
+``Schema status not found for datasource '<name>'``.
+
+The cluster leader also writes a `SCHEMA_ACTIVATION_BLOCKED` audit entry when it observes a
+`FAILED` record, naming the datasource, the owning blueprint, and the held slices.
+
+> **Known limit — the gate scopes by migration *ownership*, not by *usage*.** A blueprint that
+> reads or writes a datasource **without declaring migrations for it** is never held when that
+> datasource's owner fails. `aether schema status` tells you who migrates a datasource, not who
+> uses it.
+
+Related: because datasource names are cluster-global (the default `schema/V001__*.sql` layout
+names the datasource `database` for every blueprint), publishing a blueprint whose migrations claim
+a datasource that a **different** blueprint already migrates is refused with HTTP 409 at deploy
+time — see [`aether blueprints deploy` / `publish`](#blueprint) for the exact scope of that check.
 
 Example:
 ```bash

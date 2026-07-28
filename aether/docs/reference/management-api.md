@@ -824,11 +824,53 @@ Deploy a blueprint from an artifact in the cluster's artifact repository.
 }
 ```
 
+#### Single-migrator gate (409 Conflict)
+
+Both artifact-based entry points (`/deploy` and `/publish`) refuse a request with **409 Conflict**
+when the artifact declares migrations for a datasource that a **different** blueprint already
+migrates. The refusal happens before any KV command is applied, so a refused publish writes
+nothing.
+
+```json
+{
+  "type": "about:blank",
+  "title": "Conflict",
+  "status": 409,
+  "detail": "Blueprint 'org.example:other-app:1.0.0' rejected — datasource 'database' is already migrated by blueprint 'org.example:my-app:1.0.0'. Declare the migrations in one blueprint only, or give this blueprint its own datasource section."
+}
+```
+
+Rules:
+
+- Ownership is compared on the artifact base (`group:artifact`, version stripped). The **same**
+  blueprint republishing at a newer version is an owner advancing its own schema, not a conflict.
+- A blueprint that declares **no** migrations passes the gate trivially. Sharing a datasource for
+  reads and writes stays legal — only duplicate *migration ownership* is refused.
+- The gate runs for `registerOnly` publishes too, so `POST /api/blueprints/publish` is refused on
+  the same terms as `/deploy`.
+- `POST /api/blueprints` (raw blueprint content) is **not** subject to the gate: migrations are
+  read from the artifact jar's `schema/` directory, so a raw-DSL blueprint carries none.
+
+**What this check does and does not promise.** Both routes are task-group targeted
+(`DEPLOYMENT`), so a request arriving at any node is forwarded to the node that owns the deployment
+task group; the ownership lookup therefore reads that owner's state rather than a possibly-stale
+follower's. The check itself is a read of the existing schema record followed by a write of the
+publish commands — not a compare-and-swap. Two publishes issued **concurrently** for the same
+unclaimed datasource can therefore both observe it unclaimed and both proceed. Sequential
+publishes — the realistic operator case — are reliably refused. This is the same deploy-time
+read-then-write window every other validation on this path uses.
+
+Why refuse rather than namespace: datasource names are cluster-global (the default
+`schema/V001__*.sql` layout yields the name `database` for every blueprint, resolved against the
+same node-global config section), so two blueprints migrating one physical database would
+interleave unrelated version sequences.
+
 ### POST /api/blueprints/publish
 
 Publish a blueprint from an artifact already present in the cluster's artifact
 repository. Orthogonal to `POST /api/blueprints` (which takes raw blueprint
-content in the body). Same body shape as `POST /api/blueprints/deploy`.
+content in the body). Same body shape as `POST /api/blueprints/deploy`, and subject to the same
+[single-migrator gate](#single-migrator-gate-409-conflict).
 
 **Request Body:**
 ```json
@@ -3960,6 +4002,40 @@ emitted to stderr as a structured `{"error":"<message>"}` object; otherwise the 
 
 Manage datasource schema migrations across the cluster.
 
+### Migration ownership and the activation gate
+
+Every schema record names the blueprint that **owns** it — the blueprint whose artifact declared
+the migration set. Ownership is what scopes the deployment-side activation gate:
+
+> A slice is withheld from activation **if and only if its own blueprint owns a datasource whose
+> migration is in `PENDING`, `MIGRATING` or `FAILED`**. A failed or in-flight migration owned by
+> any *other* blueprint does not affect it.
+
+`COMPLETED` is the only status that releases activation. Ownership is compared on the blueprint's
+artifact base (`group:artifact`, version stripped), so a blueprint that advances from `1.0.0` to
+`1.0.1` still owns the records its earlier version wrote.
+
+**Known limit — this scopes by ownership, not by usage.** The gate matches records to slices via
+the *migrator*, not via the readers. A blueprint that reads or writes a datasource **without
+declaring migrations for it** is never held when that datasource's owner fails. Do not read this
+gate as protecting every consumer of a datasource; it protects the migrator's own slices.
+
+Three further conditions are resolved from deployment state, and a slice for which they cannot be
+resolved is reported ready rather than held: the gate applies only when the slice's blueprint is
+present in the leader's blueprint map, has `schema_required` set, and carries an owner. No record
+can be attributed to a blueprint that carries no owner, so holding it would be an unclearable hold.
+
+Datasource names are **cluster-global** — the default `schema/V001__*.sql` layout yields the name
+`database` for every blueprint, and all of them resolve it against the same node-global config
+section. That is why a publish claiming a datasource another blueprint already migrates is refused
+at deploy time (see [`POST /api/blueprints/deploy`](#post-apiblueprintsdeploy)) rather than
+namespaced per blueprint.
+
+Recovery from a `FAILED` hold: `POST /api/schema/retry/{datasource}` (`FAILED` -> `PENDING` ->
+`COMPLETED`), `POST /api/schema/baseline/{datasource}?version=N` (-> `COMPLETED`), or redeploy the
+owning blueprint. The leader also emits a `SCHEMA_ACTIVATION_BLOCKED` audit entry naming the
+datasource, the owning blueprint, and the held slices when it observes a `FAILED` record.
+
 ### GET /api/schema/status
 
 Returns schema migration status for all datasources.
@@ -3972,11 +4048,20 @@ Returns schema migration status for all datasources.
       "datasource": "orders_db",
       "currentVersion": 3,
       "lastMigration": "V003__add_index.sql",
-      "status": "COMPLETED"
+      "status": "COMPLETED",
+      "owningBlueprint": "org.example:my-app:1.0.0"
     }
   ]
 }
 ```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `datasource` | string | Datasource name (cluster-global) |
+| `currentVersion` | int | Highest version recorded for this datasource |
+| `lastMigration` | string | Filename of the last migration recorded |
+| `status` | string | `PENDING`, `MIGRATING`, `COMPLETED`, `FAILED` |
+| `owningBlueprint` | string | Blueprint id (`group:artifact:version`) that declared the migrations. Whose slices this record holds while `status` is not `COMPLETED` |
 
 ### GET /api/schema/status/{datasource}
 
@@ -3988,17 +4073,22 @@ Returns schema status for a specific datasource.
   "datasource": "orders_db",
   "currentVersion": 3,
   "lastMigration": "V003__add_index.sql",
-  "status": "COMPLETED"
+  "status": "COMPLETED",
+  "owningBlueprint": "org.example:my-app:1.0.0"
 }
 ```
 
+Answers `404 Not Found` when the datasource has no schema record.
+
 ### GET /api/schema/history/{datasource}
 
-Returns migration history for a datasource (placeholder -- currently returns current status).
+Returns migration history for a datasource (placeholder -- currently returns the same body as
+`GET /api/schema/status/{datasource}`, including `owningBlueprint`).
 
 ### POST /api/schema/migrate/{datasource}
 
-Triggers manual schema migration for a datasource. Sets status to `MIGRATING`.
+Triggers manual schema migration for a datasource. Sets status to `MIGRATING`. Preserves the
+existing record's artifact coordinates and owning blueprint.
 
 **Response:**
 ```json
@@ -4011,10 +4101,14 @@ Triggers manual schema migration for a datasource. Sets status to `MIGRATING`.
 ### POST /api/schema/undo/{datasource}?targetVersion=N
 
 Undoes migrations to the specified target version. Sets status to `PENDING` at the target version.
+Preserves the existing record's artifact coordinates and owning blueprint.
+
+Note that `PENDING` is a **blocking** status: while the undo is outstanding, the owning blueprint's
+slices are withheld from activation.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `targetVersion` | int | yes | Version to undo to |
+| `targetVersion` | int | no | Version to undo to (defaults to `0` when absent; a non-integer value is a `400`) |
 
 **Response:**
 ```json
@@ -4026,7 +4120,14 @@ Undoes migrations to the specified target version. Sets status to `PENDING` at t
 
 ### POST /api/schema/retry/{datasource}
 
-Retries a failed schema migration by resetting status from FAILED to PENDING. Only works when the datasource is in FAILED state; returns 409 Conflict otherwise.
+Retries a failed schema migration by resetting status from `FAILED` to `PENDING` and clearing the
+attempt counter. This is the primary operator recovery from a `FAILED` activation hold: the
+migration runs again, and reaching `COMPLETED` releases the owning blueprint's slices.
+
+Only works when the datasource is in `FAILED` state; when it is in any other state the call fails
+with `409 Conflict` and
+``Schema for datasource '<name>' is not in FAILED state (currently <STATUS>) — retry only applies to failed migrations``
+(the observed status is named, so the refusal explains itself without a second call).
 
 **Response:**
 ```json
@@ -4039,10 +4140,19 @@ Retries a failed schema migration by resetting status from FAILED to PENDING. On
 ### POST /api/schema/baseline/{datasource}?version=N
 
 Baselines a datasource at the specified version (marks V001..V{N} as applied without executing).
+Sets status to `COMPLETED`, which releases any activation hold on the owning blueprint's slices.
+
+The existing record's artifact coordinates and owning blueprint are **inherited**, not rewritten.
+A datasource with **no existing schema record cannot be baselined** — the call fails with
+`404 Not Found` and ``Schema status not found for datasource '<name>'`` rather than fabricating an
+unowned record. Publish (or deploy) the owning blueprint first so the record exists.
+
+`version` is optional and defaults to `1` when absent; a present-but-non-integer value is rejected
+with `400 Bad Request`.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `version` | int | yes | Version to baseline at |
+| `version` | int | no | Version to baseline at (defaults to `1` when absent; a non-integer value is a `400`) |
 
 **Response:**
 ```json
@@ -4051,6 +4161,20 @@ Baselines a datasource at the specified version (marks V001..V{N} as applied wit
   "message": "Baselined orders_db at version 3"
 }
 ```
+
+> **Status-code contract — applies to every endpoint in this Schema Management group.** The schema
+> failure causes implement `HttpStatusAware`, so the management error funnel renders each as an
+> RFC 9457 ProblemDetail carrying its semantic status. Both the status code and the `detail` message
+> are a stable contract; scripted clients may match on either.
+>
+> | Condition | Status | `detail` |
+> |-----------|--------|----------|
+> | Datasource has no schema record (every route that reads one) | `404 Not Found` | ``Schema status not found for datasource '<name>'`` |
+> | `retry` against a datasource that is not `FAILED` | `409 Conflict` | ``Schema for datasource '<name>' is not in FAILED state (currently <STATUS>) — retry only applies to failed migrations`` |
+> | `?version=` / `?targetVersion=` present but not an integer | `400 Bad Request` | ``Invalid '<parameter>' parameter: '<value>' is not an integer`` |
+>
+> An **absent** `version`/`targetVersion` is not an error — it takes the documented default
+> (`1` for baseline, `0` for undo). Any other failure on these routes remains a `500`.
 
 ---
 
