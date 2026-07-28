@@ -40,6 +40,7 @@ import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.Memb
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.SelfShutdownReceived;
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.VersionRoutingPutReceived;
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.VersionRoutingRemoveReceived;
+import org.pragmatica.aether.deployment.schema.SchemaEvent.ActivationBlocked;
 import org.pragmatica.aether.metrics.deployment.DeploymentEvent.DeploymentFailed;
 import org.pragmatica.aether.metrics.deployment.DeploymentEvent.DeploymentStarted;
 import org.pragmatica.aether.slice.SliceState;
@@ -166,6 +167,13 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
         /// The fallback source label for a joining worker whose membership `source` is absent or
         /// blank (worker-membership-spec D2).
         private static final String DEFAULT_SOURCE = "default";
+
+        /// Schema statuses that hold slice activation (#542). FAILED is a blocking status: the
+        /// physical schema sits at a version the slice was not built against until an operator
+        /// retries or redeploys.
+        private static final Set<SchemaStatus> BLOCKING_SCHEMA_STATUSES = Set.of(SchemaStatus.PENDING,
+                                                                                 SchemaStatus.MIGRATING,
+                                                                                 SchemaStatus.FAILED);
 
         // --- move-only extraction seams (package-private helpers operating on this Active) ---
         StuckTransitionalRemediator stuckRemediator() {
@@ -396,7 +404,7 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
             switch (value.status()) {
                 case PENDING -> handleSchemaPending(datasource);
                 case COMPLETED -> handleSchemaCompleted(datasource);
-                case FAILED -> log.warn("Schema migration failed for datasource: {}", datasource);
+                case FAILED -> handleSchemaFailed(value);
                 case MIGRATING -> log.debug("Schema migration in progress for datasource: {}", datasource);
             }
         }
@@ -505,6 +513,7 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                                                                 value.lastMigration(),
                                                                 SchemaStatus.PENDING,
                                                                 value.artifactCoords(),
+                                                                value.owningBlueprint(),
                                                                 value.attemptCount());
             var lockKey = SchemaMigrationLockKey.schemaMigrationLockKey(datasourceName);
             var commands = List.<KVCommand<AetherKey>> of(new KVCommand.Put<>(versionKey, updated),
@@ -617,6 +626,49 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                        .map(Map.Entry::getKey)
                        .toList()
                        .forEach(this::tryActivateIfDependenciesReady);
+        }
+
+        /// #542: a FAILED record holds every slice of its owning blueprint (`areSchemasReady`), so
+        /// the hold must be reported rather than inferred from a deploy that silently never
+        /// finishes. The orchestrator's own `MigrationFailed` names the failure but always carries
+        /// an empty `blockedSlices` — it has no deployment state to consult. The leader does, so it
+        /// emits the consequence here: which slices are held, and by whose migration.
+        private void handleSchemaFailed(SchemaVersionValue value) {
+            var owner = value.owningBlueprint();
+            var blockedSlices = slicesOwnedBy(owner);
+
+            log.error("Schema migration FAILED for datasource '{}' (owner '{}') — holding activation of {} slice(s) {};"
+                     + " clear with POST /api/schema/{}/retry or redeploy the blueprint",
+                      value.datasourceName(),
+                      owner.asString(),
+                      blockedSlices.size(),
+                      blockedSlices,
+                      value.datasourceName());
+            AuditLog.schemaActivationBlocked(value.datasourceName(), owner.asString(), blockedSlices);
+            ctx.router()
+               .route(ActivationBlocked.activationBlocked(value.datasourceName(),
+                                                          owner,
+                                                          blockedSlices,
+                                                          value.artifactCoords(),
+                                                          value.attemptCount()));
+        }
+
+        private List<String> slicesOwnedBy(BlueprintId owner) {
+            return blueprints.entrySet()
+                             .stream()
+                             .filter(entry -> isOwnedBy(owner,
+                                                        entry.getValue()))
+                             .map(entry -> entry.getKey()
+                                                .asString())
+                             .sorted()
+                             .toList();
+        }
+
+        private static boolean isOwnedBy(BlueprintId owner, Blueprint blueprint) {
+            return blueprint.schemaRequired() && blueprint.owner()
+                                                          .map(BlueprintId::base)
+                                                          .filter(owner.base()::equals)
+                                                          .isPresent();
         }
 
         private void handleSliceNodeRemoval(SliceNodeKey sliceNodeKey) {
@@ -1308,25 +1360,52 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                                                         ctx.nowMs()));
         }
 
-        private boolean areSchemasReady(SliceNodeKey sliceKey) {
-            var blueprint = blueprints.get(sliceKey.artifact());
+        /// The activation gate for a slice's schema migrations, scoped to the slice's OWN blueprint.
+        /// Datasource names are cluster-global (`BlueprintArtifactParser` derives `"database"` from
+        /// the default script layout for every blueprint), so an unrelated blueprint's record must
+        /// never hold this slice — that unscoped scan was the other half of #542.
+        ///
+        /// Blocking statuses are PENDING, MIGRATING and FAILED. FAILED blocks: a permanently failed
+        /// migration leaves the physical schema at a version the slice was not built against, which
+        /// is exactly the corruption this gate exists to prevent. Note the pre-#542 gate was
+        /// inverted — `scheduleRetry` writes PENDING (blocked) while `emitPermanentFailure` writes
+        /// FAILED (released), so the slice was held during recoverable retries and let through on
+        /// permanent failure. The hold now clears only via `/api/schema/{ds}/retry`
+        /// (FAILED -> PENDING -> COMPLETED) or a redeploy that republishes the record.
+        ///
+        /// A slice whose owning blueprint cannot be resolved — no `Blueprint` entry, or an entry
+        /// carrying no owner — is reported READY. No record can be attributed to it, so blocking
+        /// would be an unclearable hold: nothing that ever completes could match it, and the slice
+        /// would sit in LOADED forever. Records only ever exist because some blueprint declared
+        /// migrations, and that blueprint's own slices do carry its owner, so the safety property is
+        /// held from the owning side rather than by refusing to decide here.
+        boolean areSchemasReady(SliceNodeKey sliceKey) {
+            return Option.option(blueprints.get(sliceKey.artifact()))
+                         .filter(Blueprint::schemaRequired)
+                         .flatMap(Blueprint::owner)
+                         .map(this::noBlockingSchemaRecords)
+                         .or(true);
+        }
 
-            if (blueprint != null && !blueprint.schemaRequired()) {
-                return true;
-            }
-
+        private boolean noBlockingSchemaRecords(BlueprintId owner) {
             var schemasReady = new AtomicBoolean(true);
 
             ctx.kvStore()
                .forEach(SchemaVersionKey.class,
                         SchemaVersionValue.class,
-                        (_, value) -> checkSchemaBlocking(value, schemasReady));
+                        (_, value) -> checkSchemaBlocking(owner, value, schemasReady));
 
             return schemasReady.get();
         }
 
-        private static void checkSchemaBlocking(SchemaVersionValue value, AtomicBoolean schemasReady) {
-            if (value.status() == SchemaStatus.PENDING || value.status() == SchemaStatus.MIGRATING) {
+        /// Ownership matches on `ArtifactBase` (version stripped), so a blueprint that advanced from
+        /// `my-app:1.0.0` to `my-app:1.0.1` still owns the records its earlier version wrote — the
+        /// same rule `hasConflictingOwnership` and `BlueprintService`'s deploy-time gate apply.
+        private static void checkSchemaBlocking(BlueprintId owner,
+                                                SchemaVersionValue value,
+                                                AtomicBoolean schemasReady) {
+            if (BLOCKING_SCHEMA_STATUSES.contains(value.status()) && owner.base()
+                                                                          .equals(value.owningBlueprint().base())) {
                 schemasReady.set(false);
             }
         }

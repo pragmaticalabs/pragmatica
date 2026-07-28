@@ -27,6 +27,7 @@ import org.pragmatica.aether.resource.db.DatasourceConnectionProvider;
 import org.pragmatica.aether.resource.db.PoolConfig;
 import org.pragmatica.aether.resource.db.RowMapper;
 import org.pragmatica.aether.resource.db.SqlConnector;
+import org.pragmatica.aether.slice.blueprint.BlueprintId;
 import org.pragmatica.aether.slice.blueprint.MigrationEntry;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SchemaVersionKey;
@@ -76,6 +77,7 @@ class SchemaMigrationResolutionTest {
     private static final NodeId SELF = new NodeId("node-1");
     private static final String DATASOURCE = "database.orders";
     private static final String COORDS = "org.example:my-app:1.0.0";
+    private static final BlueprintId OWNER = BlueprintId.blueprintId(COORDS).unwrap();
     private static final String LAST_MIGRATION = "V003__add_index.sql";
     private static final int DECLARED_VERSION = 3;
     private static final Cause NOT_IN_REPOSITORY = Causes.cause("Artifact not present in local repository");
@@ -240,7 +242,8 @@ class SchemaMigrationResolutionTest {
                                                           currentVersion,
                                                           lastMigration,
                                                           SchemaStatus.PENDING,
-                                                          artifactCoords));
+                                                          artifactCoords,
+                                                          OWNER));
     }
 
     private List<SchemaStatus> statusesWrittenToKv() {

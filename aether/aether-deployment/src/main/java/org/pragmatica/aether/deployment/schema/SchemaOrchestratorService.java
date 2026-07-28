@@ -381,6 +381,7 @@ class SchemaOrchestratorServiceInstance implements SchemaOrchestratorService {
                                                             current.lastMigration(),
                                                             newStatus,
                                                             current.artifactCoords(),
+                                                            current.owningBlueprint(),
                                                             current.attemptCount());
         KVCommand<AetherKey> command = new Put<>(key, updated);
 
@@ -398,6 +399,7 @@ class SchemaOrchestratorServiceInstance implements SchemaOrchestratorService {
                                                             current.lastMigration(),
                                                             newStatus,
                                                             current.artifactCoords(),
+                                                            current.owningBlueprint(),
                                                             attemptCount);
         KVCommand<AetherKey> command = new Put<>(key, updated);
 

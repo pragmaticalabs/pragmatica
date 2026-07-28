@@ -1063,7 +1063,8 @@ public final class KVStoreSerializer {
 
     private static String serializeSchemaVersion(SchemaVersionValue v) {
         return v.datasourceName() + PIPE + v.currentVersion() + PIPE + v.lastMigration() + PIPE + v.status()
-                                                                                                   .name() + PIPE + v.artifactCoords() + PIPE + v.attemptCount() + PIPE + v.updatedAt();
+                                                                                                   .name() + PIPE + v.artifactCoords() + PIPE + v.owningBlueprint()
+                                                                                                                                                 .asString() + PIPE + v.attemptCount() + PIPE + v.updatedAt();
     }
 
     private static String serializeSchemaMigrationLock(SchemaMigrationLockValue v) {
@@ -1071,32 +1072,25 @@ public final class KVStoreSerializer {
                                             .id() + PIPE + v.acquiredAt() + PIPE + v.expiresAt();
     }
 
+    /// `datasourceName|currentVersion|lastMigration|status|artifactCoords|owningBlueprint|attemptCount|updatedAt`.
+    /// The owning blueprint is a required field — a record without one cannot be attributed to a
+    /// blueprint by the activation gate, so there is no pre-ownership form to fall back to.
     private static Result<Map.Entry<AetherKey, AetherValue>> parseSchemaVersionEntry(String identity, String raw) {
         var parts = raw.split("\\|", -1);
 
-        if (parts.length == 6) {
-            return SchemaVersionKey.schemaVersionKey("schema-version/" + identity, true).map(key -> entry(key,
-                                                                                                          new SchemaVersionValue(parts[0],
-                                                                                                                                 Integer.parseInt(parts[1]),
-                                                                                                                                 parts[2],
-                                                                                                                                 SchemaStatus.valueOf(parts[3]),
-                                                                                                                                 parts[4],
-                                                                                                                                 0,
-                                                                                                                                 Long.parseLong(parts[5]))));
+        if (parts.length != 8) {
+            return parseFailure("schema-version value requires 8 fields, got " + parts.length);
         }
 
-        if (parts.length != 7) {
-            return parseFailure("schema-version value requires 6 or 7 fields, got " + parts.length);
-        }
-
-        return SchemaVersionKey.schemaVersionKey("schema-version/" + identity, true).map(key -> entry(key,
-                                                                                                      new SchemaVersionValue(parts[0],
-                                                                                                                             Integer.parseInt(parts[1]),
-                                                                                                                             parts[2],
-                                                                                                                             SchemaStatus.valueOf(parts[3]),
-                                                                                                                             parts[4],
-                                                                                                                             Integer.parseInt(parts[5]),
-                                                                                                                             Long.parseLong(parts[6]))));
+        return SchemaVersionKey.schemaVersionKey("schema-version/" + identity, true).flatMap(key -> BlueprintId.blueprintId(parts[5]).map(owner -> entry(key,
+                                                                                                                                                         new SchemaVersionValue(parts[0],
+                                                                                                                                                                                Integer.parseInt(parts[1]),
+                                                                                                                                                                                parts[2],
+                                                                                                                                                                                SchemaStatus.valueOf(parts[3]),
+                                                                                                                                                                                parts[4],
+                                                                                                                                                                                owner,
+                                                                                                                                                                                Integer.parseInt(parts[6]),
+                                                                                                                                                                                Long.parseLong(parts[7])))));
     }
 
     private static Result<Map.Entry<AetherKey, AetherValue>> parseSchemaMigrationLockEntry(String identity,

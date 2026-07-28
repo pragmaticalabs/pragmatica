@@ -951,23 +951,33 @@ public sealed interface AetherValue {
         }
     }
 
+    /// Datasource names are cluster-global (`BlueprintArtifactParser` derives them from the
+    /// migration script path, so two blueprints using the default layout both claim `"database"`),
+    /// therefore the record must name the blueprint that owns the migration set. Ownership is
+    /// REQUIRED, not optional: the deploy-time gate in `BlueprintService` refuses to write a record
+    /// for a datasource another blueprint already migrates, and the activation gate in
+    /// `ClusterDeploymentState.areSchemasReady` matches records to slices by this owner so one
+    /// blueprint's failed migration cannot hold an unrelated blueprint's slices.
     record SchemaVersionValue(String datasourceName,
                               int currentVersion,
                               String lastMigration,
                               SchemaStatus status,
                               String artifactCoords,
+                              BlueprintId owningBlueprint,
                               int attemptCount,
                               long updatedAt) implements AetherValue {
         public static SchemaVersionValue schemaVersionValue(String datasourceName,
                                                             int currentVersion,
                                                             String lastMigration,
                                                             SchemaStatus status,
-                                                            String artifactCoords) {
+                                                            String artifactCoords,
+                                                            BlueprintId owningBlueprint) {
             return new SchemaVersionValue(datasourceName,
                                           currentVersion,
                                           lastMigration,
                                           status,
                                           artifactCoords,
+                                          owningBlueprint,
                                           0,
                                           System.currentTimeMillis());
         }
@@ -977,26 +987,15 @@ public sealed interface AetherValue {
                                                             String lastMigration,
                                                             SchemaStatus status,
                                                             String artifactCoords,
+                                                            BlueprintId owningBlueprint,
                                                             int attemptCount) {
             return new SchemaVersionValue(datasourceName,
                                           currentVersion,
                                           lastMigration,
                                           status,
                                           artifactCoords,
+                                          owningBlueprint,
                                           attemptCount,
-                                          System.currentTimeMillis());
-        }
-
-        public static SchemaVersionValue schemaVersionValue(String datasourceName,
-                                                            int currentVersion,
-                                                            String lastMigration,
-                                                            SchemaStatus status) {
-            return new SchemaVersionValue(datasourceName,
-                                          currentVersion,
-                                          lastMigration,
-                                          status,
-                                          "",
-                                          0,
                                           System.currentTimeMillis());
         }
     }
