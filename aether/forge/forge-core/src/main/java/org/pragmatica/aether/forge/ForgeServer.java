@@ -39,6 +39,7 @@ import org.pragmatica.http.JdkHttpOperations;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
+import org.pragmatica.lang.io.FileOps;
 import org.pragmatica.lang.io.TimeSpan;
 
 import org.slf4j.Logger;
@@ -232,6 +233,7 @@ public final class ForgeServer {
                                                         forgeConfig.coreMax());
 
         applyApiVersioning(clusterInstance);
+        applyForgeDataDir(clusterInstance);
         var entryPointMetrics = EntryPointMetrics.entryPointMetrics();
         Supplier<List<Integer>> portSupplier = forgeConfig.lbEnabled()
                                                ? () -> List.of(forgeConfig.lbPort())
@@ -274,6 +276,36 @@ public final class ForgeServer {
                      .map(AetherConfig::appHttp)
                      .onPresent(appHttp -> clusterInstance.withApiVersioningDetection(appHttp.apiVersioningDetection(),
                                                                                       appHttp.apiVersionHeaderName()));
+    }
+
+    /// #515 — a local-dev Forge simulator must not inherit the production `/data/aether` storage
+    /// default (read-only on a laptop → a per-node "Stream WAL disabled" WARN wall + non-crash-durable
+    /// streaming). Point every embedded node at a writable, restart-stable base dir under
+    /// `$AETHER_HOME` (or the user-home `.aether/forge-data` fallback), which turns the artifact disk
+    /// tier and the per-partition stream WAL writable so Forge streaming is crash-durable by default.
+    /// Production nodes never take this path — they keep the `/data/aether` default from `StorageConfig`
+    /// / `ConfigLoader`. The single loud line (info on success, error on failure) replaces the silent
+    /// per-node WARN wall for the operator.
+    private void applyForgeDataDir(EmberCluster clusterInstance) {
+        var baseDir = forgeDataBaseDir();
+
+        FileOps.createDirectories(baseDir)
+               .onSuccess(_ -> log.info("Forge data dir: {} (stream WAL crash-durable)",
+                                        baseDir))
+               .onFailure(cause -> log.error("Forge data dir {} not writable: {} — streaming will run "
+                                            + "non-crash-durable (in-memory tail only)",
+                                             baseDir,
+                                             cause.message()));
+        clusterInstance.withDataBaseDir(baseDir);
+    }
+
+    private static Path forgeDataBaseDir() {
+        return Option.option(System.getenv("AETHER_HOME"))
+                     .filter(home -> !home.isBlank())
+                     .map(home -> Path.of(home, "forge-data"))
+                     .or(Path.of(System.getProperty("user.home"),
+                                 ".aether",
+                                 "forge-data"));
     }
 
     private static String serializeStatus(EmberCluster cluster,
@@ -438,8 +470,8 @@ public final class ForgeServer {
         http.sendString(request)
             .await(TimeSpan.timeSpan(10).seconds())
             .onSuccess(result -> handleDeployResponse(result, artifactCoords))
-            .onFailure(cause -> log.error("Failed to deploy blueprint: {}",
-                                          cause.message()));
+            .onFailure(cause -> failStartupDeploy(artifactCoords,
+                                                  cause.message()));
     }
 
     private void handleDeployResponse(org.pragmatica.http.HttpResult<String> result, String artifactCoords) {
@@ -449,8 +481,24 @@ public final class ForgeServer {
                                                  "Blueprint deployed from artifact " + artifactCoords));
             TimeSpan.timeSpan(1).seconds().sleep();
         } else {
-            log.error("Blueprint deploy failed (HTTP {}): {}", result.statusCode(), result.body());
+            failStartupDeploy(artifactCoords,
+                              "HTTP " + result.statusCode() + ": " + result.body());
         }
+    }
+
+    /// A `--blueprint` was supplied, so the whole point of this Forge run is to serve that slice. If
+    /// the startup deploy fails we must NOT keep running an empty cluster that looks healthy (banner +
+    /// dashboard up, but every request 404s) — that stranded a cold user in the #513 getting-started
+    /// dry-run. Fail loud: the thrown exception propagates out of [#start] to [#main], which logs it
+    /// and exits non-zero. Runs without `--blueprint` never reach this path and are unchanged.
+    private void failStartupDeploy(String artifactCoords, String detail) {
+        log.error("Startup blueprint deploy failed for '{}': {}", artifactCoords, detail);
+
+        throw new IllegalStateException("Startup blueprint deploy failed for '" + artifactCoords
+                                       + "': " + detail
+                                       + " — exiting so the cluster does not run empty while appearing healthy. "
+                                       + "Check the coordinates (groupId:artifactId:version:blueprint) and that the "
+                                       + "artifacts are installed to the resolvable repository (mvn install).");
     }
 
     private void loadLoadConfig(Path loadConfigPath) {

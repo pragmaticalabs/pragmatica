@@ -17,7 +17,7 @@ import picocli.CommandLine.Parameters;
 
 
 /// Init command - create new JBCT project.
-@Command(name = "init", description = "Initialize a new JBCT project", mixinStandardHelpOptions = true)
+@Command(name = "init", description = "Initialize a new JBCT project", mixinStandardHelpOptions = true, versionProvider = JbctCommand.VersionProvider.class)
 public class InitCommand implements Callable<Integer> {
     @Parameters(paramLabel = "<directory>", description = "Project directory (default: current directory)", arity = "0..1")
     Path projectDir;
@@ -27,9 +27,6 @@ public class InitCommand implements Callable<Integer> {
 
     @Option(names = {"--artifact-id", "-a"}, description = "Maven artifact ID (default: directory name)")
     String artifactId;
-
-    @Option(names = {"--slice"}, description = "Create an Aether slice project", hidden = true)
-    boolean slice;
 
     @Option(names = {"--no-slice"}, description = "Create a plain JBCT project (no Aether slice)")
     boolean noSlice;
@@ -57,9 +54,6 @@ public class InitCommand implements Callable<Integer> {
 
     @Option(names = {"--jbct-version"}, description = "Override jbct-maven-plugin version")
     String jbctVersion;
-
-    @Option(names = {"--version"}, description = "Override all dependency versions (pragmatica-lite, aether, jbct)")
-    String version;
 
     @Override
     public Integer call() {
@@ -203,28 +197,24 @@ public class InitCommand implements Callable<Integer> {
     }
 
     private boolean hasVersionOverrides() {
-        return org.pragmatica.lang.Option.option(version)
-                                         .isPresent() || org.pragmatica.lang.Option.option(pragmaticaVersion)
-                                                                                   .isPresent() || org.pragmatica.lang.Option.option(aetherVersion)
-                                                                                                                             .isPresent() || org.pragmatica.lang.Option.option(jbctVersion)
-                                                                                                                                                                       .isPresent();
+        return org.pragmatica.lang.Option.option(pragmaticaVersion)
+                                         .isPresent() || org.pragmatica.lang.Option.option(aetherVersion)
+                                                                                   .isPresent() || org.pragmatica.lang.Option.option(jbctVersion)
+                                                                                                                             .isPresent();
     }
 
     private String effectivePragmaticaVersion() {
         return org.pragmatica.lang.Option.option(pragmaticaVersion)
-                                         .orElse(() -> org.pragmatica.lang.Option.option(version))
                                          .or(GitHubVersionResolver::defaultPragmaticaVersion);
     }
 
     private String effectiveAetherVersion() {
         return org.pragmatica.lang.Option.option(aetherVersion)
-                                         .orElse(() -> org.pragmatica.lang.Option.option(version))
                                          .or(GitHubVersionResolver::defaultAetherVersion);
     }
 
     private String effectiveJbctVersion() {
         return org.pragmatica.lang.Option.option(jbctVersion)
-                                         .orElse(() -> org.pragmatica.lang.Option.option(version))
                                          .or(GitHubVersionResolver::defaultJbctVersion);
     }
 

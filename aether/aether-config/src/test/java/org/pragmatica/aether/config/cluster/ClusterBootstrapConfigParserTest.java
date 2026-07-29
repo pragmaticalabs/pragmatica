@@ -562,4 +562,73 @@ class ClusterBootstrapConfigParserTest {
                 .onFailure(cause -> assertThat(cause.message()).contains("cluster.name"));
         }
     }
+
+    /// S7 — a source's `provider` is optional (forge / ssh / docker have none) but a present-but-invalid
+    /// value must fail loudly, not silently resolve to `Option.empty()`. Absent → ok/empty; valid →
+    /// resolved; invalid → parse failure naming the bad value and the valid provider names.
+    @Nested
+    class ProviderValidation {
+        private static final String CLOUD_WITH_PROVIDER = """
+            config_version = "1.0.0"
+
+            [cluster]
+            name = "production"
+            version = "1.0.0"
+
+            [source.hetzner-eu]
+            type = "cloud"
+            provider = "%s"
+            credentials = "${secrets:hetzner-api-key}"
+            region = "eu-central"
+
+            [source.hetzner-eu.core]
+            count = 3
+            instance_type = "cx41"
+            runtime = "prod-container"
+
+            [runtime.prod-container]
+            type = "container"
+            image = "ghcr.io/pragmaticalabs/aether-node:1.0.0"
+            """;
+
+        @Test
+        void parse_validProvider_resolvesProvider() {
+            ClusterBootstrapConfigParser.parse(CLOUD_WITH_PROVIDER.formatted("hetzner"))
+                .onFailure(cause -> Assertions.fail(cause.message()))
+                .onSuccess(config -> assertThat(config.sources().get("hetzner-eu").provider())
+                    .isEqualTo(Option.some(CloudProviderName.HETZNER)));
+        }
+
+        @Test
+        void parse_invalidProvider_failsNamingBadValueAndValidNames() {
+            ClusterBootstrapConfigParser.parse(CLOUD_WITH_PROVIDER.formatted("hetnzer"))
+                .onSuccess(config -> Assertions.fail("Expected a parse failure for a typo'd provider, not a silent drop"))
+                .onFailure(cause -> assertThat(cause.message())
+                    .contains("hetnzer")
+                    .contains("hetzner")
+                    .contains("aws"));
+        }
+
+        @Test
+        void parse_absentProvider_succeedsWithEmptyProvider() {
+            var toml = """
+                config_version = "1.0.0"
+
+                [cluster]
+                name = "dev-local"
+                version = "1.0.0"
+
+                [source.local]
+                type = "forge"
+
+                [source.local.core]
+                count = 3
+                """;
+
+            ClusterBootstrapConfigParser.parse(toml)
+                .onFailure(cause -> Assertions.fail(cause.message()))
+                .onSuccess(config -> assertThat(config.sources().get("local").provider())
+                    .isEqualTo(Option.empty()));
+        }
+    }
 }

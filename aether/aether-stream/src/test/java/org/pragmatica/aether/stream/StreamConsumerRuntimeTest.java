@@ -17,12 +17,16 @@ import org.pragmatica.aether.slice.StreamConfig;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 
+import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.stream.LongStream;
 
+import static java.nio.charset.StandardCharsets.UTF_8;
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.aether.stream.StreamConsumerRuntime.streamConsumerRuntime;
 import static org.pragmatica.aether.stream.StreamPartitionManager.streamPartitionManager;
 
@@ -321,6 +325,200 @@ class StreamConsumerRuntimeTest {
                               (offset, payload, ts) -> Promise.unitPromise())
                    .onSuccess(_ -> org.junit.jupiter.api.Assertions.fail("Expected failure"))
                    .onFailure(cause -> assertThat(cause).isEqualTo(StreamError.General.CONSUMER_RUNTIME_CLOSED));
+        }
+    }
+
+    /// #488. The reaper measures time since the last `pollPartition`, which for a PUSH-listener
+    /// consumer advances only when events arrive. On a quiet partition a perfectly healthy
+    /// deployment-declared consumer therefore looks "idle" and, before the IdlePolicy split, was
+    /// silently unsubscribed after 60s — reintroducing the exact silent-no-delivery defect #488 fixes,
+    /// one layer down. This logic had never run in a cluster, so it is pinned here.
+    ///
+    /// Time is injected rather than waited on: the threshold is 60s.
+    @Nested
+    class IdleReaping {
+        private static final long WELL_PAST_TIMEOUT_MS = 120_000;
+
+        @Test
+        void reapIdleConsumers_unsubscribesClientConsumer_whenIdlePastTimeout() {
+            createTestStream("orders");
+            runtime.subscribe("orders", 0, ConsumerConfig.consumerConfig("client-group"),
+                              (offset, payload, ts) -> Promise.unitPromise());
+
+            reapAt(System.currentTimeMillis() + WELL_PAST_TIMEOUT_MS);
+
+            assertThat(runtime.subscriptions())
+                    .describedAs("a client-driven consumer that stopped polling is still reaped")
+                    .isEmpty();
+        }
+
+        @Test
+        void reapIdleConsumers_keepsDeclarativeConsumer_whenIdlePastTimeout() {
+            createTestStream("orders");
+            runtime.subscribe("orders", 0, ConsumerConfig.consumerConfig("declared-group"),
+                              (offset, payload, ts) -> Promise.unitPromise(),
+                              StreamConsumerRuntime.IdlePolicy.KEEP_UNTIL_UNSUBSCRIBED);
+
+            reapAt(System.currentTimeMillis() + WELL_PAST_TIMEOUT_MS);
+
+            assertThat(runtime.subscriptions())
+                    .describedAs("a deployment-declared consumer survives an arbitrarily quiet partition")
+                    .hasSize(1);
+            assertThat(runtime.subscriptions().getFirst().consumerGroup()).isEqualTo("declared-group");
+        }
+
+        @Test
+        void reapIdleConsumers_reapsOnlyTheClientConsumer_whenBothAreIdle() {
+            createTestStream("orders");
+            runtime.subscribe("orders", 0, ConsumerConfig.consumerConfig("client-group"),
+                              (offset, payload, ts) -> Promise.unitPromise());
+            runtime.subscribe("orders", 1, ConsumerConfig.consumerConfig("declared-group"),
+                              (offset, payload, ts) -> Promise.unitPromise(),
+                              StreamConsumerRuntime.IdlePolicy.KEEP_UNTIL_UNSUBSCRIBED);
+
+            reapAt(System.currentTimeMillis() + WELL_PAST_TIMEOUT_MS);
+
+            assertThat(runtime.subscriptions())
+                    .extracting(StreamConsumerRuntime.SubscriptionSnapshot::consumerGroup)
+                    .containsExactly("declared-group");
+        }
+
+        @Test
+        void reapIdleConsumers_keepsBoth_whenNeitherIsIdle() {
+            createTestStream("orders");
+            runtime.subscribe("orders", 0, ConsumerConfig.consumerConfig("client-group"),
+                              (offset, payload, ts) -> Promise.unitPromise());
+            runtime.subscribe("orders", 1, ConsumerConfig.consumerConfig("declared-group"),
+                              (offset, payload, ts) -> Promise.unitPromise(),
+                              StreamConsumerRuntime.IdlePolicy.KEEP_UNTIL_UNSUBSCRIBED);
+
+            reapAt(System.currentTimeMillis());
+
+            assertThat(runtime.subscriptions()).hasSize(2);
+        }
+
+        private void reapAt(long now) {
+            ((ConsumerRuntimeState) runtime).reapIdleConsumers(now);
+        }
+    }
+
+    /// #488 operator surface: the subscription snapshot backing `GET /api/streams/declarative-consumers`.
+    @Nested
+    class SubscriptionSnapshots {
+
+        @Test
+        void subscriptions_reportsStreamPartitionAndGroup_forEachSubscription() {
+            createTestStream("orders");
+            runtime.subscribe("orders", 2, ConsumerConfig.consumerConfig("group-a"),
+                              (offset, payload, ts) -> Promise.unitPromise());
+
+            assertThat(runtime.subscriptions()).singleElement()
+                                               .satisfies(snapshot -> {
+                                                   assertThat(snapshot.streamName()).isEqualTo("orders");
+                                                   assertThat(snapshot.partition()).isEqualTo(2);
+                                                   assertThat(snapshot.consumerGroup()).isEqualTo("group-a");
+                                                   assertThat(snapshot.stalled()).isFalse();
+                                               });
+        }
+
+        @Test
+        void subscriptions_isEmpty_whenNothingSubscribed() {
+            createTestStream("orders");
+
+            assertThat(runtime.subscriptions()).isEmpty();
+        }
+    }
+
+    /// #535: a consumer no longer needs the partition's ring to be local.
+    ///
+    /// The node wires [StreamConsumerRuntime.PartitionReader] to the routed reader, which forwards to
+    /// the HRW owner when the local read fails `PARTITION_NOT_LOCAL`. These tests stand in for that
+    /// router with a reader serving a synthetic remote log, and subscribe to a stream this node has
+    /// never created — precisely the shape of an assignee that does not own the partition.
+    @Nested
+    class RoutedReads {
+        private static final int REMOTE_LOG_SIZE = 3;
+
+        private StreamConsumerRuntime routedRuntime;
+
+        @AfterEach
+        void closeRouted() throws Exception {
+            if (routedRuntime != null) {
+                routedRuntime.close();
+            }
+        }
+
+        @Test
+        void subscribe_deliversEvents_whenPartitionIsNotLocalButReaderServesIt() throws InterruptedException {
+            var latch = new CountDownLatch(REMOTE_LOG_SIZE);
+            var received = new CopyOnWriteArrayList<String>();
+
+            routedRuntime = runtimeReading((_, _, fromOffset, _) -> Promise.success(remoteLog(fromOffset)));
+            routedRuntime.subscribe("never-created-here", 0, ConsumerConfig.consumerConfig("group-1"),
+                                    (offset, payload, ts) -> record(received, latch, payload));
+
+            assertThat(latch.await(10, TimeUnit.SECONDS))
+                    .describedAs("the routed reader is what makes a non-owner assignee able to consume at all")
+                    .isTrue();
+            assertThat(received).containsExactly("remote-0", "remote-1", "remote-2");
+        }
+
+        /// Non-vacuity: the SAME subscription against the default local reader delivers nothing, because
+        /// the ring is not here. Without this arm the test above could pass for the wrong reason.
+        @Test
+        void subscribe_deliversNothing_whenPartitionIsNotLocalAndReaderIsTheLocalRing() throws InterruptedException {
+            var latch = new CountDownLatch(1);
+            var received = new CopyOnWriteArrayList<String>();
+
+            routedRuntime = runtimeReading(StreamConsumerRuntime.localPartitionReader(manager));
+            routedRuntime.subscribe("never-created-here", 0, ConsumerConfig.consumerConfig("group-1"),
+                                    (offset, payload, ts) -> record(received, latch, payload));
+
+            assertThat(latch.await(2, TimeUnit.SECONDS))
+                    .describedAs("this is the #535 defect: no local ring, so the local reader consumes nothing")
+                    .isFalse();
+            assertThat(received).isEmpty();
+        }
+
+        @Test
+        void subscribe_keepsPolling_whenTheReaderKeepsFailing() throws InterruptedException {
+            var attempts = new AtomicInteger();
+
+            routedRuntime = runtimeReading((_, _, _, _) -> failedRead(attempts));
+            routedRuntime.subscribe("never-created-here", 0, ConsumerConfig.consumerConfig("group-1"),
+                                    (offset, payload, ts) -> Promise.unitPromise());
+            TimeUnit.MILLISECONDS.sleep(500);
+
+            assertThat(attempts.get())
+                    .describedAs("an unreachable owner must back off and retry, not give up and not spin")
+                    .isBetween(2, 200);
+        }
+
+        private StreamConsumerRuntime runtimeReading(StreamConsumerRuntime.PartitionReader reader) {
+            return new ConsumerRuntimeState(manager, DeadLetterHandler.deadLetterHandler(), none(), none(), reader);
+        }
+
+        private static Promise<List<OffHeapRingBuffer.RawEvent>> failedRead(AtomicInteger attempts) {
+            attempts.incrementAndGet();
+
+            return StreamError.General.PARTITION_NOT_LOCAL.promise();
+        }
+
+        /// A synthetic remote log: everything at or after `fromOffset`, so the cursor converges exactly
+        /// as it would against a real partition rather than redelivering forever.
+        private static List<OffHeapRingBuffer.RawEvent> remoteLog(long fromOffset) {
+            return LongStream.range(fromOffset, REMOTE_LOG_SIZE)
+                             .mapToObj(offset -> new OffHeapRingBuffer.RawEvent(offset,
+                                                                                ("remote-" + offset).getBytes(UTF_8),
+                                                                                0L))
+                             .toList();
+        }
+
+        private static Promise<Unit> record(List<String> received, CountDownLatch latch, byte[] payload) {
+            received.add(new String(payload, UTF_8));
+            latch.countDown();
+
+            return Promise.unitPromise();
         }
     }
 }

@@ -4,6 +4,9 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.deployment.schema;
 
+import org.pragmatica.aether.slice.blueprint.BlueprintId;
+import org.pragmatica.http.HttpStatus;
+import org.pragmatica.http.HttpStatusAware;
 import org.pragmatica.lang.Cause;
 
 
@@ -78,6 +81,46 @@ public sealed interface SchemaError extends Cause {
         }
     }
 
+    /// The schema version record declares a migration set but carries no blueprint artifact
+    /// coordinates, so the declared scripts cannot be located. Permanent: nothing about a retry
+    /// changes the recorded coordinates.
+    record MigrationArtifactUnresolved(String datasource, int declaredVersion, String declaredMigration) implements SchemaError {
+        public static MigrationArtifactUnresolved migrationArtifactUnresolved(String datasource,
+                                                                              int declaredVersion,
+                                                                              String declaredMigration) {
+            return new MigrationArtifactUnresolved(datasource, declaredVersion, declaredMigration);
+        }
+
+        @Override
+        public String message() {
+            return "Datasource '" + datasource
+                 + "' declares schema migrations up to version " + declaredVersion
+                 + " (last: '" + declaredMigration
+                 + "') but its schema version record carries no blueprint artifact coordinates"
+                 + " — the declared migrations were NOT applied";
+        }
+    }
+
+    /// The blueprint artifact resolved from the recorded coordinates contains no migration scripts
+    /// for a datasource that declared them, meaning the resolved artifact is not the one the deploy
+    /// declared against. Permanent: a retry resolves the same coordinates.
+    record MigrationSetUnavailable(String datasource, String artifactCoords, int declaredVersion) implements SchemaError {
+        public static MigrationSetUnavailable migrationSetUnavailable(String datasource,
+                                                                      String artifactCoords,
+                                                                      int declaredVersion) {
+            return new MigrationSetUnavailable(datasource, artifactCoords, declaredVersion);
+        }
+
+        @Override
+        public String message() {
+            return "Datasource '" + datasource
+                 + "' declares schema migrations up to version " + declaredVersion
+                 + " but blueprint artifact '" + artifactCoords
+                 + "' contains no migration scripts for it"
+                 + " — the declared migrations were NOT applied";
+        }
+    }
+
     record InvalidMigrationFormat(String filename, String detail) implements SchemaError {
         public static InvalidMigrationFormat invalidMigrationFormat(String filename, String detail) {
             return new InvalidMigrationFormat(filename, detail);
@@ -86,6 +129,37 @@ public sealed interface SchemaError extends Cause {
         @Override
         public String message() {
             return "Invalid migration filename '" + filename + "': " + detail;
+        }
+    }
+
+    /// Datasource names are cluster-global (`BlueprintArtifactParser` derives them from the
+    /// migration script path, so every blueprint using the default `schema/V001__*.sql` layout
+    /// claims `"database"` and resolves it against the same node-global config section). Two
+    /// blueprints migrating one physical database interleave unrelated version sequences, so the
+    /// publish that would become the second migrator is rejected outright. Sharing a datasource
+    /// for reads and writes stays legal — only duplicate *migration ownership* is refused.
+    ///
+    /// Surfaces as HTTP 409 on the publish endpoint: the request is well-formed and the conflict is
+    /// with existing cluster state, not with the payload.
+    record DatasourceOwnershipConflict(String datasource, BlueprintId currentOwner, BlueprintId rejected) implements SchemaError, HttpStatusAware {
+        public static DatasourceOwnershipConflict datasourceOwnershipConflict(String datasource,
+                                                                              BlueprintId currentOwner,
+                                                                              BlueprintId rejected) {
+            return new DatasourceOwnershipConflict(datasource, currentOwner, rejected);
+        }
+
+        @Override
+        public String message() {
+            return "Blueprint '" + rejected.asString()
+                 + "' rejected — datasource '" + datasource
+                 + "' is already migrated by blueprint '" + currentOwner.asString()
+                 + "'. Declare the migrations in one blueprint only, or give this blueprint its own"
+                 + " datasource section.";
+        }
+
+        @Override
+        public HttpStatus httpStatus() {
+            return HttpStatus.CONFLICT;
         }
     }
 }

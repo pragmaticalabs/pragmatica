@@ -10,6 +10,7 @@ import java.util.List;
 import java.util.stream.IntStream;
 
 import org.pragmatica.aether.config.AetherConfig;
+import org.pragmatica.aether.config.DockerConfig;
 import org.pragmatica.aether.config.Environment;
 import org.pragmatica.aether.config.KubernetesConfig;
 import org.pragmatica.aether.config.ResourcesConfig;
@@ -182,7 +183,7 @@ public final class KubernetesGenerator implements Generator {
                : "G1GC";
     }
 
-    private String generateStatefulSet(AetherConfig config) {
+    String generateStatefulSet(AetherConfig config) {
         var namespace = k8sConfig(config).namespace();
         var resources = config.node().resources().or(ResourcesConfig.resourcesConfig());
         var nodes = config.cluster().nodes();
@@ -218,7 +219,7 @@ public final class KubernetesGenerator implements Generator {
                   terminationGracePeriodSeconds: 30
                   containers:
                   - name: aether-node
-                    image: ghcr.io/siy/aether-node:latest
+                    image: %s
                     ports:
                     - containerPort: %d
                       name: management
@@ -254,6 +255,7 @@ public final class KubernetesGenerator implements Generator {
             """,
                              namespace,
                              nodes,
+                             DockerConfig.DEFAULT_IMAGE,
                              mgmtPort,
                              clusterPort,
                              resources.cpuRequest(),

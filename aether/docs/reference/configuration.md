@@ -367,6 +367,11 @@ target_rf = 3
 
 Cloud provider integration is configured via the `[cloud]` TOML section. See [Cloud Integration](cloud-integration.md) for the full operator guide.
 
+> **Provisioning a new cluster?** `[cloud.*]` below is *generated output* — `aether cluster bootstrap`
+> composes it from a separate `[source.<name>]` schema you write once. See the
+> [Bootstrap Config Reference](bootstrap-config.md) for that schema and a minimal working example; you
+> should not hand-write `[cloud.*]` in a bootstrap-config file.
+
 ```toml
 [cloud]
 provider = "hetzner"                          # Required: hetzner | aws | gcp | azure
@@ -436,6 +441,8 @@ password = "secret"
 **Strict resolution:** Every schema directory must have a corresponding config section. A missing section causes an explicit failure — there is no fallback or derivation between sections. This prevents silent misconfiguration where migrations run against the wrong database.
 
 **Single-datasource zero-config:** Slices using only `@Sql` place migration scripts directly in `schema/` (no subdirectory). The scripts map to `[database]` — the same section `@Sql` resolves from.
+
+**Bootstrapping a cluster:** a bootstrap-config `[source.<name>] databases.<name> = "url"` entry composes into a *named* `[database.<name>]` section on the provisioned node, never the flat `[database]` — a common trap for slices that expect the default datasource. See [Bootstrap Config Reference](bootstrap-config.md#c-databasesx-vs-flat-database).
 
 ## Blueprint Resources (`resources.toml`)
 

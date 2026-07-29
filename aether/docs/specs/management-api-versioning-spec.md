@@ -86,7 +86,6 @@ Covers all 181 enum entries. HTTP methods and path parameters are unchanged unle
 | `/api/alerts/history` | `/api/v1/alerts/history` |
 | `/api/alerts/inject` | `/api/v1/alerts/inject` |
 | `/api/artifacts/metrics` | `/api/v1/artifacts/metrics` |
-| `/api/audit/commands` | `/api/v1/audit/commands` |
 | `/api/backups` | `/api/v1/backups` |
 | `/api/backups/restore` | `/api/v1/backups/restore` |
 | `/api/blueprints` | `/api/v1/blueprints` |

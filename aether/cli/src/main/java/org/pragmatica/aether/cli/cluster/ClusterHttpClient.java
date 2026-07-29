@@ -22,6 +22,7 @@ import org.pragmatica.aether.management.route.ManagementRoute;
 import org.pragmatica.http.HttpOperations;
 import org.pragmatica.http.HttpResult;
 import org.pragmatica.http.JdkHttpOperations;
+import org.pragmatica.json.JsonMapper;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
@@ -36,6 +37,9 @@ public sealed interface ClusterHttpClient {
     record unused() implements ClusterHttpClient {}
 
     AtomicReference<HttpOperations> HTTP_OPS_REF = new AtomicReference<>(JdkHttpOperations.jdkHttpOperations());
+
+    JsonMapper LIFECYCLE_MAPPER = JsonMapper.defaultJsonMapper();
+    String DECOMMISSIONED = "DECOMMISSIONED";
 
     @Contract
     @SuppressWarnings({"JBCT-EX-01", "JBCT-PAT-01", "JBCT-RET-08"})
@@ -369,9 +373,7 @@ public sealed interface ClusterHttpClient {
         var deadline = System.currentTimeMillis() + timeoutMs;
 
         while (System.currentTimeMillis() < deadline) {
-            var stateResult = getDirect(url);
-
-            if (stateResult.map(body -> body.contains("DECOMMISSIONED")).or(false)) {
+            if (isDecommissioned(getDirect(url))) {
                 return Result.unitResult();
             }
 
@@ -379,6 +381,19 @@ public sealed interface ClusterHttpClient {
         }
 
         return new HttpError.DrainTimeout(nodeId, timeoutMs).result();
+    }
+
+    /// Reads the lifecycle entry's `state` field rather than searching the whole response body
+    /// for the token (#522 sibling sweep): a body-wide match would report a drain complete the
+    /// moment any other field happened to mention the state — the wave would then restart a node
+    /// that is still shedding traffic. An unreadable response is never "decommissioned", so the
+    /// caller keeps waiting and ultimately fails with `DrainTimeout`.
+    static boolean isDecommissioned(Result<String> lifecycleResponse) {
+        return lifecycleResponse.flatMap(LIFECYCLE_MAPPER::readTree)
+                                .map(node -> node.path("state")
+                                                 .asText(""))
+                                .map(DECOMMISSIONED::equals)
+                                .or(false);
     }
 
     sealed interface HttpError extends Cause {

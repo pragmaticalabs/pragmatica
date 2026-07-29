@@ -132,6 +132,15 @@ public sealed interface ManagementApiResponses {
 
     record RouteInfo(String method, String path, List<String> nodes, String security) {}
 
+    record WorkersResponse(List<WorkerInfo> workers) {}
+
+    record WorkerInfo(String nodeId,
+                      String community,
+                      String governorId,
+                      boolean isGovernor,
+                      long communityTerm,
+                      long announcedAt) {}
+
     record ScaleResponse(String status, String artifact, int instances) {}
 
     record BlueprintResponse(String status, String blueprint, int slices) {}
@@ -696,6 +705,45 @@ public sealed interface ManagementApiResponses {
                                    long releasedPartitionsSinceBoot,
                                    long materializeQueueDepth,
                                    List<StreamHydrationDetail> streams) {}
+
+    /// #488 declarative-consumer view for THIS node. `attachedSubscriptions` is the count actually
+    /// subscribed here, which for a correctly assigned consumer equals the number of partitions this
+    /// node was assigned — not the stream's partition count.
+    record DeclarativeConsumersResponse(int attachedSubscriptions, List<DeclarativeConsumerDetail> consumers) {}
+
+    /// One declared `[streams.X]` consumer as this node sees it.
+    ///
+    /// `unassignedPartitions` is the loud gap (#535): partitions whose declared consumer slice is ACTIVE
+    /// on NO live node, so nothing can run the handler and they are consumed by nobody. It is NOT a gap
+    /// for this node to lack the slice — since #535 the partition's owner no longer has to host it, and
+    /// `partitionAssignments` names which node consumes each partition and which owns it. Reads are
+    /// forwarded to the owner whenever those two differ.
+    ///
+    /// `eventTypePublishable` is absent when this node cannot know: the probe needs the slice's own
+    /// codec registry, which only a node hosting the slice has. When present and false, the event type
+    /// has no codec there, so it cannot be published to the stream at all and this consumer will receive
+    /// nothing however healthy it otherwise looks. `diagnostic` carries the operator-facing explanation
+    /// for whichever condition applies, and is empty when the consumer is healthy.
+    record DeclarativeConsumerDetail(String stream,
+                                     String configSection,
+                                     String artifact,
+                                     String method,
+                                     String consumerGroup,
+                                     boolean batchMode,
+                                     String eventType,
+                                     boolean sliceDeployedLocally,
+                                     Option<Boolean> eventTypePublishable,
+                                     List<DeclarativeConsumerPartition> assignedPartitions,
+                                     List<Integer> unassignedPartitions,
+                                     List<DeclarativeConsumerAssignment> partitionAssignments,
+                                     String diagnostic) {}
+
+    /// Who consumes one partition and who owns it, as computed locally. Both are absent only during the
+    /// bootstrap window; `consumerNode` is additionally absent when nothing can consume the partition.
+    record DeclarativeConsumerAssignment(int partition, Option<String> consumerNode, Option<String> ownerNode) {}
+
+    /// `committedOffset` is the next offset this consumer will read — one past the last delivered event.
+    record DeclarativeConsumerPartition(int partition, long committedOffset, boolean stalled) {}
 
     /// Per-stream hydration row: `partitionsDeclared` the configured partition count,
     /// `ringsMaterialized` the rings actually built on this node (gated below declared on non-replicas),

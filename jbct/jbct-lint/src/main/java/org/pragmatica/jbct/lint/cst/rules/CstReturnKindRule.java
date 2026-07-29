@@ -7,6 +7,8 @@ import java.util.stream.Stream;
 import org.pragmatica.jbct.lint.Diagnostic;
 import org.pragmatica.jbct.lint.LintContext;
 import org.pragmatica.jbct.lint.cst.CstLintRule;
+import org.pragmatica.jbct.lint.cst.filetype.FileType;
+import org.pragmatica.jbct.lint.cst.filetype.FileTypeClassifier;
 import org.pragmatica.jbct.parser.Cursor;
 import org.pragmatica.jbct.parser.RuleKind;
 
@@ -36,6 +38,10 @@ public class CstReturnKindRule implements CstLintRule {
     @Override
     public Stream<Diagnostic> analyze(Cursor root, String source, LintContext ctx) {
         if (!ctx.shouldLint(packageName(root))) {
+            return Stream.empty();
+        }
+
+        if (FileTypeClassifier.classify(root) == FileType.TEST_CLASS) {
             return Stream.empty();
         }
 

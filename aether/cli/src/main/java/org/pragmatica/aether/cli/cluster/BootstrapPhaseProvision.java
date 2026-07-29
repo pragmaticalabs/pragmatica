@@ -12,6 +12,7 @@ import java.util.regex.Pattern;
 
 import org.pragmatica.aether.cli.cluster.ClusterBootstrapOrchestrator.BootstrapContext;
 import org.pragmatica.aether.config.cluster.CloudProviderName;
+import org.pragmatica.aether.config.cluster.ClusterBootstrapConfigParser;
 import org.pragmatica.aether.config.cluster.NodeRole;
 import org.pragmatica.aether.config.cluster.RoleSubTable;
 import org.pragmatica.aether.config.cluster.SourceProfile;
@@ -100,9 +101,29 @@ sealed interface BootstrapPhaseProvision {
         }
 
         var envVars = extractEnvVarNames(rawToml, sourceName);
+
+        warnOnUnmappedCredentials(sourceName, providerName, envVars);
         var handle = SourceCleanupHandle.sourceCleanupHandle(providerName, source.region(), envVars);
 
         return state.withSource(sourceName, handle);
+    }
+
+    /// #521 — a cloud source whose `[source.<name>]` stanza yields no `${env:NAME}` credential leaves the
+    /// persisted handle without the mapping `aether cluster destroy` needs to re-derive the provisioning
+    /// token. Cleanup then falls back to the raw provider env var, which may name a different account.
+    /// Say so at bootstrap time rather than discovering it hours later with paid VMs on the line.
+    @Contract
+    private static void warnOnUnmappedCredentials(String sourceName, String providerName, Map<String, String> envVars) {
+        if (!envVars.isEmpty()) {
+            return;
+        }
+
+        System.err.printf("  WARN: source '%s' (provider %s) records no credential env-var mapping — its "
+                         + "[source.%s] stanza declares no credentials = \"${env:NAME}\". Cleanup will fall back "
+                         + "to the raw provider env var.%n",
+                          sourceName,
+                          providerName,
+                          sourceName);
     }
 
     // RET-06: `rawToml` is raw operator TOML content; the null/empty coalesce is parse-boundary handling.
@@ -142,15 +163,23 @@ sealed interface BootstrapPhaseProvision {
                : null;
     }
 
+    /// #521 — the stanza header is derived from the parser's own `SOURCE_PREFIX`, never re-spelled here.
+    /// A local literal is exactly how this broke: the CLI mined a plural `[sources.<name>]` while the
+    /// grammar is singular `[source.<name>]`, so it matched no real config and every persisted handle
+    /// carried an empty `credentialEnvVars`, leaving destroy unable to re-derive the provisioning token.
+    /// The header is anchored to the start of a line so a mention inside a comment cannot be mistaken for
+    /// the section itself.
     private static String extractStanza(String rawToml, String sourceName) {
-        var header = "[sources." + sourceName + "]";
-        var headerIndex = rawToml.indexOf(header);
+        var header = Pattern.compile("(?m)^[ \\t]*\\[" + Pattern.quote(ClusterBootstrapConfigParser.SOURCE_PREFIX + sourceName)
+                                    + "][ \\t]*(#.*)?$");
+        var matcher = header.matcher(rawToml);
 
-        if (headerIndex < 0) {
+        if (!matcher.find()) {
             return "";
         }
 
-        var after = rawToml.indexOf("\n[", headerIndex + header.length());
+        var headerIndex = matcher.start();
+        var after = rawToml.indexOf("\n[", matcher.end());
 
         return after < 0
                ? rawToml.substring(headerIndex)

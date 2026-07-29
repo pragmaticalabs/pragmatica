@@ -44,6 +44,31 @@ class RouteAssemblerTest {
         assertThat(path.isSuccess()).isTrue();
     }
 
+    /// #522: `blueprints deploy --wait` polls BLUEPRINT_STATUS with a blueprint id, which is
+    /// always artifact-shaped (`group:artifact:version`). The colons must survive assembly and
+    /// come back intact on match, or the wait gate would poll a route that never resolves.
+    @Test
+    void assemble_blueprintIdWithColons_percentEncodesThemIntoOneSegment() {
+        var path = ManagementRoute.BLUEPRINT_STATUS.assemble("org.example:hello:1.0.0-SNAPSHOT");
+        path.onSuccess(p -> assertThat(p)
+                .isEqualTo("/api/blueprints/status/org.example%3Ahello%3A1.0.0-SNAPSHOT"));
+        assertThat(path.isSuccess()).isTrue();
+    }
+
+    @Test
+    void match_assembledBlueprintStatusPath_recoversTheOriginalBlueprintId() {
+        var blueprintId = "org.example:hello:1.0.0-SNAPSHOT";
+
+        ManagementRoute.BLUEPRINT_STATUS
+                .assemble(blueprintId)
+                .flatMap(path -> RouteMatcher.shared().match(ManagementRoute.BLUEPRINT_STATUS.method(), path))
+                .onSuccess(matched -> {
+                    assertThat(matched.route()).isEqualTo(ManagementRoute.BLUEPRINT_STATUS);
+                    assertThat(matched.param("id").or((String) null)).isEqualTo(blueprintId);
+                })
+                .onFailure(cause -> assertThat(cause).as("round trip must succeed").isNull());
+    }
+
     @Test
     void assemble_failsOnWrongParamCount() {
         var path = ManagementRoute.DEPLOY_PROMOTE.assemble(List.of());

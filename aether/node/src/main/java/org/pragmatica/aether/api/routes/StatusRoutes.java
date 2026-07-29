@@ -35,6 +35,7 @@ import org.pragmatica.aether.api.ManagementApiResponses.NodesResponse;
 import org.pragmatica.aether.api.ManagementApiResponses.ReadinessResponse;
 import org.pragmatica.aether.api.ManagementApiResponses.StatusResponse;
 import org.pragmatica.aether.api.ManagementApiResponses.WhoamiResponse;
+import org.pragmatica.aether.deployment.membership.ntt.QuorumLossSnapshot;
 import org.pragmatica.aether.deployment.membership.view.MembershipView;
 import org.pragmatica.aether.metrics.NodeReportedState;
 import org.pragmatica.net.tcp.security.CertificateRenewalScheduler;
@@ -188,7 +189,7 @@ public final class StatusRoutes implements RouteSource {
                                                             leader,
                                                             kvStateMap.getOrDefault(nodeId, "")))
                                   .toList();
-        var quorate = leader.isPresent() && nodeInfos.size() >= quorumOf(nodeInfos.size());
+        var quorate = leader.isPresent() && quorumStatus(node).held();
         var cluster = new ClusterInfo(nodeInfos.size(), leaderId, quorate, nodeInfos);
         var derived = node.snapshotCollector().derivedMetrics();
         var metrics = new MetricsSummary(derived.requestRate(),
@@ -271,6 +272,42 @@ public final class StatusRoutes implements RouteSource {
 
     private static int quorumOf(int n) {
         return n / 2 + 1;
+    }
+
+    /// Single source of truth for the node's quorum posture, shared by `/api/status`
+    /// (`cluster.quorate`), `/api/health` (`quorum`) and `/health/ready` (the `quorum`
+    /// component) so the three surfaces never disagree. `held` is true iff the counted strict
+    /// core-member set meets the consensus simple-majority threshold (`coreCount / 2 + 1`) — a
+    /// minority partition (e.g. 2 of 5) correctly reports NOT held, unlike the retired
+    /// "connected to at least one peer" (`>= 2`) check that let a minority claim quorum.
+    record QuorumStatus(boolean held, int countedMembers, int requiredThreshold) {
+        static QuorumStatus from(QuorumLossSnapshot snapshot) {
+            return new QuorumStatus(!snapshot.belowThreshold(),
+                                    snapshot.strictMemberCount(),
+                                    snapshot.requiredThreshold());
+        }
+
+        String detail() {
+            return "Counted core members: " + countedMembers + " / required: " + requiredThreshold;
+        }
+    }
+
+    /// Prefer the per-node `QuorumLossDetector` snapshot — the SAME signal the minority
+    /// self-drain latches on, so the management surfaces cannot disagree with the consensus
+    /// layer. Before the detector is wired (cold-start window) or on a `ManageableNode` test
+    /// proxy that omits it, fall back to the configured-core simple-majority over the FSM's
+    /// counted core members (never raw connection counts — a worker must not inflate the numerator).
+    static QuorumStatus quorumStatus(ManageableNode node) {
+        return node.quorumLossSnapshot()
+                   .map(QuorumStatus::from)
+                   .or(() -> fallbackQuorumStatus(node));
+    }
+
+    private static QuorumStatus fallbackQuorumStatus(ManageableNode node) {
+        var counted = node.membershipFsm().coreCountedMembers().size();
+        var required = quorumOf(node.initialTopology().size());
+
+        return new QuorumStatus(counted >= required, counted, required);
     }
 
     /// A1 (harness-resilience spec §5) — resolves the requested nodeId to its cluster-transport
@@ -405,7 +442,7 @@ public final class StatusRoutes implements RouteSource {
         var sliceCount = node.sliceStore().loaded().size();
         var ready = node.isReady();
         var totalNodes = connectedNodeCount + 1;
-        var hasQuorum = totalNodes >= 2;
+        var hasQuorum = quorumStatus(node).held();
         var status = !ready || !hasQuorum
                      ? "unhealthy"
                      : "healthy";
@@ -511,13 +548,12 @@ public final class StatusRoutes implements RouteSource {
     }
 
     private static ComponentHealth buildQuorumHealth(ManageableNode node) {
-        var connectedCount = node.connectedNodeCount();
-        var hasQuorum = connectedCount + 1 >= 2;
+        var quorum = quorumStatus(node);
 
         return new ComponentHealth("quorum",
-                                   hasQuorum
+                                   quorum.held()
                                    ? "UP"
                                    : "DOWN",
-                                   "Connected peers: " + connectedCount);
+                                   quorum.detail());
     }
 }

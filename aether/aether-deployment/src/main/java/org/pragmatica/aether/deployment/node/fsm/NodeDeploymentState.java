@@ -59,7 +59,7 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.TopicSubscriptionValue;
 import org.pragmatica.aether.slice.resource.ResourceAddress;
 import org.pragmatica.aether.slice.stream.StreamRegistryEntry;
 import org.pragmatica.aether.resource.ScheduleConfig;
-import org.pragmatica.aether.resource.StreamNameConfig;
+import org.pragmatica.aether.slice.StreamConfig;
 import org.pragmatica.aether.resource.TopicConfig;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
@@ -1307,6 +1307,11 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
                                                                                                                                                                     method,
                                                                                                                                                                     batchMode,
                                                                                                                                                                     eventType)))
+                                     .onFailure(cause -> log.error("Declarative stream consumer {}.{} on section [{}] could NOT be registered — it will receive nothing: {}",
+                                                                   artifact,
+                                                                   entry.method(),
+                                                                   entry.config(),
+                                                                   cause.message()))
                                      .option()
                                      .onPresent(result::add);
                 }
@@ -1315,11 +1320,21 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
             return result;
         }
 
+        /// Resolve the stream a `[streams.X]` consumer subscribes to.
+        ///
+        /// Binds [StreamConfig] — the SAME type the stream resource itself is provisioned with — and takes
+        /// its `name`, so a consumer always resolves to exactly the stream its publisher writes to.
+        ///
+        /// This previously bound a dedicated `StreamNameConfig(String streamName)`, which required a
+        /// `stream-name` key that no `resources.toml` carries (the stream's name comes from the config
+        /// section, e.g. `[streams.orders]` → `orders`). Resolution therefore always failed and every
+        /// declarative registration was silently dropped by the `.option()` below — a consumer that
+        /// declared correctly still received nothing, with no diagnostic anywhere. Part of #488.
         private Result<String> resolveStreamName(Artifact artifact, String configSection) {
             return sliceConfigService(artifact).orElse(ConfigService::instance)
                                      .toResult(Causes.cause("ConfigService not available for stream name resolution"))
-                                     .flatMap(svc -> svc.config(configSection, StreamNameConfig.class))
-                                     .map(StreamNameConfig::streamName);
+                                     .flatMap(svc -> svc.config(configSection, StreamConfig.class))
+                                     .map(StreamConfig::name);
         }
 
         private void handleFailed(SliceNodeKey sliceKey) {

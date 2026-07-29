@@ -7,8 +7,16 @@ import java.util.List;
 ///
 /// Empty by default — a zero-config project relies entirely on [LayerClassifier]'s book-layout
 /// conventions. Any list provided here is consulted *before* conventions, so explicit config
-/// overrides the defaults. Globs use the same syntax as `excludePackages` (`*` matches one package
-/// segment, `**` matches any depth); [LayerClassifier] compiles them once.
+/// overrides the defaults. Globs use the shared [org.pragmatica.jbct.shared.PackageGlob] syntax,
+/// the same one `excludePackages` uses: `*` matches exactly one package segment, `**` matches
+/// **zero or more** segments. `com.example.core.**` therefore classifies the bare package
+/// `com.example.core` as well as every subpackage beneath it — a class sitting directly in the
+/// package that declares a layer belongs to that layer — while never matching the sibling
+/// `com.example.corex`.
+///
+/// Because `**` spans zero segments, `slices` globs want `*`: `com.example.usecase.*` makes each
+/// individual slice package a root, whereas `com.example.usecase.**` would also make the
+/// `com.example.usecase` grouping package itself a slice root.
 ///
 /// TOML shape (each key is a string list):
 /// ```toml

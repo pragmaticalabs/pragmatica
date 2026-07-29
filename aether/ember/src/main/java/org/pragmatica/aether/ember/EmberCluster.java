@@ -224,8 +224,10 @@ public final class EmberCluster {
     /// TEST SEAM (streaming A-WAL) — set the writable, restart-stable base data dir for EVERY node in
     /// this cluster (opt-in). MUST be called before [#start]. Each node then gets a `storageConfig`
     /// `artifacts` [StorageConfig] keyed by its STABLE node id, so a `stop()`→`start()` restart reuses
-    /// the same dir and the stream WAL/segments survive. Production paths never call this (the default
-    /// empty `storageConfig` keeps the read-only `/data` fallback → WAL off). See [#perNodeStorageConfig].
+    /// the same dir and the stream WAL/segments survive. Production node paths never call this (the
+    /// default empty `storageConfig` keeps the read-only `/data` fallback → WAL off); Forge — a local
+    /// dev simulator, not a production path — calls it at startup (`ForgeServer.applyForgeDataDir`) to
+    /// home node data under `$AETHER_HOME/forge-data`. See [#perNodeStorageConfig].
     ///
     /// @param baseDir writable base dir (e.g. a JUnit `@TempDir`) under which each node gets `<baseDir>/<nodeId>`
     @Contract

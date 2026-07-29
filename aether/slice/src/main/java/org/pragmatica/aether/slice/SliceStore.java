@@ -18,6 +18,7 @@ import org.pragmatica.aether.slice.dependency.DependencyResolver;
 import org.pragmatica.aether.slice.dependency.SliceRegistry;
 import org.pragmatica.aether.slice.repository.Location;
 import org.pragmatica.aether.slice.repository.Repository;
+import org.pragmatica.serialization.SliceCodec;
 import org.pragmatica.config.ConfigurationProvider;
 import org.pragmatica.config.IntrinsicConfigProvider;
 import org.pragmatica.config.LayeredConfigProvider;
@@ -80,6 +81,31 @@ public interface SliceStore {
                                  ResourceProviderFacade resourceFacade,
                                  SliceActionConfig config,
                                  Option<ConfigurationProvider> nodeComposite) {
+        return sliceStore(registry,
+                          repositories,
+                          sharedLibraryLoader,
+                          invokerFacade,
+                          resourceFacade,
+                          config,
+                          nodeComposite,
+                          Option.empty());
+    }
+
+    /// Constructor variant that additionally scopes each slice's resources to that slice's codec.
+    ///
+    /// @param nodeCodec The node-wide codec every deployed slice's codec is layered on. When
+    ///                  present, resources provisioned by a slice (stream publishers and readers,
+    ///                  distributed caches, idempotency stores) serialize with the SLICE's codec
+    ///                  and can therefore carry the application's own record types (#526). Pass
+    ///                  `Option.empty()` to leave resources on the node-wide codec.
+    static SliceStore sliceStore(SliceRegistry registry,
+                                 List<Repository> repositories,
+                                 SharedLibraryClassLoader sharedLibraryLoader,
+                                 SliceInvokerFacade invokerFacade,
+                                 ResourceProviderFacade resourceFacade,
+                                 SliceActionConfig config,
+                                 Option<ConfigurationProvider> nodeComposite,
+                                 Option<SliceCodec> nodeCodec) {
         return new sliceStore(registry,
                               repositories,
                               sharedLibraryLoader,
@@ -87,6 +113,7 @@ public interface SliceStore {
                               resourceFacade,
                               config,
                               nodeComposite,
+                              nodeCodec,
                               new ConcurrentHashMap<>());
     }
 
@@ -163,6 +190,7 @@ public interface SliceStore {
                       ResourceProviderFacade resourceFacade,
                       SliceActionConfig config,
                       Option<ConfigurationProvider> nodeComposite,
+                      Option<SliceCodec> nodeCodec,
                       ConcurrentHashMap<Artifact, Promise<LoadedSliceEntry>> entries) implements SliceStore {
         private static final Logger log = LoggerFactory.getLogger(sliceStore.class);
         private static final String SLICE_RESOURCES_TOML = "META-INF/resources.toml";
@@ -191,7 +219,8 @@ public interface SliceStore {
                                                          invokerFacade,
                                                          resourceFacade,
                                                          Option.some(classLoader -> buildSliceCompositeFromClassLoader(artifact,
-                                                                                                                       classLoader)))
+                                                                                                                       classLoader)),
+                                                         nodeCodec)
                                      .map(resolved -> {
                                               var sliceClassLoader = resolved.slice()
                                                                              .getClass()
