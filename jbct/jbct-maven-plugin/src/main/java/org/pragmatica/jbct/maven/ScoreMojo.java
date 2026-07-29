@@ -6,8 +6,9 @@ import java.util.List;
 
 import org.pragmatica.jbct.lint.Diagnostic;
 import org.pragmatica.jbct.lint.JbctLinter;
+import org.pragmatica.jbct.lint.layer.LayerCoverage;
 import org.pragmatica.jbct.score.ScoreCalculator;
-import org.pragmatica.jbct.score.ScoreCategory;
+import org.pragmatica.jbct.score.ScoreReport;
 import org.pragmatica.jbct.score.ScoreResult;
 import org.pragmatica.jbct.shared.SourceFile;
 
@@ -45,6 +46,9 @@ public class ScoreMojo extends AbstractJbctMojo {
         var allDiagnostics = lintFiles(filesToProcess, linter);
         var score = ScoreCalculator.calculate(allDiagnostics, filesToProcess.size());
 
+        LayerCoverage.coverage(filesToProcess, context)
+                     .map(LayerCoverage::render)
+                     .onPresent(getLog()::info);
         outputScore(score);
         if (baseline != null && score.overall() < baseline) {
             throw new MojoFailureException("Score " + score.overall() + " below baseline " + baseline);
@@ -65,28 +69,6 @@ public class ScoreMojo extends AbstractJbctMojo {
     }
 
     private void outputScore(ScoreResult score) {
-        getLog().info("╔═══════════════════════════════════════════════════╗");
-        getLog().info(String.format("║     JBCT COMPLIANCE SCORE: %d/100            ║", score.overall()));
-        getLog().info("╠═══════════════════════════════════════════════════╣");
-        for (var category : ScoreCategory.values()) {
-            var categoryScore = score.breakdown().get(category);
-            var percent = categoryScore.score();
-            var bar = createProgressBar(percent);
-
-            getLog().info(String.format("║  %-18s %s %3d%%    ║",
-                                        category.name().replace('_', ' '),
-                                        bar,
-                                        percent));
-        }
-
-        getLog().info("╚═══════════════════════════════════════════════════╝");
-    }
-
-    private String createProgressBar(int percent) {
-        var filled = percent / 5;
-        // 20 chars = 100%
-        var empty = 20 - filled;
-
-        return "█".repeat(filled) + "░".repeat(empty);
+        ScoreReport.terminalLines(score).forEach(line -> getLog().info(line));
     }
 }

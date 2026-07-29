@@ -11,6 +11,7 @@ import org.pragmatica.jbct.lint.Diagnostic;
 import org.pragmatica.jbct.lint.DiagnosticSeverity;
 import org.pragmatica.jbct.lint.JbctLinter;
 import org.pragmatica.jbct.lint.LintContext;
+import org.pragmatica.jbct.lint.layer.LayerCoverage;
 import org.pragmatica.jbct.shared.FileCollector;
 import org.pragmatica.jbct.shared.SourceFile;
 import org.pragmatica.lang.Option;
@@ -67,6 +68,10 @@ public class LintCommand implements Callable<Integer> {
         for (var file : filesToProcess) {
             processFile(file, linter, allDiagnostics, counters);
         }
+
+        LayerCoverage.coverage(filesToProcess, context)
+                     .map(LayerCoverage::render)
+                     .onPresent(System.err::println);
         // Output results
         printResults(allDiagnostics);
         // Print summary
