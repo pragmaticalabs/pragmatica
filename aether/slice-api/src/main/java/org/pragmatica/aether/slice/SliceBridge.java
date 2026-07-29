@@ -10,6 +10,7 @@ import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.serialization.SliceCodec;
 
 
 public interface SliceBridge {
@@ -27,6 +28,15 @@ public interface SliceBridge {
 
     ClassLoader classLoader();
     List<String> methodNames();
+
+    /// The codec this slice encodes and decodes with — its OWN codec, layered over the node codec,
+    /// so it resolves the application's declared types as well as framework ones. Exposed so
+    /// operator-facing diagnostics can answer "can this event type actually be published?" against
+    /// the codec the slice's resources really use rather than the node-wide one (#526). Bridges
+    /// that carry no codec (stubs, non-default implementations) return none.
+    default Option<SliceCodec> sliceCodec() {
+        return Option.none();
+    }
 
     /// The per-injection-point system-observability cell for `methodName` (#277 increment 2), resolved
     /// at the interceptor dispatch sites so a call flows through `cell.around(...)`. Bridges that carry

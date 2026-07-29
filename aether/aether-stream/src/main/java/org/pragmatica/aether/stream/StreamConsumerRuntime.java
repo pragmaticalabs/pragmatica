@@ -64,6 +64,30 @@ public interface StreamConsumerRuntime extends AutoCloseable {
         Promise<Unit> onEvent(long offset, byte[] payload, long timestamp);
     }
 
+    /// How a consumer reads the partition it is attached to.
+    ///
+    /// Defaults to the LOCAL ring ([#localPartitionReader]), which is what a consumer running on the
+    /// partition's owner wants. The node wires the routed reader instead, so a consumer assigned to a
+    /// node that does not hold the ring reads THROUGH the owner rather than failing
+    /// `PARTITION_NOT_LOCAL` forever (#535). Consumer placement is then free of the requirement that
+    /// the partition owner also host the declaring slice.
+    @FunctionalInterface
+    interface PartitionReader {
+        Promise<List<OffHeapRingBuffer.RawEvent>> read(String streamName,
+                                                       int partition,
+                                                       long fromOffset,
+                                                       int maxEvents);
+    }
+
+    /// The default reader: this node's own ring, and nothing else.
+    static PartitionReader localPartitionReader(StreamPartitionManager partitionManager) {
+        return (streamName, partition, fromOffset, maxEvents) -> partitionManager.readLocal(streamName,
+                                                                                            partition,
+                                                                                            fromOffset,
+                                                                                            maxEvents)
+                                                                                 .async();
+    }
+
     @FunctionalInterface
     interface BatchConsumerCallback {
         Promise<Unit> onBatch(List<OffHeapRingBuffer.RawEvent> events);
@@ -92,5 +116,14 @@ public interface StreamConsumerRuntime extends AutoCloseable {
                                         deadLetterHandler,
                                         some(cursorStore),
                                         some(transactionalCommit));
+    }
+
+    /// #535 production overload: the same runtime with an explicit [PartitionReader], so the node can
+    /// hand it the routed reader that forwards to the partition owner when the ring is not local.
+    static StreamConsumerRuntime streamConsumerRuntime(StreamPartitionManager partitionManager,
+                                                       DeadLetterHandler deadLetterHandler,
+                                                       ConsumerCursorStore cursorStore,
+                                                       PartitionReader reader) {
+        return new ConsumerRuntimeState(partitionManager, deadLetterHandler, some(cursorStore), none(), reader);
     }
 }

@@ -331,6 +331,28 @@ Migration scripts live in the `schema/` directory of your blueprint artifact. Th
 
 Every schema directory must have a corresponding `[database]` or `[database.<name>]` config section. There is no fallback or derivation — a missing config section causes an explicit failure with a descriptive error message. This prevents silent misconfiguration.
 
+#### One Migrator Per Datasource
+
+Datasource names are **cluster-global**, not per-blueprint: the zero-config layout above names the
+datasource `database` for *every* blueprint, and all of them resolve it against the same
+`[database]` section on the node. Deploying a second blueprint whose `schema/` directory claims a
+datasource another blueprint already migrates is therefore **refused with HTTP 409** — two
+blueprints interleaving unrelated version sequences against one physical database is not a
+supported configuration. The check runs at deploy time and is not atomic against a simultaneous
+competing publish, so it reliably refuses the sequential case; do not rely on it to arbitrate two
+publishes racing each other.
+
+- Republishing the *same* blueprint at a newer version is fine; ownership matches on
+  `group:artifact` with the version stripped.
+- Reading and writing a shared datasource stays legal. Only declaring **migrations** for it is
+  exclusive: a blueprint with no `schema/` directory is never in conflict.
+- To give a second blueprint its own schema, give it its own named datasource — a
+  `schema/<name>/` subdirectory plus the matching `[database.<name>]` section.
+
+`aether schema status` shows the current owner of each datasource in its `OWNING BLUEPRINT`
+column. That owner also determines whose slices wait: while a datasource's migration is `PENDING`,
+`MIGRATING` or `FAILED`, only the **owning** blueprint's slices are withheld from activation.
+
 #### Migration Script Types
 
 Migration scripts use Flyway-style naming: versioned (`V`), repeatable (`R`), undo (`U`), and baseline (`B`). They are applied automatically when a blueprint is deployed. Schema history is tracked per datasource in the `aether_schema_history` table.

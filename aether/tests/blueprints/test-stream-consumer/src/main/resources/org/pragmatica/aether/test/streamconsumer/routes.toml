@@ -5,11 +5,16 @@ prefix = "/api/stream-consumer"
 default = "public"
 override_policy = "strengthen_only"
 
-# onConsumerEvent is deliberately absent — it is a declarative stream consumer, reachable only via
-# the framework's delivery path, never over HTTP. If it were routable the proof would be vacuous.
+# onConsumerEvent, onOrderPlaced and onSpreadEvent are deliberately absent — they are declarative
+# stream consumers, reachable only via the framework's delivery path, never over HTTP. If they were
+# routable the proof would be vacuous.
 [routes]
 publish = "POST /publish"
 received = "POST /received"
+publishOrder = "POST /publish-order"
+receivedOrders = "POST /received-orders"
+publishSpread = "POST /publish-spread"
+receivedSpread = "POST /received-spread"
 
 [errors]
 default = 500

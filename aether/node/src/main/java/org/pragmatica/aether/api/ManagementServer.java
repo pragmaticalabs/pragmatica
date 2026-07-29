@@ -325,6 +325,12 @@ class ManagementServerImpl implements ManagementServer {
         routeSources.add(ApiKeyRoutes.apiKeyRoutes(nodeSupplier));
         routeSources.add(DhtRoutes.dhtRoutes(nodeSupplier));
         routeSources.add(org.pragmatica.aether.api.routes.VersionRoutes.versionRoutes(nodeSupplier));
+        routeSources.add(org.pragmatica.aether.api.routes.WorkerRoutes.workerRoutes(nodeSupplier));
+        // #525: turns declared-but-unbuilt routes into an honest 501 instead of a bare 404.
+        // Registration order is irrelevant (route names are unique); registration itself is not —
+        // dropping this source silently resurrects the dead-route class. Reasons live per-route in
+        // NotImplementedRoutes, and ManagementRouteCoverageTest fails if a route loses its handler.
+        routeSources.add(org.pragmatica.aether.api.routes.NotImplementedRoutes.notImplementedRoutes());
         dynamicConfigManager.onPresent(dcm -> routeSources.add(ConfigRoutes.configRoutes(dcm, nodeSupplier)));
         this.router = ManagementRouter.managementRouter(routeSources.toArray(RouteSource[]::new));
         // #520 — the publication gate inside MavenProtocolRoutes must see the SAME posture this

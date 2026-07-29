@@ -47,6 +47,7 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
     private final DeadLetterHandler dlHandler;
     private final Option<ConsumerCursorStore> cursorStore;
     private final Option<TransactionalCursorCommit> transactionalCommit;
+    private final PartitionReader reader;
     private final ConcurrentHashMap<ConsumerKey, ConsumerState> consumers = new ConcurrentHashMap<>();
     private final AtomicBoolean closed = new AtomicBoolean(false);
     private final ScheduledFuture<?> idleConsumerChecker;
@@ -65,10 +66,23 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
                          DeadLetterHandler dlHandler,
                          Option<ConsumerCursorStore> cursorStore,
                          Option<TransactionalCursorCommit> transactionalCommit) {
+        this(partitionManager,
+             dlHandler,
+             cursorStore,
+             transactionalCommit,
+             StreamConsumerRuntime.localPartitionReader(partitionManager));
+    }
+
+    ConsumerRuntimeState(StreamPartitionManager partitionManager,
+                         DeadLetterHandler dlHandler,
+                         Option<ConsumerCursorStore> cursorStore,
+                         Option<TransactionalCursorCommit> transactionalCommit,
+                         PartitionReader reader) {
         this.partitionManager = partitionManager;
         this.dlHandler = dlHandler;
         this.cursorStore = cursorStore;
         this.transactionalCommit = transactionalCommit;
+        this.reader = reader;
         this.idleConsumerChecker = SharedScheduler.scheduleAtFixedRate(this::reapIdleConsumers,
                                                                        TimeSpan.timeSpan(IDLE_CHECK_INTERVAL_MS).millis());
     }
@@ -233,7 +247,7 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
     }
 
     private void registerPushListener(OffHeapRingBuffer buffer, ConsumerKey key, ConsumerState state) {
-        LongConsumer listener = _ -> pollPartition(key, state);
+        LongConsumer listener = _ -> onAppend(key, state);
 
         state.pushListener(listener);
         buffer.addAppendListener(listener);
@@ -264,58 +278,82 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
         state.scheduledFuture(future);
     }
 
+    /// The scheduled poll loop is SERIAL: the next poll is scheduled only once the current cycle —
+    /// read AND delivery — has completed.
+    ///
+    /// The previous shape rescheduled eagerly, so a second poll could read from a cursor the first poll
+    /// had not yet advanced and re-deliver the same events. That was harmless while every read was a
+    /// synchronous local one, but it becomes a duplicate generator the moment a consumer assigned to a
+    /// non-owner node reads THROUGH the owner (#535): those reads take a network round trip, during
+    /// which the eager 1ms reschedule would stack further reads on the same offset.
+    @Contract
     private void pollAndReschedule(ConsumerKey key, ConsumerState state) {
-        pollPartition(key, state);
-        scheduleNextPoll(key, state);
+        pollCycle(key, state).onFailure(cause -> logPollFailure(key, cause)).onResult(_ -> scheduleNextPoll(key, state));
     }
 
-    private void pollPartition(ConsumerKey key, ConsumerState state) {
+    /// Push-listener entry point. An append notification is fire-and-forget by construction — the ring
+    /// buffer hands out a `LongConsumer` — so the cycle's outcome has no caller to return to and is
+    /// logged instead. Only reachable when the ring IS local, where the read resolves without I/O.
+    @Contract
+    private void onAppend(ConsumerKey key, ConsumerState state) {
+        pollCycle(key, state).onFailure(cause -> logPollFailure(key, cause));
+    }
+
+    /// One poll cycle: read the partition, then deliver what came back. The returned promise resolves
+    /// when the cycle is DONE. It fails only when the READ failed; a DELIVERY failure is handled by the
+    /// consumer's error strategy ([#handleDeliveryFailure]) and deliberately never surfaces here, so a
+    /// handler error cannot be mistaken for an unreachable partition.
+    private Promise<Unit> pollCycle(ConsumerKey key, ConsumerState state) {
         if (closed.get() || state.isCancelled() || state.isStalled()) {
-            return;
+            return Promise.unitPromise();
         }
 
         state.touchLastPollTime();
-        var fromOffset = state.cursor();
 
-        partitionManager.readLocal(key.streamName(),
-                                   key.partition(),
-                                   fromOffset,
-                                   MAX_POLL_BATCH)
-                        .onSuccess(events -> handlePollSuccess(key, state, events))
-                        .onFailure(cause -> handlePollFailure(key, state, cause));
+        return reader.read(key.streamName(),
+                           key.partition(),
+                           state.cursor(),
+                           MAX_POLL_BATCH)
+                     .fold(result -> result.fold(cause -> pollFailed(state, cause),
+                                                 events -> pollSucceeded(key, state, events)));
     }
 
-    private void handlePollSuccess(ConsumerKey key, ConsumerState state, List<OffHeapRingBuffer.RawEvent> events) {
+    private Promise<Unit> pollSucceeded(ConsumerKey key, ConsumerState state, List<OffHeapRingBuffer.RawEvent> events) {
         state.adjustPollInterval(!events.isEmpty());
-        deliverEvents(key, state, events);
+
+        return deliverEvents(key, state, events);
     }
 
     /// Back off on failure too, not just on an empty successful read.
     ///
-    /// `currentPollMs` starts at `MIN_POLL_MS` (1ms) and previously only ever grew inside
-    /// [#handlePollSuccess], so a consumer whose partition is not materialized locally — `readLocal`
-    /// fails with `PARTITION_NOT_LOCAL` — rescheduled every millisecond forever, ~1000 wakeups/s per
-    /// consumer, each on its own virtual thread. The declarative path (#488) can enter that window
-    /// legitimately: HRW can name this node OWNER of a partition whose ring is still materializing, so
-    /// the poll path is reachable before the push listener exists.
-    private void handlePollFailure(ConsumerKey key, ConsumerState state, Cause cause) {
+    /// `currentPollMs` starts at `MIN_POLL_MS` (1ms) and previously only ever grew on a successful
+    /// read, so a consumer whose partition is not materialized locally — `readLocal` fails with
+    /// `PARTITION_NOT_LOCAL` — rescheduled every millisecond forever, ~1000 wakeups/s per consumer,
+    /// each on its own virtual thread. The declarative path (#488) can enter that window legitimately:
+    /// HRW can name this node OWNER of a partition whose ring is still materializing, so the poll path
+    /// is reachable before the push listener exists.
+    private Promise<Unit> pollFailed(ConsumerState state, Cause cause) {
         state.adjustPollInterval(false);
-        logPollFailure(key, cause);
+
+        return cause.promise();
     }
 
-    private void deliverEvents(ConsumerKey key, ConsumerState state, List<OffHeapRingBuffer.RawEvent> events) {
-        deliverNextEvent(key, state, events, 0);
+    private Promise<Unit> deliverEvents(ConsumerKey key, ConsumerState state, List<OffHeapRingBuffer.RawEvent> events) {
+        return deliverNextEvent(key, state, events, 0).fold(_ -> Promise.unitPromise());
     }
 
-    private void deliverNextEvent(ConsumerKey key,
-                                  ConsumerState state,
-                                  List<OffHeapRingBuffer.RawEvent> events,
-                                  int index) {
+    private Promise<Unit> deliverNextEvent(ConsumerKey key,
+                                           ConsumerState state,
+                                           List<OffHeapRingBuffer.RawEvent> events,
+                                           int index) {
         if (index >= events.size() || state.isCancelled() || state.isStalled()) {
-            return;
+            return Promise.unitPromise();
         }
 
-        deliverSingleEvent(key, state, events.get(index)).onSuccess(_ -> deliverNextEvent(key, state, events, index + 1));
+        return deliverSingleEvent(key, state, events.get(index)).flatMap(_ -> deliverNextEvent(key,
+                                                                                               state,
+                                                                                               events,
+                                                                                               index + 1));
     }
 
     private Promise<Unit> deliverSingleEvent(ConsumerKey key, ConsumerState state, OffHeapRingBuffer.RawEvent event) {

@@ -3781,7 +3781,11 @@ public class AetherCli implements Runnable {
         }
     }
 
-    @Command(name = "workers", description = "Manage worker nodes", subcommands = {WorkersCommand.ListCommand.class, WorkersCommand.HealthCommand.class, WorkersCommand.EndpointsCommand.class})
+    /// #525: `health` and `endpoints` subcommands removed. Per-worker health and per-worker
+    /// endpoints are never published to consensus, so those commands could only ever fail. The
+    /// routes remain declared and answer an honest 501 (see NotImplementedRoutes) for anyone
+    /// calling the HTTP API directly; the CLI simply stops offering what it cannot deliver.
+    @Command(name = "workers", description = "Inspect worker nodes", subcommands = {WorkersCommand.ListCommand.class})
     static class WorkersCommand implements Runnable {
         @CommandLine.ParentCommand
         private AetherCli parent;
@@ -3792,7 +3796,7 @@ public class AetherCli implements Runnable {
             CommandLine.usage(this, System.out);
         }
 
-        @Command(name = "list", description = "List worker nodes")
+        @Command(name = "list", description = "List worker nodes and the community each belongs to")
         static class ListCommand implements Callable<Integer> {
             @CommandLine.ParentCommand
             private WorkersCommand workersParent;
@@ -3804,38 +3808,47 @@ public class AetherCli implements Runnable {
                 return OutputFormatter.printQuery(response, workersParent.parent.outputOptions());
             }
         }
-
-        @Command(name = "health", description = "Show worker pool health summary")
-        static class HealthCommand implements Callable<Integer> {
-            @CommandLine.ParentCommand
-            private WorkersCommand workersParent;
-
-            @Override
-            public Integer call() {
-                var response = workersParent.parent.fetch(WORKERS_HEALTH);
-
-                return OutputFormatter.printQuery(response, workersParent.parent.outputOptions());
-            }
-        }
-
-        @Command(name = "endpoints", description = "List worker endpoints")
-        static class EndpointsCommand implements Callable<Integer> {
-            @CommandLine.ParentCommand
-            private WorkersCommand workersParent;
-
-            @Override
-            public Integer call() {
-                var response = workersParent.parent.fetch(WORKERS_ENDPOINTS);
-
-                return OutputFormatter.printQuery(response, workersParent.parent.outputOptions());
-            }
-        }
     }
 
     @Command(name = "schema", description = "Manage datasource schemas", subcommands = {SchemaCommand.StatusCommand.class, SchemaCommand.HistoryCommand.class, SchemaCommand.MigrateCommand.class, SchemaCommand.UndoCommand.class, SchemaCommand.BaselineCommand.class, SchemaCommand.RetryCommand.class})
     static class SchemaCommand implements Runnable {
         @CommandLine.ParentCommand
         private AetherCli parent;
+
+        /// `OWNING BLUEPRINT` is the blueprint whose migrations claim this datasource (#542/#550).
+        /// It is the field that says whose slices a non-COMPLETED status is holding: activation is
+        /// withheld from the slices of THIS blueprint only, never from an unrelated one.
+        ///
+        /// Package-visible (like `SchemaRoutes.baselineDatasource`) so `SchemaStatusTableTest` can
+        /// render the real column set over a real response body: a wrong `jsonPath` renders a blank
+        /// column rather than failing, so only a test that RUNS the renderer can catch it.
+        static final List<OutputFormatter.Column> SCHEMA_STATUS_COLUMNS = List.of(new OutputFormatter.Column("DATASOURCE",
+                                                                                                             "datasource",
+                                                                                                             20),
+                                                                                  new OutputFormatter.Column("STATUS",
+                                                                                                             "status",
+                                                                                                             10),
+                                                                                  new OutputFormatter.Column("VERSION",
+                                                                                                             "currentVersion",
+                                                                                                             7),
+                                                                                  new OutputFormatter.Column("LAST MIGRATION",
+                                                                                                             "lastMigration",
+                                                                                                             32),
+                                                                                  new OutputFormatter.Column("OWNING BLUEPRINT",
+                                                                                                             "owningBlueprint",
+                                                                                                             45));
+
+        static final OutputFormatter.TableSpec SCHEMA_STATUS_ALL_TABLE = new OutputFormatter.TableSpec("Schema Status",
+                                                                                                       SCHEMA_STATUS_COLUMNS,
+                                                                                                       "datasources");
+
+        // JBCT-RET-08: single-datasource responses are a bare object, so this table has no
+        // array-path (matching RESOLVE_TABLE); Option-ifying TableSpec.arrayPath globally is
+        // disproportionate
+        @SuppressWarnings("JBCT-RET-08")
+        static final OutputFormatter.TableSpec SCHEMA_STATUS_ONE_TABLE = new OutputFormatter.TableSpec("Schema Status",
+                                                                                                       SCHEMA_STATUS_COLUMNS,
+                                                                                                       null);
 
         @Contract
         @Override
@@ -3852,12 +3865,23 @@ public class AetherCli implements Runnable {
             private String datasource;
 
             @Override
+            @SuppressWarnings("JBCT-UTIL-02")
             public Integer call() {
+                var output = schemaParent.parent.outputOptions();
                 var response = datasource != null
                                ? schemaParent.parent.fetch(SCHEMA_STATUS_ONE, List.of(datasource))
                                : schemaParent.parent.fetch(SCHEMA_STATUS_ALL);
+                var errorCode = OutputFormatter.checkResponseError(response, output, "Failed to get schema status");
 
-                return OutputFormatter.printQuery(response, schemaParent.parent.outputOptions());
+                if (errorCode >= 0) {
+                    return errorCode;
+                }
+
+                return OutputFormatter.printQuery(response,
+                                                  output,
+                                                  datasource != null
+                                                  ? SCHEMA_STATUS_ONE_TABLE
+                                                  : SCHEMA_STATUS_ALL_TABLE);
             }
         }
 
@@ -3870,10 +3894,17 @@ public class AetherCli implements Runnable {
             private String datasource;
 
             @Override
+            @SuppressWarnings("JBCT-UTIL-02")
             public Integer call() {
+                var output = schemaParent.parent.outputOptions();
                 var response = schemaParent.parent.fetch(SCHEMA_HISTORY, List.of(datasource));
+                var errorCode = OutputFormatter.checkResponseError(response, output, "Failed to get schema history");
 
-                return OutputFormatter.printQuery(response, schemaParent.parent.outputOptions());
+                if (errorCode >= 0) {
+                    return errorCode;
+                }
+
+                return OutputFormatter.printQuery(response, output, SCHEMA_STATUS_ONE_TABLE);
             }
         }
 
@@ -3886,12 +3917,17 @@ public class AetherCli implements Runnable {
             private String datasource;
 
             @Override
+            @SuppressWarnings("JBCT-UTIL-02")
             public Integer call() {
+                var output = schemaParent.parent.outputOptions();
                 var response = schemaParent.parent.post(SCHEMA_MIGRATE, List.of(datasource), "{}");
+                var errorCode = OutputFormatter.checkResponseError(response, output, "Failed to trigger migration");
 
-                return OutputFormatter.printAction(response,
-                                                   schemaParent.parent.outputOptions(),
-                                                   "Migration triggered for " + datasource);
+                if (errorCode >= 0) {
+                    return errorCode;
+                }
+
+                return OutputFormatter.printAction(response, output, "Migration triggered for " + datasource);
             }
         }
 
@@ -3907,14 +3943,21 @@ public class AetherCli implements Runnable {
             private int targetVersion;
 
             @Override
+            @SuppressWarnings("JBCT-UTIL-02")
             public Integer call() {
+                var output = schemaParent.parent.outputOptions();
                 var response = schemaParent.parent.post(SCHEMA_UNDO,
                                                         List.of(datasource),
                                                         "targetVersion=" + targetVersion,
                                                         "{}");
+                var errorCode = OutputFormatter.checkResponseError(response, output, "Failed to undo migrations");
+
+                if (errorCode >= 0) {
+                    return errorCode;
+                }
 
                 return OutputFormatter.printAction(response,
-                                                   schemaParent.parent.outputOptions(),
+                                                   output,
                                                    "Undo to version " + targetVersion + " for " + datasource);
             }
         }
@@ -3930,17 +3973,28 @@ public class AetherCli implements Runnable {
             @CommandLine.Option(names = {"-v", "--version"}, required = true, description = "Baseline version")
             private int version;
 
+            /// Baselining inherits the existing record's owning blueprint, so a datasource with no
+            /// schema record cannot be baselined (#551) — the server answers with an error rather
+            /// than fabricating an unowned record. The error guard is what makes that visible:
+            /// without it the canned success line would be printed over the failure body.
             @Override
+            @SuppressWarnings("JBCT-UTIL-02")
             public Integer call() {
+                var output = schemaParent.parent.outputOptions();
                 var response = schemaParent.parent.post(SCHEMA_BASELINE, List.of(datasource), "version=" + version, "{}");
+                var errorCode = OutputFormatter.checkResponseError(response, output, "Failed to baseline datasource");
+
+                if (errorCode >= 0) {
+                    return errorCode;
+                }
 
                 return OutputFormatter.printAction(response,
-                                                   schemaParent.parent.outputOptions(),
+                                                   output,
                                                    "Baseline set at version " + version + " for " + datasource);
             }
         }
 
-        @Command(name = "retry", description = "Retry a failed schema migration")
+        @Command(name = "retry", description = "Retry a failed schema migration (clears the activation hold on the owning blueprint's slices)")
         static class RetryCommand implements Callable<Integer> {
             @CommandLine.ParentCommand
             private SchemaCommand schemaParent;
@@ -3949,12 +4003,17 @@ public class AetherCli implements Runnable {
             private String datasource;
 
             @Override
+            @SuppressWarnings("JBCT-UTIL-02")
             public Integer call() {
+                var output = schemaParent.parent.outputOptions();
                 var response = schemaParent.parent.post(SCHEMA_RETRY, List.of(datasource), "{}");
+                var errorCode = OutputFormatter.checkResponseError(response, output, "Failed to retry migration");
 
-                return OutputFormatter.printAction(response,
-                                                   schemaParent.parent.outputOptions(),
-                                                   "Migration retry triggered for " + datasource);
+                if (errorCode >= 0) {
+                    return errorCode;
+                }
+
+                return OutputFormatter.printAction(response, output, "Migration retry triggered for " + datasource);
             }
         }
     }
@@ -4080,7 +4139,7 @@ public class AetherCli implements Runnable {
         }
     }
 
-    @Command(name = "streams", description = "Manage event streams", subcommands = {StreamCommand.ListCommand.class, StreamCommand.StatusCommand.class, StreamCommand.PublishCommand.class, StreamCommand.ReadCommand.class, StreamCommand.CreateCommand.class, StreamCommand.DeleteCommand.class, StreamCommand.ConsumerGroupCommand.class})
+    @Command(name = "streams", description = "Manage event streams", subcommands = {StreamCommand.ListCommand.class, StreamCommand.StatusCommand.class, StreamCommand.ConsumersCommand.class, StreamCommand.PublishCommand.class, StreamCommand.ReadCommand.class, StreamCommand.CreateCommand.class, StreamCommand.DeleteCommand.class, StreamCommand.ConsumerGroupCommand.class})
     static class StreamCommand implements Runnable {
         @CommandLine.ParentCommand
         private AetherCli parent;
@@ -4115,6 +4174,24 @@ public class AetherCli implements Runnable {
             @Override
             public Integer call() {
                 var response = streamParent.parent.fetch(STREAM_GET, List.of(name));
+
+                return OutputFormatter.printQuery(response, streamParent.parent.outputOptions());
+            }
+        }
+
+        /// #488/#535 operator surface: which declarative `[streams.X]` consumers this node knows about,
+        /// which partitions it consumes, and — since #535 — which node consumes each partition and which
+        /// owns it. LOCAL scope: the answer describes the node you asked, so `unassignedPartitions` and
+        /// the diagnostic are that node's view. Every node computes the same assignment, so one call is
+        /// enough to answer "who consumes partition 3".
+        @Command(name = "consumers", description = "Show declarative stream consumers on the target node")
+        static class ConsumersCommand implements Callable<Integer> {
+            @CommandLine.ParentCommand
+            private StreamCommand streamParent;
+
+            @Override
+            public Integer call() {
+                var response = streamParent.parent.fetch(STREAM_DECLARATIVE_CONSUMERS);
 
                 return OutputFormatter.printQuery(response, streamParent.parent.outputOptions());
             }

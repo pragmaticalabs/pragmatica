@@ -115,7 +115,7 @@ This is distinct from the authentication 403 (invalid API key). The authorizatio
 
 A management request may land on any core node, but where it is ultimately served depends on the route:
 
-- **Control-plane read/write routes forward to the leader** (the control plane is leader-only). This covers cluster/node/slice status, topology, lifecycle, scheduled-task control-plane reads, config, controller, thresholds, observability depth, routes, workers, and audit endpoints. A request received by a follower is transparently forwarded to the current leader.
+- **Control-plane read/write routes forward to the leader** (the control plane is leader-only). This covers cluster/node/slice status, topology, lifecycle, scheduled-task control-plane reads, config, controller, thresholds, observability depth, routes, and workers. A request received by a follower is transparently forwarded to the current leader.
 - **Per-node diagnostic routes are served node-locally** (metrics, traces, alerts, logs, storage, TTM, DHT replication map, certificates). These report the receiving node's own view and are not forwarded.
 - **Per-node addressed routes** (those with an `{id}` node parameter) are forwarded to the named node.
 
@@ -824,11 +824,53 @@ Deploy a blueprint from an artifact in the cluster's artifact repository.
 }
 ```
 
+#### Single-migrator gate (409 Conflict)
+
+Both artifact-based entry points (`/deploy` and `/publish`) refuse a request with **409 Conflict**
+when the artifact declares migrations for a datasource that a **different** blueprint already
+migrates. The refusal happens before any KV command is applied, so a refused publish writes
+nothing.
+
+```json
+{
+  "type": "about:blank",
+  "title": "Conflict",
+  "status": 409,
+  "detail": "Blueprint 'org.example:other-app:1.0.0' rejected — datasource 'database' is already migrated by blueprint 'org.example:my-app:1.0.0'. Declare the migrations in one blueprint only, or give this blueprint its own datasource section."
+}
+```
+
+Rules:
+
+- Ownership is compared on the artifact base (`group:artifact`, version stripped). The **same**
+  blueprint republishing at a newer version is an owner advancing its own schema, not a conflict.
+- A blueprint that declares **no** migrations passes the gate trivially. Sharing a datasource for
+  reads and writes stays legal — only duplicate *migration ownership* is refused.
+- The gate runs for `registerOnly` publishes too, so `POST /api/blueprints/publish` is refused on
+  the same terms as `/deploy`.
+- `POST /api/blueprints` (raw blueprint content) is **not** subject to the gate: migrations are
+  read from the artifact jar's `schema/` directory, so a raw-DSL blueprint carries none.
+
+**What this check does and does not promise.** Both routes are task-group targeted
+(`DEPLOYMENT`), so a request arriving at any node is forwarded to the node that owns the deployment
+task group; the ownership lookup therefore reads that owner's state rather than a possibly-stale
+follower's. The check itself is a read of the existing schema record followed by a write of the
+publish commands — not a compare-and-swap. Two publishes issued **concurrently** for the same
+unclaimed datasource can therefore both observe it unclaimed and both proceed. Sequential
+publishes — the realistic operator case — are reliably refused. This is the same deploy-time
+read-then-write window every other validation on this path uses.
+
+Why refuse rather than namespace: datasource names are cluster-global (the default
+`schema/V001__*.sql` layout yields the name `database` for every blueprint, resolved against the
+same node-global config section), so two blueprints migrating one physical database would
+interleave unrelated version sequences.
+
 ### POST /api/blueprints/publish
 
 Publish a blueprint from an artifact already present in the cluster's artifact
 repository. Orthogonal to `POST /api/blueprints` (which takes raw blueprint
-content in the body). Same body shape as `POST /api/blueprints/deploy`.
+content in the body). Same body shape as `POST /api/blueprints/deploy`, and subject to the same
+[single-migrator gate](#single-migrator-gate-409-conflict).
 
 **Request Body:**
 ```json
@@ -2972,19 +3014,22 @@ List all API keys with status.
 
 **RBAC:** ADMIN
 
-**Response:**
+**Response:** a JSON array of key records. Each record carries its own `status`
+(`ACTIVE`, `REVOKED`, or `EXPIRED`) — clients must read the per-record field rather than matching
+a status token against the whole document.
+
 ```json
-{
-  "keys": [
-    {
-      "keyId": "ak_1a2b3c4d",
-      "status": "ACTIVE",
-      "createdAt": 1712000000000,
-      "expiresAt": -1,
-      "revokedAt": -1
-    }
-  ]
-}
+[
+  {
+    "keyId": "ak_1a2b3c4d",
+    "status": "ACTIVE",
+    "createdAt": 1712000000000,
+    "expiresAt": -1,
+    "revokedAt": -1,
+    "gracePeriodMs": 300000,
+    "authorizationRole": "ADMIN"
+  }
+]
 ```
 
 ### POST /api/cluster/keys/{id}/revoke
@@ -3312,50 +3357,53 @@ When no API keys are configured, WebSocket connections are immediately authorize
 
 ### GET /api/workers
 
-List all known worker nodes across all worker groups.
+List worker nodes across all communities, read from committed consensus state (the governor
+announcements written by each community's `GovernorAnnouncer`). One row per worker; a worker that is
+also its community's governor is flagged with `isGovernor`. Members of dissolved communities are
+omitted. Rows are ordered by community, then node id.
 
-**Response:**
-```json
-[
-  {
-    "nodeId": "worker-1",
-    "groupId": "default"
-  },
-  {
-    "nodeId": "worker-2",
-    "groupId": "default"
-  }
-]
-```
-
-### GET /api/workers/health
-
-Get worker pool health summary.
+This is the per-worker projection of the same announcements that `/api/cluster/governors` projects
+per-community.
 
 **Response:**
 ```json
 {
-  "totalWorkers": 5,
-  "totalGroups": 1,
-  "isEmpty": false
+  "workers": [
+    {
+      "nodeId": "governor-1",
+      "community": "east",
+      "governorId": "governor-1",
+      "isGovernor": true,
+      "communityTerm": 7,
+      "announcedAt": 1700000000000
+    },
+    {
+      "nodeId": "worker-a",
+      "community": "east",
+      "governorId": "governor-1",
+      "isGovernor": false,
+      "communityTerm": 7,
+      "announcedAt": 1700000000000
+    }
+  ]
 }
 ```
 
+A cluster running no workers returns `{"workers":[]}`.
+
+### GET /api/workers/health
+
+**Not implemented — returns HTTP 501.** Workers publish only their community roster to consensus
+(`GovernorAnnouncementValue`); no per-worker health fact is replicated, so the leader has nothing to
+report. Use `GET /api/workers` for the roster and `GET /api/cluster/membership` for per-node SWIM
+state. The corresponding `aether workers health` CLI subcommand was removed in #525.
+
 ### GET /api/workers/endpoints
 
-List all worker-hosted slice endpoints across all groups.
-
-**Response:**
-```json
-[
-  {
-    "artifact": "org.example:my-slice:1.0.0",
-    "methodName": "processOrder",
-    "workerNodeId": "worker-1",
-    "instanceNumber": 0
-  }
-]
-```
+**Not implemented — returns HTTP 501.** Only the *governor's* `tcpAddress` is recorded in consensus,
+never per-worker endpoints, so a cluster-wide worker endpoint table cannot be assembled. Use
+`GET /api/routes` for the cluster HTTP route table. The corresponding `aether workers endpoints` CLI
+subcommand was removed in #525.
 
 ---
 
@@ -3586,7 +3634,6 @@ Conclude the A/B test and promote the winning variant. Requires leader node.
 | GET | `/api/nodes/lifecycle/{id}` | Node Lifecycle |
 | POST | `/api/nodes/drain/{id}` | Node Lifecycle |
 | POST | `/api/nodes/shutdown/{id}` | Node Lifecycle |
-| GET | `/api/audit/commands` | Observability |
 | GET | `/api/scheduled-tasks` | Scheduled Tasks |
 | GET | `/api/scheduled-tasks/{configSection}` | Scheduled Tasks |
 | POST | `/api/scheduled-tasks/{configSection}/{artifact}/{method}/pause` | Scheduled Tasks |
@@ -3597,8 +3644,10 @@ Conclude the A/B test and promote the winning variant. Requires leader node.
 | GET | `/api/scheduled-tasks/executions-by-node/{configSection}/{artifact}/{method}` | Scheduled Tasks |
 | POST | `/api/certificates/configure-short-validity` | Certificates (dev-mode only) |
 | GET | `/api/workers` | Worker Pools |
-| GET | `/api/workers/health` | Worker Pools |
-| GET | `/api/workers/endpoints` | Worker Pools |
+| GET | `/api/workers/health` | Worker Pools (501 — not implemented) |
+| GET | `/api/workers/endpoints` | Worker Pools (501 — not implemented) |
+| POST | `/api/cluster/migrate` | Cluster Migration (501 — not implemented) |
+| POST | `/api/cluster/migrate/plan` | Cluster Migration (501 — not implemented) |
 
 ---
 
@@ -3712,68 +3761,6 @@ Accepted values for `targetRole` (case-insensitive): `"CORE"`, `"WORKER"`. Promo
   "message": "Promoted node from CORE to WORKER"
 }
 ```
-
----
-
-## Audit
-
-### GET /api/audit/commands
-
-**Phase 3 PR-C (lifecycle reconciler):** operator inspection surface for the `audit.lifecycle.commands` stream — surfaces the most recent `CommandReceived` / `CommandApplied` events the local node has emitted (via `DirectLifecycleWriter`).
-
-**Scope note:** the backing store is a per-node in-memory ring buffer (capacity 1024 by default), not a full stream subscription. Events survive the lifetime of the JVM only. For cluster-wide audit visibility operators should target the leader (`-c <leader-host>`); a follower will only surface events emitted via writers running on this same node. RC2 follow-up: replace with a proper `StreamReadRouter`-backed subscription so audit history survives node restarts.
-
-**Authorization:** ADMIN (audit channel — operational observability).
-
-**Query parameters (all optional):**
-- `since` — time window. Accepts epoch-millis (e.g., `1700000000000`), ISO-8601 (`2026-05-23T10:00:00Z`), or relative duration with unit suffix:
-  - `<N>s` — N seconds ago
-  - `<N>m` — N minutes ago
-  - `<N>h` — N hours ago
-  - `<N>d` — N days ago
-- `source` — case-insensitive emitter discriminator: `operator`, `reconciler`, `ctm`, `drain_coordinator`, `bootstrap`, `unknown`, or `all` (default).
-- `limit` — most-recent N entries (default 100; capped at buffer capacity).
-
-**Response:**
-```json
-{
-  "events": [
-    {
-      "commandType": "ForceDecommission",
-      "peerId": "node-2",
-      "reasonTag": "FORCED",
-      "justificationMessage": "Operator FORCE_DECOMMISSION: stuck JOINING",
-      "source": "OPERATOR",
-      "timestampMs": 1700000000123
-    },
-    {
-      "commandType": "ForceDecommission",
-      "peerId": "node-2",
-      "reasonTag": "FORCED",
-      "justificationMessage": "Operator FORCE_DECOMMISSION: stuck JOINING",
-      "source": "OPERATOR",
-      "timestampMs": 1700000000125,
-      "accepted": true
-    }
-  ]
-}
-```
-
-Each `LifecycleCommand` that flows through `DirectLifecycleWriter.applyCommand(...)` produces a pair of entries: `CommandReceived` on entry, `CommandApplied` after the underlying KV write resolves (carrying the `accepted` boolean).
-
-**Examples:**
-```bash
-# All events seen by this node in the last 5 minutes
-curl 'http://localhost:8080/api/audit/commands?since=5m'
-
-# Only operator-emitted events
-curl 'http://localhost:8080/api/audit/commands?source=operator'
-
-# Reconciler-emitted events since a specific ISO-8601 timestamp, limit 50
-curl 'http://localhost:8080/api/audit/commands?source=reconciler&since=2026-05-23T10:00:00Z&limit=50'
-```
-
----
 
 ## Scheduled Tasks
 
@@ -4015,6 +4002,40 @@ emitted to stderr as a structured `{"error":"<message>"}` object; otherwise the 
 
 Manage datasource schema migrations across the cluster.
 
+### Migration ownership and the activation gate
+
+Every schema record names the blueprint that **owns** it — the blueprint whose artifact declared
+the migration set. Ownership is what scopes the deployment-side activation gate:
+
+> A slice is withheld from activation **if and only if its own blueprint owns a datasource whose
+> migration is in `PENDING`, `MIGRATING` or `FAILED`**. A failed or in-flight migration owned by
+> any *other* blueprint does not affect it.
+
+`COMPLETED` is the only status that releases activation. Ownership is compared on the blueprint's
+artifact base (`group:artifact`, version stripped), so a blueprint that advances from `1.0.0` to
+`1.0.1` still owns the records its earlier version wrote.
+
+**Known limit — this scopes by ownership, not by usage.** The gate matches records to slices via
+the *migrator*, not via the readers. A blueprint that reads or writes a datasource **without
+declaring migrations for it** is never held when that datasource's owner fails. Do not read this
+gate as protecting every consumer of a datasource; it protects the migrator's own slices.
+
+Three further conditions are resolved from deployment state, and a slice for which they cannot be
+resolved is reported ready rather than held: the gate applies only when the slice's blueprint is
+present in the leader's blueprint map, has `schema_required` set, and carries an owner. No record
+can be attributed to a blueprint that carries no owner, so holding it would be an unclearable hold.
+
+Datasource names are **cluster-global** — the default `schema/V001__*.sql` layout yields the name
+`database` for every blueprint, and all of them resolve it against the same node-global config
+section. That is why a publish claiming a datasource another blueprint already migrates is refused
+at deploy time (see [`POST /api/blueprints/deploy`](#post-apiblueprintsdeploy)) rather than
+namespaced per blueprint.
+
+Recovery from a `FAILED` hold: `POST /api/schema/retry/{datasource}` (`FAILED` -> `PENDING` ->
+`COMPLETED`), `POST /api/schema/baseline/{datasource}?version=N` (-> `COMPLETED`), or redeploy the
+owning blueprint. The leader also emits a `SCHEMA_ACTIVATION_BLOCKED` audit entry naming the
+datasource, the owning blueprint, and the held slices when it observes a `FAILED` record.
+
 ### GET /api/schema/status
 
 Returns schema migration status for all datasources.
@@ -4027,11 +4048,20 @@ Returns schema migration status for all datasources.
       "datasource": "orders_db",
       "currentVersion": 3,
       "lastMigration": "V003__add_index.sql",
-      "status": "COMPLETED"
+      "status": "COMPLETED",
+      "owningBlueprint": "org.example:my-app:1.0.0"
     }
   ]
 }
 ```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `datasource` | string | Datasource name (cluster-global) |
+| `currentVersion` | int | Highest version recorded for this datasource |
+| `lastMigration` | string | Filename of the last migration recorded |
+| `status` | string | `PENDING`, `MIGRATING`, `COMPLETED`, `FAILED` |
+| `owningBlueprint` | string | Blueprint id (`group:artifact:version`) that declared the migrations. Whose slices this record holds while `status` is not `COMPLETED` |
 
 ### GET /api/schema/status/{datasource}
 
@@ -4043,17 +4073,22 @@ Returns schema status for a specific datasource.
   "datasource": "orders_db",
   "currentVersion": 3,
   "lastMigration": "V003__add_index.sql",
-  "status": "COMPLETED"
+  "status": "COMPLETED",
+  "owningBlueprint": "org.example:my-app:1.0.0"
 }
 ```
 
+Answers `404 Not Found` when the datasource has no schema record.
+
 ### GET /api/schema/history/{datasource}
 
-Returns migration history for a datasource (placeholder -- currently returns current status).
+Returns migration history for a datasource (placeholder -- currently returns the same body as
+`GET /api/schema/status/{datasource}`, including `owningBlueprint`).
 
 ### POST /api/schema/migrate/{datasource}
 
-Triggers manual schema migration for a datasource. Sets status to `MIGRATING`.
+Triggers manual schema migration for a datasource. Sets status to `MIGRATING`. Preserves the
+existing record's artifact coordinates and owning blueprint.
 
 **Response:**
 ```json
@@ -4066,10 +4101,14 @@ Triggers manual schema migration for a datasource. Sets status to `MIGRATING`.
 ### POST /api/schema/undo/{datasource}?targetVersion=N
 
 Undoes migrations to the specified target version. Sets status to `PENDING` at the target version.
+Preserves the existing record's artifact coordinates and owning blueprint.
+
+Note that `PENDING` is a **blocking** status: while the undo is outstanding, the owning blueprint's
+slices are withheld from activation.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `targetVersion` | int | yes | Version to undo to |
+| `targetVersion` | int | no | Version to undo to (defaults to `0` when absent; a non-integer value is a `400`) |
 
 **Response:**
 ```json
@@ -4081,7 +4120,14 @@ Undoes migrations to the specified target version. Sets status to `PENDING` at t
 
 ### POST /api/schema/retry/{datasource}
 
-Retries a failed schema migration by resetting status from FAILED to PENDING. Only works when the datasource is in FAILED state; returns 409 Conflict otherwise.
+Retries a failed schema migration by resetting status from `FAILED` to `PENDING` and clearing the
+attempt counter. This is the primary operator recovery from a `FAILED` activation hold: the
+migration runs again, and reaching `COMPLETED` releases the owning blueprint's slices.
+
+Only works when the datasource is in `FAILED` state; when it is in any other state the call fails
+with `409 Conflict` and
+``Schema for datasource '<name>' is not in FAILED state (currently <STATUS>) — retry only applies to failed migrations``
+(the observed status is named, so the refusal explains itself without a second call).
 
 **Response:**
 ```json
@@ -4094,10 +4140,19 @@ Retries a failed schema migration by resetting status from FAILED to PENDING. On
 ### POST /api/schema/baseline/{datasource}?version=N
 
 Baselines a datasource at the specified version (marks V001..V{N} as applied without executing).
+Sets status to `COMPLETED`, which releases any activation hold on the owning blueprint's slices.
+
+The existing record's artifact coordinates and owning blueprint are **inherited**, not rewritten.
+A datasource with **no existing schema record cannot be baselined** — the call fails with
+`404 Not Found` and ``Schema status not found for datasource '<name>'`` rather than fabricating an
+unowned record. Publish (or deploy) the owning blueprint first so the record exists.
+
+`version` is optional and defaults to `1` when absent; a present-but-non-integer value is rejected
+with `400 Bad Request`.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `version` | int | yes | Version to baseline at |
+| `version` | int | no | Version to baseline at (defaults to `1` when absent; a non-integer value is a `400`) |
 
 **Response:**
 ```json
@@ -4106,6 +4161,20 @@ Baselines a datasource at the specified version (marks V001..V{N} as applied wit
   "message": "Baselined orders_db at version 3"
 }
 ```
+
+> **Status-code contract — applies to every endpoint in this Schema Management group.** The schema
+> failure causes implement `HttpStatusAware`, so the management error funnel renders each as an
+> RFC 9457 ProblemDetail carrying its semantic status. Both the status code and the `detail` message
+> are a stable contract; scripted clients may match on either.
+>
+> | Condition | Status | `detail` |
+> |-----------|--------|----------|
+> | Datasource has no schema record (every route that reads one) | `404 Not Found` | ``Schema status not found for datasource '<name>'`` |
+> | `retry` against a datasource that is not `FAILED` | `409 Conflict` | ``Schema for datasource '<name>' is not in FAILED state (currently <STATUS>) — retry only applies to failed migrations`` |
+> | `?version=` / `?targetVersion=` present but not an integer | `400 Bad Request` | ``Invalid '<parameter>' parameter: '<value>' is not an integer`` |
+>
+> An **absent** `version`/`targetVersion` is not an error — it takes the documented default
+> (`1` for baseline, `0` for undo). Any other failure on these routes remains a `500`.
 
 ---
 
@@ -4299,6 +4368,80 @@ Materialization is placement-gated (increment 2): `ringsMaterialized` drops belo
 | `streams[].ownerPartitions` | Partitions this node OWNS under the current placement supplier |
 | `streams[].replicaPartitions` | Partitions this node is a non-owner REPLICA of |
 | `streams[].nonePartitions` | Partitions this node neither owns nor replicates |
+
+### Declarative Stream Consumers
+
+```
+GET /api/streams/declarative-consumers
+```
+
+**Auth:** ALL_AUTHENTICATED · **Routing:** LOCAL (per-node)
+
+**CLI:** `aether streams consumers`
+
+What this node knows about declarative `[streams.X]` consumers — slice methods annotated with a `@ResourceQualifier(type = StreamSubscriber.class)` qualifier, which the runtime invokes for every event on the partitions assigned to them (#488). The declaration itself is cluster-wide committed KV, so **every node answers with the same declarations**; what differs per node is which partitions that node has actually attached.
+
+**Which node consumes which partition (#535).** Exactly one node is assigned per `(stream, partition, consumer group)`. Given the candidate set — nodes where the declaring artifact is `ACTIVE`, intersected with the live member view — the assignee is the partition's HRW owner when the owner is in that set, otherwise the HRW pick over the set itself. An assignee that is not the owner holds no ring for the partition and reads THROUGH the owner. Before #535 the rule was owner-gating alone, which meant a slice deployed at default replication frequently had no node that both owned a partition and hosted the consumer, and such partitions were consumed by nobody while every node truthfully reported `attachedSubscriptions: 0`.
+
+`partitionAssignments` is computed identically on every node, so a single call to any node answers "who consumes partition 3, and does it read locally?" — reads are forwarded whenever `consumerNode` differs from `ownerNode`.
+
+`eventTypePublishable` is absent when this node cannot know: the probe needs the slice's own codec registry, which only a node hosting the slice has, so reporting `false` there would fabricate a value. A deployment still activating produces the same empty candidate set as a slice that is nowhere, so the two are reported differently — "not being consumed YET" (normal, logged at INFO) versus the `unassignedPartitions` gap (logged at ERROR).
+
+**Guarantee.** At-least-once delivery per partition, conditional on the slice being `ACTIVE` on at least one live node. Duplicates arise from redelivery after a handler failure under `RETRY`, from the reconcile-tick window during an ownership or placement change (old and new assignee may both deliver), and from resuming at the last checkpoint (≤1000 events or ≤30s of progress) rather than the last delivered offset after an ungraceful move — a graceful detach flushes the exact cursor. Not effectively-once: there is no fencing token on delivery, and two transiently-divergent assignment views can both deliver and both write the cursor, last write winning.
+
+**Response:**
+```json
+{
+  "attachedSubscriptions": 2,
+  "consumers": [
+    {
+      "stream": "orders",
+      "configSection": "streams.orders",
+      "artifact": "com.example:order-slice:1.0.0",
+      "method": "onOrderPlaced",
+      "consumerGroup": "orders-onOrderPlaced",
+      "batchMode": false,
+      "eventType": "com.example.OrderPlaced",
+      "sliceDeployedLocally": true,
+      "eventTypePublishable": true,
+      "assignedPartitions": [
+        {"partition": 0, "committedOffset": 42, "stalled": false},
+        {"partition": 2, "committedOffset": 17, "stalled": false}
+      ],
+      "partitionAssignments": [
+        {"partition": 0, "consumerNode": "node-1", "ownerNode": "node-1"},
+        {"partition": 1, "consumerNode": "node-3", "ownerNode": "node-2"},
+        {"partition": 2, "consumerNode": "node-1", "ownerNode": "node-4"}
+      ],
+      "diagnostic": "consuming partitions [2] of stream orders whose owner is another node — reads for them are forwarded to the owner"
+    }
+  ]
+}
+```
+
+> **Empty fields are omitted.** The serializer drops empty collections and absent optionals, so a healthy
+> consumer carries no `unassignedPartitions` key at all rather than `[]`, and `eventTypePublishable` is
+> absent (not `false`) on a node that cannot determine it. Check for the field's PRESENCE, not for an
+> empty value.
+
+| Field | Description |
+|-------|-------------|
+| `attachedSubscriptions` | Subscriptions actually attached ON THIS NODE — the number of partitions assigned here, not the stream's partition count |
+| `consumers[].stream` | Stream the consumer is declared against |
+| `consumers[].configSection` | The `[streams.X]` section in the slice's `resources.toml` |
+| `consumers[].artifact` | Artifact declaring the consumer |
+| `consumers[].method` | The slice method the runtime invokes |
+| `consumers[].consumerGroup` | Derived consumer group owning the durable cursor |
+| `consumers[].batchMode` | Whether the method takes `List<T>` (delivered as singleton batches in this release) |
+| `consumers[].eventType` | Declared event type |
+| `consumers[].sliceDeployedLocally` | Whether the declaring slice is loaded on THIS node |
+| `consumers[].eventTypePublishable` | Whether the slice's own codec registry knows the event type (#526). **Absent when this node cannot know** — the probe needs the slice's codec, which only a node hosting the slice has |
+| `consumers[].assignedPartitions` | Live subscriptions on this node: `partition`, `committedOffset` (next offset to read — one past the last delivered), `stalled` |
+| `consumers[].unassignedPartitions` | **The loud gap:** partitions no node can consume because the slice is `ACTIVE` nowhere. Absent when there is no gap. It is NOT a gap for this node to lack the slice — since #535 the owner need not host it. During a deploy the same emptiness is reported as "not being consumed YET" in `diagnostic` rather than as a gap |
+| `consumers[].partitionAssignments` | Full partition→node map: `consumerNode` (who consumes it), `ownerNode` (who owns it). Reads are forwarded whenever they differ. Either is `null` during the bootstrap window; `consumerNode` is also `null` when nothing can consume |
+| `consumers[].diagnostic` | Operator-facing explanation of whichever condition applies; empty when the consumer is healthy and reading locally |
+
+An empty `consumers` list means no slice in the cluster declares a `[streams.X]` consumer — the honest answer; rows are never fabricated.
 
 ### Create Stream
 
