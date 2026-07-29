@@ -7,10 +7,14 @@ package org.pragmatica.aether.cli.cluster;
 
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.config.cluster.ClusterBootstrapConfigParser;
+import org.pragmatica.lang.Option;
 
 import java.util.List;
+import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
 
 
 class ProviderResolverTest {
@@ -78,5 +82,21 @@ class ProviderResolverTest {
 
         assertFalse(cloudConfig.compute().containsKey("image"),
                     "image must be omitted from the compute map when the CORE role sets none");
+    }
+
+    /// #521 — an unmapped cleanup handle used to produce a `CloudConfig` with an EMPTY credentials map and
+    /// report SUCCESS (the missing-env-var loop never ran, so nothing looked missing). The provider factory
+    /// then failed with "Cloud credentials missing for provider 'hetzner': set HCLOUD_TOKEN" — naming an env
+    /// var that WAS set. A handle that names no credential must say so where it is knowable.
+    @Test
+    void resolveCloudComputeFromHandle_failsLoudly_whenHandleNamesNoCredentialEnvVar() {
+        var unmapped = SourceCleanupHandle.sourceCleanupHandle("hetzner", Option.some("fsn1"), Map.of());
+
+        var result = ProviderResolver.resolveCloudComputeFromHandle(unmapped);
+
+        result.onSuccess(_ -> fail("a handle carrying no credential env var cannot yield a credentialed provider"))
+              .onFailure(cause -> assertTrue(cause.message().contains("names no credential env var"),
+                                             "the failure must name the real problem — the handle, not a "
+                                             + "supposedly-unset env var: " + cause.message()));
     }
 }

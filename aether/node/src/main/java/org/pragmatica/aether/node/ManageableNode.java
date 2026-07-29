@@ -39,6 +39,7 @@ import org.pragmatica.aether.slice.generation.HealthSignalSink;
 import org.pragmatica.aether.node.StorageFactory;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
+import org.pragmatica.aether.node.stream.StreamConsumerManager;
 import org.pragmatica.aether.stream.StreamPartitionManager;
 import org.pragmatica.aether.stream.StreamReadRouter;
 import org.pragmatica.aether.stream.StreamWriteRouter;
@@ -115,6 +116,14 @@ public interface ManageableNode {
 
     ConsumerGroupCoordinator consumerGroupCoordinator();
     ConsumerGroupRegistry consumerGroupRegistry();
+
+    /// Declarative `[streams.X]` consumer manager (#488). The production node record supplies the
+    /// wired manager; the default keeps `ManageableNode` test proxies compiling with an inert one
+    /// that truthfully reports no declared consumers rather than fabricating any.
+    default StreamConsumerManager streamConsumerManager() {
+        return StreamConsumerManager.inactive();
+    }
+
     org.pragmatica.aether.slice.stream.StreamNamespacesService streamNamespacesService();
     Fn1<Result<NodeId>, TaskGroup> taskGroupOwnerResolver();
     Map<String, StorageFactory.StorageSetup> storageSetups();

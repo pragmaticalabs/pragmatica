@@ -17,6 +17,7 @@ package org.pragmatica.serialization;
 
 import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
+import java.util.Comparator;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -292,16 +293,81 @@ final class CodecHolder implements SliceCodec {
         return codec;
     }
 
+    /// Resolve a codec for a type with no exact registration by walking the registered supertypes.
+    ///
+    /// Resolution is deterministic and independent of `byClass` iteration order, so every node in a
+    /// cluster (and every restart of the same node) reaches the same answer for the same type — the
+    /// prior "first assignable entry wins" behaviour could cache a DIFFERENT codec per process and
+    /// produce cross-node payloads that decode as the wrong type instead of failing (#529).
+    ///
+    /// The candidate set is reduced to the MOST SPECIFIC registered supertypes: a candidate survives
+    /// only when no other candidate is a strict subtype of it. That alone resolves the documented
+    /// case (`ImmutableCollections$ListN` -> `List`). When several mutually unrelated candidates
+    /// remain, one documented tie-break applies: a class candidate beats interface candidates,
+    /// which is well-founded because Java's single-inheritance class chain leaves at most one
+    /// minimal class. Anything still ambiguous fails loudly naming the type and every competing
+    /// candidate — an encoding decision is not a defaultable value.
     private SliceCodec.TypeCodec<?> findBySupertype(Class<?> type) {
-        for (var entry : byClass.entrySet()) {
-            if (entry.getKey().isAssignableFrom(type)) {
-                classCache.put(type, entry.getValue());
+        var minimal = mostSpecific(assignableCandidates(type));
 
-                return entry.getValue();
-            }
+        if (minimal.isEmpty()) {
+            throw new IllegalArgumentException("No codec registered for class: " + type.getName());
         }
 
-        throw new IllegalArgumentException("No codec registered for class: " + type.getName());
+        var resolved = preferClassCandidate(minimal);
+
+        if (resolved.size() > 1) {
+            throw new IllegalArgumentException(ambiguousCandidates(type, resolved));
+        }
+
+        var codec = resolved.getFirst();
+
+        classCache.put(type, codec);
+
+        return codec;
+    }
+
+    /// Every registered codec whose type is a supertype of `type`, ordered by type name so that both
+    /// the resolution and the ambiguity message are stable across processes.
+    private List<SliceCodec.TypeCodec<?>> assignableCandidates(Class<?> type) {
+        return byClass.values()
+                      .stream()
+                      .filter(codec -> codec.type().isAssignableFrom(type))
+                      .sorted(Comparator.comparing(codec -> codec.type().getName()))
+                      .toList();
+    }
+
+    private static List<SliceCodec.TypeCodec<?>> mostSpecific(List<SliceCodec.TypeCodec<?>> candidates) {
+        return candidates.stream().filter(candidate -> isMinimal(candidate, candidates)).toList();
+    }
+
+    private static boolean isMinimal(SliceCodec.TypeCodec<?> candidate, List<SliceCodec.TypeCodec<?>> candidates) {
+        return candidates.stream().noneMatch(other -> isStrictSubtype(other.type(), candidate.type()));
+    }
+
+    private static boolean isStrictSubtype(Class<?> subtype, Class<?> supertype) {
+        return !subtype.equals(supertype) && supertype.isAssignableFrom(subtype);
+    }
+
+    /// Documented tie-break for equally specific candidates: prefer the class over unrelated
+    /// interfaces. Java's single-inheritance class chain is totally ordered, so at most one class
+    /// candidate can be minimal; when none is, the candidates stay ambiguous.
+    private static List<SliceCodec.TypeCodec<?>> preferClassCandidate(List<SliceCodec.TypeCodec<?>> minimal) {
+        var classes = minimal.stream().filter(codec -> !codec.type().isInterface()).toList();
+
+        return classes.size() == 1
+               ? classes
+               : minimal;
+    }
+
+    private static String ambiguousCandidates(Class<?> type, List<SliceCodec.TypeCodec<?>> candidates) {
+        var names = candidates.stream()
+                              .map(codec -> codec.type().getName())
+                              .collect(Collectors.joining(", "));
+
+        return "Ambiguous codec resolution for class %s: equally specific registered supertypes [%s]. Register an explicit codec for %s.".formatted(type.getName(),
+                                                                                                                                                    names,
+                                                                                                                                                    type.getName());
     }
 
     @Override

@@ -48,9 +48,11 @@ test_schema_status_before_retry() {
 }
 
 # Strict: retry endpoint accepts the call (HTTP 2xx) OR returns the documented
-# "not in FAILED state" message (HTTP 500) — both prove the endpoint contract
+# "not in FAILED state" message (HTTP 409 Conflict) — both prove the endpoint contract
 # is wired. The deeper FAILED → HEALTHY assertion still requires fault-injection
 # (separate TODO), but the endpoint contract is testable now.
+# Matched on the body phrase rather than the numeric code, so the 500 → 409 correction
+# does not churn this assertion.
 test_schema_retry_endpoint() {
     if [ -z "$DATASOURCE" ]; then
         log_fail "DATASOURCE empty — discovery failed"
@@ -103,7 +105,7 @@ test_retry_idempotent() {
         return 1
     fi
     # Same contract as test_schema_retry_endpoint: accept either 2xx or the
-    # documented "not in FAILED state" 500 — both prove the endpoint is wired
+    # documented "not in FAILED state" 409 — both prove the endpoint is wired
     # and idempotent against a healthy datasource.
     if schema_retry "$DATASOURCE" >/dev/null 2>&1; then
         log_pass "Schema retry endpoint is idempotent (second call accepted)"

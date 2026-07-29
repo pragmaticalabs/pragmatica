@@ -589,7 +589,7 @@ aether blueprints validate <file.toml>
 aether blueprints delete <blueprintId> [-f|--force]
 
 # Deploy a blueprint from an artifact in the cluster repository
-aether blueprints deploy <coords>
+aether blueprints deploy <coords> [--wait] [--timeout <seconds>]
 
 # Publish a blueprint already present in the artifact repository
 aether blueprints publish <coords>
@@ -640,6 +640,18 @@ aether blueprints publish org.example:my-app:1.0.0
 # Upload a blueprint JAR and deploy it
 aether blueprints upload my-app-1.0.0-blueprint.jar -g org.example -a my-app -v 1.0.0
 ```
+
+**Single-migrator gate.** `deploy` and `publish` (the artifact-based paths) are refused with
+HTTP 409 when the artifact declares migrations for a datasource that a **different** blueprint
+already migrates; a refused request writes nothing. Republishing the *same* blueprint at a newer
+version is fine (ownership matches on `group:artifact`, version stripped), and a blueprint that
+declares no migrations is unaffected: only duplicate migration *ownership* is refused. `apply`
+(raw TOML) is not subject to the gate, because migrations are read from the artifact jar's
+`schema/` directory. The check runs at deploy time on the node owning the deployment task group
+(requests are forwarded there), and it is a read-then-write, not an atomic compare-and-swap: two
+publishes issued *concurrently* for the same unclaimed datasource can both get through. Sequential
+publishes are reliably refused. See [`aether schema status`](#schema) for who currently owns a
+datasource.
 
 #### deploy
 
@@ -1273,30 +1285,23 @@ aether nodes promote node-4 --role WORKER
 
 #### workers
 
-Manage worker pool nodes:
+Inspect worker nodes:
 
 ```bash
-# List all worker nodes
+# List worker nodes and the community each belongs to
 aether workers list
-
-# Show worker pool health summary
-aether workers health
-
-# List worker endpoints
-aether workers endpoints
 ```
 
-Example:
-```bash
-# Check worker pool status
-aether workers list
+`workers list` reads the roster from committed consensus state (the per-community governor
+announcements). Each row carries the worker's node id, its community, that community's governor, and
+whether the worker IS the governor. Workers belonging to a dissolved community are omitted; a cluster
+running no workers reports an empty list.
 
-# Verify worker health
-aether workers health
-
-# See all deployed endpoints across workers
-aether workers endpoints
-```
+> **Removed in #525:** `aether workers health` and `aether workers endpoints`. Neither could ever be
+> answered — workers publish only their community roster to consensus, so no per-worker health fact
+> and no per-worker endpoint is replicated for the leader to report. The underlying routes remain
+> declared and return an honest `501 Not Implemented`. Use `aether cluster membership` for per-node
+> SWIM state and `aether routes` for the cluster HTTP route table.
 
 #### scheduled-tasks
 
@@ -1422,6 +1427,9 @@ aether schema migrate <datasource>
 # Undo migrations to a target version
 aether schema undo <datasource> -v <version>
 
+# Retry a failed migration
+aether schema retry <datasource>
+
 # Baseline a datasource at a version
 aether schema baseline <datasource> -v <version>
 ```
@@ -1432,7 +1440,73 @@ aether schema baseline <datasource> -v <version>
 | `history <datasource>` | Show migration history |
 | `migrate <datasource>` | Trigger manual migration |
 | `undo <datasource> -v N` | Undo to target version |
+| `retry <datasource>` | Retry a failed migration (clears the activation hold) |
 | `baseline <datasource> -v N` | Baseline at version |
+
+#### `aether schema status` output
+
+`status` and `history` render as a table under the default `--format table`, and honor
+`--format json`, `--format csv`, and `--format value --field <path>` like every other query
+command.
+
+| Column | JSON field | Meaning |
+|--------|-----------|---------|
+| `DATASOURCE` | `datasource` | Datasource name (cluster-global, not per-blueprint) |
+| `STATUS` | `status` | `PENDING`, `MIGRATING`, `COMPLETED`, `FAILED` |
+| `VERSION` | `currentVersion` | Highest version recorded |
+| `LAST MIGRATION` | `lastMigration` | Filename of the last migration recorded |
+| `OWNING BLUEPRINT` | `owningBlueprint` | Blueprint that declared the migrations — **whose slices this record holds** while `status` is not `COMPLETED` |
+
+```bash
+# Just the owning blueprint of one datasource
+aether schema status orders_db --format value --field owningBlueprint
+
+# Machine-readable sweep of every datasource
+aether schema status --format csv
+```
+
+#### Recovering from a FAILED activation hold
+
+A slice is withheld from activation **if and only if its own blueprint owns a datasource whose
+migration is in `PENDING`, `MIGRATING` or `FAILED`**. A failed or in-flight migration owned by any
+*other* blueprint does not affect it. `COMPLETED` is the only status that releases activation.
+
+So when a blueprint's slices sit in `LOADED` and never activate, the `OWNING BLUEPRINT` column is
+the diagnostic: find the row whose owner is the stuck blueprint and whose status is not
+`COMPLETED`. Rows owned by other blueprints are irrelevant no matter how broken they look.
+
+```bash
+# 1. Find the record that is holding this blueprint
+aether schema status
+
+# 2. Recover — pick ONE:
+aether schema retry orders_db              # FAILED -> PENDING -> COMPLETED (re-runs the migration)
+aether schema baseline orders_db -v 3      # -> COMPLETED (marks V001..V003 applied WITHOUT running them)
+aether blueprints deploy org.example:my-app:1.0.1   # redeploy the owning blueprint
+
+# 3. Confirm the hold is gone
+aether schema status orders_db
+```
+
+`retry` only applies to a record in `FAILED`; against any other status it fails with `409 Conflict`
+and ``Schema for datasource '<name>' is not in FAILED state (currently <STATUS>) — retry only
+applies to failed migrations``, naming the status it actually observed. `baseline` requires an
+existing record — it inherits that record's owning blueprint rather than inventing one, so
+baselining a datasource that has never been published fails with `404 Not Found` and
+``Schema status not found for datasource '<name>'``.
+
+The cluster leader also writes a `SCHEMA_ACTIVATION_BLOCKED` audit entry when it observes a
+`FAILED` record, naming the datasource, the owning blueprint, and the held slices.
+
+> **Known limit — the gate scopes by migration *ownership*, not by *usage*.** A blueprint that
+> reads or writes a datasource **without declaring migrations for it** is never held when that
+> datasource's owner fails. `aether schema status` tells you who migrates a datasource, not who
+> uses it.
+
+Related: because datasource names are cluster-global (the default `schema/V001__*.sql` layout
+names the datasource `database` for every blueprint), publishing a blueprint whose migrations claim
+a datasource that a **different** blueprint already migrates is refused with HTTP 409 at deploy
+time — see [`aether blueprints deploy` / `publish`](#blueprint) for the exact scope of that check.
 
 Example:
 ```bash
@@ -1474,6 +1548,23 @@ Show detailed stream info including per-partition details.
 ```bash
 aether streams status my-events
 ```
+
+### `aether streams consumers`
+
+Show the declarative `[streams.X]` consumers this node knows about — slice methods the runtime invokes
+for every event on the partitions assigned to them.
+
+```bash
+aether streams consumers
+```
+
+Per-node: the declarations are cluster-wide, but `attachedSubscriptions` and `assignedPartitions`
+describe the node you asked. `partitionAssignments` names which node consumes each partition and which
+owns it — reads are forwarded to the owner whenever those differ — and is computed identically on every
+node, so one call answers "who consumes partition 3". `unassignedPartitions` is the gap worth alerting
+on: partitions no node can consume because the declaring slice is `ACTIVE` nowhere.
+
+See [Management API — Declarative Stream Consumers](management-api.md#declarative-stream-consumers).
 
 ### `aether streams publish <name> <message>`
 
@@ -2202,11 +2293,12 @@ aether cluster destroy --cluster=my-cluster --yes
 | `--keep-resources` | Skip cloud resource termination — remove the registry entry only |
 | `-q`, `--no-color`, `-o <format>`, `--field <field>` | Standard output controls |
 
-> **⚠️ Verify cleanup (issue #521):** destroy can currently fail VM termination (persisted
-> credential-mapping loss) while still exiting 0 and removing the registry entry — always confirm
-> in your cloud provider's console that the servers are actually gone. From a repo checkout,
-> `tools/cloud-reaper.sh --cluster <name>` (dry-run; add `--destroy` to delete) is the
-> label-driven safety net.
+> **Cleanup failure is loud (#521).** If cloud resource termination fails, `destroy` exits
+> non-zero (`ExitCode.CLEANUP_FAILED`) and deliberately **keeps** the registry entry — the
+> summary prints `Registry entry: KEPT` with the retry command — so the cluster stays
+> addressable while its VMs may still be billing. Just re-run the command. From a repo
+> checkout, `tools/cloud-reaper.sh --cluster <name>` (dry-run; add `--destroy` to delete)
+> is the label-driven safety net that finds resources no local state knows about.
 
 ### `aether cluster apply`
 
@@ -2231,14 +2323,22 @@ Computes diff against stored config, presents terraform-style plan (`[+]`/`[~]`/
 Rotate the cluster API key with zero-downtime grace period.
 
 ```bash
-aether cluster rotate-key [--grace-period <duration>]
+aether cluster rotate-key [--grace-period <duration>] [--role <role>] [--key-id <keyId>]
 ```
 
 | Option | Description |
 |--------|-------------|
 | `--grace-period` | Grace period for old key (default: `5m`). Accepts `s`, `m`, `h` suffixes |
+| `--role` | Authorization role for the new key: `ADMIN`, `OPERATOR`, or `VIEWER` (default: `VIEWER`) |
+| `--key-id` | Key ID to retire. Required when the cluster has more than one `ACTIVE` key |
 
 Generates new key, pushes to cluster, marks old key REVOKED with grace period, updates local `~/.aether/clusters/<name>/api-key`.
+
+The key to retire is chosen by reading each record's own `status` in `GET /api/cluster/keys`, so
+listing order never decides which credential is revoked. With exactly one `ACTIVE` key the command
+retires it and names it in the output. With several, it refuses and lists the candidates — re-run
+with `--key-id` naming the one to retire. A key listing that cannot be read fails the rotation
+rather than resolving to some key.
 
 ### `aether cluster revoke-key`
 

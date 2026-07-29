@@ -46,6 +46,11 @@ class ClusterDestroyCommand implements Callable<Integer> {
     /// `resourceCleaner`/`stateLoader` so tests exercise it without a real cloud call.
     static BiFunction<BootstrapState, String, Result<Unit>> sshKeySweeper = BootstrapCleanup::sweepClusterSshKeys;
 
+    /// #521 — registry-removal seam, injectable like `resourceCleaner`/`stateLoader` so a test can assert
+    /// that a FAILED cloud cleanup leaves the entry in place (the operator's only remaining handle on VMs
+    /// that are still billing) without writing to the real `~/.aether/clusters.toml`.
+    static BiFunction<ClusterRegistry, String, Result<ClusterRegistry>> registryRemover = ClusterDestroyCommand::removeRegistryEntry;
+
     @Option(names = "--yes", description = "Skip interactive confirmation")
     private boolean skipConfirmation;
 
@@ -115,7 +120,7 @@ class ClusterDestroyCommand implements Callable<Integer> {
         if (!skipConfirmation && !confirmDestruction(entry.name())) {
             System.out.println("Aborted.");
 
-            return Result.success(ExitCode.SUCCESS);
+            return Result.success(ExitCode.ERROR);
         }
 
         applyEndpointOverride(entry);
@@ -137,11 +142,26 @@ class ClusterDestroyCommand implements Callable<Integer> {
         var shutdownResults = shutdownAllNodes(nodeIds);
         var cleanupOk = cleanupCloudResources(entry.name());
 
-        return removeRegistryEntry(registry, entry.name()).map(_ -> printSummary(entry.name(),
-                                                                                 nodeIds,
-                                                                                 drainResults,
-                                                                                 shutdownResults,
-                                                                                 cleanupOk));
+        return finalizeDestruction(registry, entry.name(), cleanupOk, nodeIds, drainResults, shutdownResults);
+    }
+
+    /// #521 — registry honesty. The registry entry is the operator's only handle on a cluster whose VMs may
+    /// still be billing, so it is removed ONLY once cloud cleanup has actually succeeded; a failed cleanup
+    /// keeps it so `aether cluster destroy` can simply be re-run. `--keep-resources` routes `cleanupOk` to
+    /// true by design — skipping termination is the explicitly acknowledged path there, and removing the
+    /// entry is correct.
+    static Result<Integer> finalizeDestruction(ClusterRegistry registry,
+                                               String clusterName,
+                                               boolean cleanupOk,
+                                               List<String> nodeIds,
+                                               List<NodeResult> drainResults,
+                                               List<NodeResult> shutdownResults) {
+        if (!cleanupOk) {
+            return Result.success(printSummary(clusterName, nodeIds, drainResults, shutdownResults, false, false));
+        }
+
+        return registryRemover.apply(registry, clusterName)
+                              .map(_ -> printSummary(clusterName, nodeIds, drainResults, shutdownResults, true, true));
     }
 
     boolean cleanupCloudResources(String clusterName) {
@@ -318,7 +338,8 @@ class ClusterDestroyCommand implements Callable<Integer> {
                                     List<String> nodeIds,
                                     List<NodeResult> drainResults,
                                     List<NodeResult> shutdownResults,
-                                    boolean cleanupSucceeded) {
+                                    boolean cleanupSucceeded,
+                                    boolean registryEntryRemoved) {
         System.out.println();
         System.out.printf("Cluster '%s' destruction summary:%n", clusterName);
         System.out.printf("  Nodes processed: %d%n", nodeIds.size());
@@ -328,7 +349,11 @@ class ClusterDestroyCommand implements Callable<Integer> {
                           cleanupSucceeded
                           ? "ok"
                           : "failed");
-        System.out.println("  Registry entry removed.");
+        System.out.printf("  Registry entry: %s%n",
+                          registryEntryRemoved
+                          ? "removed"
+                          : "KEPT (cloud cleanup failed — retry 'aether cluster destroy --cluster " + clusterName
+                           + " --yes')");
         var drainShutdownOk = countSuccesses(drainResults) == drainResults.size() && countSuccesses(shutdownResults) == shutdownResults.size();
 
         if (!cleanupSucceeded) {

@@ -33,6 +33,8 @@ even with large per-method offsets (e.g., ManagementApiTest has offsets up to 38
 | MultiPartitionStreamTest      | 16000     | 16100          | 0          | 5 nodes (shared cluster, app-http 16200; #429 multi-partition e2e — distribution/order/read-paths) |
 | StreamPublishReshuffleTest    | 17000     | 17100          | 0          | 5 nodes (shared cluster, app-http 17200; #430 publish-under-owner-kill-reshuffle chaos) |
 | MultiPartitionCrashDurabilityTest | 17500 | 17600          | 0          | 5 nodes (shared cluster, app-http 17700; #431 multi-partition WAL crash-durability, per-partition replay) |
+| DeclarativeStreamConsumerTest | 18000     | 18100          | 0          | 5 nodes (shared cluster, app-http 18200; #488 declarative consumer delivery + #526 app-typed round trip) |
+| DeclarativeConsumerPlacementTest | 18500  | 18600          | 0          | 5 nodes (shared cluster, app-http 18700; #535 delivery when the partition owner does not host the slice) |
 
 ## Per-Method Offset Pattern
 
@@ -82,4 +84,7 @@ When adding a new test class:
 - 16000+ / 16100+: Allocated to MultiPartitionStreamTest (app-http 16200)
 - 17000+ / 17100+: Allocated to StreamPublishReshuffleTest (app-http 17200)
 - 17500+ / 17600+: Allocated to MultiPartitionCrashDurabilityTest (app-http 17700)
-- 18000+: Reserved for future tests
+- 18000+ / 18100+: Allocated to DeclarativeStreamConsumerTest (app-http 18200) — moved off 14000, which it
+  silently shared with StreamOwnerFailoverTest while absent from this table (#535)
+- 18500+ / 18600+: Allocated to DeclarativeConsumerPlacementTest (app-http 18700)
+- 19000+: Reserved for future tests

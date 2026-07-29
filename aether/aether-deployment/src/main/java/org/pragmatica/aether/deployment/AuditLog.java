@@ -4,6 +4,8 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.deployment;
 
+import java.util.List;
+
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -51,6 +53,16 @@ public final class AuditLog {
                    artifactCoords,
                    attemptNumber,
                    nextRetryMs);
+    }
+
+    /// The deployment consequence of a FAILED migration (#542): the named slices stay in LOADED
+    /// until the datasource is retried or the blueprint redeployed. Distinct from
+    /// SCHEMA_MIGRATION_FAILED, which records the failure without knowing what it holds.
+    public static void schemaActivationBlocked(String datasource, String owningBlueprint, List<String> blockedSlices) {
+        AUDIT.warn("SCHEMA_ACTIVATION_BLOCKED datasource={} owningBlueprint={} blockedSlices={}",
+                   datasource,
+                   owningBlueprint,
+                   blockedSlices);
     }
 
     public static void reconciliationScaleUp(String artifact, int currentInstances, int desiredInstances) {

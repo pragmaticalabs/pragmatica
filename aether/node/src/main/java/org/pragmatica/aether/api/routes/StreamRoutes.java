@@ -11,10 +11,17 @@ import java.util.Map;
 import java.util.function.Supplier;
 import java.util.stream.Stream;
 
+import org.pragmatica.aether.api.ManagementApiResponses.DeclarativeConsumerAssignment;
+import org.pragmatica.aether.api.ManagementApiResponses.DeclarativeConsumerDetail;
+import org.pragmatica.aether.api.ManagementApiResponses.DeclarativeConsumerPartition;
+import org.pragmatica.aether.api.ManagementApiResponses.DeclarativeConsumersResponse;
 import org.pragmatica.aether.api.ManagementApiResponses.ReplicaStateDetail;
 import org.pragmatica.aether.api.ManagementApiResponses.StreamHydrationDetail;
 import org.pragmatica.aether.api.ManagementApiResponses.StreamHydrationResponse;
 import org.pragmatica.aether.api.ManagementApiResponses.StreamReplicasResponse;
+import org.pragmatica.aether.node.stream.StreamConsumerManager.ConsumerStatus;
+import org.pragmatica.aether.node.stream.StreamConsumerManager.PartitionAssignment;
+import org.pragmatica.aether.node.stream.StreamConsumerManager.PartitionCursor;
 import org.pragmatica.aether.management.route.ManagementRoute;
 import org.pragmatica.aether.node.ManageableNode;
 import org.pragmatica.aether.slice.ReadPreference;
@@ -152,6 +159,7 @@ public final class StreamRoutes implements RouteSource {
                         .toResult(this::replicaDetails)
                         .asJson(),
                          ManagementRoutes.<StreamHydrationResponse> route(ManagementRoute.STREAM_HYDRATION).toJson(this::streamHydration),
+                         ManagementRoutes.<DeclarativeConsumersResponse> route(ManagementRoute.STREAM_DECLARATIVE_CONSUMERS).toJson(this::declarativeConsumers),
                          ManagementRoutes.<PublishResponse> route(ManagementRoute.STREAM_PUBLISH)
                                          .withPath(PathParameter.aString())
                                          .withBody(PublishRequest.class)
@@ -243,6 +251,48 @@ public final class StreamRoutes implements RouteSource {
     /// `streams` list with the node's live budget totals, itself the operator-meaningful answer.
     private StreamHydrationResponse streamHydration() {
         return toHydrationResponse(streamManager().hydrationSnapshot());
+    }
+
+    /// #488: what this node has actually attached. Pure snapshot read off the consumer manager — no
+    /// hot-path cost. An empty `consumers` list means no slice in the cluster declares a `[streams.X]`
+    /// consumer, which is itself the honest answer; it never fabricates rows.
+    private DeclarativeConsumersResponse declarativeConsumers() {
+        var statuses = nodeSupplier.get().streamConsumerManager().statuses();
+
+        return new DeclarativeConsumersResponse(nodeSupplier.get().streamConsumerManager().activeSubscriptionCount(),
+                                                statuses.stream().map(StreamRoutes::toConsumerDetail).toList());
+    }
+
+    private static DeclarativeConsumerDetail toConsumerDetail(ConsumerStatus status) {
+        return new DeclarativeConsumerDetail(status.streamName(),
+                                             status.configSection(),
+                                             status.artifact(),
+                                             status.methodName(),
+                                             status.consumerGroup(),
+                                             status.batchMode(),
+                                             status.eventType(),
+                                             status.sliceDeployedLocally(),
+                                             status.eventTypePublishable(),
+                                             status.assignedPartitions()
+                                                   .stream()
+                                                   .map(StreamRoutes::toConsumerPartition)
+                                                   .toList(),
+                                             status.unassignedPartitions(),
+                                             status.partitionAssignments()
+                                                   .stream()
+                                                   .map(StreamRoutes::toConsumerAssignment)
+                                                   .toList(),
+                                             status.diagnostic().or(""));
+    }
+
+    private static DeclarativeConsumerAssignment toConsumerAssignment(PartitionAssignment assignment) {
+        return new DeclarativeConsumerAssignment(assignment.partition(),
+                                                 assignment.consumerNode().map(NodeId::id),
+                                                 assignment.ownerNode().map(NodeId::id));
+    }
+
+    private static DeclarativeConsumerPartition toConsumerPartition(PartitionCursor cursor) {
+        return new DeclarativeConsumerPartition(cursor.partition(), cursor.cursor(), cursor.stalled());
     }
 
     private static StreamHydrationResponse toHydrationResponse(HydrationSnapshot snapshot) {

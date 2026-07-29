@@ -6,6 +6,7 @@ package org.pragmatica.aether.deployment.schema;
 
 import java.util.List;
 
+import org.pragmatica.aether.slice.blueprint.BlueprintId;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.messaging.Message;
 
@@ -92,6 +93,31 @@ public sealed interface SchemaEvent extends Message.Local {
     record ManualRetryRequested(String datasource, String requestedBy, long timestamp) implements SchemaEvent {
         public static ManualRetryRequested manualRetryRequested(String datasource, String requestedBy) {
             return new ManualRetryRequested(datasource, requestedBy, System.currentTimeMillis());
+        }
+    }
+
+    /// Emitted by the cluster deployment leader when a FAILED schema record is observed (#542).
+    /// `MigrationFailed` reports the failure itself and always carries an empty `blockedSlices` —
+    /// the orchestrator has no deployment state to consult. This event reports the *consequence*:
+    /// the slices of `owningBlueprint` whose activation the failed migration is holding, which only
+    /// the leader can compute. It is what an operator reads to learn WHY a blueprint is stuck.
+    record ActivationBlocked(String datasource,
+                             BlueprintId owningBlueprint,
+                             List<String> blockedSlices,
+                             String artifactCoords,
+                             int attemptCount,
+                             long timestamp) implements SchemaEvent {
+        public static ActivationBlocked activationBlocked(String datasource,
+                                                          BlueprintId owningBlueprint,
+                                                          List<String> blockedSlices,
+                                                          String artifactCoords,
+                                                          int attemptCount) {
+            return new ActivationBlocked(datasource,
+                                         owningBlueprint,
+                                         List.copyOf(blockedSlices),
+                                         artifactCoords,
+                                         attemptCount,
+                                         System.currentTimeMillis());
         }
     }
 }
