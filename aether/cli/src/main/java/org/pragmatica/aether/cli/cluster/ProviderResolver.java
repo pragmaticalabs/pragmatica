@@ -73,7 +73,20 @@ public final class ProviderResolver {
                                 .flatMap(ProviderResolver::extractCompute);
     }
 
+    /// #521 — an EMPTY `credentialEnvVars` used to report success here: the loop never ran, so `missing`
+    /// stayed empty and a `CloudConfig` with no credentials at all was handed to the provider factory,
+    /// which then failed with the misleading "Cloud credentials missing for provider 'hetzner': set
+    /// HCLOUD_TOKEN" — pointing the operator at an env var that WAS set. A cloud cleanup handle that names
+    /// no credential cannot produce one; say that, at the point where it is knowable.
     private static Result<CloudConfig> buildHandleConfig(SourceCleanupHandle handle) {
+        if (handle.credentialEnvVars().isEmpty()) {
+            return new BootstrapError.ProvisionFailed(handle.provider(),
+                                                      "Persisted cleanup handle names no credential env var, so no"
+                                                     + " credentials can be re-derived from it. Callers must fall back"
+                                                     + " to raw provider env credentials rather than resolving from"
+                                                     + " this handle.").result();
+        }
+
         var creds = new HashMap<String, String>();
         var missing = new ArrayList<String>();
 

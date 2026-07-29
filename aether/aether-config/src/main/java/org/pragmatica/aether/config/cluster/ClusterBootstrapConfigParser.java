@@ -38,7 +38,12 @@ public final class ClusterBootstrapConfigParser {
     private static final String OPERATIONS_TLS_SECTION = "operations.tls";
     private static final String OPERATIONS_TIMEOUTS_SECTION = "operations.timeouts";
     private static final String OPERATIONS_PORTS_SECTION = "operations.ports";
-    private static final String SOURCE_PREFIX = "source.";
+    /// The one true spelling of a source stanza's section prefix: `[source.<name>]`, SINGULAR. Public
+    /// because readers outside the parser also address source stanzas by name — notably the CLI's
+    /// bootstrap-time credential mining (`BootstrapPhaseProvision.extractStanza`), which duplicated this
+    /// literal as a plural `"sources."` and consequently mined nothing from every real config (#521).
+    /// Anything that needs to name a source section MUST derive it from here rather than re-spell it.
+    public static final String SOURCE_PREFIX = "source.";
     private static final String RUNTIME_PREFIX = "runtime.";
     private static final String FIREWALL_SUFFIX = ".firewall";
     private static final String DATABASES_PREFIX = "databases.";

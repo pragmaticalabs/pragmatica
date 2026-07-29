@@ -401,6 +401,137 @@ class BootstrapCleanupTest {
         assertEquals(List.of(42L), deleteCalls, "the sweep must still attempt the delete before tolerating 404");
     }
 
+    // --- #521: a persisted handle that names NO credential env var ---
+
+    private static BootstrapCleanup.CleanupResolvers resolversFor(List<String> fallbackProviders,
+                                                                   List<String> terminateCalls,
+                                                                   List<Long> deleteCalls,
+                                                                   Map<String, String> env,
+                                                                   List<String> envReads) {
+        return BootstrapCleanup.CleanupResolvers.cleanupResolvers()
+                                                .withCloudComputeFallback(provider -> recordFallbackCompute(provider,
+                                                                                                             fallbackProviders,
+                                                                                                             terminateCalls))
+                                                .withHetznerClientFallback(provider -> recordFallbackClient(provider,
+                                                                                                             fallbackProviders,
+                                                                                                             deleteCalls))
+                                                .withHandleComputeResolver(_ -> new TestCause("handle resolver must not be used when the handle names no credential").result())
+                                                .withGetenv(recordingGetenv(env, envReads));
+    }
+
+    private static Result<ComputeProvider> recordFallbackCompute(String providerName,
+                                                                  List<String> fallbackProviders,
+                                                                  List<String> terminateCalls) {
+        fallbackProviders.add(providerName);
+        return Result.success(recordingCompute(terminateCalls));
+    }
+
+    private static Result<HetznerClient> recordFallbackClient(String providerName,
+                                                               List<String> fallbackProviders,
+                                                               List<Long> deleteCalls) {
+        fallbackProviders.add(providerName);
+        return Result.success(new RecordingHetznerClient(deleteCalls));
+    }
+
+    /// #521 — the incident shape. Bootstrap stamped a handle (provider + region) but mined NO credential
+    /// env-var name, so `credentialEnvVars` is empty. The handle-derived config would carry no credentials
+    /// at all and the provider factory would reject it, stranding five paid VMs. An unmapped handle
+    /// expresses no credential intent, so cleanup must demote to the LOUD raw-env last resort and actually
+    /// reap — both the VM and the ssh key.
+    @Test
+    void cleanup_reapsVmAndSshKey_viaLoudFallback_whenHandleNamesNoCredentialEnvVar() {
+        var fallbackProviders = new ArrayList<String>();
+        var terminateCalls = new ArrayList<String>();
+        var deleteCalls = new ArrayList<Long>();
+
+        var unmappedHandle = SourceCleanupHandle.sourceCleanupHandle("hetzner", Option.some("fsn1"), Map.of());
+        var state = stateWithVmSshKeyAndHandle("core-source", unmappedHandle);
+
+        var result = BootstrapCleanup.cleanupWith(state,
+                                                  resolversFor(fallbackProviders,
+                                                               terminateCalls,
+                                                               deleteCalls,
+                                                               Map.of(),
+                                                               new ArrayList<>()));
+
+        assertTrue(result.isSuccess(),
+                   () -> "an unmapped handle must NOT strand resources — cleanup must fall back and reap: " + result);
+        assertEquals(List.of("vm-1"), terminateCalls,
+                     "the VM must be terminated through the demoted raw-env fallback");
+        assertEquals(List.of(42L), deleteCalls,
+                     "the ssh key must be reaped through the demoted raw-env fallback");
+        assertEquals(List.of("hetzner", "hetzner"), fallbackProviders,
+                     "both reaps must route through the raw-env fallback with the provider name");
+    }
+
+    /// #521 must not weaken #439: a handle that DOES name an env var stays authoritative. When that name is
+    /// unset, cleanup fails loudly rather than silently retrying with the raw default, which could reap
+    /// against a DIFFERENT account's token.
+    @Test
+    void cleanup_failsLoudly_whenHandleNamesEnvVarThatIsUnset() {
+        var envReads = new ArrayList<String>();
+        var handle = SourceCleanupHandle.sourceCleanupHandle("hetzner",
+                                                             Option.some("fsn1"),
+                                                             Map.of("api_token", NON_DEFAULT_TOKEN_ENV));
+        var state = stateWithSshKeyAndHandle(handle);
+
+        var result = BootstrapCleanup.cleanupWith(state,
+                                                  BootstrapCleanup.CleanupResolvers.cleanupResolvers()
+                                                                                   .withHetznerClientFallback(_ -> new TestCause("raw-env fallback must NOT be reached when the handle names an env var").result())
+                                                                                   .withGetenv(recordingGetenv(Map.of(), envReads)));
+
+        assertTrue(result.isFailure(),
+                   "a handle-named env var that is unset must fail loudly, not silently reap with another token");
+        assertTrue(envReads.contains(NON_DEFAULT_TOKEN_ENV),
+                   "the handle's env-var NAME must still be the one consulted");
+    }
+
+    private static BootstrapState stateWithSshKeyAndHandle(SourceCleanupHandle handle) {
+        var phases = new EnumMap<BootstrapPhase, PhaseStatus>(BootstrapPhase.class);
+        for (var phase : BootstrapPhase.values()) {phases.put(phase, PhaseStatus.COMPLETED);}
+        var resources = List.<CreatedResource>of(SshKeyResource.sshKeyResource("hetzner", 42L, "aether-bootstrap-abc12345"));
+        return BootstrapState.bootstrapState(CLUSTER_NAME,
+                                             "hash-1",
+                                             "2026-05-01T00:00:00Z",
+                                             phases,
+                                             resources,
+                                             List.of(),
+                                             List.of(),
+                                             "",
+                                             Map.of("core-source", handle));
+    }
+
+    /// #521 — the sweep resolves its client from the same handle. An unmapped handle must not abort the
+    /// sweep (which would leave orphan cluster-scoped keys on the account); it demotes to raw-env.
+    @Test
+    void sweep_deletesClusterScopedKeys_viaLoudFallback_whenHandleNamesNoCredentialEnvVar() {
+        var fallbackProviders = new ArrayList<String>();
+        var deleteCalls = new ArrayList<Long>();
+        var keys = List.of(new SshKey(42L, "aether-bootstrap-prod-op", "fp-42", "pk-42"));
+        var unmappedHandle = SourceCleanupHandle.sourceCleanupHandle("hetzner", Option.some("fsn1"), Map.of());
+        var state = stateWithSshKeyAndHandle(unmappedHandle);
+        var sweepingClient = new SweepingHetznerClient(keys, deleteCalls, Set.of());
+
+        var result = BootstrapCleanup.sweepClusterSshKeys(state,
+                                                          "prod",
+                                                          BootstrapCleanup.CleanupResolvers.cleanupResolvers()
+                                                                                           .withHetznerClientFallback(provider -> recordSweepFallback(provider,
+                                                                                                                                                       fallbackProviders,
+                                                                                                                                                       sweepingClient)));
+
+        assertTrue(result.isSuccess(), () -> "the sweep must fall back rather than abort: " + result);
+        assertEquals(List.of(42L), deleteCalls, "the cluster-scoped key must still be swept");
+        assertEquals(List.of("hetzner"), fallbackProviders,
+                     "the sweep client must come from the demoted raw-env fallback");
+    }
+
+    private static Result<HetznerClient> recordSweepFallback(String providerName,
+                                                             List<String> fallbackProviders,
+                                                             HetznerClient client) {
+        fallbackProviders.add(providerName);
+        return Result.success(client);
+    }
+
     /// Stub for the #481 sweep: records `listSshKeys` results and `deleteSshKey` calls; ids in `goneIds`
     /// surface as a Hetzner 404 `not_found` `ApiError` (already-gone). All other operations throw.
     record SweepingHetznerClient(List<SshKey> keys, List<Long> deleteCalls, Set<Long> goneIds) implements HetznerClient {

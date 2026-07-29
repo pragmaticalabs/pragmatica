@@ -25,8 +25,10 @@ public record DependencyModel(String parameterName,
                               Option<String> version,
                               Option<ResourceQualifierModel> resourceQualifier,
                               boolean sliceAnnotated,
-                              boolean hasFactoryMethod) {
-    /// Backward-compatible constructor without resourceQualifier, sliceAnnotated, hasFactoryMethod.
+                              boolean hasFactoryMethod,
+                              Option<AnnotatedComponent> partitionKey) {
+    /// Backward-compatible constructor without resourceQualifier, sliceAnnotated, hasFactoryMethod,
+    /// partitionKey.
     public DependencyModel(String parameterName,
                            TypeMirror interfaceType,
                            String interfaceQualifiedName,
@@ -43,13 +45,15 @@ public record DependencyModel(String parameterName,
              version,
              Option.none(),
              false,
-             false);
+             false,
+             Option.none());
     }
 
     private static final String SLICE_ANNOTATION = "org.pragmatica.aether.slice.annotation.Slice";
     private static final String PUBLISHER_TYPE = "org.pragmatica.aether.slice.Publisher";
     private static final String STREAM_PUBLISHER_TYPE = "org.pragmatica.aether.slice.StreamPublisher";
     private static final String STREAM_ACCESS_TYPE = "org.pragmatica.aether.slice.StreamAccess";
+    private static final String PARTITION_KEY_ANNOTATION = "org.pragmatica.aether.slice.annotation.PartitionKey";
 
     public static Result<DependencyModel> dependencyModel(VariableElement param, ProcessingEnvironment env) {
         var paramName = param.getSimpleName().toString();
@@ -80,16 +84,47 @@ public record DependencyModel(String parameterName,
         // Check if the interface has a factory method (lowercase-first of simple name, static)
         var hasFactory = hasFactoryMethod(typeElement, simpleName);
 
-        return Result.success(new DependencyModel(paramName,
-                                                  type,
-                                                  qualifiedName,
-                                                  simpleName,
-                                                  packageName,
-                                                  Option.none(),
-                                                  Option.none(),
-                                                  resourceQualifier,
-                                                  isSlice,
-                                                  hasFactory));
+        return resolvePartitionKey(type, resourceQualifier).map(partitionKey -> new DependencyModel(paramName,
+                                                                                                     type,
+                                                                                                     qualifiedName,
+                                                                                                     simpleName,
+                                                                                                     packageName,
+                                                                                                     Option.none(),
+                                                                                                     Option.none(),
+                                                                                                     resourceQualifier,
+                                                                                                     isSlice,
+                                                                                                     hasFactory,
+                                                                                                     partitionKey));
+    }
+
+    /// Resolve the `@PartitionKey` component of a stream resource's event type (#507).
+    ///
+    /// Only stream resources carry one: `StreamPublisherFactory` / `StreamAccessFactory` are the
+    /// only provisioners that read `ProvisioningContext.keyExtractor()` for partition routing.
+    /// Topic `Publisher<T>` is unpartitioned — `PublisherFactory` ignores the extractor — so a key
+    /// emitted there would advertise routing that does not happen.
+    private static Result<Option<AnnotatedComponent>> resolvePartitionKey(TypeMirror type,
+                                                                          Option<ResourceQualifierModel> qualifier) {
+        if (!isStreamResource(qualifier)) {
+            return Result.success(Option.none());
+        }
+
+        return eventTypeMirror(type).map(eventType -> AnnotatedComponent.annotatedComponent(eventType,
+                                                                                             PARTITION_KEY_ANNOTATION))
+                                    .or(() -> Result.success(Option.none()));
+    }
+
+    /// The single type argument of a `StreamPublisher<T>` / `StreamAccess<T>` parameter.
+    private static Option<TypeMirror> eventTypeMirror(TypeMirror type) {
+        if (! (type instanceof DeclaredType dt)) {
+            return Option.none();
+        }
+
+        var typeArgs = dt.getTypeArguments();
+
+        return typeArgs.isEmpty()
+               ? Option.none()
+               : Option.some(typeArgs.getFirst());
     }
 
     /// Check if this dependency is a resource (has @ResourceQualifier).
@@ -119,53 +154,47 @@ public record DependencyModel(String parameterName,
 
     /// Check if this dependency is a Publisher resource.
     public boolean isPublisher() {
-        return resourceQualifier.map(q -> PUBLISHER_TYPE.equals(q.resourceType().toString()))
-                                .or(false);
+        return isResourceType(resourceQualifier, PUBLISHER_TYPE);
     }
 
     /// Check if this dependency is a StreamPublisher resource.
     public boolean isStreamPublisher() {
-        return resourceQualifier.map(q -> STREAM_PUBLISHER_TYPE.equals(q.resourceType().toString()))
-                                .or(false);
+        return isResourceType(resourceQualifier, STREAM_PUBLISHER_TYPE);
     }
 
     /// Check if this dependency is a StreamAccess resource.
     public boolean isStreamAccess() {
-        return resourceQualifier.map(q -> STREAM_ACCESS_TYPE.equals(q.resourceType().toString()))
-                                .or(false);
+        return isResourceType(resourceQualifier, STREAM_ACCESS_TYPE);
     }
 
     /// Check if this dependency is any stream resource (StreamPublisher or StreamAccess).
     public boolean isStreamResource() {
-        return isStreamPublisher() || isStreamAccess();
+        return isStreamResource(resourceQualifier);
+    }
+
+    private static boolean isStreamResource(Option<ResourceQualifierModel> qualifier) {
+        return isResourceType(qualifier, STREAM_PUBLISHER_TYPE) || isResourceType(qualifier, STREAM_ACCESS_TYPE);
+    }
+
+    private static boolean isResourceType(Option<ResourceQualifierModel> qualifier, String resourceType) {
+        return qualifier.map(q -> resourceType.equals(q.resourceType().toString()))
+                        .or(false);
     }
 
     /// Extract message type from Publisher<T> generic parameter.
     /// Returns the qualified type name of T, or empty if not a Publisher or no type arg.
     public Option<String> publisherMessageType() {
-        if (!isPublisher() || !(interfaceType instanceof DeclaredType dt)) {
-            return Option.none();
-        }
-
-        var typeArgs = dt.getTypeArguments();
-
-        return typeArgs.isEmpty()
-               ? Option.none()
-               : Option.some(typeArgs.getFirst().toString());
+        return isPublisher()
+               ? eventTypeMirror(interfaceType).map(TypeMirror::toString)
+               : Option.none();
     }
 
     /// Extract event type from StreamPublisher<T> or StreamAccess<T> generic parameter.
     /// Returns the qualified type name of T, or empty if not a stream resource or no type arg.
     public Option<String> streamEventType() {
-        if ((!isStreamPublisher() && !isStreamAccess()) || !(interfaceType instanceof DeclaredType dt)) {
-            return Option.none();
-        }
-
-        var typeArgs = dt.getTypeArguments();
-
-        return typeArgs.isEmpty()
-               ? Option.none()
-               : Option.some(typeArgs.getFirst().toString());
+        return isStreamResource()
+               ? eventTypeMirror(interfaceType).map(TypeMirror::toString)
+               : Option.none();
     }
 
     /// Returns usable name for nested types: "EnclosingType.SimpleName" for nested, just "SimpleName" for top-level.
@@ -212,7 +241,8 @@ public record DependencyModel(String parameterName,
                                    Option.some(version),
                                    resourceQualifier,
                                    sliceAnnotated,
-                                   hasFactoryMethod);
+                                   hasFactoryMethod,
+                                   partitionKey);
     }
 
     public Option<String> fullArtifact() {

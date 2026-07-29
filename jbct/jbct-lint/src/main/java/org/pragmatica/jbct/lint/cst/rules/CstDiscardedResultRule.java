@@ -53,11 +53,6 @@ public class CstDiscardedResultRule implements CstLintRule {
     private static final Pattern CHAIN_TERMINAL_PATTERN = Pattern.compile("\\.(" + String.join("|", CHAIN_TERMINALS)
                                                                          + ")\\s*\\([^)]*\\)\\s*;\\s*$");
 
-    /// Matches Java single-line and text-block string literals, handling escaped quotes.
-    /// Used to strip literal content before scanning for method-call patterns — otherwise
-    /// `sb.append(".map((")` would falsely trip the chain-terminal regex on the literal.
-    private static final Pattern STRING_LITERAL_PATTERN = Pattern.compile("\"\"\"(?:[^\"\\\\]|\\\\.|\"(?!\"\"))*\"\"\"|\"(?:[^\"\\\\\\n]|\\\\.)*\"");
-
     /// Known-type factory patterns: `Result.success(...)`, `Promise.failure(...)`, etc.
     private static final Pattern FACTORY_PATTERN = Pattern.compile("^\\s*(Result|Promise|Option)\\s*\\.\\s*(success|failure|some|none|option|unitPromise|unitResult|unit)\\s*\\(");
 
@@ -213,10 +208,14 @@ public class CstDiscardedResultRule implements CstLintRule {
     }
 
     /// Replaces the content of every string literal with an empty placeholder of the same delimiter
-    /// so regex-based pattern matching never matches inside a literal. Preserves statement length
-    /// roughly so downstream diagnostics stay aligned.
+    /// so regex-based pattern matching never matches inside a literal — otherwise
+    /// `sb.append(".map((")` would falsely trip the chain-terminal regex on the literal. Preserves
+    /// statement length roughly so downstream diagnostics stay aligned.
+    ///
+    /// Shares [MapperSafety#STRING_LITERAL] rather than compiling a private copy: the duplicate
+    /// carried its own copy of the #540 stack-overflow bug, and one definition cannot drift.
     private static String stripStringLiterals(String stmtText) {
-        return STRING_LITERAL_PATTERN.matcher(stmtText).replaceAll(match -> {
+        return MapperSafety.STRING_LITERAL.matcher(stmtText).replaceAll(match -> {
             var s = match.group();
 
             return s.startsWith("\"\"\"")

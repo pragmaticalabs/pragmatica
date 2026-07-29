@@ -13,6 +13,7 @@ import org.pragmatica.jbct.lint.Diagnostic;
 import org.pragmatica.jbct.lint.DiagnosticSeverity;
 import org.pragmatica.jbct.lint.JbctLinter;
 import org.pragmatica.jbct.lint.LintContext;
+import org.pragmatica.jbct.lint.layer.LayerCoverage;
 import org.pragmatica.jbct.shared.FileCollector;
 import org.pragmatica.jbct.shared.SourceFile;
 import org.pragmatica.lang.Option;
@@ -67,6 +68,10 @@ public class CheckCommand implements Callable<Integer> {
             checkFormat(file, formatter, needsFormatting, formatErrors);
             checkLint(file, linter, allDiagnostics, lintErrors, warnings, parseErrors);
         }
+
+        LayerCoverage.coverage(filesToProcess, context)
+                     .map(LayerCoverage::render)
+                     .onPresent(System.err::println);
         // Report format issues
         if (!needsFormatting.isEmpty()) {
             System.out.println();

@@ -1,0 +1,41 @@
+# Application-level (blueprint) resources for test-stream-consumer (#488).
+#
+# Packaged into the blueprint JAR as META-INF/resources.toml by the JBCT maven-plugin. At deploy
+# time BlueprintService stores this content in the KV-Store; each node's slice loader resolves
+# @ResourceQualifier(config = "streams.consumer-events") lookups against it — both the
+# @EventStreamPublisher parameter qualifier and the @ConsumerEventSubscriber method qualifier.
+#
+#   - partitions = 1        -> exactly ONE node owns the partition. This is the discriminator for
+#     partition-ownership gating: with N nodes all running the slice, a correctly gated consumer
+#     delivers each event ONCE cluster-wide, while an ungated one would deliver it N times.
+#   - retention  = count    -> count-based eviction (never time-based), with a retention-value far
+#     above any test event count, so nothing is evicted mid-test.
+[streams.consumer-events]
+partitions = 1
+retention = "count"
+retention-value = "100000"
+max-event-size = "64KB"
+
+# The APPLICATION-TYPED stream (#526). Same shape as consumer-events on purpose — the only variable
+# under test is the event TYPE. It carries `OrderPlaced`, a record only the slice's own codec knows,
+# so a resource provisioned with the node-wide codec fails here and passes on consumer-events.
+[streams.order-events]
+partitions = 1
+retention = "count"
+retention-value = "100000"
+max-event-size = "64KB"
+
+# The MULTI-PARTITION stream (#535). Its whole purpose is the pigeonhole: with 5 partitions and a
+# deployment restricted to 1 instance, the single slice-bearing node can own AT MOST one of them, so
+# at least four partitions are guaranteed to have an owner that cannot run the consumer. That is the
+# case the #488 fixture structurally could not express — it ran the slice on every node, making
+# `owner INTERSECT slice-bearing` non-empty by construction — and it is exactly the case that
+# delivered nothing on the live 5-node cluster.
+#
+# Deterministic by counting, not by luck: no placement control is needed and there is no arrangement
+# of 1 host over 5 partitions in which every owner hosts the slice.
+[streams.spread-events]
+partitions = 5
+retention = "count"
+retention-value = "100000"
+max-event-size = "64KB"

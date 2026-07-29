@@ -107,8 +107,20 @@ public enum ManagementRoute {
     VERSIONS(GET, "/api/versions", List.of(), LOCAL),
     SLICE_SCALE(POST, "/api/scale", List.of(), taskGroup(SCALING)),
     WORKERS_LIST(GET, "/api/workers", List.of(), LEADER),
+    // #525: declared but not built. Per-worker health and per-worker endpoints are never published
+    // to consensus — the only worker facts that reach the KV-Store are the community roster and the
+    // GOVERNOR's tcpAddress (GovernorAnnouncementValue), which WORKERS_LIST already serves. Both are
+    // answered by NotImplementedRoutes with an honest 501 naming the missing capability, rather than
+    // being left unserved (a bare 404 tells the operator nothing) or deleted (worker mode is live —
+    // see AetherNode.activateWorkerMode). Implementing them requires workers to publish health and
+    // endpoint facts; that is a feature, not a repair.
     WORKERS_HEALTH(GET, "/api/workers/health", List.of(), LEADER),
     WORKERS_ENDPOINTS(GET, "/api/workers/endpoints", List.of(), LEADER),
+    // #525: declared but not built — cloud migration has no server-side implementation at all.
+    // Answered by NotImplementedRoutes with an honest 501. These two hid from the #525 sweep because
+    // they ARE referenced under aether/node/src/main — but only in the ManagementRoutePermissions
+    // table, which grants authorization for a handler that does not exist. Permission-table presence
+    // is not service; ManagementRouteCoverageTest keys on handler registration for exactly this reason.
     CLUSTER_MIGRATE(POST, "/api/cluster/migrate", List.of(), taskGroup(DEPLOYMENT)),
     CLUSTER_MIGRATE_PLAN(POST, "/api/cluster/migrate/plan", List.of(), taskGroup(DEPLOYMENT)),
     CLUSTER_KEYS_CREATE(POST, "/api/cluster/keys", List.of(), taskGroup(DEPLOYMENT)),
@@ -119,7 +131,6 @@ public enum ManagementRoute {
     MAVEN_METADATA(GET, "/repository", List.of("groupPath", "artifactId", "file"), taskGroup(DEPLOYMENT)),
     NODE_LIFECYCLE_LIST(GET, "/api/nodes/lifecycle", List.of(), LEADER),
     NODE_LIFECYCLE_GET(GET, "/api/nodes/lifecycle", List.of("id"), LEADER),
-    AUDIT_COMMANDS_LIST(GET, "/api/audit/commands", List.of(), LEADER),
     NODE_DRAIN(POST, "/api/nodes/drain", List.of("id"), taskGroup(DEPLOYMENT)),
     NODE_SHUTDOWN(POST, "/api/nodes/shutdown", List.of("id"), taskGroup(DEPLOYMENT)),
     NODE_PROMOTE(POST, "/api/nodes/promote", List.of("id"), LEADER),
@@ -166,6 +177,15 @@ public enum ManagementRoute {
     // node; the handler assembles the snapshot from that node's local StreamPartitionManager (per-node
     // materialized-ring / floor-byte / placement-role view — the §6 regression sensor).
     STREAM_HYDRATION(GET, "/api/streams/hydration", List.of(), taskGroup(STREAMING)),
+    // #488 declarative-consumer observability: which `[streams.X]` consumers this node has actually
+    // attached, on which partitions, at which committed offsets — plus the two ways a declared consumer
+    // ends up receiving nothing (this node owns partitions whose slice is not deployed here, or the
+    // event type is unpublishable per #526). LOCAL, not taskGroup: subscriptions are per-node truth,
+    // since a node consumes exactly the partitions it owns. Static prefix
+    // `/api/streams/declarative-consumers` (0 params) is matched before `/api/streams/{name}`
+    // (STREAM_GET) by the longest-static-prefix rule, and shares no segment with
+    // `/api/streams/consumers/{name}` (STREAM_CONSUMERS), so neither collides.
+    STREAM_DECLARATIVE_CONSUMERS(GET, "/api/streams/declarative-consumers", List.of(), LOCAL),
     CONSUMER_GROUP_JOIN(POST, "/api/streams/groups/join", List.of(), taskGroup(STREAMING)),
     CONSUMER_GROUP_LEAVE(POST, "/api/streams/groups/leave", List.of(), taskGroup(STREAMING)),
     CONSUMER_GROUP_STATUS(GET, "/api/streams/groups", List.of("id"), taskGroup(STREAMING)),

@@ -15,6 +15,22 @@ never guessed. Each file's header comment records its source run and evidence gr
 The underlying artifacts are licensed CC BY 4.0; quoted material from engineering blogs and public
 records remains with its original authors (see each run's `SOURCES.md` in the artifacts repo).
 
+## This directory is canonical
+
+The four published runs' sheets are **mirrored** into `siy/derivation-artifacts` under `schema/`,
+which is where that repo's own `schema/README.md` promised they would land. **This copy is the
+canonical one** — these files are the engine's golden tests, so a correction made here is exercised
+by `GoldenSheetsTest`, while a correction made in the artifacts repo is not.
+
+Each mirrored file carries a header naming the source path and the commit it was taken from, and
+says plainly that edits there are lost at the next sync. When a sheet changes here, re-sync the
+mirror and update the recorded commit; the mirror is a copy with provenance, not a second source of
+truth.
+
+`living-system.toml` is **not** mirrored — it is synthetic, with no corresponding prose run under
+the artifacts repo's `runs/`, so publishing it beside four real transcriptions would read as a fifth
+case study.
+
 ## Files
 
 | File | Run | Grade | Mode |

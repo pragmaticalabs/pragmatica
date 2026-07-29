@@ -1,6 +1,7 @@
 package org.pragmatica.jbct.maven;
 
 import org.pragmatica.jbct.lint.JbctLinter;
+import org.pragmatica.jbct.lint.layer.LayerCoverage;
 import org.pragmatica.jbct.score.DensityGate;
 import org.pragmatica.jbct.score.ScoreCalculator;
 import org.pragmatica.jbct.score.ScoreReport;
@@ -54,6 +55,9 @@ public class ScoreMojo extends AbstractJbctMojo {
                                          message -> getLog().error("Parse error in " + message));
         var score = ScoreCalculator.calculate(scan);
 
+        LayerCoverage.coverage(filesToProcess, context)
+                     .map(LayerCoverage::render)
+                     .onPresent(getLog()::info);
         outputScore(score);
         if (maxDensity != null && DensityGate.exceeds(score.totalDensityPerKloc(), maxDensity)) {
             throw new MojoFailureException(DensityGate.breachMessage(score.totalDensityPerKloc(), maxDensity));

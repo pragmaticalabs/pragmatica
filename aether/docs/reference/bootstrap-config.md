@@ -218,13 +218,15 @@ authorization_role="ADMIN"` table under `node_config.app-http` in the bootstrap-
 lets the bootstrap POST authenticate immediately, with `security_mode` left at its secure `API_KEY`
 default.
 
-> **⚠️ Known dead-end under `NONE` (issue #520, live-verified 2026-07-24):** with
-> `security_mode = "NONE"` the server ignores API keys entirely — every caller is
-> `anonymous`/`VIEWER` (`aether whoami` shows `authenticated: false` even with the
-> bootstrap-minted admin key) — while **artifact publication requires OPERATOR or ADMIN**.
-> A NONE-mode cluster therefore bootstraps successfully but rejects `aether artifacts push`
-> with 403: you cannot ship a slice to it via the CLI until #520 lands. If you need to deploy
-> artifacts today, use the pre-seeded `API_KEY` path above instead of `NONE`.
+> **Artifact publication under `NONE` (resolved in #520, live-verified 2026-07-24):** a
+> `NONE`-mode node ignores API keys entirely — every caller is `anonymous`/`VIEWER`, and
+> `aether whoami` reports `authenticated: false` even for the bootstrap-minted admin key.
+> Because publication would otherwise require an `OPERATOR`/`ADMIN` role that nobody can
+> hold in that mode, the publication gate now treats `security_mode = "NONE"` as the
+> dev-mode posture and accepts the push, logging a WARN that names the artifact and the
+> reason. So `aether artifacts push` works against a NONE cluster — and everything it
+> accepts is unauthenticated by construction, which is precisely why `NONE` is dev/eval
+> only. Under `API_KEY`/`JWT` the gate is unchanged and still rejects anonymous callers.
 
 ### (b) `jar_url` pinning
 

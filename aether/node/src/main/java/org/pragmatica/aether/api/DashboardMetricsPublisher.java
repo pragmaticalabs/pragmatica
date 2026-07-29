@@ -23,6 +23,7 @@ import org.pragmatica.aether.node.ManageableNode;
 import org.pragmatica.aether.slice.kvstore.AetherKey.GovernorAnnouncementKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SchemaVersionKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.GovernorAnnouncementValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.SchemaStatus;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SchemaVersionValue;
 import org.pragmatica.aether.slice.topology.TopologyGraph;
 import org.pragmatica.aether.slice.topology.TopologyParser;
@@ -40,6 +41,14 @@ public class DashboardMetricsPublisher {
     private static final Logger log = LoggerFactory.getLogger(DashboardMetricsPublisher.class);
     private static final long DEFAULT_BROADCAST_INTERVAL_MS = 1000;
     private static final double EMA_ALPHA = 0.2;
+
+    /// Mirrors `ClusterDeploymentState.Active.BLOCKING_SCHEMA_STATUSES` (#542), which is private to
+    /// the deployment FSM. PENDING and MIGRATING hold while the migration is still in flight;
+    /// FAILED holds until an operator retries, baselines, or redeploys the owning blueprint.
+    /// COMPLETED is the only status that releases activation.
+    private static final Set<SchemaStatus> BLOCKING_SCHEMA_STATUSES = Set.of(SchemaStatus.PENDING,
+                                                                             SchemaStatus.MIGRATING,
+                                                                             SchemaStatus.FAILED);
 
     private final long broadcastIntervalMs;
     private final Supplier<ManageableNode> nodeSupplier;
@@ -651,6 +660,13 @@ public class DashboardMetricsPublisher {
         sb.append("]}");
     }
 
+    /// `owningBlueprint` and `blocksActivation` are what make the activation gate legible on the
+    /// dashboard (#542/#550): a record in a blocking status withholds activation from the slices of
+    /// `owningBlueprint` — and from no other blueprint's slices. The held set itself is NOT
+    /// reported here: it lives in the cluster-deployment leader's in-memory blueprint map, which
+    /// this per-node publisher does not read. `blocksActivation` therefore states the record's own
+    /// property ("this status withholds activation of its owner's slices"), not an observation that
+    /// some particular slice is currently waiting.
     private void appendSchema(StringBuilder sb, ManageableNode node) {
         var entries = new ArrayList<SchemaVersionValue>();
 
@@ -669,7 +685,11 @@ public class DashboardMetricsPublisher {
               .append(entry.currentVersion())
               .append(",\"lastMigration\":\"")
               .append(escapeJson(entry.lastMigration()))
-              .append("\",\"attemptCount\":")
+              .append("\",\"owningBlueprint\":\"")
+              .append(escapeJson(entry.owningBlueprint().asString()))
+              .append("\",\"blocksActivation\":")
+              .append(BLOCKING_SCHEMA_STATUSES.contains(entry.status()))
+              .append(",\"attemptCount\":")
               .append(entry.attemptCount())
               .append("}");
             first = false;

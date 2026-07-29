@@ -92,6 +92,14 @@ the file's own `package` declaration and its imports. Classification is **conven
 deepest segment winning. Explicit `[lint.layers]` globs override the conventions. A package that
 matches neither is left unclassified and produces no layering diagnostics.
 
+**Coverage summary.** Because unclassified packages are silent, a narrow `[lint.layers]` config can
+enforce almost nothing while the run still reports clean. Whenever an explicit `[lint.layers]`
+section is present, each run of `lint` / `check` / `score` prints one line —
+`layering: evaluated 46 of 3458 files, 3412 unclassified` (plus `, N excluded` when
+`excludePackages` skipped files) — so the enforced fraction is visible. With no explicit section the
+summary is omitted, since conventions alone leave most real package names unclassified by design. On
+the CLI it goes to stderr, so `--format json` / `badge` / `sarif` output stays machine-parseable.
+
 - **JBCT-ARCH-01** — dependency direction: imports point up only
   (`domain <- application <- adapter <- bootstrap`); a domain file may not import framework packages.
 - **JBCT-ARCH-02** — `lift(...)` (foreign-exception→`Cause` conversion) is confined to the

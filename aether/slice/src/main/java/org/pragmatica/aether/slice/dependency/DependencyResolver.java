@@ -92,18 +92,55 @@ public interface DependencyResolver {
                                                      SliceInvokerFacade invokerFacade,
                                                      ResourceProviderFacade resourceFacade,
                                                      Option<org.pragmatica.lang.Functions.Fn1<Option<org.pragmatica.config.ConfigurationProvider>, ClassLoader>> compositeBuilder) {
-        var loadingContext = SliceLoadingContext.sliceLoadingContext(invokerFacade, resourceFacade, artifact.asString());
+        return resolveWithContext(artifact,
+                                  repository,
+                                  registry,
+                                  sharedLibraryLoader,
+                                  invokerFacade,
+                                  resourceFacade,
+                                  compositeBuilder,
+                                  Option.none());
+    }
+
+    /// Variant that additionally scopes resource serialization to the deployed slice's codec.
+    ///
+    /// `nodeCodec` is the parent the slice's own codec is layered on. Supplying it arms the
+    /// late-bound slice codec that every resource provisioned by this slice receives, so a slice
+    /// can publish and consume its OWN record types (#526); omitting it keeps resources on the
+    /// node-wide codec.
+    static Promise<ResolvedSlice> resolveWithContext(Artifact artifact,
+                                                     Repository repository,
+                                                     SliceRegistry registry,
+                                                     SharedLibraryClassLoader sharedLibraryLoader,
+                                                     SliceInvokerFacade invokerFacade,
+                                                     ResourceProviderFacade resourceFacade,
+                                                     Option<org.pragmatica.lang.Functions.Fn1<Option<org.pragmatica.config.ConfigurationProvider>, ClassLoader>> compositeBuilder,
+                                                     Option<SliceCodec> nodeCodec) {
+        var loadingContext = SliceLoadingContext.sliceLoadingContext(invokerFacade,
+                                                                     resourceFacade,
+                                                                     artifact.asString(),
+                                                                     nodeCodec);
 
         compositeBuilder.onPresent(loadingContext::setCompositeBuilder);
 
         return registry.lookup(artifact)
-                       .map(slice -> Promise.success(new ResolvedSlice(slice, loadingContext)))
+                       .map(slice -> Promise.success(resolvedSlice(slice, loadingContext)))
                        .or(() -> resolveWithSharedLoaderAndContext(artifact,
                                                                    repository,
                                                                    registry,
                                                                    sharedLibraryLoader,
                                                                    loadingContext,
                                                                    new HashSet<>()));
+    }
+
+    /// Pair a freshly created slice with its loading context, binding the slice's codec on the way
+    /// through. This is the earliest point the codec CAN be bound — `Slice.codec(parent)` needs the
+    /// instance — and it is still well before `start()` and before the slice is invocable, so every
+    /// resource that captured the late-bound codec during construction is ready by first use (#526).
+    private static ResolvedSlice resolvedSlice(Slice slice, SliceLoadingContext loadingContext) {
+        loadingContext.bindSliceCodec(slice);
+
+        return new ResolvedSlice(slice, loadingContext);
     }
 
     static Promise<ResolvedSlice> resolveWithContext(Artifact artifact,
@@ -322,7 +359,7 @@ public interface DependencyResolver {
                                         loadingContext,
                                         List.of(),
                                         List.of()).flatMap(slice -> registerSlice(artifact, slice, registry))
-                                       .map(slice -> new ResolvedSlice(slice, loadingContext));
+                                       .map(slice -> resolvedSlice(slice, loadingContext));
         }
 
         return resolveArtifactDependenciesWithContextSequentially(sliceDeps,
@@ -353,7 +390,7 @@ public interface DependencyResolver {
         return createSliceFromClass(sliceClass, loadingContext, resolvedSlices, sliceDeps).flatMap(slice -> registerSlice(artifact,
                                                                                                                           slice,
                                                                                                                           registry))
-                                   .map(slice -> new ResolvedSlice(slice, loadingContext));
+                                   .map(slice -> resolvedSlice(slice, loadingContext));
     }
 
     static Promise<SliceBridge> resolveBridge(Artifact artifact,

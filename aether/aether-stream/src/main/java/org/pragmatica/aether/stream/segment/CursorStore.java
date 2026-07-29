@@ -17,7 +17,13 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 
-public final class CursorStore {
+/// Node-local committed-offset store, backed by this node's [StorageInstance] ref index.
+///
+/// The ref index is per-node and is NOT replicated, so a cursor written here is invisible to every
+/// other node. That is why [ConsumerCursorStore] exists: the node composes this store with a
+/// consensus-KV cursor for deployment-declared consumers, which must resume after their partition's
+/// owner changes.
+public final class CursorStore implements ConsumerCursorStore {
     private static final Logger log = LoggerFactory.getLogger(CursorStore.class);
     private static final String CURSORS_PREFIX = "cursors/";
 
@@ -31,6 +37,7 @@ public final class CursorStore {
         return new CursorStore(storage);
     }
 
+    @Override
     public Promise<Unit> commit(String consumerGroup, String streamName, int partition, long offset) {
         var refName = buildRefName(consumerGroup, streamName, partition);
         var payload = encodeOffset(offset);
@@ -40,6 +47,7 @@ public final class CursorStore {
                       .onSuccess(_ -> logCommit(consumerGroup, streamName, partition, offset));
     }
 
+    @Override
     public Promise<Option<Long>> fetch(String consumerGroup, String streamName, int partition) {
         var refName = buildRefName(consumerGroup, streamName, partition);
 

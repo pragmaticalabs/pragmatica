@@ -73,7 +73,17 @@ public sealed interface MapperSafety permits MapperSafety.unused {
     /// Java single-line and text-block string literals — masked before op-scanning so a partial-op
     /// pattern never matches inside a literal, and so a string argument (`get("key")`) is never
     /// seen as empty / integer parens.
-    Pattern STRING_LITERAL = Pattern.compile("\"\"\"(?:[^\"\\\\]|\\\\.|\"(?!\"\"))*\"\"\"|\"(?:[^\"\\\\\\n]|\\\\.)*\"");
+    ///
+    /// The bulk alternatives are possessive (`++`) for stack safety (#540). The JDK compiles a
+    /// quantified group containing alternation to `Loop`/`Branch`/`GroupHead`/`GroupTail` nodes
+    /// whose `Loop.match` **recurses once per iteration**; with a plain `[^"\\]` each iteration
+    /// consumes one character, so stack depth grew linearly with literal length and a 7481-char
+    /// text block overflowed the default stack. Possessive matching makes one iteration consume a
+    /// maximal RUN of ordinary characters, so depth tracks the number of `"` / `\` occurrences
+    /// instead. It matches exactly the same language: every closing delimiter begins with `"`, and
+    /// the sibling alternatives require `"` or `\` — all excluded from the possessive class — so
+    /// stopping mid-run can never yield a match the greedy form would have found.
+    Pattern STRING_LITERAL = Pattern.compile("\"\"\"(?:[^\"\\\\]++|\\\\.|\"(?!\"\"))*\"\"\"|\"(?:[^\"\\\\\\n]++|\\\\.)*\"");
 
     /// Line (`//`) and block (`/* */`) comments — blanked before scanning so a marker or guard
     /// mentioned only in a comment is never mistaken for code.

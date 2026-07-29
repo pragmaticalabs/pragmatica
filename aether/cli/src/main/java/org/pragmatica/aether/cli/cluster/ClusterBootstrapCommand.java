@@ -276,9 +276,13 @@ class ClusterBootstrapCommand implements Callable<Integer> {
         }
     }
 
+    /// #521 — an aborted bootstrap exits NON-zero. Exiting 0 told every wrapper script that a cluster had
+    /// been provisioned when nothing had been, and it is indistinguishable from success in CI: the
+    /// interactive `Continue? [y/N]` prompt reads EOF in a non-interactive shell, so the abort is exactly
+    /// the case a script is most likely to hit and least likely to notice.
     private static int onFailure(Cause cause) {
         if (cause instanceof AbortedError) {
-            return ExitCode.SUCCESS;
+            return ExitCode.ERROR;
         }
 
         System.err.println("Error: " + cause.message());
