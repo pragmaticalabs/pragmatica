@@ -103,38 +103,6 @@ public class ScoreCommand implements Callable<Integer> {
     }
 
     private void outputBadge(ScoreResult score) {
-        var color = score.overall() >= 90
-                    ? "brightgreen"
-                    : score.overall() >= 75
-                      ? "green"
-                      : score.overall() >= 60
-                        ? "yellow"
-                        : score.overall() >= 50
-                          ? "orange"
-                          : "red";
-        var svg = """
-            <svg xmlns="http://www.w3.org/2000/svg" width="100" height="20">
-              <linearGradient id="b" x2="0" y2="100%%">
-                <stop offset="0" stop-color="#bbb" stop-opacity=".1"/>
-                <stop offset="1" stop-opacity=".1"/>
-              </linearGradient>
-              <mask id="a">
-                <rect width="100" height="20" rx="3" fill="#fff"/>
-              </mask>
-              <g mask="url(#a)">
-                <path fill="#555" d="M0 0h45v20H0z"/>
-                <path fill="%s" d="M45 0h55v20H45z"/>
-                <path fill="url(#b)" d="M0 0h100v20H0z"/>
-              </g>
-              <g fill="#fff" text-anchor="middle" font-family="DejaVu Sans,Verdana,Geneva,sans-serif" font-size="11">
-                <text x="22.5" y="15" fill="#010101" fill-opacity=".3">JBCT</text>
-                <text x="22.5" y="14">JBCT</text>
-                <text x="71.5" y="15" fill="#010101" fill-opacity=".3">%d/100</text>
-                <text x="71.5" y="14">%d/100</text>
-              </g>
-            </svg>
-            """.formatted(color, score.overall(), score.overall());
-
-        System.out.println(svg);
+        ScoreReport.badgeLines(score).forEach(System.out::println);
     }
 }
