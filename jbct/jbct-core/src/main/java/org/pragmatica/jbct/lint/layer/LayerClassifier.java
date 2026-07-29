@@ -6,6 +6,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.regex.Pattern;
 
+import org.pragmatica.jbct.shared.PackageGlob;
 import org.pragmatica.lang.Option;
 
 
@@ -16,8 +17,9 @@ import org.pragmatica.lang.Option;
 /// drive classification, explicit-first:
 ///
 ///   1. **Explicit config** ([LayerConfig]) — per-layer package globs and slice-root globs, using
-///      the `excludePackages` glob syntax (`*` = one segment, `**` = any depth). Consulted first, in
-///      registration order (domain, application, adapter, bootstrap).
+///      the shared [PackageGlob] syntax (`*` = one segment, `**` = zero or more segments, so
+///      `com.example.core.**` covers `com.example.core` itself). Consulted first, in registration
+///      order (domain, application, adapter, bootstrap).
 ///   2. **Book-layout conventions** — a package is classified by the layer keyword among its dotted
 ///      segments: `domain` -> domain; `application` / `usecase` -> application; `adapter` /
 ///      `integration` / `infra` -> adapter; `bootstrap` / `main` -> bootstrap. The deepest
@@ -73,7 +75,7 @@ public final class LayerClassifier {
 
         var slices = config.sliceGlobs()
                            .stream()
-                           .map(LayerClassifier::compile)
+                           .map(PackageGlob::compile)
                            .toList();
 
         return new LayerClassifier(List.copyOf(rules), slices);
@@ -86,7 +88,7 @@ public final class LayerClassifier {
 
     private static void addRules(List<LayerRule> rules, List<String> globs, Layer layer) {
         for (var glob : globs) {
-            rules.add(new LayerRule(compile(glob), layer, specificity(glob)));
+            rules.add(new LayerRule(PackageGlob.compile(glob), layer, specificity(glob)));
         }
     }
 
@@ -202,16 +204,4 @@ public final class LayerClassifier {
         return String.join(".", Arrays.copyOfRange(segments, 0, endInclusive + 1));
     }
 
-    private static Pattern compile(String glob) {
-        return Pattern.compile(globToRegex(glob));
-    }
-
-    private static String globToRegex(String glob) {
-        // Placeholder keeps ** from being mangled by the single-* replacement (mirrors LintContext).
-        // Literal dots are escaped so a glob segment separator matches only a real '.'.
-        return glob.replace("**", "\0DOTSTAR\0")
-                   .replace("*", "[^.]*")
-                   .replace(".", "\\.")
-                   .replace("\0DOTSTAR\0", ".*");
-    }
 }
