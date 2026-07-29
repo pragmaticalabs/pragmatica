@@ -7,6 +7,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 import org.pragmatica.jbct.lint.Diagnostic;
 import org.pragmatica.jbct.lint.JbctLinter;
+import org.pragmatica.jbct.lint.layer.LayerCoverage;
 import org.pragmatica.jbct.shared.SourceFile;
 
 import org.apache.maven.plugin.MojoExecutionException;
@@ -45,6 +46,10 @@ public class LintMojo extends AbstractJbctMojo {
         for (var file : filesToProcess) {
             processFile(file, linter, allDiagnostics, errors, warnings, infos, parseErrors);
         }
+
+        LayerCoverage.coverage(filesToProcess, context)
+                     .map(LayerCoverage::render)
+                     .onPresent(getLog()::info);
         // Print diagnostics
         for (var d : allDiagnostics) {
             switch (d.severity()) {

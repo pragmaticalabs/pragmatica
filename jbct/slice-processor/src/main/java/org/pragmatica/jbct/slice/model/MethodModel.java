@@ -6,10 +6,8 @@ package org.pragmatica.jbct.slice.model;
 
 import javax.annotation.processing.ProcessingEnvironment;
 import javax.lang.model.element.AnnotationMirror;
-import javax.lang.model.element.Element;
 import javax.lang.model.element.ElementKind;
 import javax.lang.model.element.ExecutableElement;
-import javax.lang.model.element.RecordComponentElement;
 import javax.lang.model.element.TypeElement;
 import javax.lang.model.type.DeclaredType;
 import javax.lang.model.type.TypeMirror;
@@ -361,7 +359,7 @@ public record MethodModel(String name,
         }
 
         return validateBusinessParamCount(method, paramInfos, name).flatMap(_ -> validateKeyAnnotations(paramInfos, name))
-                                         .flatMap(_ -> resolveKeyInfo(paramInfos, env, methodInterceptors, name))
+                                         .flatMap(_ -> resolveKeyInfo(paramInfos, methodInterceptors, name))
                                          .map(keyResult -> new MethodModel(name,
                                                                            returnType,
                                                                            responseType,
@@ -439,7 +437,6 @@ public record MethodModel(String name,
     }
 
     private static Result<KeyResolution> resolveKeyInfo(List<MethodParameterInfo> paramInfos,
-                                                        ProcessingEnvironment env,
                                                         List<ResourceQualifierModel> interceptors,
                                                         String methodName) {
         if (interceptors.isEmpty()) {
@@ -457,8 +454,8 @@ public record MethodModel(String name,
                 return Result.success(new KeyResolution(Option.none(), Option.none()));
             }
 
-            return extractKeyInfoFromRecord(param.type(), env, interceptors).map(keyInfo -> new KeyResolution(keyInfo,
-                                                                                                              Option.none()));
+            return extractKeyInfoFromRecord(param.type(), interceptors).map(keyInfo -> new KeyResolution(keyInfo,
+                                                                                                         Option.none()));
         }
         // Multi-param: check for @Key on parameter
         var keyParam = paramInfos.stream().filter(MethodParameterInfo::isKey).findFirst();
@@ -684,67 +681,27 @@ public record MethodModel(String name,
     /// Extract @Key info from the method parameter record, but only if interceptors are present.
     /// If no interceptors, keyExtractor is always none.
     /// Key extractors are only generated from explicit @Key annotations on record components.
+    /// Component resolution is shared with `@PartitionKey` — see [AnnotatedComponent].
     private static Result<Option<KeyExtractorInfo>> extractKeyInfoFromRecord(TypeMirror paramType,
-                                                                             ProcessingEnvironment env,
                                                                              List<ResourceQualifierModel> interceptors) {
         if (interceptors.isEmpty()) {
             return Result.success(Option.none());
         }
 
-        if (! (paramType instanceof DeclaredType dt)) {
-            return Result.success(Option.none());
-        }
-
-        var element = dt.asElement();
-
-        if (element.getKind() != ElementKind.RECORD) {
-            return Result.success(Option.none());
-        }
-
-        var typeElement = (TypeElement) element;
-        var keyFields = findKeyAnnotatedFields(typeElement);
-
-        if (keyFields.isEmpty()) {
-            return Result.success(Option.none());
-        }
-
-        if (keyFields.size() > 1) {
-            return Causes.cause("Multiple @Key annotations found on " + typeElement.getSimpleName()
-                               + ". Only one @Key field is allowed per record.").result();
-        }
-
-        return buildKeyExtractorFromField(keyFields.getFirst(), typeElement);
+        return AnnotatedComponent.annotatedComponent(paramType, KEY_ANNOTATION)
+                                 .flatMap(MethodModel::toKeyExtractor);
     }
 
-    private static List<RecordComponentElement> findKeyAnnotatedFields(TypeElement typeElement) {
-        return typeElement.getEnclosedElements()
-                          .stream()
-                          .filter(RecordComponentElement.class::isInstance)
-                          .map(RecordComponentElement.class::cast)
-                          .filter(MethodModel::hasKeyAnnotation)
-                          .toList();
+    private static Result<Option<KeyExtractorInfo>> toKeyExtractor(Option<AnnotatedComponent> keyComponent) {
+        return keyComponent.map(MethodModel::keyExtractorFor)
+                           .or(() -> Result.success(Option.none()));
     }
 
-    private static Result<Option<KeyExtractorInfo>> buildKeyExtractorFromField(RecordComponentElement keyField,
-                                                                               TypeElement typeElement) {
-        var keyType = keyField.asType().toString();
-        var fieldName = keyField.getSimpleName().toString();
-        var paramTypeName = typeElement.getQualifiedName().toString();
-
-        return KeyExtractorInfo.single(keyType, fieldName, paramTypeName).map(Option::some);
-    }
-
-    private static boolean hasKeyAnnotation(RecordComponentElement element) {
-        return findAnnotationMirror(element, KEY_ANNOTATION).isPresent();
-    }
-
-    private static Option<AnnotationMirror> findAnnotationMirror(Element element, String annotationName) {
-        return element.getAnnotationMirrors()
-                      .stream()
-                      .filter(mirror -> isAnnotationType(mirror, annotationName))
-                      .findFirst()
-                      .map(Option::some)
-                      .orElse(Option.none());
+    private static Result<Option<KeyExtractorInfo>> keyExtractorFor(AnnotatedComponent keyComponent) {
+        return KeyExtractorInfo.single(keyComponent.componentTypeName(),
+                                       keyComponent.componentName(),
+                                       keyComponent.ownerQualifiedName())
+                               .map(Option::some);
     }
 
     private static boolean isAnnotationType(AnnotationMirror mirror, String annotationName) {

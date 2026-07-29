@@ -13,6 +13,8 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 
+import java.nio.charset.StandardCharsets;
+
 import static org.assertj.core.api.Assertions.assertThat;
 
 class MavenProtocolHandlerTest {
@@ -49,6 +51,90 @@ class MavenProtocolHandlerTest {
         var handler = MavenProtocolHandler.mavenProtocolHandler(store);
 
         handler.handleGet("/repository/invalid")
+               .await()
+               .onFailureRun(Assertions::fail)
+               .onSuccess(response -> {
+                   assertThat(response.statusCode()).isEqualTo(400);
+               });
+    }
+
+    @Test
+    void handleGet_returns_notImplemented_for_artifacts_list_path() {
+        var store = testStore();
+        var handler = MavenProtocolHandler.mavenProtocolHandler(store);
+
+        handler.handleGet("/repository/artifacts")
+               .await()
+               .onFailureRun(Assertions::fail)
+               .onSuccess(response -> {
+                   assertThat(response.statusCode()).isEqualTo(501);
+
+                   var body = new String(response.content(), StandardCharsets.UTF_8);
+                   // The operator must learn WHAT is missing, WHICH surfaces work instead, and
+                   // WHERE the real capability is tracked — a bare "not implemented" would be
+                   // honest but useless.
+                   assertThat(body).contains("listing is not implemented");
+                   assertThat(body).contains("maven-metadata.xml");
+                   assertThat(body).contains("/repository/info/");
+                   assertThat(body).contains("/api/artifacts/metrics");
+                   assertThat(body).contains("#527");
+               });
+    }
+
+    @Test
+    void handleGet_returns_notImplemented_for_artifacts_list_path_with_trailing_slash() {
+        var store = testStore();
+        var handler = MavenProtocolHandler.mavenProtocolHandler(store);
+
+        handler.handleGet("/repository/artifacts/")
+               .await()
+               .onFailureRun(Assertions::fail)
+               .onSuccess(response -> {
+                   assertThat(response.statusCode()).isEqualTo(501);
+               });
+    }
+
+    /// The exclusion must stay narrow: a request that really IS a malformed coordinate keeps its
+    /// 400. Turning every parse failure into 501 would hide client errors behind a server excuse.
+    @Test
+    void handleGet_returns_badRequest_for_malformed_coordinate_path() {
+        var store = testStore();
+        var handler = MavenProtocolHandler.mavenProtocolHandler(store);
+
+        handler.handleGet("/repository/org/example/bad")
+               .await()
+               .onFailureRun(Assertions::fail)
+               .onSuccess(response -> {
+                   assertThat(response.statusCode()).isEqualTo(400);
+               });
+    }
+
+    /// A groupId may begin with the segment `artifacts` (`GROUP_ID_PATTERN` only requires a dotted
+    /// name), so `/repository/artifacts/demo/lib/1.0.0/lib-1.0.0.jar` is a REAL coordinate for group
+    /// `artifacts.demo`. 404 (store miss) rather than 501 proves the reserved-path test is whole-path
+    /// equality and not a prefix match, which would swallow every artifact published under such a group.
+    @Test
+    void handleGet_resolves_coordinate_for_group_starting_with_artifacts() {
+        var store = testStore();
+        var handler = MavenProtocolHandler.mavenProtocolHandler(store);
+
+        handler.handleGet("/repository/artifacts/demo/lib/1.0.0/lib-1.0.0.jar")
+               .await()
+               .onFailureRun(Assertions::fail)
+               .onSuccess(response -> {
+                   assertThat(response.statusCode()).isEqualTo(404);
+               });
+    }
+
+    /// PUT keeps its 400 deliberately: no PUT route is declared at `/repository/artifacts`, so a PUT
+    /// there IS a malformed maven request. 501 would claim the server owes a capability it never
+    /// advertised for this verb.
+    @Test
+    void handlePut_returns_badRequest_for_artifacts_list_path() {
+        var store = testStore();
+        var handler = MavenProtocolHandler.mavenProtocolHandler(store);
+
+        handler.handlePut("/repository/artifacts", new byte[]{1, 2, 3})
                .await()
                .onFailureRun(Assertions::fail)
                .onSuccess(response -> {

@@ -17,21 +17,26 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 
+import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.PrintStream;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.EnumMap;
 import java.util.List;
+import java.util.concurrent.Callable;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BiFunction;
 import java.util.function.Function;
 
 import picocli.CommandLine;
+import picocli.CommandLine.Command;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
 import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.some;
 
@@ -330,4 +335,136 @@ class ClusterDestroyCommandTest {
     }
 
     record TestCause(String message) implements Cause {}
+
+    /// #521 — the money path. `destroy` used to remove the registry entry and exit 0 even when cloud
+    /// cleanup had failed, so the operator lost the cluster handle while its VMs kept billing.
+    @Nested
+    class RegistryHonestyAndExitCode {
+
+        private static final String ENDPOINT = "https://cluster.example:8080";
+
+        private BiFunction<ClusterRegistry, String, Result<ClusterRegistry>> originalRemover;
+
+        private List<String> removalCalls;
+
+        @BeforeEach
+        void captureRemovals() {
+            originalRemover = ClusterDestroyCommand.registryRemover;
+            removalCalls = new ArrayList<>();
+            ClusterDestroyCommand.registryRemover = (registry, name) -> recordRemoval(registry, name);
+        }
+
+        @AfterEach
+        void restoreRemover() {
+            ClusterDestroyCommand.registryRemover = originalRemover;
+        }
+
+        private Result<ClusterRegistry> recordRemoval(ClusterRegistry registry, String name) {
+            removalCalls.add(name);
+            return registry.remove(name);
+        }
+
+        private static ClusterRegistry registryWith(String name) {
+            return ClusterRegistry.clusterRegistry(Path.of("unused-in-test.toml"),
+                                                   some(name),
+                                                   List.of(new ClusterRegistry.ClusterEntry(name,
+                                                                                            ENDPOINT,
+                                                                                            none())));
+        }
+
+        private static Result<Integer> finalizeWith(boolean cleanupOk) {
+            return ClusterDestroyCommand.finalizeDestruction(registryWith(CLUSTER_NAME),
+                                                             CLUSTER_NAME,
+                                                             cleanupOk,
+                                                             List.of("node-1"),
+                                                             List.of(new ClusterDestroyCommand.NodeResult("node-1", true)),
+                                                             List.of(new ClusterDestroyCommand.NodeResult("node-1", true)));
+        }
+
+        @Test
+        void finalizeDestruction_failedCleanup_keepsRegistryEntry() {
+            finalizeWith(false).onFailure(cause -> fail("summary must still be produced: " + cause.message()));
+
+            assertTrue(removalCalls.isEmpty(),
+                       "a cluster whose VMs may still be billing must keep its registry entry so destroy can be retried");
+        }
+
+        @Test
+        void finalizeDestruction_failedCleanup_returnsNonZeroExitCode() {
+            finalizeWith(false).onFailure(cause -> fail(cause.message()))
+                               .onSuccess(code -> assertEquals(ExitCode.CLEANUP_FAILED, (int) code,
+                                                               "failed cloud cleanup must exit non-zero"));
+        }
+
+        @Test
+        void finalizeDestruction_successfulCleanup_removesRegistryEntryAndSucceeds() {
+            finalizeWith(true).onFailure(cause -> fail(cause.message()))
+                              .onSuccess(code -> assertEquals(ExitCode.SUCCESS, (int) code));
+
+            assertEquals(List.of(CLUSTER_NAME), removalCalls,
+                         "a successful cleanup removes the registry entry");
+        }
+
+        @Test
+        void finalizeDestruction_keepResources_removesRegistryEntryAndSucceeds() {
+            // --keep-resources routes cleanupCloudResources to `true`: skipping termination is the
+            // explicitly acknowledged path, so removal + success is the correct outcome there.
+            var command = new ClusterDestroyCommand();
+            command.setKeepResources(true);
+
+            var cleanupOk = command.cleanupCloudResources(CLUSTER_NAME);
+
+            assertTrue(cleanupOk);
+            finalizeWith(cleanupOk).onFailure(cause -> fail(cause.message()))
+                                   .onSuccess(code -> assertEquals(ExitCode.SUCCESS, (int) code));
+            assertEquals(List.of(CLUSTER_NAME), removalCalls,
+                         "--keep-resources is the acknowledged path: the registry entry is still removed");
+        }
+
+        @Test
+        void destroy_abortedAtConfirmationPrompt_returnsNonZeroExitCode() {
+            var originalIn = System.in;
+            var originalOut = System.out;
+            var outCapture = new ByteArrayOutputStream();
+
+            System.setIn(new ByteArrayInputStream(new byte[0]));
+            System.setOut(new PrintStream(outCapture));
+            try {
+                var command = new ClusterDestroyCommand();
+                command.setClusterNameOverride("aborted-cluster");
+
+                var exitCode = command.call();
+
+                assertTrue(outCapture.toString().contains("Aborted."),
+                           "expected the abort path, got: " + outCapture);
+                assertEquals(ExitCode.ERROR, exitCode,
+                             "an aborted destroy must exit non-zero — exiting 0 is indistinguishable from success");
+            } finally {
+                System.setIn(originalIn);
+                System.setOut(originalOut);
+            }
+        }
+    }
+
+    /// Guards the assumption every exit-code test rests on: picocli propagates the `Callable<Integer>`
+    /// return value as the process exit code (`AetherCli.main` passes it straight to `System.exit`).
+    @Nested
+    class ExitCodePropagation {
+
+        @Test
+        void execute_propagatesCallableReturnValue_asProcessExitCode() {
+            var exitCode = new CommandLine(new FixedCodeCommand()).execute();
+
+            assertEquals(ExitCode.CLEANUP_FAILED, exitCode,
+                         "a non-zero value returned by call() must reach the process exit code");
+        }
+
+        @Command(name = "fixed")
+        static class FixedCodeCommand implements Callable<Integer> {
+            @Override
+            public Integer call() {
+                return ExitCode.CLEANUP_FAILED;
+            }
+        }
+    }
 }

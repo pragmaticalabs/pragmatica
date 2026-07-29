@@ -49,6 +49,14 @@ public interface MavenProtocolHandler {
             return new MavenResponse(400, "text/plain", message.getBytes(StandardCharsets.UTF_8));
         }
 
+        /// A capability the management API DECLARES but this server does not provide. Distinct from
+        /// [#badRequest] on purpose: 400 says the caller sent something malformed, 501 says the
+        /// caller was right and the server is incomplete. Answering a declared-but-unbuilt route
+        /// with 400 blames the operator for the server's gap.
+        public static MavenResponse notImplemented(String message) {
+            return new MavenResponse(501, "text/plain", message.getBytes(StandardCharsets.UTF_8));
+        }
+
         public static MavenResponse serverError(String message) {
             return new MavenResponse(500, "text/plain", message.getBytes(StandardCharsets.UTF_8));
         }
@@ -70,6 +78,30 @@ public interface MavenProtocolHandler {
 class MavenProtocolHandlerImpl implements MavenProtocolHandler {
     private static final Logger log = LoggerFactory.getLogger(MavenProtocolHandlerImpl.class);
     private static final String REPOSITORY_PREFIX = "/repository/";
+    /// `ManagementRoute.REPOSITORY_ARTIFACTS_LIST` declares `GET /repository/artifacts` inside the
+    /// namespace the maven protocol owns, so this handler receives it before any management route
+    /// can. It is not a maven coordinate, so the coordinate parser rejected it and the caller got
+    /// `400 Cannot parse path` — a parse error for a request that was never malformed, blaming the
+    /// operator for a route the server simply never implemented (#523).
+    ///
+    /// `/repository/info/...` (`ARTIFACT_INFO`) is the other non-coordinate route under this prefix;
+    /// it is excluded upstream in `MavenProtocolRoutes`. Both exclusions are hand-maintained, so a
+    /// THIRD non-coordinate route declared under `/repository/` would reintroduce this bug — see the
+    /// note on #525.
+    private static final String ARTIFACTS_LIST_PATH = "/repository/artifacts";
+
+    /// Names the missing capability, why it is missing, where it is tracked, and every
+    /// listing-adjacent surface that DOES work today, so an operator who hits it learns both what to
+    /// use right now and that the real thing is coming.
+    private static final String ARTIFACTS_LIST_UNSUPPORTED = "Repository-wide artifact listing is not implemented. GET /repository/artifacts is declared "
+                                                           + "in the management API but has no server-side implementation: artifacts are content-addressed "
+                                                           + "in the DHT, which exposes no scan or prefix-iteration primitive, so a listing needs an index "
+                                                           + "that does not exist yet (tracked by issue #527). Supported today: "
+                                                           + "GET /repository/{groupPath}/{artifactId}/maven-metadata.xml "
+                                                           + "('aether artifacts versions <group:artifact>') lists the versions of a known artifact; "
+                                                           + "GET /repository/info/{groupPath}/{artifactId}/{version} ('aether artifacts info <coords>') "
+                                                           + "describes one artifact; GET /api/artifacts/metrics ('aether artifacts metrics') reports "
+                                                           + "repository totals.";
 
     private final ArtifactStore store;
 
@@ -84,10 +116,23 @@ class MavenProtocolHandlerImpl implements MavenProtocolHandler {
             return Promise.success(MavenResponse.notFound("Invalid path"));
         }
 
+        if (isArtifactsListPath(path)) {
+            return Promise.success(MavenResponse.notImplemented(ARTIFACTS_LIST_UNSUPPORTED));
+        }
+
         var repoPath = path.substring(REPOSITORY_PREFIX.length());
 
         return parsePath(repoPath).fold(() -> Promise.success(MavenResponse.badRequest("Cannot parse path: " + path)),
                                         parsed -> handleGetParsed(parsed));
+    }
+
+    /// Whole-path equality, tolerating one trailing slash — deliberately NOT a prefix test.
+    /// A groupId may begin with the segment `artifacts` (`GROUP_ID_PATTERN` only requires a dotted
+    /// name), so `/repository/artifacts/demo/lib/1.0.0/lib-1.0.0.jar` is a real coordinate for group
+    /// `artifacts.demo` that must keep resolving; a `startsWith` here would silently 501 every
+    /// artifact published under such a group. Everything else that fails to parse keeps its 400.
+    private static boolean isArtifactsListPath(String path) {
+        return ARTIFACTS_LIST_PATH.equals(path) || (ARTIFACTS_LIST_PATH + "/").equals(path);
     }
 
     private Promise<MavenResponse> handleGetParsed(ParsedPath parsed) {

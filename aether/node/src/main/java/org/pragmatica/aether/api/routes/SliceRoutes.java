@@ -92,6 +92,7 @@ public final class SliceRoutes implements RouteSource {
                                          .withPath(aString())
                                          .to(__ -> org.pragmatica.lang.Promise.success(buildRoutesResponse()))
                                          .asJson(),
+                         ManagementRoutes.<RoutesResponse> route(ManagementRoute.ROUTES_LIST).toJson(this::buildRoutesResponse),
                          ManagementRoutes.<ScaleResponse> route(ManagementRoute.SLICE_SCALE)
                                          .withBody(ScaleRequest.class)
                                          .toJson(this::handleScale),
@@ -585,6 +586,15 @@ public final class SliceRoutes implements RouteSource {
                                     instances);
     }
 
+    /// Cluster-wide HTTP route table, shared by three declared routes.
+    ///
+    /// `HttpRouteRegistry` is already cluster-wide — each `RouteInfo` carries the node ids serving
+    /// that path — so `/api/routes` (ROUTES_LIST) and `/api/nodes/routes` (NODE_ROUTES) answer from
+    /// the same assembly; there is nothing per-node left to aggregate.
+    ///
+    /// #525: ROUTES_LIST was declared and consumed by both `aether routes` and the dashboard's
+    /// routes panel (`stores/deployments.js` `refreshRoutes`), but was never registered — so the
+    /// live panel fetched an endpoint that answered 404.
     private RoutesResponse buildRoutesResponse() {
         var node = nodeSupplier.get();
         var routes = node.httpRouteRegistry().allRoutes().stream().map(this::toRouteInfo).toList();

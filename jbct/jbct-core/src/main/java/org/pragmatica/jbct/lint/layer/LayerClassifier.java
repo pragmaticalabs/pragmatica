@@ -6,6 +6,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.regex.Pattern;
 
+import org.pragmatica.jbct.shared.PackageGlob;
 import org.pragmatica.lang.Option;
 
 
@@ -16,8 +17,9 @@ import org.pragmatica.lang.Option;
 /// drive classification, explicit-first:
 ///
 ///   1. **Explicit config** ([LayerConfig]) — per-layer package globs and slice-root globs, using
-///      the `excludePackages` glob syntax (`*` = one segment, `**` = any depth). Consulted first, in
-///      registration order (domain, application, adapter, bootstrap).
+///      the shared [PackageGlob] syntax (`*` = one segment, `**` = zero or more segments, so
+///      `com.example.core.**` covers `com.example.core` itself). Consulted first, in registration
+///      order (domain, application, adapter, bootstrap).
 ///   2. **Book-layout conventions** — a package is classified by the layer keyword among its dotted
 ///      segments: `domain` -> domain; `application` / `usecase` -> application; `adapter` /
 ///      `integration` / `infra` -> adapter; `bootstrap` / `main` -> bootstrap. The deepest
@@ -52,14 +54,16 @@ public final class LayerClassifier {
 
     private final List<LayerRule> layerRules;
     private final List<Pattern> sliceGlobs;
+    private final boolean explicitlyConfigured;
 
     /// An explicit layer glob. `specificity` is the count of literal (non-`*`) characters in the
     /// source glob, so the most-specific matching glob wins across all layer lists.
     private record LayerRule(Pattern pattern, Layer layer, int specificity) {}
 
-    private LayerClassifier(List<LayerRule> layerRules, List<Pattern> sliceGlobs) {
+    private LayerClassifier(List<LayerRule> layerRules, List<Pattern> sliceGlobs, boolean explicitlyConfigured) {
         this.layerRules = layerRules;
         this.sliceGlobs = sliceGlobs;
+        this.explicitlyConfigured = explicitlyConfigured;
     }
 
     /// Build a classifier from explicit config. Globs are compiled once here.
@@ -73,10 +77,10 @@ public final class LayerClassifier {
 
         var slices = config.sliceGlobs()
                            .stream()
-                           .map(LayerClassifier::compile)
+                           .map(PackageGlob::compile)
                            .toList();
 
-        return new LayerClassifier(List.copyOf(rules), slices);
+        return new LayerClassifier(List.copyOf(rules), slices, !config.isEmpty());
     }
 
     /// A classifier with no explicit config — conventions only.
@@ -84,9 +88,19 @@ public final class LayerClassifier {
         return from(LayerConfig.DEFAULT);
     }
 
+    /// Provenance: whether this classifier was built from a non-empty `[lint.layers]` config, rather
+    /// than falling back to conventions alone. [#from(LayerConfig)] and [#conventionsOnly()] produce
+    /// the same opaque type, so this is the only way downstream can tell "the project declared its
+    /// layering" from "nobody opted in" — the distinction the layering-coverage summary
+    /// ([LayerCoverage]) gates on, since under conventions alone most real packages carry no layer
+    /// keyword and are unclassified by design.
+    public boolean isExplicitlyConfigured() {
+        return explicitlyConfigured;
+    }
+
     private static void addRules(List<LayerRule> rules, List<String> globs, Layer layer) {
         for (var glob : globs) {
-            rules.add(new LayerRule(compile(glob), layer, specificity(glob)));
+            rules.add(new LayerRule(PackageGlob.compile(glob), layer, specificity(glob)));
         }
     }
 
@@ -202,16 +216,4 @@ public final class LayerClassifier {
         return String.join(".", Arrays.copyOfRange(segments, 0, endInclusive + 1));
     }
 
-    private static Pattern compile(String glob) {
-        return Pattern.compile(globToRegex(glob));
-    }
-
-    private static String globToRegex(String glob) {
-        // Placeholder keeps ** from being mangled by the single-* replacement (mirrors LintContext).
-        // Literal dots are escaped so a glob segment separator matches only a real '.'.
-        return glob.replace("**", "\0DOTSTAR\0")
-                   .replace("*", "[^.]*")
-                   .replace(".", "\\.")
-                   .replace("\0DOTSTAR\0", ".*");
-    }
 }

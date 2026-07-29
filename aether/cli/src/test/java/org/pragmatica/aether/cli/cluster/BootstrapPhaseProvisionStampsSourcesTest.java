@@ -7,6 +7,7 @@ package org.pragmatica.aether.cli.cluster;
 
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.config.cluster.CloudProviderName;
+import org.pragmatica.aether.config.cluster.ClusterBootstrapConfigParser;
 import org.pragmatica.aether.config.cluster.LoadBalancerMode;
 import org.pragmatica.aether.config.cluster.NodeRole;
 import org.pragmatica.aether.config.cluster.RoleSubTable;
@@ -14,6 +15,8 @@ import org.pragmatica.aether.config.cluster.SourceProfile;
 import org.pragmatica.aether.config.cluster.SourceType;
 import org.pragmatica.lang.Option;
 
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
 
@@ -22,22 +25,54 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
 
 class BootstrapPhaseProvisionStampsSourcesTest {
+
+    private static final String SOURCE_NAME = "hetzner-eu";
+
+    /// Section headers are DERIVED from the parser's own `SOURCE_PREFIX`, never re-spelled here. A
+    /// hand-written fixture is what let #521 survive a green suite: it invented a plural `[sources.<name>]`
+    /// header, so it agreed with the buggy miner while no real config did. Built this way, the fixture
+    /// cannot disagree with the grammar.
+    private static final String SOURCE_HEADER = sectionHeader(SOURCE_NAME);
+
+    private static final String CORE_ROLE_HEADER = sectionHeader(SOURCE_NAME + ".core");
+
+    private static String sectionHeader(String suffix) {
+        return "[" + ClusterBootstrapConfigParser.SOURCE_PREFIX + suffix + "]";
+    }
 
     private static final String RAW_TOML = """
         [cluster]
         name = "prod"
 
-        [sources.hetzner-eu]
+        %s
         type = "cloud"
         provider = "hetzner"
         credentials = "${env:HCLOUD_TOKEN_PROD}"
         region = "eu-central"
 
-        [sources.hetzner-eu.roles.core]
+        %s
         count = 3
-        """;
+        """.formatted(SOURCE_HEADER, CORE_ROLE_HEADER);
+
+    /// The repo's live Hetzner cluster config — the very artifact `aether cluster bootstrap` is pointed at,
+    /// and the shape that stranded five paid VMs on 2026-07-24. Read from disk rather than transcribed, so
+    /// the miner is exercised against real operator input and any future grammar drift fails here.
+    private static final Path REAL_CLUSTER_CONFIG = Path.of("..",
+                                                            "tests",
+                                                            "integration",
+                                                            "env",
+                                                            "cloud-hetzner-jvm.toml");
+
+    private static String realClusterConfig() throws Exception {
+        assertTrue(Files.exists(REAL_CLUSTER_CONFIG),
+                   "Expected the repo's Hetzner cluster config at " + REAL_CLUSTER_CONFIG.toAbsolutePath()
+                   + " — if it moved, re-point this test rather than replacing it with a hand-written fixture");
+
+        return Files.readString(REAL_CLUSTER_CONFIG);
+    }
 
     private static SourceProfile cloudHetznerSource() {
         return SourceProfile.sourceProfile("hetzner-eu",
@@ -176,12 +211,12 @@ class BootstrapPhaseProvisionStampsSourcesTest {
         // If two sources are present, mining for source A must NOT match source B's
         // credentials line.
         var multiSource = """
-            [sources.alpha]
+            [source.alpha]
             type = "cloud"
             provider = "hetzner"
             credentials = "${env:TOKEN_A}"
 
-            [sources.beta]
+            [source.beta]
             type = "cloud"
             provider = "aws"
             credentials = "${env:TOKEN_B}"
@@ -192,5 +227,87 @@ class BootstrapPhaseProvisionStampsSourcesTest {
 
         assertEquals("TOKEN_A", alphaVars.get("api_token"));
         assertEquals("TOKEN_B", betaVars.get("api_token"));
+    }
+
+    // --- #521: mined against the repo's REAL cluster config, not a transcription of it ---
+
+    @Test
+    void extractEnvVarNames_recoversCredentialEnvVarName_fromRealRepoClusterConfig() throws Exception {
+        var envVars = BootstrapPhaseProvision.extractEnvVarNames(realClusterConfig(), SOURCE_NAME);
+
+        assertFalse(envVars.isEmpty(),
+                    "A cloud source declaring credentials = \"${env:HCLOUD_TOKEN}\" MUST yield a non-empty "
+                    + "mapping — an empty one is what left every persisted handle unusable for destroy");
+        assertEquals("HCLOUD_TOKEN", envVars.get("api_token"),
+                     "The env-var NAME the operator wrote in the real config must be recovered");
+    }
+
+    @Test
+    void stampSourceHandle_recordsNonEmptyCredentialMapping_forRealRepoClusterConfig() throws Exception {
+        var stamped = BootstrapPhaseProvision.stampSourceHandle(BootstrapState.initialState("gs-dryrun", "h", "now"),
+                                                                 realClusterConfig(),
+                                                                 SOURCE_NAME,
+                                                                 cloudHetznerSource(),
+                                                                 "hetzner");
+
+        assertFalse(stamped.sources()
+                           .get(SOURCE_NAME)
+                           .credentialEnvVars()
+                           .isEmpty(),
+                    "The single assertion that would have caught #521: a cloud source bootstrapped from a "
+                    + "${env:...} credential must stamp a NON-EMPTY credential env-var mapping");
+    }
+
+    @Test
+    void extractEnvVarNames_findsCredential_whenHeaderCarriesTrailingComment() {
+        var withComment = """
+            %s   # primary EU pool
+            type = "cloud"
+            credentials = "${env:HCLOUD_TOKEN}"
+            """.formatted(SOURCE_HEADER);
+
+        var envVars = BootstrapPhaseProvision.extractEnvVarNames(withComment, SOURCE_NAME);
+
+        assertEquals("HCLOUD_TOKEN", envVars.get("api_token"),
+                     "A TOML table header may carry a trailing comment");
+    }
+
+    @Test
+    void extractEnvVarNames_ignoresHeaderMentionedInsideComment() {
+        var commentedOut = """
+            # %s was retired; credentials = "${env:STALE_TOKEN}"
+
+            %s
+            type = "cloud"
+            credentials = "${env:AWS_TOKEN}"
+            """.formatted(SOURCE_HEADER, sectionHeader("aws-us"));
+
+        var envVars = BootstrapPhaseProvision.extractEnvVarNames(commentedOut, SOURCE_NAME);
+
+        assertTrue(envVars.isEmpty(),
+                   "A header mentioned inside a comment is not the section — mining it would attribute a "
+                   + "stale credential to a source that is not declared");
+    }
+
+    @Test
+    void stampSourceHandle_credentialMappingSurvivesPersistAndLoad() throws Exception {
+        // The acceptance shape of #521: what bootstrap stamps must still be there when a LATER
+        // `aether cluster destroy` process reads the state file back off disk.
+        var stamped = BootstrapPhaseProvision.stampSourceHandle(BootstrapState.initialState("gs-dryrun", "h", "now"),
+                                                                 realClusterConfig(),
+                                                                 SOURCE_NAME,
+                                                                 cloudHetznerSource(),
+                                                                 "hetzner");
+
+        var reloaded = BootstrapState.fromJson(stamped.toJson());
+
+        reloaded.onFailure(cause -> fail("state must round-trip through JSON: " + cause.message()))
+                .onSuccess(state -> assertEquals("HCLOUD_TOKEN",
+                                                 state.sources()
+                                                      .get(SOURCE_NAME)
+                                                      .credentialEnvVars()
+                                                      .get("api_token"),
+                                                 "the api_token env-var NAME must survive persist -> load, "
+                                                 + "or destroy cannot re-derive the provisioning token"));
     }
 }

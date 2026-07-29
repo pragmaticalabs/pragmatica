@@ -288,13 +288,25 @@ class SliceProcessorTest {
             public @interface Key {}
             """);
 
+    private static final JavaFileObject PARTITION_KEY_ANNOTATION = JavaFileObjects.forSourceString(
+            "org.pragmatica.aether.slice.annotation.PartitionKey",
+            """
+            package org.pragmatica.aether.slice.annotation;
+
+            import java.lang.annotation.*;
+
+            @Target(ElementType.RECORD_COMPONENT)
+            @Retention(RetentionPolicy.RUNTIME)
+            public @interface PartitionKey {}
+            """);
+
     private List<JavaFileObject> commonSources() {
         return new ArrayList<>(List.of(
                 SLICE_ANNOTATION,
                 SLICE_CODEC, SLICE, SLICE_METHOD, METHOD_NAME, METHOD_HANDLE, INVOKER_FACADE,
                 METHOD_INTERCEPTOR, PROVISIONING_CONTEXT,
                 RESOURCE_PROVIDER_FACADE, CONFIG_FACADE, SLICE_CREATION_CONTEXT, RESOURCE_QUALIFIER,
-                CONFIGURATION_SECTION, KEY_ANNOTATION, UNIT
+                CONFIGURATION_SECTION, KEY_ANNOTATION, PARTITION_KEY_ANNOTATION, UNIT
         ));
     }
 
@@ -2332,9 +2344,217 @@ class SliceProcessorTest {
         assertThat(factoryContent).contains("ctx.resources().provide(StreamAccess.class, \"streams.order-events\", ProvisioningContext.provisioningContext())");
     }
 
+    // ========== @PartitionKey Routing Tests (#507) ==========
+
+    private static JavaFileObject partitionedEvent(String body) {
+        return JavaFileObjects.forSourceString("test.dto.ShipmentEvent",
+                                               """
+            package test.dto;
+            import org.pragmatica.aether.slice.annotation.PartitionKey;
+            public record ShipmentEvent(%s) {}
+            """.formatted(body));
+    }
+
+    private static final JavaFileObject SHIPMENT_STREAM = JavaFileObjects.forSourceString("test.annotation.ShipmentStream",
+                                                                                           """
+            package test.annotation;
+            import org.pragmatica.aether.slice.annotation.ResourceQualifier;
+            import org.pragmatica.aether.slice.StreamPublisher;
+            import java.lang.annotation.*;
+            @ResourceQualifier(type = StreamPublisher.class, config = "streams.shipments")
+            @Retention(RetentionPolicy.RUNTIME)
+            @Target(ElementType.PARAMETER)
+            public @interface ShipmentStream {}
+            """);
+
+    private static final JavaFileObject SHIPMENT_STREAM_ACCESS = JavaFileObjects.forSourceString("test.annotation.ShipmentStreamAccess",
+                                                                                                  """
+            package test.annotation;
+            import org.pragmatica.aether.slice.annotation.ResourceQualifier;
+            import org.pragmatica.aether.slice.StreamAccess;
+            import java.lang.annotation.*;
+            @ResourceQualifier(type = StreamAccess.class, config = "streams.shipments")
+            @Retention(RetentionPolicy.RUNTIME)
+            @Target(ElementType.PARAMETER)
+            public @interface ShipmentStreamAccess {}
+            """);
+
+    private static final JavaFileObject SHIPMENT_PUBLISHER_SLICE = JavaFileObjects.forSourceString("test.ShipmentService",
+                                                                                                    """
+            package test;
+            import org.pragmatica.aether.slice.annotation.Slice;
+            import org.pragmatica.aether.slice.StreamPublisher;
+            import org.pragmatica.lang.Promise;
+            import test.annotation.ShipmentStream;
+            import test.dto.ShipmentEvent;
+            @Slice
+            public interface ShipmentService {
+                Promise<String> ship(String shipmentId);
+                static ShipmentService shipmentService(@ShipmentStream StreamPublisher<ShipmentEvent> stream) { return null; }
+            }
+            """);
+
+    private static final JavaFileObject SHIPMENT_ACCESS_SLICE = JavaFileObjects.forSourceString("test.ShipmentAudit",
+                                                                                                 """
+            package test;
+            import org.pragmatica.aether.slice.annotation.Slice;
+            import org.pragmatica.aether.slice.StreamAccess;
+            import org.pragmatica.lang.Promise;
+            import test.annotation.ShipmentStreamAccess;
+            import test.dto.ShipmentEvent;
+            @Slice
+            public interface ShipmentAudit {
+                Promise<String> audit(String shipmentId);
+                static ShipmentAudit shipmentAudit(@ShipmentStreamAccess StreamAccess<ShipmentEvent> access) { return null; }
+            }
+            """);
+
+    private Compilation compilePartitioned(JavaFileObject event, JavaFileObject qualifier, JavaFileObject slice) {
+        var sources = streamSources();
+
+        sources.add(event);
+        sources.add(qualifier);
+        sources.add(slice);
+
+        return javac().withProcessors(new SliceProcessor()).compile(sources);
+    }
+
     @Test
-    void should_process_stream_subscriber_method() throws Exception {
-        var orderConsumer = JavaFileObjects.forSourceString("test.annotation.OrderStreamConsumer",
+    void partitionKey_emitsKeyExtractorOnStreamPublisher_whenEventDeclaresOne() throws Exception {
+        var compilation = compilePartitioned(partitionedEvent("String shipmentId, @PartitionKey String customerId"),
+                                             SHIPMENT_STREAM,
+                                             SHIPMENT_PUBLISHER_SLICE);
+
+        assertCompilation(compilation).succeeded();
+
+        var factoryContent = compilation.generatedSourceFile("test.ShipmentServiceFactory")
+                                        .get().getCharContent(false).toString();
+
+        assertThat(factoryContent).contains("ctx.resources().provide(StreamPublisher.class, \"streams.shipments\", "
+                                           + "ProvisioningContext.provisioningContext()"
+                                           + ".withKeyExtractor((Fn1<String, ShipmentEvent>) ShipmentEvent::customerId))");
+        // The event type is import-tracked, so the emitted method reference stays unqualified.
+        assertThat(factoryContent).contains("import test.dto.ShipmentEvent;");
+        assertThat(factoryContent).doesNotContain("(Fn1<String, test.dto.ShipmentEvent>)");
+    }
+
+    @Test
+    void partitionKey_emitsKeyExtractorOnStreamAccess_whenEventDeclaresOne() throws Exception {
+        var compilation = compilePartitioned(partitionedEvent("String shipmentId, @PartitionKey String customerId"),
+                                             SHIPMENT_STREAM_ACCESS,
+                                             SHIPMENT_ACCESS_SLICE);
+
+        assertCompilation(compilation).succeeded();
+
+        var factoryContent = compilation.generatedSourceFile("test.ShipmentAuditFactory")
+                                        .get().getCharContent(false).toString();
+
+        assertThat(factoryContent).contains("ctx.resources().provide(StreamAccess.class, \"streams.shipments\", "
+                                           + "ProvisioningContext.provisioningContext()"
+                                           + ".withKeyExtractor((Fn1<String, ShipmentEvent>) ShipmentEvent::customerId))");
+    }
+
+    @Test
+    void partitionKey_selectsAnnotatedComponent_whenEventDeclaresSeveralComponents() throws Exception {
+        var compilation = compilePartitioned(partitionedEvent("String shipmentId, String region, @PartitionKey Long tenantId, String note"),
+                                             SHIPMENT_STREAM,
+                                             SHIPMENT_PUBLISHER_SLICE);
+
+        assertCompilation(compilation).succeeded();
+
+        var factoryContent = compilation.generatedSourceFile("test.ShipmentServiceFactory")
+                                        .get().getCharContent(false).toString();
+
+        assertThat(factoryContent).contains(".withKeyExtractor((Fn1<Long, ShipmentEvent>) ShipmentEvent::tenantId)");
+    }
+
+    @Test
+    void partitionKey_boxesPrimitiveKeyType_whenComponentIsPrimitive() throws Exception {
+        var compilation = compilePartitioned(partitionedEvent("String shipmentId, @PartitionKey long tenantId"),
+                                             SHIPMENT_STREAM,
+                                             SHIPMENT_PUBLISHER_SLICE);
+
+        assertCompilation(compilation).succeeded();
+
+        var factoryContent = compilation.generatedSourceFile("test.ShipmentServiceFactory")
+                                        .get().getCharContent(false).toString();
+        // Fn1's type argument rejects primitives, so the key type must be emitted boxed.
+        assertThat(factoryContent).contains(".withKeyExtractor((Fn1<Long, ShipmentEvent>) ShipmentEvent::tenantId)");
+        assertThat(factoryContent).doesNotContain("Fn1<long,");
+    }
+
+    @Test
+    void partitionKey_leavesProvisioningContextBare_whenEventDeclaresNone() throws Exception {
+        var compilation = compilePartitioned(partitionedEvent("String shipmentId, String customerId"),
+                                             SHIPMENT_STREAM,
+                                             SHIPMENT_PUBLISHER_SLICE);
+
+        assertCompilation(compilation).succeeded();
+
+        var factoryContent = compilation.generatedSourceFile("test.ShipmentServiceFactory")
+                                        .get().getCharContent(false).toString();
+
+        assertThat(factoryContent).contains("ctx.resources().provide(StreamPublisher.class, \"streams.shipments\", "
+                                           + "ProvisioningContext.provisioningContext())");
+        assertThat(factoryContent).doesNotContain("withKeyExtractor");
+    }
+
+    @Test
+    void partitionKey_failsCompilation_whenEventDeclaresMultiple() {
+        var compilation = compilePartitioned(partitionedEvent("@PartitionKey String shipmentId, @PartitionKey String customerId"),
+                                             SHIPMENT_STREAM,
+                                             SHIPMENT_PUBLISHER_SLICE);
+
+        assertCompilation(compilation).failed();
+        assertCompilation(compilation).hadErrorContaining("Multiple @PartitionKey annotations found on test.dto.ShipmentEvent");
+        assertCompilation(compilation).hadErrorContaining("shipmentId, customerId");
+    }
+
+    @Test
+    void partitionKey_leavesTopicPublisherBare_whenMessageDeclaresOne() throws Exception {
+        var message = JavaFileObjects.forSourceString("test.dto.OrderEvent",
+                                                      """
+            package test.dto;
+            import org.pragmatica.aether.slice.annotation.PartitionKey;
+            public record OrderEvent(@PartitionKey String orderId) {}
+            """);
+        var source = JavaFileObjects.forSourceString("test.OrderService",
+                                                     """
+            package test;
+            import org.pragmatica.aether.slice.annotation.Slice;
+            import org.pragmatica.aether.slice.Publisher;
+            import org.pragmatica.lang.Promise;
+            import test.annotation.LegacyPublisher;
+            import test.dto.OrderEvent;
+            @Slice
+            public interface OrderService {
+                Promise<String> placeOrder(String orderId);
+                static OrderService orderService(@LegacyPublisher Publisher<OrderEvent> orderPublisher) { return null; }
+            }
+            """);
+        var sources = commonSources();
+
+        sources.add(PUBLISHER);
+        sources.add(SUBSCRIBER);
+        sources.add(message);
+        sources.add(publisherAnnotation("LegacyPublisher", "order-events"));
+        sources.add(source);
+
+        Compilation compilation = javac().withProcessors(new SliceProcessor()).compile(sources);
+
+        assertCompilation(compilation).succeeded();
+
+        var factoryContent = compilation.generatedSourceFile("test.OrderServiceFactory")
+                                        .get().getCharContent(false).toString();
+        // Topics are unpartitioned — PublisherFactory never reads ProvisioningContext.keyExtractor(),
+        // so emitting one here would advertise routing that does not happen.
+        assertThat(factoryContent).contains("ctx.resources().provide(Publisher.class, \"order-events\", "
+                                           + "ProvisioningContext.provisioningContext())");
+        assertThat(factoryContent).doesNotContain("withKeyExtractor");
+    }
+
+    @Test
+    void should_process_stream_subscriber_method() throws Exception {        var orderConsumer = JavaFileObjects.forSourceString("test.annotation.OrderStreamConsumer",
                                                             """
             package test.annotation;
             import org.pragmatica.aether.slice.annotation.ResourceQualifier;

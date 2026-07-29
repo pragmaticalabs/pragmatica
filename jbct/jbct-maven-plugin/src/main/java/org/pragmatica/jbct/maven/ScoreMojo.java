@@ -6,6 +6,7 @@ import java.util.List;
 
 import org.pragmatica.jbct.lint.Diagnostic;
 import org.pragmatica.jbct.lint.JbctLinter;
+import org.pragmatica.jbct.lint.layer.LayerCoverage;
 import org.pragmatica.jbct.score.ScoreCalculator;
 import org.pragmatica.jbct.score.ScoreReport;
 import org.pragmatica.jbct.score.ScoreResult;
@@ -45,6 +46,9 @@ public class ScoreMojo extends AbstractJbctMojo {
         var allDiagnostics = lintFiles(filesToProcess, linter);
         var score = ScoreCalculator.calculate(allDiagnostics, filesToProcess.size());
 
+        LayerCoverage.coverage(filesToProcess, context)
+                     .map(LayerCoverage::render)
+                     .onPresent(getLog()::info);
         outputScore(score);
         if (baseline != null && score.overall() < baseline) {
             throw new MojoFailureException("Score " + score.overall() + " below baseline " + baseline);

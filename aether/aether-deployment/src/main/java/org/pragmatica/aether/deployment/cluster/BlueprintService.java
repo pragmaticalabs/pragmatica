@@ -33,6 +33,7 @@ import org.pragmatica.aether.slice.resource.ResourceAddress;
 import org.pragmatica.aether.slice.stream.StreamResource;
 import org.pragmatica.aether.slice.stream.StreamVersionSpec;
 import org.pragmatica.aether.slice.blueprint.BlueprintNamespace;
+import org.pragmatica.aether.deployment.schema.SchemaError;
 import org.pragmatica.aether.deployment.validation.StreamResourceValidator;
 import org.pragmatica.aether.deployment.validation.ValidatedStreamResources;
 import org.pragmatica.aether.slice.repository.Location;
@@ -261,10 +262,65 @@ class BlueprintServiceInstance implements BlueprintService {
                                                              Map<String, List<MigrationEntry>> migrations,
                                                              String artifactCoords,
                                                              boolean registerOnly) {
+        return ensureMigrationOwnership(expanded.id(),
+                                        migrations).async()
+                                       .flatMap(_ -> applyAllCommands(expanded,
+                                                                      resourcesConfig,
+                                                                      roleHints,
+                                                                      migrations,
+                                                                      artifactCoords,
+                                                                      registerOnly));
+    }
+
+    private Promise<ExpandedBlueprint> applyAllCommands(ExpandedBlueprint expanded,
+                                                        Option<String> resourcesConfig,
+                                                        Map<String, String> roleHints,
+                                                        Map<String, List<MigrationEntry>> migrations,
+                                                        String artifactCoords,
+                                                        boolean registerOnly) {
         var commands = buildAllCommands(expanded, resourcesConfig, roleHints, migrations, artifactCoords, registerOnly);
 
         return cluster.apply(commands)
                       .map(_ -> expanded);
+    }
+
+    /// Deploy-time single-migrator gate. Every datasource this artifact declares migrations for must
+    /// be unclaimed or already claimed by this same blueprint; otherwise the whole publish is
+    /// rejected before a single command is applied, so a second migrator never lands in KV.
+    /// A blueprint declaring no migrations passes trivially — sharing a datasource for reads and
+    /// writes is legal, only duplicate migration ownership is refused.
+    ///
+    /// Ownership is compared on the blueprint's `ArtifactBase` (group:artifact, version stripped),
+    /// matching `ClusterDeploymentState.hasConflictingOwnership`: republishing `my-app:1.0.1` over
+    /// records written by `my-app:1.0.0` is the same owner advancing its own schema, not a conflict.
+    ///
+    /// `firstFailureOf`, not `allOf`: accumulation would fold the conflicts into a composite cause,
+    /// and a composite is not `HttpStatusAware` — the publish endpoint would answer 500 instead of
+    /// the 409 the typed cause declares. The first conflict is also the whole answer, since the
+    /// publish is refused outright either way.
+    private Result<Unit> ensureMigrationOwnership(BlueprintId owner, Map<String, List<MigrationEntry>> migrations) {
+        return Result.firstFailureOf(migrations.keySet()
+                                               .stream()
+                                               .map(datasource -> ensureDatasourceUnclaimed(owner, datasource))
+                                               .toList()).mapToUnit();
+    }
+
+    private Result<Unit> ensureDatasourceUnclaimed(BlueprintId owner, String datasource) {
+        return currentMigrationOwner(datasource).filter(current -> !current.base()
+                                                                           .equals(owner.base()))
+                                    .map(current -> ownershipConflict(datasource, current, owner))
+                                    .or(Result::unitResult);
+    }
+
+    private static Result<Unit> ownershipConflict(String datasource, BlueprintId current, BlueprintId rejected) {
+        return SchemaError.DatasourceOwnershipConflict.datasourceOwnershipConflict(datasource, current, rejected).result();
+    }
+
+    private Option<BlueprintId> currentMigrationOwner(String datasource) {
+        return store.get(SchemaVersionKey.schemaVersionKey(datasource))
+                    .filter(SchemaVersionValue.class::isInstance)
+                    .map(SchemaVersionValue.class::cast)
+                    .map(SchemaVersionValue::owningBlueprint);
     }
 
     private List<KVCommand<AetherKey>> buildAllCommands(ExpandedBlueprint expanded,
@@ -289,7 +345,7 @@ class BlueprintServiceInstance implements BlueprintService {
         // semantics (the gate that would HTTP-422 on bad stream config is a separate stage).
         commands.add(buildStreamBindingsCommand(expanded, resourcesConfig, roleHints));
         if (!migrations.isEmpty()) {
-            commands.addAll(buildSchemaMigrationCommands(migrations, artifactCoords));
+            commands.addAll(buildSchemaMigrationCommands(migrations, artifactCoords, expanded.id()));
         }
 
         return commands;
@@ -355,15 +411,17 @@ class BlueprintServiceInstance implements BlueprintService {
     }
 
     private List<KVCommand<AetherKey>> buildSchemaMigrationCommands(Map<String, List<MigrationEntry>> migrations,
-                                                                    String artifactCoords) {
+                                                                    String artifactCoords,
+                                                                    BlueprintId owningBlueprint) {
         return migrations.entrySet()
                          .stream()
-                         .map(entry -> buildMigrationCommand(entry, artifactCoords))
+                         .map(entry -> buildMigrationCommand(entry, artifactCoords, owningBlueprint))
                          .toList();
     }
 
     private KVCommand<AetherKey> buildMigrationCommand(Map.Entry<String, List<MigrationEntry>> entry,
-                                                       String artifactCoords) {
+                                                       String artifactCoords,
+                                                       BlueprintId owningBlueprint) {
         var datasource = entry.getKey();
         var migrationList = entry.getValue();
         var maxVersion = migrationList.stream()
@@ -380,7 +438,8 @@ class BlueprintServiceInstance implements BlueprintService {
                                                           maxVersion,
                                                           lastFilename,
                                                           SchemaStatus.PENDING,
-                                                          artifactCoords);
+                                                          artifactCoords,
+                                                          owningBlueprint);
 
         return new Put<>(key, value);
     }

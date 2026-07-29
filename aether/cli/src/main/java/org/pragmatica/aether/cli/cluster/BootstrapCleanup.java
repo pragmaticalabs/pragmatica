@@ -127,7 +127,10 @@ sealed interface BootstrapCleanup {
                                            .withHetznerClientFactory(hetznerClientFactory));
     }
 
-    private static Result<Unit> cleanupWith(BootstrapState state, CleanupResolvers resolvers) {
+    /// Full-control entry: every resolver seam is caller-supplied, so a test can drive the demoted raw-env
+    /// fallback (#521) — which the positional overloads above cannot inject alongside the handle seams —
+    /// without any real cloud call.
+    static Result<Unit> cleanupWith(BootstrapState state, CleanupResolvers resolvers) {
         System.out.println("Cleaning up resources for cluster '" + state.clusterName() + "'...");
         var resources = new ArrayList<>(state.createdResources());
 
@@ -165,9 +168,7 @@ sealed interface BootstrapCleanup {
     // RET-06: `clusterName` may be absent/blank when the bootstrap state never captured it;
     // the guarded skip is defensive scoping, not a business optional.
     @SuppressWarnings({"JBCT-PAT-01", "JBCT-RET-06"})
-    private static Result<Unit> sweepClusterSshKeys(BootstrapState state,
-                                                    String clusterName,
-                                                    CleanupResolvers resolvers) {
+    static Result<Unit> sweepClusterSshKeys(BootstrapState state, String clusterName, CleanupResolvers resolvers) {
         if (clusterName == null || clusterName.isBlank()) {
             System.out.println("  Skipping SSH-key sweep: cluster name is blank (cannot scope the sweep).");
 
@@ -366,12 +367,24 @@ sealed interface BootstrapCleanup {
         return hetznerClientFromHandle(handle, resolvers);
     }
 
+    /// #521 — a handle whose `credentialEnvVars` names NO api-token env var expresses no credential intent
+    /// at all (bootstrap mined nothing from the TOML), so it is informationally equivalent to having no
+    /// handle: fall back to the raw-env resolver, LOUDLY, as the same demoted last resort. This does NOT
+    /// weaken W4/#439 — a handle that DOES name an env var is still authoritative, and an unset one still
+    /// hard-fails rather than silently reaping with some other account's token.
     private static Result<HetznerClient> hetznerClientFromHandle(SourceCleanupHandle handle,
                                                                  CleanupResolvers resolvers) {
         var envVarName = handle.credentialEnvVars().get(API_TOKEN_KEY);
 
         if (envVarName == null || envVarName.isBlank()) {
-            return new HetznerCleanupHandleMissingToken(handle.provider()).result();
+            System.err.println("  WARN: persisted cleanup handle for provider '" + handle.provider()
+                              + "' has no '" + API_TOKEN_KEY
+                              + "' credential env-var mapping; falling back to raw provider env credentials."
+                              + " Bootstrap recorded the handle but mined no ${env:NAME} credential from the"
+                              + " [source.*] stanza — reaping proceeds so resources are never stranded.");
+
+            return resolvers.hetznerClientFallback()
+                            .apply(handle.provider());
         }
 
         var token = resolvers.getenv().apply(envVarName);
@@ -411,25 +424,43 @@ sealed interface BootstrapCleanup {
     }
 
     /// RFC-0016 W4 — VM reaping resolves compute from the persisted handle; the raw-env resolver is a loud
-    /// last resort reached only when bootstrap recorded no handle for the VM's source.
+    /// last resort reached only when bootstrap recorded no handle for the VM's source, or (#521) recorded
+    /// one that names no credential env var at all. In the latter case the handle-derived config would
+    /// carry an EMPTY credentials map and the provider factory would reject it ("credentials missing"),
+    /// stranding a running VM even though the correctly-named env var is present in the operator's shell.
     private static Result<ComputeProvider> resolveComputeForVm(BootstrapState state,
                                                                CreatedResource.ProvisionedVm vm,
                                                                CleanupResolvers resolvers) {
         var handle = state.sources().get(vm.sourceName());
 
         if (handle == null) {
-            System.err.println("  WARN: no persisted cleanup handle for source '" + vm.sourceName()
-                              + "'; falling back to raw " + vm.provider()
-                              + " env credentials. A token that"
-                              + " provisioned SHOULD be able to reap — a missing handle means bootstrap did not"
-                              + " persist one.");
+            return fallbackCompute(vm, NO_HANDLE_REASON, resolvers);
+        }
 
-            return resolvers.cloudComputeFallback()
-                            .apply(vm.provider());
+        if (handle.credentialEnvVars().isEmpty()) {
+            return fallbackCompute(vm, UNMAPPED_HANDLE_REASON, resolvers);
         }
 
         return resolvers.handleComputeResolver()
                         .apply(handle);
+    }
+
+    String NO_HANDLE_REASON = "bootstrap persisted no cleanup handle";
+
+    String UNMAPPED_HANDLE_REASON = "the persisted cleanup handle names no credential env var"
+                                  + " (no credentials = \"${env:NAME}\" was mined from the source stanza)";
+
+    private static Result<ComputeProvider> fallbackCompute(CreatedResource.ProvisionedVm vm,
+                                                           String reason,
+                                                           CleanupResolvers resolvers) {
+        System.err.println("  WARN: " + reason
+                          + " for source '" + vm.sourceName()
+                          + "'; falling back to raw " + vm.provider()
+                          + " env credentials. A token that provisioned SHOULD be able to reap, so reaping"
+                          + " proceeds rather than stranding paid resources.");
+
+        return resolvers.cloudComputeFallback()
+                        .apply(vm.provider());
     }
 
     @SuppressWarnings("JBCT-EX-01")
@@ -490,15 +521,6 @@ sealed interface BootstrapCleanup {
         @Override
         public String message() {
             return "Hetzner credentials missing for SSH key cleanup: set HCLOUD_TOKEN env var";
-        }
-    }
-
-    record HetznerCleanupHandleMissingToken(String provider) implements Cause {
-        @Override
-        public String message() {
-            return "Hetzner SSH-key cleanup: persisted source handle for provider '" + provider
-                 + "' has no '" + API_TOKEN_KEY
-                 + "' credential env-var mapping";
         }
     }
 

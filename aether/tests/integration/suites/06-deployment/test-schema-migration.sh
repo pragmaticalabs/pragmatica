@@ -101,12 +101,14 @@ test_schema_retry() {
     # Product contract (SchemaOrchestratorService): /api/schema/retry only applies
     # to migrations currently in FAILED state. Against a COMPLETED/HEALTHY
     # datasource (the steady-state of test-persistence after V900 ran), the
-    # endpoint returns 500 with body containing "not in FAILED state" — this is
-    # the expected, documented response. A full FAILED → HEALTHY transition
+    # endpoint returns 409 Conflict with body containing "not in FAILED state" —
+    # this is the expected, documented response. A full FAILED → HEALTHY transition
     # requires fault-injection (a slice with a deliberately-failing migration)
     # which is a separate fixture. Accept either:
     #   (a) 2xx — retry was applicable (FAILED state existed), OR
-    #   (b) 500 with body matching "not in FAILED state" — expected per contract.
+    #   (b) non-2xx with body matching "not in FAILED state" — expected per contract.
+    # Matched on the body phrase rather than the numeric code, so the 500 → 409
+    # correction does not churn this assertion.
     local body status
     body=$(api_post "/api/schema/retry/${DATASOURCE}" "{}" 2>/dev/null || true)
     if [ -n "$body" ]; then

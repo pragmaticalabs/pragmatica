@@ -20,18 +20,27 @@ import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.http.routing.QueryParameter;
 import org.pragmatica.http.routing.Route;
 import org.pragmatica.http.routing.RouteSource;
-import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
-import org.pragmatica.lang.utils.Causes;
+import org.pragmatica.lang.Result;
+import org.pragmatica.lang.parse.Number;
 
+import static org.pragmatica.aether.api.routes.SchemaRouteError.InvalidVersionParameter.invalidVersionParameter;
+import static org.pragmatica.aether.api.routes.SchemaRouteError.SchemaNotFailed.schemaNotFailed;
+import static org.pragmatica.aether.api.routes.SchemaRouteError.SchemaRecordNotFound.schemaRecordNotFound;
 import static org.pragmatica.http.routing.PathParameter.aString;
+import static org.pragmatica.lang.Result.success;
 
 
 public final class SchemaRoutes implements RouteSource {
-    private static final Cause SCHEMA_NOT_FOUND = Causes.cause("Schema status not found for datasource");
-
-    private static final Cause SCHEMA_NOT_FAILED = Causes.cause("Schema is not in FAILED state — retry only applies to failed migrations");
+    /// Query parameter names, reused as the `parameterName` carried by a 400 so the response points
+    /// at the same spelling the caller typed.
+    private static final String TARGET_VERSION_PARAMETER = "targetVersion";
+    private static final String VERSION_PARAMETER = "version";
+    /// Applied when the parameter is ABSENT. Present-but-unparseable is a 400 instead — see
+    /// [SchemaRouteError.InvalidVersionParameter].
+    private static final int DEFAULT_UNDO_VERSION = 0;
+    private static final int DEFAULT_BASELINE_VERSION = 1;
 
     private final Supplier<ManageableNode> nodeSupplier;
 
@@ -43,12 +52,17 @@ public final class SchemaRoutes implements RouteSource {
         return new SchemaRoutes(nodeSupplier);
     }
 
-    record SchemaStatusResponse(String datasource, int currentVersion, String lastMigration, String status) {
+    record SchemaStatusResponse(String datasource,
+                                int currentVersion,
+                                String lastMigration,
+                                String status,
+                                String owningBlueprint) {
         static SchemaStatusResponse schemaStatusResponse(SchemaVersionValue v) {
             return new SchemaStatusResponse(v.datasourceName(),
                                             v.currentVersion(),
                                             v.lastMigration(),
-                                            v.status().name());
+                                            v.status().name(),
+                                            v.owningBlueprint().asString());
         }
     }
 
@@ -116,15 +130,36 @@ public final class SchemaRoutes implements RouteSource {
     }
 
     private Promise<SchemaMigrateResponse> undoMigration(String datasource, Option<String> targetVersionOpt) {
-        var targetVersion = targetVersionOpt.map(SchemaRoutes::parseIntSafe).or(0);
+        return versionParameter(targetVersionOpt, TARGET_VERSION_PARAMETER, DEFAULT_UNDO_VERSION).async()
+                               .flatMap(targetVersion -> undoToVersion(datasource, targetVersion));
+    }
 
+    private Promise<SchemaMigrateResponse> undoToVersion(String datasource, int targetVersion) {
         return lookupSchemaVersion(datasource).flatMap(current -> writeUndoStatus(current, datasource, targetVersion));
     }
 
-    private Promise<SchemaMigrateResponse> baselineDatasource(String datasource, Option<String> versionOpt) {
-        var version = versionOpt.map(SchemaRoutes::parseIntSafe).or(1);
+    /// Package-visible so the baseline contract can be exercised directly (matching
+    /// `ClusterTopologyRoutes.assembleOwnershipResponse`): baselining must inherit the existing
+    /// record's artifact coordinates and owning blueprint, and must fail rather than fabricate an
+    /// unowned record for a datasource that has none.
+    Promise<SchemaMigrateResponse> baselineDatasource(String datasource, Option<String> versionOpt) {
+        return versionParameter(versionOpt, VERSION_PARAMETER, DEFAULT_BASELINE_VERSION).async()
+                               .flatMap(version -> baselineAtVersion(datasource, version));
+    }
 
-        return writeBaselineStatus(datasource, version);
+    private Promise<SchemaMigrateResponse> baselineAtVersion(String datasource, int version) {
+        return lookupSchemaVersion(datasource).flatMap(current -> writeBaselineStatus(current, datasource, version));
+    }
+
+    /// An absent parameter takes the documented default; a present one must parse, so a typo is a
+    /// 400 naming it rather than a `NumberFormatException` unwinding into Netty's catch-all 500.
+    private static Result<Integer> versionParameter(Option<String> raw, String parameterName, int fallback) {
+        return raw.map(value -> parseVersion(parameterName, value))
+                  .or(success(fallback));
+    }
+
+    private static Result<Integer> parseVersion(String parameterName, String value) {
+        return Number.parseInt(value).mapError(_ -> invalidVersionParameter(parameterName, value));
     }
 
     private Promise<SchemaVersionValue> lookupSchemaVersion(String datasource) {
@@ -135,7 +170,7 @@ public final class SchemaRoutes implements RouteSource {
                            .get(key)
                            .filter(v -> v instanceof SchemaVersionValue)
                            .map(v -> (SchemaVersionValue) v)
-                           .async(SCHEMA_NOT_FOUND);
+                           .async(schemaRecordNotFound(datasource));
     }
 
     private Promise<SchemaMigrateResponse> writeMigratingStatus(SchemaVersionValue current, String datasource) {
@@ -143,7 +178,8 @@ public final class SchemaRoutes implements RouteSource {
                                                             current.currentVersion(),
                                                             current.lastMigration(),
                                                             SchemaStatus.MIGRATING,
-                                                            current.artifactCoords());
+                                                            current.artifactCoords(),
+                                                            current.owningBlueprint());
 
         return applySchemaUpdate(datasource, updated).map(_ -> SchemaMigrateResponse.schemaMigrateResponse(true,
                                                                                                            "Migration triggered for " + datasource));
@@ -156,18 +192,30 @@ public final class SchemaRoutes implements RouteSource {
                                                             targetVersion,
                                                             current.lastMigration(),
                                                             SchemaStatus.PENDING,
-                                                            current.artifactCoords());
+                                                            current.artifactCoords(),
+                                                            current.owningBlueprint());
 
         return applySchemaUpdate(datasource, updated).map(_ -> SchemaMigrateResponse.schemaMigrateResponse(true,
                                                                                                            "Undo to version " + targetVersion
                                                                                                           + " initiated for " + datasource));
     }
 
-    private Promise<SchemaMigrateResponse> writeBaselineStatus(String datasource, int version) {
+    /// Baselining rewrites only the version, the marker migration name and the status. The artifact
+    /// coordinates and the owning blueprint are carried over from the existing record: dropping the
+    /// coordinates breaks `SchemaOrchestratorService.resolveAndParseMigrations` on any later
+    /// migrate, and dropping the owner detaches the record from the blueprint whose activation gate
+    /// consults it. A datasource with no record cannot be baselined — there is no owner to inherit,
+    /// and inventing an unowned record would produce exactly the orphan the required-ownership
+    /// component exists to make unrepresentable.
+    private Promise<SchemaMigrateResponse> writeBaselineStatus(SchemaVersionValue current,
+                                                               String datasource,
+                                                               int version) {
         var baselined = SchemaVersionValue.schemaVersionValue(datasource,
                                                               version,
                                                               "V" + String.format("%03d", version) + "__baseline",
-                                                              SchemaStatus.COMPLETED);
+                                                              SchemaStatus.COMPLETED,
+                                                              current.artifactCoords(),
+                                                              current.owningBlueprint());
 
         return applySchemaUpdate(datasource, baselined).map(_ -> SchemaMigrateResponse.schemaMigrateResponse(true,
                                                                                                              "Baselined " + datasource
@@ -189,7 +237,7 @@ public final class SchemaRoutes implements RouteSource {
 
     private Promise<SchemaMigrateResponse> writeRetryStatus(SchemaVersionValue current, String datasource) {
         if (current.status() != SchemaStatus.FAILED) {
-            return SCHEMA_NOT_FAILED.promise();
+            return schemaNotFailed(datasource, current.status()).promise();
         }
 
         var updated = SchemaVersionValue.schemaVersionValue(datasource,
@@ -197,13 +245,10 @@ public final class SchemaRoutes implements RouteSource {
                                                             current.lastMigration(),
                                                             SchemaStatus.PENDING,
                                                             current.artifactCoords(),
+                                                            current.owningBlueprint(),
                                                             0);
 
         return applySchemaUpdate(datasource, updated).map(_ -> SchemaMigrateResponse.schemaMigrateResponse(true,
                                                                                                            "Retry initiated for " + datasource));
-    }
-
-    private static int parseIntSafe(String value) {
-        return Integer.parseInt(value);
     }
 }

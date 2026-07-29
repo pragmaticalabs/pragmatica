@@ -8,6 +8,8 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /// Unit tests for the #452 package-classification engine.
 class LayerClassifierTest {
@@ -116,6 +118,110 @@ class LayerClassifierTest {
     }
 
     @Nested
+    class Provenance {
+        @Test
+        void isExplicitlyConfigured_conventionsOnly_isFalse() {
+            assertFalse(conventions.isExplicitlyConfigured());
+        }
+
+        @Test
+        void isExplicitlyConfigured_emptyConfig_isFalse() {
+            assertFalse(LayerClassifier.from(LayerConfig.DEFAULT)
+                                       .isExplicitlyConfigured());
+        }
+
+        @Test
+        void isExplicitlyConfigured_layerGlob_isTrue() {
+            var config = LayerConfig.layerConfig(List.of(),
+                                                 List.of(),
+                                                 List.of("com.example.cloud.**"),
+                                                 List.of(),
+                                                 List.of());
+
+            assertTrue(LayerClassifier.from(config)
+                                      .isExplicitlyConfigured());
+        }
+
+        @Test
+        void isExplicitlyConfigured_sliceGlobOnly_isTrue() {
+            var config = LayerConfig.layerConfig(List.of(),
+                                                 List.of(),
+                                                 List.of(),
+                                                 List.of(),
+                                                 List.of("com.example.svc.*"));
+
+            assertTrue(LayerClassifier.from(config)
+                                      .isExplicitlyConfigured());
+        }
+    }
+
+    @Nested
+    class GlobSemantics {
+        private static LayerClassifier domainClassifier(String... globs) {
+            return LayerClassifier.from(LayerConfig.layerConfig(List.of(globs),
+                                                                List.of(),
+                                                                List.of(),
+                                                                List.of(),
+                                                                List.of()));
+        }
+
+        @Test
+        void layerOf_anyDepthGlob_classifiesBarePackage() {
+            assertEquals(Option.some(Layer.DOMAIN),
+                         domainClassifier("com.example.core.**").layerOf("com.example.core"));
+        }
+
+        @Test
+        void layerOf_anyDepthGlob_classifiesSubpackage() {
+            var classifier = domainClassifier("com.example.core.**");
+
+            assertEquals(Option.some(Layer.DOMAIN), classifier.layerOf("com.example.core.user"));
+            assertEquals(Option.some(Layer.DOMAIN), classifier.layerOf("com.example.core.user.internal"));
+        }
+
+        @Test
+        void layerOf_anyDepthGlob_leavesSiblingWithSharedPrefixUnclassified() {
+            var classifier = domainClassifier("com.example.core.**");
+
+            assertEquals(Option.none(), classifier.layerOf("com.example.corex"));
+            assertEquals(Option.none(), classifier.layerOf("com.example.corex.user"));
+        }
+
+        @Test
+        void layerOf_anyDepthGlob_leavesParentPackageUnclassified() {
+            assertEquals(Option.none(), domainClassifier("com.example.core.**").layerOf("com.example"));
+        }
+
+        @Test
+        void layerOf_singleStarGlob_matchesOneSegmentOnly() {
+            var classifier = domainClassifier("com.example.*");
+
+            assertEquals(Option.some(Layer.DOMAIN), classifier.layerOf("com.example.core"));
+            assertEquals(Option.none(), classifier.layerOf("com.example.core.user"));
+            assertEquals(Option.none(), classifier.layerOf("com.example"));
+        }
+
+        @Test
+        void layerOf_middleAnyDepthGlob_spansAnyDepthIncludingNone() {
+            var classifier = domainClassifier("com.**.model");
+
+            assertEquals(Option.some(Layer.DOMAIN), classifier.layerOf("com.model"));
+            assertEquals(Option.some(Layer.DOMAIN), classifier.layerOf("com.example.model"));
+            assertEquals(Option.some(Layer.DOMAIN), classifier.layerOf("com.example.core.model"));
+            assertEquals(Option.none(), classifier.layerOf("com.example.core"));
+        }
+
+        @Test
+        void layerOf_leadingAnyDepthGlob_classifiesBareAndNestedPackage() {
+            var classifier = domainClassifier("**.model");
+
+            assertEquals(Option.some(Layer.DOMAIN), classifier.layerOf("model"));
+            assertEquals(Option.some(Layer.DOMAIN), classifier.layerOf("com.example.model"));
+            assertEquals(Option.none(), classifier.layerOf("com.example.model.internal"));
+        }
+    }
+
+    @Nested
     class SliceRoots {
         @Test
         void sliceRootOf_conventionUsecaseChild_isRoot() {
@@ -149,6 +255,21 @@ class LayerClassifierTest {
             var classifier = LayerClassifier.from(config);
 
             assertEquals(Option.some("com.example.svc.orders"),
+                         classifier.sliceRootOf("com.example.svc.orders.internal.dao"));
+        }
+
+        /// `**` spans zero segments, so a `**` slice glob also makes the grouping package itself a
+        /// root — `slices` globs want `*`, as [LayerConfig] documents.
+        @Test
+        void sliceRootOf_anyDepthGlob_makesGroupingPackageTheRoot() {
+            var config = LayerConfig.layerConfig(List.of(),
+                                                 List.of(),
+                                                 List.of(),
+                                                 List.of(),
+                                                 List.of("com.example.svc.**"));
+            var classifier = LayerClassifier.from(config);
+
+            assertEquals(Option.some("com.example.svc"),
                          classifier.sliceRootOf("com.example.svc.orders.internal.dao"));
         }
     }
