@@ -1,4 +1,4 @@
-# JBCT Formatter — Disabled (2026-05-12) → Format RE-ENABLED (2026-06-10)
+# JBCT Formatter — Disabled (2026-05-12) → Format + Lint RE-ENABLED (2026-06-10 / 2026-06-13)
 
 > **✅ FORMAT RE-ENABLED 2026-06-10 (PR #243).** `build.sh` Step 2 now runs the `format` goal.
 > PR #243 implemented the recommended **orphan-trivia sweep** (see "Recommended fix" below),
@@ -7,23 +7,22 @@
 > across 2667 files (`FlowCodebaseCheckTest`), compiles all 80+ modules, and passes unit tests.
 > The whole codebase was reformatted in one pass (843 files).
 >
-> **⚠️ Lint is DECOUPLED for now (deferred debt).** The combined single-pass `process` goal
-> (format + lint) is NOT yet wired into `build.sh`, because enabling the lint gate surfaces
-> **33 pre-existing JBCT lint errors** that predate this change and were never enforced (build.sh
-> Step 2 had been red on this debt and bypassed). Once cleared, switch `build.sh` Step 2 from
-> `format` back to `process` to re-enable the lint gate. Inventory:
+> **✅ LINT RE-COUPLED 2026-06-13 — #244 CLOSED.** `build.sh` Step 2 now runs the combined
+> single-pass `process` goal (format + lint), failing on lint ERRORS; warnings are non-fatal
+> (`jbct.toml failOnWarning=false`). The **33 pre-existing lint errors** in the inventory below
+> were cleared during the #489/#493 lint-audit burn-down (RET-01 → `@Contract` for intentional
+> side-effect voids and interface/framework-forced signatures; RET-03/EX-01 → genuine
+> `Option`/`Result` refactors). The ERROR-severity gate is at **0 across the corpus** — verified
+> 2026-07-24 (66 linted modules, 0 errors). Inventory retained as history:
 >
 > | Module | Count | Rules |
 > |---|---|---|
 > | `aether-deployment` | 19 | RET-01 ×18 (FSM handlers/mutators), EX-01 ×1 (`StreamResourceValidator` throw) |
 > | `node` | 12 | RET-01 ×8 (`AetherNode` side-effects, `ProblemResponses`, `SwimHealthState`), RET-03 ×3 (`AlertManager` null-returns), EX-01 ×1 (`ContainerLabelInspector` throws) |
-> | `aether-stream` | 1 | RET-01 (`ReplicaSetController.close()` — `AutoCloseable` override, must stay void → needs **suppression**) |
+> | `aether-stream` | 1 | RET-01 (`ReplicaSetController.close()` — `AutoCloseable` override, void → suppression) |
 > | `aether-invoke` | 1 | RET-01 (`InvocationTraceStore.emitInjectedTrace` — `@FunctionalInterface` void) |
 >
-> Most RET-01s are intentional side-effect voids wanting a `@Contract` annotation (per the
-> repo convention), but classification is per-method; the 3 RET-03 null-returns and 2 EX-01
-> throws are genuine refactors (→ `Option`/`Result`). The RET-07 site in `slice-api` was fixed
-> separately (commit `685ec0aff`).
+> The RET-07 site in `slice-api` was fixed separately (commit `685ec0aff`).
 
 ---
 
