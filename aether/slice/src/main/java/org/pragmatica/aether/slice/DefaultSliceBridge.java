@@ -62,6 +62,11 @@ public record DefaultSliceBridge(Artifact artifact,
     }
 
     @Override
+    public Option<SliceCodec> sliceCodec() {
+        return Option.some(codec);
+    }
+
+    @Override
     public Promise<byte[]> invoke(String methodName, byte[] input) {
         return lookupMethod(methodName).async()
                            .flatMap(method -> invokeWithSerialization(method, input));

@@ -164,17 +164,32 @@ public final class SpiResourceProvider implements ResourceProvider {
                      .or(() -> new SliceLoadingFailure.Fatal.ResourceFactoryNotFound(resourceType.getName()).promise());
     }
 
+    /// Layer the node-wide runtime extensions under whatever the caller already supplied.
+    ///
+    /// Runtime extensions are DEFAULTS, not overrides. A slice that deliberately supplies its own
+    /// value for an extension type — the deployed slice's codec as `Serializer`/`Deserializer`,
+    /// which is the only codec that knows the application's own record types — must keep it.
+    /// Overwriting unconditionally is what made application-typed stream events and distributed
+    /// cache entries unencodable (#526). Every other registered extension type is untouched by
+    /// this rule: none of them is ever supplied by a caller today, so the guard changes nothing
+    /// for them.
     private ProvisioningContext enrichWithRuntimeExtensions(ProvisioningContext context) {
         var enriched = context;
 
         for (var entry : runtimeExtensions.entrySet()) {
-            @SuppressWarnings("unchecked")
-            var type = (Class<Object>) entry.getKey();
-
-            enriched = enriched.withExtension(type, entry.getValue());
+            enriched = addUnlessSupplied(enriched, context, entry);
         }
 
         return enriched;
+    }
+
+    @SuppressWarnings("unchecked")
+    private static ProvisioningContext addUnlessSupplied(ProvisioningContext enriched,
+                                                         ProvisioningContext supplied,
+                                                         Map.Entry<Class<?>, Object> entry) {
+        return supplied.hasExtension(entry.getKey())
+               ? enriched
+               : enriched.withExtension((Class<Object>) entry.getKey(), entry.getValue());
     }
 
     private <T> Promise<T> loadConfigAndInvoke(List<ResourceFactory<T, ?>> factoryList,

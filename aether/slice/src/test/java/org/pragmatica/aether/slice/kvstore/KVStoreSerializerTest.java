@@ -21,6 +21,7 @@ import org.pragmatica.aether.slice.blueprint.BlueprintId;
 import org.pragmatica.aether.slice.kvstore.AetherKey.*;
 import org.pragmatica.aether.slice.kvstore.AetherValue.*;
 import org.pragmatica.aether.slice.kvstore.AetherValue.BlueprintStreamBindingsValue.NamedAddress;
+import org.pragmatica.aether.slice.kvstore.AetherValue.StreamPartitionAssignmentValue.PartitionAssignment;
 import org.pragmatica.aether.slice.resource.ResourceAddress;
 import org.pragmatica.aether.slice.stream.StreamRegistryEntry;
 import org.pragmatica.aether.slice.resource.ResourceVersion;
@@ -28,12 +29,18 @@ import org.pragmatica.aether.slice.resource.ResourceAddress;
 import org.pragmatica.aether.slice.resource.ResourceVersion;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.rabia.Phase;
+import org.pragmatica.lang.NullReturn;
 import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Result;
 
+import java.lang.reflect.RecordComponent;
 import java.time.Instant;
+import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.stream.Collectors;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -1085,6 +1092,181 @@ class KVStoreSerializerTest {
                              .onFailureRun(Assertions::fail)
                              .onSuccess(recovered -> assertThat(recovered).containsOnlyKeys(registration, cursor));
         }
+
+        @Test
+        void fromToml_streamMetadata_recoversKeyAndAllFields() {
+            var key = StreamMetadataKey.streamMetadataKey("orders");
+            var value = new StreamMetadataValue("orders",
+                                                4,
+                                                "count",
+                                                "100000",
+                                                "65536",
+                                                "block",
+                                                "com.example:my-app:1.0.0",
+                                                1710072000000L);
+
+            KVStoreSerializer.toToml(Map.of(key, value), TEST_PHASE, TEST_TIMESTAMP)
+                             .flatMap(KVStoreSerializer::fromToml)
+                             .onFailureRun(Assertions::fail)
+                             .onSuccess(entries -> {
+                                 assertThat(entries).containsKey(key);
+                                 assertThat(entries.get(key)).isEqualTo(value);
+                             });
+        }
+
+        @Test
+        void fromToml_streamPartitionAssignment_recoversPartitionsAndNodes() {
+            var key = StreamPartitionAssignmentKey.streamPartitionAssignmentKey("orders", "orders-onOrderEvent");
+            var assignments = List.of(new PartitionAssignment(0, NodeId.nodeId("node-a").unwrap()),
+                                      new PartitionAssignment(3, NodeId.nodeId("node-b").unwrap()));
+            var value = new StreamPartitionAssignmentValue(assignments, 1710072000000L);
+
+            KVStoreSerializer.toToml(Map.of(key, value), TEST_PHASE, TEST_TIMESTAMP)
+                             .flatMap(KVStoreSerializer::fromToml)
+                             .onFailureRun(Assertions::fail)
+                             .onSuccess(entries -> {
+                                 assertThat(entries).containsKey(key);
+                                 assertThat(entries.get(key)).isEqualTo(value);
+                                 var rk = (StreamPartitionAssignmentKey) entries.keySet().iterator().next();
+                                 assertThat(rk.streamName()).isEqualTo("orders");
+                                 assertThat(rk.consumerGroup()).isEqualTo("orders-onOrderEvent");
+                             });
+        }
+
+        @Test
+        void fromToml_streamPartitionAssignmentWithoutAssignments_recoversEmptyList() {
+            var key = StreamPartitionAssignmentKey.streamPartitionAssignmentKey("orders", "idle-group");
+            var value = new StreamPartitionAssignmentValue(List.of(), 1710072000000L);
+
+            KVStoreSerializer.toToml(Map.of(key, value), TEST_PHASE, TEST_TIMESTAMP)
+                             .flatMap(KVStoreSerializer::fromToml)
+                             .onFailureRun(Assertions::fail)
+                             .onSuccess(entries -> {
+                                 assertThat(entries.get(key)).isEqualTo(value);
+                                 assertThat(((StreamPartitionAssignmentValue) entries.get(key)).assignments()).isEmpty();
+                             });
+        }
+    }
+
+    /// Executable form of the [KVStoreSerializer#parseKeyValue] symmetry invariant. The tag set is
+    /// derived by enumerating the sealed [AetherKey] hierarchy and building one throwaway instance
+    /// per variant, so a newly added key type is covered the moment it joins the hierarchy — there
+    /// is no per-type sample to remember to write, which is what let nine tags drift unnoticed
+    /// (#530).
+    @Nested
+    class ParseSerializeSymmetry {
+        @Test
+        void parseKeyValue_coversEverySerializedSection_exceptNamedExemptions() {
+            var missing = serializedSections().stream()
+                                              .filter(section -> !EphemeralKeys.isEphemeralSection(section))
+                                              .filter(section -> !KVStoreSerializer.LOSSY_SECTIONS.contains(section))
+                                              .filter(section -> !hasParseCase(section))
+                                              .sorted()
+                                              .toList();
+
+            assertThat(missing).as("section tags that toToml can emit but parseKeyValue rejects as UnknownKeyType")
+                               .isEmpty();
+        }
+
+        @Test
+        void sectionForKey_assignsDistinctSection_toEveryPermittedKeyType() {
+            assertThat(permittedKeyTypes()).isNotEmpty();
+            assertThat(serializedSections()).as("two key types sharing one section tag would collide on restore")
+                                            .hasSameSizeAs(permittedKeyTypes());
+        }
+
+        @Test
+        void ephemeralSections_matchSectionsOfEphemeralKeyTypes_exactly() {
+            var derived = EphemeralKeys.EPHEMERAL_KEY_TYPES.stream()
+                                                           .map(KVStoreSerializerTest::instantiate)
+                                                           .map(KVStoreSerializer::sectionForKey)
+                                                           .collect(Collectors.toSet());
+
+            assertThat(EphemeralKeys.EPHEMERAL_SECTIONS).as("EPHEMERAL_SECTIONS must be exactly the section tags of EPHEMERAL_KEY_TYPES")
+                                                        .isEqualTo(derived);
+        }
+
+        @Test
+        void lossySections_areSerializedAndNotAlsoEphemeral() {
+            assertThat(serializedSections()).containsAll(KVStoreSerializer.LOSSY_SECTIONS);
+            assertThat(KVStoreSerializer.LOSSY_SECTIONS.stream().filter(EphemeralKeys::isEphemeralSection).toList())
+                    .as("an ephemeral section never reaches TOML, so it cannot also be lossy")
+                    .isEmpty();
+        }
+
+        @Test
+        void parseKeyValue_unknownSection_reportsUnknownKeyType() {
+            assertThat(hasParseCase("no-such-section")).isFalse();
+        }
+    }
+
+    private static Set<String> serializedSections() {
+        return permittedKeyTypes().stream()
+                                  .map(KVStoreSerializerTest::instantiate)
+                                  .map(KVStoreSerializer::sectionForKey)
+                                  .collect(Collectors.toSet());
+    }
+
+    @SuppressWarnings("unchecked")
+    private static List<Class<? extends AetherKey>> permittedKeyTypes() {
+        return Arrays.stream(AetherKey.class.getPermittedSubclasses())
+                     .<Class<? extends AetherKey>> map(type -> (Class<? extends AetherKey>) type)
+                     .toList();
+    }
+
+    /// Probes the parse switch behaviourally instead of reading its source: only the `default` arm
+    /// produces [KVStoreSerializer.SerializationError.UnknownKeyType], so any other outcome —
+    /// including a thrown exception from a parser fed deliberately empty input — proves a case
+    /// exists for the tag.
+    private static boolean hasParseCase(String section) {
+        return Result.lift(() -> KVStoreSerializer.parseKeyValue(section, "", ""))
+                     .map(KVStoreSerializerTest::isKnownSection)
+                     .or(true);
+    }
+
+    private static boolean isKnownSection(Result<Map.Entry<AetherKey, AetherValue>> result) {
+        return switch (result) {
+            case Result.Failure<Map.Entry<AetherKey, AetherValue>> failure ->
+                    !(failure.cause() instanceof KVStoreSerializer.SerializationError.UnknownKeyType);
+            case Result.Success<Map.Entry<AetherKey, AetherValue>> _ -> true;
+        };
+    }
+
+    /// Builds a throwaway key instance from the canonical record constructor with zeroed
+    /// components. [KVStoreSerializer#sectionForKey] dispatches on type alone and never reads a
+    /// component, so the zeroed values are never observed — that is what lets the guard cover every
+    /// variant without a hand-written sample per key type.
+    private static AetherKey instantiate(Class<? extends AetherKey> type) {
+        return Result.lift(() -> newKeyInstance(type))
+                     .onFailure(cause -> Assertions.fail("Cannot instantiate " + type.getSimpleName() + ": " + cause.message()))
+                     .unwrap();
+    }
+
+    private static AetherKey newKeyInstance(Class<? extends AetherKey> type) throws ReflectiveOperationException {
+        var componentTypes = Arrays.stream(type.getRecordComponents())
+                                   .map(RecordComponent::getType)
+                                   .toArray(Class<?>[]::new);
+        var arguments = Arrays.stream(componentTypes).map(KVStoreSerializerTest::zeroValue).toArray();
+
+        return type.cast(type.getDeclaredConstructor(componentTypes).newInstance(arguments));
+    }
+
+    /// A reference component's zero value is `null` — that is what
+    /// [java.lang.reflect.Constructor#newInstance] requires for an unset reference argument, and
+    /// the constructed key is only ever type-matched, never read.
+    @NullReturn
+    private static Object zeroValue(Class<?> type) {
+        return switch (type.getName()) {
+            case "int" -> 0;
+            case "long" -> 0L;
+            case "boolean" -> false;
+            case "double" -> 0.0d;
+            case "float" -> 0.0f;
+            case "short" -> (short) 0;
+            case "byte" -> (byte) 0;
+            case "char" -> '\0';
+            default -> null;
+        };
     }
 
     private static int countOccurrences(String text, String substring) {

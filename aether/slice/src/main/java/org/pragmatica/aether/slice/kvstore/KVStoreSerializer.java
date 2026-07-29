@@ -28,6 +28,7 @@ import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.slice.kvstore.AetherKey.*;
 import org.pragmatica.aether.slice.kvstore.AetherValue.*;
 import org.pragmatica.aether.slice.kvstore.AetherValue.BlueprintStreamBindingsValue.NamedAddress;
+import org.pragmatica.aether.slice.kvstore.AetherValue.StreamPartitionAssignmentValue.PartitionAssignment;
 import org.pragmatica.aether.slice.resource.ResourceAddress;
 import org.pragmatica.aether.slice.stream.StreamRegistryEntry;
 import org.pragmatica.consensus.NodeId;
@@ -35,6 +36,7 @@ import org.pragmatica.consensus.rabia.Phase;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
+import org.pragmatica.lang.parse.Number;
 import org.pragmatica.lang.utils.Causes;
 
 import static org.pragmatica.lang.Result.success;
@@ -46,6 +48,14 @@ public final class KVStoreSerializer {
 
     private static final String PIPE = "|";
     private static final String META_SECTION = "[meta]";
+    /// Sections deliberately left WITHOUT a [#parseKeyValue] case because their value is not
+    /// faithfully representable in this TOML form: `app-blueprint` serializes its
+    /// `ExpandedBlueprint` to the empty string (see [#serializeValue]), so a parse case could only
+    /// reconstruct a blueprint with no content. Failing loudly with
+    /// [SerializationError.UnknownKeyType] is the safer of the two wrong answers — silently
+    /// restoring an empty blueprint is worse than refusing to restore one. An entry may only leave
+    /// this set together with a lossless serialize form for its value.
+    static final Set<String> LOSSY_SECTIONS = Set.of("app-blueprint");
 
     public static Result<String> toToml(Map<AetherKey, AetherValue> entries, Phase phase, Instant timestamp) {
         var sb = new StringBuilder();
@@ -139,7 +149,11 @@ public final class KVStoreSerializer {
           .append("\"\n");
     }
 
-    private static String sectionForKey(AetherKey key) {
+    /// Assigns the snapshot section tag for each [AetherKey] variant. Exhaustive over the sealed
+    /// hierarchy by compiler check (no `default` arm). Its inverse is [#parseKeyValue], which is a
+    /// separate switch keyed by the same tags — see that method for the symmetry invariant.
+    /// Package-visible so the symmetry guard can derive the tag set without hand-written samples.
+    static String sectionForKey(AetherKey key) {
         return switch (key) {
             case SliceTargetKey _ -> "slice-target";
             case AppBlueprintKey _ -> "app-blueprint";
@@ -494,9 +508,17 @@ public final class KVStoreSerializer {
         return parseKeyValue(section, rawKey, rawValue);
     }
 
-    private static Result<Map.Entry<AetherKey, AetherValue>> parseKeyValue(String section,
-                                                                           String identity,
-                                                                           String rawValue) {
+    /// Inverse of [#sectionForKey]. Both switches are hand-maintained and independent, so they can
+    /// drift: a tag that [#toToml] emits but this switch does not accept makes every snapshot
+    /// containing that key unreadable ([SerializationError.UnknownKeyType]). The invariant —
+    /// **every tag [#sectionForKey] can produce has a case here** — is enforced executably by
+    /// `KVStoreSerializerTest.ParseSerializeSymmetry`, which enumerates the sealed [AetherKey]
+    /// hierarchy reflectively rather than from a list someone has to remember to update.
+    ///
+    /// Two exemptions are permitted, both named by production constants rather than by the test:
+    /// [EphemeralKeys#EPHEMERAL_SECTIONS] (dropped by [#groupBySection] before serialization, so
+    /// they never reach TOML) and [#LOSSY_SECTIONS].
+    static Result<Map.Entry<AetherKey, AetherValue>> parseKeyValue(String section, String identity, String rawValue) {
         return switch (section) {
             case "slice-target" -> parseSliceTargetEntry(identity, rawValue);
             case "slices" -> parseSliceNodeEntry(identity, rawValue);
@@ -529,6 +551,8 @@ public final class KVStoreSerializer {
             case "storage-block" -> parseStorageBlockEntry(identity, rawValue);
             case "storage-ref" -> parseStorageRefEntry(identity, rawValue);
             case "stream-config" -> parseStreamConfigEntry(identity, rawValue);
+            case "stream-meta" -> parseStreamMetadataEntry(identity, rawValue);
+            case "stream-assign" -> parseStreamPartitionAssignmentEntry(identity, rawValue);
             case "stream-cursor" -> parseStreamCursorCheckpointEntry(identity, rawValue);
             case "stream-reg" -> parseStreamRegistrationEntry(identity, rawValue);
             case "stream-registry" -> parseStreamRegistryEntry(identity, rawValue);
@@ -1039,7 +1063,8 @@ public final class KVStoreSerializer {
 
     private static String serializeSchemaVersion(SchemaVersionValue v) {
         return v.datasourceName() + PIPE + v.currentVersion() + PIPE + v.lastMigration() + PIPE + v.status()
-                                                                                                   .name() + PIPE + v.artifactCoords() + PIPE + v.attemptCount() + PIPE + v.updatedAt();
+                                                                                                   .name() + PIPE + v.artifactCoords() + PIPE + v.owningBlueprint()
+                                                                                                                                                 .asString() + PIPE + v.attemptCount() + PIPE + v.updatedAt();
     }
 
     private static String serializeSchemaMigrationLock(SchemaMigrationLockValue v) {
@@ -1047,32 +1072,25 @@ public final class KVStoreSerializer {
                                             .id() + PIPE + v.acquiredAt() + PIPE + v.expiresAt();
     }
 
+    /// `datasourceName|currentVersion|lastMigration|status|artifactCoords|owningBlueprint|attemptCount|updatedAt`.
+    /// The owning blueprint is a required field — a record without one cannot be attributed to a
+    /// blueprint by the activation gate, so there is no pre-ownership form to fall back to.
     private static Result<Map.Entry<AetherKey, AetherValue>> parseSchemaVersionEntry(String identity, String raw) {
         var parts = raw.split("\\|", -1);
 
-        if (parts.length == 6) {
-            return SchemaVersionKey.schemaVersionKey("schema-version/" + identity, true).map(key -> entry(key,
-                                                                                                          new SchemaVersionValue(parts[0],
-                                                                                                                                 Integer.parseInt(parts[1]),
-                                                                                                                                 parts[2],
-                                                                                                                                 SchemaStatus.valueOf(parts[3]),
-                                                                                                                                 parts[4],
-                                                                                                                                 0,
-                                                                                                                                 Long.parseLong(parts[5]))));
+        if (parts.length != 8) {
+            return parseFailure("schema-version value requires 8 fields, got " + parts.length);
         }
 
-        if (parts.length != 7) {
-            return parseFailure("schema-version value requires 6 or 7 fields, got " + parts.length);
-        }
-
-        return SchemaVersionKey.schemaVersionKey("schema-version/" + identity, true).map(key -> entry(key,
-                                                                                                      new SchemaVersionValue(parts[0],
-                                                                                                                             Integer.parseInt(parts[1]),
-                                                                                                                             parts[2],
-                                                                                                                             SchemaStatus.valueOf(parts[3]),
-                                                                                                                             parts[4],
-                                                                                                                             Integer.parseInt(parts[5]),
-                                                                                                                             Long.parseLong(parts[6]))));
+        return SchemaVersionKey.schemaVersionKey("schema-version/" + identity, true).flatMap(key -> BlueprintId.blueprintId(parts[5]).map(owner -> entry(key,
+                                                                                                                                                         new SchemaVersionValue(parts[0],
+                                                                                                                                                                                Integer.parseInt(parts[1]),
+                                                                                                                                                                                parts[2],
+                                                                                                                                                                                SchemaStatus.valueOf(parts[3]),
+                                                                                                                                                                                parts[4],
+                                                                                                                                                                                owner,
+                                                                                                                                                                                Integer.parseInt(parts[6]),
+                                                                                                                                                                                Long.parseLong(parts[7])))));
     }
 
     private static Result<Map.Entry<AetherKey, AetherValue>> parseSchemaMigrationLockEntry(String identity,
@@ -1343,9 +1361,78 @@ public final class KVStoreSerializer {
         return new StreamConfigValue(config, createdAt);
     }
 
-    /// Inverse of [#serializeStreamRegistry]. Wire form (8 fields, pipe-delimited):
-    /// `address|refCount|registeredAtEpochMillis|registeredBy|maxCount|maxBytes|maxAgeMs|retentionMode`.
-    /// Mirror of [#serializeStreamCursorCheckpoint]. Consensus-visible consumer checkpoints (#488):
+    /// Mirror of [#serializeStreamMetadata]. Wire form (8 fields, pipe-delimited):
+    /// `streamName|partitionCount|retention|retentionValue|maxEventSize|backpressure|owningBlueprint|createdAt`.
+    /// The stream name is carried twice — once in the key identity, once in the value — and the
+    /// value copy is authoritative, matching [#parseStreamConfigEntry]'s treatment of the same
+    /// duplication.
+    private static Result<Map.Entry<AetherKey, AetherValue>> parseStreamMetadataEntry(String identity, String raw) {
+        var parts = raw.split("\\|", -1);
+
+        if (parts.length != 8) {
+            return parseFailure("stream-meta value requires 8 fields, got " + parts.length);
+        }
+
+        return StreamMetadataKey.streamMetadataKey("stream-meta/" + identity, true).map(key -> entry(key,
+                                                                                                     buildStreamMetadataValue(parts)));
+    }
+
+    private static AetherValue buildStreamMetadataValue(String[] parts) {
+        return new StreamMetadataValue(parts[0],
+                                       Integer.parseInt(parts[1]),
+                                       parts[2],
+                                       parts[3],
+                                       parts[4],
+                                       parts[5],
+                                       parts[6],
+                                       Long.parseLong(parts[7]));
+    }
+
+    /// Mirror of [#serializeStreamPartitionAssignment]. Wire form (2 fields, pipe-delimited):
+    /// `assignments|updatedAt`, where `assignments` is a semicolon-joined list of
+    /// `partition:consumerNodeId` pairs and renders as the empty string when no partition is
+    /// assigned — reconstructed as an empty list, mirroring [#parseNamedAddresses].
+    private static Result<Map.Entry<AetherKey, AetherValue>> parseStreamPartitionAssignmentEntry(String identity,
+                                                                                                 String raw) {
+        var parts = raw.split("\\|", -1);
+
+        if (parts.length != 2) {
+            return parseFailure("stream-assign value requires 2 fields, got " + parts.length);
+        }
+
+        return StreamPartitionAssignmentKey.streamPartitionAssignmentKey("stream-assign/" + identity).flatMap(key -> buildStreamPartitionAssignmentValue(parts).map(value -> entry(key,
+                                                                                                                                                                                   value)));
+    }
+
+    private static Result<AetherValue> buildStreamPartitionAssignmentValue(String[] parts) {
+        return parsePartitionAssignments(parts[0]).map(assignments -> new StreamPartitionAssignmentValue(assignments,
+                                                                                                         Long.parseLong(parts[1])));
+    }
+
+    private static Result<List<PartitionAssignment>> parsePartitionAssignments(String raw) {
+        if (raw.isEmpty()) {
+            return success(List.of());
+        }
+
+        var results = Arrays.stream(raw.split(";")).map(KVStoreSerializer::parsePartitionAssignment).toList();
+
+        return Result.allOf(results);
+    }
+
+    private static Result<PartitionAssignment> parsePartitionAssignment(String token) {
+        var colon = token.indexOf(':');
+
+        if (colon <= 0 || colon == token.length() - 1) {
+            return parseFailure("stream-assign entry requires partition:nodeId, got: " + token);
+        }
+
+        return Result.all(Number.parseInt(token.substring(0, colon)),
+                          NodeId.nodeId(token.substring(colon + 1)))
+                     .map(PartitionAssignment::new);
+    }
+
+    /// Mirror of [#serializeStreamCursorCheckpoint]. Wire form (2 fields, pipe-delimited):
+    /// `committedOffset|commitTimestamp`. Consensus-visible consumer checkpoints (#488):
     /// a declarative consumer resumes from the cluster cursor when a partition's owner changes, so
     /// the entry MUST survive a snapshot round-trip.
     private static Result<Map.Entry<AetherKey, AetherValue>> parseStreamCursorCheckpointEntry(String identity,
