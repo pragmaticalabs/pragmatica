@@ -54,14 +54,16 @@ public final class LayerClassifier {
 
     private final List<LayerRule> layerRules;
     private final List<Pattern> sliceGlobs;
+    private final boolean explicitlyConfigured;
 
     /// An explicit layer glob. `specificity` is the count of literal (non-`*`) characters in the
     /// source glob, so the most-specific matching glob wins across all layer lists.
     private record LayerRule(Pattern pattern, Layer layer, int specificity) {}
 
-    private LayerClassifier(List<LayerRule> layerRules, List<Pattern> sliceGlobs) {
+    private LayerClassifier(List<LayerRule> layerRules, List<Pattern> sliceGlobs, boolean explicitlyConfigured) {
         this.layerRules = layerRules;
         this.sliceGlobs = sliceGlobs;
+        this.explicitlyConfigured = explicitlyConfigured;
     }
 
     /// Build a classifier from explicit config. Globs are compiled once here.
@@ -78,12 +80,22 @@ public final class LayerClassifier {
                            .map(PackageGlob::compile)
                            .toList();
 
-        return new LayerClassifier(List.copyOf(rules), slices);
+        return new LayerClassifier(List.copyOf(rules), slices, !config.isEmpty());
     }
 
     /// A classifier with no explicit config — conventions only.
     public static LayerClassifier conventionsOnly() {
         return from(LayerConfig.DEFAULT);
+    }
+
+    /// Provenance: whether this classifier was built from a non-empty `[lint.layers]` config, rather
+    /// than falling back to conventions alone. [#from(LayerConfig)] and [#conventionsOnly()] produce
+    /// the same opaque type, so this is the only way downstream can tell "the project declared its
+    /// layering" from "nobody opted in" — the distinction the layering-coverage summary
+    /// ([LayerCoverage]) gates on, since under conventions alone most real packages carry no layer
+    /// keyword and are unclassified by design.
+    public boolean isExplicitlyConfigured() {
+        return explicitlyConfigured;
     }
 
     private static void addRules(List<LayerRule> rules, List<String> globs, Layer layer) {
