@@ -1,5 +1,6 @@
 package org.pragmatica.jbct.score;
 
+import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
 
@@ -29,6 +30,12 @@ class RuleCategoryMappingTest {
         return Diagnostic.diagnostic(ruleId, DiagnosticSeverity.ERROR, "Test.java", 1, 1, "test", "test");
     }
 
+    private static List<String> registryIdsIn(ScoreCategory category) {
+        return REGISTRY.stream()
+                       .filter(ruleId -> RuleCategoryMapping.categoryFor(ruleId).equals(Option.some(category)))
+                       .toList();
+    }
+
     @Nested
     class RegistryMappingBijection {
         @Test
@@ -39,13 +46,14 @@ class RuleCategoryMappingTest {
         }
 
         @Test
-        void mapping_everyRegisteredRule_isCategorizedOrUncategorized() {
+        void mapping_everyRegisteredRule_isCategorized() {
             var unclassified = REGISTRY.stream()
                                        .filter(ruleId -> !RuleCategoryMapping.isKnown(ruleId))
                                        .toList();
 
             assertTrue(unclassified.isEmpty(),
-                       "Registered rules missing from RuleCategoryMapping (add them to MAPPING or UNCATEGORIZED): "
+                       "Registered rules missing from RuleCategoryMapping (add them to MAPPING — "
+                       + "ScoreCategory.STYLE is the home for advisory style/log/ordering/zone rules): "
                        + unclassified);
         }
 
@@ -61,29 +69,29 @@ class RuleCategoryMappingTest {
         }
 
         @Test
-        void mapping_everyUncategorizedId_isEmittedByRegistry() {
-            var orphans = RuleCategoryMapping.uncategorized()
-                                             .stream()
-                                             .filter(ruleId -> !REGISTRY.contains(ruleId))
-                                             .toList();
-
-            assertTrue(orphans.isEmpty(), "UNCATEGORIZED contains rule IDs that no rule emits: " + orphans);
-        }
-
-        @Test
-        void mapping_categorizedAndUncategorized_areDisjoint() {
-            var overlap = new HashSet<>(RuleCategoryMapping.mapping().keySet());
-
-            overlap.retainAll(RuleCategoryMapping.uncategorized());
-            assertTrue(overlap.isEmpty(), "Rule IDs appear in both MAPPING and UNCATEGORIZED: " + overlap);
-        }
-
-        @Test
         void mapping_partition_coversRegistryExactly() {
-            var classified = new HashSet<String>(RuleCategoryMapping.mapping().keySet());
+            assertEquals(new HashSet<>(REGISTRY),
+                         new HashSet<>(RuleCategoryMapping.mapping().keySet()),
+                         "Every registered rule must have exactly one score category, and the mapping "
+                         + "must contain nothing else");
+        }
 
-            classified.addAll(RuleCategoryMapping.uncategorized());
-            assertEquals(new HashSet<>(REGISTRY), classified, "Mapping partition must equal the live registry exactly");
+        @Test
+        void mapping_styleBucket_holdsExactlyTheAdvisoryRules() {
+            assertThat(registryIdsIn(ScoreCategory.STYLE)).containsExactlyInAnyOrder("JBCT-STY-03",
+                                                                                     "JBCT-STY-04",
+                                                                                     "JBCT-STY-06",
+                                                                                     "JBCT-STY-07",
+                                                                                     "JBCT-STY-08",
+                                                                                     "JBCT-STY-09",
+                                                                                     "JBCT-ORD-01",
+                                                                                     "JBCT-STATIC-01",
+                                                                                     "JBCT-LOG-01",
+                                                                                     "JBCT-LOG-02",
+                                                                                     "JBCT-NAM-05",
+                                                                                     "JBCT-ZONE-01",
+                                                                                     "JBCT-ZONE-02",
+                                                                                     "JBCT-ZONE-03");
         }
     }
 
@@ -105,9 +113,19 @@ class RuleCategoryMappingTest {
         }
 
         @Test
-        void categoryFor_zoneRule_isUncategorized() {
-            assertEquals(Option.none(), RuleCategoryMapping.categoryFor("JBCT-ZONE-01"));
+        void categoryFor_zoneRule_mapsToStyle() {
+            assertEquals(Option.some(ScoreCategory.STYLE), RuleCategoryMapping.categoryFor("JBCT-ZONE-01"));
             assertTrue(RuleCategoryMapping.isKnown("JBCT-ZONE-01"));
+        }
+
+        @Test
+        void categoryFor_staticImportRule_mapsToStyle() {
+            assertEquals(Option.some(ScoreCategory.STYLE), RuleCategoryMapping.categoryFor("JBCT-STATIC-01"));
+        }
+
+        @Test
+        void categoryFor_memberOrderingRule_mapsToStyle() {
+            assertEquals(Option.some(ScoreCategory.STYLE), RuleCategoryMapping.categoryFor("JBCT-ORD-01"));
         }
 
         @Test
@@ -142,15 +160,17 @@ class RuleCategoryMappingTest {
         }
 
         @Test
-        void calculate_uncategorizedDiagnostic_isExcludedFromAllCategories() {
+        void calculate_styleDiagnostic_scoresStyleAndNoPrincipleCategory() {
             var score = ScoreCalculator.calculate(List.of(diagnostic("JBCT-ZONE-01")), 1);
-            var totalViolations = score.breakdown()
-                                       .values()
-                                       .stream()
-                                       .mapToInt(categoryScore -> categoryScore.violations())
-                                       .sum();
+            var principleViolations = ScoreCategory.weightedCategories()
+                                                   .stream()
+                                                   .mapToInt(category -> score.breakdown()
+                                                                              .get(category)
+                                                                              .violations())
+                                                   .sum();
 
-            assertThat(totalViolations).isZero();
+            assertThat(score.breakdown().get(ScoreCategory.STYLE).violations()).isEqualTo(1);
+            assertThat(principleViolations).isZero();
         }
 
         @Test
@@ -163,6 +183,43 @@ class RuleCategoryMappingTest {
                                        .sum();
 
             assertThat(totalViolations).isZero();
+        }
+    }
+
+    @Nested
+    class AdvisoryNeutrality {
+        @Test
+        void calculate_everyLiveStyleRule_leavesOverallUnchanged() {
+            var styleDiagnostics = registryIdsIn(ScoreCategory.STYLE).stream()
+                                                                     .map(RuleCategoryMappingTest::diagnostic)
+                                                                     .toList();
+            var clean = ScoreCalculator.calculate(List.of(), 1);
+            var styleOnly = ScoreCalculator.calculate(styleDiagnostics, 1);
+
+            assertThat(styleDiagnostics).isNotEmpty();
+            assertThat(styleOnly.overall()).isEqualTo(clean.overall());
+        }
+
+        @Test
+        void calculate_styleDiagnosticsAddedToPrincipleFindings_leaveOverallUnchanged() {
+            var principle = List.of(diagnostic("JBCT-EX-01"), diagnostic("JBCT-RET-03"), diagnostic("JBCT-LAM-01"));
+            var mixed = new ArrayList<>(principle);
+
+            registryIdsIn(ScoreCategory.STYLE).forEach(ruleId -> mixed.add(diagnostic(ruleId)));
+            var principleOverall = ScoreCalculator.calculate(principle, 3).overall();
+            var mixedOverall = ScoreCalculator.calculate(mixed, 3).overall();
+
+            assertThat(mixedOverall).isEqualTo(principleOverall);
+        }
+
+        @Test
+        void calculate_styleDiagnostics_areStillCountedInTheirOwnCategory() {
+            var styleDiagnostics = registryIdsIn(ScoreCategory.STYLE).stream()
+                                                                     .map(RuleCategoryMappingTest::diagnostic)
+                                                                     .toList();
+            var score = ScoreCalculator.calculate(styleDiagnostics, 1);
+
+            assertThat(score.breakdown().get(ScoreCategory.STYLE).violations()).isEqualTo(styleDiagnostics.size());
         }
     }
 
@@ -192,6 +249,15 @@ class RuleCategoryMappingTest {
             var diagnostics = List.of(diagnostic("JBCT-EX-01"), diagnostic("JBCT-ZONE-01"));
 
             assertThat(ScoreCalculator.unknownRuleIds(diagnostics)).isEmpty();
+        }
+
+        @Test
+        void unknownRuleIds_styleAndUnknownMixed_reportsOnlyUnknown() {
+            var diagnostics = List.of(diagnostic("JBCT-STATIC-01"),
+                                      diagnostic("JBCT-RETIRED-99"),
+                                      diagnostic("JBCT-ORD-01"));
+
+            assertThat(ScoreCalculator.unknownRuleIds(diagnostics)).containsExactly("JBCT-RETIRED-99");
         }
     }
 }

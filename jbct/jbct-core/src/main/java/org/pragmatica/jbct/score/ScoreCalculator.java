@@ -21,6 +21,10 @@ import org.slf4j.LoggerFactory;
 ///
 /// category_score = 100 × (1 - weighted_violations / checkpoints)
 /// overall_score = Σ(category_score[i] × weight[i])
+///
+/// Every category is measured the same way, but only the weighted ones reach
+/// `overall_score`: advisory categories ([ScoreCategory#advisory()], weight 0) are
+/// reported in the breakdown and contribute nothing to the total.
 public sealed interface ScoreCalculator permits ScoreCalculator.unused {
     record unused() implements ScoreCalculator {}
 
@@ -138,7 +142,7 @@ public sealed interface ScoreCalculator permits ScoreCalculator.unused {
     private static int calculateOverallScore(Map<ScoreCategory, ScoreResult.CategoryScore> breakdown) {
         var weightedSum = 0.0;
 
-        for (var category : ScoreCategory.values()) {
+        for (var category : ScoreCategory.weightedCategories()) {
             var categoryScore = breakdown.get(category);
 
             weightedSum += categoryScore.score() * category.weightFraction();
