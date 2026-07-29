@@ -1,18 +1,12 @@
 package org.pragmatica.jbct.config;
 
-import java.util.HashMap;
-import java.util.HashSet;
 import java.util.List;
-import java.util.Map;
-import java.util.Set;
 import java.util.stream.Collectors;
 
 import org.pragmatica.config.toml.TomlDocument;
 import org.pragmatica.jbct.format.FormatterConfig;
-import org.pragmatica.jbct.lint.DiagnosticSeverity;
 import org.pragmatica.jbct.lint.LintConfig;
 import org.pragmatica.jbct.lint.layer.LayerConfig;
-import org.pragmatica.lang.Option;
 
 
 /// Unified configuration for JBCT tools.
@@ -52,107 +46,13 @@ public record JbctConfig(FormatterConfig formatter,
         return new JbctConfig(formatter, lint, files, blueprint, sourceDirectories, excludePackages, layers);
     }
 
-    /// Create config from parsed TOML document.
+    /// Create config from parsed TOML document, applying built-in defaults to every absent key.
+    ///
+    /// This materialises a *single* document in isolation. Layered loading goes through
+    /// [ConfigLoader], which folds [PartialConfig] layers per key and materialises once at the end.
     public static JbctConfig fromToml(TomlDocument toml) {
-        // Format section
-        var formatterConfig = FormatterConfig.DEFAULT.withMaxLineLength(toml.getInt("format", "maxLineLength").or(120))
-                                                     .withIndentSize(toml.getInt("format", "indentSize").or(4))
-                                                     .withUseTabs(toml.getBoolean("format", "useTabs").or(false))
-                                                     .withOrganizeImports(toml.getBoolean("format", "organizeImports")
-                                                                              .or(true));
-        // Lint section
-        boolean failOnWarning = toml.getBoolean("lint", "failOnWarning").or(false);
-        // Lint rules section
-        Map<String, DiagnosticSeverity> ruleSeverities = new HashMap<>(LintConfig.DEFAULT.ruleSeverities());
-        Set<String> disabledRules = new HashSet<>(LintConfig.DEFAULT.disabledRules());
-        var rulesSection = toml.getSection("lint.rules");
-
-        for (var entry : rulesSection.entrySet()) {
-            String ruleId = entry.getKey();
-            String severityStr = entry.getValue().toLowerCase();
-
-            switch (severityStr) {
-                case "off", "disabled" -> disabledRules.add(ruleId);
-                case "error" -> {
-                    ruleSeverities.put(ruleId, DiagnosticSeverity.ERROR);
-                    disabledRules.remove(ruleId);
-                }
-                case "warning", "warn" -> {
-                    ruleSeverities.put(ruleId, DiagnosticSeverity.WARNING);
-                    disabledRules.remove(ruleId);
-                }
-                case "info" -> {
-                    ruleSeverities.put(ruleId, DiagnosticSeverity.INFO);
-                    disabledRules.remove(ruleId);
-                }
-            }
-        }
-
-        var lintConfig = LintConfig.lintConfig(Map.copyOf(ruleSeverities), Set.copyOf(disabledRules), failOnWarning);
-        // Files section
-        var maxFileSize = toml.getLong("files", "maxFileSize").or(FilesConfig.DEFAULT.maxFileSize());
-        var fileExcludes = toml.getStringList("files", "excludes").or(FilesConfig.DEFAULT.excludes());
-        var filesConfig = new FilesConfig(maxFileSize, fileExcludes);
-        // Blueprint section
-        var schemaMode = toml.getString("blueprint", "schema")
-                             .map(BlueprintConfig.SchemaMode::fromString)
-                             .or(BlueprintConfig.SchemaMode.REQUIRED);
-        var blueprintConfig = new BlueprintConfig(schemaMode);
-        // Project section
-        var sourceDirectories = toml.getStringList("project", "sourceDirectories").or(List.of("src/main/java"));
-        var excludePackages = toml.getStringList("lint", "excludePackages").or(List.of());
-        // Layering section (issue #452) — per-layer package globs + slice-root globs.
-        var layerConfig = LayerConfig.layerConfig(toml.getStringList("lint.layers", "domain").or(List.of()),
-                                                  toml.getStringList("lint.layers", "application").or(List.of()),
-                                                  toml.getStringList("lint.layers", "adapter").or(List.of()),
-                                                  toml.getStringList("lint.layers", "bootstrap").or(List.of()),
-                                                  toml.getStringList("lint.layers", "slices").or(List.of()));
-
-        return jbctConfig(formatterConfig,
-                          lintConfig,
-                          filesConfig,
-                          blueprintConfig,
-                          sourceDirectories,
-                          excludePackages,
-                          layerConfig);
-    }
-
-    /// Merge this config with another, with other taking precedence.
-    public JbctConfig merge(Option<JbctConfig> other) {
-        return other.map(this::mergeWith)
-                    .or(this);
-    }
-
-    private JbctConfig mergeWith(JbctConfig other) {
-        var mergedFormatter = other.formatter.equals(FormatterConfig.DEFAULT)
-                              ? this.formatter
-                              : other.formatter;
-        var mergedLint = other.lint.equals(LintConfig.DEFAULT)
-                         ? this.lint
-                         : other.lint;
-        var mergedFiles = other.files.equals(FilesConfig.DEFAULT)
-                          ? this.files
-                          : other.files;
-        var mergedBlueprint = other.blueprint.equals(BlueprintConfig.DEFAULT)
-                              ? this.blueprint
-                              : other.blueprint;
-        var mergedSourceDirs = other.sourceDirectories.equals(List.of("src/main/java"))
-                               ? this.sourceDirectories
-                               : other.sourceDirectories;
-        var mergedExcludePackages = other.excludePackages.isEmpty()
-                                    ? this.excludePackages
-                                    : other.excludePackages;
-        var mergedLayers = other.layers.isEmpty()
-                           ? this.layers
-                           : other.layers;
-
-        return jbctConfig(mergedFormatter,
-                          mergedLint,
-                          mergedFiles,
-                          mergedBlueprint,
-                          mergedSourceDirs,
-                          mergedExcludePackages,
-                          mergedLayers);
+        return PartialConfig.partialConfig(toml)
+                            .materialize();
     }
 
     /// Generate TOML representation of this config.
