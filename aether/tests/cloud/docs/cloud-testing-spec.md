@@ -5,6 +5,28 @@
 **Status:** Draft
 **Branch:** release-1.0.0-rc1
 
+> **Superseded in part — 2026-07-30 (rc3).** This spec was written against an in-house
+> `aether-lb` deployable that no longer exists: `aether/lb` is not a module in this
+> repository, no workflow builds an `aether-lb` image, and `ghcr.io/pragmaticalabs/aether-lb`
+> is not published. The harness therefore no longer runs an LB on the bastion.
+>
+> What actually happens now, per `deploy-cloud.sh`:
+> - **Management traffic** goes straight to a core node's own management port
+>   (`CORE_MGMT` = `<core-node-public-ip>:8080`, i.e. `[deployment.ports].management`).
+>   Any core node is a valid entry point, because a node forwards management requests it
+>   does not own to the leader or task-group owner.
+> - **Application traffic** goes through the managed Hetzner load balancer (`HLB_IP`),
+>   which the harness already provisions and which targets all core nodes.
+> - The `cloud-test-lb` VM still exists, but purely as an SSH jump host and Docker host
+>   (`TARGET_HOST`). It runs no Aether process.
+>
+> Sections below that describe an `aether-lb` container, or management on port `8081`,
+> describe the retired design and not current behaviour. The environment-variable tables in
+> §REQ-T01/T02 and the variable-mapping table have been corrected; the surrounding prose has
+> not been rewritten. Whether an LB should return at all — and if so as a *mode* of
+> `aether-node` built on `PassiveNode` rather than a separate deployable — is tracked
+> separately.
+
 ---
 
 ## 1. Overview
@@ -339,10 +361,10 @@ REQ-D38: Push example blueprint artifacts (url-shortener v1 and v2) via CLI:
          aether -c <aether-lb-public-ip>:8081 artifact push org.pragmatica.aether.example:url-shortener:1.0.0
          aether -c <aether-lb-public-ip>:8081 artifact push org.pragmatica.aether.example:url-shortener:1.0.1
 REQ-D39: Deploy v1 as baseline:
-         aether -c <aether-lb-public-ip>:8081 blueprint deploy org.pragmatica.aether.example:url-shortener:1.0.0
+         aether -c <core-node-public-ip>:8080 blueprint deploy org.pragmatica.aether.example:url-shortener:1.0.0
 REQ-D40: Wait for slices to become active (at least 1 instance running).
 REQ-D41: Export environment for test runner:
-         echo "CLUSTER_ENDPOINT=http://<aether-lb-public-ip>:8081"
+         echo "CLUSTER_ENDPOINT=http://<core-node-public-ip>:8080"
          echo "APP_ENDPOINT=https://<hetzner-lb-public-ip>:443"
          Write these to aether/tests/cloud/.cloud-env for sourcing.
 ```
@@ -385,12 +407,12 @@ REQ-D51: Check hcloud load-balancer list before creating Hetzner LB.
 ```
 REQ-T01: Source .cloud-env to get CLUSTER_ENDPOINT and APP_ENDPOINT.
 REQ-T02: Export:
-         TARGET_HOST=<aether-lb-public-ip>    (for common.sh)
-         MGMT_PORT=8081                        (LB management port)
-         LB_PORT=8081                          (same as MGMT_PORT for cloud)
-         LB_MGMT_PORT=8081                     (management API port)
+         TARGET_HOST=<bastion-public-ip>       (for common.sh; bastion is a jump host only)
+         MGMT_PORT=8080                        (core node management port)
+         LB_PORT=80                            (managed Hetzner LB, app traffic)
+         LB_MGMT_PORT=8080                     (same node management port; kept for set -u)
          APP_PORT=443                          (Hetzner LB public port)
-         CLUSTER_ENDPOINT=http://<aether-lb-public-ip>:8081
+         CLUSTER_ENDPOINT=http://<core-node-public-ip>:8080
          APP_ENDPOINT=https://<hetzner-lb-public-ip>:443
          AETHER_SSH_USER=root
          AETHER_SSH_KEY=<path-to-ssh-key>
@@ -497,12 +519,12 @@ REQ-A09: leader_api_post() in cloud mode:
 
 | Variable | Local Docker | Cloud |
 |----------|-------------|-------|
-| `TARGET_HOST` | localhost or remote Docker host | Aether LB public IP |
-| `MGMT_PORT` | 5150 | 8081 |
-| `LB_PORT` | 9090 | 8081 |
-| `LB_MGMT_PORT` | 9091 | 8081 |
+| `TARGET_HOST` | localhost or remote Docker host | Bastion public IP (jump host) |
+| `MGMT_PORT` | 5150 | 8080 |
+| `LB_PORT` | 9090 | 80 |
+| `LB_MGMT_PORT` | 9091 | 8080 |
 | `APP_PORT` | 8070 | 443 |
-| `CLUSTER_ENDPOINT` | `http://<host>:9091` | `http://<aether-lb-ip>:8081` |
+| `CLUSTER_ENDPOINT` | `http://<host>:9091` | `http://<core-node-ip>:8080` |
 | `APP_ENDPOINT` | `http://<host>:9090` | `https://<hetzner-lb-ip>:443` |
 
 ```

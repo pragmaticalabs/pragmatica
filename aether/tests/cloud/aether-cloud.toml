@@ -9,7 +9,7 @@
 
 [cluster]
 name = "cloud-test"
-version = "1.0.0-rc1"
+version = "1.0.0-rc3"
 
 [cluster.core]
 count = 5
@@ -31,7 +31,12 @@ core = "cx22"
 
 [deployment.runtime]
 type = "container"
-image = "ghcr.io/pragmaticalabs/aether-node:1.0.0-rc1"
+# Must match a tag published by .github/workflows/release.yml, which derives the tag
+# from the pushed git tag (VERSION=${GITHUB_REF#refs/tags/v}). The moving candidate tag
+# v1.0.0-rc3-candidate therefore publishes :1.0.0-rc3-candidate. A stale pin here does
+# not fail loudly — deploy-cloud.sh swallows a failed pull — so it must be updated
+# whenever the candidate tag's name changes.
+image = "ghcr.io/pragmaticalabs/aether-node:1.0.0-rc3-candidate"
 
 [deployment.zones]
 zone-1 = "fsn1-dc14"

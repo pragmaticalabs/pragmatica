@@ -7,7 +7,8 @@
 #   - HCLOUD_TOKEN set in environment (NEVER echoed)
 #   - hcloud CLI installed
 #   - aether CLI installed
-#   - Docker image pushed to GHCR (ghcr.io/pragmaticalabs/aether-node:1.0.0-rc1)
+#   - Node image pushed to GHCR (see AETHER_IMAGE below; published by the release workflow
+#     from the pushed git tag, e.g. v1.0.0-rc3-candidate -> :1.0.0-rc3-candidate)
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -26,8 +27,10 @@ NETWORK_NAME="${CLUSTER_NAME}-net"
 NETWORK_RANGE="10.0.1.0/24"
 SSH_KEY_NAME="${CLUSTER_NAME}-key"
 LB_NAME="${CLUSTER_NAME}-lb-public"
-AETHER_IMAGE="ghcr.io/pragmaticalabs/aether-node:1.0.0-rc1"
-AETHER_LB_IMAGE="ghcr.io/pragmaticalabs/aether-lb:1.0.0-rc1"
+# Keep in step with aether-cloud.toml's [deployment.runtime].image — the candidate tag
+# v1.0.0-rc3-candidate publishes :1.0.0-rc3-candidate (release.yml derives the image tag
+# from the pushed git tag).
+AETHER_IMAGE="ghcr.io/pragmaticalabs/aether-node:1.0.0-rc3-candidate"
 
 DO_BUILD=false
 SKIP_BUILD=false
@@ -145,14 +148,28 @@ fi
 
 # Collect core node IPs
 log_info "Collecting node information..."
+CORE_NODE_IP=""
 for i in $(seq 1 5); do
     NODE_NAME="${CLUSTER_NAME}-${i}"
     if driver_node_exists "${NODE_NAME}"; then
         NODE_IP=$(driver_node_public_ip "${NODE_NAME}")
         PRIVATE_IP="10.0.1.1${i}"
+        [ -z "$CORE_NODE_IP" ] && CORE_NODE_IP="${NODE_IP}"
         log_info "  ${NODE_NAME}: public=${NODE_IP} private=${PRIVATE_IP}"
     fi
 done
+
+if [ -z "$CORE_NODE_IP" ]; then
+    log_fail "No core node has a public IP — cannot address the management API"
+    exit 1
+fi
+
+# Management entry point. 8080 is [deployment.ports].management from aether-cloud.toml —
+# the node's own port. (The retired aether-lb served management on 8081; that is not a
+# node port and nothing listens there now.) Any core node is a valid entry point because
+# a node forwards management requests it does not own to the leader / task-group owner.
+CORE_MGMT="${CORE_NODE_IP}:8080"
+log_info "Management entry point: http://${CORE_MGMT}"
 
 # =========================================================================
 # Phase 5: Provision Aether LB VM
@@ -179,32 +196,26 @@ log_info "Waiting for SSH on LB VM..."
 wait_for_ssh "${BASTION_IP}" 120
 log_pass "SSH available on LB VM"
 
-# Install Docker and start Aether LB
-PEERS=""
-for i in $(seq 1 5); do
-    [ -n "$PEERS" ] && PEERS="${PEERS},"
-    PEERS="${PEERS}node-${i}:10.0.1.1${i}:6000"
-done
-
-ssh_bastion "bash -s" <<'SETUP_LB'
+# Install Docker on the bastion. The suites reach it as TARGET_HOST and run containers
+# there, so Docker stays even though the in-house LB is gone.
+#
+# The aether-lb container that used to run here was removed: `aether/lb` is not a module
+# in this repository any more, nothing in .github/workflows builds an aether-lb image, and
+# ghcr.io/pragmaticalabs/aether-lb does not exist — so this step could never have started.
+# Management traffic now goes straight to a core node's management port (see CORE_MGMT
+# above), matching what the integration suite did when it removed its nginx sidecar.
+# Application traffic already goes through the managed Hetzner LB (HLB_IP). An in-house LB
+# is a latency optimisation at most: nodes forward requests they do not own, so any node is
+# a valid entry point.
+ssh_bastion "bash -s" <<'SETUP_BASTION'
 set -euo pipefail
 if ! command -v docker >/dev/null 2>&1; then
     apt-get update -qq && apt-get install -y -qq docker.io >/dev/null 2>&1
     systemctl enable docker && systemctl start docker
 fi
-SETUP_LB
+SETUP_BASTION
 
-ssh_bastion "docker pull ${AETHER_LB_IMAGE} 2>/dev/null || true"
-ssh_bastion "docker rm -f aether-lb 2>/dev/null || true"
-ssh_bastion "docker run -d --name aether-lb --network host \
-    -e LB_HTTP_PORT=8080 \
-    -e LB_MANAGEMENT_PORT=8081 \
-    -e LB_MANAGEMENT_MAX_CONTENT_LENGTH=16777216 \
-    -e LB_CLUSTER_PORT=7000 \
-    -e 'PEERS=${PEERS}' \
-    ${AETHER_LB_IMAGE}"
-
-log_pass "Aether LB started on ${BASTION_IP}:8081"
+log_pass "Bastion ready at ${BASTION_IP} (no in-house LB; management goes direct to a core node)"
 
 # =========================================================================
 # Phase 6: Provision Postgres VM
@@ -300,7 +311,7 @@ fi
 
 log_info "Waiting for cluster health via Aether LB..."
 for i in $(seq 1 60); do
-    HEALTH=$(curl -sf -H "X-API-Key: ${API_KEY}" "http://${BASTION_IP}:8081/api/health" 2>/dev/null || echo "")
+    HEALTH=$(curl -sf -H "X-API-Key: ${API_KEY}" "http://${CORE_MGMT}/api/health" 2>/dev/null || echo "")
     if echo "$HEALTH" | grep -q '"ready":true'; then
         log_pass "Cluster healthy"
         break
@@ -315,14 +326,14 @@ if ! echo "$HEALTH" | grep -q '"ready":true'; then
 fi
 
 # Verify node count
-NODE_COUNT=$(curl -sf -H "X-API-Key: ${API_KEY}" "http://${BASTION_IP}:8081/api/cluster/topology" 2>/dev/null \
+NODE_COUNT=$(curl -sf -H "X-API-Key: ${API_KEY}" "http://${CORE_MGMT}/api/cluster/topology" 2>/dev/null \
     | python3 -c 'import sys,json;print(json.load(sys.stdin).get("coreCount",0))' 2>/dev/null || echo "0")
 log_info "Core nodes visible: ${NODE_COUNT}"
 
 # Wait for task groups
 log_info "Waiting for task group assignments..."
 for i in $(seq 1 60); do
-    TASKS=$(curl -sf -H "X-API-Key: ${API_KEY}" "http://${BASTION_IP}:8081/api/cluster/tasks" 2>/dev/null || echo "{}")
+    TASKS=$(curl -sf -H "X-API-Key: ${API_KEY}" "http://${CORE_MGMT}/api/cluster/tasks" 2>/dev/null || echo "{}")
     ACTIVE=$(echo "$TASKS" | python3 -c "
 import sys,json
 try:
@@ -342,7 +353,7 @@ done
 # =========================================================================
 log_step "Phase 9: Push test artifacts"
 
-AETHER_CONN="${BASTION_IP}:8081"
+AETHER_CONN="${CORE_MGMT}"
 
 aether -c "${AETHER_CONN}" --api-key "${API_KEY}" artifact push \
     org.pragmatica.aether.example:url-shortener:1.0.0 2>/dev/null && \
@@ -360,14 +371,19 @@ log_step "Phase 10: Environment file"
 cat > "${CLOUD_ENV}" <<ENVFILE
 # Generated by deploy-cloud.sh — source this before running tests
 DEPLOY_START=$(date +%s)
-CLUSTER_ENDPOINT=http://${BASTION_IP}:8081
+CLUSTER_ENDPOINT=http://${CORE_MGMT}
 APP_ENDPOINT=http://${HLB_IP}:80
 TARGET_HOST=${BASTION_IP}
 BASTION_IP=${BASTION_IP}
+CORE_MGMT=${CORE_MGMT}
 HLB_IP=${HLB_IP}
-MGMT_PORT=8081
-LB_PORT=8081
-LB_MGMT_PORT=8081
+# Node management port ([deployment.ports].management in aether-cloud.toml). Was 8081 while
+# the retired aether-lb fronted management; that port has no listener now.
+MGMT_PORT=8080
+# Kept because run-cloud-tests.sh exports it unconditionally under `set -u`. It now names
+# the same node management port rather than the retired LB's.
+LB_MGMT_PORT=8080
+# Managed Hetzner LB, application traffic only.
 LB_PORT=80
 NODE_COUNT=5
 API_KEY=${API_KEY}
@@ -384,7 +400,7 @@ echo "========================================"
 echo "  Cloud cluster deployed"
 echo "  Cluster:    ${CLUSTER_NAME}"
 echo "  Nodes:      5 core + LB + postgres"
-echo "  Mgmt API:   http://${BASTION_IP}:8081"
+echo "  Mgmt API:   http://${CORE_MGMT}"
 echo "  App HTTP:   http://${HLB_IP}:80"
 echo "  Bastion:    ssh -i ${SSH_KEY_FILE} root@${BASTION_IP}"
 echo "  API Key:    ${API_KEY}"
