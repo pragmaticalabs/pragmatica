@@ -281,7 +281,7 @@ No authentication required.
   "components": [
     {"name": "consensus", "status": "UP", "detail": "Cluster active"},
     {"name": "routes", "status": "UP", "detail": "Route sync received"},
-    {"name": "quorum", "status": "UP", "detail": "Counted core members: 3 / required: 2"}
+    {"name": "quorum", "status": "UP", "detail": "Reachable core members: 3 / required: 2"}
   ]
 }
 ```
@@ -2545,7 +2545,7 @@ Errors: `layer` values other than `fsm` / `peer` are rejected.
 
 Membership diagnostics — the responding node's authoritative `MembershipFsm` lifecycle view plus its quorum-loss self-drain readiness. Purpose: diagnose SWIM-under-concurrent-loss situations without log-scraping — per survivor, which peers are SUSPECT/DEAD and whether this node's quorum-loss self-drain window is armed and below threshold. **Per-node local view** (each node serves its own membership state); read-only; **not leader-forwarded** — query an individual node to read *that* node's view (e.g. each survivor's view during a multi-core-loss window).
 
-`requiredThreshold` is the simple-majority quorum threshold `coreCount / 2 + 1` (`0` while the core count is still unknown at bootstrap). `armed` is a cold-start latch: a node that has never observed a quorate count never self-drains. DEAD members are retained in `members[]` for incarnation-fenced rejoin.
+`requiredThreshold` is the simple-majority quorum threshold `coreCount / 2 + 1` (`0` while the core count is still unknown at bootstrap). `armed` is a cold-start latch: a node that has never observed a quorate count never self-drains. Since #557 the count behind that latch is the *observed-reachability* core count (`MembershipFsm.strictCoreObservedMemberCount`), not the boot-seeded one — previously every configured core counted from process start, so the latch armed on configuration before the cluster had formed and the cold-start guard was already spent when formation began. DEAD members are retained in `members[]` for incarnation-fenced rejoin.
 
 **RBAC:** VIEWER · **Routing:** LOCAL
 
@@ -2573,7 +2573,7 @@ Membership diagnostics — the responding node's authoritative `MembershipFsm` l
 | `countedCoreMemberCount` | Core members counting toward effective membership (`Member` + `Suspect`) |
 | `requiredThreshold` | Simple-majority quorum threshold `coreCount / 2 + 1` (`0` while core count unknown at bootstrap) |
 | `belowThreshold` | Whether the strict count is currently below threshold |
-| `armed` | Whether this node has ever observed a quorate count (cold-start latch; a never-quorate node never self-drains) |
+| `armed` | Whether this node has ever observed a quorate count (cold-start latch; a never-quorate node never self-drains). "Observed" is literal since #557: the count is reachability-derived, so the latch cannot arm on configuration alone |
 | `members[]` | Every tracked peer (DEAD retained for incarnation-fenced rejoin) |
 | `members[].state` | FSM lifecycle state (`Observed` / `Member` / `Suspect` / `Departing` / `Dead`) |
 | `members[].incarnation` | Member incarnation |

@@ -276,11 +276,15 @@ public final class StatusRoutes implements RouteSource {
 
     /// Single source of truth for the node's quorum posture, shared by `/api/status`
     /// (`cluster.quorate`), `/api/health` (`quorum`) and `/health/ready` (the `quorum`
-    /// component) so the three surfaces never disagree. `held` is true iff the counted strict
+    /// component) so the three surfaces never disagree. `held` is true iff the OBSERVED strict
     /// core-member set meets the consensus simple-majority threshold (`coreCount / 2 + 1`) — a
     /// minority partition (e.g. 2 of 5) correctly reports NOT held, unlike the retired
     /// "connected to at least one peer" (`>= 2`) check that let a minority claim quorum.
-    record QuorumStatus(boolean held, int countedMembers, int requiredThreshold) {
+    ///
+    /// #557: "observed" is load-bearing in that sentence. The count was previously seed-derived,
+    /// so every configured core counted from wiring time and this surface reported quorum held
+    /// before a single peer had connected.
+    record QuorumStatus(boolean held, int observedMembers, int requiredThreshold) {
         static QuorumStatus from(QuorumLossSnapshot snapshot) {
             return new QuorumStatus(!snapshot.belowThreshold(),
                                     snapshot.strictMemberCount(),
@@ -288,7 +292,7 @@ public final class StatusRoutes implements RouteSource {
         }
 
         String detail() {
-            return "Counted core members: " + countedMembers + " / required: " + requiredThreshold;
+            return "Reachable core members: " + observedMembers + " / required: " + requiredThreshold;
         }
     }
 
@@ -296,7 +300,14 @@ public final class StatusRoutes implements RouteSource {
     /// self-drain latches on, so the management surfaces cannot disagree with the consensus
     /// layer. Before the detector is wired (cold-start window) or on a `ManageableNode` test
     /// proxy that omits it, fall back to the configured-core simple-majority over the FSM's
-    /// counted core members (never raw connection counts — a worker must not inflate the numerator).
+    /// OBSERVED core members (never raw connection counts — a worker must not inflate the numerator).
+    ///
+    /// #557: the fallback counts `coreObservedMembers`, not `coreCountedMembers`. The counted set
+    /// includes every core the boot seed promoted from CONFIGURATION at wiring time, so this
+    /// surface — and therefore `/health/ready` — reported quorum held before a single peer had
+    /// connected. The detector path above is narrowed to the same observed projection at its feed
+    /// (`AetherNode.propagateMemberCount`), so both paths now answer from reachability and the
+    /// three surfaces still cannot disagree with each other or with the consensus layer.
     static QuorumStatus quorumStatus(ManageableNode node) {
         return node.quorumLossSnapshot()
                    .map(QuorumStatus::from)
@@ -304,7 +315,7 @@ public final class StatusRoutes implements RouteSource {
     }
 
     private static QuorumStatus fallbackQuorumStatus(ManageableNode node) {
-        var counted = node.membershipFsm().coreCountedMembers().size();
+        var counted = node.membershipFsm().coreObservedMembers(node.self()).size();
         var required = quorumOf(node.initialTopology().size());
 
         return new QuorumStatus(counted >= required, counted, required);

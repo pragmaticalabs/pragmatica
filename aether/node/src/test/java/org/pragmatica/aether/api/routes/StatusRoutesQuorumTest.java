@@ -27,6 +27,11 @@ class StatusRoutesQuorumTest {
     private static final QuorumLossSnapshot NO_SNAPSHOT = null;
     private static final MembershipFsm NO_FSM = null;
     private static final List<NodeId> NO_TOPOLOGY = null;
+    /// #557: `fallbackQuorumStatus` reads `node.self()` so it can count self toward the observed
+    /// quorum numerator (self is reachable by definition and never observes itself). The proxy's
+    /// default branch throws, so an unstubbed `self` fails every fallback case at RUNTIME while
+    /// still compiling — which is why `test-compile` alone cannot vouch for this file.
+    private static final NodeId PROXY_SELF = new NodeId("proxy-self");
 
     private static ManageableNode nodeWith(Option<QuorumLossSnapshot> snapshot, MembershipFsm fsm, List<NodeId> topology) {
         return (ManageableNode) Proxy.newProxyInstance(ManageableNode.class.getClassLoader(),
@@ -42,6 +47,7 @@ class StatusRoutesQuorumTest {
             case "quorumLossSnapshot" -> snapshot;
             case "membershipFsm" -> fsm;
             case "initialTopology" -> topology;
+            case "self" -> PROXY_SELF;
             default -> throw new UnsupportedOperationException("Not stubbed in test proxy: " + method);
         };
     }
@@ -104,7 +110,7 @@ class StatusRoutesQuorumTest {
             var node = nodeWith(Option.some(snapshot(5, 3, false)), NO_FSM, NO_TOPOLOGY);
 
             assertThat(StatusRoutes.quorumStatus(node).detail())
-                .isEqualTo("Counted core members: 5 / required: 3");
+                .isEqualTo("Reachable core members: 5 / required: 3");
         }
     }
 

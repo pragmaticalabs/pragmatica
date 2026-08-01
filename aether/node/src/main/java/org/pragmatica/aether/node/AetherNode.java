@@ -492,8 +492,20 @@ public interface AetherNode extends ManageableNode {
         // included and the latch stays edge-driven, as before. The `.or(Set.of())` guards the
         // pre-FSM-published boot window (lazy supplier; the FSM holder is populated before any
         // snapshot is taken).
+        // #557 / #558: the quorum numerator reads the OBSERVED-REACHABILITY projection, not the
+        // counting one. `coreCountedMembers` includes every member the boot seed promoted from the
+        // CONFIGURED topology at wiring time (MembershipFsm.seed, below), so feeding it here made
+        // boot-time quorum a statement about configuration rather than reachability: all cores
+        // counted before a packet moved, the latch below flipped on its first call, TopologyObserver
+        // went BOOTING→NORMAL and declared quorum with zero connections, and RabiaEngine broadcast
+        // its SyncRequest into an empty network. It also made TopologyObserver's BOOTING
+        // connectivity fallback dead code in production — that path runs only while this source
+        // yields none(), which the seed made false before the observer had started.
+        // `coreObservedMembers` narrows to members with latched first-hand reachability evidence
+        // (QUIC handshake or SWIM ALIVE) plus self, restoring the none()-until-converged intent.
+        // Placement / heal-deficit / role-assignment consumers keep reading coreCountedMembers.
         Supplier<Set<NodeId>> presenceMemberSupplier = () -> Option.option(membershipFsmRef.get())
-                                                                   .map(MembershipFsm::coreCountedMembers)
+                                                                   .map(fsm -> fsm.coreObservedMembers(config.self()))
                                                                    .or(Set.of());
         IntSupplier presenceCoreSizeSupplier = () -> kvStore.get(AetherKey.ClusterConfigKey.CURRENT)
                                                             .filter(v -> v instanceof AetherValue.ClusterConfigValue)
@@ -592,15 +604,16 @@ public interface AetherNode extends ManageableNode {
     @Contract
     private static void onNttReconcile(AtomicReference<QuorumLossDetector> quorumLossDetectorRef,
                                        AtomicReference<MembershipFsm> membershipFsmRef,
-                                       AtomicReference<LeaderReconciler> leaderReconcilerRef) {
-        Option.option(membershipFsmRef.get()).onPresent(fsm -> propagateMemberCount(quorumLossDetectorRef, fsm));
+                                       AtomicReference<LeaderReconciler> leaderReconcilerRef,
+                                       NodeId self) {
+        Option.option(membershipFsmRef.get()).onPresent(fsm -> propagateMemberCount(quorumLossDetectorRef, fsm, self));
         Option.option(leaderReconcilerRef.get()).onPresent(LeaderReconciler::onTopologyUnhealthy);
     }
 
     /// Feed the quorum-loss detector the current member count. Wave 2 / W1 of the
     /// cluster-topology-overhaul spec (adopting membership-fsm-unification §6): the numerator is
-    /// the FSM's STRICT CORE count ([`MembershipFsm#strictCoreMemberCount`] — state exactly
-    /// MEMBER, role=core; SUSPECT excluded, workers excluded). A worker must never hold the
+    /// the FSM's STRICT CORE count — state exactly MEMBER, role=core; SUSPECT excluded, workers
+    /// excluded. A worker must never hold the
     /// quorum-loss detector above threshold (1 core + 2 workers is NOT a quorum of a 3-core
     /// config — Rabia has no voter majority). The strict MEMBER-only numerator is safe against
     /// premature self-drain on a transient SUSPECT because the detector only fires after the
@@ -610,10 +623,17 @@ public interface AetherNode extends ManageableNode {
     /// published before the sampler's first 1s tick can fire this path, so the propagation is
     /// simply skipped in the (unreachable in practice) pre-FSM window; the next reconcile
     /// trigger after FSM publication propagates.
+    ///
+    /// #557: the count is [`MembershipFsm#strictCoreObservedMemberCount`], i.e. the strict core
+    /// count narrowed to OBSERVED reachability. The plain strict count is seed-derived — every
+    /// configured core is MEMBER from wiring time — which armed the detector's
+    /// arm-after-first-quorum latch on configuration alone, before the cluster had formed. That
+    /// latch is specified as "has this cluster ever been quorate"; only the observed count means it.
     @Contract
     private static void propagateMemberCount(AtomicReference<QuorumLossDetector> quorumLossDetectorRef,
-                                             MembershipFsm membershipFsm) {
-        var memberCount = membershipFsm.strictCoreMemberCount();
+                                             MembershipFsm membershipFsm,
+                                             NodeId self) {
+        var memberCount = membershipFsm.strictCoreObservedMemberCount(self);
 
         Option.option(quorumLossDetectorRef.get()).onPresent(detector -> detector.onMemberCountChanged(memberCount));
     }
@@ -667,9 +687,10 @@ public interface AetherNode extends ManageableNode {
                                           Consumer<NodeId> dropDeadPeerLink,
                                           AtomicReference<QuorumLossDetector> quorumLossDetectorRef,
                                           AtomicReference<MembershipFsm> membershipFsmRef,
-                                          AtomicReference<LeaderReconciler> leaderReconcilerRef) {
+                                          AtomicReference<LeaderReconciler> leaderReconcilerRef,
+                                          NodeId self) {
         dropDeadPeerLink.accept(departed);
-        onNttReconcile(quorumLossDetectorRef, membershipFsmRef, leaderReconcilerRef);
+        onNttReconcile(quorumLossDetectorRef, membershipFsmRef, leaderReconcilerRef, self);
     }
 
     /// Operator/controller drain sink (M10, cluster-topology-overhaul Wave 7): every drain command
@@ -2473,7 +2494,10 @@ public interface AetherNode extends ManageableNode {
                                                                                            .coreNodes()
                                                                                            .size());
         var leaderReconcilerRef = new AtomicReference<LeaderReconciler>();
-        Runnable nttReconcileTrigger = () -> onNttReconcile(quorumLossDetectorRef, membershipFsmRef, leaderReconcilerRef);
+        Runnable nttReconcileTrigger = () -> onNttReconcile(quorumLossDetectorRef,
+                                                            membershipFsmRef,
+                                                            leaderReconcilerRef,
+                                                            config.self());
         Supplier<HealthSnapshot> nttHealthSupplier = () -> swimHealthDetector.currentHealth()
                                                                              .or(() -> HealthSnapshot.healthSnapshot(Map.of()));
         var presenceSampler = PresenceSampler.presenceSampler(membershipConfig,
@@ -2530,7 +2554,8 @@ public interface AetherNode extends ManageableNode {
         membershipFsm.onTransition(record -> onFsmTransition(transitionJournal,
                                                              quorumLossDetectorRef,
                                                              membershipFsm,
-                                                             record));
+                                                             record,
+                                                             config.self()));
         // Wave-4 (cluster-topology-overhaul, #245): the MembershipDeltaProjector is the SOLE
         // emitter of MembershipDecision, fed by the FSM's own JOINED/REMOVED delta edge —
         // installed BEFORE the boot seed below so the seeded members' OBSERVED→MEMBER
@@ -2749,7 +2774,12 @@ public interface AetherNode extends ManageableNode {
         Consumer<NodeId> dropDeadPeerLink = clusterNetworkRef::departurePermanent;
 
         membershipFsm.onConfirmedDeparture(departed -> {
-            onMembershipDeath(departed, dropDeadPeerLink, quorumLossDetectorRef, membershipFsmRef, leaderReconcilerRef);
+            onMembershipDeath(departed,
+                              dropDeadPeerLink,
+                              quorumLossDetectorRef,
+                              membershipFsmRef,
+                              leaderReconcilerRef,
+                              config.self());
             // #210: emit the user-facing NODE_FAILED from this ungated DEAD edge — the SAME confirmed-
             // death signal that drives auto-heal above — instead of the quorum-gated
             // MembershipDecision.NodeRemoved, which the MembershipDeltaProjector drops during the
@@ -3662,10 +3692,11 @@ public interface AetherNode extends ManageableNode {
     private static void onFsmTransition(TransitionJournal journal,
                                         AtomicReference<QuorumLossDetector> quorumLossDetectorRef,
                                         MembershipFsm membershipFsm,
-                                        MembershipTransitionRecord record) {
+                                        MembershipTransitionRecord record,
+                                        NodeId self) {
         appendFsmTransition(journal, record);
         if (crossesMemberBoundary(record)) {
-            propagateMemberCount(quorumLossDetectorRef, membershipFsm);
+            propagateMemberCount(quorumLossDetectorRef, membershipFsm, self);
         }
     }
 
