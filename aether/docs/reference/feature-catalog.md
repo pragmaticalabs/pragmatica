@@ -221,7 +221,7 @@ Three storage/persistence concepts that are distinct and must not be conflated:
 | 208 | GitHub Issues as worklog | Complete | GitHub Issues adopted as primary work tracking and project log |
 | 158 | V1.0.0 roadmap | Complete | Evolutionary implementation protocol with phased milestones, feature prioritization, and release criteria for Aether 1.0 |
 | 210 | JBCT code formatter | Complete | CST-based Java code formatter (`jbct-format` module). Records, enums, switch expressions, text blocks, chain alignment, multiline parameters, ternary operators, lambdas, comments. 17 golden test files |
-| 211 | JBCT compliance scorer | Complete | Numeric JBCT compliance scoring (`jbct-core/score`). ScoreCalculator, ScoreResult, ScoreCategory, RuleCategoryMapping |
+| 211 | JBCT compliance scorer | Complete | Violation-density reporting (`jbct-core/score`) — violations per KLOC, lower is better, advisory STYLE category excluded from the total. ScoreCalculator, ScoreResult, ScoreCategory, RuleCategoryMapping, SourceScan, DensityGate |
 | 164 | JBCT project scaffolding | Complete | Full project initialization (`jbct-init` module). ProjectInitializer, SliceProjectInitializer, PersistenceAdder, EventAdder, AiToolsInstaller, self-upgrade mechanism. 17 classes, 4 test classes |
 | 165 | Property-based testing | Complete | Property-based testing library (`testing` module). PropertyTest, Arbitrary, Shrinkable, Shrinkers, RandomSource. 7 classes, 3 tests |
 

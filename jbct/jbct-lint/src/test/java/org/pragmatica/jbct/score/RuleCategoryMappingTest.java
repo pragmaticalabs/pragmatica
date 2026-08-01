@@ -25,9 +25,16 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /// jbct-lint because it is the module that can see both.
 class RuleCategoryMappingTest {
     private static final List<String> REGISTRY = CstLinter.defaultRuleIds();
+    private static final int ONE_KLOC = 1000;
 
     private static Diagnostic diagnostic(String ruleId) {
         return Diagnostic.diagnostic(ruleId, DiagnosticSeverity.ERROR, "Test.java", 1, 1, "test", "test");
+    }
+
+    /// Measure the diagnostics against a fixed one-KLOC denominator, so every density in this
+    /// suite is simply the violation count.
+    private static ScoreResult calculate(List<Diagnostic> diagnostics) {
+        return ScoreCalculator.calculate(new SourceScan(diagnostics, ONE_KLOC, 1));
     }
 
     private static List<String> registryIdsIn(ScoreCategory category) {
@@ -139,7 +146,7 @@ class RuleCategoryMappingTest {
     class LiveBuckets {
         @Test
         void calculate_exceptionRuleDiagnostic_scoresExceptionHygieneNotPatternPurity() {
-            var score = ScoreCalculator.calculate(List.of(diagnostic("JBCT-EX-01")), 1);
+            var score = calculate(List.of(diagnostic("JBCT-EX-01")));
 
             assertThat(score.breakdown().get(ScoreCategory.EXCEPTION_HYGIENE).violations()).isEqualTo(1);
             assertThat(score.breakdown().get(ScoreCategory.PATTERN_PURITY).violations()).isZero();
@@ -147,22 +154,22 @@ class RuleCategoryMappingTest {
 
         @Test
         void calculate_nullReturnDiagnostic_scoresNullSafety() {
-            var score = ScoreCalculator.calculate(List.of(diagnostic("JBCT-RET-03")), 1);
+            var score = calculate(List.of(diagnostic("JBCT-RET-03")));
 
             assertThat(score.breakdown().get(ScoreCategory.NULL_SAFETY).violations()).isEqualTo(1);
         }
 
         @Test
         void calculate_lambdaDiagnostic_scoresLambdaCompliance() {
-            var score = ScoreCalculator.calculate(List.of(diagnostic("JBCT-LAM-01")), 1);
+            var score = calculate(List.of(diagnostic("JBCT-LAM-01")));
 
             assertThat(score.breakdown().get(ScoreCategory.LAMBDA_COMPLIANCE).violations()).isEqualTo(1);
         }
 
         @Test
         void calculate_styleDiagnostic_scoresStyleAndNoPrincipleCategory() {
-            var score = ScoreCalculator.calculate(List.of(diagnostic("JBCT-ZONE-01")), 1);
-            var principleViolations = ScoreCategory.weightedCategories()
+            var score = calculate(List.of(diagnostic("JBCT-ZONE-01")));
+            var principleViolations = ScoreCategory.countedCategories()
                                                    .stream()
                                                    .mapToInt(category -> score.breakdown()
                                                                               .get(category)
@@ -175,7 +182,7 @@ class RuleCategoryMappingTest {
 
         @Test
         void calculate_unknownDiagnostic_isExcludedFromAllCategories() {
-            var score = ScoreCalculator.calculate(List.of(diagnostic("JBCT-RETIRED-99")), 1);
+            var score = calculate(List.of(diagnostic("JBCT-RETIRED-99")));
             var totalViolations = score.breakdown()
                                        .values()
                                        .stream()
@@ -189,27 +196,27 @@ class RuleCategoryMappingTest {
     @Nested
     class AdvisoryNeutrality {
         @Test
-        void calculate_everyLiveStyleRule_leavesOverallUnchanged() {
+        void calculate_everyLiveStyleRule_leavesTheTotalUnchanged() {
             var styleDiagnostics = registryIdsIn(ScoreCategory.STYLE).stream()
                                                                      .map(RuleCategoryMappingTest::diagnostic)
                                                                      .toList();
-            var clean = ScoreCalculator.calculate(List.of(), 1);
-            var styleOnly = ScoreCalculator.calculate(styleDiagnostics, 1);
+            var clean = calculate(List.of());
+            var styleOnly = calculate(styleDiagnostics);
 
             assertThat(styleDiagnostics).isNotEmpty();
-            assertThat(styleOnly.overall()).isEqualTo(clean.overall());
+            assertThat(styleOnly.totalDensityPerKloc()).isEqualTo(clean.totalDensityPerKloc());
         }
 
         @Test
-        void calculate_styleDiagnosticsAddedToPrincipleFindings_leaveOverallUnchanged() {
+        void calculate_styleDiagnosticsAddedToPrincipleFindings_leaveTheTotalUnchanged() {
             var principle = List.of(diagnostic("JBCT-EX-01"), diagnostic("JBCT-RET-03"), diagnostic("JBCT-LAM-01"));
             var mixed = new ArrayList<>(principle);
 
             registryIdsIn(ScoreCategory.STYLE).forEach(ruleId -> mixed.add(diagnostic(ruleId)));
-            var principleOverall = ScoreCalculator.calculate(principle, 3).overall();
-            var mixedOverall = ScoreCalculator.calculate(mixed, 3).overall();
+            var principleTotal = calculate(principle).totalDensityPerKloc();
+            var mixedTotal = calculate(mixed).totalDensityPerKloc();
 
-            assertThat(mixedOverall).isEqualTo(principleOverall);
+            assertThat(mixedTotal).isEqualTo(principleTotal);
         }
 
         @Test
@@ -217,7 +224,7 @@ class RuleCategoryMappingTest {
             var styleDiagnostics = registryIdsIn(ScoreCategory.STYLE).stream()
                                                                      .map(RuleCategoryMappingTest::diagnostic)
                                                                      .toList();
-            var score = ScoreCalculator.calculate(styleDiagnostics, 1);
+            var score = calculate(styleDiagnostics);
 
             assertThat(score.breakdown().get(ScoreCategory.STYLE).violations()).isEqualTo(styleDiagnostics.size());
         }
