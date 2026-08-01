@@ -19,7 +19,9 @@ import java.nio.file.Path;
 import java.nio.file.attribute.FileTime;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
+import java.util.stream.Collectors;
 
 import static com.google.common.truth.Truth.assertThat;
 import static com.google.testing.compile.Compiler.javac;
@@ -3817,5 +3819,92 @@ class SliceProcessorTest {
                                         .get().getCharContent(false).toString();
         assertThat(factoryContent).contains("ctx.resources().provide(Publisher.class, \"order-events\", ProvisioningContext.provisioningContext())");
         assertThat(factoryContent).doesNotContain("TypedPublisher");
+    }
+
+    // ========== Interceptor Config Section Tests ==========
+
+    private static JavaFileObject interceptorAnnotation(String simpleName, String config) {
+        return JavaFileObjects.forSourceString("test.annotation." + simpleName,
+                                               """
+            package test.annotation;
+            import org.pragmatica.aether.slice.annotation.ResourceQualifier;
+            import org.pragmatica.aether.slice.MethodInterceptor;
+            import java.lang.annotation.*;
+            @ResourceQualifier(type = MethodInterceptor.class, config = "%s")
+            @Retention(RetentionPolicy.RUNTIME)
+            @Target(ElementType.METHOD)
+            public @interface %s {}
+            """.formatted(config, simpleName));
+    }
+
+    private static JavaFileObject interceptedSlice(String... annotationNames) {
+        var annotations = Arrays.stream(annotationNames)
+                                .map(name -> "    @" + name)
+                                .collect(Collectors.joining("\n"));
+        var imports = Arrays.stream(annotationNames)
+                            .map(name -> "import test.annotation." + name + ";")
+                            .collect(Collectors.joining("\n"));
+
+        return JavaFileObjects.forSourceString("test.SeatService",
+                                               """
+            package test;
+            import org.pragmatica.aether.slice.annotation.Slice;
+            import org.pragmatica.lang.Promise;
+            %s
+            @Slice
+            public interface SeatService {
+            %s
+                Promise<String> findSeat(String seatId);
+                static SeatService seatService() { return null; }
+            }
+            """.formatted(imports, annotations));
+    }
+
+    @Test
+    void interceptorConfig_sanitizesIdentifier_forHyphenatedSection() throws Exception {
+        var sources = commonSources();
+        sources.add(interceptorAnnotation("Cached", "cache.availability.seat-status"));
+        sources.add(interceptedSlice("Cached"));
+
+        Compilation compilation = javac().withProcessors(new SliceProcessor()).compile(sources);
+
+        assertCompilation(compilation).succeeded();
+        var factoryContent = compilation.generatedSourceFile("test.SeatServiceFactory")
+                                        .get().getCharContent(false).toString();
+        assertThat(factoryContent).contains("ctx.resources().provide(MethodInterceptor.class, \"cache.availability.seat-status\")");
+        assertThat(factoryContent).contains("methodInterceptor_cache_availability_seat_status");
+        assertThat(factoryContent).doesNotContain("methodInterceptor_cache_availability_seat-status");
+    }
+
+    @Test
+    void interceptorConfig_keepsDottedIdentifierForm_forConventionalSection() throws Exception {
+        var sources = commonSources();
+        sources.add(interceptorAnnotation("Cached", "cache.availability"));
+        sources.add(interceptedSlice("Cached"));
+
+        Compilation compilation = javac().withProcessors(new SliceProcessor()).compile(sources);
+
+        assertCompilation(compilation).succeeded();
+        var factoryContent = compilation.generatedSourceFile("test.SeatServiceFactory")
+                                        .get().getCharContent(false).toString();
+        assertThat(factoryContent).contains("methodInterceptor_cache_availability.intercept(impl::findSeat)");
+    }
+
+    @Test
+    void interceptorConfig_issuesDistinctIdentifiers_whenSectionsDifferOnlyBySeparator() throws Exception {
+        var sources = commonSources();
+        sources.add(interceptorAnnotation("Hyphenated", "cache.seat-status"));
+        sources.add(interceptorAnnotation("Underscored", "cache.seat_status"));
+        sources.add(interceptedSlice("Hyphenated", "Underscored"));
+
+        Compilation compilation = javac().withProcessors(new SliceProcessor()).compile(sources);
+
+        assertCompilation(compilation).succeeded();
+        var factoryContent = compilation.generatedSourceFile("test.SeatServiceFactory")
+                                        .get().getCharContent(false).toString();
+        assertThat(factoryContent).contains("ctx.resources().provide(MethodInterceptor.class, \"cache.seat-status\")");
+        assertThat(factoryContent).contains("ctx.resources().provide(MethodInterceptor.class, \"cache.seat_status\")");
+        assertThat(factoryContent).contains("methodInterceptor_cache_seat_status_2");
+        assertThat(factoryContent).contains("methodInterceptor_cache_seat_status.intercept(methodInterceptor_cache_seat_status_2.intercept(impl::findSeat))");
     }
 }

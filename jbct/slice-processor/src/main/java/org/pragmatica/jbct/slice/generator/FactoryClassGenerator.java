@@ -369,16 +369,24 @@ public class FactoryClassGenerator {
     }
 
     /// Collect unique interceptor provisions across all methods, deduplicating by (type, config).
+    ///
+    /// The variable name derived from a qualifier is used verbatim as a lambda parameter in the
+    /// generated factory, so the config section is sanitized into an identifier fragment first.
+    /// Sanitization is lossy (`a-b` and `a_b` collapse), while deduplication still treats those
+    /// as two distinct entries — hence issued names are tracked and de-collided with a numeric
+    /// suffix. Both steps are required: without either, the generated source fails to compile.
     private List<InterceptorEntry> collectUniqueInterceptors(SliceModel model) {
         var seen = new LinkedHashMap<String, InterceptorEntry>();
+        var issuedNames = new LinkedHashSet<String>();
 
         for (var method : model.methods()) {
             for (var interceptor : method.interceptors()) {
                 var key = interceptor.deduplicationKey();
 
                 if (!seen.containsKey(key)) {
-                    var varName = lowercaseFirst(interceptor.variableSafeName())
-                                + "_" + interceptor.configSection().replace('.', '_');
+                    var varName = issueUniqueName(lowercaseFirst(interceptor.variableSafeName())
+                                                + "_" + interceptor.variableSafeConfigSection(),
+                                                  issuedNames);
 
                     seen.put(key, new InterceptorEntry(varName, interceptor, method));
                 }
@@ -386,6 +394,19 @@ public class FactoryClassGenerator {
         }
 
         return new ArrayList<>(seen.values());
+    }
+
+    /// Returns `candidate` if unused, otherwise the first free `candidate_N` (N starting at 2).
+    /// The chosen name is recorded in `issuedNames`.
+    private static String issueUniqueName(String candidate, Set<String> issuedNames) {
+        var name = candidate;
+        var suffix = 2;
+
+        while (!issuedNames.add(name)) {
+            name = candidate + "_" + suffix++;
+        }
+
+        return name;
     }
 
     private record InterceptorEntry(String varName, ResourceQualifierModel qualifier, MethodModel firstMethod) {}
