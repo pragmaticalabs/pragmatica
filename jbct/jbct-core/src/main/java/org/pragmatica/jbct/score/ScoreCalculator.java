@@ -31,6 +31,30 @@ import org.slf4j.LoggerFactory;
 /// category saturated at 0 after ten violations. Density has a denominator that is independent of
 /// the numerator, which is the whole point.
 ///
+/// **Why not a real checkpoint count?** #533's stated acceptance was that `checkpoints` should derive
+/// from counts reported by the linter — the number of sites each rule actually examined — rather than
+/// from a proxy. That was not pursued, and #533's own fallback clause asks for the reason to be
+/// recorded at the call site.
+///
+/// Two obstacles, the second decisive. First, no rule reports checked sites: the `CstLintRule`
+/// contract in `jbct-lint` has rules return a stream of diagnostics and nothing else, so every rule
+/// would need a contract change. That alone is only work. The decisive problem is that
+/// "checked site" has no common unit across rule families. The null-return rule's natural denominator
+/// is return statements; the import-ordering rule's is import blocks (ordering is one property of the
+/// whole block, not a per-import fact); the chain-length rule's is call chains; the
+/// fully-qualified-name rule's is type references. Summing those into one per-category `checkpoints`
+/// adds return-statement counts to import-block counts, and a ratio over that sum has no interpretable
+/// unit and does not scale with the amount of code checked — which is exactly the defect #533 filed
+/// against the old score. A per-rule denominator would be sound but yields per-rule numbers that
+/// cannot be aggregated into the category and project totals this surface exists to report.
+///
+/// Physical non-blank lines are not a perfect proxy for "sites a rule could have fired on", and this
+/// is a genuine limitation rather than a claim of equivalence: density is *violations relative to
+/// code volume*, not *violations relative to opportunities*. What it buys is one honest unit that
+/// scales with the amount of code analysed and is comparable across modules and projects. Raw
+/// violation, LOC and file counts are always reported alongside, so a small-N denominator is visible
+/// as such rather than hidden inside a ratio.
+///
 /// Two deliberate absences: there is no severity multiplier and no category weight. Both were
 /// invisible judgements baked into one number. ERROR / WARNING / INFO are reported as raw counts
 /// beside each density, and the total is a plain sum, not a weighted average. Advisory categories
