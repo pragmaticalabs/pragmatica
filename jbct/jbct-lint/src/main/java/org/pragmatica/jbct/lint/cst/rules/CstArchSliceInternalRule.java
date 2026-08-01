@@ -23,6 +23,17 @@ import static org.pragmatica.jbct.parser.CstNodes.*;
 /// child of a `usecase` segment (`com.example.usecase.registeruser`). With no slice classification
 /// available for the referenced package, the rule is silent.
 ///
+/// An absent slice root for the *analysed file* is a different case, and deliberately NOT silent.
+/// The question this rule asks is whether the file sits in the same slice as the internal it reaches
+/// into, and "belongs to no slice" answers that definitively: a file outside every slice may still
+/// only touch a slice's public root. Note the asymmetry with JBCT-ARCH-01/02, which need *both*
+/// endpoints ranked before a direction can be compared and therefore must stay silent when either is
+/// unclassified — this rule needs only a same-or-different answer, so one endpoint suffices. A file
+/// genuinely inside the referenced slice cannot lose its own root: `explicitSliceRoot` walks prefixes
+/// shortest-first, so a slice member and its sibling internal resolve to the same root, and if the
+/// globs miss the slice entirely then the referenced package does not classify either and the rule
+/// falls silent anyway.
+///
 /// Lineage: this rule delivers the cross-slice import boundary that the retired no-op JBCT-SLICE-01
 /// surface (removed in #450) never enforced; it is realised as a specialization of the #452
 /// package-classification engine rather than by reviving the SLICE-01 ID. Severity ships at WARNING

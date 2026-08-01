@@ -57,6 +57,21 @@ class CstArchSliceInternalRuleTest {
                     }
                     """));
         }
+
+        /// A file belonging to no slice is NOT an unclassified endpoint the rule should skip. The
+        /// check asks "same slice as the internal being reached into?", and "no slice" answers it —
+        /// code outside every slice may still only touch a slice's public root. Pins the asymmetry
+        /// with JBCT-ARCH-01/02, which do fall silent on an unclassified own-layer because a
+        /// direction cannot be compared without both endpoints ranked (see #548, closed as
+        /// not-a-bug after this behaviour was mistaken for that one).
+        @Test
+        void detects_referenceFromFileBelongingToNoSlice() {
+            assertTrue(hasRule("""
+                    package com.example.shared;
+                    import com.example.usecase.loginuser.internal.Token;
+                    class SharedHelper {}
+                    """));
+        }
     }
 
     @Nested
