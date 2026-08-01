@@ -482,20 +482,25 @@ class PartitionBackfillTest {
             // A NON-owner replica must NOT take the owner-immediate path. Here the owner source is a NOOP
             // transport (returns nothing past fromOffset), so backfill fails-soft to SYNCING — the highest
             // applied offset stays below the response watermark, so there is NO false-promote, and the
-            // cold-start probe path is never consulted. (Pre-#333 this asserted a pure bounded-wait; the
+            // cold-start promotion contest is never entered. (Pre-#333 this asserted a pure bounded-wait; the
             // non-owner now attempts the authoritative owner source first, but still stays SYNCING when the
             // owner yields nothing.)
+            //
+            // #559 changed ONE thing here: the owner IS now probed once on the empty-response path, because
+            // "the owner is empty" and "I already hold the owner's tail" are indistinguishable in the
+            // response itself (`toOffset` is stamped `fromOffset - 1` for both) and only the owner's true
+            // watermark separates them. The stub therefore reports an EMPTY owner (-1) instead of throwing.
+            // Every behavioural assertion below is unchanged and still load-bearing: an owner at -1 is never
+            // a true tail (#445), so self stays SYNCING at -1 despite holding local data at 9.
             registry.registerReplica(STREAM, PARTITION, OWNER);
             registry.registerReplica(STREAM, PARTITION, NON_OWNER); // self
 
             var clock = new AtomicLong(0L);
-            ReplicaWatermarkProbe failIfProbed = (_, _, _) -> {
-                throw new AssertionError("non-owner must not probe peers on the owner-source path");
-            };
+            ReplicaWatermarkProbe emptyOwnerProbe = (_, _, _) -> Promise.success(-1L);
             var backfill = partitionBackfill(registry,
                                              recovery,
                                              CatchupTransport.NOOP,
-                                             failIfProbed,
+                                             emptyOwnerProbe,
                                              selfWatermarkOf(9L),
                                              NON_OWNER,
                                              BOUND,
@@ -643,6 +648,99 @@ class PartitionBackfillTest {
                 .as("no degraded CAUGHT_UP@-1 promote past the empty-owner distrust gate")
                 .isEqualTo(ReplicationState.SYNCING);
             assertThat(descriptorFor(NON_OWNER).confirmedOffset()).isEqualTo(-1L);
+        }
+
+        /// #559: an empty owner response means "nothing to fetch", which is TWO different situations —
+        /// the owner is genuinely empty (#445 failover), or self already holds the owner's whole tail.
+        /// `ForwardCatchupTransport.toResponse` stamps `toOffset = fromOffset - 1` for every empty
+        /// response, so the response cannot tell them apart and both used to route into the cold-start
+        /// contest. A caught-up replica then lost the lowest-NodeId tie-break to the owner and returned
+        /// to SYNCING every redrive interval — observed as 336 declines over 28 minutes.
+        @Test
+        void backfill_selfAtOwnerTail_emptyResponse_reachesCaughtUp_withoutPromotionContest() {
+            registry.registerReplica(STREAM, PARTITION, NON_OWNER); // self
+
+            var clock = new AtomicLong(BOUND.millis() + 1L); // bound elapsed — contest would be reachable
+            var backfill = partitionBackfill(registry,
+                                             recovery,
+                                             fixedSource(List.of()), // nothing at or beyond self's tail
+                                             ownerProbedAt(1L),      // owner's true tail is 1 — self matches
+                                             selfWatermarkOf(1L),
+                                             NON_OWNER,
+                                             BOUND,
+                                             clock::get,
+                                             () -> MEMBERS,
+                                             committedOwnerIs(OWNER));
+
+            assertThat(backfill.backfill(STREAM, PARTITION).await().isSuccess())
+                .as("a replica holding the owner's tail is caught up, whatever the tie-break would say")
+                .isTrue();
+            assertThat(descriptorFor(NON_OWNER).state()).isEqualTo(ReplicationState.CAUGHT_UP);
+            assertThat(descriptorFor(NON_OWNER).confirmedOffset()).isEqualTo(1L);
+        }
+
+        /// #445 must survive: an owner reporting `-1` is NOT trusted as the true tail even when self
+        /// holds data, because the acked history may live on a further-ahead survivor.
+        @Test
+        void backfill_selfAheadOfEmptyOwner_emptyResponse_staysSyncing_no445Regression() {
+            registry.registerReplica(STREAM, PARTITION, NON_OWNER); // self
+
+            var clock = new AtomicLong(BOUND.millis() + 1L);
+            var backfill = partitionBackfill(registry,
+                                             recovery,
+                                             fixedSource(List.of()),
+                                             ownerProbedAt(-1L),  // fresh owner, ring still empty
+                                             selfWatermarkOf(1L), // self holds acked history the owner lost
+                                             NON_OWNER,
+                                             BOUND,
+                                             clock::get,
+                                             () -> MEMBERS,
+                                             committedOwnerIs(OWNER));
+
+            assertThat(backfill.backfill(STREAM, PARTITION).await().isFailure())
+                .as("an empty owner is never the true tail — the #445 distrust gate still governs")
+                .isTrue();
+            assertThat(descriptorFor(NON_OWNER).state()).isEqualTo(ReplicationState.SYNCING);
+        }
+
+        private static ReplicaWatermarkProbe ownerProbedAt(long watermark) {
+            return (_, _, _) -> Promise.success(watermark);
+        }
+
+        /// The incident topology, from #559's acceptance list: THREE replicas, both non-owners sitting
+        /// exactly at the owner's tail. This is what the single-replica case above cannot show — the
+        /// lowest-NodeId tie-break is live here, and pre-fix it is precisely what kept these two SYNCING.
+        /// Whichever non-owner loses the tie-break to the owner must STILL reach CAUGHT_UP, because being
+        /// caught up is not the same question as winning a promotion contest.
+        @Test
+        void backfill_threeReplicasAllAtOwnerTail_bothNonOwnersReachCaughtUp_neitherBlockedByTieBreak() {
+            var ranked = ReplicaPlacement.rank(STREAM, PARTITION, MEMBERS);
+            var secondReplica = ranked.get(1);
+            var thirdReplica = ranked.get(2);
+
+            registry.registerReplica(STREAM, PARTITION, secondReplica);
+            registry.registerReplica(STREAM, PARTITION, thirdReplica);
+
+            for (var replica : List.of(secondReplica, thirdReplica)) {
+                var backfill = partitionBackfill(registry,
+                                                 recovery,
+                                                 fixedSource(List.of()), // nothing at or beyond this replica's tail
+                                                 ownerProbedAt(1L),      // owner's true tail
+                                                 selfWatermarkOf(1L),    // this replica already holds it
+                                                 replica,
+                                                 BOUND,
+                                                 new AtomicLong(BOUND.millis() + 1L)::get,
+                                                 () -> MEMBERS,
+                                                 committedOwnerIs(OWNER));
+
+                assertThat(backfill.backfill(STREAM, PARTITION).await().isSuccess())
+                    .as("replica %s holds the owner's tail and must reach CAUGHT_UP", replica)
+                    .isTrue();
+                assertThat(descriptorFor(replica).state())
+                    .as("replica %s must not be parked in SYNCING by a tie-break it should never face", replica)
+                    .isEqualTo(ReplicationState.CAUGHT_UP);
+                assertThat(descriptorFor(replica).confirmedOffset()).isEqualTo(1L);
+            }
         }
 
         @Test

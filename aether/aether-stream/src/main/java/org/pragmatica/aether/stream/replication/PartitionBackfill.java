@@ -552,7 +552,12 @@ public final class PartitionBackfill {
                   fromOffset);
 
         return transport.requestCatchup(owner, request)
-                        .flatMap(response -> applyOwnerResponse(streamName, partition, replicas, response));
+                        .flatMap(response -> applyOwnerResponse(streamName,
+                                                                partition,
+                                                                owner,
+                                                                fromOffset - 1,
+                                                                replicas,
+                                                                response));
     }
 
     /// Dispatch the owner's catch-up response (#445). An EMPTY response (`payloads().isEmpty()` — the robust
@@ -566,12 +571,22 @@ public final class PartitionBackfill {
     /// promotes at its watermark. A NON-empty response is genuine owner history: clear the cold-start wait
     /// memory (a data-bearing authoritative source exists, so a later transient no-source observation re-arms
     /// the bound from scratch) and promote via the usual {@link #applyAndPromote} watermark gate.
+    ///
+    /// #559: an empty response is first disambiguated by {@link #promoteIfAtOwnerTail}. "The owner is
+    /// empty" and "I already hold everything the owner holds" are indistinguishable in the response
+    /// itself, and conflating them sent a fully caught-up replica into the cold-start contest forever.
+    /// Gated on `selfConfirmed >= 0`: a replica holding NOTHING cannot be at a non-empty owner's tail,
+    /// so the #445 empty-owner path keeps its exact previous behaviour and costs no extra probe.
     private Promise<Long> applyOwnerResponse(String streamName,
                                              int partition,
+                                             NodeId owner,
+                                             long selfConfirmed,
                                              List<ReplicaDescriptor> replicas,
                                              ReplicationMessage.CatchupResponse response) {
         if (response.payloads().isEmpty()) {
-            return handleNoSource(streamName, partition, replicas);
+            return selfConfirmed >= 0
+                   ? promoteIfAtOwnerTail(streamName, partition, owner, selfConfirmed, replicas)
+                   : handleNoSource(streamName, partition, replicas);
         }
 
         firstNoSourceMs.remove(partitionKey(streamName, partition));
@@ -1136,6 +1151,64 @@ public final class PartitionBackfill {
                  peers.size(),
                  maxPeerWatermark);
         registry.updateWatermark(streamName, partition, self, selfWm);
+        firstNoSourceMs.remove(partitionKey(streamName, partition));
+
+        return Promise.success(0L);
+    }
+
+    /// #559 — "the owner is empty" vs "I am at the owner's tail". Both produce an EMPTY
+    /// `CatchupResponse`, so both used to route into [`#handleNoSource`] and the cold-start promotion
+    /// contest. A replica that is genuinely caught up then competes in a contest it should never have
+    /// entered, and when it loses the lowest-NodeId tie-break to the owner it returns to SYNCING and
+    /// repeats every redrive interval, indefinitely. Observed in the wild: two replicas holding exactly
+    /// the owner's tail declined promotion 336 times each over 28 minutes, correctly losing the
+    /// tie-break every time while fully caught up.
+    ///
+    /// The response cannot discriminate. `ForwardCatchupTransport.toResponse` stamps
+    /// `toOffset = fromOffset - 1` for EVERY empty response, so comparing them is an identity that
+    /// carries no information about the owner's true tail. The owner's watermark must be asked for, so
+    /// this probes the owner we just pulled from.
+    ///
+    /// Self is at the owner's tail iff the owner reports a REAL watermark (`>= 0`) that self is not
+    /// behind. `ownerWm >= 0` preserves #445: a fresh/re-elected owner whose ring is empty reports
+    /// `-1`, is NOT trusted as the true tail, and still falls through to the probe-gated no-source path
+    /// rather than flipping a false `CAUGHT_UP` at self's watermark.
+    ///
+    /// Deliberately scoped to the OWNER-PULL path. The cold-start contest in [`#decidePromotion`] must
+    /// keep its lowest-NodeId tie-break: there the HRW-ranked node is a candidate, not an authority —
+    /// nobody has been confirmed to hold authoritative history — so "self matches that node's
+    /// watermark" does not establish that self is caught up. Here it does, because the owner answered
+    /// a real catch-up request.
+    private Promise<Long> promoteIfAtOwnerTail(String streamName,
+                                               int partition,
+                                               NodeId owner,
+                                               long selfConfirmed,
+                                               List<ReplicaDescriptor> replicas) {
+        return Promise.allOf(List.of(probe.probe(owner, streamName, partition)))
+                      .flatMap(results -> results.getFirst()
+                                                 .fold(_ -> handleNoSource(streamName, partition, replicas),
+                                                       ownerWatermark -> atTail(selfConfirmed, ownerWatermark)
+                                                                         ? promoteAtOwnerTail(streamName,
+                                                                                              partition,
+                                                                                              selfConfirmed,
+                                                                                              ownerWatermark)
+                                                                         : handleNoSource(streamName, partition, replicas)));
+    }
+
+    /// An owner reporting `-1` is an EMPTY owner, never a true tail (#445) — self must not promote off
+    /// it however much history self holds, because a further-ahead survivor may exist.
+    private static boolean atTail(long selfConfirmed, long ownerWatermark) {
+        return ownerWatermark >= 0 && selfConfirmed >= ownerWatermark;
+    }
+
+    private Promise<Long> promoteAtOwnerTail(String streamName, int partition, long selfConfirmed, long ownerWatermark) {
+        log.debug("Backfill {}[{}]: CAUGHT_UP at owner tail — owner watermark {}, self {} — empty response "
+                + "means nothing to fetch, not an empty owner; skipping the cold-start contest",
+                  streamName,
+                  partition,
+                  ownerWatermark,
+                  selfConfirmed);
+        registry.updateWatermark(streamName, partition, self, selfConfirmed);
         firstNoSourceMs.remove(partitionKey(streamName, partition));
 
         return Promise.success(0L);
