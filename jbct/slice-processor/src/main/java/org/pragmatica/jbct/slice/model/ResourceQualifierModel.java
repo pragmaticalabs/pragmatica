@@ -170,6 +170,33 @@ public record ResourceQualifierModel(TypeMirror resourceType, String resourceTyp
                : resourceTypeSimpleName;
     }
 
+    /// Returns the config section rendered as a Java identifier fragment.
+    /// Every character that cannot appear inside a Java identifier is replaced with `_`, so
+    /// conventional TOML sections such as `cache.availability.seat-status` become
+    /// `cache_availability_seat_status`.
+    ///
+    /// The fragment is always appended after a type-name prefix (never at the start of an
+    /// identifier), so `Character.isJavaIdentifierPart` is the correct predicate here —
+    /// `isJavaIdentifierStart` would needlessly mangle digits.
+    ///
+    /// Sanitization is not injective (`a-b` and `a_b` collapse onto the same fragment), so
+    /// callers building variable names must additionally de-collide the results.
+    public String variableSafeConfigSection() {
+        var builder = new StringBuilder(configSection.length());
+
+        configSection.codePoints()
+                     .map(ResourceQualifierModel::identifierSafeCodePoint)
+                     .forEach(builder::appendCodePoint);
+
+        return builder.toString();
+    }
+
+    private static int identifierSafeCodePoint(int codePoint) {
+        return Character.isJavaIdentifierPart(codePoint)
+               ? codePoint
+               : '_';
+    }
+
     /// Deduplication key: type simple name + config section.
     public String deduplicationKey() {
         return resourceTypeSimpleName + ":" + configSection;
