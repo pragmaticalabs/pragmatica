@@ -253,6 +253,42 @@ at 20 it overwrites 20..24 with markers 0000..0004, yielding exactly `expected 2
 duplicates) and offsets are IN ORDER over 0..24 only (passes when duplicates land at 25+). Neither can
 detect duplication. Acceptance on #567 adds `total entry count == events published`.
 
+#### RESOLVED 2026-08-02 — and both leads above were wrong
+
+Fixed in `cb816f5d0`. **Do not follow the two leads recorded above**; both were disproven against the code:
+
+- *"Strongest lead: the governor failover handler anchors replay at offset 0"* — **wrong.** It ran and
+  replayed nothing; its own log line above says `no segments to replay`. It is fully instrumented, so its
+  silence is real. (The other candidate, `DefaultFailoverRecovery`, is **dead code** — nothing outside its
+  own test constructs it. An earlier comment on #567 naming it as the root cause has been retracted.)
+- *"The watermark goes 24 → 49 with NO intervening apply logged. Not a second backfill cycle"* — **wrong,
+  and this is the trap.** The apply IS the `07:26:05 applied 25 events` line. `promote()` logs the SOURCE's
+  watermark (`at offset 24`), never the local head, so a pull that lands 25 events onto a ring already
+  holding 0..24 — producing head 49 — reads in the log exactly like a pull that lands 25 events into an
+  empty ring. The two are indistinguishable at INFO. That single ambiguity is what sent this to the wrong
+  subsystem twice.
+
+**Actual root cause.** `PartitionBackfill` has two catch-up pull paths that disagreed on where the local
+log ends. `backfillFromOwner` used `selfWatermark.localWatermark(...) + 1` (the ring head — correct);
+`backfillFromCaughtUpSource` used `selfConfirmedOffset(replicas) + 1` — the **replica registry's
+self-descriptor**, which `SelfWatermark`'s own contract explicitly warns is not a substitute because it
+reads `-1` after a failover while the ring holds real events. So `fromOffset` was `0`, the replica re-pulled
+history it already held, and `appendRecoveredEvent` — which assigns sequential offsets **at the tail** —
+re-appended the overlap instead of overwriting it. The `promote` gate cannot catch this:
+`highestApplied = fromOffset + applied - 1` is satisfied identically by a correct empty pull at the tail
+and by a full re-pull from zero.
+
+**Verified in-JVM** [verified: `PartitionBackfillTest.PeerSourceAppendFloor`]: 3 tests confirmed red
+against the unfixed tree first (`fromOffset` expected 25 was 0; offset 25 held `event-0`; a behind-replica
+pulled 25 instead of the missing 15), green after; 650 aether-stream + 796 node tests; `build.sh` green.
+**Live gate outstanding** — only `02-chaos` on real hardware with contiguous offsets proves it end-to-end.
+
+**Two adjacent findings left open:** `DefaultFailoverRecovery` is dead code carrying the same defect *plus
+tests asserting the wrong semantics* (recommend deleting it with `FailoverRecovery`/`FailoverRecoveryTest`);
+and `StreamPartitionManager.appendRecovered` documents "into an empty partition" as a precondition nothing
+enforces — an offset-addressed variant that rejects a below-tail append would kill this class of bug rather
+than this instance.
+
 ### #568 — an empty HRW owner wedges forever (LIVE at time of writing)
 
 ```
