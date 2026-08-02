@@ -454,7 +454,7 @@ public final class PartitionBackfill {
                                                          int partition,
                                                          List<ReplicaDescriptor> replicas) {
         return selectSource(replicas).fold(() -> handleNoSource(streamName, partition, replicas),
-                                           source -> backfillFromCaughtUpSource(streamName, partition, replicas, source));
+                                           source -> backfillFromCaughtUpSource(streamName, partition, source));
     }
 
     /// Probe-first owner re-verify for a CAUGHT_UP non-owner replica (#333 write-idle residual). Stamps
@@ -594,19 +594,24 @@ public final class PartitionBackfill {
         return applyAndPromote(streamName, partition, -1L, response);
     }
 
-    private Promise<Long> backfillFromCaughtUpSource(String streamName,
-                                                     int partition,
-                                                     List<ReplicaDescriptor> replicas,
-                                                     ReplicaDescriptor source) {
+    private Promise<Long> backfillFromCaughtUpSource(String streamName, int partition, ReplicaDescriptor source) {
         // A caught-up source exists: this is the normal path. Clear any cold-start wait memory so a
         // later transient no-source observation re-arms the bound from scratch (no false fast-promote).
         firstNoSourceMs.remove(partitionKey(streamName, partition));
 
-        return backfillFrom(streamName, partition, source, selfConfirmedOffset(replicas));
+        return backfillFrom(streamName, partition, source, selfWatermark.localWatermark(streamName, partition));
     }
 
-    private Promise<Long> backfillFrom(String streamName, int partition, ReplicaDescriptor source, long selfConfirmed) {
-        var fromOffset = selfConfirmed + 1;
+    /// `selfTail` is the LOCAL RING HEAD, never the registry self-descriptor's `confirmedOffset` (#567).
+    /// {@link StreamPartitionRecovery#appendRecoveredEvent} assigns SEQUENTIAL offsets at the tail, so a
+    /// `fromOffset` below the local head does not overwrite the overlap — it re-appends it as brand-new
+    /// offsets and duplicates the partition's history. The self-descriptor reads `-1` after a failover or
+    /// restart while the ring holds real recovered events ({@link SelfWatermark}'s own contract says so),
+    /// which turned this into a full re-pull from offset 0: 25 held events became 50 entries / 25 distinct
+    /// markers, and the replica then self-promoted owner at the doubled tail. The sibling owner-source path
+    /// ({@link #backfillFromOwner}) already derives its floor this way — both pulls now share one authority.
+    private Promise<Long> backfillFrom(String streamName, int partition, ReplicaDescriptor source, long selfTail) {
+        var fromOffset = selfTail + 1;
         var request = catchupRequest(source.nodeId(), streamName, partition, fromOffset);
 
         log.debug("Backfill {}[{}]: source={} from offset {} (source watermark {})",
@@ -1184,15 +1189,25 @@ public final class PartitionBackfill {
                                                NodeId owner,
                                                long selfConfirmed,
                                                List<ReplicaDescriptor> replicas) {
-        return Promise.allOf(List.of(probe.probe(owner, streamName, partition)))
-                      .flatMap(results -> results.getFirst()
-                                                 .fold(_ -> handleNoSource(streamName, partition, replicas),
-                                                       ownerWatermark -> atTail(selfConfirmed, ownerWatermark)
-                                                                         ? promoteAtOwnerTail(streamName,
-                                                                                              partition,
-                                                                                              selfConfirmed,
-                                                                                              ownerWatermark)
-                                                                         : handleNoSource(streamName, partition, replicas)));
+        return probe.probe(owner, streamName, partition)
+                    .fold(result -> result.fold(_ -> handleNoSource(streamName, partition, replicas),
+                                                ownerWatermark -> promoteOrWait(streamName,
+                                                                                partition,
+                                                                                selfConfirmed,
+                                                                                ownerWatermark,
+                                                                                replicas)));
+    }
+
+    /// Self is at the owner's tail iff the owner reports a REAL watermark self is not behind; anything
+    /// else falls through to the probe-gated no-source path rather than flipping a false `CAUGHT_UP`.
+    private Promise<Long> promoteOrWait(String streamName,
+                                        int partition,
+                                        long selfConfirmed,
+                                        long ownerWatermark,
+                                        List<ReplicaDescriptor> replicas) {
+        return atTail(selfConfirmed, ownerWatermark)
+               ? promoteAtOwnerTail(streamName, partition, selfConfirmed, ownerWatermark)
+               : handleNoSource(streamName, partition, replicas);
     }
 
     /// An owner reporting `-1` is an EMPTY owner, never a true tail (#445) — self must not promote off
@@ -1201,9 +1216,12 @@ public final class PartitionBackfill {
         return ownerWatermark >= 0 && selfConfirmed >= ownerWatermark;
     }
 
-    private Promise<Long> promoteAtOwnerTail(String streamName, int partition, long selfConfirmed, long ownerWatermark) {
+    private Promise<Long> promoteAtOwnerTail(String streamName,
+                                             int partition,
+                                             long selfConfirmed,
+                                             long ownerWatermark) {
         log.debug("Backfill {}[{}]: CAUGHT_UP at owner tail — owner watermark {}, self {} — empty response "
-                + "means nothing to fetch, not an empty owner; skipping the cold-start contest",
+                 + "means nothing to fetch, not an empty owner; skipping the cold-start contest",
                   streamName,
                   partition,
                   ownerWatermark,

@@ -3209,10 +3209,10 @@ public interface AetherNode extends ManageableNode {
         // filter would reject EVERY committed owner and reintroduce the #491 F4 self-promote this gate
         // exists to prevent. Empty membership means "cannot judge liveness", not "nobody is alive".
         var rawStreamCommittedOwnerSource = KvCommittedStreamOwnerSource.kvCommittedStreamOwnerSource(kvStore);
-        CommittedStreamOwnerSource streamCommittedOwnerSource =
-            (stream, partition) -> rawStreamCommittedOwnerSource.committedOwner(stream, partition)
-                                                                .filter(committed -> committedOwnerStillAlive(membershipFsm,
-                                                                                                              committed.owner()));
+        CommittedStreamOwnerSource streamCommittedOwnerSource = (stream, partition) -> rawStreamCommittedOwnerSource.committedOwner(stream,
+                                                                                                                                    partition)
+                                                                                                                    .filter(committed -> committedOwnerStillAlive(membershipFsm,
+                                                                                                                                                                  committed.owner()));
         var streamPartitionBackfill = PartitionBackfill.partitionBackfill(streamReplicaRegistry,
                                                                           streamPartitionRecovery,
                                                                           streamCatchupTransport,

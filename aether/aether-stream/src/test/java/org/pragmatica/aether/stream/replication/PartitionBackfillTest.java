@@ -306,8 +306,8 @@ class PartitionBackfillTest {
 
         @Test
         void backfill_caughtUpSourceExists_normalBackfill_noPromotionPathTaken() {
-            // A genuine CAUGHT_UP source exists: the normal backfill path runs and is byte-identical to
-            // the pre-fix behavior — the probe/promotion machinery is never consulted.
+            // A genuine CAUGHT_UP source exists: the normal backfill path runs and the probe/promotion
+            // machinery is never consulted.
             registry.registerReplica(STREAM, PARTITION, SOURCE);
             registry.updateWatermark(STREAM, PARTITION, SOURCE, 4L);
             registry.registerReplica(STREAM, PARTITION, SELF);
@@ -316,14 +316,17 @@ class PartitionBackfillTest {
             ReplicaWatermarkProbe failIfProbed = (_, _, _) -> {
                 throw new AssertionError("probe must not be consulted when a caught-up source exists");
             };
-            SelfWatermark failIfRead = (_, _) -> {
-                throw new AssertionError("self-watermark must not be read on the normal path");
-            };
+            // "Promotion path not taken" is carried by `failIfProbed`: the cold-start contest cannot run
+            // without probing peers. It is NOT carried by a throwing SelfWatermark — since #567 the normal
+            // path legitimately reads the local ring tail to compute its contiguous append floor, so a
+            // never-read stub would assert the duplication defect rather than the absence of promotion.
+            // The ring is empty here, so the honest local tail is -1 and `fromOffset` is 0 as before.
+            SelfWatermark emptyRing = (_, _) -> - 1L;
             var backfill = partitionBackfill(registry,
                                              recovery,
                                              fixedSource(eventsFrom(0, 5)),
                                              failIfProbed,
-                                             failIfRead,
+                                             emptyRing,
                                              SELF,
                                              BOUND,
                                              clock::get);
@@ -2235,6 +2238,145 @@ class PartitionBackfillTest {
                                                        payloads,
                                                        timestamps));
             };
+        }
+    }
+
+    /// #567 — the append floor for a PEER-source catch-up pull.
+    ///
+    /// [StreamPartitionRecovery#appendRecoveredEvent] assigns SEQUENTIAL offsets at the ring tail, so a
+    /// `fromOffset` below the local head does not overwrite — it re-appends the overlap as brand-new
+    /// offsets, duplicating history. The only authority on "what have I already landed" is the local ring,
+    /// which is precisely what [SelfWatermark] exists to report and what its own contract warns about:
+    /// the registry self-descriptor `confirmedOffset` is NOT a substitute, because after a failover /
+    /// restart it reads `-1` while the ring holds real recovered events.
+    ///
+    /// Observed live (cluster B, `test-stream-replica-failover`): a replica holding 25 events pulled from
+    /// a caught-up peer at `fromOffset=0`, re-appended all 25 at the tail, and self-promoted owner at
+    /// watermark 49 — 50 entries, 25 distinct markers, `offset 25 -> marker 0000`.
+    @Nested
+    class PeerSourceAppendFloor {
+        private static final NodeId PEER = NodeId.randomNodeId();
+        private static final TimeSpan BOUND = TimeSpan.timeSpan(10).seconds();
+
+        /// THE regression. Self's registry descriptor is reset to `-1` (the post-failover SYNCING state)
+        /// while the local ring already holds the full history. The pull must start at the ring tail and
+        /// land nothing, NOT restart at 0 and double the partition.
+        @Test
+        void backfill_peerSource_selfDescriptorResetButRingHoldsHistory_pullsFromRingTail() {
+            var held = 25;
+            seedLocal(held);
+
+            registry.registerReplica(STREAM, PARTITION, PEER);
+            registry.updateWatermark(STREAM, PARTITION, PEER, held - 1L);
+            registry.registerReplica(STREAM, PARTITION, SELF);
+
+            assertThat(descriptorFor(SELF).confirmedOffset()).isEqualTo(-1L);
+
+            var requestedFrom = new AtomicLong(Long.MIN_VALUE);
+            var backfill = partitionBackfill(registry,
+                                             recovery,
+                                             recordingSource(requestedFrom, held),
+                                             benignProbe(),
+                                             localHeadWatermark(),
+                                             SELF,
+                                             BOUND,
+                                             new AtomicLong(0L)::get);
+
+            assertThat(backfill.backfill(STREAM, PARTITION).await().isSuccess()).isTrue();
+
+            assertThat(requestedFrom.get()).isEqualTo((long) held);
+            assertThat(manager.readLocal(STREAM, PARTITION, 0, 200).or(List.of())).hasSize(held);
+        }
+
+        /// The partition's offsets stay contiguous and its markers stay distinct — the operator-visible
+        /// shape of the defect, asserted directly rather than inferred from the entry count.
+        @Test
+        void backfill_peerSource_ringHoldsHistory_offsetsStayContiguousAndDistinct() {
+            var held = 25;
+            seedLocal(held);
+
+            registry.registerReplica(STREAM, PARTITION, PEER);
+            registry.updateWatermark(STREAM, PARTITION, PEER, held - 1L);
+            registry.registerReplica(STREAM, PARTITION, SELF);
+
+            var backfill = partitionBackfill(registry,
+                                             recovery,
+                                             recordingSource(new AtomicLong(0L), held),
+                                             benignProbe(),
+                                             localHeadWatermark(),
+                                             SELF,
+                                             BOUND,
+                                             new AtomicLong(0L)::get);
+
+            backfill.backfill(STREAM, PARTITION).await();
+
+            var local = manager.readLocal(STREAM, PARTITION, 0, 200).or(List.of());
+            var markers = local.stream().map(event -> new String(event.data())).distinct().toList();
+
+            assertThat(markers).hasSize(held);
+            for (var i = 0; i < local.size(); i++) {
+                assertThat(local.get(i).offset()).isEqualTo((long) i);
+                assertThat(new String(local.get(i).data())).isEqualTo("event-" + i);
+            }
+        }
+
+        /// A genuinely-behind replica must still catch up — the fix must not turn the pull into a no-op.
+        /// Self holds 10 of the peer's 25; the pull starts at 10 and lands exactly the missing 15.
+        @Test
+        void backfill_peerSource_selfBehindSource_pullsOnlyTheMissingSuffix() {
+            var held = 10;
+            var sourceTotal = 25;
+            seedLocal(held);
+
+            registry.registerReplica(STREAM, PARTITION, PEER);
+            registry.updateWatermark(STREAM, PARTITION, PEER, sourceTotal - 1L);
+            registry.registerReplica(STREAM, PARTITION, SELF);
+
+            var requestedFrom = new AtomicLong(Long.MIN_VALUE);
+            var backfill = partitionBackfill(registry,
+                                             recovery,
+                                             recordingSource(requestedFrom, sourceTotal),
+                                             benignProbe(),
+                                             localHeadWatermark(),
+                                             SELF,
+                                             BOUND,
+                                             new AtomicLong(0L)::get);
+
+            assertThat(await(backfill.backfill(STREAM, PARTITION))).isEqualTo((long) (sourceTotal - held));
+
+            assertThat(requestedFrom.get()).isEqualTo((long) held);
+            assertThat(manager.readLocal(STREAM, PARTITION, 0, 200).or(List.of())).hasSize(sourceTotal);
+            assertThat(descriptorFor(SELF).state()).isEqualTo(ReplicationState.CAUGHT_UP);
+        }
+
+        private void seedLocal(int count) {
+            for (var i = 0; i < count; i++) {
+                recovery.appendRecoveredEvent(STREAM, PARTITION, ("event-" + i).getBytes(), 1000L + i).unwrap();
+            }
+        }
+
+        /// Self's local watermark = the local ring HEAD, backed by the same manager the recovery seam
+        /// writes into — the production wiring's notion, not the registry descriptor's.
+        private SelfWatermark localHeadWatermark() {
+            return (stream, partition) -> manager.partitionInfo(stream, partition)
+                                                 .map(StreamPartitionManager.PartitionInfo::headOffset)
+                                                 .or(-1L);
+        }
+
+        /// A peer holding `total` events (offsets `0..total-1`) that records the requested `fromOffset`
+        /// and serves exactly the suffix at/after it — an empty page when the caller is already at the tail.
+        private CatchupTransport recordingSource(AtomicLong requestedFrom, int total) {
+            return (target, request) -> {
+                requestedFrom.set(request.fromOffset());
+
+                var missing = (int) Math.max(0L, total - request.fromOffset());
+
+                return fixedSource(eventsFrom(request.fromOffset(), missing)).requestCatchup(target, request);
+            };
+        }
+
+        private ReplicaWatermarkProbe benignProbe() {
+            return (_, _, _) -> ReplicationError.General.REPLICATION_TIMEOUT.promise();
         }
     }
 
