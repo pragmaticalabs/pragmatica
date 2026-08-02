@@ -6,14 +6,39 @@ package org.pragmatica.aether.update;
 
 import java.util.List;
 
+import org.pragmatica.http.HttpStatus;
+import org.pragmatica.http.HttpStatusAware;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Result;
-import org.pragmatica.lang.utils.Causes;
 
 
 public record CanaryStage(int trafficPercent, int observationMinutes) {
-    private static final Cause INVALID_TRAFFIC = Causes.cause("Traffic percent must be between 1 and 100");
-    private static final Cause NEGATIVE_OBSERVATION = Causes.cause("Observation minutes must be non-negative");
+    /// 400 — both are out-of-range values in a caller-supplied canary stage (#569). They were bare
+    /// `Causes.cause(...)` constants, which `ProblemResponses.resolveStatus` cannot distinguish from a
+    /// node fault, so a canary deploy with `trafficPercent: 500` answered `500 Internal Server Error`.
+    /// Status is stored per constant rather than returned as a shared literal so a future variant with
+    /// different semantics has to state its own code instead of silently inheriting 400.
+    enum CanaryStageError implements Cause, HttpStatusAware {
+        INVALID_TRAFFIC("Traffic percent must be between 1 and 100", HttpStatus.BAD_REQUEST),
+        NEGATIVE_OBSERVATION("Observation minutes must be non-negative", HttpStatus.BAD_REQUEST);
+        private final String msg;
+        private final HttpStatus status;
+        CanaryStageError(String msg, HttpStatus status) {
+            this.msg = msg;
+            this.status = status;
+        }
+        @Override
+        public String message() {
+            return msg;
+        }
+        @Override
+        public HttpStatus httpStatus() {
+            return status;
+        }
+    }
+
+    private static final Cause INVALID_TRAFFIC = CanaryStageError.INVALID_TRAFFIC;
+    private static final Cause NEGATIVE_OBSERVATION = CanaryStageError.NEGATIVE_OBSERVATION;
 
     public static Result<CanaryStage> canaryStage(int trafficPercent, int observationMinutes) {
         if (trafficPercent < 1 || trafficPercent > 100) {

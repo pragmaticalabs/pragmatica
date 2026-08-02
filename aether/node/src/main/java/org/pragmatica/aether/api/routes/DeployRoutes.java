@@ -4,6 +4,7 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.api.routes;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.function.Supplier;
@@ -15,6 +16,7 @@ import org.pragmatica.aether.update.CanaryAnalysisConfig;
 import org.pragmatica.aether.update.CanaryStage;
 import org.pragmatica.aether.update.CleanupPolicy;
 import org.pragmatica.aether.update.Deployment;
+import org.pragmatica.aether.update.DeploymentError;
 import org.pragmatica.aether.update.DeploymentManager;
 import org.pragmatica.aether.update.DeploymentStrategy;
 import org.pragmatica.aether.update.HealthThresholds;
@@ -27,7 +29,6 @@ import org.pragmatica.http.routing.Route;
 import org.pragmatica.http.routing.RouteSource;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Result;
-import org.pragmatica.lang.utils.Causes;
 
 import static org.pragmatica.http.routing.PathParameter.aString;
 import static org.pragmatica.lang.Option.option;
@@ -35,13 +36,14 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 
 public final class DeployRoutes implements RouteSource {
-    private static final Cause NOT_FOUND = Causes.cause("Deployment not found");
-    private static final Cause MISSING_BLUEPRINT = Causes.cause("Missing required field: blueprint");
-    private static final Cause MISSING_STRATEGY = Causes.cause("Missing required field: strategy");
-
-    private static final Cause INVALID_STRATEGY = Causes.cause("Invalid strategy; must be one of: canary, blue_green, rolling");
-
-    private static final Cause MISSING_CANARY_STAGES = Causes.cause("Canary strategy requires at least one stage");
+    // #569: request-validation and not-found failures carry their own HTTP status. They were bare
+    // `Causes.cause(...)` constants, which `ProblemResponses.resolveStatus` cannot distinguish from a
+    // node fault — every one of them answered 500. `DEPLOYMENT_NOT_FOUND` is now minted per-request
+    // from the domain type so the ProblemDetail `detail` names WHICH deployment was missing.
+    private static final Cause MISSING_BLUEPRINT = DeployRouteError.MISSING_BLUEPRINT;
+    private static final Cause MISSING_STRATEGY = DeployRouteError.MISSING_STRATEGY;
+    private static final Cause INVALID_STRATEGY = DeployRouteError.INVALID_STRATEGY;
+    private static final Cause MISSING_CANARY_STAGES = DeployRouteError.MISSING_CANARY_STAGES;
 
     private final Supplier<ManageableNode> nodeSupplier;
 
@@ -113,7 +115,7 @@ public final class DeployRoutes implements RouteSource {
 
     private Result<DeploymentResponse> getDeployment(String deploymentId) {
         return deploymentManager().status(deploymentId)
-                                .toResult(NOT_FOUND)
+                                .toResult(DeploymentError.DeploymentNotFound.deploymentNotFound(deploymentId))
                                 .map(DeployRoutes::toResponse);
     }
 
@@ -144,18 +146,35 @@ public final class DeployRoutes implements RouteSource {
         return parseBlueprint(request).flatMap(blueprintParts -> buildParsedRequest(blueprintParts, request));
     }
 
+    /// Validation is a SEQUENTIAL first-failure-wins chain, deliberately NOT `Result.all` (#569).
+    ///
+    /// `Result.all` replaces the emerging cause with `Causes.composite(...)` as soon as ANY input fails,
+    /// and `CompositeCause extends Cause` only — so the `HttpStatusAware` mixin these causes carry is
+    /// erased on the way out and `ProblemResponses.resolveStatus` silently restores the very 500 this
+    /// change exists to remove. An unrecognized strategy answered `500 Internal Server Error` for exactly
+    /// this reason, even though `DeployRouteError.INVALID_STRATEGY` is typed 400.
+    ///
+    /// Accumulation buys nothing here: `CompositeCause` renders one opaque message, so the caller never
+    /// saw the individual validation failures anyway. First-failure-wins yields one precise message AND
+    /// the correct status. `CompositeCause` cannot simply be made status-aware — it lives in `core`,
+    /// which is deliberately HTTP-free.
     private Result<ParsedDeployRequest> buildParsedRequest(String[] blueprintParts, DeployRequest request) {
-        return Result.all(parseVersion(blueprintParts[2]),
-                          parseStrategy(request.strategy()),
-                          parseThresholds(request.thresholds()),
-                          parseCleanupPolicy(request.cleanupPolicy()))
-                     .flatMap((version, strategy, thresholds, cleanupPolicy) -> parseStrategyConfig(strategy, request).map(config -> new ParsedDeployRequest(request.blueprint(),
-                                                                                                                                                             version,
-                                                                                                                                                             strategy,
-                                                                                                                                                             config,
-                                                                                                                                                             thresholds,
-                                                                                                                                                             cleanupPolicy,
-                                                                                                                                                             parseInstances(request.instances()))));
+        return parseVersion(blueprintParts[2]).flatMap(version -> parseStrategy(request.strategy()).flatMap(strategy -> completeParsedRequest(request,
+                                                                                                                                              version,
+                                                                                                                                              strategy)));
+    }
+
+    private Result<ParsedDeployRequest> completeParsedRequest(DeployRequest request,
+                                                              Version version,
+                                                              DeploymentStrategy strategy) {
+        return parseThresholds(request.thresholds()).flatMap(thresholds -> parseCleanupPolicy(request.cleanupPolicy()).flatMap(cleanupPolicy -> parseStrategyConfig(strategy,
+                                                                                                                                                                    request).map(config -> new ParsedDeployRequest(request.blueprint(),
+                                                                                                                                                                                                                   version,
+                                                                                                                                                                                                                   strategy,
+                                                                                                                                                                                                                   config,
+                                                                                                                                                                                                                   thresholds,
+                                                                                                                                                                                                                   cleanupPolicy,
+                                                                                                                                                                                                                   parseInstances(request.instances())))));
     }
 
     private static Result<String[]> parseBlueprint(DeployRequest request) {
@@ -243,8 +262,38 @@ public final class DeployRoutes implements RouteSource {
             return MISSING_CANARY_STAGES.result();
         }
 
-        return Result.allOf(rawStages.stream().map(DeployRoutes::parseCanaryStage).toList()).map(stages -> new CanaryConfig(stages,
-                                                                                                                            CanaryAnalysisConfig.DEFAULT));
+        return parseCanaryStages(rawStages).map(stages -> new CanaryConfig(stages, CanaryAnalysisConfig.DEFAULT));
+    }
+
+    /// First-failure-wins, deliberately NOT `Result.allOf` (#569). `allOf` accumulates every stage's
+    /// failure into `Causes.composite(...)`, and `CompositeCause extends Cause` only — which erases the
+    /// `HttpStatusAware` mixin the stage errors carry and restores the 500. A canary deploy with
+    /// `trafficPercent: 500` is a malformed request, not a cluster fault.
+    ///
+    /// `flatMap` is what preserves the cause: on a failure it forwards the original instance untouched,
+    /// so the mixin survives the hop to the response funnel.
+    private static Result<List<CanaryStage>> parseCanaryStages(List<Map<String, Object>> rawStages) {
+        return parseCanaryStagesFrom(rawStages, 0, List.of());
+    }
+
+    private static Result<List<CanaryStage>> parseCanaryStagesFrom(List<Map<String, Object>> rawStages,
+                                                                   int index,
+                                                                   List<CanaryStage> accumulated) {
+        if (index >= rawStages.size()) {
+            return Result.success(accumulated);
+        }
+
+        return parseCanaryStage(rawStages.get(index)).flatMap(stage -> parseCanaryStagesFrom(rawStages,
+                                                                                             index + 1,
+                                                                                             appended(accumulated, stage)));
+    }
+
+    private static List<CanaryStage> appended(List<CanaryStage> stages, CanaryStage stage) {
+        var next = new ArrayList<>(stages);
+
+        next.add(stage);
+
+        return List.copyOf(next);
     }
 
     private static Result<CanaryStage> parseCanaryStage(Map<String, Object> raw) {
