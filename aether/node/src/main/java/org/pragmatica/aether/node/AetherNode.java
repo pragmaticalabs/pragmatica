@@ -2091,17 +2091,24 @@ public interface AetherNode extends ManageableNode {
         // forward-declared to DrainProcedure (constructed earlier) via this ref; the emitter lambda
         // resolves it lazily and no-ops until bound. NOT leader-gated — the draining node is the only
         // authoritative source for "I am self-draining".
-        clusterEventDrainEmitterRef.set(reason -> eventAggregator.emit(new ClusterEvent.SelfDrainInitiated(clusterEventsHlcClock.now(),
-                                                                                                           ClusterEvent.Severity.WARNING,
-                                                                                                           "Self-drain initiated on " + config.self()
-                                                                                                                                              .id()
-                                                                                                          + " (reason=" + reason
-                                                                                                          + ")",
-                                                                                                           Map.of("nodeId",
-                                                                                                                  config.self()
-                                                                                                                        .id(),
-                                                                                                                  "reason",
-                                                                                                                  String.valueOf(reason)))));
+        // #565: that contract requires `emitLocal`, NOT `emit`. `emit` applies the OWNER gate (a
+        // different gate from the leader gate this comment rules out), and a self-fencing node is by
+        // definition not the owner of the cluster-events partition — its placement view is the
+        // PRE-partition one, whose partition-0 owner is typically among the nodes it just lost. So the
+        // one event that explains why a node left was suppressed at DEBUG, invisible at default INFO.
+        // `emitLocal`'s own contract cites SelfDrainInitiated as the exemplar for this exact class of
+        // per-node fact; this call site was the one that did not follow it.
+        clusterEventDrainEmitterRef.set(reason -> eventAggregator.emitLocal(new ClusterEvent.SelfDrainInitiated(clusterEventsHlcClock.now(),
+                                                                                                                ClusterEvent.Severity.WARNING,
+                                                                                                                "Self-drain initiated on " + config.self()
+                                                                                                                                                   .id()
+                                                                                                               + " (reason=" + reason
+                                                                                                               + ")",
+                                                                                                                Map.of("nodeId",
+                                                                                                                       config.self()
+                                                                                                                             .id(),
+                                                                                                                       "reason",
+                                                                                                                       String.valueOf(reason)))));
         // #427: resolve the departure-push observer now the aggregator is bound — a budget overrun
         // during graceful departure emits DeparturePushIncomplete (per-node fact, un-gated emitLocal).
         departurePushObserverRef.set((keysAtRisk, sampleKeys) -> eventAggregator.onDeparturePushIncomplete(config.self(),

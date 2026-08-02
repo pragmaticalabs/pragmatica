@@ -318,6 +318,56 @@ class ClusterEventAggregatorTest {
                                                .containsEntry("nodeId", SELF.id());
     }
 
+    // --- self-drain (per-node, NOT owner-gated; #565) -------------------------------------------
+
+    private static ClusterEvent selfDrainInitiated(Harness h) {
+        return new ClusterEvent.SelfDrainInitiated(h.hlc().now(),
+                                                   ClusterEvent.Severity.WARNING,
+                                                   "Self-drain initiated on " + SELF.id() + " (reason=QUORUM_LOSS)",
+                                                   Map.of("nodeId", SELF.id(), "reason", "QUORUM_LOSS"));
+    }
+
+    /// #565 — THE regression. A self-draining node is the ONLY authoritative source for "I am
+    /// self-draining", and it is by definition NOT the owner of the cluster-events partition: it is
+    /// fencing itself out of a cluster whose pre-partition placement typically put partition 0 on one of
+    /// the nodes it just lost. So the one event that explains why a node left must travel the un-gated
+    /// path. Four doc sites already named `SelfDrainInitiated` as the exemplar for exactly this
+    /// (`ClusterEvent` x2, `emitLocal`, and the budget test above) — the wiring was the one place that
+    /// did not follow it, and the suppression logged at DEBUG, invisible at default INFO.
+    @Test
+    void emitLocal_selfDrainInitiated_notOwner_isPublished() {
+        var h = Harness.create(Harness.defaultRetention(), NOT_OWNER);
+        h.aggregator().emitLocal(selfDrainInitiated(h));
+
+        var events = h.events();
+        assertThat(events).hasSize(1);
+        assertThat(events.getFirst()).isInstanceOf(ClusterEvent.SelfDrainInitiated.class);
+        assertThat(events.getFirst().severity()).isEqualTo(ClusterEvent.Severity.WARNING);
+        assertThat(events.getFirst().details()).containsEntry("nodeId", SELF.id())
+                                               .containsEntry("reason", "QUORUM_LOSS");
+    }
+
+    /// The trap this fix closes, pinned so it cannot be reintroduced by "simplifying" the call site back
+    /// to `emit`. The owner gate is a DIFFERENT gate from the leader gate the wiring comment rules out,
+    /// and it silently drops the event for precisely the node that needs to report it.
+    @Test
+    void emit_selfDrainInitiated_notOwner_isSuppressed_whichIsWhyWiringUsesEmitLocal() {
+        var h = Harness.create(Harness.defaultRetention(), NOT_OWNER);
+        h.aggregator().emit(selfDrainInitiated(h));
+
+        assertThat(h.events()).isEmpty();
+    }
+
+    /// An OWNER self-draining must not double-publish: `emitLocal` bypasses the owner gate rather than
+    /// adding a second path, so the owner case emits exactly once.
+    @Test
+    void emitLocal_selfDrainInitiated_owner_isPublishedExactlyOnce() {
+        var h = Harness.create(Harness.defaultRetention(), OWNER);
+        h.aggregator().emitLocal(selfDrainInitiated(h));
+
+        assertThat(h.events()).hasSize(1);
+    }
+
     /// Rate-limit: within the 60s window per (streamName, phase) the first growth-phase exhaustion
     /// emits and subsequent ones are suppressed (a saturated growing stream must not flood the log).
     @Test
