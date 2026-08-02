@@ -945,6 +945,29 @@ public interface AetherNode extends ManageableNode {
                      .or(true);
     }
 
+    /// Whether a committed stream-partition owner is still a live cluster member (#568).
+    ///
+    /// Committed stream ownership has no relinquish path other than the owner releasing it, so a record
+    /// whose holder has died outlives it indefinitely and wedges the partition — see the wiring comment on
+    /// `streamCommittedOwnerSource`. Treating a dead holder's record as absent is what lets HRW ownership
+    /// take effect, and it closes the class: any partition whose committed owner dies is otherwise exposed.
+    ///
+    /// [`MembershipFsm#countedMembers`] is the correct set on two counts. It is ROLE-BLIND — a stream owner
+    /// may be a worker, so the core-scoped projection would wrongly evict worker-owned partitions. And it is
+    /// MEMBER + SUSPECT — a transient SUSPECT keeps its ownership (ownership must not flap on a link
+    /// wobble), while only a confirmed DEAD member, already removed from the counted set, releases it.
+    ///
+    /// **Empty membership means "cannot judge", not "nobody is alive".** During the boot window the FSM has
+    /// no members; answering `false` there would reject every committed owner and reintroduce exactly the
+    /// #491 F4 self-promote the gate exists to prevent. Absent evidence, the record stands.
+    /// Package-private rather than private so the #568 semantics — including the boot-window guard — are
+    /// directly testable; the boot guard is the part most likely to be "simplified" into a regression.
+    static boolean committedOwnerStillAlive(MembershipFsm membershipFsm, NodeId owner) {
+        var counted = membershipFsm.countedMembers();
+
+        return counted.isEmpty() || counted.contains(owner);
+    }
+
     private static void snapshotAllSetups(Map<String, StorageFactory.StorageSetup> storageSetups) {
         storageSetups.values().forEach(setup -> setup.snapshotManager()
                                                      .maybeSnapshot());
@@ -3165,7 +3188,31 @@ public interface AetherNode extends ManageableNode {
         // #491 F4: the committed StreamPartitionOwnershipValue.owner source, hoisted here so the backfill
         // orchestrator can gate HRW self-election on it (a diverged/empty-ring node must not self-promote
         // while a DIFFERENT node is the committed owner). Reused by the #265 owner-release guard below.
-        var streamCommittedOwnerSource = KvCommittedStreamOwnerSource.kvCommittedStreamOwnerSource(kvStore);
+        //
+        // #568: the committed record is only authoritative while its holder is ALIVE. Committed stream
+        // ownership has no relinquish path other than the owner itself releasing it, so when the committed
+        // owner dies the record outlives it forever. That wedged a partition permanently: a fresh
+        // CTM replacement HRW-ranked itself owner of a stream with existing history, but `isSelfOwner`
+        // reads COMMITTED ownership and answered false, so `promoteOwner` was never taken; HRW-owner==self
+        // then filtered to none() and the flow fell to `backfillViaRegistryOrColdStart` ->
+        // `handleNoSource` -> `waitThenPromote`, which suppressed self-promotion precisely BECAUSE a
+        // committed owner existed (correctly preserving the #445 empty-owner distrust gate). Every step
+        // correct; composed, no exit. Observed live: an owner stuck SYNCING@-1 for 13+ minutes, looping
+        // every 20s, while four replicas sat CAUGHT_UP holding the data.
+        //
+        // Filtering the record by liveness closes the class rather than the instance — ANY partition whose
+        // committed owner dies is otherwise exposed, not just system streams. `countedMembers()` is the
+        // right set: ROLE-BLIND (a stream owner may be a worker) and MEMBER+SUSPECT, so a transient
+        // SUSPECT still holds ownership and only a confirmed DEAD member releases it.
+        //
+        // The empty-set guard is load-bearing: before the FSM has any members (boot window) an unguarded
+        // filter would reject EVERY committed owner and reintroduce the #491 F4 self-promote this gate
+        // exists to prevent. Empty membership means "cannot judge liveness", not "nobody is alive".
+        var rawStreamCommittedOwnerSource = KvCommittedStreamOwnerSource.kvCommittedStreamOwnerSource(kvStore);
+        CommittedStreamOwnerSource streamCommittedOwnerSource =
+            (stream, partition) -> rawStreamCommittedOwnerSource.committedOwner(stream, partition)
+                                                                .filter(committed -> committedOwnerStillAlive(membershipFsm,
+                                                                                                              committed.owner()));
         var streamPartitionBackfill = PartitionBackfill.partitionBackfill(streamReplicaRegistry,
                                                                           streamPartitionRecovery,
                                                                           streamCatchupTransport,
