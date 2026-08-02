@@ -7,7 +7,8 @@
 
 > ⚠️ **`v1.0.0-rc3-candidate` is still STALE at `27cf20ed1`** — now 16 commits behind. Deliberately not
 > moved: the tag move publishes `ghcr.io/pragmaticalabs/aether-node:1.0.0-rc3-candidate`, which the cloud
-> harness pins, and #564 is unresolved. See §6.
+> harness pins. **HOLD — two rc3 defects found on the streaming/failover path after this doc was first
+> written: #567 and #568. See §10.**
 
 ## TL;DR
 
@@ -209,3 +210,87 @@ failures; `restore_cluster_baseline` cleaned it for every subsequent test.
   across 11 containers on an idle host (load 0.10).
 - **One transient ~900–1100s convergence episode** occurred mid-run on an idle host and self-recovered.
   Unexplained; not reproduced. Noted in case it recurs.
+
+## 10. POST-SCRIPT — two rc3 defects found after §1-§9 were written
+
+A `--skip-teardown` re-run of `02-chaos` alone (to investigate #564) turned up two defects that the full
+gate had masked. **Cluster B containers were left running and still hold this evidence.**
+
+### #567 — owner failover re-appends the ENTIRE partition history
+
+**Measured directly on the live cluster**, not inferred:
+
+```
+GET /api/streams/read/repl-failover-events/0?fromOffset=0&limit=100
+  total events:         50
+  distinct data values: 25      <- every marker appears exactly TWICE
+  offset 24 -> marker 0024
+  offset 25 -> marker 0000      <- history restarts here
+```
+
+25 events were published (20 pre-kill + 5 post-repair). The partition holds 50. Both replicas report
+`CAUGHT_UP` at `confirmedOffset 49` and `ownerHeadOffset` is 50 — **every existing surface reports the
+doubled log as healthy.**
+
+Promoted-owner logs:
+
+```
+07:25:57 DefaultGovernorFailoverHandler.handleWithWatermark()
+         Failover repl-failover-events/0 from offset 0 -- no segments to replay
+07:26:05 PartitionBackfill.promote()   complete: applied 25 events, self CAUGHT_UP at offset 24
+07:26:10 PartitionBackfill.ownerSelfPromote()  owner self-promoting to CAUGHT_UP at watermark 49
+```
+
+**The watermark goes 24 → 49 in 5s with NO intervening apply logged.** Not a second backfill cycle.
+Strongest lead: the governor failover handler anchors replay at **offset 0**.
+
+**This supersedes #564**, which framed it as an offset gap and was closed. It also explains #564's apparent
+flakiness: the duplication is *deterministic*; only the offset at which the re-append begins is
+timing-dependent. When it begins at 25 the `Offsets 0..24 in publish order` assertion passes; when it begins
+at 20 it overwrites 20..24 with markers 0000..0004, yielding exactly `expected 25, got 20`.
+
+**Why the test could not catch it:** it asserts markers are PRESENT (content search — passes with
+duplicates) and offsets are IN ORDER over 0..24 only (passes when duplicates land at 25+). Neither can
+detect duplication. Acceptance on #567 adds `total entry count == events published`.
+
+### #568 — an empty HRW owner wedges forever (LIVE at time of writing)
+
+```
+system:cluster-events:1.0.0[0]
+  hrwOwner (CTM replacement node): SYNCING, confirmedOffset = -1   <- holds nothing
+  aether-b-node-2:                 CAUGHT_UP, confirmedOffset = 39
+  aether-b-node-3:                 CAUGHT_UP, confirmedOffset = 38
+```
+
+Looping `bound elapsed with no source but a committed owner exists — staying SYNCING` every 20s. Counted
+**9 occurrences in a 3-minute window**, continuous for 13+ minutes and still going at time of writing.
+
+The #445 empty-owner distrust gate correctly blocks the unsafe self-promote at `-1`. But the safe path —
+backfill from one of the two CAUGHT_UP replicas — never succeeds, so the partition is wedged permanently.
+
+**General hazard:** a CTM replacement can HRW-win ownership of ANY partition with existing history, and it
+always starts empty. This is not specific to the system stream.
+
+**It may reframe #565.** `system:cluster-events` backs `/api/events`. #565 was filed on the hypothesis that
+`SELF_DRAIN_INITIATED` lost a race against `Runtime.halt(2)`. If the events stream owner is wedged holding
+nothing, the event would be missing regardless of when it was published. **Rule this out before accepting
+#565's publish-vs-halt fix direction.**
+
+### Attribution
+
+Neither appears attributable to #557/#559. #567 is on the `promoteOwner` / governor-failover route; #568 is
+on the owner-side committed-owner gate. #559 changed only the non-owner empty-catchup-response path
+(`promoteIfAtOwnerTail`). But there is no pre-change baseline for either, so this is attribution by
+inspection, not proof.
+
+Circumstantial evidence #567 predates the change: the failover test's own read limit is sized
+`(N_EVENTS + K_EVENTS) * 2 + 10` — someone already sized for double the events.
+
+### Revised next-session order
+
+1. **#567 and #568 are release blockers** — both rc3, both on the streaming/failover path, one a live wedge
+   affecting the operator event feed.
+2. Do **not** move the candidate tag until both are understood. Publishing a candidate that duplicates
+   stream history on failover is worse than a delayed tag.
+3. **Preserve the cluster-B containers** if possible — they hold the live #568 state, which will not survive
+   teardown.
