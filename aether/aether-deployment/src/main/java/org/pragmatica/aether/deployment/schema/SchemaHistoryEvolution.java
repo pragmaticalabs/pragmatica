@@ -38,10 +38,23 @@ public sealed interface SchemaHistoryEvolution {
     /// The latest internal schema version of the `aether_schema_history` table — the version every
     /// cluster converges to after [SchemaHistoryRepository#bootstrap].
     int LATEST_VERSION = 2;
-
     /// The fixed single-row meta table tracking the history table's own internal schema version.
     /// Created `IF NOT EXISTS` and never itself evolved.
     String META_TABLE = "aether_schema_history_meta";
+
+    /// The fixed single-row claim table naming the blueprint (`group:artifact`, version stripped)
+    /// that owns migration of THIS physical database. Created `IF NOT EXISTS` and, like
+    /// [#META_TABLE], never itself evolved — a new column would silently skip every existing
+    /// cluster, whose `IF NOT EXISTS` create is a no-op.
+    ///
+    /// It exists because `aether_schema_history` is UNQUALIFIED: there is exactly one history table
+    /// per PHYSICAL database, so two node config sections (`[database.a]`, `[database.b]`) pointing
+    /// at the same database would let two blueprints interleave unrelated version sequences in one
+    /// shared history. The publish-time gate in `BlueprintService.ensureMigrationOwnership` compares
+    /// datasource NAMES and cannot see that, since the physical target is a node-local config
+    /// resolution known only at migration time. This claim therefore lives IN the database being
+    /// migrated, where the physical identity is the table's own location.
+    String OWNER_TABLE = "aether_schema_owner";
 
     /// One ordered evolution step. `targetVersion` is the internal version this step raises the
     /// history table TO; `ddl` renders the dialect-aware statements (one or more) that perform it.

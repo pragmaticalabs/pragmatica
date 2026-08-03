@@ -19,6 +19,7 @@ import org.pragmatica.aether.resource.db.DatasourceConnectionProvider;
 import org.pragmatica.aether.resource.db.SqlConnector;
 import org.pragmatica.aether.slice.blueprint.BlueprintArtifact;
 import org.pragmatica.aether.slice.blueprint.BlueprintArtifactParser;
+import org.pragmatica.aether.slice.blueprint.BlueprintId;
 import org.pragmatica.aether.slice.blueprint.MigrationEntry;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SchemaMigrationLockKey;
@@ -493,17 +494,24 @@ class SchemaOrchestratorServiceInstance implements SchemaOrchestratorService {
                                                         BlueprintArtifact artifact) {
         return Option.option(artifact.schemaMigrations().get(datasourceName))
                      .filter(list -> !list.isEmpty())
-                     .map(scripts -> provisionAndMigrate(datasourceName, scripts))
+                     .map(scripts -> provisionAndMigrate(datasourceName,
+                                                         scripts,
+                                                         value.owningBlueprint()))
                      .or(() -> unavailableMigrationSet(datasourceName, value));
     }
 
-    private Promise<Unit> provisionAndMigrate(String datasourceName, List<MigrationEntry> scripts) {
+    /// The schema version record's `owningBlueprint` is the blueprint whose artifact declared these
+    /// scripts, so it is the identity claimed against the physical database's `aether_schema_owner`
+    /// row — a second blueprint whose node config section resolves to the SAME database is refused
+    /// there, where the publish-time name comparison could not see it.
+    private Promise<Unit> provisionAndMigrate(String datasourceName, List<MigrationEntry> scripts, BlueprintId owner) {
         log.info("Executing {} migration scripts for datasource '{}'", scripts.size(), datasourceName);
 
         return provisionConnector(datasourceName).flatMap(connector -> schemaManager.migrate(datasourceName,
                                                                                              scripts,
                                                                                              connector,
-                                                                                             self.id())
+                                                                                             self.id(),
+                                                                                             owner)
                                                                                     .onSuccess(result -> logMigrationSuccess(datasourceName,
                                                                                                                              result))
                                                                                     .mapToUnit()

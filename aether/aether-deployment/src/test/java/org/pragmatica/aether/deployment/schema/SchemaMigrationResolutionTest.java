@@ -385,7 +385,8 @@ class SchemaMigrationResolutionTest {
         public Promise<SchemaResult> migrate(String datasource,
                                              List<MigrationEntry> scripts,
                                              SqlConnector connector,
-                                             String nodeId) {
+                                             String nodeId,
+                                             BlueprintId owner) {
             invocations.add(datasource);
 
             return Promise.success(SchemaResult.schemaResult(scripts.size(), DECLARED_VERSION, 1L));
@@ -396,7 +397,8 @@ class SchemaMigrationResolutionTest {
                                           int targetVersion,
                                           List<MigrationEntry> scripts,
                                           SqlConnector connector,
-                                          String nodeId) {
+                                          String nodeId,
+                                          BlueprintId owner) {
             return Promise.success(SchemaResult.schemaResult(0, targetVersion, 1L));
         }
 
@@ -405,7 +407,8 @@ class SchemaMigrationResolutionTest {
                                               int baselineVersion,
                                               List<MigrationEntry> scripts,
                                               SqlConnector connector,
-                                              String nodeId) {
+                                              String nodeId,
+                                              BlueprintId owner) {
             return Promise.success(SchemaResult.schemaResult(0, baselineVersion, 1L));
         }
     }

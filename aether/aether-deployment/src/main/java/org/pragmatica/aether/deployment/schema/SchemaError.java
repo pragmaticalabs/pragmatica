@@ -162,4 +162,44 @@ public sealed interface SchemaError extends Cause {
             return HttpStatus.CONFLICT;
         }
     }
+
+    /// Migration-time single-migrator gate on the PHYSICAL database, the companion to
+    /// [DatasourceOwnershipConflict]. The publish-time check compares datasource NAMES, so two
+    /// distinct node config sections (`[database.a]`, `[database.b]`) resolving to the SAME physical
+    /// database slip past it: each name is unclaimed. Since `aether_schema_history` is unqualified —
+    /// one per physical database — both blueprints would then interleave unrelated version sequences
+    /// in a single shared history. The claim is therefore recorded IN the database being migrated
+    /// ([SchemaHistoryEvolution#OWNER_TABLE]) and read before any migration is applied, so a refused
+    /// claim writes nothing at all.
+    ///
+    /// Compared on `ArtifactBase` (`group:artifact`, version stripped), exactly like the publish-time
+    /// gate: republishing `my-app:1.0.1` over rows written by `my-app:1.0.0` is the same owner
+    /// advancing its own schema, not a conflict.
+    ///
+    /// Surfaces as HTTP 409: the request is well-formed and the conflict is with existing database
+    /// state, not with the payload.
+    record PhysicalDatasourceOwnershipConflict(String datasource, String currentOwnerBase, String rejectedBase) implements SchemaError, HttpStatusAware {
+        public static PhysicalDatasourceOwnershipConflict physicalDatasourceOwnershipConflict(String datasource,
+                                                                                              String currentOwnerBase,
+                                                                                              String rejectedBase) {
+            return new PhysicalDatasourceOwnershipConflict(datasource, currentOwnerBase, rejectedBase);
+        }
+
+        @Override
+        public String message() {
+            return "Blueprint '" + rejectedBase
+                 + "' rejected — the physical database behind datasource '" + datasource
+                 + "' is already migrated by blueprint '" + currentOwnerBase
+                 + "' (its 'aether_schema_owner' claim). No migration was applied."
+                 + " To recover: point this blueprint's '" + datasource
+                 + "' config section at a different physical database, or consolidate both blueprints'"
+                 + " migrations into the single blueprint '" + currentOwnerBase
+                 + "' that owns it.";
+        }
+
+        @Override
+        public HttpStatus httpStatus() {
+            return HttpStatus.CONFLICT;
+        }
+    }
 }

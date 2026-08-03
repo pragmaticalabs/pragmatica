@@ -12,6 +12,7 @@ import org.pragmatica.aether.resource.db.DatabaseType;
 import org.pragmatica.aether.resource.db.PoolConfig;
 import org.pragmatica.aether.resource.db.RowMapper;
 import org.pragmatica.aether.resource.db.SqlConnector;
+import org.pragmatica.aether.slice.blueprint.BlueprintId;
 import org.pragmatica.aether.slice.blueprint.MigrationEntry;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
@@ -29,6 +30,7 @@ import static org.pragmatica.lang.Option.some;
 class AetherSchemaManagerTest {
     private static final SchemaPolicy POLICY = SchemaPolicy.schemaPolicy();
     private static final String NODE_ID = "node-1";
+    private static final BlueprintId OWNER = BlueprintId.blueprintId("org.example:orders-app:1.0.0").unwrap();
 
     @Nested
     class PostgresFamily {
@@ -90,7 +92,7 @@ class AetherSchemaManagerTest {
                         INSERT INTO t VALUES (1);
                       """;
 
-            schemaManager().migrate("ds", List.of(migrationEntry("V4__bad.sql", sql, 4L)), connector, NODE_ID)
+            schemaManager().migrate("ds", List.of(migrationEntry("V4__bad.sql", sql, 4L)), connector, NODE_ID, OWNER)
                            .await()
                            .onSuccess(_ -> fail("Expected migration to fail with a SplitError"))
                            .onFailure(cause -> assertThat(cause).isInstanceOf(SplitError.UnterminatedDollarQuote.class));
@@ -306,7 +308,7 @@ class AetherSchemaManagerTest {
     }
 
     private void migrate(RecordingConnector connector, String filename, String sql) {
-        schemaManager().migrate("ds", List.of(migrationEntry(filename, sql, filename.hashCode())), connector, NODE_ID)
+        schemaManager().migrate("ds", List.of(migrationEntry(filename, sql, filename.hashCode())), connector, NODE_ID, OWNER)
                        .await()
                        .onFailure(cause -> fail("Migration failed: " + cause.message()));
     }
@@ -320,6 +322,7 @@ class AetherSchemaManagerTest {
     private static final class RecordingConnector implements SqlConnector {
         private static final String HISTORY_TABLE = "aether_schema_history";
         private static final String META_TABLE = "aether_schema_history_meta";
+        private static final String OWNER_TABLE = "aether_schema_owner";
 
         private final DatabaseConnectorConfig config;
         private final RecordingConnector parent;
@@ -402,9 +405,12 @@ class AetherSchemaManagerTest {
         /// Schema-evolution bootstrap statements against the meta table
         /// (`aether_schema_history_meta`) are bookkeeping, not migration body or history rows, so
         /// they are dropped before classification — its substring would otherwise match the
-        /// history-table prefix and be miscounted as a history-row write.
+        /// history-table prefix and be miscounted as a history-row write. The single-migrator claim
+        /// table (`aether_schema_owner`, #566) is dropped for the same reason: its `CREATE`/`INSERT`
+        /// is ownership bookkeeping, and being neither history nor migration body it would otherwise
+        /// land in `migrationStatements`.
         private void recordStatement(String sql) {
-            if (sql.contains(META_TABLE)) {
+            if (sql.contains(META_TABLE) || sql.contains(OWNER_TABLE)) {
                 return;
             }
 

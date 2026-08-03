@@ -19,6 +19,7 @@ import org.pragmatica.aether.deployment.schema.SchemaHistoryRepository.Migration
 import org.pragmatica.aether.pg.split.Statement;
 import org.pragmatica.aether.pg.split.StatementSplitter;
 import org.pragmatica.aether.resource.db.SqlConnector;
+import org.pragmatica.aether.slice.blueprint.BlueprintId;
 import org.pragmatica.aether.slice.blueprint.MigrationEntry;
 import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Option;
@@ -33,22 +34,30 @@ import static org.pragmatica.aether.deployment.schema.SchemaHistoryRepository.Ap
 
 
 public interface AetherSchemaManager {
+    /// `owner` is the blueprint whose artifact declared these scripts. Every entry point claims
+    /// migration ownership of the PHYSICAL database
+    /// ([SchemaHistoryRepository#claimOwnership]) right after bootstrap and before reading applied
+    /// history, so a database already claimed by a different blueprint is refused with
+    /// [SchemaError.PhysicalDatasourceOwnershipConflict] having written nothing.
     Promise<SchemaResult> migrate(String datasource,
                                   List<MigrationEntry> scripts,
                                   SqlConnector connector,
-                                  String nodeId);
+                                  String nodeId,
+                                  BlueprintId owner);
 
     Promise<SchemaResult> undo(String datasource,
                                int targetVersion,
                                List<MigrationEntry> scripts,
                                SqlConnector connector,
-                               String nodeId);
+                               String nodeId,
+                               BlueprintId owner);
 
     Promise<SchemaResult> baseline(String datasource,
                                    int baselineVersion,
                                    List<MigrationEntry> scripts,
                                    SqlConnector connector,
-                                   String nodeId);
+                                   String nodeId,
+                                   BlueprintId owner);
 
     static AetherSchemaManager aetherSchemaManager(SchemaPolicy policy) {
         return new DefaultAetherSchemaManager(policy, SchemaHistoryRepository.schemaHistoryRepository());
@@ -70,13 +79,20 @@ final class DefaultAetherSchemaManager implements AetherSchemaManager {
         this.historyRepo = historyRepo;
     }
 
+    /// Claim ownership of the physical database IMMEDIATELY after bootstrap and BEFORE
+    /// [SchemaHistoryRepository#queryApplied], so a refused claim short-circuits with no history read
+    /// and no migration applied.
     @Override
     public Promise<SchemaResult> migrate(String datasource,
                                          List<MigrationEntry> scripts,
                                          SqlConnector connector,
-                                         String nodeId) {
+                                         String nodeId,
+                                         BlueprintId owner) {
         return parseAll(scripts).async()
                        .flatMap(parsed -> historyRepo.bootstrap(connector)
+                                                     .flatMap(_ -> historyRepo.claimOwnership(connector,
+                                                                                              datasource,
+                                                                                              owner))
                                                      .flatMap(_ -> historyRepo.queryApplied(connector))
                                                      .flatMap(applied -> executeMigration(datasource,
                                                                                           parsed,
@@ -90,9 +106,13 @@ final class DefaultAetherSchemaManager implements AetherSchemaManager {
                                       int targetVersion,
                                       List<MigrationEntry> scripts,
                                       SqlConnector connector,
-                                      String nodeId) {
+                                      String nodeId,
+                                      BlueprintId owner) {
         return parseAll(scripts).async()
                        .flatMap(parsed -> historyRepo.bootstrap(connector)
+                                                     .flatMap(_ -> historyRepo.claimOwnership(connector,
+                                                                                              datasource,
+                                                                                              owner))
                                                      .flatMap(_ -> historyRepo.queryApplied(connector))
                                                      .flatMap(applied -> executeUndo(datasource,
                                                                                      targetVersion,
@@ -107,9 +127,13 @@ final class DefaultAetherSchemaManager implements AetherSchemaManager {
                                           int baselineVersion,
                                           List<MigrationEntry> scripts,
                                           SqlConnector connector,
-                                          String nodeId) {
+                                          String nodeId,
+                                          BlueprintId owner) {
         return parseAll(scripts).async()
                        .flatMap(parsed -> historyRepo.bootstrap(connector)
+                                                     .flatMap(_ -> historyRepo.claimOwnership(connector,
+                                                                                              datasource,
+                                                                                              owner))
                                                      .flatMap(_ -> historyRepo.queryApplied(connector))
                                                      .flatMap(applied -> executeBaseline(datasource,
                                                                                          baselineVersion,
