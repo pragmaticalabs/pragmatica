@@ -820,11 +820,23 @@ teardown() {
             # Those rows are dropped by the per-cluster orphan filter and survived
             # teardown last run (4 orphan VMs leaked). A final bare reaper run (no
             # --cluster) matches ANY `aether-cluster` OR `aether-node-id` label and
-            # closes the gap. Safe here: the integration run owns every aether-labeled
-            # resource in the account, and both cluster reaps already ran — anything
-            # still labeled is an orphan from THIS run. Only fired when a cloud cluster
-            # was actually provisioned this run.
-            if [ "${A_SUITES_SELECTED:-0}" -gt 0 ] || [ ${#B_SUITES[@]} -gt 0 ]; then
+            # closes the gap. Only fired when cloud resources were ACTUALLY provisioned
+            # this run.
+            #
+            # 2026-08-03 — TWO corrections after this deleted the standing `test-pg` VM:
+            #
+            #   1. The previous guard tested SUITES SELECTED, not resources provisioned, so
+            #      a run that died during bootstrap (unresolvable ${env:PG_*} secrets, 15s in,
+            #      zero VMs created) still reached this line. It now gates on
+            #      CLOUD_RESOURCES_PROVISIONED, set only after a bootstrap call returns.
+            #
+            #   2. The previous comment claimed "Safe here: the integration run owns every
+            #      aether-labeled resource in the account." That premise was FALSE. `test-pg`
+            #      is aether-labeled, long-lived, and owned by no run. cloud-reaper.sh now
+            #      protects it by default (PROTECTED_CLUSTERS), so this bare reap can no
+            #      longer take it even if the guard above is wrong again — the tool enforces
+            #      it rather than every caller having to remember.
+            if [ "${CLOUD_RESOURCES_PROVISIONED:-false}" = true ]; then
                 ("${REPO_ROOT}/../tools/cloud-reaper.sh" --destroy --force 2>&1 | tail -3 || true)
             fi
             # Re-close PG firewall (5432 → denied) after cluster teardown.
@@ -1018,6 +1030,9 @@ if [ "$SKIP_DEPLOY" = false ]; then
             export CLOUD_TOML_A CLOUD_TOML_B
             if [ ${#A_SUITES[@]} -gt 0 ]; then
                 bootstrap_cloud_cluster_a
+                # Records that cloud resources were ACTUALLY provisioned this run, which is
+                # what the teardown safety-net must gate on. See the guard below.
+                CLOUD_RESOURCES_PROVISIONED=true
             else
                 log_info "Skipping Cluster A bootstrap (no A-suites selected)"
             fi
