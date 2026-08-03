@@ -1606,6 +1606,29 @@ publish_blueprint() {
     return 0
 }
 
+# Publish a blueprint and ABORT the calling test if the publish is REFUSED (#566 acceptance 4).
+#
+# `publish_blueprint` already returns non-zero on an HTTP error, but that return is easy to drop:
+# `run_test` deliberately invokes each test function as `if "$fn"; then` so a `set -e` abort inside
+# a test cannot skip `cleanup()` and leave the cluster degraded for the rest of the suite. A very
+# useful property — with the side effect that `set -e` is masked for the WHOLE test body, so an
+# unchecked non-zero return from any helper is silently ignored and execution continues.
+#
+# That is how a refused publish became an unrelated-looking failure two steps later: a 409
+# datasource-ownership conflict on `POST /api/blueprints/publish` left the blueprint unregistered,
+# the test carried on to `deploy_start`, and the suite reported `output does not contain
+# deploymentId` while the actual cause (the 409, with its explanatory message) sat further up the
+# log as a warning. Callers that must not proceed past a failed publish use THIS helper; the raw
+# `publish_blueprint` remains for callers that legitimately inspect the outcome themselves.
+publish_blueprint_or_fail() {
+    local artifact="$1" result
+    if ! result=$(publish_blueprint "$artifact"); then
+        log_fail "Publish of ${artifact} was REFUSED — aborting before deploy so the real cause is the reported failure: $(printf '%s' "$result" | head -c 300)"
+        return 1
+    fi
+    printf '%s' "$result"
+}
+
 deploy_blueprint_file() {
     local filepath="$1"
     log_info "Deploying blueprint file: ${filepath}" >&2
