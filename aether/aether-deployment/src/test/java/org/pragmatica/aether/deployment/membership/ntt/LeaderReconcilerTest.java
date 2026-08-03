@@ -2103,6 +2103,67 @@ class LeaderReconcilerTest {
         }
     }
 
+    /// #509 probe — post-full-cluster-restart deficit-fill for stable-id members that are merely
+    /// slow to rejoin.
+    ///
+    /// The ticket (2026-07-24) reports that after a full-cluster restart the reconciler sees
+    /// `clusterMembers < configured` and provisions EMPTY replacements for configured peers that
+    /// have not finished rejoining, `failedPeer=None`, un-gated by auto-heal-off. These tests
+    /// reproduce that shape against CURRENT code rather than assuming it still holds: several gates
+    /// landed on or after that date (the arm-latch, `reachedFullMembership`, the deficit debounce),
+    /// and `MembershipFsm#seed` promotes the whole CONFIGURED core set to MEMBER at wiring time —
+    /// which, if it applies here, means a restarted leader counts the slow rejoiners and sees no
+    /// deficit at all.
+    ///
+    /// Whichever way these land they are worth keeping: they pin the restart-with-laggards
+    /// behaviour, which nothing else in this class covers.
+    @Nested
+    class PostRestartSlowRejoin {
+        /// The restart shape: the leader's FSM is seeded from CONFIGURED topology (as `AetherNode`
+        /// does at wiring), only a quorum actually rejoins, and leadership is gained on a term > 1
+        /// so `reachedFullMembership` is pre-latched via the re-election path. Nothing here carries
+        /// a death verdict — the missing peers are known stable IDs that simply have not come back.
+        @Test
+        void reconcile_configuredPeersSeededButNotYetRejoined_doesNotProvisionReplacements() {
+            configuredCoreCount.set(5);
+            // Config-topology seed: every configured core, including the two that have not rejoined.
+            membershipFsm.seed(Set.of(PEER_A, PEER_B, PEER_C, PEER_D));
+            // Only PEER_A and PEER_B actually came back and are observed.
+            seedClusterWithPeers(PEER_A, PEER_B);
+            leaderTerm.set(2L);
+
+            reconciler.activate();
+            triggerAndFireReconcile();
+            advancePastProvisioningGates();
+            triggerAndFireReconcile();
+
+            assertThat(ctm.provisionReplacementCalls()).as(
+                "#509: configured peers that are merely slow to rejoin must not be replaced by empty nodes")
+                      .isEmpty();
+        }
+
+        /// Control: a peer carrying a genuine death verdict MUST still be replaced, otherwise a
+        /// "grace" for slow rejoiners would silently disable auto-heal. Without this, the assertion
+        /// above could be satisfied by provisioning being broken outright.
+        @Test
+        void reconcile_configuredPeerConfirmedDead_stillProvisionsReplacement() {
+            configuredCoreCount.set(5);
+            membershipFsm.seed(Set.of(PEER_A, PEER_B, PEER_C, PEER_D));
+            seedClusterWithPeers(PEER_A, PEER_B, PEER_C, PEER_D);
+            leaderTerm.set(2L);
+
+            reconciler.activate();
+            triggerAndFireReconcile();
+            removePeers(PEER_D);
+            triggerAndFireReconcile();
+            advancePastProvisioningGates();
+            triggerAndFireReconcile();
+
+            assertThat(ctm.provisionReplacementCalls()).as("a confirmed-dead peer is a departure and must still auto-heal")
+                      .isNotEmpty();
+        }
+    }
+
     /// Recording `ClusterTopologyManager` stub. Phase 1.5 verification surface for
     /// `provisionReplacement` / `drainNode` / `reconcile` v2 calls.
     private static final class RecordingCtm implements ClusterTopologyManager {
