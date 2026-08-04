@@ -384,8 +384,8 @@ class AppHttpServerAdapter implements AppHttpServer {
     private static SecurityValidator buildSecurityValidator(AppHttpConfig config) {
         return switch (config.securityMode()) {
             case API_KEY -> SecurityValidator.apiKeyValidator(config.apiKeys());
-            case JWT -> config.jwtConfig().map(SecurityValidator::jwtValidator).or(SecurityValidator.noOpValidator());
-            case NONE -> SecurityValidator.noOpValidator();
+            case JWT -> config.jwtConfig().map(SecurityValidator::jwtValidator).or(SecurityValidator.permitAllValidator());
+            case NONE -> SecurityValidator.permitAllValidator();
         };
     }
 

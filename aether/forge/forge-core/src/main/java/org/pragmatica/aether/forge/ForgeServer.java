@@ -63,13 +63,13 @@ public final class ForgeServer {
     private volatile Option<ScheduledExecutorService> metricsScheduler = Option.empty();
     private volatile Option<StatusWebSocketPublisher> wsPublisher = Option.empty();
 
-    private final StatusWebSocketHandler wsHandler = new StatusWebSocketHandler(WebSocketAuthenticator.webSocketAuthenticator(SecurityValidator.noOpValidator(),
+    private final StatusWebSocketHandler wsHandler = new StatusWebSocketHandler(WebSocketAuthenticator.webSocketAuthenticator(SecurityValidator.permitAllValidator(),
                                                                                                                               false));
 
-    private final StatusWebSocketHandler dashboardWsHandler = new StatusWebSocketHandler(WebSocketAuthenticator.webSocketAuthenticator(SecurityValidator.noOpValidator(),
+    private final StatusWebSocketHandler dashboardWsHandler = new StatusWebSocketHandler(WebSocketAuthenticator.webSocketAuthenticator(SecurityValidator.permitAllValidator(),
                                                                                                                                        false));
 
-    private final StatusWebSocketHandler eventWsHandler = new StatusWebSocketHandler(WebSocketAuthenticator.webSocketAuthenticator(SecurityValidator.noOpValidator(),
+    private final StatusWebSocketHandler eventWsHandler = new StatusWebSocketHandler(WebSocketAuthenticator.webSocketAuthenticator(SecurityValidator.permitAllValidator(),
                                                                                                                                    false));
 
     private final HttpOperations http = JdkHttpOperations.jdkHttpOperations();

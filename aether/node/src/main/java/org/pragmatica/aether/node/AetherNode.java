@@ -3619,9 +3619,24 @@ public interface AetherNode extends ManageableNode {
             if (config.managementPort() > 0) {
                 var mgmtSecurityEnabled = config.appHttp()
                                                 .securityEnabled();
+                // #573: the false arm must DENY, not permit-all. It previously used the validator now
+                // named `permitAllValidator`, which grants ADMIN + SERVICE to every caller — so a node
+                // whose `[app-http] enabled` was false (the DEFAULT) served an unauthenticated,
+                // fully-privileged Management API. `denyUnlessPublicValidator` refuses anything but a
+                // Public route, and by FAILING rather than succeeding it also lets the
+                // `kvStoreAwareValidator` below consult the cluster's bootstrap admin keys, which the
+                // unconditionally-succeeding grant short-circuited entirely.
                 var configValidator = mgmtSecurityEnabled
                                       ? SecurityValidator.apiKeyValidator(config.appHttp().apiKeys())
-                                      : SecurityValidator.noOpValidator();
+                                      : SecurityValidator.denyUnlessPublicValidator();
+
+                if (!mgmtSecurityEnabled) {
+                    LOG.warn("Management API on port {} has NO configured credentials — non-public routes will be"
+                            + " REFUSED unless a cluster bootstrap admin key is present in KV. Set [app-http] enabled"
+                            + " = true with [app-http.api-keys.<key>] to authenticate operators (#573).",
+                             config.managementPort());
+                }
+
                 var mgmtSecurityValidator = SecurityValidator.kvStoreAwareValidator(configValidator,
                                                                                     () -> node.kvStore());
                 var managementServer = ManagementServer.managementServer(config.managementPort(),
