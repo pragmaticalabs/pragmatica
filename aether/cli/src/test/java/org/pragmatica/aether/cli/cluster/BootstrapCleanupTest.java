@@ -176,6 +176,94 @@ class BootstrapCleanupTest {
         return _ -> new TestCause("hetzner client unavailable").result();
     }
 
+    private static BootstrapState stateWithFirewall(long firewallId) {
+        var phases = new EnumMap<BootstrapPhase, PhaseStatus>(BootstrapPhase.class);
+        for (var phase : BootstrapPhase.values()) {phases.put(phase, PhaseStatus.COMPLETED);}
+        var resources = List.<CreatedResource>of(CreatedResource.CloudFirewall.cloudFirewall("hetzner",
+                                                                                             firewallId,
+                                                                                             "hetzner-eu",
+                                                                                             "aether-test-hetzner-eu"));
+        return BootstrapState.bootstrapState(CLUSTER_NAME,
+                                             "hash-1",
+                                             "2026-05-01T00:00:00Z",
+                                             phases,
+                                             resources,
+                                             List.of(),
+                                             List.of());
+    }
+
+    /// The cleanup arm for firewalls used to PRINT and return success without issuing any call, so
+    /// destroy reported "Cleaned up ..." while the firewall kept existing and kept costing money.
+    /// Asserting success is therefore NOT enough — the delete call itself has to be observed.
+    @Test
+    void cleanup_deletesFirewall_whenCloudFirewallResourcePresent() {
+        var firewallDeletes = new ArrayList<Long>();
+        var state = stateWithFirewall(77L);
+
+        var result = BootstrapCleanup.cleanup(state,
+                                              providerName -> new TestCause("unused").result(),
+                                              providerName -> Result.success(new FirewallRecordingHetznerClient(firewallDeletes)));
+
+        assertTrue(result.isSuccess(), () -> "cleanup must succeed: " + result);
+        assertEquals(List.of(77L), firewallDeletes,
+                     "Hetzner deleteFirewall must be called with the recorded firewall id");
+    }
+
+    @Test
+    void cleanup_surfacesFailure_whenFirewallDeleteFails() {
+        var state = stateWithFirewall(77L);
+
+        var result = BootstrapCleanup.cleanup(state,
+                                              providerName -> new TestCause("unused").result(),
+                                              failingHetznerResolver());
+
+        assertTrue(result.isFailure(), "a firewall that could not be deleted must NOT report success");
+    }
+
+    /// Scope guard: firewall teardown must issue exactly the id-scoped delete and nothing else. A
+    /// label sweep here is what destroyed the standing `test-pg` VM on 2026-08-03 (#572) — every
+    /// other client call throws.
+    record FirewallRecordingHetznerClient(List<Long> deleteCalls) implements HetznerClient {
+        @Override public Promise<Unit> deleteFirewall(long firewallId) {
+            deleteCalls.add(firewallId);
+            return Promise.success(Unit.unit());
+        }
+
+        @Override public Promise<Unit> deleteSshKey(long sshKeyId) {throw fail("deleteSshKey");}
+        @Override public Promise<SshKey> createSshKey(SshKey.CreateSshKeyRequest request) {throw fail("createSshKey");}
+        @Override public Promise<List<SshKey>> listSshKeys() {throw fail("listSshKeys");}
+        @Override public Promise<Server> createServer(CreateServerRequest request) {throw fail("createServer");}
+        @Override public Promise<Unit> deleteServer(long serverId) {throw fail("deleteServer");}
+        @Override public Promise<Server> getServer(long serverId) {throw fail("getServer");}
+        @Override public Promise<List<Server>> listServers() {throw fail("listServers");}
+        @Override public Promise<List<Server>> listServers(String labelSelector) {throw fail("listServers(label)");}
+        @Override public Promise<Unit> updateServerLabels(long serverId, Map<String, String> labels) {throw fail("updateServerLabels");}
+        @Override public Promise<Unit> rebootServer(long serverId) {throw fail("rebootServer");}
+        @Override public Promise<List<Network>> listNetworks() {throw fail("listNetworks");}
+        @Override public Promise<Network> getNetwork(long networkId) {throw fail("getNetwork");}
+        @Override public Promise<List<Firewall>> listFirewalls() {throw fail("listFirewalls");}
+        @Override public Promise<List<Firewall>> listFirewalls(String labelSelector) {throw fail("listFirewalls(selector)");}
+        @Override public Promise<Firewall> createFirewall(Firewall.CreateFirewallRequest request) {throw fail("createFirewall");}
+        @Override public Promise<Unit> setFirewallRules(long firewallId, List<Firewall.Rule> rules) {throw fail("setFirewallRules");}
+        @Override public Promise<Unit> removeFirewallFromResources(long firewallId, long serverId) {throw fail("removeFirewallFromResources");}
+        @Override public Promise<Unit> applyFirewall(long firewallId, long serverId) {throw fail("applyFirewall");}
+        @Override public Promise<LoadBalancer> createLoadBalancer(LoadBalancer.CreateLoadBalancerRequest request) {throw fail("createLoadBalancer");}
+        @Override public Promise<Unit> deleteLoadBalancer(long loadBalancerId) {throw fail("deleteLoadBalancer");}
+        @Override public Promise<List<LoadBalancer>> listLoadBalancers() {throw fail("listLoadBalancers");}
+        @Override public Promise<Unit> addTarget(long loadBalancerId, long serverId) {throw fail("addTarget");}
+        @Override public Promise<Unit> removeTarget(long loadBalancerId, long serverId) {throw fail("removeTarget");}
+        @Override public Promise<Unit> addIpTarget(long loadBalancerId, String ip) {throw fail("addIpTarget");}
+        @Override public Promise<Unit> removeIpTarget(long loadBalancerId, String ip) {throw fail("removeIpTarget");}
+        @Override public Promise<LoadBalancer> getLoadBalancer(long loadBalancerId) {throw fail("getLoadBalancer");}
+        @Override public Promise<List<FloatingIp>> listFloatingIps() {throw fail("listFloatingIps");}
+        @Override public Promise<FloatingIp> getFloatingIp(long floatingIpId) {throw fail("getFloatingIp");}
+        @Override public Promise<Unit> assignFloatingIp(long floatingIpId, long serverId) {throw fail("assignFloatingIp");}
+
+        private static AssertionError fail(String name) {
+            return new AssertionError("Test stub: firewall cleanup must not call '" + name + "'");
+        }
+    }
+
     @Test
     void cleanup_deletesSshKey_whenSshKeyResourcePresent() {
         var deleteCalls = new ArrayList<Long>();
@@ -559,6 +647,11 @@ class BootstrapCleanupTest {
         @Override public Promise<Network> getNetwork(long networkId) {throw fail("getNetwork");}
         @Override public Promise<List<Firewall>> listFirewalls() {throw fail("listFirewalls");}
         @Override public Promise<Unit> applyFirewall(long firewallId, long serverId) {throw fail("applyFirewall");}
+        @Override public Promise<List<Firewall>> listFirewalls(String labelSelector) {throw fail("listFirewalls(selector)");}
+        @Override public Promise<Firewall> createFirewall(Firewall.CreateFirewallRequest request) {throw fail("createFirewall");}
+        @Override public Promise<Unit> setFirewallRules(long firewallId, List<Firewall.Rule> rules) {throw fail("setFirewallRules");}
+        @Override public Promise<Unit> deleteFirewall(long firewallId) {throw fail("deleteFirewall");}
+        @Override public Promise<Unit> removeFirewallFromResources(long firewallId, long serverId) {throw fail("removeFirewallFromResources");}
         @Override public Promise<LoadBalancer> createLoadBalancer(LoadBalancer.CreateLoadBalancerRequest request) {throw fail("createLoadBalancer");}
         @Override public Promise<Unit> deleteLoadBalancer(long loadBalancerId) {throw fail("deleteLoadBalancer");}
         @Override public Promise<List<LoadBalancer>> listLoadBalancers() {throw fail("listLoadBalancers");}
@@ -597,6 +690,11 @@ class BootstrapCleanupTest {
         @Override public Promise<Network> getNetwork(long networkId) {throw fail("getNetwork");}
         @Override public Promise<List<Firewall>> listFirewalls() {throw fail("listFirewalls");}
         @Override public Promise<Unit> applyFirewall(long firewallId, long serverId) {throw fail("applyFirewall");}
+        @Override public Promise<List<Firewall>> listFirewalls(String labelSelector) {throw fail("listFirewalls(selector)");}
+        @Override public Promise<Firewall> createFirewall(Firewall.CreateFirewallRequest request) {throw fail("createFirewall");}
+        @Override public Promise<Unit> setFirewallRules(long firewallId, List<Firewall.Rule> rules) {throw fail("setFirewallRules");}
+        @Override public Promise<Unit> deleteFirewall(long firewallId) {throw fail("deleteFirewall");}
+        @Override public Promise<Unit> removeFirewallFromResources(long firewallId, long serverId) {throw fail("removeFirewallFromResources");}
         @Override public Promise<LoadBalancer> createLoadBalancer(LoadBalancer.CreateLoadBalancerRequest request) {throw fail("createLoadBalancer");}
         @Override public Promise<Unit> deleteLoadBalancer(long loadBalancerId) {throw fail("deleteLoadBalancer");}
         @Override public Promise<List<LoadBalancer>> listLoadBalancers() {throw fail("listLoadBalancers");}

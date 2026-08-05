@@ -6,6 +6,7 @@ package org.pragmatica.aether.cli.cluster;
 
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.Comparator;
 import java.util.List;
 
 import org.pragmatica.aether.environment.ComputeProvider;
@@ -288,7 +289,7 @@ sealed interface BootstrapCleanup {
                                                        CleanupResolvers resolvers) {
         var failures = new ArrayList<String>();
 
-        for (var resource : resources) {
+        for (var resource : inDestructionOrder(resources)) {
             var result = destroyResource(state, resource, resolvers);
 
             logResourceResult(result, resource);
@@ -296,6 +297,30 @@ sealed interface BootstrapCleanup {
         }
 
         return List.copyOf(failures);
+    }
+
+    /// Hetzner refuses to delete a firewall still applied to a live server, so VMs must go first.
+    /// Reverse-of-creation (applied by `cleanupWith`) already yields that today, because the firewall
+    /// phase runs BEFORE provision — this makes the guarantee independent of record order rather than
+    /// a consequence of phase ordering, so a later producer that records a firewall AFTER provisioning
+    /// (e.g. applying a rule change once #578 lands) cannot silently break teardown. The sort is
+    /// stable, so equal-rank resources keep the reversed order they arrived in.
+    private static List<CreatedResource> inDestructionOrder(List<CreatedResource> resources) {
+        return resources.stream()
+                        .sorted(Comparator.comparingInt(BootstrapCleanup::destructionRank))
+                        .toList();
+    }
+
+    @SuppressWarnings("JBCT-PAT-01")
+    private static int destructionRank(CreatedResource resource) {
+        return switch (resource) {
+            case CreatedResource.SshDeployedConfig ignored -> 0;
+            case CreatedResource.ProvisionedVm ignored -> 1;
+            case CreatedResource.DockerContainer ignored -> 1;
+            case CreatedResource.FloatingIpAssignment ignored -> 2;
+            case CreatedResource.CloudFirewall ignored -> 3;
+            case CreatedResource.SshKeyResource ignored -> 4;
+        };
     }
 
     @Contract
@@ -319,7 +344,7 @@ sealed interface BootstrapCleanup {
                                                 CleanupResolvers resolvers) {
         return switch (resource) {
             case CreatedResource.ProvisionedVm vm -> destroyVm(state, vm, resolvers);
-            case CreatedResource.FirewallRule rule -> deleteFirewallRule(rule);
+            case CreatedResource.CloudFirewall firewall -> deleteCloudFirewall(state, firewall, resolvers);
             case CreatedResource.FloatingIpAssignment ip -> detachFloatingIp(ip);
             case CreatedResource.DockerContainer container -> removeContainer(container);
             case CreatedResource.SshDeployedConfig config -> removeRemoteConfig(config);
@@ -327,7 +352,28 @@ sealed interface BootstrapCleanup {
         };
     }
 
+    /// Deletes the standalone firewall [ComputeProvider#openIngress] created for a source.
+    ///
+    /// This used to print "Deleting firewall rule ..." and return success WITHOUT issuing any call,
+    /// so `logResourceResult` reported "Cleaned up ..." for a firewall that still existed and still
+    /// cost money. Nothing produced a firewall resource at the time, which is why the lie was
+    /// invisible; wiring a producer to that stub would have leaked every firewall Aether created.
+    ///
+    /// Deletion is scoped by the recorded id ALONE — never by a label sweep. An unscoped reap is
+    /// exactly what destroyed the standing `test-pg` VM and its firewall on 2026-08-03 (#572).
     @SuppressWarnings("JBCT-EX-01")
+    private static Result<Unit> deleteCloudFirewall(BootstrapState state,
+                                                    CreatedResource.CloudFirewall firewall,
+                                                    CleanupResolvers resolvers) {
+        System.out.printf("  Deleting firewall %s (id=%d)...%n", firewall.name(), firewall.firewallId());
+        if (!"hetzner".equals(firewall.provider())) {
+            return new UnsupportedFirewallProvider(firewall.provider()).result();
+        }
+
+        return resolveHetznerClientFor(state, firewall.provider(), resolvers).flatMap(client -> client.deleteFirewall(firewall.firewallId())
+                                                                                                      .await());
+    }
+
     private static Result<Unit> deleteSshKey(BootstrapState state,
                                              CreatedResource.SshKeyResource key,
                                              CleanupResolvers resolvers) {
@@ -336,32 +382,31 @@ sealed interface BootstrapCleanup {
             return new UnsupportedSshKeyProvider(key.provider()).result();
         }
 
-        return resolveHetznerClient(state, key, resolvers).flatMap(client -> client.deleteSshKey(key.sshKeyId())
-                                                                                   .await());
+        return resolveHetznerClientFor(state, key.provider(), resolvers).flatMap(client -> client.deleteSshKey(key.sshKeyId())
+                                                                                                 .await());
     }
 
-    /// RFC-0016 W4 — SSH-key reaping routes through the persisted handle first (the credential the token
+    /// RFC-0016 W4 — reaping routes through the persisted handle first (the credential the token
     /// that provisioned uses), so a token supplied under a non-default env-var name still reaps its own
-    /// keys. Only when NO handle names this provider does it fall back — loudly — to the raw-env resolver.
+    /// resources. Only when NO handle names this provider does it fall back — loudly — to the raw-env resolver.
     @SuppressWarnings("JBCT-PAT-01")
-    private static Result<HetznerClient> resolveHetznerClient(BootstrapState state,
-                                                              CreatedResource.SshKeyResource key,
-                                                              CleanupResolvers resolvers) {
+    private static Result<HetznerClient> resolveHetznerClientFor(BootstrapState state,
+                                                                 String provider,
+                                                                 CleanupResolvers resolvers) {
         var handle = state.sources()
                           .values()
                           .stream()
-                          .filter(candidate -> key.provider()
-                                                  .equals(candidate.provider()))
+                          .filter(candidate -> provider.equals(candidate.provider()))
                           .findFirst()
                           .orElse(null);
 
         if (handle == null) {
-            System.err.println("  WARN: no persisted cleanup handle names SSH-key provider '" + key.provider()
+            System.err.println("  WARN: no persisted cleanup handle names provider '" + provider
                               + "'; falling back to raw HCLOUD_TOKEN. A token that provisioned SHOULD be able to reap"
-                              + " its own ssh keys — a missing handle means bootstrap did not persist one.");
+                              + " its own resources — a missing handle means bootstrap did not persist one.");
 
             return resolvers.hetznerClientFallback()
-                            .apply(key.provider());
+                            .apply(provider);
         }
 
         return hetznerClientFromHandle(handle, resolvers);
@@ -469,12 +514,6 @@ sealed interface BootstrapCleanup {
                                                                       .await());
     }
 
-    private static Result<Unit> deleteFirewallRule(CreatedResource.FirewallRule rule) {
-        System.out.printf("  Deleting firewall rule %s...%n", rule.resourceId());
-
-        return Result.unitResult();
-    }
-
     private static Result<Unit> detachFloatingIp(CreatedResource.FloatingIpAssignment ip) {
         System.out.printf("  Detaching floating IP %s from %s...%n", ip.floatingIp(), ip.targetNodeId());
 
@@ -506,6 +545,13 @@ sealed interface BootstrapCleanup {
         @Override
         public String message() {
             return "SSH-key sweep completed with failures: " + detail;
+        }
+    }
+
+    record UnsupportedFirewallProvider(String provider) implements Cause {
+        @Override
+        public String message() {
+            return "Unsupported firewall provider for cleanup: '" + provider + "'";
         }
     }
 

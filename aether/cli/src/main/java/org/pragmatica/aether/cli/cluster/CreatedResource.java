@@ -20,18 +20,23 @@ public sealed interface CreatedResource {
         }
     }
 
-    record FirewallRule(String provider, String resourceId, String sourceName, int port, String protocol) implements CreatedResource {
-        static FirewallRule firewallRule(String provider,
-                                         String resourceId,
-                                         String sourceName,
-                                         int port,
-                                         String protocol) {
-            return new FirewallRule(provider, resourceId, sourceName, port, protocol);
+    /// A standalone cloud firewall created by [ComputeProvider#openIngress] for one source
+    /// (cluster-bootstrap-spec §6.2). ONE resource per source carrying ALL of that source's rules —
+    /// a `"tcp+udp"` entry is two rules on this one firewall, not two firewalls — so destroy issues
+    /// exactly one delete.
+    record CloudFirewall(String provider, long firewallId, String sourceName, String name) implements CreatedResource {
+        static CloudFirewall cloudFirewall(String provider, long firewallId, String sourceName, String name) {
+            return new CloudFirewall(provider, firewallId, sourceName, name);
+        }
+
+        @Override
+        public String resourceId() {
+            return Long.toString(firewallId);
         }
 
         @Override
         public String description() {
-            return "Firewall rule " + resourceId + " (" + sourceName + " port " + port + "/" + protocol + ")";
+            return "Firewall " + name + " (id=" + firewallId + ", source=" + sourceName + ")";
         }
     }
 

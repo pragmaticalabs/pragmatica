@@ -189,11 +189,10 @@ sealed interface BootstrapStateJson {
                                                                                 node.path("resourceId").asText(),
                                                                                 node.path("sourceName").asText(),
                                                                                 node.path("role").asText());
-            case "FirewallRule" -> CreatedResource.FirewallRule.firewallRule(node.path("provider").asText(),
-                                                                             node.path("resourceId").asText(),
-                                                                             node.path("sourceName").asText(),
-                                                                             node.path("port").asInt(0),
-                                                                             node.path("protocol").asText("tcp"));
+            case "CloudFirewall" -> CreatedResource.CloudFirewall.cloudFirewall(node.path("provider").asText(),
+                                                                                node.path("firewallId").asLong(),
+                                                                                node.path("sourceName").asText(),
+                                                                                node.path("name").asText());
             case "FloatingIpAssignment" -> CreatedResource.FloatingIpAssignment.floatingIpAssignment(node.path("provider").asText(),
                                                                                                      node.path("floatingIp").asText(),
                                                                                                      node.path("targetNodeId").asText());
@@ -267,7 +266,7 @@ sealed interface BootstrapStateJson {
     static void appendResourceJson(StringBuilder sb, CreatedResource resource) {
         switch (resource) {
             case CreatedResource.ProvisionedVm vm -> appendVm(sb, vm);
-            case CreatedResource.FirewallRule rule -> appendFirewallRule(sb, rule);
+            case CreatedResource.CloudFirewall firewall -> appendCloudFirewall(sb, firewall);
             case CreatedResource.FloatingIpAssignment ip -> appendFloatingIp(sb, ip);
             case CreatedResource.DockerContainer container -> appendDockerContainer(sb, container);
             case CreatedResource.SshDeployedConfig config -> appendSshConfig(sb, config);
@@ -297,17 +296,15 @@ sealed interface BootstrapStateJson {
           .append("\"}");
     }
 
-    private static void appendFirewallRule(StringBuilder sb, CreatedResource.FirewallRule rule) {
-        sb.append("{\"type\": \"FirewallRule\", \"provider\": \"")
-          .append(escapeJson(rule.provider()))
-          .append("\", \"resourceId\": \"")
-          .append(escapeJson(rule.resourceId()))
-          .append("\", \"sourceName\": \"")
-          .append(escapeJson(rule.sourceName()))
-          .append("\", \"port\": ")
-          .append(rule.port())
-          .append(", \"protocol\": \"")
-          .append(escapeJson(rule.protocol()))
+    private static void appendCloudFirewall(StringBuilder sb, CreatedResource.CloudFirewall firewall) {
+        sb.append("{\"type\": \"CloudFirewall\", \"provider\": \"")
+          .append(escapeJson(firewall.provider()))
+          .append("\", \"firewallId\": ")
+          .append(firewall.firewallId())
+          .append(", \"sourceName\": \"")
+          .append(escapeJson(firewall.sourceName()))
+          .append("\", \"name\": \"")
+          .append(escapeJson(firewall.name()))
           .append("\"}");
     }
 
