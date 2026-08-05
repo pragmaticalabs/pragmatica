@@ -103,26 +103,6 @@ class HetznerCloudProviderTest {
         }
     }
 
-    @Nested
-    class IngressTests {
-
-        @Test
-        void openIngress_returnsNotSupported() {
-            provider.openIngress("fw-1", 8080, "tcp", "0.0.0.0/0", "test")
-                    .await()
-                    .onSuccess(unit -> assertThat(unit).isNull())
-                    .onFailure(HetznerCloudProviderTest::assertOperationNotSupported);
-        }
-
-        @Test
-        void closeIngress_returnsNotSupported() {
-            provider.closeIngress("fw-1", 8080, "tcp", "0.0.0.0/0")
-                    .await()
-                    .onSuccess(unit -> assertThat(unit).isNull())
-                    .onFailure(HetznerCloudProviderTest::assertOperationNotSupported);
-        }
-    }
-
     private static void assertUnknownQuota(QuotaStatus status) {
         assertThat(status.sufficient()).isTrue();
         assertThat(status.requested()).isEqualTo(3);

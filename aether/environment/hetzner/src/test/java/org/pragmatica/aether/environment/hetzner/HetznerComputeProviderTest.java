@@ -879,6 +879,20 @@ class HetznerComputeProviderTest {
         Promise<Unit> rebootServerResponse = Promise.success(Unit.unit());
         Promise<Unit> updateLabelsResponse = Promise.success(Unit.unit());
         Promise<List<SshKey>> listSshKeysResponse = Promise.success(List.of());
+        Promise<List<Firewall>> listFirewallsResponse = Promise.success(List.of());
+        Promise<Firewall> createFirewallResponse = Promise.success(new Firewall(77,
+                                                                                "fw",
+                                                                                List.of(),
+                                                                                Map.of()));
+
+        String lastFirewallSelector;
+        Firewall.CreateFirewallRequest lastCreateFirewallRequest;
+        long lastSetRulesFirewallId;
+        List<Firewall.Rule> lastSetRules;
+        long lastDeletedFirewallId;
+        int createFirewallCalls;
+        int setFirewallRulesCalls;
+        int deleteFirewallCalls;
 
         long lastDeletedServerId;
         long lastGetServerId;
@@ -963,6 +977,39 @@ class HetznerComputeProviderTest {
         }
 
         @Override
+        public Promise<List<Firewall>> listFirewalls(String labelSelector) {
+            lastFirewallSelector = labelSelector;
+            return listFirewallsResponse;
+        }
+
+        @Override
+        public Promise<Firewall> createFirewall(Firewall.CreateFirewallRequest request) {
+            lastCreateFirewallRequest = request;
+            createFirewallCalls++;
+            return createFirewallResponse;
+        }
+
+        @Override
+        public Promise<Unit> setFirewallRules(long firewallId, List<Firewall.Rule> rules) {
+            lastSetRulesFirewallId = firewallId;
+            lastSetRules = rules;
+            setFirewallRulesCalls++;
+            return Promise.success(Unit.unit());
+        }
+
+        @Override
+        public Promise<Unit> deleteFirewall(long firewallId) {
+            lastDeletedFirewallId = firewallId;
+            deleteFirewallCalls++;
+            return Promise.success(Unit.unit());
+        }
+
+        @Override
+        public Promise<Unit> removeFirewallFromResources(long firewallId, long serverId) {
+            return Promise.success(Unit.unit());
+        }
+
+        @Override
         public Promise<Unit> applyFirewall(long firewallId, long serverId) {
             return Promise.success(Unit.unit());
         }
@@ -1026,6 +1073,157 @@ class HetznerComputeProviderTest {
         @Override
         public Promise<Unit> assignFloatingIp(long floatingIpId, long serverId) {
             return Promise.success(Unit.unit());
+        }
+    }
+
+    /// REQ-5.1.8.4. The risk here is not "does a rule appear" but "can this ever touch a firewall
+    /// Aether did not create, drop a rule it did not own, or leave an unreclaimable resource behind"
+    /// — the 2026-08-03 test-pg incident (#572) is what the last one costs.
+    @Nested
+    class OpenIngressTests {
+        private static final String CLUSTER = "prod-eu";
+        private static final String SOURCE = "hetzner-eu";
+
+        private HetznerComputeProvider ingressProvider;
+
+        @BeforeEach
+        void setUpIngress() {
+            ingressProvider = HetznerComputeProvider.hetznerComputeProvider(testClient,
+                                                                            CONFIG.withDiscovery(CLUSTER))
+                                                    .unwrap();
+        }
+
+        private static Firewall.Rule rule(int port, String protocol, String cidr) {
+            return Firewall.Rule.inbound(port, protocol, cidr, "existing");
+        }
+
+        private static Firewall firewallWith(Firewall.Rule... rules) {
+            return new Firewall(77, "aether-prod-eu-hetzner-eu", List.of(rules), Map.of());
+        }
+
+        @Test
+        void openIngress_whenNoFirewallExists_createsFirewallLabelledForCleanup() {
+            ingressProvider.openIngress(SOURCE, 8070, "tcp", "0.0.0.0/0", "app_http")
+                           .await()
+                           .onFailure(cause -> assertThat(cause).isNull())
+                           .onSuccess(handle -> assertThat(handle.providerResourceId()).isEqualTo("77"));
+
+            assertThat(testClient.createFirewallCalls).isEqualTo(1);
+            // Without BOTH labels the firewall is invisible to tools/cloud-reaper.sh and leaks.
+            assertThat(testClient.lastCreateFirewallRequest.labels()).containsEntry("aether-cluster", CLUSTER)
+                                                                     .containsEntry("aether-source", SOURCE);
+            assertThat(testClient.lastCreateFirewallRequest.rules()).singleElement()
+                                                                     .satisfies(created -> {
+                                                                         assertThat(created.direction()).isEqualTo("in");
+                                                                         assertThat(created.port()).isEqualTo("8070");
+                                                                         assertThat(created.protocol()).isEqualTo("tcp");
+                                                                         assertThat(created.sourceIps()).containsExactly("0.0.0.0/0");
+                                                                     });
+        }
+
+        @Test
+        void openIngress_scopesLookupToBothClusterAndSource() {
+            ingressProvider.openIngress(SOURCE, 8070, "tcp", "0.0.0.0/0", "app_http").await();
+
+            assertThat(testClient.lastFirewallSelector).isEqualTo("aether-cluster=prod-eu,aether-source=hetzner-eu");
+        }
+
+        /// REQ-5.1.8.1 — "rules not listed are not touched". Hetzner has no add-one-rule action, so a
+        /// patch that sent only the new rule would silently wipe every other rule on the firewall.
+        @Test
+        void openIngress_whenFirewallExists_sendsUnionOfRulesRatherThanReplacing() {
+            var preexisting = rule(9000, "tcp", "10.0.0.0/8");
+
+            testClient.listFirewallsResponse = Promise.success(List.of(firewallWith(preexisting)));
+
+            ingressProvider.openIngress(SOURCE, 8070, "udp", "0.0.0.0/0", "app_http")
+                           .await()
+                           .onFailure(cause -> assertThat(cause).isNull())
+                           .onSuccess(handle -> assertThat(handle.providerResourceId()).isEqualTo("77"));
+
+            assertThat(testClient.createFirewallCalls).isZero();
+            assertThat(testClient.lastSetRulesFirewallId).isEqualTo(77);
+            assertThat(testClient.lastSetRules).hasSize(2)
+                                                .anySatisfy(kept -> assertThat(kept.port()).isEqualTo("9000"))
+                                                .anySatisfy(added -> assertThat(added.port()).isEqualTo("8070"));
+        }
+
+        /// A `"tcp+udp"` entry arrives as two calls, and bootstrap may be re-run. Neither may
+        /// duplicate a rule nor issue a pointless write.
+        @Test
+        void openIngress_whenRuleAlreadyPresent_returnsSameHandleAndWritesNothing() {
+            testClient.listFirewallsResponse = Promise.success(List.of(firewallWith(rule(8070, "tcp", "0.0.0.0/0"))));
+
+            ingressProvider.openIngress(SOURCE, 8070, "tcp", "0.0.0.0/0", "app_http")
+                           .await()
+                           .onFailure(cause -> assertThat(cause).isNull())
+                           .onSuccess(handle -> assertThat(handle.providerResourceId()).isEqualTo("77"));
+
+            assertThat(testClient.createFirewallCalls).isZero();
+            assertThat(testClient.setFirewallRulesCalls).isZero();
+        }
+
+        /// An unlabelled firewall cannot be reclaimed by any cleanup path. Refusing beats creating a
+        /// resource that silently costs money forever.
+        @Test
+        void openIngress_whenClusterNameAbsent_refusesInsteadOfCreatingUnlabelledFirewall() {
+            var noCluster = HetznerComputeProvider.hetznerComputeProvider(testClient, CONFIG).unwrap();
+
+            noCluster.openIngress(SOURCE, 8070, "tcp", "0.0.0.0/0", "app_http")
+                     .await()
+                     .onSuccess(handle -> assertThat(handle).isNull())
+                     .onFailure(cause -> assertThat(cause).isInstanceOf(EnvironmentError.OperationNotSupported.class));
+
+            assertThat(testClient.createFirewallCalls).isZero();
+        }
+
+        @Test
+        void closeIngress_whenLastRuleWithdrawn_deletesFirewall() {
+            testClient.listFirewallsResponse = Promise.success(List.of(firewallWith(rule(8070, "tcp", "0.0.0.0/0"))));
+
+            ingressProvider.closeIngress(SOURCE, 8070, "tcp", "0.0.0.0/0")
+                           .await()
+                           .onFailure(cause -> assertThat(cause).isNull());
+
+            assertThat(testClient.deleteFirewallCalls).isEqualTo(1);
+            assertThat(testClient.lastDeletedFirewallId).isEqualTo(77);
+            assertThat(testClient.setFirewallRulesCalls).isZero();
+        }
+
+        @Test
+        void closeIngress_whenOtherRulesRemain_keepsFirewallAndWritesRemainder() {
+            testClient.listFirewallsResponse = Promise.success(List.of(firewallWith(rule(8070, "tcp", "0.0.0.0/0"),
+                                                                                    rule(9000, "tcp", "10.0.0.0/8"))));
+
+            ingressProvider.closeIngress(SOURCE, 8070, "tcp", "0.0.0.0/0")
+                           .await()
+                           .onFailure(cause -> assertThat(cause).isNull());
+
+            assertThat(testClient.deleteFirewallCalls).isZero();
+            assertThat(testClient.lastSetRules).singleElement()
+                                                .satisfies(kept -> assertThat(kept.port()).isEqualTo("9000"));
+        }
+
+        @Test
+        void closeIngress_whenRuleAbsent_writesNothing() {
+            testClient.listFirewallsResponse = Promise.success(List.of(firewallWith(rule(9000, "tcp", "10.0.0.0/8"))));
+
+            ingressProvider.closeIngress(SOURCE, 8070, "tcp", "0.0.0.0/0")
+                           .await()
+                           .onFailure(cause -> assertThat(cause).isNull());
+
+            assertThat(testClient.deleteFirewallCalls).isZero();
+            assertThat(testClient.setFirewallRulesCalls).isZero();
+        }
+
+        @Test
+        void closeIngress_whenNoFirewallExists_succeedsWithoutWriting() {
+            ingressProvider.closeIngress(SOURCE, 8070, "tcp", "0.0.0.0/0")
+                           .await()
+                           .onFailure(cause -> assertThat(cause).isNull());
+
+            assertThat(testClient.deleteFirewallCalls).isZero();
+            assertThat(testClient.setFirewallRulesCalls).isZero();
         }
     }
 }

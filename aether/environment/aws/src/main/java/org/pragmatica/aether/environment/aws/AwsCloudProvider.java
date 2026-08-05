@@ -52,18 +52,4 @@ public record AwsCloudProvider(ComputeProvider computeProvider) implements Cloud
     public boolean supportsPreemptible() {
         return true;
     }
-
-    @Override
-    public Promise<Unit> openIngress(String sourceId,
-                                     int port,
-                                     String protocol,
-                                     String sourceCidr,
-                                     String description) {
-        return EnvironmentError.operationNotSupported("openIngress (AWS security group API not yet wired)").promise();
-    }
-
-    @Override
-    public Promise<Unit> closeIngress(String sourceId, int port, String protocol, String sourceCidr) {
-        return EnvironmentError.operationNotSupported("closeIngress (AWS security group API not yet wired)").promise();
-    }
 }

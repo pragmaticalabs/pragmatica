@@ -26,7 +26,11 @@ import java.util.Map;
 
 import org.pragmatica.cloud.hetzner.api.Firewall;
 import org.pragmatica.cloud.hetzner.api.Firewall.ApplyToResourcesRequest;
+import org.pragmatica.cloud.hetzner.api.Firewall.CreateFirewallRequest;
 import org.pragmatica.cloud.hetzner.api.Firewall.FirewallListResponse;
+import org.pragmatica.cloud.hetzner.api.Firewall.FirewallResponse;
+import org.pragmatica.cloud.hetzner.api.Firewall.RemoveFromResourcesRequest;
+import org.pragmatica.cloud.hetzner.api.Firewall.SetRulesRequest;
 import org.pragmatica.cloud.hetzner.api.FloatingIp;
 import org.pragmatica.cloud.hetzner.api.FloatingIp.AssignRequest;
 import org.pragmatica.cloud.hetzner.api.FloatingIp.FloatingIpListResponse;
@@ -84,6 +88,17 @@ public interface HetznerClient {
     Promise<Network> getNetwork(long networkId);
     /// Lists all firewalls.
     Promise<List<Firewall>> listFirewalls();
+    /// Lists firewalls matching a label selector (e.g., "aether-cluster=my-cluster").
+    Promise<List<Firewall>> listFirewalls(String labelSelector);
+    /// Creates a standalone firewall.
+    Promise<Firewall> createFirewall(CreateFirewallRequest request);
+    /// Replaces a firewall's entire rule set. Hetzner has no add-one-rule action.
+    Promise<Unit> setFirewallRules(long firewallId, List<Firewall.Rule> rules);
+    /// Deletes a firewall by ID. Fails while the firewall is still applied to any resource —
+    /// detach with [#removeFirewallFromResources] first.
+    Promise<Unit> deleteFirewall(long firewallId);
+    /// Detaches a firewall from a server.
+    Promise<Unit> removeFirewallFromResources(long firewallId, long serverId);
     /// Applies a firewall to a server.
     Promise<Unit> applyFirewall(long firewallId, long serverId);
     /// Creates a new load balancer.
@@ -190,6 +205,34 @@ record HetznerClientRecord(HetznerConfig config, HttpOperations http, JsonMapper
     @Override
     public Promise<List<Firewall>> listFirewalls() {
         return getJson("/firewalls", FirewallListResponse.class).map(FirewallListResponse::firewalls);
+    }
+
+    @Override
+    public Promise<List<Firewall>> listFirewalls(String labelSelector) {
+        return getJson("/firewalls?label_selector=" + encodeQueryParam(labelSelector),
+                       FirewallListResponse.class).map(FirewallListResponse::firewalls);
+    }
+
+    @Override
+    public Promise<Firewall> createFirewall(CreateFirewallRequest request) {
+        return postJson("/firewalls", request, FirewallResponse.class).map(FirewallResponse::firewall);
+    }
+
+    @Override
+    public Promise<Unit> setFirewallRules(long firewallId, List<Firewall.Rule> rules) {
+        return postJsonDiscarding("/firewalls/" + firewallId + "/actions/set_rules",
+                                  SetRulesRequest.setRulesRequest(rules));
+    }
+
+    @Override
+    public Promise<Unit> deleteFirewall(long firewallId) {
+        return delete("/firewalls/" + firewallId);
+    }
+
+    @Override
+    public Promise<Unit> removeFirewallFromResources(long firewallId, long serverId) {
+        return postJsonDiscarding("/firewalls/" + firewallId + "/actions/remove_from_resources",
+                                  RemoveFromResourcesRequest.removeFromServer(serverId));
     }
 
     @Override

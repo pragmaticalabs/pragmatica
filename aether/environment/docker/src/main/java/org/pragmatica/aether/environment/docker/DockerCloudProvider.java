@@ -52,18 +52,4 @@ public record DockerCloudProvider(ComputeProvider computeProvider) implements Cl
     public boolean supportsPreemptible() {
         return false;
     }
-
-    @Override
-    public Promise<Unit> openIngress(String sourceId,
-                                     int port,
-                                     String protocol,
-                                     String sourceCidr,
-                                     String description) {
-        return EnvironmentError.operationNotSupported("openIngress (Docker does not support ingress management)").promise();
-    }
-
-    @Override
-    public Promise<Unit> closeIngress(String sourceId, int port, String protocol, String sourceCidr) {
-        return EnvironmentError.operationNotSupported("closeIngress (Docker does not support ingress management)").promise();
-    }
 }

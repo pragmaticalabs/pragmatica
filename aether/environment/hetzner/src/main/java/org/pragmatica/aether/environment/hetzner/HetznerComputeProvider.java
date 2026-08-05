@@ -14,6 +14,7 @@ import java.util.stream.Stream;
 
 import org.pragmatica.aether.environment.ComputeProvider;
 import org.pragmatica.aether.environment.EnvironmentError;
+import org.pragmatica.aether.environment.IngressHandle;
 import org.pragmatica.aether.environment.InstanceId;
 import org.pragmatica.aether.environment.InstanceInfo;
 import org.pragmatica.aether.environment.InstanceStatus;
@@ -24,6 +25,8 @@ import org.pragmatica.aether.environment.ProvisionRequest;
 import org.pragmatica.aether.environment.ReadinessPolicy;
 import org.pragmatica.cloud.hetzner.HetznerClient;
 import org.pragmatica.cloud.hetzner.HetznerError;
+import org.pragmatica.cloud.hetzner.api.Firewall;
+import org.pragmatica.cloud.hetzner.api.Firewall.CreateFirewallRequest;
 import org.pragmatica.cloud.hetzner.api.Server;
 import org.pragmatica.cloud.hetzner.api.Server.CreateServerRequest;
 import org.pragmatica.cloud.hetzner.api.SshKey;
@@ -401,13 +404,170 @@ public record HetznerComputeProvider(HetznerClient client, HetznerEnvironmentCon
     private static Map<String, String> buildLabels(String clusterLabel, String role, String sourceName) {
         var labels = new HashMap<String, String>();
 
-        labels.put("aether-cluster", sanitizeLabelValue(clusterLabel));
+        labels.put(CLUSTER_LABEL, sanitizeLabelValue(clusterLabel));
         labels.put("aether-role", sanitizeLabelValue(role));
         if (!sourceName.isEmpty()) {
-            labels.put("aether-source", sanitizeLabelValue(sourceName));
+            labels.put(SOURCE_LABEL, sanitizeLabelValue(sourceName));
         }
 
         return labels;
+    }
+
+    static final String CLUSTER_LABEL = "aether-cluster";
+    static final String SOURCE_LABEL = "aether-source";
+
+    /// Ingress (REQ-5.1.8.4), create-or-patch. Per §6.2 Aether creates its rules as a STANDALONE
+    /// firewall associated with the source's servers — one firewall per (cluster, source), carrying
+    /// every rule that source declares. A `"tcp+udp"` entry arrives here as two calls (REQ-5.1.8.1);
+    /// the first creates the firewall, the second patches it and returns the SAME handle.
+    ///
+    /// The returned id is fed back into server-create (`firewall_ids`), so the rule is in force
+    /// before the instance exists. Applying it afterwards would leave a window in which the node is
+    /// up and — per §6.2, Hetzner servers with no firewall association accept ALL inbound — fully
+    /// open.
+    @Override
+    public Promise<IngressHandle> openIngress(String sourceId,
+                                              int port,
+                                              String protocol,
+                                              String sourceCidr,
+                                              String description) {
+        return firewallCluster().async()
+                              .flatMap(cluster -> openIngressFor(cluster,
+                                                                 sourceId,
+                                                                 port,
+                                                                 protocol,
+                                                                 sourceCidr,
+                                                                 description));
+    }
+
+    @Override
+    public Promise<Unit> closeIngress(String sourceId, int port, String protocol, String sourceCidr) {
+        return firewallCluster().async()
+                              .flatMap(cluster -> client.listFirewalls(firewallSelector(cluster, sourceId)))
+                              .flatMap(found -> withdrawFrom(found, port, protocol, sourceCidr));
+    }
+
+    /// An ingress firewall MUST carry `aether-cluster` — the out-of-band reaper
+    /// (`tools/cloud-reaper.sh`) enumerates by that label, so an unlabelled firewall is invisible to
+    /// every cleanup path and leaks as a paid resource. Refusing loudly beats creating one we cannot
+    /// later find; the bootstrap caller always supplies the cluster.
+    private Result<String> firewallCluster() {
+        var cluster = config.clusterName().or("");
+
+        return cluster.isEmpty()
+               ? EnvironmentError.operationNotSupported(NO_CLUSTER_FOR_INGRESS).result()
+               : success(cluster);
+    }
+
+    private static final String NO_CLUSTER_FOR_INGRESS = "openIngress/closeIngress (no cluster name resolved for this provider — an ingress firewall "
+                                                       + "without the aether-cluster label cannot be reclaimed by cleanup and would leak)";
+
+    private Promise<IngressHandle> openIngressFor(String cluster,
+                                                  String sourceId,
+                                                  int port,
+                                                  String protocol,
+                                                  String sourceCidr,
+                                                  String description) {
+        var rule = Firewall.Rule.inbound(port, protocol, sourceCidr, description);
+
+        return client.listFirewalls(firewallSelector(cluster, sourceId))
+                     .flatMap(found -> openOrPatch(cluster, sourceId, rule, port, protocol, sourceCidr, found));
+    }
+
+    private Promise<IngressHandle> openOrPatch(String cluster,
+                                               String sourceId,
+                                               Firewall.Rule rule,
+                                               int port,
+                                               String protocol,
+                                               String sourceCidr,
+                                               List<Firewall> found) {
+        if (found.isEmpty()) {
+            return createIngressFirewall(cluster, sourceId, rule);
+        }
+
+        return patchIngressFirewall(found.getFirst(), rule, port, protocol, sourceCidr);
+    }
+
+    private Promise<IngressHandle> createIngressFirewall(String cluster, String sourceId, Firewall.Rule rule) {
+        var labels = Map.of(CLUSTER_LABEL, sanitizeLabelValue(cluster), SOURCE_LABEL, sanitizeLabelValue(sourceId));
+        var request = CreateFirewallRequest.createFirewallRequest(firewallName(cluster, sourceId), List.of(rule), labels);
+
+        return client.createFirewall(request)
+                     .onSuccess(firewall -> log.info("Hetzner ingress: created firewall '{}' (id={}) for source '{}' with rule {}/{} from {}",
+                                                     firewall.name(),
+                                                     firewall.id(),
+                                                     sourceId,
+                                                     rule.port(),
+                                                     rule.protocol(),
+                                                     sourceCidr(rule)))
+                     .map(firewall -> IngressHandle.ingressHandle(Long.toString(firewall.id())));
+    }
+
+    /// Patch = union, never replace. Hetzner exposes no add-one-rule action, so the current rule set
+    /// is read and the new rule appended. Sending only the new rule would silently drop every other
+    /// rule on the firewall — and REQ-5.1.8.1 requires that rules not listed are not touched.
+    private Promise<IngressHandle> patchIngressFirewall(Firewall firewall,
+                                                        Firewall.Rule rule,
+                                                        int port,
+                                                        String protocol,
+                                                        String sourceCidr) {
+        var current = rulesOf(firewall);
+        var handle = IngressHandle.ingressHandle(Long.toString(firewall.id()));
+
+        if (current.stream().anyMatch(existing -> existing.sameTargetAs(port, protocol, sourceCidr))) {
+            return Promise.success(handle);
+        }
+
+        return client.setFirewallRules(firewall.id(),
+                                       Stream.concat(current.stream(),
+                                                     Stream.of(rule)).toList())
+                     .map(_ -> handle);
+    }
+
+    private Promise<Unit> withdrawFrom(List<Firewall> found, int port, String protocol, String sourceCidr) {
+        if (found.isEmpty()) {
+            return Promise.success(Unit.unit());
+        }
+
+        var firewall = found.getFirst();
+        var current = rulesOf(firewall);
+        var remaining = current.stream()
+                               .filter(existing -> !existing.sameTargetAs(port, protocol, sourceCidr))
+                               .toList();
+
+        if (remaining.size() == current.size()) {
+            return Promise.success(Unit.unit());
+        }
+
+        return remaining.isEmpty()
+               ? client.deleteFirewall(firewall.id())
+               : client.setFirewallRules(firewall.id(), remaining);
+    }
+
+    private static List<Firewall.Rule> rulesOf(Firewall firewall) {
+        return option(firewall.rules()).or(List.of());
+    }
+
+    private static String sourceCidr(Firewall.Rule rule) {
+        var ips = option(rule.sourceIps()).or(List.<String> of());
+
+        return ips.isEmpty()
+               ? ""
+               : ips.getFirst();
+    }
+
+    /// Selects the ONE firewall belonging to this (cluster, source). Scoping by both labels is what
+    /// keeps create-or-patch and withdraw from ever touching a firewall Aether did not create —
+    /// the 2026-08-03 test-pg incident (#572) is what unscoped cleanup costs.
+    private static String firewallSelector(String cluster, String sourceId) {
+        return CLUSTER_LABEL
+             + "=" + sanitizeLabelValue(cluster)
+             + "," + SOURCE_LABEL
+             + "=" + sanitizeLabelValue(sourceId);
+    }
+
+    private static String firewallName(String cluster, String sourceId) {
+        return sanitizeLabelValue("aether-" + cluster + "-" + sourceId);
     }
 
     private static final Pattern LABEL_VALUE_DISALLOWED = Pattern.compile("[^a-zA-Z0-9._-]");

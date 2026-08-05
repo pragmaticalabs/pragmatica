@@ -34,6 +34,40 @@ public interface ComputeProvider {
         return EnvironmentError.operationNotSupported("applyTags").promise();
     }
 
+    /// Ensure ONE ingress rule is in force for `sourceId`, returning the provider resource that
+    /// carries it (spec REQ-5.1.8.4). MUST be create-or-patch and idempotent: a `"tcp+udp"` entry
+    /// expands to two rules (REQ-5.1.8.1) and every rule of a source lands on the SAME provider
+    /// resource, so the second call patches what the first created and returns the same
+    /// [IngressHandle].
+    ///
+    /// The handle exists so the caller can apply the rule AT instance-create. Do NOT implement this
+    /// as a post-create mutation: on Hetzner an unassociated server accepts all inbound traffic
+    /// (§6.2), so opening ingress after the fact leaves the node briefly wide open.
+    ///
+    /// Rules the caller did not name are left untouched (REQ-5.1.8.1) — this never reconciles a
+    /// provider resource down to the requested set.
+    ///
+    /// Defaults to a loud refusal: a provider that cannot manage ingress must FAIL rather than let
+    /// the caller believe a rule is in force. Operators of such providers manage ingress themselves
+    /// (§6.2), and pre-flight rejects the config before this is ever reached.
+    default Promise<IngressHandle> openIngress(String sourceId,
+                                               int port,
+                                               String protocol,
+                                               String sourceCidr,
+                                               String description) {
+        return EnvironmentError.operationNotSupported("openIngress").promise();
+    }
+
+    /// Withdraw one rule previously placed by [#openIngress]. Removing the last rule of a source
+    /// disposes the provider resource itself.
+    ///
+    /// MUST only ever touch resources this provider created — see `CreatedResource` tracking and
+    /// the 2026-08-03 test-pg incident (#572), where an unscoped cleanup deleted standing shared
+    /// infrastructure.
+    default Promise<Unit> closeIngress(String sourceId, int port, String protocol, String sourceCidr) {
+        return EnvironmentError.operationNotSupported("closeIngress").promise();
+    }
+
     default Promise<List<InstanceInfo>> listInstances(Map<String, String> tagFilter) {
         return listInstances().map(instances -> filterByTags(instances, tagFilter));
     }

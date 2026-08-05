@@ -17,8 +17,4 @@ public interface CloudProvider {
     Promise<Unit> destroy(List<String> nodeIds);
     Promise<List<NodeAddress>> addresses(List<String> nodeIds);
     boolean supportsPreemptible();
-
-    Promise<Unit> openIngress(String sourceId, int port, String protocol, String sourceCidr, String description);
-
-    Promise<Unit> closeIngress(String sourceId, int port, String protocol, String sourceCidr);
 }

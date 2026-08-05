@@ -52,18 +52,4 @@ public record HetznerCloudProvider(ComputeProvider computeProvider) implements C
     public boolean supportsPreemptible() {
         return false;
     }
-
-    @Override
-    public Promise<Unit> openIngress(String sourceId,
-                                     int port,
-                                     String protocol,
-                                     String sourceCidr,
-                                     String description) {
-        return EnvironmentError.operationNotSupported("openIngress (Hetzner firewall API not yet wired)").promise();
-    }
-
-    @Override
-    public Promise<Unit> closeIngress(String sourceId, int port, String protocol, String sourceCidr) {
-        return EnvironmentError.operationNotSupported("closeIngress (Hetzner firewall API not yet wired)").promise();
-    }
 }
