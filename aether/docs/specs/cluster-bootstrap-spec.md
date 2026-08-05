@@ -538,7 +538,9 @@ The `protocol` field matters for HTTP/3 support: HTTP/3 runs over QUIC (UDP), wh
 
 **REQ-5.1.8.3**: The cluster port (default 8090) and management port (default 8080) are **operator-managed**, not touched by Aether — consistent with `[infrastructure.networking] type = "manual"`. Operators are responsible for inter-node cluster reachability and management-API ingress. Default security-group behavior per cloud provider is documented in §6.2.
 
-**REQ-5.1.8.4**: Firewall rules are created via `CloudProvider.openIngress(port, protocol, cidr, description, sourceId)` and destroyed via `CloudProvider.closeIngress(port, protocol, cidr, sourceId)`. Pre-flight validation (PF-18) rejects invalid ports, unknown protocols, or malformed CIDRs before any call is issued.
+**REQ-5.1.8.4**: Firewall rules are created via `ComputeProvider.openIngress(sourceId, port, protocol, cidr, description)` and destroyed via `ComputeProvider.closeIngress(sourceId, port, protocol, cidr)`. Pre-flight validation (PF-18) rejects invalid ports, unknown protocols, or malformed CIDRs before any call is issued; PF-23 rejects `allow_ingress` on providers with no implemented ingress arm.
+
+`openIngress` is **create-or-patch** and returns an `IngressHandle` carrying the provider resource id. All of a source's rules land on ONE provider resource (a `"tcp+udp"` entry is two rules on one firewall), so repeated calls for the same source return the same handle. The handle is threaded into instance-create (`firewall_ids`) so rules are in force **before** the instance exists — applying them post-create would leave a window in which the node is up and, per §6.2, fully open on Hetzner. Rules the caller did not name are never touched: a patch sends the union of current and new rules, never a replacement set.
 
 ### 5.2 Runtime Profiles `[runtime.<name>]`
 
@@ -1154,6 +1156,7 @@ The `CloudProvider` SPI in §11.1 is a **new, higher-level** interface specifica
 | PF-20  | Docker sub-tables: `runtime` must be `"docker"` or omitted           | Docker      | Error    |
 | PF-21  | Cloud sub-tables: `runtime` must be `"container"` or `"jvm"`         | Cloud       | Error    |
 | PF-22  | SSH sub-tables: `runtime` must be `"container"`, `"jvm"`, or `"ember"` | SSH       | Error    |
+| PF-23  | Provider implements ingress management when `allow_ingress` declared  | Cloud       | Error    |
 
 ### 12.2 Cluster-Level Checks
 

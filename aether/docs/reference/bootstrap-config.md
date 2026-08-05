@@ -122,7 +122,28 @@ If `[cluster.core]` is absent entirely, `min`/`max` are unset (no bound) and `ma
 | `load_balancer_endpoint` | string | — | no | Used with `external` mode. |
 | `databases.<name> = "url"` (inline) or `[source.<name>.databases]` (subtable) | string map | `{}` | no | Maps to composed **`[database.<name>]`** (nested), never flat `[database]` — see Trap (c). |
 | `[source.<name>.node_config.<section>]` | raw TOML overlay | — | no | Merged verbatim as `[<section>]` into the composed per-node `aether.toml`, prefix-stripped. Escape hatch for any node-level setting not otherwise modeled (used above for `[app-http]`). |
-| `[source.<name>.firewall] allow_ingress` | table array | `[]` | no | Each entry: `port` (int, required), `protocol` (default `"tcp"`), `source_cidr` (default `"0.0.0.0/0"`), `description` (optional). |
+| `[source.<name>.firewall] allow_ingress` | table array | `[]` | no | Each entry: `port` (int, required), `protocol` (default `"tcp"`, may be `"tcp+udp"`), `source_cidr` (default `"0.0.0.0/0"`), `description` (optional). **Hetzner only** — see below. |
+
+#### Ingress firewall (`[source.<name>.firewall]`)
+
+Applied at bootstrap as a standalone cloud firewall associated with the source's servers, created
+**before** the servers themselves so no node is ever briefly reachable without its rules.
+
+- **Hetzner only.** Declaring `allow_ingress` on AWS/GCP/Azure is rejected at pre-flight (PF-23) —
+  their ingress arms are not implemented. Manage ingress with your own security groups there; their
+  defaults deny inbound, so nothing is silently exposed.
+- `"tcp+udp"` expands to two provider rules on the same firewall.
+- Rules you do not list are never touched — a firewall is patched by union, never replaced.
+- The **cluster (8090) and management (8080) ports are yours to manage** and are never opened by
+  Aether, consistent with `[infrastructure.networking] type = "manual"`.
+- With `load_balancer = "elected"` and **no** `[source.<name>.firewall]` block, Aether auto-opens
+  `app_http` (default 8070) on TCP **and** UDP to `0.0.0.0/0` so HTTP/3 works out of the box, and
+  warns. Declare the block to scope it.
+- `aether cluster destroy` deletes the firewalls it created, by recorded id.
+
+> **Bootstrap-only.** Editing `allow_ingress` on an existing cluster does not currently re-apply it
+> — `ClusterConfigApplier` discards the diffed action (#578). Re-bootstrap to change ingress rules.
+
 
 ### `[source.<name>.<role>]` — role sub-tables (`core` \| `worker` \| `spot`)
 
