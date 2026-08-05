@@ -12,6 +12,7 @@ import org.pragmatica.aether.cli.cluster.init.ClusterConfigAnswers.DatabaseAnswe
 import org.pragmatica.aether.cli.cluster.init.ClusterConfigAnswers.SecretAnswers;
 import org.pragmatica.aether.cli.cluster.init.ClusterConfigAnswers.SshAnswers;
 import org.pragmatica.aether.cli.cluster.init.ClusterConfigAnswers.TlsAnswers;
+import org.pragmatica.aether.config.cluster.CloudProviderName;
 import org.pragmatica.aether.config.cluster.FirewallRule;
 import org.pragmatica.aether.config.cluster.SourceType;
 
@@ -174,14 +175,28 @@ public sealed interface ClusterConfigGenerator {
         }
     }
 
+    /// Scaffold `allow_ingress` ONLY where Aether actually applies it — a generated config that
+    /// pre-flight then rejects (PF-23), or that is silently inert, is worse than no block at all.
+    ///
+    /// - Docker/Forge: no cloud API, nothing to manage.
+    /// - SSH: the host's firewall is the operator's; Aether never touches it.
+    /// - Cloud on AWS/GCP/Azure: ingress arms are not implemented, and PF-23 rejects the block.
+    ///   Their defaults deny inbound, so omitting it exposes nothing.
+    /// - `OPEN` preset: the operator asked for no rules.
     private static boolean skipFirewall(ClusterConfigAnswers answers) {
         var target = answers.target();
 
-        if (target == SourceType.DOCKER || target == SourceType.FORGE) {
+        if (target != SourceType.CLOUD) {
             return true;
         }
 
-        return answers.firewallPreset() == FirewallPreset.OPEN;
+        if (answers.firewallPreset() == FirewallPreset.OPEN) {
+            return true;
+        }
+
+        return ! answers.cloud()
+                        .map(cloud -> cloud.provider() == CloudProviderName.HETZNER)
+                        .or(false);
     }
 
     private static List<FirewallRule> effectiveFirewallRules(ClusterConfigAnswers answers) {

@@ -301,7 +301,48 @@ public final class ClusterBootstrapConfigValidator {
     }
 
     private static void validateFirewallRules(String name, SourceProfile source, List<String> errors) {
+        checkIngressProviderSupport(name, source, errors);
         source.firewallRules().forEach(rule -> validateSingleFirewallRule(name, rule, errors));
+    }
+
+    /// Providers with no implemented ingress arm reject `allow_ingress` loudly rather than parsing it
+    /// and doing nothing (#574). Mirrors PF-16's per-provider shape.
+    ///
+    /// Only Hetzner is absent from this map — it is the one provider where the rules are actually
+    /// applied, and the one where the gap was DANGEROUS rather than merely inert: per §6.2 a Hetzner
+    /// server created with no firewall association accepts ALL inbound traffic, so unapplied rules
+    /// fail OPEN. On AWS/GCP/Azure the default security groups deny inbound, so the same gap fails
+    /// closed — unreachable, not exposed — and operators are directed to their own security groups.
+    /// Remove a provider's entry when its `openIngress` lands (#463).
+    private static final Map<CloudProviderName, String> INGRESS_UNSUPPORTED_REASONS = Map.of(CloudProviderName.AWS,
+                                                                                             "Provider 'aws' ingress management (security groups) is not yet implemented on this client",
+                                                                                             CloudProviderName.GCP,
+                                                                                             "Provider 'gcp' ingress management (firewall rules) is not yet implemented on this client",
+                                                                                             CloudProviderName.AZURE,
+                                                                                             "Provider 'azure' ingress management (network security groups) is not yet implemented on this client");
+
+    private static void checkIngressProviderSupport(String name, SourceProfile source, List<String> errors) {
+        if (source.firewallRules().isEmpty()) {
+            return;
+        }
+
+        if (source.type() != SourceType.CLOUD) {
+            errors.add("PF-23: Source '" + name
+                      + "' is type '" + source.type().value()
+                      + "', which has no cloud ingress API — `allow_ingress` would be silently ignored."
+                      + " Manage the host firewall yourself and remove `[source." + name
+                      + ".firewall]`.");
+
+            return;
+        }
+
+        source.provider()
+              .flatMap(provider -> Option.option(INGRESS_UNSUPPORTED_REASONS.get(provider)))
+              .onPresent(reason -> errors.add("PF-23: " + reason
+                                             + " on source '" + name
+                                             + "'. Manage ingress via your own security groups"
+                                             + " and remove `[source." + name
+                                             + ".firewall]`."));
     }
 
     private static void validateSingleFirewallRule(String sourceName, FirewallRule rule, List<String> errors) {

@@ -60,6 +60,21 @@ class ClusterBootstrapConfigValidatorTest {
                                       infrastructureConfig(NetworkingType.MANUAL), defaultOperationsConfig());
     }
 
+    private static ClusterBootstrapConfig cloudConfigWithFirewall(CloudProviderName provider) {
+        var runtime = runtimeProfile("prod", RuntimeType.CONTAINER, some("aether:latest"), none());
+        var coreRole = roleSubTable(NodeRole.CORE, some(3), none(), some("cx41"), "prod");
+        var rules = List.of(firewallRule(8070, "tcp", "0.0.0.0/0", none()));
+        var source = sourceProfile("cloud-src", SourceType.CLOUD, some(provider),
+                                   some("key"), some("eu-central"), none(), none(), none(), none(),
+                                   LoadBalancerMode.EXTERNAL, List.of("10.0.0.1"), none(), Map.of(),
+                                   Map.of(NodeRole.CORE, coreRole), rules);
+
+        return clusterBootstrapConfig("1.0.0", clusterIdentity("production", "1.0.0").unwrap(),
+                                      defaultCoreTopology(), Map.of("cloud-src", source),
+                                      Map.of("prod", runtime),
+                                      infrastructureConfig(NetworkingType.MANUAL), defaultOperationsConfig());
+    }
+
     private static ClusterBootstrapConfig cloudConfigWithSpot(CloudProviderName provider) {
         var runtime = runtimeProfile("prod", RuntimeType.CONTAINER, some("aether:latest"), none());
         var coreRole = roleSubTable(NodeRole.CORE, some(3), none(), some("cx41"), "prod");
@@ -277,9 +292,62 @@ class ClusterBootstrapConfigValidatorTest {
                                                               .contains("priority=Spot"));
         }
 
+        /// #574 — `allow_ingress` on a provider with no ingress arm used to parse, validate and diff
+        /// cleanly while never being applied. On AWS/GCP/Azure that fails CLOSED (default security
+        /// groups deny inbound), so rejecting is about honesty rather than exposure; Hetzner, where
+        /// the same gap fails OPEN, is the one provider that actually applies them.
         @Test
-        void validate_electedLbOnSsh_returnsError() {
+        void validate_allowIngressOnAwsSource_returnsPf19() {
+            validate(cloudConfigWithFirewall(CloudProviderName.AWS))
+                .onSuccess(v -> Assertions.fail("Expected failure"))
+                .onFailure(cause -> assertThat(cause.message()).contains("PF-23")
+                                                              .contains("aws")
+                                                              .contains("security groups"));
+        }
+
+        @Test
+        void validate_allowIngressOnGcpSource_returnsPf19() {
+            validate(cloudConfigWithFirewall(CloudProviderName.GCP))
+                .onSuccess(v -> Assertions.fail("Expected failure"))
+                .onFailure(cause -> assertThat(cause.message()).contains("PF-23").contains("gcp"));
+        }
+
+        @Test
+        void validate_allowIngressOnAzureSource_returnsPf19() {
+            validate(cloudConfigWithFirewall(CloudProviderName.AZURE))
+                .onSuccess(v -> Assertions.fail("Expected failure"))
+                .onFailure(cause -> assertThat(cause.message()).contains("PF-23").contains("azure"));
+        }
+
+        /// An SSH host's firewall is the operator's; Aether has no API to manage it, so the block
+        /// would be silently inert. Refuse rather than pretend.
+        @Test
+        void validate_allowIngressOnSshSource_returnsPf23() {
             var coreRole = roleSubTable(NodeRole.CORE, none(), some(List.of("h1", "h2", "h3")), none(), "ember");
+            var rules = List.of(firewallRule(8070, "tcp", "0.0.0.0/0", none()));
+            var source = sourceProfile("ssh-src", SourceType.SSH, none(), none(), none(), none(),
+                                       some("root"), some("/key"), some(22), LoadBalancerMode.NONE,
+                                       List.of(), none(), Map.of(),
+                                       Map.of(NodeRole.CORE, coreRole), rules);
+            var config = clusterBootstrapConfig("1.0.0", clusterIdentity("production", "1.0.0").unwrap(),
+                                                defaultCoreTopology(), Map.of("ssh-src", source), Map.of(),
+                                                infrastructureConfig(NetworkingType.MANUAL), defaultOperationsConfig());
+
+            validate(config)
+                .onSuccess(v -> Assertions.fail("Expected failure"))
+                .onFailure(cause -> assertThat(cause.message()).contains("PF-23")
+                                                              .contains("no cloud ingress API"));
+        }
+
+        @Test
+        void validate_allowIngressOnHetznerSource_succeeds() {
+            validate(cloudConfigWithFirewall(CloudProviderName.HETZNER))
+                .onFailure(cause -> Assertions.fail(cause.message()))
+                .onSuccess(config -> assertThat(config.cluster().name()).isEqualTo("production"));
+        }
+
+        @Test
+        void validate_electedLbOnSsh_returnsError() {            var coreRole = roleSubTable(NodeRole.CORE, none(), some(List.of("h1", "h2", "h3")), none(), "ember");
             var source = sourceProfile("ssh-src", SourceType.SSH, none(), none(), none(), none(),
                                        some("root"), some("/key"), some(22), LoadBalancerMode.ELECTED,
                                        List.of(), none(), Map.of(),

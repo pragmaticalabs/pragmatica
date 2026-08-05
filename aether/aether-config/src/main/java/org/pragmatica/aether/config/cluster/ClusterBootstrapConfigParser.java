@@ -385,10 +385,31 @@ public final class ClusterBootstrapConfigParser {
         };
     }
 
-    @SuppressWarnings("unchecked")
+    /// Both TOML spellings of `allow_ingress` must parse:
+    ///
+    /// - inline array under an explicit `[source.X.firewall]` section, and
+    /// - a bare array-of-tables `[[source.X.firewall.allow_ingress]]`, which needs NO
+    ///   `[source.X.firewall]` header — and is exactly what `aether cluster init` writes.
+    ///
+    /// Gating the whole lookup on `hasSection(source.X.firewall)` dropped the second shape silently,
+    /// so every wizard-generated firewall block parsed to zero rules while the file plainly contained
+    /// them. That is a second inertness layer beneath #574: even once the rules were applied, the
+    /// ones the wizard produced never reached [SourceProfile].
     private static List<FirewallRule> parseFirewallRules(TomlDocument doc, String sourceName) {
         var firewallSection = SOURCE_PREFIX + sourceName + FIREWALL_SUFFIX;
+        var inline = inlineFirewallRules(doc, firewallSection);
 
+        if (!inline.isEmpty()) {
+            return inline;
+        }
+
+        return doc.getTableArray(firewallSection + ".allow_ingress")
+                  .map(ClusterBootstrapConfigParser::parseFirewallList)
+                  .or(List.of());
+    }
+
+    @SuppressWarnings("unchecked")
+    private static List<FirewallRule> inlineFirewallRules(TomlDocument doc, String firewallSection) {
         if (!doc.hasSection(firewallSection)) {
             return List.of();
         }
@@ -400,9 +421,7 @@ public final class ClusterBootstrapConfigParser {
             return parseFirewallList((List<Map<String, Object>>) list);
         }
 
-        return doc.getTableArray(firewallSection + ".allow_ingress")
-                  .map(ClusterBootstrapConfigParser::parseFirewallList)
-                  .or(List.of());
+        return List.of();
     }
 
     private static List<FirewallRule> parseFirewallList(List<Map<String, Object>> tables) {
