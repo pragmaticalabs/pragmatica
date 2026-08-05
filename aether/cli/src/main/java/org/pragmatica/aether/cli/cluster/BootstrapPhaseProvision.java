@@ -224,12 +224,15 @@ sealed interface BootstrapPhaseProvision {
                                                                       String clusterName) {
         var providerName = resolveProviderName(source);
         var sshKeyIds = ctx.sshKeyIdsFor(providerName);
+        // Ids from BootstrapPhaseFirewall, applied AT create so the node is never up-and-unfirewalled
+        // (§6.2 — a Hetzner server with no firewall association accepts all inbound traffic).
+        var firewallIds = ctx.firewallIdsFor(sourceName);
 
-        return ProviderResolver.resolveCloudCompute(source, sshKeyIds, "").flatMap(compute -> provisionCloudWithCompute(compute,
-                                                                                                                        ctx,
-                                                                                                                        sourceName,
-                                                                                                                        source,
-                                                                                                                        clusterName));
+        return ProviderResolver.resolveCloudCompute(source, sshKeyIds, "", clusterName, firewallIds).flatMap(compute -> provisionCloudWithCompute(compute,
+                                                                                                                                                  ctx,
+                                                                                                                                                  sourceName,
+                                                                                                                                                  source,
+                                                                                                                                                  clusterName));
     }
 
     @SuppressWarnings("JBCT-PAT-01")

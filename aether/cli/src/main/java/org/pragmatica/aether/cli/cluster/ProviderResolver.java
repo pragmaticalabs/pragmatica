@@ -45,13 +45,35 @@ public final class ProviderResolver {
     public static Result<ComputeProvider> resolveCloudCompute(SourceProfile source,
                                                               List<Long> sshKeyIds,
                                                               String userData) {
+        return resolveCloudCompute(source, sshKeyIds, userData, "", List.of());
+    }
+
+    /// Cluster-aware resolution. `clusterName` is REQUIRED for ingress management (the provider
+    /// refuses to create a firewall it could not later find), and `firewallIds` carry the ids the
+    /// firewall phase created into server-create.
+    public static Result<ComputeProvider> resolveCloudCompute(SourceProfile source,
+                                                              List<Long> sshKeyIds,
+                                                              String userData,
+                                                              String clusterName,
+                                                              List<Long> firewallIds) {
         return source.provider()
                      .toResult(NO_PROVIDER)
                      .flatMap(provider -> lookupAndCreateCloud(provider.value(),
                                                                source,
                                                                sshKeyIds,
-                                                               userData))
+                                                               userData,
+                                                               clusterName,
+                                                               firewallIds))
                      .flatMap(ProviderResolver::extractCompute);
+    }
+
+    /// Seam shape for [BootstrapPhaseFirewall]: ingress needs the cluster but never pre-existing
+    /// firewall ids (it is what creates them).
+    static Result<ComputeProvider> resolveCloudCompute(SourceProfile source,
+                                                       List<Long> sshKeyIds,
+                                                       String userData,
+                                                       String clusterName) {
+        return resolveCloudCompute(source, sshKeyIds, userData, clusterName, List.of());
     }
 
     public static Result<FloatingIpProvider> resolveFloatingIpProvider(SourceProfile source) {
@@ -125,17 +147,21 @@ public final class ProviderResolver {
     }
 
     private static Result<EnvironmentIntegration> lookupAndCreateCloud(String providerName, SourceProfile source) {
-        return lookupAndCreateCloud(providerName, source, List.of(), "");
+        return lookupAndCreateCloud(providerName, source, List.of(), "", "", List.of());
     }
 
     private static Result<EnvironmentIntegration> lookupAndCreateCloud(String providerName,
                                                                        SourceProfile source,
                                                                        List<Long> sshKeyIds,
-                                                                       String userData) {
+                                                                       String userData,
+                                                                       String clusterName,
+                                                                       List<Long> firewallIds) {
         return lookupFactory(providerName).flatMap(factory -> factory.create(buildCloudConfig(providerName,
                                                                                               source,
                                                                                               sshKeyIds,
-                                                                                              userData)));
+                                                                                              userData,
+                                                                                              clusterName,
+                                                                                              firewallIds)));
     }
 
     private static Result<EnvironmentIntegrationFactory> lookupFactory(String providerName) {
@@ -167,6 +193,24 @@ public final class ProviderResolver {
                                         SourceProfile source,
                                         List<Long> sshKeyIds,
                                         String userData) {
+        return buildCloudConfig(providerName, source, sshKeyIds, userData, "", List.of());
+    }
+
+    /// `clusterName` lands in the `discovery` map (the key `HetznerEnvironmentIntegrationFactory`
+    /// already reads) so the resolved provider knows its own cluster. Ingress management REQUIRES
+    /// it: a firewall created without the `aether-cluster` label is invisible to
+    /// `tools/cloud-reaper.sh` and leaks as a paid resource, so `openIngress` refuses without it.
+    ///
+    /// `firewallIds` are the ids [BootstrapPhaseFirewall] just created, threaded into
+    /// `[cloud.compute] firewall_ids` — the SAME key an operator uses for a pre-existing firewall,
+    /// consumed at `HetznerComputeProvider.buildCreateRequest`. Passing them at server-CREATE is
+    /// what closes the window in which a node would be up and unfirewalled (§6.2).
+    static CloudConfig buildCloudConfig(String providerName,
+                                        SourceProfile source,
+                                        List<Long> sshKeyIds,
+                                        String userData,
+                                        String clusterName,
+                                        List<Long> firewallIds) {
         var credentials = new HashMap<String, String>();
 
         source.credentials()
@@ -188,11 +232,19 @@ public final class ProviderResolver {
             compute.put("user_data", userData);
         }
 
+        if (!firewallIds.isEmpty()) {
+            compute.put("firewall_ids", joinLongs(firewallIds));
+        }
+
+        var discovery = clusterName.isEmpty()
+                        ? Map.<String, String> of()
+                        : Map.of("cluster_name", clusterName);
+
         return new CloudConfig(providerName,
                                Map.copyOf(credentials),
                                Map.copyOf(compute),
                                Map.of(),
-                               Map.of(),
+                               discovery,
                                Map.of(),
                                Map.of());
     }

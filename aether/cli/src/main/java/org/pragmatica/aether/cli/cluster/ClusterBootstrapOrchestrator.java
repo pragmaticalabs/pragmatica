@@ -166,8 +166,9 @@ public sealed interface ClusterBootstrapOrchestrator permits ClusterBootstrapOrc
         configureClusterHttpClient(ctx.config(), ctx.clusterSecret());
 
         return executePhase(ctx, BootstrapPhase.UPLOAD_SSH_KEYS, BootstrapPhaseSshKey::execute).flatMap(c -> executePhase(c,
-                                                                                                                          BootstrapPhase.PROVISION,
-                                                                                                                          BootstrapPhaseProvision::execute))
+                                                                                                                          BootstrapPhase.CREATE_FIREWALL,
+                                                                                                                          BootstrapPhaseFirewall::execute))
+                           .flatMap(c -> executePhase(c, BootstrapPhase.PROVISION, BootstrapPhaseProvision::execute))
                            .flatMap(c -> executePhase(c,
                                                       BootstrapPhase.COLLECT_ADDRESSES,
                                                       BootstrapPhaseCollect::execute))
@@ -390,6 +391,7 @@ public sealed interface ClusterBootstrapOrchestrator permits ClusterBootstrapOrc
                             Option<String> apiKey,
                             List<SshPublicKey> sshPublicKeys,
                             Map<String, List<Long>> sshKeyIdsByProvider,
+                            Map<String, List<Long>> firewallIdsBySource,
                             String clusterSecret,
                             String rawTomlContent) {
         static BootstrapContext bootstrapContext(ClusterBootstrapConfig config,
@@ -403,6 +405,7 @@ public sealed interface ClusterBootstrapOrchestrator permits ClusterBootstrapOrc
                                         none(),
                                         List.of(),
                                         Map.of(),
+                                        Map.of(),
                                         "",
                                         "");
         }
@@ -415,6 +418,7 @@ public sealed interface ClusterBootstrapOrchestrator permits ClusterBootstrapOrc
                                         apiKey,
                                         sshPublicKeys,
                                         sshKeyIdsByProvider,
+                                        firewallIdsBySource,
                                         clusterSecret,
                                         rawTomlContent);
         }
@@ -427,6 +431,7 @@ public sealed interface ClusterBootstrapOrchestrator permits ClusterBootstrapOrc
                                         apiKey,
                                         sshPublicKeys,
                                         sshKeyIdsByProvider,
+                                        firewallIdsBySource,
                                         clusterSecret,
                                         rawTomlContent);
         }
@@ -439,6 +444,7 @@ public sealed interface ClusterBootstrapOrchestrator permits ClusterBootstrapOrc
                                         Option.some(key),
                                         sshPublicKeys,
                                         sshKeyIdsByProvider,
+                                        firewallIdsBySource,
                                         clusterSecret,
                                         rawTomlContent);
         }
@@ -451,6 +457,7 @@ public sealed interface ClusterBootstrapOrchestrator permits ClusterBootstrapOrc
                                         apiKey,
                                         sshPublicKeys,
                                         sshKeyIdsByProvider,
+                                        firewallIdsBySource,
                                         clusterSecret,
                                         rawTomlContent);
         }
@@ -463,6 +470,7 @@ public sealed interface ClusterBootstrapOrchestrator permits ClusterBootstrapOrc
                                         apiKey,
                                         List.copyOf(keys),
                                         sshKeyIdsByProvider,
+                                        firewallIdsBySource,
                                         clusterSecret,
                                         rawTomlContent);
         }
@@ -479,6 +487,7 @@ public sealed interface ClusterBootstrapOrchestrator permits ClusterBootstrapOrc
                                         apiKey,
                                         sshPublicKeys,
                                         Map.copyOf(merged),
+                                        firewallIdsBySource,
                                         clusterSecret,
                                         rawTomlContent);
         }
@@ -491,6 +500,7 @@ public sealed interface ClusterBootstrapOrchestrator permits ClusterBootstrapOrc
                                         apiKey,
                                         sshPublicKeys,
                                         sshKeyIdsByProvider,
+                                        firewallIdsBySource,
                                         secret,
                                         rawTomlContent);
         }
@@ -503,12 +513,37 @@ public sealed interface ClusterBootstrapOrchestrator permits ClusterBootstrapOrc
                                         apiKey,
                                         sshPublicKeys,
                                         sshKeyIdsByProvider,
+                                        firewallIdsBySource,
                                         clusterSecret,
                                         toml);
         }
 
         List<Long> sshKeyIdsFor(String provider) {
             return sshKeyIdsByProvider.getOrDefault(provider, List.of());
+        }
+
+        BootstrapContext withFirewallIds(String sourceName, List<Long> ids) {
+            var merged = new HashMap<String, List<Long>>(firewallIdsBySource);
+
+            merged.put(sourceName, List.copyOf(ids));
+
+            return new BootstrapContext(config,
+                                        state,
+                                        nodes,
+                                        addresses,
+                                        apiKey,
+                                        sshPublicKeys,
+                                        sshKeyIdsByProvider,
+                                        Map.copyOf(merged),
+                                        clusterSecret,
+                                        rawTomlContent);
+        }
+
+        /// Ingress-firewall ids created for `sourceName` by [BootstrapPhaseFirewall], threaded into
+        /// server-create so the rules are in force BEFORE the instance exists (§6.2). Keyed by SOURCE,
+        /// not provider (unlike ssh keys): firewall rules are declared per source.
+        List<Long> firewallIdsFor(String sourceName) {
+            return firewallIdsBySource.getOrDefault(sourceName, List.of());
         }
     }
 
