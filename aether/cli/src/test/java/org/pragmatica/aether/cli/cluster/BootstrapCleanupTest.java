@@ -209,6 +209,28 @@ class BootstrapCleanupTest {
                      "Hetzner deleteFirewall must be called with the recorded firewall id");
     }
 
+    /// The live 2026-08-05 run failed here: `deleteServer` returns before Hetzner finishes detaching
+    /// the server, so the immediately-following firewall delete got `422 resource_in_use` and destroy
+    /// reported failure for a firewall that was seconds away from deletable. Retrying is the fix; a
+    /// single attempt is what shipped.
+    @Test
+    void cleanup_retriesFirewallDelete_whenStillAttachedFromAsyncServerDeletion() {
+        var firewallDeletes = new ArrayList<Long>();
+        var state = stateWithFirewall(77L);
+        var client = new FirewallRecordingHetznerClient(firewallDeletes, 2);
+
+        var result = BootstrapCleanup.cleanupWith(state,
+                                                  BootstrapCleanup.CleanupResolvers.cleanupResolvers()
+                                                          .withCloudComputeFallback(_ -> new TestCause("unused").result())
+                                                          .withHetznerClientFallback(_ -> Result.success(client))
+                                                          .withSleeper(_ -> {}));
+
+        assertTrue(result.isSuccess(), () -> "delete must succeed once the servers finish detaching: " + result);
+        assertEquals(List.of(77L, 77L, 77L), firewallDeletes,
+                     "two in-use refusals then success = three attempts");
+    }
+
+
     @Test
     void cleanup_surfacesFailure_whenFirewallDeleteFails() {
         var state = stateWithFirewall(77L);
@@ -223,9 +245,29 @@ class BootstrapCleanupTest {
     /// Scope guard: firewall teardown must issue exactly the id-scoped delete and nothing else. A
     /// label sweep here is what destroyed the standing `test-pg` VM on 2026-08-03 (#572) — every
     /// other client call throws.
-    record FirewallRecordingHetznerClient(List<Long> deleteCalls) implements HetznerClient {
+    static final class FirewallRecordingHetznerClient implements HetznerClient {
+        private final List<Long> deleteCalls;
+        private int remainingRefusals;
+
+        FirewallRecordingHetznerClient(List<Long> deleteCalls) {
+            this(deleteCalls, 0);
+        }
+
+        /// `refusals` replies carry Hetzner's real `422 resource_in_use` before the delete succeeds —
+        /// the async-detach window observed on the live 2026-08-05 run.
+        FirewallRecordingHetznerClient(List<Long> deleteCalls, int refusals) {
+            this.deleteCalls = deleteCalls;
+            this.remainingRefusals = refusals;
+        }
+
         @Override public Promise<Unit> deleteFirewall(long firewallId) {
             deleteCalls.add(firewallId);
+            if (remainingRefusals > 0) {
+                remainingRefusals--;
+                return new HetznerError.ApiError(422, "resource_in_use",
+                                                 "firewall with ID " + firewallId + " is still in use").promise();
+            }
+
             return Promise.success(Unit.unit());
         }
 

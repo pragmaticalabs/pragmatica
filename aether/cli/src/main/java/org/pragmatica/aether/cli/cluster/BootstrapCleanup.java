@@ -8,6 +8,7 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.List;
+import java.util.function.LongConsumer;
 
 import org.pragmatica.aether.environment.ComputeProvider;
 import org.pragmatica.aether.environment.InstanceId;
@@ -45,13 +46,25 @@ sealed interface BootstrapCleanup {
                             Fn1<Result<ComputeProvider>, SourceCleanupHandle> handleComputeResolver,
                             Fn1<Result<HetznerClient>, String> hetznerClientFallback,
                             Fn1<String, String> getenv,
-                            Fn1<HetznerClient, String> hetznerClientFactory) {
+                            Fn1<HetznerClient, String> hetznerClientFactory,
+                            LongConsumer sleeper) {
         static CleanupResolvers cleanupResolvers() {
             return new CleanupResolvers(ProviderResolver::resolveCloudComputeForCleanup,
                                         ProviderResolver::resolveCloudComputeFromHandle,
                                         BootstrapCleanup::defaultHetznerClient,
                                         System::getenv,
-                                        BootstrapCleanup::hetznerClientFromToken);
+                                        BootstrapCleanup::hetznerClientFromToken,
+                                        BootstrapCleanup::sleepQuietly);
+        }
+
+        /// Test seam: a no-op sleeper makes the retry loop instant.
+        CleanupResolvers withSleeper(LongConsumer newSleeper) {
+            return new CleanupResolvers(cloudComputeFallback,
+                                        handleComputeResolver,
+                                        hetznerClientFallback,
+                                        getenv,
+                                        hetznerClientFactory,
+                                        newSleeper);
         }
 
         CleanupResolvers withCloudComputeFallback(Fn1<Result<ComputeProvider>, String> resolver) {
@@ -59,7 +72,8 @@ sealed interface BootstrapCleanup {
                                         handleComputeResolver,
                                         hetznerClientFallback,
                                         getenv,
-                                        hetznerClientFactory);
+                                        hetznerClientFactory,
+                                        sleeper);
         }
 
         CleanupResolvers withHandleComputeResolver(Fn1<Result<ComputeProvider>, SourceCleanupHandle> resolver) {
@@ -67,7 +81,8 @@ sealed interface BootstrapCleanup {
                                         resolver,
                                         hetznerClientFallback,
                                         getenv,
-                                        hetznerClientFactory);
+                                        hetznerClientFactory,
+                                        sleeper);
         }
 
         CleanupResolvers withHetznerClientFallback(Fn1<Result<HetznerClient>, String> resolver) {
@@ -75,7 +90,8 @@ sealed interface BootstrapCleanup {
                                         handleComputeResolver,
                                         resolver,
                                         getenv,
-                                        hetznerClientFactory);
+                                        hetznerClientFactory,
+                                        sleeper);
         }
 
         CleanupResolvers withGetenv(Fn1<String, String> lookup) {
@@ -83,7 +99,8 @@ sealed interface BootstrapCleanup {
                                         handleComputeResolver,
                                         hetznerClientFallback,
                                         lookup,
-                                        hetznerClientFactory);
+                                        hetznerClientFactory,
+                                        sleeper);
         }
 
         CleanupResolvers withHetznerClientFactory(Fn1<HetznerClient, String> factory) {
@@ -91,7 +108,8 @@ sealed interface BootstrapCleanup {
                                         handleComputeResolver,
                                         hetznerClientFallback,
                                         getenv,
-                                        factory);
+                                        factory,
+                                        sleeper);
         }
     }
 
@@ -361,17 +379,65 @@ sealed interface BootstrapCleanup {
     ///
     /// Deletion is scoped by the recorded id ALONE — never by a label sweep. An unscoped reap is
     /// exactly what destroyed the standing `test-pg` VM and its firewall on 2026-08-03 (#572).
+    ///
+    /// Retries because server deletion is ASYNCHRONOUS: `deleteServer` returns before Hetzner has
+    /// finished detaching the server from its firewall, so the immediately-following delete fails
+    /// `422 resource_in_use` even though teardown is proceeding correctly. Observed on the live
+    /// 2026-08-05 run — the very next attempt succeeded once the servers had drained. A single
+    /// attempt therefore reports failure for a firewall that is about to be deletable, leaving the
+    /// operator to re-run destroy by hand.
     @SuppressWarnings("JBCT-EX-01")
     private static Result<Unit> deleteCloudFirewall(BootstrapState state,
                                                     CreatedResource.CloudFirewall firewall,
                                                     CleanupResolvers resolvers) {
         System.out.printf("  Deleting firewall %s (id=%d)...%n", firewall.name(), firewall.firewallId());
-        if (!"hetzner".equals(firewall.provider())) {
+        if (!HETZNER_PROVIDER.equals(firewall.provider())) {
             return new UnsupportedFirewallProvider(firewall.provider()).result();
         }
 
-        return resolveHetznerClientFor(state, firewall.provider(), resolvers).flatMap(client -> client.deleteFirewall(firewall.firewallId())
-                                                                                                      .await());
+        return resolveHetznerClientFor(state, firewall.provider(), resolvers).flatMap(client -> deleteFirewallWithRetry(client,
+                                                                                                                        firewall,
+                                                                                                                        resolvers));
+    }
+
+    /// Attempts bounded by [#FIREWALL_DELETE_ATTEMPTS]; the LAST failure is what surfaces, so a
+    /// genuinely undeletable firewall still fails loudly rather than being swallowed.
+    int FIREWALL_DELETE_ATTEMPTS = 6;
+    long FIREWALL_DELETE_RETRY_MILLIS = 5_000L;
+
+    @SuppressWarnings("JBCT-PAT-01")
+    private static Result<Unit> deleteFirewallWithRetry(HetznerClient client,
+                                                        CreatedResource.CloudFirewall firewall,
+                                                        CleanupResolvers resolvers) {
+        var attempt = 1;
+
+        while (true) {
+            var result = client.deleteFirewall(firewall.firewallId()).await();
+
+            if (result.isSuccess() || attempt >= FIREWALL_DELETE_ATTEMPTS) {
+                return result;
+            }
+
+            System.out.printf("  Firewall %d still attached (attempt %d/%d) — servers are still detaching; retrying...%n",
+                              firewall.firewallId(),
+                              attempt,
+                              FIREWALL_DELETE_ATTEMPTS);
+            resolvers.sleeper().accept(FIREWALL_DELETE_RETRY_MILLIS);
+            attempt++;
+        }
+    }
+
+    /// Teardown-only pause between firewall delete attempts. Interruption is restored and treated as
+    /// "stop waiting" — the next attempt still runs, so an interrupted teardown fails on the API's
+    /// verdict rather than on the interrupt.
+    @Contract
+    @SuppressWarnings("JBCT-EX-01")
+    private static void sleepQuietly(long millis) {
+        try {
+            Thread.sleep(millis);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
     }
 
     private static Result<Unit> deleteSshKey(BootstrapState state,
