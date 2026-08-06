@@ -54,7 +54,11 @@ public final class ClusterBootstrapConfigValidator {
 
         checkCoreMajorityWarning(config, warnings);
         checkCapacityMajorityWarning(config, warnings);
-        config.sources().forEach((name, source) -> checkFirewallAllowsSsh(name, source, warnings));
+        config.sources()
+              .forEach((name, source) -> checkFirewallAllowsBootstrapPorts(name,
+                                                                           source,
+                                                                           config.operations().ports().management(),
+                                                                           warnings));
 
         return List.copyOf(warnings);
     }
@@ -525,32 +529,57 @@ public final class ClusterBootstrapConfigValidator {
         }
     }
 
-    /// A declared `allow_ingress` is DENY-BY-DEFAULT for everything it does not list, and the
-    /// bootstrap's own DEPLOY_RUNTIME phase reaches nodes over SSH. Omitting port 22 therefore locks
-    /// bootstrap out of the very machines it just created — observed live on 2026-08-05, where all
-    /// three nodes were provisioned correctly and then failed `SSH preflight ... 3 host(s)
-    /// unreachable after 300s` purely because the firewall was working.
+    /// A declared `allow_ingress` is DENY-BY-DEFAULT for everything it does not list, while bootstrap
+    /// reaches each node TWICE over its public address: DEPLOY_RUNTIME installs over **SSH (22)**, then
+    /// the readiness gate polls the **management API (default 8080)**. Omitting either locks bootstrap
+    /// out of the machines it just created.
     ///
-    /// A WARNING rather than an error: an operator using a pre-baked image or an out-of-band agent
-    /// legitimately needs no inbound SSH.
-    private static void checkFirewallAllowsSsh(String name, SourceProfile source, List<String> warnings) {
+    /// Both observed live on 2026-08-05, on correctly-provisioned nodes, purely because the firewall
+    /// was doing its job:
+    ///   - no 22   → `SSH preflight failed: 3 host(s) unreachable after 300s`
+    ///   - no 8080 → `Cloud-init did not finish on 3 node(s)` — the readiness gate, misattributed
+    ///
+    /// The management port is deliberately NOT auto-opened: REQ-5.1.8.3 makes it operator-managed.
+    /// A WARNING rather than an error: a pre-baked image or an out-of-band agent may need neither.
+    private static void checkFirewallAllowsBootstrapPorts(String name,
+                                                          SourceProfile source,
+                                                          int managementPort,
+                                                          List<String> warnings) {
         if (source.type() != SourceType.CLOUD || source.firewallRules().isEmpty()) {
             return;
         }
 
-        var allowsSsh = source.firewallRules()
-                              .stream()
-                              .anyMatch(rule -> rule.port() == SSH_PORT && !"udp".equals(rule.protocol()));
+        warnIfPortClosed(name,
+                         source,
+                         SSH_PORT,
+                         warnings,
+                         "bootstrap deploys the runtime over SSH, so DEPLOY_RUNTIME will fail with"
+                        + " 'SSH preflight failed: host(s) unreachable'");
+        warnIfPortClosed(name,
+                         source,
+                         managementPort,
+                         warnings,
+                         "the bootstrap readiness gate polls the management API on each node's PUBLIC"
+                        + " address, so DEPLOY_RUNTIME will fail with 'Cloud-init did not finish on N"
+                        + " node(s)' even though the nodes booted correctly");
+    }
 
-        if (!allowsSsh) {
+    private static void warnIfPortClosed(String name,
+                                         SourceProfile source,
+                                         int port,
+                                         List<String> warnings,
+                                         String consequence) {
+        var open = source.firewallRules()
+                         .stream()
+                         .anyMatch(rule -> rule.port() == port && !"udp".equals(rule.protocol()));
+
+        if (!open) {
             warnings.add("Source '" + name
                         + "' declares [source." + name
-                        + ".firewall] but no rule opens port " + SSH_PORT
-                        + "/tcp. Ingress is deny-by-default, and bootstrap deploys the runtime over SSH,"
-                        + " so DEPLOY_RUNTIME will fail with 'SSH preflight failed: host(s) unreachable'."
-                        + " Add a rule for port " + SSH_PORT
-                        + " (scope source_cidr to your operator network)"
-                        + " unless the runtime is delivered without inbound SSH.");
+                        + ".firewall] but no rule opens port " + port
+                        + "/tcp. Ingress is deny-by-default, and " + consequence
+                        + ". Add a rule for port " + port
+                        + " (scope source_cidr to your operator network).");
         }
     }
 

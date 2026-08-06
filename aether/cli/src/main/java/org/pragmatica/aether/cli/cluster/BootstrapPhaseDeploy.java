@@ -542,11 +542,20 @@ sealed interface BootstrapPhaseDeploy {
 
         if (!unreachable.isEmpty()) {
             var ips = unreachable.stream().map(ProvisionedNode::publicIp).toList();
-
+            // This gate polls the management API on each node's PUBLIC address; it does not inspect
+            // cloud-init. Naming only cloud-init sent a 2026-08-05 live investigation to the wrong
+            // place: the nodes had booted fine and the port was simply firewalled off.
             return new BootstrapError.DeploymentFailed(sourceName,
-                                                       "Cloud-init did not finish on " + unreachable.size()
-                                                      + " node(s). Unreachable IPs: " + String.join(", ", ips)
-                                                      + ". Investigate /var/log/cloud-init-output.log on the host.").result();
+                                                       unreachable.size()
+                                                      + " node(s) never answered the management"
+                                                      + " API on port " + mgmtPort
+                                                      + ". Unreachable IPs: " + String.join(", ", ips)
+                                                      + ". Most likely: ingress does not permit " + mgmtPort
+                                                      + "/tcp from this host (a declared [source.<name>.firewall]"
+                                                      + " is deny-by-default and Aether never opens the management"
+                                                      + " port itself), or the runtime failed to start —"
+                                                      + " check /var/log/cloud-init-output.log and the aether-node"
+                                                      + " service on the host.").result();
         }
 
         System.out.printf("  [%s/cloud] All nodes reported healthy%n", sourceName);

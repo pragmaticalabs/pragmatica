@@ -121,8 +121,13 @@ class BootstrapPhaseDeployHealthPollTest {
         var msg = extractFailureMessage(result);
         assertTrue(msg.contains(unreachable),
                    () -> "Failure message must name the unreachable IP. Got: " + msg);
-        assertTrue(msg.contains("Cloud-init did not finish"),
-                   () -> "Failure message must explain *what* failed. Got: " + msg);
+        // The gate polls the management API; it never inspects cloud-init. Blaming cloud-init sent a
+        // live 2026-08-05 investigation to the wrong place — the nodes were healthy and the port was
+        // firewalled. The message must name the port and the likeliest cause.
+        assertTrue(msg.contains("management") && msg.contains("API"),
+                   () -> "Failure message must name what was actually polled. Got: " + msg);
+        assertTrue(msg.contains("firewall"),
+                   () -> "Failure message must offer the likeliest cause (blocked ingress). Got: " + msg);
     }
 
     @Test

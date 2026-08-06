@@ -349,11 +349,21 @@ class ClusterBootstrapConfigValidatorTest {
                                                           .contains("DEPLOY_RUNTIME"));
         }
 
+        /// The readiness gate polls the management API on the node's PUBLIC address, so a firewall
+        /// that omits it fails bootstrap on nodes that booted perfectly (live 2026-08-05).
         @Test
-        void warnings_firewallWithSshPort_doesNotWarn() {
+        void warnings_firewallWithoutManagementPort_warnsAboutReadinessGate() {
+            assertThat(warnings(cloudConfigWithFirewall(CloudProviderName.HETZNER)))
+                .anySatisfy(warning -> assertThat(warning).contains("8080")
+                                                          .contains("management API"));
+        }
+
+        @Test
+        void warnings_firewallWithBootstrapPorts_doesNotWarn() {
             var runtime = runtimeProfile("prod", RuntimeType.CONTAINER, some("aether:latest"), none());
             var coreRole = roleSubTable(NodeRole.CORE, some(3), none(), some("cx41"), "prod");
             var rules = List.of(firewallRule(22, "tcp", "10.0.0.0/8", none()),
+                                firewallRule(8080, "tcp", "10.0.0.0/8", none()),
                                 firewallRule(8070, "tcp", "0.0.0.0/0", none()));
             var source = sourceProfile("cloud-src", SourceType.CLOUD, some(CloudProviderName.HETZNER),
                                        some("key"), some("eu-central"), none(), none(), none(), none(),
@@ -364,7 +374,8 @@ class ClusterBootstrapConfigValidatorTest {
                                                 Map.of("prod", runtime),
                                                 infrastructureConfig(NetworkingType.MANUAL), defaultOperationsConfig());
 
-            assertThat(warnings(config)).noneSatisfy(warning -> assertThat(warning).contains("port 22"));
+            assertThat(warnings(config)).noneSatisfy(warning -> assertThat(warning).contains("port 22"))
+                                        .noneSatisfy(warning -> assertThat(warning).contains("port 8080"));
         }
 
         @Test
