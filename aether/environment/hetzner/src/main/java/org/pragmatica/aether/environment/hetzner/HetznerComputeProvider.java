@@ -710,7 +710,18 @@ public record HetznerComputeProvider(HetznerClient client, HetznerEnvironmentCon
         };
     }
 
+    /// A `404 not_found` on delete means the server is ALREADY GONE, which is the outcome terminate
+    /// was asked for — so it maps to [EnvironmentError.InstanceNotFound], not a generic failure, and
+    /// callers doing idempotent teardown can treat it as success.
+    ///
+    /// Observed live on 2026-08-05: after a partially-failed `cluster destroy`, every retry re-reported
+    /// "Instance termination failed: 404 not_found" for servers that no longer existed, so cleanup could
+    /// never reach success and the cluster registry entry stayed KEPT forever.
     private static EnvironmentError toTerminateError(InstanceId instanceId, Cause cause) {
+        if (cause instanceof HetznerError.ApiError apiError && apiError.statusCode() == 404) {
+            return EnvironmentError.InstanceNotFound.instanceNotFound(instanceId).unwrap();
+        }
+
         return EnvironmentError.terminateFailed(instanceId, new RuntimeException(cause.message()));
     }
 

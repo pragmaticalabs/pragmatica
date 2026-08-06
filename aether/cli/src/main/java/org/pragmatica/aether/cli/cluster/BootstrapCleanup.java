@@ -11,6 +11,7 @@ import java.util.List;
 import java.util.function.LongConsumer;
 
 import org.pragmatica.aether.environment.ComputeProvider;
+import org.pragmatica.aether.environment.EnvironmentError;
 import org.pragmatica.aether.environment.InstanceId;
 import org.pragmatica.cloud.hetzner.HetznerClient;
 import org.pragmatica.cloud.hetzner.HetznerConfig;
@@ -576,8 +577,23 @@ sealed interface BootstrapCleanup {
 
     @SuppressWarnings("JBCT-EX-01")
     private static Result<Unit> terminateInstance(ComputeProvider compute, String resourceId) {
-        return InstanceId.instanceId(resourceId).flatMap(id -> compute.terminate(id)
-                                                                      .await());
+        return InstanceId.instanceId(resourceId).flatMap(id -> tolerateAlreadyGone(compute.terminate(id).await(),
+                                                                                   id));
+    }
+
+    private static Result<Unit> tolerateAlreadyGone(Result<Unit> result, InstanceId id) {
+        return result.fold(cause -> alreadyGone(cause, id), Result::success);
+    }
+
+    @SuppressWarnings("JBCT-PAT-01")
+    private static Result<Unit> alreadyGone(Cause cause, InstanceId id) {
+        if (cause instanceof EnvironmentError.InstanceNotFound) {
+            System.out.printf("  VM %s already gone — treating as destroyed%n", id.value());
+
+            return Result.unitResult();
+        }
+
+        return cause.result();
     }
 
     private static Result<Unit> detachFloatingIp(CreatedResource.FloatingIpAssignment ip) {

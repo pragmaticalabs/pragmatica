@@ -126,6 +126,69 @@ class BootstrapCleanupTest {
         assertEquals(List.of("i-abc123"), terminateCalls);
     }
 
+    /// A destroy that failed for any reason must be able to SUCCEED on retry. Before this, the retry
+    /// re-terminated VMs the first pass had already deleted; Hetzner answered 404, cleanup counted
+    /// that as failure, and the registry entry stayed KEPT forever. Observed live on 2026-08-05.
+    @Test
+    void cleanup_treatsAlreadyGoneVm_asDestroyed() {
+        var state = stateWithVm("hetzner", "vm-already-gone");
+
+        var result = BootstrapCleanup.cleanup(state,
+                                              _ -> Result.success(new VanishedComputeProvider()));
+
+        assertTrue(result.isSuccess(),
+                   () -> "a VM that is already gone is the outcome destroy wanted: " + result);
+    }
+
+    @Test
+    void cleanup_stillFails_whenTerminateFailsForAnyOtherReason() {
+        var state = stateWithVm("hetzner", "vm-stuck");
+
+        var result = BootstrapCleanup.cleanup(state,
+                                              _ -> Result.success(new FailingComputeProvider()));
+
+        assertFalse(result.isSuccess(), "a real termination failure must still surface");
+    }
+
+    /// Terminate always reports the instance as absent.
+    record VanishedComputeProvider() implements ComputeProvider {
+        @Override public Promise<InstanceInfo> createFrom(ProvisionRequest request) {
+            return new TestCause("unused").promise();
+        }
+
+        @Override public Promise<Unit> terminate(InstanceId instanceId) {
+            return org.pragmatica.aether.environment.EnvironmentError.InstanceNotFound
+                    .instanceNotFound(instanceId).unwrap().promise();
+        }
+
+        @Override public Promise<List<InstanceInfo>> listInstances() {
+            return Promise.success(List.of());
+        }
+
+        @Override public Promise<InstanceInfo> instanceStatus(InstanceId instanceId) {
+            return new TestCause("unused").promise();
+        }
+    }
+
+    /// Terminate fails for a reason that is NOT "already gone".
+    record FailingComputeProvider() implements ComputeProvider {
+        @Override public Promise<InstanceInfo> createFrom(ProvisionRequest request) {
+            return new TestCause("unused").promise();
+        }
+
+        @Override public Promise<Unit> terminate(InstanceId instanceId) {
+            return new TestCause("rate limited").promise();
+        }
+
+        @Override public Promise<List<InstanceInfo>> listInstances() {
+            return Promise.success(List.of());
+        }
+
+        @Override public Promise<InstanceInfo> instanceStatus(InstanceId instanceId) {
+            return new TestCause("unused").promise();
+        }
+    }
+
     private static ComputeProvider recordingCompute(List<String> terminateCalls) {
         return new RecordingComputeProvider(terminateCalls);
     }
