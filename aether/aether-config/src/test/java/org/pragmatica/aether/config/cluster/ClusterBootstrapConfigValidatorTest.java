@@ -339,6 +339,34 @@ class ClusterBootstrapConfigValidatorTest {
                                                               .contains("no cloud ingress API"));
         }
 
+        /// Live 2026-08-05: three nodes provisioned fine, then DEPLOY_RUNTIME died with
+        /// "SSH preflight failed: 3 host(s) unreachable after 300s" — because the firewall was
+        /// working and port 22 was not declared. Warn before the operator burns 5 minutes and 3 VMs.
+        @Test
+        void warnings_firewallWithoutSshPort_warnsAboutDeployLockout() {
+            assertThat(warnings(cloudConfigWithFirewall(CloudProviderName.HETZNER)))
+                .anySatisfy(warning -> assertThat(warning).contains("port 22")
+                                                          .contains("DEPLOY_RUNTIME"));
+        }
+
+        @Test
+        void warnings_firewallWithSshPort_doesNotWarn() {
+            var runtime = runtimeProfile("prod", RuntimeType.CONTAINER, some("aether:latest"), none());
+            var coreRole = roleSubTable(NodeRole.CORE, some(3), none(), some("cx41"), "prod");
+            var rules = List.of(firewallRule(22, "tcp", "10.0.0.0/8", none()),
+                                firewallRule(8070, "tcp", "0.0.0.0/0", none()));
+            var source = sourceProfile("cloud-src", SourceType.CLOUD, some(CloudProviderName.HETZNER),
+                                       some("key"), some("eu-central"), none(), none(), none(), none(),
+                                       LoadBalancerMode.EXTERNAL, List.of("10.0.0.1"), none(), Map.of(),
+                                       Map.of(NodeRole.CORE, coreRole), rules);
+            var config = clusterBootstrapConfig("1.0.0", clusterIdentity("production", "1.0.0").unwrap(),
+                                                defaultCoreTopology(), Map.of("cloud-src", source),
+                                                Map.of("prod", runtime),
+                                                infrastructureConfig(NetworkingType.MANUAL), defaultOperationsConfig());
+
+            assertThat(warnings(config)).noneSatisfy(warning -> assertThat(warning).contains("port 22"));
+        }
+
         @Test
         void validate_allowIngressOnHetznerSource_succeeds() {
             validate(cloudConfigWithFirewall(CloudProviderName.HETZNER))
