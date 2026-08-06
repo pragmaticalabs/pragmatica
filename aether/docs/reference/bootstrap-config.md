@@ -143,7 +143,7 @@ Applied at bootstrap as a standalone cloud firewall associated with the source's
   asynchronous, so the delete retries while Hetzner finishes detaching; a firewall that is truly
   stuck still fails loudly, and `tools/cloud-reaper.sh --cluster <name> --destroy` is the fallback.
 
-> **Open port 22, or bootstrap cannot reach its own nodes.** `allow_ingress` is deny-by-default for
+> **Open ports 22 AND the management port, or bootstrap cannot reach its own nodes.** `allow_ingress` is deny-by-default for
 > everything it does not list, and the `DEPLOY_RUNTIME` phase installs the runtime over SSH. A config
 > that omits port 22 provisions its VMs correctly and then fails with
 > `SSH preflight failed: N host(s) unreachable after 300s` — the firewall doing exactly its job.
@@ -155,7 +155,19 @@ Applied at bootstrap as a standalone cloud firewall associated with the source's
 > protocol    = "tcp"
 > source_cidr = "203.0.113.0/24"   # your operator network
 > description = "bootstrap SSH"
+>
+> [[source.hetzner-eu.firewall.allow_ingress]]
+> port        = 8080                # operations.ports.management
+> protocol    = "tcp"
+> source_cidr = "203.0.113.0/24"
+> description = "bootstrap readiness gate + operator management API"
 > ```
+>
+> The readiness gate polls `http://<public-ip>:<management>/health/live` on every node, and
+> REQ-5.1.8.3 deliberately keeps the management port operator-managed — Aether never opens it for
+> you. Omitting it fails bootstrap with `N node(s) never answered the management API on port 8080`
+> on nodes that are perfectly healthy. Verified live on 2026-08-05: from inside the host that exact
+> URL returned **HTTP 200** with the runtime running, while from outside it never connected.
 
 > **Bootstrap-only.** Editing `allow_ingress` on an existing cluster does not currently re-apply it
 > — `ClusterConfigApplier` discards the diffed action (#578). Re-bootstrap to change ingress rules.
