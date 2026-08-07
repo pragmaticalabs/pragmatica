@@ -201,18 +201,24 @@ public final class ClusterBootstrapConfigValidator {
     }
 
     private static void validateSources(ClusterBootstrapConfig config, List<String> errors) {
-        config.sources().forEach((name, source) -> validateSource(name, source, config.runtimes(), errors));
+        config.sources()
+              .forEach((name, source) -> validateSource(name,
+                                                        source,
+                                                        config.runtimes(),
+                                                        config.operations().ports().management(),
+                                                        errors));
     }
 
     private static void validateSource(String name,
                                        SourceProfile source,
                                        Map<String, RuntimeProfile> runtimes,
+                                       int managementPort,
                                        List<String> errors) {
         validateRoleConstraints(name, source, errors);
         validateSpotRestriction(name, source, errors);
         validateElectedLbRestriction(name, source, errors);
         validateElectedLbHasNonSpot(name, source, errors);
-        validateFirewallRules(name, source, errors);
+        validateFirewallRules(name, source, managementPort, errors);
         validateRuntimeTypeCompatibility(name, source, runtimes, errors);
         validatePortConflictsOnSameHost(name, source, errors);
     }
@@ -305,8 +311,12 @@ public final class ClusterBootstrapConfigValidator {
         }
     }
 
-    private static void validateFirewallRules(String name, SourceProfile source, List<String> errors) {
+    private static void validateFirewallRules(String name,
+                                              SourceProfile source,
+                                              int managementPort,
+                                              List<String> errors) {
         checkIngressProviderSupport(name, source, errors);
+        checkPublicManagementWithoutAuth(name, source, managementPort, errors);
         source.firewallRules().forEach(rule -> validateSingleFirewallRule(name, rule, errors));
     }
 
@@ -325,6 +335,44 @@ public final class ClusterBootstrapConfigValidator {
                                                                                              "Provider 'gcp' ingress management (firewall rules) is not yet implemented on this client",
                                                                                              CloudProviderName.AZURE,
                                                                                              "Provider 'azure' ingress management (network security groups) is not yet implemented on this client");
+
+    /// PF-24 — the management API reachable from the whole internet with authentication disabled is
+    /// unauthenticated remote control of the cluster: deploy, scale, config, secrets-adjacent surface.
+    /// Either half alone is a defensible operator choice; the PAIR is not, so it is an error rather
+    /// than a warning.
+    ///
+    /// `security_mode` lives in the per-source `node_config` overlay (`[app-http] security_mode`),
+    /// which is the same place the documented cloud example sets `"NONE"` to get past bootstrap's own
+    /// config write — so this combination is reachable by following the docs, not only by mistake.
+    private static void checkPublicManagementWithoutAuth(String name,
+                                                         SourceProfile source,
+                                                         int managementPort,
+                                                         List<String> errors) {
+        var publiclyOpen = source.firewallRules()
+                                 .stream()
+                                 .anyMatch(rule -> rule.port() == managementPort && ANY_CIDR.equals(rule.sourceCidr()));
+
+        if (!publiclyOpen || !securityDisabled(source)) {
+            return;
+        }
+
+        errors.add("PF-24: Source '" + name
+                  + "' opens the management port " + managementPort
+                  + " to " + ANY_CIDR
+                  + " while [app-http] security_mode = \"none\". That is an"
+                  + " unauthenticated management API on the public internet — anyone who can reach it"
+                  + " can deploy, scale and reconfigure the cluster. Scope source_cidr to your operator"
+                  + " network, or enable authentication.");
+    }
+
+    private static boolean securityDisabled(SourceProfile source) {
+        return source.nodeConfig()
+                     .flatMap(doc -> doc.getString("app-http", "security_mode"))
+                     .map(mode -> "none".equalsIgnoreCase(mode.trim()))
+                     .or(false);
+    }
+
+    private static final String ANY_CIDR = "0.0.0.0/0";
 
     private static void checkIngressProviderSupport(String name, SourceProfile source, List<String> errors) {
         if (source.firewallRules().isEmpty()) {

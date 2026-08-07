@@ -1157,6 +1157,7 @@ The `CloudProvider` SPI in §11.1 is a **new, higher-level** interface specifica
 | PF-21  | Cloud sub-tables: `runtime` must be `"container"` or `"jvm"`         | Cloud       | Error    |
 | PF-22  | SSH sub-tables: `runtime` must be `"container"`, `"jvm"`, or `"ember"` | SSH       | Error    |
 | PF-23  | Provider implements ingress management when `allow_ingress` declared  | Cloud       | Error    |
+| PF-24  | Management port not open to `0.0.0.0/0` while `security_mode = "none"` | Cloud       | Error    |
 
 ### 12.2 Cluster-Level Checks
 

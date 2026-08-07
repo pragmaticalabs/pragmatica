@@ -8,6 +8,7 @@ package org.pragmatica.aether.config.cluster;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.pragmatica.config.toml.TomlDocument;
 import org.pragmatica.lang.Option;
 
 import java.util.List;
@@ -73,6 +74,31 @@ class ClusterBootstrapConfigValidatorTest {
                                       defaultCoreTopology(), Map.of("cloud-src", source),
                                       Map.of("prod", runtime),
                                       infrastructureConfig(NetworkingType.MANUAL), defaultOperationsConfig());
+    }
+
+    private static ClusterBootstrapConfig cloudConfigWithManagement(String securityMode, String cidr) {
+        var runtime = runtimeProfile("prod", RuntimeType.CONTAINER, some("aether:latest"), none());
+        var coreRole = roleSubTable(NodeRole.CORE, some(3), none(), some("cx41"), "prod");
+        var rules = List.of(firewallRule(22, "tcp", "10.0.0.0/8", none()),
+                            firewallRule(8080, "tcp", cidr, none()));
+        var overlay = new TomlDocument(Map.of("app-http", Map.of("security_mode", securityMode)));
+        var source = sourceProfile("cloud-src", SourceType.CLOUD, some(CloudProviderName.HETZNER),
+                                   some("key"), some("eu-central"), none(), none(), none(), none(),
+                                   LoadBalancerMode.EXTERNAL, List.of("10.0.0.1"), none(), Map.of(),
+                                   Map.of(NodeRole.CORE, coreRole), rules, some(overlay));
+
+        return clusterBootstrapConfig("1.0.0", clusterIdentity("production", "1.0.0").unwrap(),
+                                      defaultCoreTopology(), Map.of("cloud-src", source),
+                                      Map.of("prod", runtime),
+                                      infrastructureConfig(NetworkingType.MANUAL), defaultOperationsConfig());
+    }
+
+    private static ClusterBootstrapConfig cloudConfigWithPublicManagement(String securityMode) {
+        return cloudConfigWithManagement(securityMode, "0.0.0.0/0");
+    }
+
+    private static ClusterBootstrapConfig cloudConfigWithScopedManagement(String securityMode) {
+        return cloudConfigWithManagement(securityMode, "203.0.113.0/24");
     }
 
     private static ClusterBootstrapConfig cloudConfigWithSpot(CloudProviderName provider) {
@@ -376,6 +402,29 @@ class ClusterBootstrapConfigValidatorTest {
 
             assertThat(warnings(config)).noneSatisfy(warning -> assertThat(warning).contains("port 22"))
                                         .noneSatisfy(warning -> assertThat(warning).contains("port 8080"));
+        }
+
+        /// PF-24. Either half alone is a defensible operator choice; the pair is unauthenticated
+        /// remote control of the cluster. Reachable by following the documented cloud example, which
+        /// sets security_mode="none" to get past bootstrap's own config write.
+        @Test
+        void validate_publicManagementPortWithSecurityDisabled_returnsPf24() {
+            validate(cloudConfigWithPublicManagement("none"))
+                .onSuccess(v -> Assertions.fail("Expected failure"))
+                .onFailure(cause -> assertThat(cause.message()).contains("PF-24")
+                                                              .contains("unauthenticated management API"));
+        }
+
+        @Test
+        void validate_publicManagementPortWithAuthEnabled_succeeds() {
+            validate(cloudConfigWithPublicManagement("api_key"))
+                .onFailure(cause -> assertThat(cause.message()).doesNotContain("PF-24"));
+        }
+
+        @Test
+        void validate_scopedManagementPortWithSecurityDisabled_succeeds() {
+            validate(cloudConfigWithScopedManagement("none"))
+                .onFailure(cause -> assertThat(cause.message()).doesNotContain("PF-24"));
         }
 
         @Test
