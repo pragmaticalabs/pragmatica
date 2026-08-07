@@ -77,9 +77,39 @@ public record HetznerComputeProvider(HetznerClient client, HetznerEnvironmentCon
             return SPOT_UNSUPPORTED.promise();
         }
 
-        return createAndConfirm(request, labelsFor(request.context())).mapError(cause -> toProvisionError(request.zone(),
-                                                                                                          cause));
+        return requireClusterName(request.context()).fold(Cause::promise,
+                                                          clusterName -> createLabelled(request, clusterName));
     }
+
+    private Promise<InstanceInfo> createLabelled(ProvisionRequest request, String clusterName) {
+        return createAndConfirm(request, labelsFor(request.context(), clusterName)).mapError(cause -> toProvisionError(request.zone(),
+                                                                                                                       cause));
+    }
+
+    /// RFC-0017 C2 — a VM whose cluster cannot be identified MUST NOT be created.
+    ///
+    /// The label is the ONLY handle teardown has on a cluster-provisioned node: it is not recorded
+    /// in `bootstrap-state.json`, so `aether cluster destroy` finds it by sweeping
+    /// `aether-cluster=<name>`. A server stamped `aether-cluster=unknown` is invisible to that sweep
+    /// and to every scoped cleanup path — a permanent, billable orphan that only an account-wide
+    /// reap would catch, and account-wide reaps are what destroyed the standing `test-pg` VM (#572).
+    ///
+    /// Failing here costs one loud provisioning error at the only moment the problem is cheap to
+    /// fix. [#clusterNameOrDefault]'s `AETHER_CLUSTER_NAME` fallback is retained — it covers the
+    /// genuine pre-bootstrap window — so this fires only when context, env AND provider config are
+    /// all silent, which means nothing downstream could have attributed the server either.
+    private Result<String> requireClusterName(ProvisionContext ctx) {
+        var resolved = clusterNameOrDefault(ctx);
+
+        return UNKNOWN_CLUSTER.equals(resolved)
+               ? CLUSTER_NAME_UNRESOLVED.result()
+               : success(resolved);
+    }
+
+    private static final Cause CLUSTER_NAME_UNRESOLVED = EnvironmentError.provisionFailed(new RuntimeException("Refusing to provision: no cluster name resolved from the provisioning context, AETHER_CLUSTER_NAME, "
+                                                                                                              + "or the provider config. The server would be labelled aether-cluster=unknown, which no scoped "
+                                                                                                              + "cleanup can find — it would leak as a billable orphan. Set the cluster name on the provisioning "
+                                                                                                              + "context (bootstrap/CTM) or export AETHER_CLUSTER_NAME."));
 
     /// Hetzner offers no spot/preemptible product. PF-16 ([ClusterBootstrapConfigValidator]) already
     /// rejects a spot sub-table on Hetzner at parse, so a SPOT request reaching this provider is a
@@ -342,8 +372,7 @@ public record HetznerComputeProvider(HetznerClient client, HetznerEnvironmentCon
                                                        labels);
     }
 
-    private Map<String, String> labelsFor(ProvisionContext ctx) {
-        var clusterLabel = clusterNameOrDefault(ctx);
+    private Map<String, String> labelsFor(ProvisionContext ctx, String clusterLabel) {
         var role = ctx.role().isEmpty()
                    ? "core"
                    : ctx.role();

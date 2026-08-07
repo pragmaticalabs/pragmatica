@@ -67,6 +67,15 @@ class HetznerComputeProviderTest {
     private TestHetznerClient testClient;
     private HetznerComputeProvider provider;
 
+    /// [ComputeProvider#provision(InstanceType)] is a convenience seed whose context carries NO
+    /// cluster name, so under RFC-0017 C2 it is refused unless the provider config supplies one.
+    /// Tests exercising provisioning mechanics (image, instance info) use this; the refusal itself
+    /// is covered by ClusterLabelPreconditionTests.
+    private HetznerComputeProvider seededProvider() {
+        return HetznerComputeProvider.hetznerComputeProvider(testClient, CONFIG.withDiscovery("test-cluster"))
+                                     .unwrap();
+    }
+
     @BeforeEach
     void setUp() {
         testClient = new TestHetznerClient();
@@ -80,10 +89,10 @@ class HetznerComputeProviderTest {
         void provision_success_returnsInstanceInfo() {
             testClient.createServerResponse = Promise.success(runningServer(42, "aether-test"));
 
-            provider.provision(InstanceType.ON_DEMAND)
-                    .await()
-                    .onFailure(cause -> assertThat(cause).isNull())
-                    .onSuccess(HetznerComputeProviderTest::assertProvisionedInstanceInfo);
+            seededProvider().provision(InstanceType.ON_DEMAND)
+                            .await()
+                            .onFailure(cause -> assertThat(cause).isNull())
+                            .onSuccess(HetznerComputeProviderTest::assertProvisionedInstanceInfo);
         }
 
         @Test
@@ -314,7 +323,9 @@ class HetznerComputeProviderTest {
             // request instead of the hardcoded default.
             testClient.createServerResponse = Promise.success(runningServer(42, "aether-test"));
 
-            provider.provision(InstanceType.ON_DEMAND).await().onFailure(cause -> assertThat(cause).isNull());
+            seededProvider().provision(InstanceType.ON_DEMAND)
+                            .await()
+                            .onFailure(cause -> assertThat(cause).isNull());
 
             assertThat(testClient.lastCreateServerRequest.image()).isEqualTo("ubuntu-24.04");
         }
@@ -515,12 +526,25 @@ class HetznerComputeProviderTest {
 
         @Test
         void terminate_failure_mapsToEnvironmentError() {
-            testClient.deleteServerResponse = new HetznerError.ApiError(404, "not_found", "Not found").promise();
+            testClient.deleteServerResponse = new HetznerError.ApiError(500, "server_error", "Internal").promise();
 
             provider.terminate(new InstanceId("99"))
                     .await()
                     .onSuccess(unit -> assertThat(unit).isNull())
                     .onFailure(HetznerComputeProviderTest::assertTerminateFailedError);
+        }
+
+        /// A 404 on delete means the server is ALREADY GONE — the outcome terminate was asked for.
+        /// Distinguishing it lets teardown be idempotent, so a destroy that failed for any other
+        /// reason can succeed on retry instead of re-reporting "termination failed" forever.
+        @Test
+        void terminate_whenServerAlreadyGone_mapsToInstanceNotFound() {
+            testClient.deleteServerResponse = new HetznerError.ApiError(404, "not_found", "Not found").promise();
+
+            provider.terminate(new InstanceId("99"))
+                    .await()
+                    .onSuccess(unit -> assertThat(unit).isNull())
+                    .onFailure(cause -> assertThat(cause).isInstanceOf(EnvironmentError.InstanceNotFound.class));
         }
     }
 
@@ -1079,6 +1103,40 @@ class HetznerComputeProviderTest {
     /// REQ-5.1.8.4. The risk here is not "does a rule appear" but "can this ever touch a firewall
     /// Aether did not create, drop a rule it did not own, or leave an unreclaimable resource behind"
     /// — the 2026-08-03 test-pg incident (#572) is what the last one costs.
+    /// RFC-0017 C2 / #579. A server labelled `aether-cluster=unknown` is invisible to every scoped
+    /// cleanup path, so it leaks as a billable orphan. Refusing to create it is the only cheap moment.
+    @Nested
+    class ClusterLabelPreconditionTests {
+
+        @Test
+        void createFrom_whenNoClusterNameResolves_refusesToCreateServer() {
+            var context = ProvisionContext.provisionContext("", "core", "", ProvisionContext.PROVISIONED_BY_BOOTSTRAP);
+            var spec = ProvisionSpec.provisionSpec(InstanceType.ON_DEMAND, "cx22", "core", context).unwrap();
+
+            provider.provision(spec)
+                    .await()
+                    .onSuccess(info -> assertThat(info).isNull())
+                    .onFailure(cause -> assertThat(cause.message()).contains("aether-cluster=unknown")
+                                                                  .contains("Refusing to provision"));
+
+            assertThat(testClient.lastCreateServerRequest)
+                    .as("no server may be created when its cluster cannot be identified")
+                    .isNull();
+        }
+
+        @Test
+        void createFrom_whenClusterNamePresent_stampsItAndCreates() {
+            var context = ProvisionContext.provisionContext("prod-eu", "core", "", ProvisionContext.PROVISIONED_BY_BOOTSTRAP);
+            var spec = ProvisionSpec.provisionSpec(InstanceType.ON_DEMAND, "cx22", "core", context).unwrap();
+
+            provider.provision(spec)
+                    .await()
+                    .onFailure(cause -> assertThat(cause).isNull());
+
+            assertThat(testClient.lastCreateServerRequest.labels()).containsEntry("aether-cluster", "prod-eu");
+        }
+    }
+
     @Nested
     class OpenIngressTests {
         private static final String CLUSTER = "prod-eu";
