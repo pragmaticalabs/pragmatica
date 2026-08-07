@@ -325,6 +325,24 @@ public final class ClusterConfigRoutes implements RouteSource {
                                                                                                              request.tomlContent())));
     }
 
+    /// The desired shape the cluster reconciles toward: every (source, role) the operator declared,
+    /// carried in cluster state so cores can provision workers from it (RFC-0017). Previously only a
+    /// single cluster-wide core count survived this boundary, which is why worker counts could not
+    /// be acted on by the cluster at all.
+    private static List<AetherValue.TopologyEntry> topologyOf(ClusterBootstrapConfig desired) {
+        return desired.sources()
+                      .entrySet()
+                      .stream()
+                      .flatMap(source -> source.getValue()
+                                               .roles()
+                                               .entrySet()
+                                               .stream()
+                                               .map(role -> new AetherValue.TopologyEntry(source.getKey(),
+                                                                                          role.getKey().value(),
+                                                                                          role.getValue().count().or(0))))
+                      .toList();
+    }
+
     @SuppressWarnings("unchecked")
     private Promise<Object> storeInitialConfig(ClusterBootstrapConfig desired, String tomlContent) {
         var cluster = desired.cluster();
@@ -336,7 +354,7 @@ public final class ClusterConfigRoutes implements RouteSource {
         var configValue = new ClusterConfigValue(tomlContent,
                                                  cluster.name(),
                                                  cluster.version(),
-                                                 coreCount,
+                                                 topologyOf(desired),
                                                  coreMin,
                                                  coreMax,
                                                  sourceType,
@@ -435,7 +453,7 @@ public final class ClusterConfigRoutes implements RouteSource {
         var configValue = new ClusterConfigValue(tomlContent,
                                                  cluster.name(),
                                                  cluster.version(),
-                                                 coreCount,
+                                                 topologyOf(desired),
                                                  coreMin,
                                                  coreMax,
                                                  sourceType,
@@ -517,10 +535,17 @@ public final class ClusterConfigRoutes implements RouteSource {
 
     @SuppressWarnings("unchecked")
     private Promise<Object> storeScaledConfig(ClusterConfigValue stored, int newCoreCount, long newVersion) {
+        var scaled = stored.withCoreTotal(newCoreCount);
+
+        if (scaled.isEmpty()) {
+            return new ClusterConfigError.ParseFailed("Cluster has cores in more than one source; scale the source's core role explicitly"
+                                                     + " rather than setting a single cluster-wide core count.").promise();
+        }
+
         var configValue = new ClusterConfigValue(stored.tomlContent(),
                                                  stored.clusterName(),
                                                  stored.version(),
-                                                 newCoreCount,
+                                                 scaled.unwrap().desiredTopology(),
                                                  stored.coreMin(),
                                                  stored.coreMax(),
                                                  stored.deploymentType(),
@@ -559,7 +584,7 @@ public final class ClusterConfigRoutes implements RouteSource {
         var configValue = new ClusterConfigValue(stored.tomlContent(),
                                                  stored.clusterName(),
                                                  targetVersion,
-                                                 stored.coreCount(),
+                                                 stored.desiredTopology(),
                                                  stored.coreMin(),
                                                  stored.coreMax(),
                                                  stored.deploymentType(),

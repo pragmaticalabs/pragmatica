@@ -471,10 +471,16 @@ public final class KVStoreSerializer {
         return v.role() + PIPE + v.communityId() + PIPE + v.governorHint();
     }
 
+    private static String serializeDesiredTopology(List<AetherValue.TopologyEntry> topology) {
+        return topology.stream()
+                       .map(entry -> entry.sourceName() + ":" + entry.role() + "=" + entry.count())
+                       .collect(java.util.stream.Collectors.joining(";"));
+    }
+
     private static String serializeClusterConfig(ClusterConfigValue v) {
-        return v.clusterName() + PIPE + v.version() + PIPE + v.coreCount() + PIPE + v.coreMin() + PIPE + v.coreMax() + PIPE + v.deploymentType() + PIPE + v.configVersion() + PIPE + v.updatedAt() + PIPE + v.tomlContent()
-                                                                                                                                                                                                             .replace("|",
-                                                                                                                                                                                                                      "\\|");
+        return v.clusterName() + PIPE + v.version() + PIPE + serializeDesiredTopology(v.desiredTopology()) + PIPE + v.coreMin() + PIPE + v.coreMax() + PIPE + v.deploymentType() + PIPE + v.configVersion() + PIPE + v.updatedAt() + PIPE + v.tomlContent()
+                                                                                                                                                                                                                                             .replace("|",
+                                                                                                                                                                                                                                                      "\\|");
     }
 
     private static String serializeStorageStatus(StorageStatusValue v) {
@@ -1233,12 +1239,43 @@ public final class KVStoreSerializer {
                                                                                                                                         "|"),
                                                                                                                        parts[0],
                                                                                                                        parts[1],
-                                                                                                                       Integer.parseInt(parts[2]),
+                                                                                                                       parseDesiredTopology(parts[2]),
                                                                                                                        Integer.parseInt(parts[3]),
                                                                                                                        Integer.parseInt(parts[4]),
                                                                                                                        parts[5],
                                                                                                                        Long.parseLong(parts[6]),
                                                                                                                        Long.parseLong(parts[7]))));
+    }
+
+    /// Desired topology encodes as `source:role=count` triples separated by `;`. Field 2 previously
+    /// held the core-only `coreCount` scalar (RFC-0017 C1 replaced it); a bare integer there is
+    /// therefore read as a single unnamed-source core entry so an already-persisted cluster state
+    /// still loads.
+    private static List<AetherValue.TopologyEntry> parseDesiredTopology(String raw) {
+        if (raw.isEmpty()) {
+            return List.of();
+        }
+
+        if (raw.chars().allMatch(Character::isDigit)) {
+            return List.of(new AetherValue.TopologyEntry("", AetherValue.TopologyEntry.CORE_ROLE, Integer.parseInt(raw)));
+        }
+
+        var entries = new ArrayList<AetherValue.TopologyEntry>();
+
+        for (var triple : raw.split(";")) {
+            var atCount = triple.lastIndexOf('=');
+            var atRole = triple.lastIndexOf(':', atCount);
+
+            if (atCount < 0 || atRole < 0) {
+                continue;
+            }
+
+            entries.add(new AetherValue.TopologyEntry(triple.substring(0, atRole),
+                                                      triple.substring(atRole + 1, atCount),
+                                                      Integer.parseInt(triple.substring(atCount + 1))));
+        }
+
+        return List.copyOf(entries);
     }
 
     private static Result<Map.Entry<AetherKey, AetherValue>> parseStorageStatusEntry(String identity, String raw) {

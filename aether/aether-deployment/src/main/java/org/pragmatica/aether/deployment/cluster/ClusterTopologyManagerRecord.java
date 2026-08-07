@@ -231,7 +231,15 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
             return Causes.cause("ClusterConfigValue atom missing — bootstrap must seed it before scale operations are accepted").promise();
         }
 
-        var updated = withCoreCount(existing.unwrap(), size);
+        var scaled = existing.unwrap().withCoreTotal(size);
+
+        if (scaled.isEmpty()) {
+            return Causes.cause("Cluster has cores in more than one source — 'scale cores to " + size
+                               + "' does not say which source absorbs the change. Scale the source's core"
+                               + " role explicitly.").promise();
+        }
+
+        var updated = scaled.unwrap();
         @SuppressWarnings("unchecked")
         var command = (KVCommand<AetherKey>)(KVCommand<?>) new KVCommand.Put<AetherKey, AetherValue>(ClusterConfigKey.CURRENT,
                                                                                                      updated);
@@ -244,18 +252,6 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                                       size,
                                                       updated.configVersion()))
                              .mapToUnit();
-    }
-
-    private ClusterConfigValue withCoreCount(ClusterConfigValue existing, int newCoreCount) {
-        return new ClusterConfigValue(existing.tomlContent(),
-                                      existing.clusterName(),
-                                      existing.version(),
-                                      newCoreCount,
-                                      existing.coreMin(),
-                                      existing.coreMax(),
-                                      existing.deploymentType(),
-                                      existing.configVersion() + 1,
-                                      nowMs());
     }
 
     @Override

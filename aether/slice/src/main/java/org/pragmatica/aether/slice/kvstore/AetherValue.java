@@ -5,6 +5,7 @@
 package org.pragmatica.aether.slice.kvstore;
 
 import java.util.HashSet;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
 
@@ -1208,19 +1209,120 @@ public sealed interface AetherValue {
         }
     }
 
+    /// Desired cluster shape, per source and per role (RFC-0017 C1).
+    ///
+    /// `desiredTopology` REPLACES the former stored `coreCount`. That field was a core-only scalar
+    /// that scale operations rewrote while leaving `tomlContent` untouched, so after any scale the
+    /// two representations of desired size disagreed — and it could not express
+    /// "3 cores in hetzner-eu + 5 workers in aws-us" at all, which is what cores need in order to
+    /// provision workers themselves.
+    ///
+    /// [#coreCount] is now DERIVED from this map rather than stored alongside it, so the two can
+    /// never drift: there is one authoritative representation and one way to read it.
+    ///
+    /// The role is carried as a `String` because `aether/slice` deliberately does not depend on
+    /// `aether-config` (where `NodeRole` lives); the deployment layer converts at its boundary.
+    record TopologyEntry(String sourceName, String role, int count) {
+        public static final String CORE_ROLE = "core";
+
+        public static TopologyEntry topologyEntry(String sourceName, String role, int count) {
+            return new TopologyEntry(sourceName, role, count);
+        }
+
+        public boolean isCore() {
+            return CORE_ROLE.equalsIgnoreCase(role);
+        }
+    }
+
     record ClusterConfigValue(String tomlContent,
                               String clusterName,
                               String version,
-                              int coreCount,
+                              List<TopologyEntry> desiredTopology,
                               int coreMin,
                               int coreMax,
                               String deploymentType,
                               long configVersion,
                               long updatedAt) implements AetherValue {
+        public ClusterConfigValue {
+            desiredTopology = List.copyOf(desiredTopology);
+        }
+
+        /// Derived — never stored. Total CORE nodes across every source.
+        public int coreCount() {
+            return desiredTopology.stream()
+                                  .filter(TopologyEntry::isCore)
+                                  .mapToInt(TopologyEntry::count)
+                                  .sum();
+        }
+
+        /// Desired count for one (source, role), or 0 when the pair is not in the topology.
+        public int desiredCountFor(String sourceName, String role) {
+            return desiredTopology.stream()
+                                  .filter(entry -> entry.sourceName()
+                                                        .equals(sourceName) && entry.role()
+                                                                                    .equalsIgnoreCase(role))
+                                  .mapToInt(TopologyEntry::count)
+                                  .findFirst()
+                                  .orElse(0);
+        }
+
+        /// Set the total CORE count when the cluster has exactly ONE core-bearing source.
+        ///
+        /// Returns empty when several sources carry cores: "scale cores to N" is genuinely ambiguous
+        /// then — it does not say which source absorbs the change — and the old core-only scalar hid
+        /// that by overwriting a single number. Callers surface the ambiguity instead of guessing.
+        public Option<ClusterConfigValue> withCoreTotal(int count) {
+            var coreSources = desiredTopology.stream()
+                                             .filter(TopologyEntry::isCore)
+                                             .map(TopologyEntry::sourceName)
+                                             .distinct()
+                                             .toList();
+
+            if (coreSources.size() > 1) {
+                return Option.none();
+            }
+
+            var target = coreSources.isEmpty()
+                         ? ""
+                         : coreSources.getFirst();
+
+            return Option.some(withDesiredCount(target, TopologyEntry.CORE_ROLE, count));
+        }
+
+        /// Replace the desired count for one (source, role), preserving every other entry, and bump
+        /// the config version. Adds the pair when absent.
+        public ClusterConfigValue withDesiredCount(String sourceName, String role, int count) {
+            var updated = new ArrayList<TopologyEntry>();
+            var replaced = false;
+
+            for (var entry : desiredTopology) {
+                if (entry.sourceName().equals(sourceName) && entry.role().equalsIgnoreCase(role)) {
+                    updated.add(new TopologyEntry(sourceName, role, count));
+                    replaced = true;
+                } else {
+                    updated.add(entry);
+                }
+            }
+
+            if (!replaced) {
+                updated.add(new TopologyEntry(sourceName, role, count));
+            }
+
+            return new ClusterConfigValue(tomlContent,
+                                          clusterName,
+                                          version,
+                                          List.copyOf(updated),
+                                          coreMin,
+                                          coreMax,
+                                          deploymentType,
+                                          configVersion + 1,
+                                          System.currentTimeMillis());
+        }
+
         public static ClusterConfigValue clusterConfigValue(String tomlContent,
                                                             String clusterName,
                                                             String version,
-                                                            int coreCount,
+                                                            List<TopologyEntry> desiredTopology,
                                                             int coreMin,
                                                             int coreMax,
                                                             String deploymentType,
@@ -1228,7 +1330,7 @@ public sealed interface AetherValue {
             return new ClusterConfigValue(tomlContent,
                                           clusterName,
                                           version,
-                                          coreCount,
+                                          desiredTopology,
                                           coreMin,
                                           coreMax,
                                           deploymentType,
@@ -1239,7 +1341,7 @@ public sealed interface AetherValue {
         public static ClusterConfigValue clusterConfigValue(String tomlContent,
                                                             String clusterName,
                                                             String version,
-                                                            int coreCount,
+                                                            List<TopologyEntry> desiredTopology,
                                                             int coreMin,
                                                             int coreMax,
                                                             String deploymentType,
@@ -1248,7 +1350,7 @@ public sealed interface AetherValue {
             return new ClusterConfigValue(tomlContent,
                                           clusterName,
                                           version,
-                                          coreCount,
+                                          desiredTopology,
                                           coreMin,
                                           coreMax,
                                           deploymentType,
@@ -1260,7 +1362,7 @@ public sealed interface AetherValue {
             return new ClusterConfigValue(tomlContent,
                                           clusterName,
                                           version,
-                                          coreCount,
+                                          desiredTopology,
                                           coreMin,
                                           coreMax,
                                           deploymentType,

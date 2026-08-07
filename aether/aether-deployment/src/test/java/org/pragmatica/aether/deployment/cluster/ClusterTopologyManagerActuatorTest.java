@@ -57,6 +57,12 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// pin the surviving actuator surface plus the `setDesiredSize` config-atom write and the
 /// auto-heal toggle, replacing the deleted slot-era `SnapshotDrivenDeficitTest`.
 class ClusterTopologyManagerActuatorTest {
+    /// RFC-0017 C1 — desired topology replaced the core-only scalar; tests that only care about a
+    /// core count build a single-source entry.
+    private static java.util.List<org.pragmatica.aether.slice.kvstore.AetherValue.TopologyEntry> coreTopology(int count) {
+        return java.util.List.of(new org.pragmatica.aether.slice.kvstore.AetherValue.TopologyEntry("primary", "core", count));
+    }
+
     private static final NodeId SELF = nodeId("node-self").unwrap();
     private static final NodeId PEER_A = nodeId("node-a").unwrap();
     private static final NodeId PEER_B = nodeId("node-b").unwrap();
@@ -450,7 +456,7 @@ class ClusterTopologyManagerActuatorTest {
         private final ConcurrentHashMap<ProvisioningSlotKey, ProvisioningSlotValue> slotKv = new ConcurrentHashMap<>();
 
         void seed(int coreCount) {
-            current.set(Option.some(new ClusterConfigValue("", "", "1.0.0", coreCount, 3, 9, "test",
+            current.set(Option.some(new ClusterConfigValue("", "", "1.0.0", coreTopology(coreCount), 3, 9, "test",
                                                            current.get().map(ClusterConfigValue::configVersion).or(0L) + 1L,
                                                            System.currentTimeMillis())));
         }

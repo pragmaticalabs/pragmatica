@@ -44,6 +44,11 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 /// Unit tests for [`BootstrapModule`] covering leader-gain DHT bootstrap, the cluster-config
 /// seed grace window, the bootstrap-committed callback, and the leader-loss reset.
 class BootstrapModuleTest {
+    /// RFC-0017 C1 — desired topology replaced the core-only scalar.
+    private static java.util.List<org.pragmatica.aether.slice.kvstore.AetherValue.TopologyEntry> coreTopology(int count) {
+        return java.util.List.of(new org.pragmatica.aether.slice.kvstore.AetherValue.TopologyEntry("primary", "core", count));
+    }
+
     private static final NodeId SELF = new NodeId("node-self");
     private static final long FIXTURE_RABIA_TERM = 1L;
 
@@ -188,7 +193,7 @@ class BootstrapModuleTest {
             var existingConfig = ClusterConfigValue.clusterConfigValue("",
                                                                         "existing-cluster",
                                                                         "1.0.0",
-                                                                        7,
+                                                                        coreTopology(7),
                                                                         7,
                                                                         11,
                                                                         "applied",
@@ -226,7 +231,7 @@ class BootstrapModuleTest {
             var existingConfig = ClusterConfigValue.clusterConfigValue("",
                                                                         "",
                                                                         "1.0.0",
-                                                                        1,
+                                                                        coreTopology(1),
                                                                         3,
                                                                         15,
                                                                         "test",
