@@ -14,6 +14,7 @@ import org.pragmatica.aether.cli.cluster.init.ClusterConfigAnswers.SshAnswers;
 import org.pragmatica.aether.cli.cluster.init.ClusterConfigAnswers.TlsAnswers;
 import org.pragmatica.aether.config.cluster.CloudProviderName;
 import org.pragmatica.aether.config.cluster.FirewallRule;
+import org.pragmatica.aether.config.cluster.PortMapping;
 import org.pragmatica.aether.config.cluster.SourceType;
 
 
@@ -203,11 +204,12 @@ public sealed interface ClusterConfigGenerator {
         if (answers.firewallPreset() == FirewallPreset.CUSTOM) {
             return answers.customFirewallRules();
         }
-
-        var adminCidr = answers.adminCidr().or(FirewallPresets.ANY_CIDR);
+        // An absent admin CIDR means "I did not say who may reach the control plane", which is
+        // never "everyone" — it used to default to 0.0.0.0/0, putting the management API on the
+        // public internet by default. Option is passed through so the preset omits those rules.
         var internalCidr = answers.internalCidr().or(FirewallPresets.DEFAULT_INTERNAL_CIDR);
 
-        return FirewallPresets.rulesFor(answers.firewallPreset(), adminCidr, internalCidr);
+        return FirewallPresets.rulesFor(answers.firewallPreset(), answers.adminCidr(), internalCidr);
     }
 
     private static void appendRuntime(StringBuilder sb, ClusterConfigAnswers answers) {
@@ -278,22 +280,22 @@ public sealed interface ClusterConfigGenerator {
                      "cluster",
                      String.valueOf(docker
                                     ? DOCKER_CLUSTER_PORT
-                                    : FirewallPresets.CLUSTER_PORT));
+                                    : PortMapping.defaultPortMapping().cluster()));
         appendKvBare(sb,
                      "management",
                      String.valueOf(docker
                                     ? DOCKER_MGMT_PORT
-                                    : FirewallPresets.MGMT_PORT));
+                                    : PortMapping.defaultPortMapping().management()));
         appendKvBare(sb,
                      "app_http",
                      String.valueOf(docker
                                     ? DOCKER_APP_HTTP_PORT
-                                    : FirewallPresets.APP_HTTP_PORT));
+                                    : PortMapping.defaultPortMapping().appHttp()));
         appendKvBare(sb,
                      "swim",
                      String.valueOf(docker
                                     ? DOCKER_SWIM_PORT
-                                    : FirewallPresets.SWIM_PORT));
+                                    : PortMapping.defaultPortMapping().swim()));
         appendBlank(sb);
     }
 
