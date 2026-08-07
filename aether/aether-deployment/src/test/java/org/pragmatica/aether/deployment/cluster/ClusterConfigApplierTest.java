@@ -53,7 +53,9 @@ class ClusterConfigApplierTest {
             var result = applier.apply(List.of(new DiffAction.ScaleUp("default", NodeRole.CORE, 5, 7))).await();
 
             assertThat(result.isSuccess()).isTrue();
-            assertThat(topologyManager.setDesiredSizeCalls()).containsExactly(7);
+            assertThat(topologyManager.setDesiredCountCalls())
+                    .as("the source and role must survive the applier — the scalar surface discarded them")
+                    .containsExactly(new RecordingTopologyManager.ScaleCall("default", NodeRole.CORE, 7));
         }
 
         @Test
@@ -61,7 +63,8 @@ class ClusterConfigApplierTest {
             var result = applier.apply(List.of(new DiffAction.ScaleDown("default", NodeRole.CORE, 7, 5))).await();
 
             assertThat(result.isSuccess()).isTrue();
-            assertThat(topologyManager.setDesiredSizeCalls()).containsExactly(5);
+            assertThat(topologyManager.setDesiredCountCalls())
+                    .containsExactly(new RecordingTopologyManager.ScaleCall("default", NodeRole.CORE, 5));
         }
     }
 
@@ -72,7 +75,7 @@ class ClusterConfigApplierTest {
             var result = applier.apply(List.of(new DiffAction.ScaleUp("default", NodeRole.WORKER, 0, 3))).await();
 
             assertThat(result.isFailure()).isTrue();
-            assertThat(topologyManager.setDesiredSizeCalls()).as("a WORKER scale must never mutate the core desired size").isEmpty();
+            assertThat(topologyManager.setDesiredCountCalls()).as("a WORKER scale must never mutate the core desired size").isEmpty();
             result.onFailure(cause -> assertThat(cause.message()).contains("worker").contains("#241"));
         }
 
@@ -81,7 +84,7 @@ class ClusterConfigApplierTest {
             var result = applier.apply(List.of(new DiffAction.ScaleDown("default", NodeRole.WORKER, 3, 1))).await();
 
             assertThat(result.isFailure()).isTrue();
-            assertThat(topologyManager.setDesiredSizeCalls()).isEmpty();
+            assertThat(topologyManager.setDesiredCountCalls()).isEmpty();
         }
 
         @Test
@@ -89,7 +92,7 @@ class ClusterConfigApplierTest {
             var result = applier.apply(List.of(new DiffAction.ScaleUp("default", NodeRole.SPOT, 0, 2))).await();
 
             assertThat(result.isFailure()).isTrue();
-            assertThat(topologyManager.setDesiredSizeCalls()).isEmpty();
+            assertThat(topologyManager.setDesiredCountCalls()).isEmpty();
         }
 
         /// A mixed diff applies the CORE action and fails on the WORKER action — the overall
@@ -103,22 +106,25 @@ class ClusterConfigApplierTest {
             var result = applier.apply(actions).await();
 
             assertThat(result.isFailure()).isTrue();
-            assertThat(topologyManager.setDesiredSizeCalls()).containsExactly(6);
+            assertThat(topologyManager.setDesiredCountCalls())
+                    .containsExactly(new RecordingTopologyManager.ScaleCall("default", NodeRole.CORE, 6));
         }
     }
 
-    /// Recording `ClusterTopologyManager` stub — only `setDesiredSize` matters for the applier;
+    /// Recording `ClusterTopologyManager` stub — only `setDesiredCount` matters for the applier;
     /// the rest is inert surface (same shape as `LeaderReconcilerTest.RecordingCtm`).
     private static final class RecordingTopologyManager implements ClusterTopologyManager {
-        private final List<Integer> setDesiredSizeCalls = new CopyOnWriteArrayList<>();
+        record ScaleCall(String sourceName, NodeRole role, int count) {}
 
-        List<Integer> setDesiredSizeCalls() {
-            return List.copyOf(setDesiredSizeCalls);
+        private final List<ScaleCall> setDesiredCountCalls = new CopyOnWriteArrayList<>();
+
+        List<ScaleCall> setDesiredCountCalls() {
+            return List.copyOf(setDesiredCountCalls);
         }
 
         @Override
-        public Promise<Unit> setDesiredSize(int size) {
-            setDesiredSizeCalls.add(size);
+        public Promise<Unit> setDesiredCount(String sourceName, NodeRole role, int count) {
+            setDesiredCountCalls.add(new ScaleCall(sourceName, role, count));
             return Promise.success(unit());
         }
 

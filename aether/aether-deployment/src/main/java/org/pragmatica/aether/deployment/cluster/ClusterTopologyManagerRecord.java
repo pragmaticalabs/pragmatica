@@ -214,42 +214,40 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     }
 
     @Override
-    public Promise<Unit> setDesiredSize(int size) {
-        if (size < MINIMUM_CLUSTER_SIZE) {
+    public Promise<Unit> setDesiredCount(String sourceName, NodeRole role, int count) {
+        // The quorum floor is a property of the CORE tier only; worker and spot tiers may legitimately
+        // scale to zero.
+        if (role == NodeRole.CORE && count < MINIMUM_CLUSTER_SIZE) {
             return Causes.cause("Cluster size cannot be below " + MINIMUM_CLUSTER_SIZE + " (quorum requirement)").promise();
         }
 
-        resetProvisioningCircuit("setDesiredSize=" + size);
+        resetProvisioningCircuit("setDesiredCount " + sourceName + "/" + role.value() + "=" + count);
 
-        return writeDesiredCoreCount(size);
+        return writeDesiredCount(sourceName, role, count);
     }
 
-    private Promise<Unit> writeDesiredCoreCount(int size) {
+    private Promise<Unit> writeDesiredCount(String sourceName, NodeRole role, int count) {
         var existing = clusterConfigReader.get();
 
         if (existing.isEmpty()) {
             return Causes.cause("ClusterConfigValue atom missing — bootstrap must seed it before scale operations are accepted").promise();
         }
 
-        var scaled = existing.unwrap().withCoreTotal(size);
-
-        if (scaled.isEmpty()) {
-            return Causes.cause("Cluster has cores in more than one source — 'scale cores to " + size
-                               + "' does not say which source absorbs the change. Scale the source's core"
-                               + " role explicitly.").promise();
-        }
-
-        var updated = scaled.unwrap();
+        var updated = existing.unwrap().withDesiredCount(sourceName, role.value(), count);
         @SuppressWarnings("unchecked")
         var command = (KVCommand<AetherKey>)(KVCommand<?>) new KVCommand.Put<AetherKey, AetherValue>(ClusterConfigKey.CURRENT,
                                                                                                      updated);
 
         return commandApplier.apply(List.of(command))
-                             .onFailure(cause -> log.warn("CTM: failed to write ClusterConfigValue coreCount={}: {}",
-                                                          size,
+                             .onFailure(cause -> log.warn("CTM: failed to write ClusterConfigValue {}/{}={}: {}",
+                                                          sourceName,
+                                                          role.value(),
+                                                          count,
                                                           cause.message()))
-                             .onSuccess(_ -> log.info("CTM: wrote ClusterConfigValue coreCount={} (configVersion={})",
-                                                      size,
+                             .onSuccess(_ -> log.info("CTM: wrote ClusterConfigValue {}/{}={} (configVersion={})",
+                                                      sourceName,
+                                                      role.value(),
+                                                      count,
                                                       updated.configVersion()))
                              .mapToUnit();
     }

@@ -32,7 +32,12 @@ import org.pragmatica.lang.Unit;
 @SuppressWarnings("JBCT-RET-01")
 public interface ClusterTopologyManager extends TopologyManager {
     NodeReconcilerState reconcilerState();
-    Promise<Unit> setDesiredSize(int size);
+    /// Set the desired node count for one (source, role) — RFC-0017 C1.
+    ///
+    /// Replaces `setDesiredSize(int)`, which took a bare cluster-wide core count and so could not
+    /// say which source a change applied to. The caller always knows both (`DiffAction.ScaleUp`
+    /// carries `sourceName` and `role`), so the information existed and was being discarded.
+    Promise<Unit> setDesiredCount(String sourceName, NodeRole role, int count);
     int desiredSize();
     int configuredSize();
     void onNodeReady(NodeId nodeId);

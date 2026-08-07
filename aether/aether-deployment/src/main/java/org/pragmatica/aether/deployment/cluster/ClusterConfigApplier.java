@@ -93,14 +93,18 @@ record ClusterConfigApplierRecord(ClusterTopologyManager topologyManager) implem
     }
 
     private Promise<Unit> applyScaleUp(ScaleUp scale) {
-        return topologyManager.setDesiredSize(scale.to())
+        return topologyManager.setDesiredCount(scale.sourceName(),
+                                               scale.role(),
+                                               scale.to())
                               .onSuccess(_ -> ClusterConfigApplier.log.info("Applied scale-up: {}",
                                                                             scale.description()))
                               .mapToUnit();
     }
 
     private Promise<Unit> applyScaleDown(ScaleDown scale) {
-        return topologyManager.setDesiredSize(scale.to())
+        return topologyManager.setDesiredCount(scale.sourceName(),
+                                               scale.role(),
+                                               scale.to())
                               .onSuccess(_ -> ClusterConfigApplier.log.info("Applied scale-down: {}",
                                                                             scale.description()))
                               .mapToUnit();

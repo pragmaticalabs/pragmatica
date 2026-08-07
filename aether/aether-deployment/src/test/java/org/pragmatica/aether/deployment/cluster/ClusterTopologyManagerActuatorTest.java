@@ -407,7 +407,7 @@ class ClusterTopologyManagerActuatorTest {
     void setDesiredSize_writesClusterConfigValueAtom_withIncrementedVersion() {
         ctm.activate();
         var before = clusterStore.currentVersion();
-        var result = ctm.setDesiredSize(7).await();
+        var result = ctm.setDesiredCount("primary", NodeRole.CORE, 7).await();
         assertThat(result.isSuccess()).isTrue();
         var after = clusterStore.current().unwrap();
         assertThat(after.coreCount()).isEqualTo(7);
@@ -418,7 +418,7 @@ class ClusterTopologyManagerActuatorTest {
     void setDesiredSize_belowQuorum_rejectedWithoutAtomWrite() {
         ctm.activate();
         var before = clusterStore.currentVersion();
-        var result = ctm.setDesiredSize(2).await();
+        var result = ctm.setDesiredCount("primary", NodeRole.CORE, 2).await();
         assertThat(result.isFailure()).isTrue();
         assertThat(clusterStore.currentVersion()).isEqualTo(before);
     }

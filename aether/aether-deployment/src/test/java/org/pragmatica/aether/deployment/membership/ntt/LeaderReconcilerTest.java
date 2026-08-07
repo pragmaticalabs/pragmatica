@@ -2246,7 +2246,7 @@ class LeaderReconcilerTest {
         }
 
         @Override
-        public Promise<Unit> setDesiredSize(int size) {
+        public Promise<Unit> setDesiredCount(String sourceName, NodeRole role, int count) {
             return Promise.success(unit());
         }
 
