@@ -18,8 +18,18 @@ else in the RFC: cores cannot provision workers from a spec the cluster does not
 
 - Promote to the per-source/per-role model `ClusterBootstrapConfig` already has (count,
   instance_type, image, zone, runtime ref).
-- Publish it into cluster state at `CLUSTER_FORMATION`. **Nothing publishes the topology spec
-  today** — verified, `BootstrapPhaseFormation` has no config-publication path.
+- **The spec is ALREADY published.** `BootstrapPhaseFormation:247,362` posts the full
+  `tomlContent` into `ClusterConfigValue` (which also carries clusterName, version, coreCount,
+  coreMin/Max, configVersion), and `ClusterConfigRoutes` serves it. So stage 2 does **not** need a
+  new publication path or a new KV value — it needs a typed *view*: parse the published
+  `tomlContent` with `ClusterBootstrapConfigParser` into `ClusterBootstrapConfig` and let CTM
+  reconcile against per-source/per-role desired counts instead of a core-only scalar.
+  (An earlier draft of this handover said "nothing publishes the topology spec today". That was
+  wrong — it came from grepping one file for a few keywords. Corrected 2026-08-07.)
+- `desiredSize()`/`configuredSize()` are core-only scalars: `configuredSize()` is
+  `MembershipView.desiredCoreSize`. Only 3 files touch them
+  (`ClusterTopologyManager`, `ClusterTopologyManagerRecord`, `ClusterConfigApplier`), so the
+  surface to promote is small.
 - Touches the REST → CLI → docs → dashboard quad (scale endpoints). Report before wiring that.
 
 Remaining order after stage 2: **#570** (`setDesiredSize` lost-update race — this design leans on it
