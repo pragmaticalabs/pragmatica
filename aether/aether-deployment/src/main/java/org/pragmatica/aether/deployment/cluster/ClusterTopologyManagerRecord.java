@@ -223,33 +223,96 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
 
         resetProvisioningCircuit("setDesiredCount " + sourceName + "/" + role.value() + "=" + count);
 
-        return writeDesiredCount(sourceName, role, count);
+        return applyDesiredCount(clusterConfigReader,
+                                 commandApplier,
+                                 sourceName,
+                                 role.value(),
+                                 count,
+                                 DESIRED_COUNT_CAS_ATTEMPTS);
     }
 
-    private Promise<Unit> writeDesiredCount(String sourceName, NodeRole role, int count) {
-        var existing = clusterConfigReader.get();
+    static final int DESIRED_COUNT_CAS_ATTEMPTS = 3;
+
+    /// Fenced read-modify-write of one `(source, role)` desired count (RFC-0018, #570).
+    ///
+    /// The applier's successor fence rejects a `Put` built on a stale read, so a concurrent writer
+    /// (a scale racing an auto-heal) can no longer be silently overwritten — but the rejection is
+    /// invisible in the apply result: under batch merging every submitter receives the FULL merged
+    /// result list and cannot attribute an element to its own command. So this loop confirms
+    /// semantically instead — after the apply resolves, the local state machine has applied the
+    /// batch (the engine runs `process` before resolving the promise, and `setDesiredCount` is
+    /// leader-gated so the reader is the applying node), and a re-read tells us whether the count
+    /// we asked for landed. If it did not, we lost the race: recompute from the fresh committed
+    /// value and retry, bounded. If the reader lags the commit, a retry recomputes the same version
+    /// and loses again — burning an attempt but never lying.
+    ///
+    /// Static and collaborator-injected so the loop is testable without wiring the full CTM record.
+    static Promise<Unit> applyDesiredCount(Supplier<Option<ClusterConfigValue>> reader,
+                                           Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> applier,
+                                           String sourceName,
+                                           String role,
+                                           int count,
+                                           int attemptsLeft) {
+        var existing = reader.get();
 
         if (existing.isEmpty()) {
             return Causes.cause("ClusterConfigValue atom missing — bootstrap must seed it before scale operations are accepted").promise();
         }
 
-        var updated = existing.unwrap().withDesiredCount(sourceName, role.value(), count);
+        var updated = existing.unwrap().withDesiredCount(sourceName, role, count);
         @SuppressWarnings("unchecked")
         var command = (KVCommand<AetherKey>)(KVCommand<?>) new KVCommand.Put<AetherKey, AetherValue>(ClusterConfigKey.CURRENT,
                                                                                                      updated);
 
-        return commandApplier.apply(List.of(command))
-                             .onFailure(cause -> log.warn("CTM: failed to write ClusterConfigValue {}/{}={}: {}",
-                                                          sourceName,
-                                                          role.value(),
-                                                          count,
-                                                          cause.message()))
-                             .onSuccess(_ -> log.info("CTM: wrote ClusterConfigValue {}/{}={} (configVersion={})",
-                                                      sourceName,
-                                                      role.value(),
-                                                      count,
-                                                      updated.configVersion()))
-                             .mapToUnit();
+        return applier.apply(List.of(command))
+                      .onFailure(cause -> log.warn("CTM: failed to write ClusterConfigValue {}/{}={}: {}",
+                                                   sourceName,
+                                                   role,
+                                                   count,
+                                                   cause.message()))
+                      .flatMap(_ -> confirmOrRetry(reader,
+                                                   applier,
+                                                   sourceName,
+                                                   role,
+                                                   count,
+                                                   attemptsLeft,
+                                                   updated.configVersion()));
+    }
+
+    private static Promise<Unit> confirmOrRetry(Supplier<Option<ClusterConfigValue>> reader,
+                                                Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> applier,
+                                                String sourceName,
+                                                String role,
+                                                int count,
+                                                int attemptsLeft,
+                                                long intendedVersion) {
+        var landed = reader.get().map(fresh -> fresh.desiredCountFor(sourceName, role) == count).or(false);
+
+        if (landed) {
+            log.info("CTM: wrote ClusterConfigValue {}/{}={} (configVersion={})",
+                     sourceName,
+                     role,
+                     count,
+                     intendedVersion);
+
+            return Promise.unitPromise();
+        }
+
+        log.warn("CTM: desired-count CAS lost — {}/{}={} did not land at configVersion={}, {} attempt(s) left",
+                 sourceName,
+                 role,
+                 count,
+                 intendedVersion,
+                 attemptsLeft - 1);
+        if (attemptsLeft <= 1) {
+            return Causes.cause("Desired-count write for " + sourceName
+                               + "/" + role
+                               + "=" + count
+                               + " lost the version race " + DESIRED_COUNT_CAS_ATTEMPTS
+                               + " times — a concurrent writer keeps advancing the cluster config; re-issue the scale").promise();
+        }
+
+        return applyDesiredCount(reader, applier, sourceName, role, count, attemptsLeft - 1);
     }
 
     @Override

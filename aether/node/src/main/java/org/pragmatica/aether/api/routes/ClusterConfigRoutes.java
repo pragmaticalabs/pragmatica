@@ -6,6 +6,7 @@ package org.pragmatica.aether.api.routes;
 
 import java.util.List;
 import java.util.Map;
+import java.util.function.Predicate;
 import java.util.function.Supplier;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
@@ -451,9 +452,7 @@ public final class ClusterConfigRoutes implements RouteSource {
         return Promise.unitPromise().map(u -> (Object) u);
     }
 
-    @SuppressWarnings("unchecked")
     private Promise<Object> storeUpdatedConfig(ClusterBootstrapConfig desired, String tomlContent, long newVersion) {
-        var node = nodeSupplier.get();
         var cluster = desired.cluster();
         var coreCount = desired.derivedCoreCount();
         var coreMin = desired.coreTopology().min().or(coreCount);
@@ -469,13 +468,12 @@ public final class ClusterConfigRoutes implements RouteSource {
                                                  sourceType,
                                                  newVersion,
                                                  System.currentTimeMillis());
-        var command = (KVCommand<AetherKey>)(KVCommand<?>) new KVCommand.Put<>(ClusterConfigKey.CURRENT, configValue);
 
-        return node.<Object> apply(List.of(command))
-                   .map(_ -> (Object) new ApplyConfigResponse(newVersion,
-                                                              cluster.name(),
-                                                              coreCount,
-                                                              configValue.updatedAt()));
+        return storeFencedConfig(configValue,
+                                 fresh -> tomlContent.equals(fresh.tomlContent())).map(fresh -> (Object) new ApplyConfigResponse(fresh.configVersion(),
+                                                                                                                                 cluster.name(),
+                                                                                                                                 coreCount,
+                                                                                                                                 configValue.updatedAt()));
     }
 
     private static Promise<Object> buildDryRunResponse(ClusterConfigValue stored, DiffPlan plan) {
@@ -568,12 +566,12 @@ public final class ClusterConfigRoutes implements RouteSource {
         var previousCount = stored.desiredCountFor(source, role);
         var scaled = stored.withDesiredCount(source, role, count);
 
-        return storeScaledConfig(scaled).map(_ -> new ScaleClusterResponse(true,
-                                                                           source,
-                                                                           role,
-                                                                           previousCount,
-                                                                           count,
-                                                                           scaled.configVersion()));
+        return storeFencedConfig(scaled, fresh -> fresh.desiredCountFor(source, role) == count).map(fresh -> new ScaleClusterResponse(true,
+                                                                                                                                      source,
+                                                                                                                                      role,
+                                                                                                                                      previousCount,
+                                                                                                                                      count,
+                                                                                                                                      fresh.configVersion()));
     }
 
     /// Quorum arithmetic constrains CORE nodes only — it is what keeps a majority reachable. Worker
@@ -612,15 +610,6 @@ public final class ClusterConfigRoutes implements RouteSource {
         return Result.success(source);
     }
 
-    @SuppressWarnings("unchecked")
-    private Promise<Object> storeScaledConfig(ClusterConfigValue scaled) {
-        var command = (KVCommand<AetherKey>)(KVCommand<?>) new KVCommand.Put<>(ClusterConfigKey.CURRENT, scaled);
-
-        return nodeSupplier.get()
-                           .<Object> apply(List.of(command))
-                           .map(_ -> (Object) scaled);
-    }
-
     private Promise<UpgradeResponse> handleUpgrade(UpgradeRequest request) {
         return lookupClusterConfig().flatMap(stored -> initiateUpgrade(stored, request));
     }
@@ -642,7 +631,29 @@ public final class ClusterConfigRoutes implements RouteSource {
                                                                                         targetVersion));
     }
 
+    /// Apply a fenced `Put` of the cluster config and confirm it LANDED (RFC-0018, #570).
+    ///
+    /// The applier's successor fence rejects a `Put` built on a stale read — but the rejection is
+    /// invisible in the apply result (under batch merging every submitter receives the full merged
+    /// result list), so an unconfirmed store would report success for a write that did nothing:
+    /// worse than the race it closes. The engine runs the local `process` before resolving the
+    /// apply promise, so a local re-read afterwards is authoritative for this batch. `landed` is a
+    /// SEMANTIC check — "did the change I asked for stick" — rather than version arithmetic, which
+    /// cannot distinguish my write from a competitor's at the same version.
     @SuppressWarnings("unchecked")
+    private Promise<ClusterConfigValue> storeFencedConfig(ClusterConfigValue intended,
+                                                          Predicate<ClusterConfigValue> landed) {
+        var command = (KVCommand<AetherKey>)(KVCommand<?>) new KVCommand.Put<>(ClusterConfigKey.CURRENT, intended);
+
+        return nodeSupplier.get()
+                           .<Object> apply(List.of(command))
+                           .flatMap(_ -> lookupClusterConfig())
+                           .flatMap(fresh -> landed.test(fresh)
+                                             ? Promise.success(fresh)
+                                             : new ClusterConfigError.VersionConflict(intended.configVersion(),
+                                                                                      fresh.configVersion()).promise());
+    }
+
     private Promise<Object> storeUpgradedVersion(ClusterConfigValue stored, String targetVersion) {
         var configValue = new ClusterConfigValue(stored.tomlContent(),
                                                  stored.clusterName(),
@@ -653,11 +664,9 @@ public final class ClusterConfigRoutes implements RouteSource {
                                                  stored.deploymentType(),
                                                  stored.configVersion() + 1,
                                                  System.currentTimeMillis());
-        var command = (KVCommand<AetherKey>)(KVCommand<?>) new KVCommand.Put<>(ClusterConfigKey.CURRENT, configValue);
 
-        return nodeSupplier.get()
-                           .<Object> apply(List.of(command))
-                           .map(_ -> (Object) configValue);
+        return storeFencedConfig(configValue,
+                                 fresh -> targetVersion.equals(fresh.version())).map(fresh -> (Object) fresh);
     }
 
     sealed interface UpgradeError extends Cause {
