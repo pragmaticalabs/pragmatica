@@ -741,35 +741,52 @@ REQ-EXPORT-04: With `--format json` (and `--field`, which implies JSON), emit th
 ### 7.1 Command
 
 ```bash
-aether cluster scale --core 7                 # Scale core nodes to 7
-aether cluster scale --core 7 --dry-run       # Show what would happen
+aether cluster scale --role core --count 7                        # Scale core nodes to 7
+aether cluster scale --source hetzner-eu --role core --count 7    # Name the source explicitly
 ```
+
+`--source` is optional and inferred when exactly one source declares the role; several sources are
+refused with the candidates named rather than guessed. See `cluster-bootstrap-spec.md` REQ-10.2.1a/b.
 
 ### 7.2 Behavior
 
 REQ-SCALE-01: `scale` is a thin wrapper around `apply`. It:
 1. Fetches current `ClusterConfigValue`
-2. Modifies only `cluster.core.count` to the new value
-3. Delegates to the same `apply` logic
+2. Resolves the target `(source, role)` — see `cluster-bootstrap-spec.md` REQ-10.2.1a
+3. Modifies only that pair's desired count in `desiredTopology`, leaving every other entry intact
+4. Delegates to the same `apply` logic
 
-REQ-SCALE-02: Quorum safety validation:
+REQ-SCALE-02: Quorum safety validation, applied to the `core` role ONLY and evaluated against the
+resulting **cluster-wide** core total (the sum of every source's core entries after the change), not
+against the per-source count:
 - Never below `cluster.core.min` (default 3)
 - Never below absolute minimum of 3 (hardcoded)
 - Never above `cluster.core.max`
-- New count must be odd
+- New cluster-wide total must be odd
+
+Worker and spot counts carry no quorum constraint; they are required only to be at least 1.
 
 REQ-SCALE-03: Scale-down drains excess nodes before terminating. Node selection for removal: newest nodes first (by KSUID ordering), preferring nodes in over-represented zones.
 
 ### 7.3 REST Flow
 
 ```
-CLI: POST /api/cluster/scale { "core_count": 7, "expected_version": 5 }
+CLI: POST /api/cluster/scale { "source": "hetzner-eu", "role": "core", "count": 7, "expectedVersion": 5 }
 Server:
-  1. Validate quorum safety
-  2. CTM.setDesiredSize(7)
-  3. Update ClusterConfigValue in KV-Store
-  4. Return { "success": true, "previous": 5, "new": 7, "config_version": 6 }
+  1. Check expectedVersion against the stored configVersion
+  2. Resolve the source (infer when blank; refuse if ambiguous or undeclared)
+  3. Validate quorum safety on the resulting cluster-wide core total
+  4. Write the updated desiredTopology to KV-Store
+  5. Return { "success": true, "source": "hetzner-eu", "role": "core",
+              "previousCount": 5, "newCount": 7, "configVersion": 6 }
 ```
+
+Field names are camelCase and MUST match `ManagementApiResponses.ScaleRequest` exactly. They did not
+once: the CLI sent `count`/`role`/`source` while the record read a lone `coreCount`, so no scale
+request ever carried a usable count. `aether/cli` cannot depend on `aether/node`, so this contract is
+spelled twice with nothing tying the spellings together — `ScaleRequestContractTest` and
+`ClusterScaleCommandTest` pin both halves to the same names.
+
 
 ---
 
@@ -1597,7 +1614,7 @@ This eliminates the need for Step 7 (Update Seed Peers) in the bootstrap flow.
 | `NodeUpgradeOrchestrator` | `aether-deployment` | Coordinates per-node drain/update/restart/activate |
 
 **Deliverables:**
-- `scale --core N` with quorum safety
+- `scale --role core --count N` with quorum safety
 - `upgrade --version X.Y.Z` with rolling strategy
 - Upgrade progress polling
 - Version mismatch detection in status

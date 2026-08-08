@@ -1024,10 +1024,14 @@ Apply these changes? [y/N]
 | `aether cluster status` | Cluster health summary and node list |
 | `aether cluster topology` | Source + role sub-table topology view |
 | `aether cluster drain <node>` | Drain a specific node (remove from routing, wait for in-flight) |
-| `aether cluster scale <source> <role> --count <N>` | Quick resize of a `(source, role)` sub-table without editing config |
+| `aether cluster scale [--source <name>] --role <role> --count <N>` | Quick resize of a `(source, role)` sub-table without editing config |
 | `aether cluster export [--file <output.toml>]` | Export current cluster state as TOML config (flattened) |
 
-**REQ-10.2.1**: `aether cluster scale <source> <role> --count <N>` is a convenience shortcut. It modifies the stored config for the specified sub-table and triggers the same logic as `apply`. The operator SHOULD update their config file to match afterwards. If the local file is left stale, a subsequent `aether cluster apply --dry-run` will show the drift. The recovery path is `aether cluster export --file cluster.toml` (REQ-10.2.2) to regenerate a drift-free local file from the stored state.
+**REQ-10.2.1**: `aether cluster scale [--source <name>] --role <role> --count <N>` is a convenience shortcut. It modifies the stored config for the specified sub-table and triggers the same logic as `apply`. The operator SHOULD update their config file to match afterwards. If the local file is left stale, a subsequent `aether cluster apply --dry-run` will show the drift. The recovery path is `aether cluster export --file cluster.toml` (REQ-10.2.2) to regenerate a drift-free local file from the stored state.
+
+**REQ-10.2.1a**: `--source` MAY be omitted. The server resolves it against the stored topology and MUST refuse rather than guess: exactly one source declaring `role` resolves to that source; several MUST be refused with the candidate source names in the message. A `(source, role)` pair the stored topology does not declare MUST be refused rather than created — creating it would make a mistyped source name a provisioning target. `--role` defaults to `core`.
+
+**REQ-10.2.1b**: Quorum validation (odd, `>= 3`, within `core.min`/`core.max`) applies to the `core` role only, and MUST be evaluated against the resulting **cluster-wide** core total rather than the per-source count. A per-source count is not a cluster total: scaling one core source to 1 is valid when another source carries 2. Validation is server-side; the CLI does not hold the whole topology and therefore cannot perform this arithmetic.
 
 **REQ-10.2.2**: `aether cluster export` generates a valid config file that, if used as input to `aether cluster apply`, would produce no changes (idempotent round-trip). Exports **flatten** includes, template inheritance, and variable substitution: the output contains no `include = [...]`, no `[template.X]` blocks, no `inherit` fields, and all `${env:...}` / `${secrets:...}` placeholders are resolved to their literal values.
 

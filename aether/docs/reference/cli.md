@@ -1865,37 +1865,67 @@ See `aether/docs/operator/multi-cluster-deployment.md` for the full labeling mod
 
 ### `aether cluster scale`
 
-Scale the cluster core node count. Validates quorum safety on the CLI side before sending.
+Scale one source and role of the cluster topology.
 
 ```bash
-aether cluster scale --core <N>
+aether cluster scale [--source <name>] [--role <role>] --count <N>
 ```
 
 | Option | Description |
 |--------|-------------|
-| `--core` | Target core node count (minimum 3, must be odd) |
+| `--source` | Source name. Omit it and the server infers the source, which works when exactly one source declares the role. |
+| `--role` | `core`, `worker` or `spot`. Defaults to `core`. |
+| `--count` | Target node count for this source and role. |
 | `--yes`, `--force` | Skip interactive confirmation (required in non-interactive shells) |
 | `--json` | Output raw JSON |
 
-Example:
+Examples:
 ```bash
-# Scale to 7 core nodes
-aether cluster scale --core 7
+# Single-source cluster — the source is unambiguous, so naming it is optional
+aether cluster scale --role core --count 7
 
-# Output:
-# Scale successful.
-# Core nodes: 5 -> 7
-# Config version: 8
+# Multi-source cluster — name the source that absorbs the change
+aether cluster scale --source hetzner-eu --role core --count 7
+aether cluster scale --source aws-us --role worker --count 12
 ```
+
+Default output is the confirmation line only:
+```
+Scale successful.
+```
+
+Pass `--json` for the counts the server applied:
+```json
+{
+  "success": true,
+  "source": "hetzner-eu",
+  "role": "core",
+  "previousCount": 5,
+  "newCount": 7,
+  "configVersion": 8
+}
+```
+
+Omitting `--source` in a cluster where several sources carry the role is refused, listing the
+candidates:
+
+```
+Role 'core' is declared by 2 sources (hetzner-eu, aws-us). Re-run naming one with --source.
+```
+
+A `(source, role)` the topology does not declare is also refused rather than created — otherwise a
+mistyped source name would become a real provisioning target. Add the pair to the config and use
+`aether cluster apply` instead.
+
+**Quorum safety is validated by the server, not the CLI.** A per-source count is not the cluster
+total: scaling one core source to 1 is legal when another source carries 2. Only the server holds
+the whole topology, so only the server can do that arithmetic. It checks the resulting cluster-wide
+core total (at least 3, odd, within `core.min`/`core.max`); worker and spot counts carry no quorum
+constraint.
 
 Scaling is destructive (a scale-down terminates nodes), so it prompts for confirmation in an
 interactive shell. Pass `--yes` (or `--force`) to skip the prompt; a non-interactive shell without
 `--yes` refuses to proceed.
-
-Scaling down displays a warning:
-```
-Warning: scaling down from 7 to 5 nodes. Excess nodes will be drained.
-```
 
 ### `aether cluster topology`
 

@@ -50,10 +50,16 @@ For clusters bootstrapped against a cloud provider (`source.type = "cloud"`, e.g
 ### Scaling the cluster
 
 ```bash
-aether cluster scale --target 7
+# Single-source cluster — the source is inferred
+aether cluster scale --role core --count 7
+
+# Multi-source cluster — name the source that absorbs the change
+aether cluster scale --source hetzner-eu --role core --count 7
 ```
 
-This issues `POST /api/cluster/scale` against the leader. The Cluster Topology Manager (CTM) writes the new `coreCount` to KV-Store, which triggers a reconciliation pass. If the new size is greater than the current healthy node count, CTM calls `ComputeProvider.provision()` for each missing node; if smaller, it drains and terminates the surplus.
+This issues `POST /api/cluster/scale` against the leader. The desired count for that `(source, role)` is written to KV-Store, which triggers a reconciliation pass. If the new size is greater than the current healthy node count, CTM calls `ComputeProvider.provision()` for each missing node; if smaller, it drains and terminates the surplus.
+
+Omitting `--source` when several sources declare the role is refused rather than guessed — the response names the candidates. Quorum safety is checked against the resulting **cluster-wide** core total, not the per-source count, so scaling one core source to 1 is accepted when another source carries 2.
 
 Verify progress:
 ```bash
@@ -72,7 +78,7 @@ The leader must hold valid cloud credentials at runtime. This requires:
 
 ### Recovery from a stuck scale operation
 
-If `aether cluster scale --target N` returns 200 but the node count never reaches `N`:
+If `aether cluster scale --role core --count N` returns 200 but the node count never reaches `N`:
 
 ```bash
 # 1. Identify the leader

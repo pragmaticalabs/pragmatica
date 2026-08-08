@@ -2737,6 +2737,11 @@ Get the current cluster configuration from the KV-Store.
   "clusterName": "production",
   "version": "0.21.1",
   "coreCount": 5,
+  "desiredTopology": [
+    {"sourceName": "hetzner-eu", "role": "core", "count": 3},
+    {"sourceName": "hetzner-eu", "role": "worker", "count": 4},
+    {"sourceName": "aws-us", "role": "core", "count": 2}
+  ],
   "coreMin": 3,
   "coreMax": 9,
   "deploymentType": "local",
@@ -2744,6 +2749,11 @@ Get the current cluster configuration from the KV-Store.
   "updatedAt": 1711468800000
 }
 ```
+
+`desiredTopology` is the authoritative desired shape, per source and per role. `coreCount` is
+DERIVED from it — the sum of the `core` entries — rather than stored alongside it, so the two
+cannot drift. It is retained because most consumers only need the total, but it cannot say where
+those cores live, which is what `POST /api/cluster/scale` needs in a multi-source cluster.
 
 ### GET /api/cluster/provisioning
 
@@ -2857,27 +2867,53 @@ Apply a cluster configuration change. Computes a diff against the stored config 
 
 ### POST /api/cluster/scale
 
-Scale the cluster core node count. Validates quorum safety (minimum 3, odd count, within min/max bounds).
+Scale one `(source, role)` of the desired cluster topology.
 
-**RBAC:** ADMIN
+Cluster state stores a desired count per source and per role, so a scale request names which
+source absorbs the change. A cluster-wide core count cannot express that: with cores in two
+sources, "scale cores to 7" does not say where the new nodes go.
+
+**RBAC:** ADMIN · **Routing:** LEADER
 
 **Request:**
 ```json
 {
-  "coreCount": 7,
+  "source": "hetzner-eu",
+  "role": "core",
+  "count": 7,
   "expectedVersion": 7
 }
 ```
+
+| Field | Description |
+|-------|-------------|
+| `source` | Source name. Blank asks the server to infer it, which succeeds only when exactly one source declares `role`. |
+| `role` | `core`, `worker` or `spot`. Blank defaults to `core`. |
+| `count` | Target node count for this source and role. |
+| `expectedVersion` | Config version read from `GET /api/cluster/config`; the request is rejected if it no longer matches. |
 
 **Response:**
 ```json
 {
   "success": true,
+  "source": "hetzner-eu",
+  "role": "core",
   "previousCount": 5,
   "newCount": 7,
   "configVersion": 8
 }
 ```
+
+**Validation.** Quorum arithmetic applies to `core` only — it is what keeps a majority reachable,
+and it is checked against the resulting **cluster-wide** core total, not the per-source count.
+Scaling one core source to 1 is accepted when another source carries 2, because the cluster total
+is 3. Worker and spot counts carry no quorum constraint and are required only to be at least 1.
+
+**Refusals** (both HTTP 400):
+
+- Undeclared `(source, role)` — the topology is changed with `aether cluster apply`, not with a
+  scale. Adding the pair here would turn a mistyped source name into a real provisioning target.
+- Blank `source` when several sources declare the role. The response names the candidates.
 
 ### GET /api/cluster/topology/circuit-breaker
 
