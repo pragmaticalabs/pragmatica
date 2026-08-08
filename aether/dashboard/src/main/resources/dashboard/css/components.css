@@ -578,6 +578,7 @@ tbody tr:hover { background: var(--bg-tertiary); }
 .invocation-table { width: 100%; }
 .threshold-table { width: 100%; }
 .target-metrics-table { width: 100%; }
+.desired-topology-table { width: 100%; }
 
 /* Event Feed */
 .event-feed {
