@@ -2915,6 +2915,15 @@ is 3. Worker and spot counts carry no quorum constraint and are required only to
   scale. Adding the pair here would turn a mistyped source name into a real provisioning target.
 - Blank `source` when several sources declare the role. The response names the candidates.
 
+**Conflicts** (HTTP 409):
+
+- `expectedVersion` no longer matches the stored config version (checked before the write).
+- The write itself lost a concurrent race (RFC-0018): the KV applier rejects a config write built on
+  a stale read, and the route confirms the requested count actually landed before reporting success.
+  A `VersionConflict` here means another writer — an operator or the auto-heal reconciler — advanced
+  the config between this request's read and its commit. Recovery: re-read
+  `GET /api/cluster/config` and re-issue the scale with the fresh `expectedVersion`.
+
 ### GET /api/cluster/topology/circuit-breaker
 
 Snapshot of the CTM (Cluster Topology Manager) provisioning circuit breaker. The breaker trips after `MAX_CONSECUTIVE_PROVISIONING_FAILURES` (default 3) failed slot-deadline expirations or provider API rejections, halting auto-heal until a recovery trigger fires (`setDesiredSize`, `onNodeReady`, phase NORMAL transition, leader handoff, or operator reset).
