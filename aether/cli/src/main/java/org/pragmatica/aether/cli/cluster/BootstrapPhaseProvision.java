@@ -281,6 +281,11 @@ sealed interface BootstrapPhaseProvision {
         var allNodes = new ArrayList<ProvisionedNode>();
         var roleOrder = List.of(NodeRole.CORE, NodeRole.WORKER, NodeRole.SPOT);
         var nodeIndex = 0;
+        // RFC-0017 stage 4 — cores are provisioned FIRST, so by the time worker/spot user-data is
+        // rendered their addresses are known and can be baked at create ("peer set arrives at
+        // birth"). Cores themselves get an EMPTY list — they self-assemble via discovery, and an
+        // empty list renders no peers flag on either runtime.
+        var corePeers = List.<String> of();
 
         for (var role : roleOrder) {
             var roleTable = option(source.roles().get(role));
@@ -290,7 +295,17 @@ sealed interface BootstrapPhaseProvision {
                 continue;
             }
 
-            var result = provisionCloudRoleGroup(compute, ctx, sourceName, role, count, source, clusterName, nodeIndex);
+            var result = provisionCloudRoleGroup(compute,
+                                                 ctx,
+                                                 sourceName,
+                                                 role,
+                                                 count,
+                                                 source,
+                                                 clusterName,
+                                                 nodeIndex,
+                                                 role == NodeRole.CORE
+                                                 ? List.of()
+                                                 : corePeers);
 
             if (result.isFailure()) {
                 return result;
@@ -298,10 +313,26 @@ sealed interface BootstrapPhaseProvision {
 
             var _ = result.onSuccess(allNodes::addAll);
 
+            if (role == NodeRole.CORE) {
+                corePeers = coreThreePartPeers(allNodes,
+                                               ctx.config().operations().ports().cluster());
+            }
+
             nodeIndex += count;
         }
 
         return success(List.copyOf(allNodes));
+    }
+
+    /// The 3-part `id:host:port` seed list baked into worker/spot user-data at create — CORE nodes
+    /// only. Workers are not consensus members and need only core seeds to join membership; the
+    /// peer set is maintained by gossip thereafter. (The removed SSH re-launch pushed the full node
+    /// list to everyone; core-only is the RFC-0017 worker model and removes worker-to-worker seed
+    /// coupling.)
+    static List<String> coreThreePartPeers(List<ProvisionedNode> provisionedSoFar, int clusterPort) {
+        return provisionedSoFar.stream()
+                               .map(node -> node.nodeId() + ":" + node.publicIp() + ":" + clusterPort)
+                               .toList();
     }
 
     @SuppressWarnings("JBCT-EX-01")
@@ -330,7 +361,8 @@ sealed interface BootstrapPhaseProvision {
                                                                          int count,
                                                                          SourceProfile source,
                                                                          String clusterName,
-                                                                         int nodeIndexBase) {
+                                                                         int nodeIndexBase,
+                                                                         List<String> seedPeers) {
         logProvisionRole(sourceName, source.type(), role, Option.some(count));
         ZoneProvisioner seam = (nodeId, globalIndex, zone) -> provisionOneInZone(compute,
                                                                                  ctx,
@@ -340,7 +372,8 @@ sealed interface BootstrapPhaseProvision {
                                                                                  clusterName,
                                                                                  nodeId,
                                                                                  globalIndex,
-                                                                                 zone);
+                                                                                 zone,
+                                                                                 seedPeers);
 
         return rotateZonesForRoleGroup(sourceName, role, count, nodeIndexBase, source.effectiveZones(), seam);
     }
@@ -357,9 +390,10 @@ sealed interface BootstrapPhaseProvision {
                                                               String clusterName,
                                                               String nodeId,
                                                               int globalIndex,
-                                                              String zone) {
-        return buildCloudProvisionSpec(ctx, sourceName, source, role, nodeId, globalIndex, clusterName).map(spec -> applyZone(spec,
-                                                                                                                              zone))
+                                                              String zone,
+                                                              List<String> seedPeers) {
+        return buildCloudProvisionSpec(ctx, sourceName, source, role, nodeId, globalIndex, clusterName, seedPeers).map(spec -> applyZone(spec,
+                                                                                                                                         zone))
                                       .flatMap(spec -> CloudProviderSupport.provisionOne(compute, nodeId, spec).await());
     }
 
@@ -466,7 +500,8 @@ sealed interface BootstrapPhaseProvision {
                                                                  NodeRole role,
                                                                  String nodeId,
                                                                  int nodeIndex,
-                                                                 String clusterName) {
+                                                                 String clusterName,
+                                                                 List<String> seedPeers) {
         var instanceType = source.roles().containsKey(role)
                            ? source.roles().get(role).instanceType().or("default")
                            : "default";
@@ -485,7 +520,8 @@ sealed interface BootstrapPhaseProvision {
                                                                       nodeId,
                                                                       nodeIndex,
                                                                       clusterName,
-                                                                      composedConfig))
+                                                                      composedConfig,
+                                                                      seedPeers))
                                 .flatMap(userData -> ProvisionSpec.provisionSpec(InstanceType.ON_DEMAND,
                                                                                  instanceType,
                                                                                  role.value(),
@@ -514,7 +550,8 @@ sealed interface BootstrapPhaseProvision {
                                          String nodeId,
                                          int nodeIndex,
                                          String clusterName,
-                                         TomlDocument composedConfig) {
+                                         TomlDocument composedConfig,
+                                         List<String> seedPeers) {
         return UserDataTemplate.render(ctx.config(),
                                        source,
                                        role,
@@ -524,7 +561,7 @@ sealed interface BootstrapPhaseProvision {
                                        clusterName,
                                        composedConfig,
                                        ctx.sshPublicKeys(),
-                                       List.of());
+                                       seedPeers);
     }
 
     /// Applies a single candidate zone to a built spec as a placement hint. An empty or

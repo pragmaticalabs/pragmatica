@@ -11,6 +11,8 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Comparator;
+import java.util.HashSet;
 import java.util.Map;
 import java.util.regex.Pattern;
 import java.util.stream.IntStream;
@@ -28,8 +30,10 @@ import org.pragmatica.aether.config.Environment;
 import org.pragmatica.aether.config.SliceConfig;
 import org.pragmatica.aether.config.TlsConfig;
 import org.pragmatica.aether.deployment.membership.MembershipConfig;
+import org.pragmatica.aether.environment.DiscoveryProvider;
 import org.pragmatica.aether.environment.EnvironmentIntegration;
 import org.pragmatica.aether.environment.EnvironmentIntegrationFactory;
+import org.pragmatica.aether.environment.PeerInfo;
 import org.pragmatica.aether.node.AetherNode;
 import org.pragmatica.aether.node.AetherNodeConfig;
 import org.pragmatica.aether.node.NodeCodecs;
@@ -77,7 +81,8 @@ public record Main(String[] args) {
         var port = parsePort(aetherConfig);
         var managementPort = parseManagementPort(aetherConfig);
         var nodeLabels = collectNodeLabels();
-        var peers = parsePeers(nodeId, port, nodeLabels, aetherConfig);
+        var environment = resolveEnvironment(aetherConfig);
+        var peers = parsePeers(nodeId, port, nodeLabels, aetherConfig, environment);
         var sliceConfig = parseSliceConfig(aetherConfig);
         var dhtConfig = parseDhtConfig(aetherConfig);
 
@@ -97,7 +102,7 @@ public record Main(String[] args) {
                                      .quicTls(tlsBundle.tls())
                                      .certificateProvider(tlsBundle.provider())
                                      .configProvider(resolveConfigProvider())
-                                     .environment(resolveEnvironment(aetherConfig))
+                                     .environment(environment)
                                      .managementHttpProtocol(resolveManagementHttpProtocol(aetherConfig))
                                      .storageConfig(resolveStorage(aetherConfig))
                                      .backupConfig(resolveBackup(aetherConfig))
@@ -500,15 +505,157 @@ public record Main(String[] args) {
     private List<NodeInfo> parsePeers(NodeId self,
                                       int selfPort,
                                       Map<String, String> labels,
-                                      Option<AetherConfig> aetherConfig) {
+                                      Option<AetherConfig> aetherConfig,
+                                      Option<EnvironmentIntegration> environment) {
         return findArg("--peers=").map(peersStr -> resolvePeersFromString(peersStr, self, selfPort, labels, aetherConfig))
                       .orElse(findEnv("CLUSTER_PEERS").map(peersStr -> resolvePeersFromString(peersStr,
                                                                                               self,
                                                                                               selfPort,
                                                                                               labels,
                                                                                               aetherConfig)))
+                      .orElse(discoverCloudCorePeers(self, selfPort, labels, aetherConfig, environment))
                       .orElse(aetherConfig.map(cfg -> generatePeersFromConfig(cfg, self)))
                       .or(() -> List.of(bootstrapSelfInfo(self, selfPort, labels)));
+    }
+
+    /// RFC-0017 stage 4 — cloud core self-assembly. When nothing EXPLICIT names the peers (no
+    /// `--peers=`, no `CLUSTER_PEERS`) and the environment exposes a [DiscoveryProvider], the node
+    /// discovers its core peers from the provider API instead of having them pushed over SSH.
+    ///
+    /// Placement in the chain is deliberate: AFTER the explicit arms — an operator's list always
+    /// wins, and CTM-provisioned replacements keep their user-data `CLUSTER_PEERS` path
+    /// byte-identical — but BEFORE `generatePeersFromConfig`, whose hostname-indexed synthesis is
+    /// meaningless on cloud and is exactly why the SSH push existed. Forge/compose/bare-metal nodes
+    /// configure no `[cloud]` section, so no provider materializes and their resolution is
+    /// unchanged.
+    ///
+    /// The expected core count comes from `cluster().nodes()` — the same field the config arm
+    /// already trusts. Without a positive expectation the arm stays inert: discovery cannot know
+    /// when the set is complete.
+    private Option<List<NodeInfo>> discoverCloudCorePeers(NodeId self,
+                                                          int selfPort,
+                                                          Map<String, String> labels,
+                                                          Option<AetherConfig> aetherConfig,
+                                                          Option<EnvironmentIntegration> environment) {
+        var expected = aetherConfig.map(cfg -> cfg.cluster()
+                                                  .nodes()).or(0);
+
+        return environment.flatMap(EnvironmentIntegration::discovery)
+                          .filter(_ -> expected > 0)
+                          .map(dp -> awaitDiscoveredCorePeers(dp, self, selfPort, labels, aetherConfig, expected));
+    }
+
+    private static final long DISCOVERY_TIMEOUT_MS = 300_000;
+    private static final long DISCOVERY_POLL_MS = 5_000;
+
+    /// Poll the provider until the expected number of core peers is visible, then assemble.
+    ///
+    /// At the deadline a MAJORITY of the expected cores is accepted with a warning — Rabia can form
+    /// on a quorum, and a VM that never boots must not deadlock every healthy node's startup — but
+    /// less than a majority fails loudly: proceeding would seed a cluster that cannot reach
+    /// consensus and would sit half-formed instead of telling the operator.
+    @SuppressWarnings("JBCT-EX-01")
+    private List<NodeInfo> awaitDiscoveredCorePeers(DiscoveryProvider dp,
+                                                    NodeId self,
+                                                    int selfPort,
+                                                    Map<String, String> labels,
+                                                    Option<AetherConfig> aetherConfig,
+                                                    int expected) {
+        var deadline = System.currentTimeMillis() + DISCOVERY_TIMEOUT_MS;
+        var found = List.<NodeInfo> of();
+
+        log.info("Discovering {} core peers via provider API (timeout {}s)", expected, DISCOVERY_TIMEOUT_MS / 1000);
+        while (System.currentTimeMillis() < deadline) {
+            found = dp.discoverPeers()
+                      .await()
+                      .map(peerList -> discoveredCorePeers(peerList, selfPort))
+                      .onFailure(cause -> log.warn("Peer discovery poll failed: {}",
+                                                   cause.message()))
+                      .or(List.of());
+            if (found.size() >= expected) {
+                log.info("Discovered all {} core peers", expected);
+
+                return assembleDiscovered(found, self, selfPort, labels, aetherConfig);
+            }
+
+            if (!sleepQuietly(DISCOVERY_POLL_MS)) {
+                break;
+            }
+        }
+
+        if (sufficientAtTimeout(found.size(), expected)) {
+            log.warn("Discovery timed out with {}/{} core peers — proceeding on a quorum; missing nodes must be auto-healed",
+                     found.size(),
+                     expected);
+
+            return assembleDiscovered(found, self, selfPort, labels, aetherConfig);
+        }
+
+        throw new IllegalStateException("Peer discovery found only " + found.size()
+                                       + " of " + expected
+                                       + " expected core peers within " + DISCOVERY_TIMEOUT_MS / 1000
+                                       + "s — below quorum, refusing to form a cluster that cannot reach consensus."
+                                       + " Check that all core VMs were created and carry the aether-cluster/aether-node-id labels.");
+    }
+
+    /// Majority of the EXPECTED set, not of the found set — the whole point is refusing to form
+    /// below the quorum the operator asked for.
+    static boolean sufficientAtTimeout(int found, int expected) {
+        return found >= expected / 2 + 1;
+    }
+
+    private List<NodeInfo> assembleDiscovered(List<NodeInfo> peers,
+                                              NodeId self,
+                                              int selfPort,
+                                              Map<String, String> labels,
+                                              Option<AetherConfig> aetherConfig) {
+        return assembleSelfPeers(peers,
+                                 self,
+                                 selfPort,
+                                 labels,
+                                 seeds -> resolveAdvertiseHost(self, selfPort, seeds, aetherConfig));
+    }
+
+    /// Map discovered instances to core peers, pure and deterministic (unit-tested directly).
+    ///
+    /// A peer qualifies iff its labels carry `aether-role=core` AND an `aether-node-id` — the id
+    /// the create stamped (`HetznerComputeProvider.labelsFor`). The port is deliberately THIS
+    /// node's own cluster port, not the `aether-port` label: that label is applied by
+    /// `registerSelf` only AFTER a node joins, so it cannot exist during pre-formation discovery —
+    /// while every core shares one cluster port by config composition. Entries are deduplicated by
+    /// node id (first wins) and sorted, so every core derives the same seed list from the same
+    /// provider state.
+    static List<NodeInfo> discoveredCorePeers(List<PeerInfo> discovered, int clusterPort) {
+        var seen = new HashSet<String>();
+
+        return discovered.stream()
+                         .filter(peer -> "core".equalsIgnoreCase(peer.metadata().getOrDefault("aether-role", "")))
+                         .flatMap(peer -> discoveredNodeInfo(peer, clusterPort).stream())
+                         .filter(node -> seen.add(node.id().id()))
+                         .sorted(Comparator.comparing(node -> node.id()
+                                                                  .id()))
+                         .toList();
+    }
+
+    private static Option<NodeInfo> discoveredNodeInfo(PeerInfo peer, int clusterPort) {
+        return Option.option(peer.metadata().get("aether-node-id"))
+                     .flatMap(id -> NodeId.nodeId(id).option())
+                     .flatMap(id -> nodeAddress(peer.host(),
+                                                clusterPort).option()
+                                               .map(address -> NodeInfo.nodeInfo(id, address)));
+    }
+
+    @SuppressWarnings("JBCT-EX-01")
+    private static boolean sleepQuietly(long millis) {
+        try {
+            Thread.sleep(millis);
+
+            return true;
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+
+            return false;
+        }
     }
 
     /// Explicit advertise-host override: `--advertise-host=` arg or `AETHER_ADVERTISE_HOST` env.

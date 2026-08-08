@@ -81,6 +81,12 @@ public interface BootstrapOverlayGenerator {
 
         values.put("name",
                    config.cluster().name());
+        // RFC-0017 stage 4 — the EXPECTED core count, which arms discovery-based self-assembly:
+        // `Main.discoverCloudCorePeers` gates on `cluster().nodes() > 0` and polls the provider
+        // until that many labelled cores are visible. Without an explicit value the node falls
+        // back to `Environment.defaultNodes()` (5 for DOCKER, which is what a cloud VM resolves
+        // as) — a wrong expectation that stalls discovery to its timeout on any 3-core cluster.
+        values.put("nodes", config.derivedCoreCount());
         values.put("tls",
                    config.operations().tls().autoGenerate());
 

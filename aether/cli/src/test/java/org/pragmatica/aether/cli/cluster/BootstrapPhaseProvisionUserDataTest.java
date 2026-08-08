@@ -305,6 +305,21 @@ class BootstrapPhaseProvisionUserDataTest {
     }
 
     @Test
+    void buildCloudProvisionSpec_workerRole_bakesCoreSeedPeersAtCreate() {
+        // RFC-0017 stage 4 — cores are provisioned FIRST, so worker user-data rendered afterwards
+        // carries the real core addresses: "peer set arrives at birth", no SSH re-launch needed.
+        var source = cloudHetznerSource(3);
+        var ctx = baseContext(configWithSource(source));
+        var coreSeeds = java.util.List.of("eu-1-core-0:203.0.113.10:8090", "eu-1-core-1:203.0.113.11:8090");
+
+        var ud = invokeBuildCloudProvisionSpec(ctx, source, NodeRole.WORKER, "eu-1-worker-0", 3, coreSeeds).userData()
+                                                                                                          .or("");
+
+        assertTrue(ud.contains("AETHER_PEERS=\"eu-1-core-0:203.0.113.10:8090,eu-1-core-1:203.0.113.11:8090\""),
+                   "Worker user_data must bake the core seed list at create");
+    }
+
+    @Test
     void buildCloudProvisionSpec_workerRoleWithOwnImage_specImageIsWorkerImage() {
         // RFC-0016 W2 tier-1 — a WORKER role with its own image yields a spec whose imageId is the
         // worker's image, so the seed VM boots from the worker's snapshot (not the core's, not empty).
@@ -346,6 +361,17 @@ class BootstrapPhaseProvisionUserDataTest {
                                                                 NodeRole role,
                                                                 String nodeId,
                                                                 int nodeIndex) {
+        return invokeBuildCloudProvisionSpec(ctx, source, role, nodeId, nodeIndex, java.util.List.of());
+    }
+
+    /// RFC-0017 stage 4: `seedPeers` is EMPTY for cores (they self-assemble via discovery) and the
+    /// baked core seed list for workers/spot.
+    private static ProvisionSpec invokeBuildCloudProvisionSpec(BootstrapContext ctx,
+                                                                SourceProfile source,
+                                                                NodeRole role,
+                                                                String nodeId,
+                                                                int nodeIndex,
+                                                                java.util.List<String> seedPeers) {
         try {
             var method = BootstrapPhaseProvision.class.getDeclaredMethod("buildCloudProvisionSpec",
                                                                           BootstrapContext.class,
@@ -354,7 +380,8 @@ class BootstrapPhaseProvisionUserDataTest {
                                                                           NodeRole.class,
                                                                           String.class,
                                                                           int.class,
-                                                                          String.class);
+                                                                          String.class,
+                                                                          java.util.List.class);
             method.setAccessible(true);
             @SuppressWarnings("unchecked")
             var result = (org.pragmatica.lang.Result<ProvisionSpec>) method.invoke(null,
@@ -364,7 +391,8 @@ class BootstrapPhaseProvisionUserDataTest {
                                                                                     role,
                                                                                     nodeId,
                                                                                     nodeIndex,
-                                                                                    "prod");
+                                                                                    "prod",
+                                                                                    seedPeers);
             return result.unwrap();
         } catch (ReflectiveOperationException e) {
             throw new AssertionError("Failed to invoke buildCloudProvisionSpec", e);
