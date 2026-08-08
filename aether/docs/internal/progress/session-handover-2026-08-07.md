@@ -1,39 +1,62 @@
 # Session handover — 2026-08-07
 
-**Branch:** `release-1.0.0-rc3` · **HEAD:** `761e1316e` · **pushed** (branch == origin) · working tree clean
-**Candidate tag:** `v1.0.0-rc3-candidate` → `9b88911cd`, **22 commits stale**. Owner ruling: leave it until the RFC-0017 arc lands, which is also when the Hetzner run happens.
+**Branch:** `release-1.0.0-rc3` · **HEAD:** `a1a72228a` · **pushed** (branch == origin) · working tree clean
+**Candidate tag:** `v1.0.0-rc3-candidate` → `9b88911cd`, **25 commits stale**. Owner ruling: leave it until the RFC-0017 arc lands, which is also when the Hetzner run happens.
 
 ---
 
-## §1 START HERE — RFC-0017 stage 2, the quad
+## §1 START HERE — RFC-0017 stage 3
 
 `docs/rfc/RFC-0017-cluster-owned-provisioning.md`. **Owner approved implementing the whole arc on rc3** (2026-08-07), having been told it reopens feature work on a branch declared feature-complete. Owner also chose the **replacing** approach over additive: no backward-compatibility requirement, and a clean cut avoids the residuals that keep biting this codebase.
 
-### Done in stage 2
+**Stage 2 is COMPLETE and pushed.** All four quad layers plus the store. Next is stage 3 (#570) — and it is NOT the local fix the ticket implies. Read §2 before starting it.
 
-- `ClusterConfigValue` stores **per-(source, role) desired topology** (`AetherValue.TopologyEntry`). `coreCount()` is now **derived, not stored** — the drift where a scale rewrote `coreCount` while `tomlContent` kept the old number is structurally impossible now, not merely fixed.
-- REST config paths publish the **real per-source spec** (`ClusterConfigRoutes.topologyOf`), not a lone core count.
-- `ClusterTopologyManager.setDesiredCount(sourceName, role, count)` **replaces** `setDesiredSize(int)`. `DiffAction.ScaleUp` always carried `sourceName` and `role`; the applier was discarding both.
-- Bare-`coreCount` scale **refuses** when several sources carry cores, instead of silently rewriting one number.
+### Stage 3 (#570) is structural — needs an owner call before any code
 
-### Remaining in stage 2 — the quad
+`ClusterTopologyManagerRecord.writeDesiredCount` is an unguarded read-modify-write:
 
-REST scale route → `aether scale` CLI → `management-api.md` + `cli.md` → dashboard panel.
+```java
+var existing = clusterConfigReader.get();                              // READ
+var updated  = existing.unwrap().withDesiredCount(sourceName, …);      // MODIFY
+commandApplier.apply(List.of(new KVCommand.Put<>(CURRENT, updated)));  // WRITE
+```
 
-**Unresolved and needs an owner call:** the CLI must gain `--source`/`--role`, because a bare `--cores N` is exactly the ambiguity the typed model now rejects. Settle that shape before wiring the dashboard. Do the four together so no layer is briefly inconsistent.
+Two things make it worse than the ticket says:
+
+1. **The typed topology raises the stakes.** Under the old scalar, concurrent scales necessarily fought over one number. Now `--source eu --role core` and `--source us --role worker` are independent, both-valid edits — and the lost update silently discards one. Making topology expressible created a class of concurrent write that *should* succeed.
+2. **There is no CAS to reach for.** `KVCommand` is `Put` / `Get` / `Noop` / `Remove`, and only `Remove` carries a fence (`Option<Object> witness`). `Put` has no expected-version.
+
+So the options are: add a witness to `Put` (follows the `Remove` precedent but changes a core wire type used cluster-wide, and touches codec registration → intersects #582), add a `PutIfVersion` variant, or serialize scale writes on the leader that already gates them. **Owner-level decision on a shared consensus type — do not just pick one.**
+
+Scope note: the REST layer already does optimistic concurrency via `expectedVersion`, so the real exposure is a scale racing an **auto-heal**, not two CLI scales.
 
 ### Then, in order
 
-**#570** (`setDesiredSize` lost-update race — the design leans on this path far harder) → discovery-based core assembly → cores provision workers → teardown label sweep → delete worker provisioning from bootstrap.
+discovery-based core assembly → cores provision workers → teardown label sweep → delete worker provisioning from bootstrap.
 
 ---
 
-## §2 Two traps that cost me time — read before trusting a green
+## §1a What stage 2 delivered (commits `03b1e0c90`, `6d25a390f`, `a1a72228a`)
 
-1. **Maven gives false greens on cross-module API changes.** `mvn -pl <mod> install` returned **0 without recompiling** a downstream module against a changed API. I only caught it because a `.class` file was three hours old. **Use `clean install` for anything that changes a cross-module signature**, and if a build is suspiciously fast after an API change, check a class-file timestamp before believing it.
-2. **`build.sh` does not run tests.** I shipped a red test in `51aa98231` because I ran `install -DskipTests` on the module afterwards. Compiling a module is not testing it.
+- `ClusterConfigValue` stores **per-(source, role) desired topology** (`AetherValue.TopologyEntry`). `coreCount()` is **derived, not stored** — the drift where a scale rewrote `coreCount` while `tomlContent` kept the old number is structurally impossible now, not merely fixed.
+- `ClusterTopologyManager.setDesiredCount(sourceName, role, count)` **replaces** `setDesiredSize(int)`.
+- `ScaleRequest(source, role, count, expectedVersion)` **replaces** `ScaleRequest(coreCount, expectedVersion)`; `aether cluster scale --source/--role/--count` replaces the positionals and `--core`.
+- Source **inference** when exactly one source declares the role; **refusal naming the candidates** when several do; **refusal of an undeclared `(source, role)`** so a typo cannot become a provisioning target (`withDesiredCount` appends, which is right for composing a topology and wrong for a scale).
+- Quorum arithmetic is core-only and evaluated against the resulting **cluster-wide** total. `withCoreTotal` is gone, replaced by `sourcesWithRole` + `declares`.
+- `GET /api/cluster/config` serves `desiredTopology`; dashboard **DESIRED TOPOLOGY** panel renders it and flags when a scale will need an explicit `--source`.
+
+**Evidence:** `./build.sh` green (49 lint findings, all baseline, 0 new); 832 node + 642 cli + 730 slice + 323 aether-config tests, 0 failures. `ScaleRequestContractTest` 3/3, `ClusterConfigRoutesScaleTest` 11/11, `ClusterScaleCommandTest` 3/3, `ClusterConfigKVTest$DesiredTopology` 8/8. **No scale has been executed against a live cluster** — the command was non-functional before this, so there is no prior live behaviour either.
+
+## §2 Build traps — read before trusting a green
+
+1. **`mvn install` runs failsafe and can provision a REAL PAID Hetzner server.** `install` comes *after* `verify` in the lifecycle, `aether/pom.xml:603` binds `maven-failsafe-plugin` in its **active** plugins block (`integration-test` + `verify`, `**/*IT.java`), and `HetznerCloudIT:38-39` gates only on `HCLOUD_TOKEN` being non-blank — no profile check. `aether/node` and `aether/cli` both depend on `environment-hetzner`, so `-am` pulls it in. The CLAUDE.md warning naming only `mvn verify` is **incomplete**. `./build.sh` is safe because it passes `-DskipTests`, which suppresses failsafe too. Safe hand-rolled spelling: **`-DskipITs`**. A build-runner agent caught this by refusing my instruction — I had asserted install was the safe one.
+2. **Do not hand-roll `mvn ... -am`; run `./build.sh`.** `-am` force-rebuilds `integrations/cluster`, `integrations/dht`, `integrations/swim` from source while skipping the jbct bootstrap that `build.sh` does first. Result is a **false red**: `@Codec` processor errors plus `ClassCastException: String cannot be cast to TypeMirror` in `swim`, in modules not in the diff (they last changed 2026-07-17). Cost most of a cycle. For module tests after `build.sh`: `mvn test -pl <modules>` with **no** `-am` (`-am` also drags in Docker-dependent `sql-splitter`).
+3. **`build.sh` reformats Java in place** as part of its lint gate. After a run, **re-read a file before editing it** — an `Edit` prepared beforehand will fail to match.
+4. **`build.sh` does not run tests.** Compiling a module is not testing it.
+5. **A `@Nested` test class shows `Tests run: 0` in the OUTER surefire report.** That is normal, not a vacuous pass — check `Outer$Nested.txt`. Do not raise a false alarm on it, and do not accept a genuine 0 either.
 
 Carried from earlier: `FirewallPresetsTest` used to assert `rulesFor_standard_allRulesUseAnyCidr` — that **every** rule of the default preset, management API included, uses `0.0.0.0/0`. The exposure was encoded as the requirement, so no failing test could ever have surfaced it. When a security fix meets a test that "passes", check which behaviour the test pins.
+
 
 ---
 
@@ -54,8 +77,27 @@ Carried from earlier: `FirewallPresetsTest` used to assert `rulesFor_standard_al
 | `f777ef0fb` / `1543bf2fa` | handover + its correction |
 | `86aa40885` | **typed per-source/per-role topology in cluster state** |
 | `761e1316e` | **CTM scales one (source, role)** |
+| `5ff9026cc` | handover |
+| `03b1e0c90` | **stage 2 quad — scale one (source, role)**: `ScaleRequest` retyped, source inference + refusals, cluster-wide quorum, `withCoreTotal` → `sourcesWithRole`/`declares`, CLI reflagged |
+| `6d25a390f` | dashboard **DESIRED TOPOLOGY** panel + `desiredTopology` on `GET /api/cluster/config` |
+| `a1a72228a` | docs — scale surface aligned across reference, specs, runbook |
 
-**#574 is live-verified on Hetzner** (3 runs, 9 VMs, account CLEAN after each; `test-pg` never touched). Against the real API: one labelled firewall per source; `tcp+udp` → two rules; union-not-replace; no 8090/8080; attached AT server-create (three independent proofs); idempotent re-run issued zero writes; **enforcement proven** — port 22 timed out at 6.0s while allowed 8070 refused in 0.06s; destroy deleted it (404).
+**#574 is live-verified on Hetzner** (3 runs, 9 VMs, account CLEAN after each; `test-pg` never touched). Against the real API: one labelled firewall per source; `tcp+udp` → two rules; union-not-replace; no 8090/8080; attached AT server-create (three independent proofs); idempotent re-run issued zero writes; **enforcement proven** — port 22 timed out at 6.0s while allowed 8070 refused in 0.06s; destroy deleted it (404). The CHANGELOG evidence tag was upgraded to match — it still said "not yet exercised on a live Hetzner cluster".
+
+### Docs drift found while aligning the scale surface
+
+This one command had **five** spellings across the repo, none matching the implementation:
+
+| where | said | status |
+|---|---|---|
+| `cluster-management-spec.md` | `--core N`, and `{"core_count", "expected_version"}` snake_case in the REST flow | fixed |
+| `cluster-bootstrap-spec.md` REQ-10.2.1 | `<source> <role> --count N` (positional) | fixed, + new REQ-10.2.1a/b for inference and cluster-wide quorum |
+| `operators/runbooks/scaling.md` | **`--target 7`** — never existed in ANY version | fixed |
+| `reference/cli.md` | `--core N` + fabricated example output | fixed |
+| `specs/fluid-migration-spec.md` | `--provider gcp --core 5` | **left as-is** — forward-looking design doc, `--provider` does not exist at all |
+
+Worth noting the pattern: the operator-facing runbook was the *most* wrong of the five.
+
 
 ---
 
@@ -63,7 +105,16 @@ Carried from earlier: `FirewallPresetsTest` used to assert `rulesFor_standard_al
 
 Filed: **#579** (label precondition — fixed), **#580** (preset exposure — fixed), **#581** (RFC-0017 epic), **#582** (codec tag collisions).
 
-Open and load-bearing for RFC-0017: **#570** (`setDesiredSize` unguarded read-modify-write), **#578** (`ClusterConfigApplier` no-ops 8/10 `DiffAction`s — still why firewall *edits* are discarded).
+Open and load-bearing for RFC-0017: **#570** (unguarded read-modify-write — see §1), **#578** (`ClusterConfigApplier` no-ops 8/10 `DiffAction`s — still why firewall *edits* are discarded).
+
+### NOT YET FILED — the CLI/server wire-contract gap (structural)
+
+`aether cluster scale` was **broken in every version**: the CLI posted `{"count":…,"role":…,"source":…}` while `ManagementApiResponses.ScaleRequest` read a lone `coreCount`. Executed behaviour (measured, not inferred): the mapper **rejects** the body with `Type mismatch: expected int, got unknown … ["count"]` — it trips on the absent required field, never reaching the quorum check.
+
+**Root cause is structural, and the scale fix did not eliminate it.** Request/response DTOs live in `aether/node`; `aether/cli` does not depend on that module. So every CLI request body is a hand-built JSON string with no compile-time tie to the server record — **18 CLI files do this**. The only `CLUSTER_SCALE` tests assert routing target, which stays green under any field-name drift.
+
+Mitigation landed: `ScaleRequestContractTest` (node) + `ClusterScaleCommandTest` (cli) pin both spellings to the same field names, so a unilateral rename goes red. That is a convention, not a guarantee. The real fix is moving request DTOs into a module both sides depend on (`aether-management-api` already qualifies) and having the CLI serialize records. **Worth an issue; deliberately not folded into the scale change.**
+
 
 ### #582 — codec tag collisions (do NOT fold into RFC-0017)
 
@@ -79,11 +130,16 @@ Hit while adding a serializable nested record: it hashed onto an existing tag an
 
 ## §5 Corrections I made (all committed/posted)
 
-Three claims of mine turned out wrong; each was caught by checking rather than by a test:
+Claims of mine that turned out wrong; each was caught by checking rather than by a test:
 
 - "Nothing publishes the topology spec today" — **wrong**, `BootstrapPhaseFormation:247,362` publishes the full `tomlContent`. Came from grepping one file for a few keywords. Corrected in `1543bf2fa`; it made stage 2 smaller.
 - "The firewall presets blocked consensus" — **wrong**, `ClusterConfigGenerator` wrote `[operations.ports]` from the same constants, so wizard configs were self-consistent at 7100/7200. The real defect was that the wizard disagreed with the documented defaults. Corrected on #580.
 - "Explicit codec tags would shrink the wire" — **wrong**, only tags below 128 are one varint byte and those slots are structural-tag headroom. Corrected on #582.
+- "`mvn install` is the safe one; `verify` is what provisions servers" — **wrong**, see §2.1. A subagent refused the instruction and was right.
+- "The CLI shape is unresolved and needs an owner call before anything can be wired" — half wrong. The CLI *already had* `<source> <role>` positionals; what was missing was that the server never received them. The open question was narrower than the previous handover implied.
+
+Also corrected in the docs rather than inherited: the `aether cluster scale` example output in `cli.md` (`Core nodes: 5 -> 7`, `Config version: 8`) was **fabricated** — `OutputFormatter.printAction` prints only `Scale successful.` in TABLE format.
+
 
 ---
 
