@@ -23,6 +23,7 @@ import org.pragmatica.aether.slice.blueprint.ExpandedBlueprint;
 import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.cluster.state.kvstore.EpochBearing;
+import org.pragmatica.cluster.state.kvstore.VersionFenced;
 import org.pragmatica.hlc.HlcTimestamp;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
@@ -1242,9 +1243,21 @@ public sealed interface AetherValue {
                               int coreMax,
                               String deploymentType,
                               long configVersion,
-                              long updatedAt) implements AetherValue {
+                              long updatedAt) implements AetherValue, VersionFenced {
         public ClusterConfigValue {
             desiredTopology = List.copyOf(desiredTopology);
+        }
+
+        /// Lost-update fence version (RFC-0018, #570): the applier rejects a `Put` of this value
+        /// unless its `configVersion` is the immediate successor of the committed one. Every write
+        /// site therefore derives from the CURRENT committed value and bumps by exactly one — which
+        /// all six existing sites already did ([#withDesiredCount] and friends bump; the two
+        /// bootstrap seeds write against an absent key, which the fence does not guard). A rejected
+        /// write is invisible in the apply result (batch merging), so writers confirm by re-reading
+        /// committed state and checking their change landed.
+        @Override
+        public long fenceVersion() {
+            return configVersion;
         }
 
         /// Derived — never stored. Total CORE nodes across every source.

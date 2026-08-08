@@ -236,6 +236,17 @@ class ClusterConfigKVTest {
             assertThat(value.declares("eu", "worker")).isFalse();
         }
 
+        /// RFC-0018 (#570): the applier's lost-update fence keys on `fenceVersion`, which MUST be
+        /// `configVersion` — and every mutation MUST produce its immediate successor, or the fence
+        /// rejects the write as built-on-a-stale-read.
+        @Test
+        void fenceVersion_isConfigVersion_andMutationsProduceItsImmediateSuccessor() {
+            var value = valueWith(java.util.List.of(new AetherValue.TopologyEntry("eu", "core", 3)));
+
+            assertThat(value.fenceVersion()).isEqualTo(value.configVersion());
+            assertThat(value.withDesiredCount("eu", "core", 5).fenceVersion()).isEqualTo(value.fenceVersion() + 1);
+        }
+
         @Test
         void serialization_roundTripsMultiSourceTopology() {
             var value = valueWith(java.util.List.of(new AetherValue.TopologyEntry("eu", "core", 3),

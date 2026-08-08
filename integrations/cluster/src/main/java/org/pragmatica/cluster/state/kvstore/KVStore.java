@@ -92,13 +92,14 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
 
     /// The committed-state fence, shared by [#handlePut] and [#handleRemove] (#345 piece 1a, #379):
     /// a mutation (a `Put` value or a `Remove` witness) is rejected when it is either a stale
-    /// `LeaderKey` write (H4 leader fence) or a stale-epoch write to any [EpochBearing] value
-    /// (ownership fence). Both arms are pure functions of the committed storage content and the
+    /// `LeaderKey` write (H4 leader fence), a stale-epoch write to any [EpochBearing] value
+    /// (ownership fence), or a non-successor write to a [VersionFenced] value (lost-update fence,
+    /// RFC-0018 #570). All arms are pure functions of the committed storage content and the
     /// incoming value alone, so every replica decides identically inside the consensus applier.
-    /// Snapshot restore ([#restoreSnapshot]) intentionally bypasses both fences: a restored snapshot
+    /// Snapshot restore ([#restoreSnapshot]) intentionally bypasses all fences: a restored snapshot
     /// is the authoritative committed state, not a competing write.
     private boolean staleWrite(K key, Object incoming) {
-        return staleLeaderWrite(key, incoming) || staleEpochWrite(key, incoming);
+        return staleLeaderWrite(key, incoming) || staleEpochWrite(key, incoming) || staleSuccessorWrite(key, incoming);
     }
 
     /// H4 leader fence (cluster-topology-overhaul §Wave 8.2): `LeaderKey` writes are
@@ -136,6 +137,23 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
                                                                           EpochBearing<?> stored) {
         return incoming.fenceEpoch()
                        .compareTo((E) stored.fenceEpoch()) < 0;
+    }
+
+    /// Lost-update fence (RFC-0018, #570): [VersionFenced] values are compare-and-put on their
+    /// version chain — a write is applied only when its incoming version is the IMMEDIATE SUCCESSOR
+    /// of the committed one. An EQUAL version is rejected, unlike the epoch arm: epoch equality is a
+    /// legitimate re-announcement, but on a version chain an equal write is the second writer of the
+    /// read-modify-write race, silently overwriting the first. Version jumps are rejected too — a
+    /// write built on anything but the current committed value is built on a stale read. A first
+    /// write (no committed value, or a non-fenced one) passes: there is no chain to fence yet.
+    /// Deterministic for the same reason as the arms above: reads only committed storage and the
+    /// incoming value. A rejected write mutates nothing and emits NO notification; callers detect
+    /// the loss by re-reading committed state after the apply (batch merging makes the applier's
+    /// return value unattributable — see [VersionFenced]).
+    private boolean staleSuccessorWrite(K key, Object incoming) {
+        return incoming instanceof VersionFenced in
+               && storage.get(key) instanceof VersionFenced stored
+               && in.fenceVersion() != stored.fenceVersion() + 1;
     }
 
     private Option<V> handleRemove(Remove<K> remove) {
