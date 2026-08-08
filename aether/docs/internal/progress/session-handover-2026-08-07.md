@@ -1,38 +1,21 @@
 # Session handover — 2026-08-07
 
-**Branch:** `release-1.0.0-rc3` · **HEAD:** `a1a72228a` · **pushed** (branch == origin) · working tree clean
-**Candidate tag:** `v1.0.0-rc3-candidate` → `9b88911cd`, **25 commits stale**. Owner ruling: leave it until the RFC-0017 arc lands, which is also when the Hetzner run happens.
+**Branch:** `release-1.0.0-rc3` · **HEAD:** `5687f807e` · **pushed** (branch == origin) · working tree clean
+**Candidate tag:** `v1.0.0-rc3-candidate` → `9b88911cd`, **29 commits stale**. Owner ruling: leave it until the RFC-0017 arc lands, which is also when the Hetzner run happens.
 
 ---
 
-## §1 START HERE — RFC-0017 stage 3
+## §1 START HERE — RFC-0017 stage 4
 
-`docs/rfc/RFC-0017-cluster-owned-provisioning.md`. **Owner approved implementing the whole arc on rc3** (2026-08-07), having been told it reopens feature work on a branch declared feature-complete. Owner also chose the **replacing** approach over additive: no backward-compatibility requirement, and a clean cut avoids the residuals that keep biting this codebase.
+`docs/rfc/RFC-0017-cluster-owned-provisioning.md`. **Owner approved implementing the whole arc on rc3** (2026-08-07), replacing rather than additive. Stages 1–3 are DONE and pushed; next is **stage 4: discovery-based core self-assembly, dropping the SSH re-launch for cloud sources**. Then: cores provision workers (stage 5) → teardown label sweep (6) → bootstrap seeds cores only (7).
 
-**Stage 2 is COMPLETE and pushed.** All four quad layers plus the store. Next is stage 3 (#570) — and it is NOT the local fix the ticket implies. Read §2 before starting it.
+### Stage 3 DONE — #570 CLOSED (RFC-0018, commits `257c683ca` / `2b32f046c` / `5687f807e`)
 
-### Stage 3 (#570) is structural — needs an owner call before any code
-
-`ClusterTopologyManagerRecord.writeDesiredCount` is an unguarded read-modify-write:
-
-```java
-var existing = clusterConfigReader.get();                              // READ
-var updated  = existing.unwrap().withDesiredCount(sourceName, …);      // MODIFY
-commandApplier.apply(List.of(new KVCommand.Put<>(CURRENT, updated)));  // WRITE
-```
-
-Two things make it worse than the ticket says:
-
-1. **The typed topology raises the stakes.** Under the old scalar, concurrent scales necessarily fought over one number. Now `--source eu --role core` and `--source us --role worker` are independent, both-valid edits — and the lost update silently discards one. Making topology expressible created a class of concurrent write that *should* succeed.
-2. **There is no CAS to reach for.** `KVCommand` is `Put` / `Get` / `Noop` / `Remove`, and only `Remove` carries a fence (`Option<Object> witness`). `Put` has no expected-version.
-
-So the options are: add a witness to `Put` (follows the `Remove` precedent but changes a core wire type used cluster-wide, and touches codec registration → intersects #582), add a `PutIfVersion` variant, or serialize scale writes on the leader that already gates them. **Owner-level decision on a shared consensus type — do not just pick one.**
-
-Scope note: the REST layer already does optimistic concurrency via `expectedVersion`, so the real exposure is a scale racing an **auto-heal**, not two CLI scales.
-
-### Then, in order
-
-discovery-based core assembly → cores provision workers → teardown label sweep → delete worker provisioning from bootstrap.
+- **The fix is the applier, not the caller.** `docs/rfc/RFC-0018-kv-lost-update-fence.md` (ACCEPTED, owner decisions O1–O3 recorded). A third fence arm in `KVStore.staleWrite`: a `Put` of a `VersionFenced` value applies only when its version is the immediate successor of the committed one. `ClusterConfigValue.fenceVersion()` = existing `configVersion`. No wire change, no codec tag (no #582 interaction).
+- **Equal is rejected here, accepted by the epoch fence — that asymmetry is the design.** The epoch fence guards authority (reannounce at same epoch is legal); this guards a chain (equal = the second racer). Reusing the epoch fence would have been a regression fence, not a lost-update fence.
+- **Batch merging killed both result-based discriminators**: `RabiaEngine.commitChanges` resolves every merged submitter with the FULL merged result list. Hence read-after-apply **semantic** confirm — check the change you asked for, not version arithmetic. CTM retries (3, then typed failure); REST scale/apply/upgrade 409 on loss.
+- **Mutation-checked**: removing the fence arm turns exactly the 4 rejection tests red; restored, re-verified green, diff clean.
+- **Live-cluster race remains [design intent — unverified]** — fold into the arc-final Hetzner run: a concurrent scale + auto-heal race is now well-defined (both edits survive or a loud 409/typed failure), and worth exercising live.
 
 ---
 
