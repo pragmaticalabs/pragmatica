@@ -571,10 +571,18 @@ public sealed interface ManagementApiResponses {
 
     record AutoHealToggleResponse(boolean enabled, boolean previousState) {}
 
+    /// One desired-topology entry: how many nodes of `role` the cluster wants in `sourceName`.
+    ///
+    /// `coreCount` on [ClusterConfigResponse] is the sum of the core entries. It stays for the
+    /// existing consumers, but it cannot say WHERE those cores live, which is what an operator
+    /// needs before scaling a multi-source cluster.
+    record TopologyEntryInfo(String sourceName, String role, int count) {}
+
     record ClusterConfigResponse(String tomlContent,
                                  String clusterName,
                                  String version,
                                  int coreCount,
+                                 List<TopologyEntryInfo> desiredTopology,
                                  int coreMin,
                                  int coreMax,
                                  String deploymentType,
@@ -796,9 +804,22 @@ public sealed interface ManagementApiResponses {
                           int changeCount,
                           int rejectedCount) {}
 
-    record ScaleRequest(int coreCount, long expectedVersion) {}
+    /// Scale one (source, role) to `count` (RFC-0017 C1).
+    ///
+    /// REPLACES a bare `coreCount`, which could not name which source absorbed the change and did
+    /// not match what the CLI was already sending — the CLI posted `source`/`role`/`count` while
+    /// this record read `coreCount`, so no scale request ever carried a usable count.
+    ///
+    /// A blank `source` asks the server to infer it, which succeeds only when exactly one source
+    /// carries `role`. `role` defaults to core when blank.
+    record ScaleRequest(String source, String role, int count, long expectedVersion) {}
 
-    record ScaleClusterResponse(boolean success, int previousCount, int newCount, long configVersion) {}
+    record ScaleClusterResponse(boolean success,
+                                String source,
+                                String role,
+                                int previousCount,
+                                int newCount,
+                                long configVersion) {}
 
     record UpgradeRequest(String targetVersion) {}
 

@@ -204,25 +204,36 @@ class ClusterConfigKVTest {
         }
 
         @Test
-        void withCoreTotal_setsCoreCount_whenOneSourceCarriesCores() {
+        void sourcesWithRole_namesEveryCoreBearingSource_withoutDuplicates() {
+            var value = valueWith(java.util.List.of(new AetherValue.TopologyEntry("eu", "core", 3),
+                                                    new AetherValue.TopologyEntry("us", "core", 2),
+                                                    new AetherValue.TopologyEntry("eu", "worker", 7)));
+
+            assertThat(value.sourcesWithRole("core")).containsExactly("eu", "us");
+            assertThat(value.sourcesWithRole("worker")).containsExactly("eu");
+            assertThat(value.sourcesWithRole("spot")).isEmpty();
+        }
+
+        /// A single candidate is what lets a bare `--role core` scale resolve without guessing;
+        /// several is what makes it refuse.
+        @Test
+        void sourcesWithRole_returnsExactlyOne_whenOneSourceCarriesTheRole() {
             var value = valueWith(java.util.List.of(new AetherValue.TopologyEntry("eu", "core", 3),
                                                     new AetherValue.TopologyEntry("eu", "worker", 7)));
 
-            var scaled = value.withCoreTotal(5);
-
-            assertThat(scaled.isPresent()).isTrue();
-            assertThat(scaled.unwrap().coreCount()).isEqualTo(5);
-            assertThat(scaled.unwrap().desiredCountFor("eu", "worker")).isEqualTo(7);
+            assertThat(value.sourcesWithRole("core")).containsExactly("eu");
         }
 
-        /// "Scale cores to N" does not say WHICH source absorbs the change. The old scalar hid that
-        /// by overwriting one number; the typed model refuses instead of guessing.
+        /// Guards the phantom-target case: `withDesiredCount` APPENDS an absent pair, so a scale that
+        /// did not check `declares` first would turn a mistyped source name into a provisioning target.
         @Test
-        void withCoreTotal_refuses_whenSeveralSourcesCarryCores() {
-            var value = valueWith(java.util.List.of(new AetherValue.TopologyEntry("eu", "core", 3),
-                                                    new AetherValue.TopologyEntry("us", "core", 2)));
+        void declares_distinguishesKnownPairsFromTypos() {
+            var value = valueWith(java.util.List.of(new AetherValue.TopologyEntry("eu", "core", 3)));
 
-            assertThat(value.withCoreTotal(5).isEmpty()).isTrue();
+            assertThat(value.declares("eu", "core")).isTrue();
+            assertThat(value.declares("eu", "CORE")).isTrue();
+            assertThat(value.declares("eu-centrl", "core")).isFalse();
+            assertThat(value.declares("eu", "worker")).isFalse();
         }
 
         @Test

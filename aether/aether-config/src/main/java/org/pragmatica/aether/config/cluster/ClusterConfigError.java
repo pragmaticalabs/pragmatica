@@ -4,6 +4,8 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.config.cluster;
 
+import java.util.List;
+
 import org.pragmatica.http.HttpStatus;
 import org.pragmatica.http.HttpStatusAware;
 import org.pragmatica.lang.Cause;
@@ -127,7 +129,7 @@ public sealed interface ClusterConfigError extends Cause, HttpStatusAware {
         }
     }
 
-    record ValidationFailed(java.util.List<ClusterConfigError> errors) implements ClusterConfigError {
+    record ValidationFailed(List<ClusterConfigError> errors) implements ClusterConfigError {
         @Override
         public String message() {
             var sb = new StringBuilder("Cluster config validation failed:\n");
@@ -219,6 +221,39 @@ public sealed interface ClusterConfigError extends Cause, HttpStatusAware {
         @Override
         public HttpStatus httpStatus() {
             return HttpStatus.CONFLICT;
+        }
+    }
+
+    /// A scale request named a role but not a source, and several sources declare that role.
+    ///
+    /// Refusing is the point: "scale cores to 5" across two core-bearing sources does not say which
+    /// one absorbs the change, and the former cluster-wide core count answered it by silently
+    /// rewriting one number.
+    record AmbiguousScaleSource(String role, List<String> sources) implements ClusterConfigError {
+        @Override
+        public String message() {
+            return "Role '" + role
+                 + "' is declared by " + sources.size()
+                 + " sources (" + String.join(", ", sources)
+                 + "). Re-run naming one with --source.";
+        }
+    }
+
+    /// A scale request named a (source, role) the topology does not declare.
+    ///
+    /// Adding the pair instead would turn a mistyped source name into a real provisioning target.
+    ///
+    /// The component is `sourceName`, not `source`: [Cause] already declares `source()` returning
+    /// `Option<Cause>`, so a record component named `source` fails to compile.
+    record UnknownScaleTarget(String sourceName, String role, List<String> known) implements ClusterConfigError {
+        @Override
+        public String message() {
+            return "Cluster topology declares no '" + role
+                 + "' nodes in source '" + sourceName
+                 + "'. Declared targets: " + (known.isEmpty()
+                                              ? "(none)"
+                                              : String.join(", ", known))
+                 + ". Change the topology with 'aether cluster apply', not with a scale.";
         }
     }
 

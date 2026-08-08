@@ -1266,27 +1266,31 @@ public sealed interface AetherValue {
                                   .orElse(0);
         }
 
-        /// Set the total CORE count when the cluster has exactly ONE core-bearing source.
+        /// Sources declaring an entry for `role`, in topology order, without duplicates.
         ///
-        /// Returns empty when several sources carry cores: "scale cores to N" is genuinely ambiguous
-        /// then — it does not say which source absorbs the change — and the old core-only scalar hid
-        /// that by overwriting a single number. Callers surface the ambiguity instead of guessing.
-        public Option<ClusterConfigValue> withCoreTotal(int count) {
-            var coreSources = desiredTopology.stream()
-                                             .filter(TopologyEntry::isCore)
-                                             .map(TopologyEntry::sourceName)
-                                             .distinct()
-                                             .toList();
+        /// This is what makes "scale cores to N" answerable without guessing: exactly one source
+        /// means the request is unambiguous, several means it genuinely does not say which source
+        /// absorbs the change. The former core-only scalar hid that distinction by overwriting a
+        /// single number regardless.
+        public List<String> sourcesWithRole(String role) {
+            return desiredTopology.stream()
+                                  .filter(entry -> entry.role()
+                                                        .equalsIgnoreCase(role))
+                                  .map(TopologyEntry::sourceName)
+                                  .distinct()
+                                  .toList();
+        }
 
-            if (coreSources.size() > 1) {
-                return Option.none();
-            }
-
-            var target = coreSources.isEmpty()
-                         ? ""
-                         : coreSources.getFirst();
-
-            return Option.some(withDesiredCount(target, TopologyEntry.CORE_ROLE, count));
+        /// True when the topology already declares this (source, role).
+        ///
+        /// [#withDesiredCount] APPENDS an absent pair, which is right for composing a topology and
+        /// wrong for a scale request: a mistyped source name would silently become a new entry that
+        /// provisioning then tries to satisfy. Scale callers gate on this first.
+        public boolean declares(String sourceName, String role) {
+            return desiredTopology.stream()
+                                  .anyMatch(entry -> entry.sourceName()
+                                                          .equals(sourceName) && entry.role()
+                                                                                      .equalsIgnoreCase(role));
         }
 
         /// Replace the desired count for one (source, role), preserving every other entry, and bump

@@ -23,6 +23,7 @@ import org.pragmatica.aether.api.ManagementApiResponses.ProvisioningDiagnosticsR
 import org.pragmatica.aether.api.ManagementApiResponses.DryRunResponse;
 import org.pragmatica.aether.api.ManagementApiResponses.ScaleClusterResponse;
 import org.pragmatica.aether.api.ManagementApiResponses.ScaleRequest;
+import org.pragmatica.aether.api.ManagementApiResponses.TopologyEntryInfo;
 import org.pragmatica.aether.api.ManagementApiResponses.UpgradeRequest;
 import org.pragmatica.aether.api.ManagementApiResponses.UpgradeResponse;
 import org.pragmatica.aether.config.cluster.ClusterBootstrapConfig;
@@ -41,12 +42,11 @@ import org.pragmatica.aether.node.AetherNode;
 import org.pragmatica.aether.node.ManageableNode;
 import org.pragmatica.aether.node.ProvisioningDiagnostics;
 import org.pragmatica.aether.slice.delegation.TaskGroup;
-import org.pragmatica.aether.slice.generation.HealthSignal;
-import org.pragmatica.aether.slice.generation.OperatorIntent;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ClusterConfigKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ClusterConfigValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.TopologyEntry;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.NodeInfo;
@@ -114,11 +114,21 @@ public final class ClusterConfigRoutes implements RouteSource {
                                          config.clusterName(),
                                          config.version(),
                                          config.coreCount(),
+                                         toTopologyInfo(config),
                                          config.coreMin(),
                                          config.coreMax(),
                                          config.deploymentType(),
                                          config.configVersion(),
                                          config.updatedAt());
+    }
+
+    private static List<TopologyEntryInfo> toTopologyInfo(ClusterConfigValue config) {
+        return config.desiredTopology()
+                     .stream()
+                     .map(entry -> new TopologyEntryInfo(entry.sourceName(),
+                                                         entry.role(),
+                                                         entry.count()))
+                     .toList();
     }
 
     /// #336 observability — flatten the assembled provisioning diagnostics into a readable JSON view.
@@ -487,75 +497,128 @@ public final class ClusterConfigRoutes implements RouteSource {
         return lookupClusterConfig().flatMap(stored -> applyScale(stored, request));
     }
 
+    /// `source` and `role` arrive from Jackson, where an omitted JSON field is `null`, and an operator
+    /// who did not name a source sends `""`. Both collapse to `Option` HERE, at the deserialization
+    /// boundary, so nothing downstream null-checks a `String`. Absent and blank mean the same thing to
+    /// this route — "I did not say" — and deciding that once keeps the judgement in one place.
     private Promise<ScaleClusterResponse> applyScale(ClusterConfigValue stored, ScaleRequest request) {
+        var role = effectiveRole(nonBlank(request.role()));
+        var source = nonBlank(request.source());
+
         return checkVersionAsync(stored.configVersion(),
-                                 request.expectedVersion()).flatMap(_ -> validateScaleAsync(request.coreCount(),
-                                                                                            stored.coreMin(),
-                                                                                            stored.coreMax()))
-                                .flatMap(_ -> executeScale(stored, request));
+                                 request.expectedVersion()).flatMap(_ -> Promise.resolved(resolveScaleTarget(stored,
+                                                                                                             source,
+                                                                                                             role)))
+                                .flatMap(resolved -> Promise.resolved(validateScale(stored,
+                                                                                    resolved,
+                                                                                    role,
+                                                                                    request.count())))
+                                .flatMap(resolved -> executeScale(stored,
+                                                                  resolved,
+                                                                  role,
+                                                                  request.count()));
     }
 
-    private Promise<ScaleClusterResponse> executeScale(ClusterConfigValue stored, ScaleRequest request) {
-        var previousCount = stored.coreCount();
-        var newVersion = stored.configVersion() + 1;
-
-        emitSetDesiredSizeSignal(request.coreCount());
-
-        return storeScaledConfig(stored, request.coreCount(), newVersion).map(_ -> new ScaleClusterResponse(true,
-                                                                                                            previousCount,
-                                                                                                            request.coreCount(),
-                                                                                                            newVersion));
+    static Option<String> nonBlank(String value) {
+        return Option.option(value).filter(candidate -> !candidate.isBlank());
     }
 
-    private void emitSetDesiredSizeSignal(int newSize) {
-        nodeSupplier.get()
-                    .healthSignalSink()
-                    .emit(new HealthSignal.OperatorAction(new OperatorIntent.SetDesiredSize(newSize)));
+    static String effectiveRole(Option<String> role) {
+        return role.or(TopologyEntry.CORE_ROLE);
     }
 
-    private static Promise<Object> validateScaleAsync(int coreCount, int coreMin, int coreMax) {
-        if (coreCount < 3) {
-            return new ClusterConfigError.QuorumSafetyViolation(coreCount, 3).promise();
+    /// Resolve which source absorbs the scale, refusing rather than guessing.
+    ///
+    /// An absent source is inferred only when exactly one source declares the role. A named source
+    /// must already be declared: appending an undeclared (source, role) would turn a typo into a
+    /// provisioning target.
+    static Result<String> resolveScaleTarget(ClusterConfigValue stored, Option<String> source, String role) {
+        return source.fold(() -> inferScaleTarget(stored, role), named -> declaredTargetOrRefusal(stored, named, role));
+    }
+
+    private static Result<String> declaredTargetOrRefusal(ClusterConfigValue stored, String source, String role) {
+        return stored.declares(source, role)
+               ? Result.success(source)
+               : new ClusterConfigError.UnknownScaleTarget(source, role, declaredTargets(stored)).result();
+    }
+
+    private static Result<String> inferScaleTarget(ClusterConfigValue stored, String role) {
+        var candidates = stored.sourcesWithRole(role);
+
+        if (candidates.size() > 1) {
+            return new ClusterConfigError.AmbiguousScaleSource(role, candidates).result();
         }
 
-        if (coreCount % 2 == 0) {
-            return new ClusterConfigError.InvalidCoreCount(coreCount).promise();
+        return candidates.isEmpty()
+               ? new ClusterConfigError.UnknownScaleTarget("", role, declaredTargets(stored)).result()
+               : Result.success(candidates.getFirst());
+    }
+
+    private static List<String> declaredTargets(ClusterConfigValue stored) {
+        return stored.desiredTopology()
+                     .stream()
+                     .map(entry -> entry.sourceName() + "/" + entry.role())
+                     .toList();
+    }
+
+    private Promise<ScaleClusterResponse> executeScale(ClusterConfigValue stored,
+                                                       String source,
+                                                       String role,
+                                                       int count) {
+        var previousCount = stored.desiredCountFor(source, role);
+        var scaled = stored.withDesiredCount(source, role, count);
+
+        return storeScaledConfig(scaled).map(_ -> new ScaleClusterResponse(true,
+                                                                           source,
+                                                                           role,
+                                                                           previousCount,
+                                                                           count,
+                                                                           scaled.configVersion()));
+    }
+
+    /// Quorum arithmetic constrains CORE nodes only — it is what keeps a majority reachable. Worker
+    /// and spot counts carry no such constraint, so applying `coreMin`/`coreMax` to them would
+    /// refuse legitimate scales.
+    ///
+    /// For cores the check runs against the resulting CLUSTER-WIDE total, not the per-source count.
+    /// Scaling one core source to 1 is valid when another source carries 2; checking the per-source
+    /// number would reject that, and checking the old stored scalar would miss the other source
+    /// entirely.
+    static Result<String> validateScale(ClusterConfigValue stored, String source, String role, int count) {
+        if (!TopologyEntry.CORE_ROLE.equalsIgnoreCase(role)) {
+            return count < 1
+                   ? new ClusterConfigError.InvalidCoreCount(count).result()
+                   : Result.success(source);
         }
 
-        if (coreCount < coreMin) {
-            return new ClusterConfigError.QuorumSafetyViolation(coreCount, coreMin).promise();
+        var clusterTotal = stored.coreCount() - stored.desiredCountFor(source, TopologyEntry.CORE_ROLE) + count;
+
+        if (clusterTotal < 3) {
+            return new ClusterConfigError.QuorumSafetyViolation(clusterTotal, 3).result();
         }
 
-        if (coreCount > coreMax) {
-            return new ClusterConfigError.InvalidCoreMax(coreMax, coreCount).promise();
+        if (clusterTotal % 2 == 0) {
+            return new ClusterConfigError.InvalidCoreCount(clusterTotal).result();
         }
 
-        return Promise.unitPromise().map(u -> (Object) u);
+        if (clusterTotal < stored.coreMin()) {
+            return new ClusterConfigError.QuorumSafetyViolation(clusterTotal, stored.coreMin()).result();
+        }
+
+        if (clusterTotal > stored.coreMax()) {
+            return new ClusterConfigError.InvalidCoreMax(stored.coreMax(), clusterTotal).result();
+        }
+
+        return Result.success(source);
     }
 
     @SuppressWarnings("unchecked")
-    private Promise<Object> storeScaledConfig(ClusterConfigValue stored, int newCoreCount, long newVersion) {
-        var scaled = stored.withCoreTotal(newCoreCount);
-
-        if (scaled.isEmpty()) {
-            return new ClusterConfigError.ParseFailed("Cluster has cores in more than one source; scale the source's core role explicitly"
-                                                     + " rather than setting a single cluster-wide core count.").promise();
-        }
-
-        var configValue = new ClusterConfigValue(stored.tomlContent(),
-                                                 stored.clusterName(),
-                                                 stored.version(),
-                                                 scaled.unwrap().desiredTopology(),
-                                                 stored.coreMin(),
-                                                 stored.coreMax(),
-                                                 stored.deploymentType(),
-                                                 newVersion,
-                                                 System.currentTimeMillis());
-        var command = (KVCommand<AetherKey>)(KVCommand<?>) new KVCommand.Put<>(ClusterConfigKey.CURRENT, configValue);
+    private Promise<Object> storeScaledConfig(ClusterConfigValue scaled) {
+        var command = (KVCommand<AetherKey>)(KVCommand<?>) new KVCommand.Put<>(ClusterConfigKey.CURRENT, scaled);
 
         return nodeSupplier.get()
                            .<Object> apply(List.of(command))
-                           .map(_ -> (Object) configValue);
+                           .map(_ -> (Object) scaled);
     }
 
     private Promise<UpgradeResponse> handleUpgrade(UpgradeRequest request) {
