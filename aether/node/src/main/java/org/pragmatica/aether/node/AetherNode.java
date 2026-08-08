@@ -1423,10 +1423,18 @@ public interface AetherNode extends ManageableNode {
                                                      cause.message()));
             }
 
+            /// RFC-0017 C4 — the formation signal bootstrap observes WITHOUT touching any inbound
+            /// port: this tag lands only after cluster formation succeeded, via the IP-match
+            /// self-identification that needs no `selfServerId` (unlike `registerSelf`, which is
+            /// inert in production because nothing populates that id). `applyTags` MERGES on the
+            /// provider side, so the create-stamped labels survive. Bootstrap polls
+            /// `aether-cluster=<name>, aether-formed=true` until the expected core count appears.
             private void tagMatchingInstance(ComputeProvider provider, List<InstanceInfo> instances) {
                 findSelfInstance(instances).onPresent(instance -> provider.applyTags(instance.id(),
                                                                                      Map.of("aether-node-id",
-                                                                                            self().id()))
+                                                                                            self().id(),
+                                                                                            "aether-formed",
+                                                                                            "true"))
                                                                           .onSuccess(_ -> log.info("Applied aether-node-id tag to instance {}",
                                                                                                    instance.id().value()))
                                                                           .onFailure(cause -> log.warn("Failed to apply aether-node-id tag: {}",

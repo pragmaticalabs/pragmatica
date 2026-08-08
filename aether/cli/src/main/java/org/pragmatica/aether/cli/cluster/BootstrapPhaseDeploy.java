@@ -8,10 +8,12 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.stream.IntStream;
 
 import org.pragmatica.aether.cli.cluster.ClusterBootstrapOrchestrator.BootstrapContext;
 import org.pragmatica.aether.cli.cluster.ClusterBootstrapOrchestrator.BootstrapError;
+import org.pragmatica.aether.config.cluster.ClusterBootstrapConfig;
 import org.pragmatica.aether.config.cluster.NodeRole;
 import org.pragmatica.aether.config.cluster.RuntimeProfile;
 import org.pragmatica.aether.config.cluster.RuntimeType;
@@ -154,6 +156,17 @@ sealed interface BootstrapPhaseDeploy {
 
             return Result.unitResult();
         }
+        // RFC-0017 stage 4 — discovery-based self-assembly. Cores discover their peers via the
+        // provider API (label lookup) and workers were baked core seeds at create, so there is
+        // nothing to push: no SSH preflight, no re-launch, and readiness is observed via the
+        // provider API (C4) instead of polling each node's management port — which a firewalled
+        // management port used to fail on HEALTHY nodes.
+        if (discoveryAssembly(ctx.config())) {
+            System.out.printf("  [%s/cloud] Discovery-based assembly: no SSH push; observing formation via provider labels%n",
+                              sourceName);
+
+            return awaitFormationViaLabels(ctx, source, sourceName);
+        }
 
         var restartResult = restartNodesWithFinalPeers(ctx,
                                                        source,
@@ -180,6 +193,89 @@ sealed interface BootstrapPhaseDeploy {
                           timeoutMs / 1000);
 
         return waitForCloudInit(sourceNodes, mgmtPort, scheme, timeoutMs, healthCheck, sourceName);
+    }
+
+    /// Discovery-based assembly engages when EXACTLY ONE source carries cores and it is a CLOUD
+    /// source. Multi-core-source clusters keep the legacy SSH push: `discoverPeers` sees only its
+    /// own provider account, so cores spread across providers cannot find each other by label —
+    /// a structural limit of provider-native discovery, recorded in RFC-0017.
+    static boolean discoveryAssembly(ClusterBootstrapConfig config) {
+        var coreSources = config.sources().values().stream().filter(source -> coreCount(source) > 0).toList();
+
+        return coreSources.size() == 1 && coreSources.getFirst()
+                                                     .type() == SourceType.CLOUD;
+    }
+
+    private static int coreCount(SourceProfile source) {
+        return Option.option(source.roles().get(NodeRole.CORE))
+                     .flatMap(role -> role.count())
+                     .or(0);
+    }
+
+    /// C4 — readiness without inbound ports: poll the provider API for instances carrying
+    /// `aether-formed=true`, the label each core merges onto itself AFTER cluster formation
+    /// succeeds (`AetherNode.tagMatchingInstance`). Counting those labels counts FORMED cores,
+    /// through the same API bootstrap used to create the VMs — no SSH, no management port.
+    @SuppressWarnings("JBCT-EX-01")
+    private static Result<Unit> awaitFormationViaLabels(BootstrapContext ctx, SourceProfile source, String sourceName) {
+        var clusterName = ctx.config().cluster().name();
+
+        return ProviderResolver.resolveCloudCompute(source).flatMap(compute -> pollFormedLabels(filter -> compute.listInstances(filter)
+                                                                                                                 .await()
+                                                                                                                 .map(List::size),
+                                                                                                ctx.config()
+                                                                                                   .derivedCoreCount(),
+                                                                                                clusterName,
+                                                                                                sourceName,
+                                                                                                ClusterBootstrapOrchestrator.parseDurationMs(ctx.config()
+                                                                                                                                                .operations()
+                                                                                                                                                .timeouts()
+                                                                                                                                                .healthCheck()),
+                                                                                                FORMED_LABEL_POLL_MS));
+    }
+
+    long FORMED_LABEL_POLL_MS = 5_000;
+
+    @SuppressWarnings("JBCT-EX-01")
+    static Result<Unit> pollFormedLabels(Fn1<Result<Integer>, Map<String, String>> formedCounter,
+                                         int expected,
+                                         String clusterName,
+                                         String sourceName,
+                                         long timeoutMs,
+                                         long pollMs) {
+        var filter = Map.of("aether-cluster", clusterName, "aether-formed", "true");
+        var deadline = System.currentTimeMillis() + timeoutMs;
+        var formed = 0;
+
+        System.out.printf("  [%s/cloud] Waiting for %d core(s) to report formation via labels (timeout: %ds)%n",
+                          sourceName,
+                          expected,
+                          timeoutMs / 1000);
+        while (System.currentTimeMillis() < deadline) {
+            formed = formedCounter.apply(filter)
+                                  .onFailure(cause -> System.out.printf("  [%s/cloud] label poll failed: %s%n",
+                                                                        sourceName,
+                                                                        cause.message()))
+                                  .or(formed);
+            if (formed >= expected) {
+                System.out.printf("  [%s/cloud] All %d core(s) formed%n", sourceName, expected);
+
+                return Result.unitResult();
+            }
+
+            ClusterBootstrapOrchestrator.sleepQuietly(pollMs);
+            if (Thread.currentThread().isInterrupted()) {
+                break;
+            }
+        }
+
+        return new BootstrapError.DeploymentFailed(sourceName,
+                                                   "Only " + formed
+                                                  + " of " + expected
+                                                  + " cores reported formation (aether-formed label) within " + timeoutMs / 1000
+                                                  + "s. Nodes self-assemble via discovery; check the VMs' cloud-init logs,"
+                                                  + " that the aether-cluster/aether-node-id labels exist on all core VMs,"
+                                                  + " and that [cloud.discovery] cluster_name reached the node config.").result();
     }
 
     @SuppressWarnings("JBCT-EX-01")

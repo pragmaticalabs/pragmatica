@@ -125,6 +125,32 @@ class BootstrapPhaseDeployCloudSshRestartTest {
         return configWithShortTimeout(source, Map.of());
     }
 
+    /// A second core-bearing source keeps `discoveryAssembly` FALSE, so these tests keep pinning the
+    /// LEGACY SSH-push path (RFC-0017 stage 4 routes the single-cloud-core-source shape through
+    /// label-based formation observation with no SSH push at all).
+    private static SourceProfile legacyGateSshSource() {
+        return SourceProfile.sourceProfile("dc-1",
+                                           SourceType.SSH,
+                                           Option.empty(),
+                                           Option.empty(),
+                                           Option.empty(),
+                                           Option.empty(),
+                                           Option.empty(),
+                                           Option.empty(),
+                                           Option.empty(),
+                                           LoadBalancerMode.NONE,
+                                           List.of(),
+                                           Option.empty(),
+                                           Map.of(),
+                                           Map.of(NodeRole.CORE,
+                                                  RoleSubTable.roleSubTable(NodeRole.CORE,
+                                                                            Option.some(2),
+                                                                            Option.empty(),
+                                                                            Option.empty(),
+                                                                            "default")),
+                                           List.of());
+    }
+
     private static ClusterBootstrapConfig configWithShortTimeout(SourceProfile source,
                                                                  Map<String, RuntimeProfile> runtimes) {
         var timeouts = TimeoutsConfig.timeoutsConfig("3s", "10s", "10s");
@@ -136,7 +162,7 @@ class BootstrapPhaseDeployCloudSshRestartTest {
         return ClusterBootstrapConfig.clusterBootstrapConfig(CLUSTER_VERSION,
                                                              ClusterIdentity.clusterIdentity(CLUSTER_NAME, CLUSTER_VERSION).unwrap(),
                                                              CoreTopology.defaultCoreTopology(),
-                                                             Map.of("eu-1", source),
+                                                             Map.of("eu-1", source, "dc-1", legacyGateSshSource()),
                                                              runtimes,
                                                              InfrastructureConfig.infrastructureConfig(NetworkingType.MANUAL),
                                                              ops);

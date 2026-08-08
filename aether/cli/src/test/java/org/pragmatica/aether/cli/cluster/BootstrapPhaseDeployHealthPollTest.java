@@ -64,6 +64,33 @@ class BootstrapPhaseDeployHealthPollTest {
                                            List.of());
     }
 
+    /// A second core-bearing source keeps `discoveryAssembly` FALSE, so these tests keep pinning
+    /// the LEGACY SSH-push + management-port health-poll path (RFC-0017 stage 4 routes the
+    /// single-cloud-core-source shape — the wizard's only output — through label-based formation
+    /// observation instead; that path is pinned by `BootstrapPhaseDeployFormationLabelsTest`).
+    private static SourceProfile sshCoreSource() {
+        return SourceProfile.sourceProfile("dc-1",
+                                           SourceType.SSH,
+                                           Option.empty(),
+                                           Option.empty(),
+                                           Option.empty(),
+                                           Option.empty(),
+                                           Option.empty(),
+                                           Option.empty(),
+                                           Option.empty(),
+                                           LoadBalancerMode.NONE,
+                                           List.of(),
+                                           Option.empty(),
+                                           Map.of(),
+                                           Map.of(NodeRole.CORE,
+                                                  RoleSubTable.roleSubTable(NodeRole.CORE,
+                                                                            Option.some(2),
+                                                                            Option.empty(),
+                                                                            Option.empty(),
+                                                                            "default")),
+                                           List.of());
+    }
+
     private static ClusterBootstrapConfig configWithShortTimeout() {
         // Use a very short healthCheck timeout so the failing branch completes in test time.
         var timeouts = TimeoutsConfig.timeoutsConfig("3s", "10s", "10s");
@@ -75,7 +102,7 @@ class BootstrapPhaseDeployHealthPollTest {
         return ClusterBootstrapConfig.clusterBootstrapConfig("1.0.0",
                                                              ClusterIdentity.clusterIdentity("prod", "1.0.0").unwrap(),
                                                              CoreTopology.defaultCoreTopology(),
-                                                             Map.of("eu-1", cloudSource()),
+                                                             Map.of("eu-1", cloudSource(), "dc-1", sshCoreSource()),
                                                              Map.of(),
                                                              InfrastructureConfig.infrastructureConfig(NetworkingType.MANUAL),
                                                              ops);
