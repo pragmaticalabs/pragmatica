@@ -1,21 +1,30 @@
 # Session handover — 2026-08-07
 
-**Branch:** `release-1.0.0-rc3` · **HEAD:** `5687f807e` · **pushed** (branch == origin) · working tree clean
-**Candidate tag:** `v1.0.0-rc3-candidate` → `9b88911cd`, **29 commits stale**. Owner ruling: leave it until the RFC-0017 arc lands, which is also when the Hetzner run happens.
+**Branch:** `release-1.0.0-rc3` · **HEAD:** `47abedf0a` · **pushed** (branch == origin) · working tree clean
+**Candidate tag:** `v1.0.0-rc3-candidate` → `9b88911cd`, **33 commits stale**. Owner ruling: leave it until the RFC-0017 arc lands, which is also when the Hetzner run happens.
 
 ---
 
-## §1 START HERE — RFC-0017 stage 4
+## §1 START HERE — RFC-0017 stage 5
 
-`docs/rfc/RFC-0017-cluster-owned-provisioning.md`. **Owner approved implementing the whole arc on rc3** (2026-08-07), replacing rather than additive. Stages 1–3 are DONE and pushed; next is **stage 4: discovery-based core self-assembly, dropping the SSH re-launch for cloud sources**. Then: cores provision workers (stage 5) → teardown label sweep (6) → bootstrap seeds cores only (7).
+`docs/rfc/RFC-0017-cluster-owned-provisioning.md`. **Owner approved the whole arc on rc3**, replacing rather than additive. Stages 1–4 are DONE and pushed; next is **stage 5: cores provision workers/spot from the published spec** → teardown label sweep (6) → bootstrap seeds cores only (7). Then the arc-final live Hetzner run, candidate tag re-point, and the deferred live checks (see §1b).
 
-### Stage 3 DONE — #570 CLOSED (RFC-0018, commits `257c683ca` / `2b32f046c` / `5687f807e`)
+### Stage 4 DONE — discovery-based core self-assembly (commits `5b78113c5` / `0feeb74cb` / `47abedf0a`)
 
-- **The fix is the applier, not the caller.** `docs/rfc/RFC-0018-kv-lost-update-fence.md` (ACCEPTED, owner decisions O1–O3 recorded). A third fence arm in `KVStore.staleWrite`: a `Put` of a `VersionFenced` value applies only when its version is the immediate successor of the committed one. `ClusterConfigValue.fenceVersion()` = existing `configVersion`. No wire change, no codec tag (no #582 interaction).
-- **Equal is rejected here, accepted by the epoch fence — that asymmetry is the design.** The epoch fence guards authority (reannounce at same epoch is legal); this guards a chain (equal = the second racer). Reusing the epoch fence would have been a regression fence, not a lost-update fence.
-- **Batch merging killed both result-based discriminators**: `RabiaEngine.commitChanges` resolves every merged submitter with the FULL merged result list. Hence read-after-apply **semantic** confirm — check the change you asked for, not version arithmetic. CTM retries (3, then typed failure); REST scale/apply/upgrade 409 on loss.
-- **Mutation-checked**: removing the fence arm turns exactly the 4 rejection tests red; restored, re-verified green, diff clean.
-- **Live-cluster race remains [design intent — unverified]** — fold into the arc-final Hetzner run: a concurrent scale + auto-heal race is now well-defined (both edits survive or a loud 409/typed failure), and worth exercising live.
+- **`Main.parsePeers` discovery arm**: after `--peers=`/`CLUSTER_PEERS` (operator lists and CTM replacements byte-identical), before config synthesis. Polls until `cluster().nodes()` cores visible; majority proceeds at deadline with WARN, below majority refuses loudly. Peers mapped from `aether-role=core` + create-stamped `aether-node-id` labels, on the LOCAL cluster port (`aether-port` label cannot exist pre-formation).
+- **`[cluster] nodes` now emitted** by `BootstrapOverlayGenerator` — without it a cloud VM resolves as DOCKER (`Environment` has no CLOUD constant) and expects 5 cores regardless of topology.
+- **Workers/spot get core seeds baked at create** — cores provision first, so their addresses are known when worker user-data renders. Core-only seeds; the removed re-launch pushed the full node list.
+- **C4 readiness**: bootstrap polls the provider API for `aether-formed=true` (merged by the node post-formation via the IP-match self-tag) instead of each node's management port — which a firewalled management port failed on HEALTHY nodes (live Hetzner finding).
+- **Gate**: engages ONLY for exactly-one-cloud-core-source configs (the wizard's only output). Multi-core-source keeps the legacy SSH push, still pinned by `BootstrapPhaseDeployCloudSshRestartTest` (34) + `BootstrapPhaseDeployHealthPollTest` (6) with explicitly legacy-shaped fixtures.
+- **RFC-0017's gap table was WRONG and is now corrected in the RFC itself** (read it before stage 5): `discoverPeers()` had zero production consumers; `registerSelf` is inert (nothing populates `selfServerId`); `[cloud.discovery] cluster_name` was already emitted; the real gaps were the consume side and the expected-count signal.
+
+**Evidence:** `./build.sh` green (artifacts INSTALLED to ~/.m2 per owner request), 0 new lint; 1809 tests / 0 failures (aether-config 323, cli 838, node 648); `MainDiscoveredPeersTest` 6/6, `BootstrapPhaseDeployFormationLabelsTest` 5/5, `BootstrapPhaseProvisionUserDataTest` 12/12.
+
+### §1b Deferred to the arc-final Hetzner run (accumulate, run once)
+
+1. End-to-end discovery self-assembly on live VMs (stage 4) — label mechanics already proven live in the #574 arc.
+2. Concurrent scale vs auto-heal race under the RFC-0018 fence (stage 3).
+3. First live execution of the typed `aether cluster scale` (stage 2).
 
 ---
 
@@ -61,9 +70,9 @@ Carried from earlier: `FirewallPresetsTest` used to assert `rulesFor_standard_al
 | `86aa40885` | **typed per-source/per-role topology in cluster state** |
 | `761e1316e` | **CTM scales one (source, role)** |
 | `5ff9026cc` | handover |
-| `03b1e0c90` | **stage 2 quad — scale one (source, role)**: `ScaleRequest` retyped, source inference + refusals, cluster-wide quorum, `withCoreTotal` → `sourcesWithRole`/`declares`, CLI reflagged |
-| `6d25a390f` | dashboard **DESIRED TOPOLOGY** panel + `desiredTopology` on `GET /api/cluster/config` |
-| `a1a72228a` | docs — scale surface aligned across reference, specs, runbook |
+| `03b1e0c90` / `6d25a390f` / `a1a72228a` | **stage 2 quad** — scale one (source, role): retyped `ScaleRequest`, inference + refusals, cluster-wide quorum, dashboard DESIRED TOPOLOGY, docs |
+| `257c683ca` / `2b32f046c` / `5687f807e` | **stage 3 (#570 CLOSED)** — RFC-0018 `VersionFenced` successor fence in the KV applier (mutation-checked); writers confirm the fenced put landed (CTM bounded retry, REST 409) |
+| `5b78113c5` / `0feeb74cb` / `47abedf0a` | **stage 4** — discovery self-assembly arm in `Main`, `[cluster] nodes` in overlay, worker seeds baked at create, C4 `aether-formed` label readiness, RFC gap table corrected |
 
 **#574 is live-verified on Hetzner** (3 runs, 9 VMs, account CLEAN after each; `test-pg` never touched). Against the real API: one labelled firewall per source; `tcp+udp` → two rules; union-not-replace; no 8090/8080; attached AT server-create (three independent proofs); idempotent re-run issued zero writes; **enforcement proven** — port 22 timed out at 6.0s while allowed 8070 refused in 0.06s; destroy deleted it (404). The CHANGELOG evidence tag was upgraded to match — it still said "not yet exercised on a live Hetzner cluster".
 
