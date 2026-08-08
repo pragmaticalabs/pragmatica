@@ -53,18 +53,23 @@ because it uses the HTTP API rather than an agent.
 
 ### The gap that makes it inert
 
-Every part of self-assembly already exists and is wired on both ends:
+The original draft of this table overstated readiness; corrected 2026-08-09 during stage-4
+implementation, from the code rather than from memory:
 
-| Part | Location | State |
+| Part | Location | State (corrected) |
 |---|---|---|
 | `DiscoveryProvider` SPI | `environment-integration` | live |
 | Hetzner/AWS/GCP/Azure implementations | `environment/*` | live |
-| `HetznerDiscoveryProvider.discoverPeers()` | label lookup `aether-cluster=<name>` | live |
-| Node-side register/deregister | `AetherNode:1399,1454` | live |
-| **Discovery enabled in generated node config** | — | **missing** |
+| `HetznerDiscoveryProvider.discoverPeers()` | label lookup `aether-cluster=<name>` | live, **zero production consumers** until stage 4 |
+| Node-side `registerSelf`/`deregisterSelf` | `AetherNode` | wired but **inert in production** — nothing populates `selfServerId`, so registration always fails `operationNotSupported`. NOT load-bearing for stage 4 |
+| Node-side post-formation self-tag (`aether-node-id`) | `AetherNode.applyNodeIdTag`, IP-match, **no selfServerId needed** | live — merges via provider-side read-modify-write. Stage 4's C4 signal (`aether-formed=true`) rides THIS mechanism, not `registerSelf` |
+| `[cloud.discovery] cluster_name` in composed node config | `BootstrapOverlayGenerator.cloudDiscoverySection` | **already emitted** for every cloud node |
+| `[cluster] nodes` (expected core count) in composed node config | — | was missing — without it a cloud node fell back to `Environment.defaultNodes()` (5, DOCKER), the wrong expectation for any 3-core cluster |
+| **Consume side: discovery → topology → formation** | — | **missing entirely** — the actual gap. No code ever called `discoverPeers()` |
 
-The last row is the whole gap. Nodes cannot self-assemble, so the push is
-mandatory.
+So the real gap was twofold: the consume side did not exist, and the expected-count signal was
+absent from the node config. The push was mandatory because of those two, not because of any
+missing provider capability.
 
 ### Why bootstrap should not provision workers
 
@@ -189,6 +194,22 @@ Staged, each stage independently landable and verifiable:
 4. **Discovery-based core assembly**: enable discovery in the generated node
    config; drop the SSH re-launch for cloud sources. SSH remains the mechanism for
    `type = "ssh"` sources, where it is the only option.
+   **Implemented 2026-08-09.** Notes from implementation:
+   - The peers-resolution chain in `Main` gained a discovery arm AFTER the explicit arms
+     (`--peers=`, `CLUSTER_PEERS` — so operator lists and CTM replacements are byte-identical)
+     and BEFORE config-generated synthesis. Poll until `cluster().nodes()` cores visible; at the
+     deadline a majority proceeds with a warning, below majority fails loudly.
+   - Discovered peers use the LOCAL cluster port, never the `aether-port` label — that label is
+     applied only after join and cannot exist pre-formation; cores share one port by composition.
+   - Workers/spot get core seeds **baked at create**: cores are provisioned first, so their
+     addresses are known when worker user-data renders. Core-only seeds ("peer set arrives at
+     birth"); the removed re-launch used to push the full node list.
+   - C4 readiness: bootstrap polls the provider API for `aether-formed=true` — the label the node
+     merges onto itself after formation via the IP-match self-tag (NOT `registerSelf`, which is
+     inert; see the corrected gap table).
+   - **Gate:** engages only when EXACTLY ONE source carries cores and it is CLOUD. Cores spread
+     across providers cannot find each other by label — a structural limit of provider-native
+     discovery. Multi-core-source clusters keep the legacy SSH push.
 5. **Cores provision workers/spot** from the published spec.
 6. **C3 teardown** rework.
 7. **Delete worker/spot provisioning from bootstrap** — the payoff, last.
