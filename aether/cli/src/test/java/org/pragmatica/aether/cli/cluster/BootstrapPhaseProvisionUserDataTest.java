@@ -304,19 +304,12 @@ class BootstrapPhaseProvisionUserDataTest {
                    "PEERS env var still exported so the Dockerfile entrypoint can fold it");
     }
 
+    /// RFC-0017 stage 7 — bootstrap seeds the CORE quorum only for cloud sources: worker/spot are
+    /// provisioned by the CLUSTER from the published topology, with live core peers.
     @Test
-    void buildCloudProvisionSpec_workerRole_bakesCoreSeedPeersAtCreate() {
-        // RFC-0017 stage 4 — cores are provisioned FIRST, so worker user-data rendered afterwards
-        // carries the real core addresses: "peer set arrives at birth", no SSH re-launch needed.
-        var source = cloudHetznerSource(3);
-        var ctx = baseContext(configWithSource(source));
-        var coreSeeds = java.util.List.of("eu-1-core-0:203.0.113.10:8090", "eu-1-core-1:203.0.113.11:8090");
-
-        var ud = invokeBuildCloudProvisionSpec(ctx, source, NodeRole.WORKER, "eu-1-worker-0", 3, coreSeeds).userData()
-                                                                                                          .or("");
-
-        assertTrue(ud.contains("AETHER_PEERS=\"eu-1-core-0:203.0.113.10:8090,eu-1-core-1:203.0.113.11:8090\""),
-                   "Worker user_data must bake the core seed list at create");
+    void cloudBootstrapRoles_areCoreOnly() {
+        assertTrue(BootstrapPhaseProvision.CLOUD_BOOTSTRAP_ROLES.equals(java.util.List.of(NodeRole.CORE)),
+                   "cloud bootstrap must provision CORE only — workers/spot belong to the cluster (stage 5)");
     }
 
     @Test
@@ -361,17 +354,6 @@ class BootstrapPhaseProvisionUserDataTest {
                                                                 NodeRole role,
                                                                 String nodeId,
                                                                 int nodeIndex) {
-        return invokeBuildCloudProvisionSpec(ctx, source, role, nodeId, nodeIndex, java.util.List.of());
-    }
-
-    /// RFC-0017 stage 4: `seedPeers` is EMPTY for cores (they self-assemble via discovery) and the
-    /// baked core seed list for workers/spot.
-    private static ProvisionSpec invokeBuildCloudProvisionSpec(BootstrapContext ctx,
-                                                                SourceProfile source,
-                                                                NodeRole role,
-                                                                String nodeId,
-                                                                int nodeIndex,
-                                                                java.util.List<String> seedPeers) {
         try {
             var method = BootstrapPhaseProvision.class.getDeclaredMethod("buildCloudProvisionSpec",
                                                                           BootstrapContext.class,
@@ -380,8 +362,7 @@ class BootstrapPhaseProvisionUserDataTest {
                                                                           NodeRole.class,
                                                                           String.class,
                                                                           int.class,
-                                                                          String.class,
-                                                                          java.util.List.class);
+                                                                          String.class);
             method.setAccessible(true);
             @SuppressWarnings("unchecked")
             var result = (org.pragmatica.lang.Result<ProvisionSpec>) method.invoke(null,
@@ -391,8 +372,7 @@ class BootstrapPhaseProvisionUserDataTest {
                                                                                     role,
                                                                                     nodeId,
                                                                                     nodeIndex,
-                                                                                    "prod",
-                                                                                    seedPeers);
+                                                                                    "prod");
             return result.unwrap();
         } catch (ReflectiveOperationException e) {
             throw new AssertionError("Failed to invoke buildCloudProvisionSpec", e);
