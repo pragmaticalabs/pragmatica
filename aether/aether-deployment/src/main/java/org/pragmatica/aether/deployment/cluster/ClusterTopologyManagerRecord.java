@@ -99,7 +99,8 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                     Consumer<NodeId> drainCommandSink,
                                     Consumer<NodeId> drainCommandClear,
                                     Supplier<Option<TomlDocument>> resolvedLocalConfig,
-                                    AtomicBoolean workerReconcileInFlight) implements ClusterTopologyManager {
+                                    AtomicBoolean workerReconcileInFlight,
+                                    AtomicBoolean workerReconcilePending) implements ClusterTopologyManager {
     private static final Logger log = LoggerFactory.getLogger(ClusterTopologyManager.class);
     private static final int MINIMUM_CLUSTER_SIZE = 3;
     private static final int MAX_CONSECUTIVE_PROVISIONING_FAILURES = 3;
@@ -200,6 +201,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                                 Option.option(drainCommandSink).or(_ -> {}),
                                                 Option.option(drainCommandClear).or(_ -> {}),
                                                 Option.option(resolvedLocalConfig).or((Supplier<Option<TomlDocument>>) Option::none),
+                                                new AtomicBoolean(false),
                                                 new AtomicBoolean(false));
     }
 
@@ -536,16 +538,38 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     /// hostnames out of the PEERS list, preventing DOA replacements (dead-host PEERS →
     /// QUIC NPE). If `clusterMembers` is empty (cold paths), the seed falls back to
     /// `buildProvisionContext`'s topology-derived peers. `failedPeer` is observability-only.
+    ///
+    /// The source profile name is resolved here from the persisted cluster config
+    /// ([#replacementSourceName]) rather than hardcoded, so a core replacement is stamped with the
+    /// `aether-source` label of the source that actually backs its role.
     @Override
     public Promise<ProvisionDisposition> provisionReplacement(NodeId newNodeId,
                                                               Option<NodeId> failedPeer,
                                                               Set<NodeId> clusterMembers,
                                                               NodeRole intendedRole) {
-        log.info("CTM v2: provisionReplacement requested (newNodeId={}, failedPeer={}, clusterMembers.size={}, intendedRole={})",
+        return provisionReplacement(newNodeId,
+                                    failedPeer,
+                                    clusterMembers,
+                                    intendedRole,
+                                    replacementSourceName(intendedRole));
+    }
+
+    /// RFC-0017 stage 5 — the source-explicit form. `sourceName` becomes the provider's
+    /// `aether-source` label, which is one third of the selector the worker reconcile pass lists
+    /// ACTUAL inventory with, so it MUST be the name the desired-topology entry was published
+    /// under. The worker path passes `entry.sourceName()` verbatim; the core auto-heal path above
+    /// resolves it from the persisted cluster config.
+    private Promise<ProvisionDisposition> provisionReplacement(NodeId newNodeId,
+                                                               Option<NodeId> failedPeer,
+                                                               Set<NodeId> clusterMembers,
+                                                               NodeRole intendedRole,
+                                                               String sourceName) {
+        log.info("CTM v2: provisionReplacement requested (newNodeId={}, failedPeer={}, clusterMembers.size={}, intendedRole={}, source={})",
                  newNodeId,
                  failedPeer,
                  clusterMembers.size(),
-                 intendedRole.value());
+                 intendedRole.value(),
+                 sourceName);
         // #148 — runaway-provisioning cap. If a provisioned node crash-loops (boots, fails to
         // become a member, the LeaderReconciler re-derives the same deficit and calls back here),
         // the consecutive-failure counter trips this breaker and provisioning is suspended for a
@@ -565,7 +589,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
             return Promise.success(ProvisionDisposition.deferred(ProvisionDisposition.DeferralReason.CIRCUIT_OPEN));
         }
 
-        var contextBase = buildProvisionContext(newNodeId, intendedRole);
+        var contextBase = buildProvisionContext(newNodeId, intendedRole, sourceName);
         var memberPeers = liveMemberPeers(clusterMembers);
         var contextSeeded = memberPeers.isEmpty()
                             ? contextBase
@@ -709,6 +733,27 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                      .or("default");
     }
 
+    /// RFC-0017 stage 5 — the source profile NAME backing a provision of `intendedRole`, resolved
+    /// from the persisted cluster TOML through the SAME [#cloudSourceFor] lookup that already
+    /// resolves the role's zones and instance type, so all three ride one source profile. This is
+    /// what the provider stamps as `aether-source`.
+    ///
+    /// Falls back to [ProvisionContext#DEFAULT_SOURCE_NAME] when no cloud source backs the role —
+    /// the TOML is blank/unparseable (tests, forge) or the provider is non-cloud (Docker) and has
+    /// no source concept at all. That fallback is honest rather than convenient: there is no source
+    /// name to round-trip, and nothing lists those instances by a source-scoped selector. The
+    /// worker reconcile path never relies on it — it passes the topology entry's own source name,
+    /// which is authoritative and, under multi-source topologies, the only correct answer
+    /// (`cloudSourceFor` returns the FIRST cloud source declaring the role).
+    private String replacementSourceName(NodeRole intendedRole) {
+        return Option.option(clusterConfigReader.get().map(ClusterConfigValue::tomlContent).or(""))
+                     .filter(toml -> !toml.isBlank())
+                     .flatMap(ClusterTopologyManagerRecord::parseConfig)
+                     .flatMap(config -> cloudSourceFor(config, intendedRole))
+                     .map(SourceProfile::name)
+                     .or(ProvisionContext.DEFAULT_SOURCE_NAME);
+    }
+
     /// RFC-0017 stage 5 — reconcile ACTUAL worker/spot cloud inventory toward the desired
     /// per-(source, role) topology published in cluster state. The core tier is deliberately NOT
     /// touched here: core reconciliation lives in the hardened [LeaderReconciler]-driven path with
@@ -721,10 +766,12 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     ///
     /// Leader-gated by `active` (the same guard the membership actuator path uses) and serialized
     /// by `workerReconcileInFlight` — config commits can arrive faster than a pass completes, and
-    /// two concurrent passes would both see the same deficit and double-provision. A pass that
-    /// found work re-pokes itself once at the end (via the config-change path being idempotent);
-    /// deferred provisions (open circuit, no peers) surface on the next commit or leader
-    /// activation, matching the deferral semantics of [#provisionReplacement].
+    /// two concurrent passes would both see the same deficit and double-provision. A trigger that
+    /// arrives mid-pass is NOT dropped: it is recorded in `workerReconcilePending` and replayed as
+    /// exactly one follow-up pass when the in-flight one releases. Replay cannot self-perpetuate —
+    /// the follow-up consumes the flag before it runs, so only a genuinely new external trigger can
+    /// set it again. Deferred provisions (open circuit, no peers) surface on the next commit or
+    /// leader activation, matching the deferral semantics of [#provisionReplacement].
     @Contract
     @Override
     public void reconcileWorkerTopology() {
@@ -733,12 +780,29 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
         }
 
         if (!workerReconcileInFlight.compareAndSet(false, true)) {
-            log.debug("CTM: worker reconcile already in flight — skipping");
+            // The in-flight pass may already have read the state this trigger is about, so it
+            // cannot stand in for it. Record the miss and let the completing pass replay it.
+            workerReconcilePending.set(true);
+            log.debug("CTM: worker reconcile already in flight — deferring trigger to a follow-up pass");
 
             return;
         }
 
-        runWorkerReconcilePass().onResult(_ -> workerReconcileInFlight.set(false));
+        runWorkerReconcilePass().onResult(_ -> completeWorkerReconcilePass());
+    }
+
+    /// Release the serialization flag FIRST, then replay a missed trigger. In that order a trigger
+    /// racing the release either wins the CAS and runs its own pass, or loses it and re-arms
+    /// `workerReconcilePending` for whichever pass is now in flight — no interleaving drops it. The
+    /// replay re-enters [#reconcileWorkerTopology], so it is leader-gated exactly like any other
+    /// trigger.
+    @Contract
+    private void completeWorkerReconcilePass() {
+        workerReconcileInFlight.set(false);
+        if (workerReconcilePending.compareAndSet(true, false)) {
+            log.debug("CTM: replaying worker reconcile trigger deferred during the previous pass");
+            reconcileWorkerTopology();
+        }
     }
 
     private Promise<Unit> runWorkerReconcilePass() {
@@ -804,7 +868,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
         for (int i = 0; i < deficit; i++) {
             var minted = mintWorkerNodeId(entry, i);
 
-            pass = pass.flatMap(_ -> provisionReplacement(minted, Option.none(), members, role).mapToUnit());
+            pass = pass.flatMap(_ -> provisionReplacement(minted, Option.none(), members, role, entry.sourceName()).mapToUnit());
         }
 
         return pass;
@@ -1284,7 +1348,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
         inFlightProvisions.clear();
     }
 
-    private ProvisionContext buildProvisionContext(NodeId newNodeId, NodeRole intendedRole) {
+    private ProvisionContext buildProvisionContext(NodeId newNodeId, NodeRole intendedRole, String sourceName) {
         // Always include self as a fallback bootstrap target — the CTM runs on the leader, which
         // is alive by definition. Without this fallback, transient "no healthy remote peers"
         // windows during chaos (e.g., a leader has just decommissioned several SWIM-faulty peers
@@ -1307,9 +1371,11 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
         // it as `self`). NodeId.id() is `node-<lowercase-ULID>` — alphanumeric + hyphen, a valid
         // Docker container name and cluster boot identity. The intended role (Wave 2 / W4) rides
         // the same context so the provider stamps AETHER_ROLE / aether.role explicitly instead of
-        // inheriting the provisioning host's env.
+        // inheriting the provisioning host's env, and `sourceName` rides it so the provider's
+        // `aether-source` label round-trips with the reconcile pass's inventory selector.
         return ProvisionContext.forReplacement(clusterName,
                                                intendedRole.value(),
+                                               sourceName,
                                                newNodeId.id(),
                                                peers,
                                                snapshotDesiredCoreSize());
