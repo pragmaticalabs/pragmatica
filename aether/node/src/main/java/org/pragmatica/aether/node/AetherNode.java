@@ -3861,6 +3861,9 @@ public interface AetherNode extends ManageableNode {
                                                                                                     .value()
                                                                                                     .coreCount()));
         clusterTopologyManager.onClusterConfigChanged();
+        // RFC-0017 stage 5 — every committed config change (scale, apply, restore) converges worker
+        // topology through ONE trigger source. Leader-gated and serialized inside the CTM.
+        clusterTopologyManager.reconcileWorkerTopology();
         leaderReconciler.onConfigChange();
     }
 

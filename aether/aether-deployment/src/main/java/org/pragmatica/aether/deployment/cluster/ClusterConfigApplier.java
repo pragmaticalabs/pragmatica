@@ -10,7 +10,6 @@ import org.pragmatica.aether.config.cluster.DiffAction;
 import org.pragmatica.aether.config.cluster.DiffAction.ScaleDown;
 import org.pragmatica.aether.config.cluster.DiffAction.ScaleUp;
 import org.pragmatica.aether.config.cluster.NodeRole;
-import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 
@@ -24,21 +23,6 @@ public sealed interface ClusterConfigApplier {
 
     static ClusterConfigApplier clusterConfigApplier(ClusterTopologyManager topologyManager) {
         return new ClusterConfigApplierRecord(topologyManager);
-    }
-
-    /// Operator-facing config-apply failures. Wave 2 / W5 (cluster-topology-overhaul spec):
-    /// a scale op targeting a non-CORE role must NOT touch core sizing; until worker
-    /// provisioning is wired (#241) it is rejected with this explicit error instead of being
-    /// silently applied to the core desired size.
-    sealed interface ClusterConfigError extends Cause {
-        record RoleScaleUnsupported(NodeRole role, String description) implements ClusterConfigError {
-            @Override
-            public String message() {
-                return "Scale for role '" + role.value()
-                     + "' is not supported yet (worker provisioning is not wired — see #241); "
-                     + "core sizing left untouched. Rejected action: " + description;
-            }
-        }
     }
 
     record unused() implements ClusterConfigApplier {
@@ -64,49 +48,19 @@ record ClusterConfigApplierRecord(ClusterTopologyManager topologyManager) implem
 
     private Promise<Unit> applySingle(DiffAction action) {
         return switch (action) {
-            case ScaleUp scale -> routeScaleUp(scale);
-            case ScaleDown scale -> routeScaleDown(scale);
+            case ScaleUp scale -> applyScale(scale.sourceName(), scale.role(), scale.to(), scale.description());
+            case ScaleDown scale -> applyScale(scale.sourceName(), scale.role(), scale.to(), scale.description());
             default -> logApplied(action);
         };
     }
 
-    /// Wave 2 / W5 role routing: only a CORE-targeted scale may mutate the core desired size.
-    private Promise<Unit> routeScaleUp(ScaleUp scale) {
-        return scale.role() == NodeRole.CORE
-               ? applyScaleUp(scale)
-               : rejectNonCoreScale(scale.role(), scale.description());
-    }
-
-    /// Wave 2 / W5 role routing: only a CORE-targeted scale may mutate the core desired size.
-    private Promise<Unit> routeScaleDown(ScaleDown scale) {
-        return scale.role() == NodeRole.CORE
-               ? applyScaleDown(scale)
-               : rejectNonCoreScale(scale.role(), scale.description());
-    }
-
-    private static Promise<Unit> rejectNonCoreScale(NodeRole role, String description) {
-        var error = new ClusterConfigError.RoleScaleUnsupported(role, description);
-
-        ClusterConfigApplier.log.error("Rejected runtime scale: {}", error.message());
-
-        return error.promise();
-    }
-
-    private Promise<Unit> applyScaleUp(ScaleUp scale) {
-        return topologyManager.setDesiredCount(scale.sourceName(),
-                                               scale.role(),
-                                               scale.to())
-                              .onSuccess(_ -> ClusterConfigApplier.log.info("Applied scale-up: {}",
-                                                                            scale.description()))
-                              .mapToUnit();
-    }
-
-    private Promise<Unit> applyScaleDown(ScaleDown scale) {
-        return topologyManager.setDesiredCount(scale.sourceName(),
-                                               scale.role(),
-                                               scale.to())
-                              .onSuccess(_ -> ClusterConfigApplier.log.info("Applied scale-down: {}",
-                                                                            scale.description()))
+    /// RFC-0017 stage 5 — ALL roles route through the same fenced desired-count write (closing
+    /// #241's worker-provisioning gap; the wider community-topology epic stays open). The typed topology (stage 2) made non-core counts expressible, the successor fence
+    /// (stage 3) made the write safe, and the worker reconciler acts on the committed value via the
+    /// `ClusterConfigKey` fan-out — this applier never provisions directly, for any role.
+    private Promise<Unit> applyScale(String sourceName, NodeRole role, int target, String description) {
+        return topologyManager.setDesiredCount(sourceName, role, target)
+                              .onSuccess(_ -> ClusterConfigApplier.log.info("Applied scale: {}", description))
                               .mapToUnit();
     }
 

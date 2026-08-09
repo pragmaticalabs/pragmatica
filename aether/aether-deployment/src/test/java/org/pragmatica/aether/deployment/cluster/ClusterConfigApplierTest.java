@@ -32,10 +32,12 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.lang.Unit.unit;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
-/// Wave 2 / W5 (cluster-topology-overhaul spec): the runtime config applier ROLE-ROUTES scale
-/// ops. A CORE-targeted scale mutates the core desired size exactly as before; a WORKER- (or
-/// SPOT-) targeted scale must NOT touch core sizing — until worker provisioning is wired (#241)
-/// it is rejected with an explicit operator error, never silently applied to the core size.
+/// The runtime config applier routes EVERY scale — any role — through the same fenced
+/// desired-count write (RFC-0017 stage 5, #241 closed). It never provisions directly: the worker
+/// reconciler acts on the committed value via the `ClusterConfigKey` fan-out, and the core path
+/// stays with the LeaderReconciler. Before stage 5 a non-core scale was REJECTED here
+/// (`RoleScaleUnsupported`) so it could not silently rewrite the core-only scalar; the typed
+/// topology removed that hazard, so the guard's reason to exist is gone.
 class ClusterConfigApplierTest {
     private RecordingTopologyManager topologyManager;
     private ClusterConfigApplier applier;
@@ -69,45 +71,48 @@ class ClusterConfigApplierTest {
     }
 
     @Nested
-    class NonCoreScaleRejected {
+    class NonCoreScaleRoutes {
         @Test
-        void apply_workerScaleUp_rejectedWithoutTouchingCoreSize() {
+        void apply_workerScaleUp_writesTheWorkerDesiredCount() {
             var result = applier.apply(List.of(new DiffAction.ScaleUp("default", NodeRole.WORKER, 0, 3))).await();
 
-            assertThat(result.isFailure()).isTrue();
-            assertThat(topologyManager.setDesiredCountCalls()).as("a WORKER scale must never mutate the core desired size").isEmpty();
-            result.onFailure(cause -> assertThat(cause.message()).contains("worker").contains("#241"));
+            assertThat(result.isSuccess()).isTrue();
+            assertThat(topologyManager.setDesiredCountCalls())
+                    .as("a WORKER scale writes the WORKER pair — the typed topology makes this safe")
+                    .containsExactly(new RecordingTopologyManager.ScaleCall("default", NodeRole.WORKER, 3));
         }
 
         @Test
-        void apply_workerScaleDown_rejectedWithoutTouchingCoreSize() {
+        void apply_workerScaleDown_writesTheWorkerDesiredCount() {
             var result = applier.apply(List.of(new DiffAction.ScaleDown("default", NodeRole.WORKER, 3, 1))).await();
 
-            assertThat(result.isFailure()).isTrue();
-            assertThat(topologyManager.setDesiredCountCalls()).isEmpty();
+            assertThat(result.isSuccess()).isTrue();
+            assertThat(topologyManager.setDesiredCountCalls())
+                    .containsExactly(new RecordingTopologyManager.ScaleCall("default", NodeRole.WORKER, 1));
         }
 
         @Test
-        void apply_spotScaleUp_rejectedWithoutTouchingCoreSize() {
+        void apply_spotScaleUp_writesTheSpotDesiredCount() {
             var result = applier.apply(List.of(new DiffAction.ScaleUp("default", NodeRole.SPOT, 0, 2))).await();
 
-            assertThat(result.isFailure()).isTrue();
-            assertThat(topologyManager.setDesiredCountCalls()).isEmpty();
+            assertThat(result.isSuccess()).isTrue();
+            assertThat(topologyManager.setDesiredCountCalls())
+                    .containsExactly(new RecordingTopologyManager.ScaleCall("default", NodeRole.SPOT, 2));
         }
 
-        /// A mixed diff applies the CORE action and fails on the WORKER action — the overall
-        /// result is the failure (the operator sees the rejection), and core sizing reflects
-        /// only the CORE-targeted op.
+        /// A mixed diff applies BOTH actions in order — each role's count lands on its own
+        /// (source, role) pair, and neither touches the other's.
         @Test
-        void apply_mixedCoreThenWorker_appliesCoreAndFailsOverall() {
+        void apply_mixedCoreThenWorker_appliesBothToTheirOwnPairs() {
             var actions = List.<DiffAction> of(new DiffAction.ScaleUp("default", NodeRole.CORE, 5, 6),
                                                new DiffAction.ScaleUp("default", NodeRole.WORKER, 0, 3));
 
             var result = applier.apply(actions).await();
 
-            assertThat(result.isFailure()).isTrue();
+            assertThat(result.isSuccess()).isTrue();
             assertThat(topologyManager.setDesiredCountCalls())
-                    .containsExactly(new RecordingTopologyManager.ScaleCall("default", NodeRole.CORE, 6));
+                    .containsExactly(new RecordingTopologyManager.ScaleCall("default", NodeRole.CORE, 6),
+                                     new RecordingTopologyManager.ScaleCall("default", NodeRole.WORKER, 3));
         }
     }
 

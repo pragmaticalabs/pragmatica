@@ -143,6 +143,7 @@ class ClusterConfigRoutesScaleTest {
 
         assertThat(ClusterConfigRoutes.validateScale(stored, "eu", "worker", 4).isSuccess()).isTrue();
         assertThat(ClusterConfigRoutes.validateScale(stored, "eu", "worker", 40).isSuccess()).isTrue();
-        assertThat(ClusterConfigRoutes.validateScale(stored, "eu", "worker", 0).isFailure()).isTrue();
+        assertThat(ClusterConfigRoutes.validateScale(stored, "eu", "worker", 0).isSuccess()).as("scale-to-zero is a legitimate worker operation — drain-all and the RFC-0017 teardown path use it").isTrue();
+        assertThat(ClusterConfigRoutes.validateScale(stored, "eu", "worker", -1).isFailure()).isTrue();
     }
 }

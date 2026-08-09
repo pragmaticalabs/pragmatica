@@ -584,7 +584,9 @@ public final class ClusterConfigRoutes implements RouteSource {
     /// entirely.
     static Result<String> validateScale(ClusterConfigValue stored, String source, String role, int count) {
         if (!TopologyEntry.CORE_ROLE.equalsIgnoreCase(role)) {
-            return count < 1
+            // Zero is legitimate for worker/spot tiers — "drain all workers" is a real operation and
+            // the RFC-0017 teardown path scales to zero before sweeping. Only negatives are nonsense.
+            return count < 0
                    ? new ClusterConfigError.InvalidCoreCount(count).result()
                    : Result.success(source);
         }

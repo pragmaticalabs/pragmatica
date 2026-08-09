@@ -64,8 +64,9 @@ class ClusterScaleCommand implements Callable<Integer> {
                             .fold(this::onFailure, this::onSuccess);
     }
 
+    /// Zero is allowed: "scale workers to 0" is drain-all, and the server enforces core minimums.
     private Result<Integer> requireCount() {
-        return count < 1
+        return count < 0
                ? new ScaleError.MinimumCount(count).result()
                : Result.success(count);
     }
@@ -135,7 +136,7 @@ class ClusterScaleCommand implements Callable<Integer> {
         record MinimumCount(int requested) implements ScaleError {
             @Override
             public String message() {
-                return "--count must be at least 1, got " + requested;
+                return "--count must be non-negative, got " + requested;
             }
         }
 
