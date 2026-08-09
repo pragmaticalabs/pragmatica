@@ -248,6 +248,16 @@ Staged, each stage independently landable and verifiable:
      race the polite phase existed to avoid. Destroy is terminal — there is no graceful-drain
      value left to preserve.
 7. **Delete worker/spot provisioning from bootstrap** — the payoff, last.
+   **Implemented 2026-08-09.** `BootstrapPhaseProvision.CLOUD_BOOTSTRAP_ROLES = [CORE]`: cloud
+   bootstrap seeds the core quorum only; worker/spot entries are published at formation and
+   provisioned by the cluster (stage 5) with LIVE core peers once the leader activates. Bootstrap
+   returns when the core quorum has formed; worker convergence is asynchronous, observable via the
+   topology and provisioning-diagnostics surfaces. Stage 4's worker-seed baking became dead on
+   this path and was removed rather than left as residue. Scope: CLOUD sources only — SSH sources
+   keep fixed-host registration (no cloud API to provision through) and DOCKER sources keep all
+   roles (the integration harness creates its workers at bootstrap). The `--wait` open question
+   below is thereby answered: `--wait` means "core quorum formed"; the desired-vs-actual surface
+   for worker convergence is the provisioning diagnostics + `GET /api/cluster/config` topology.
 
 ## Open Questions
 
