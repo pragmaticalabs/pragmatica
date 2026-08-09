@@ -1,30 +1,31 @@
 # Session handover — 2026-08-07
 
-**Branch:** `release-1.0.0-rc3` · **HEAD:** `47abedf0a` · **pushed** (branch == origin) · working tree clean
-**Candidate tag:** `v1.0.0-rc3-candidate` → `9b88911cd`, **33 commits stale**. Owner ruling: leave it until the RFC-0017 arc lands, which is also when the Hetzner run happens.
+**Branch:** `release-1.0.0-rc3` · **HEAD:** `f1ae06f86` · **pushed** (branch == origin) · working tree clean
+**Candidate tag:** `v1.0.0-rc3-candidate` → `9b88911cd`, **37 commits stale**. Owner ruling: leave it until the RFC-0017 arc lands, which is also when the Hetzner run happens.
 
 ---
 
-## §1 START HERE — RFC-0017 stage 5
+## §1 START HERE — RFC-0017 stage 6
 
-`docs/rfc/RFC-0017-cluster-owned-provisioning.md`. **Owner approved the whole arc on rc3**, replacing rather than additive. Stages 1–4 are DONE and pushed; next is **stage 5: cores provision workers/spot from the published spec** → teardown label sweep (6) → bootstrap seeds cores only (7). Then the arc-final live Hetzner run, candidate tag re-point, and the deferred live checks (see §1b).
+`docs/rfc/RFC-0017-cluster-owned-provisioning.md`. **Owner approved the whole arc on rc3**, replacing rather than additive. Stages 1–5 are DONE and pushed; next is **stage 6: C3 teardown via scoped label sweep** (destroy asks the cluster to scale to zero, then sweeps `aether-cluster=<name>` — NEVER bare — reusing `PROTECTED_CLUSTERS`, unioning cluster-scoped `aether-node-id` orphans, dry-run inventory before deleting) → stage 7: bootstrap seeds cores only (delete worker/spot provisioning from `BootstrapPhaseProvision` — the payoff, last). Then the arc-final live Hetzner run + candidate tag re-point + §1b deferred checks.
 
-### Stage 4 DONE — discovery-based core self-assembly (commits `5b78113c5` / `0feeb74cb` / `47abedf0a`)
+**Stage 6 groundwork already in place:** worker scale-to-zero is accepted end-to-end (CLI + REST, `validateScale` non-core allows 0) and the worker reconciler terminates surplus — so "scale to zero" already drains the worker tier via the cluster itself. The sweep handles what remains (cores + stragglers). **`tools/cloud-reaper.sh` has the `PROTECTED_CLUSTERS` guard since `14d1da8e3`** — reuse, don't reimplement. Remember `feedback_guard_the_tool_you_invoke_not_your_wrapper`: grep any teardown you invoke for destructive calls FIRST.
 
-- **`Main.parsePeers` discovery arm**: after `--peers=`/`CLUSTER_PEERS` (operator lists and CTM replacements byte-identical), before config synthesis. Polls until `cluster().nodes()` cores visible; majority proceeds at deadline with WARN, below majority refuses loudly. Peers mapped from `aether-role=core` + create-stamped `aether-node-id` labels, on the LOCAL cluster port (`aether-port` label cannot exist pre-formation).
-- **`[cluster] nodes` now emitted** by `BootstrapOverlayGenerator` — without it a cloud VM resolves as DOCKER (`Environment` has no CLOUD constant) and expects 5 cores regardless of topology.
-- **Workers/spot get core seeds baked at create** — cores provision first, so their addresses are known when worker user-data renders. Core-only seeds; the removed re-launch pushed the full node list.
-- **C4 readiness**: bootstrap polls the provider API for `aether-formed=true` (merged by the node post-formation via the IP-match self-tag) instead of each node's management port — which a firewalled management port failed on HEALTHY nodes (live Hetzner finding).
-- **Gate**: engages ONLY for exactly-one-cloud-core-source configs (the wizard's only output). Multi-core-source keeps the legacy SSH push, still pinned by `BootstrapPhaseDeployCloudSshRestartTest` (34) + `BootstrapPhaseDeployHealthPollTest` (6) with explicitly legacy-shaped fixtures.
-- **RFC-0017's gap table was WRONG and is now corrected in the RFC itself** (read it before stage 5): `discoverPeers()` had zero production consumers; `registerSelf` is inert (nothing populates `selfServerId`); `[cloud.discovery] cluster_name` was already emitted; the real gaps were the consume side and the expected-count signal.
+### Stage 5 DONE — cluster provisions workers/spot (commits `2537446bc` / `906adced5` / `f1ae06f86`; #241 commented, stays open)
 
-**Evidence:** `./build.sh` green (artifacts INSTALLED to ~/.m2 per owner request), 0 new lint; 1809 tests / 0 failures (aether-config 323, cli 838, node 648); `MainDiscoveredPeersTest` 6/6, `BootstrapPhaseDeployFormationLabelsTest` 5/5, `BootstrapPhaseProvisionUserDataTest` 12/12.
+- **`ClusterTopologyManagerRecord.reconcileWorkerTopology()`** — separate, deliberately simpler pass; NOT woven into the hardened core `LeaderReconciler` (a worker deficit is never quorum-ambiguous). Leader-gated by `active` (same guard as the membership actuator), serialized by a new `workerReconcileInFlight` record component. ACTUAL = provider label inventory, not SWIM membership.
+- **Triggers**: every `ClusterConfigKey` commit (`AetherNode.onClusterConfigPut` fan-out) + leader activation. Deferred provisions (open circuit / no peers) surface on the next commit — matches `provisionReplacement` deferral semantics.
+- **Found + fixed**: `provisionReplacement`'s spec hardcoded role `"core"` / instance type `"default"` — now role-aware (`roleInstanceType` parses the role's own sub-table).
+- **Surplus terminates newest-first** — minted `-r<clock36>` ids sort after bootstrap `-<index>` ids.
+- **Applier routes ALL roles** through the fenced `setDesiredCount` (`RoleScaleUnsupported` removed); scale-to-zero accepted (CLI `--count 0`, REST non-core `>= 0`).
+- **Evidence**: `build.sh` green ×2 (0 new lint; one JBCT-RET-01 caught → `@Contract`), 3 modules 0 failures (deployment 815, node 648, cli green), `WorkerReconcileTest` 5/5, mutation-checked: disabling the leadership gate turns `reconcile_inactiveCtm_neverListsOrProvisions` red, restored + re-verified.
 
 ### §1b Deferred to the arc-final Hetzner run (accumulate, run once)
 
-1. End-to-end discovery self-assembly on live VMs (stage 4) — label mechanics already proven live in the #574 arc.
+1. End-to-end discovery self-assembly on live VMs (stage 4) — label mechanics proven live in the #574 arc.
 2. Concurrent scale vs auto-heal race under the RFC-0018 fence (stage 3).
 3. First live execution of the typed `aether cluster scale` (stage 2).
+4. Cluster-provisioned workers on real VMs (stage 5) — incl. worker boot with live core peers and newest-first scale-down.
 
 ---
 
@@ -73,6 +74,7 @@ Carried from earlier: `FirewallPresetsTest` used to assert `rulesFor_standard_al
 | `03b1e0c90` / `6d25a390f` / `a1a72228a` | **stage 2 quad** — scale one (source, role): retyped `ScaleRequest`, inference + refusals, cluster-wide quorum, dashboard DESIRED TOPOLOGY, docs |
 | `257c683ca` / `2b32f046c` / `5687f807e` | **stage 3 (#570 CLOSED)** — RFC-0018 `VersionFenced` successor fence in the KV applier (mutation-checked); writers confirm the fenced put landed (CTM bounded retry, REST 409) |
 | `5b78113c5` / `0feeb74cb` / `47abedf0a` | **stage 4** — discovery self-assembly arm in `Main`, `[cluster] nodes` in overlay, worker seeds baked at create, C4 `aether-formed` label readiness, RFC gap table corrected |
+| `2537446bc` / `906adced5` / `f1ae06f86` | **stage 5** — CTM worker-topology reconcile (deficit/surplus vs label inventory), role-aware `provisionReplacement` spec, applier routes all roles, scale-to-zero end-to-end |
 
 **#574 is live-verified on Hetzner** (3 runs, 9 VMs, account CLEAN after each; `test-pg` never touched). Against the real API: one labelled firewall per source; `tcp+udp` → two rules; union-not-replace; no 8090/8080; attached AT server-create (three independent proofs); idempotent re-run issued zero writes; **enforcement proven** — port 22 timed out at 6.0s while allowed 8070 refused in 0.06s; destroy deleted it (404). The CHANGELOG evidence tag was upgraded to match — it still said "not yet exercised on a live Hetzner cluster".
 
