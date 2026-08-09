@@ -1,7 +1,7 @@
 # Session handover — 2026-08-07
 
-**Branch:** `release-1.0.0-rc3` · **HEAD:** `a6793e6c6` · **pushed** (branch == origin) · working tree clean
-**Candidate tag:** `v1.0.0-rc3-candidate` → `9b88911cd`, **~45 commits stale**. Owner ruling: re-point when the arc lands — **it has**; the tag re-point rides the Hetzner run below.
+**Branch:** `release-1.0.0-rc3` · **HEAD:** `091bd591a` · **pushed** (branch == origin) · working tree clean
+**Candidate tag:** `v1.0.0-rc3-candidate` → `9b88911cd`, **~46 commits stale**. Owner ruling: re-point when the arc lands — **it has**; the tag re-point rides the Hetzner run below.
 
 ---
 
@@ -25,16 +25,14 @@ All seven stages of `docs/rfc/RFC-0017-cluster-owned-provisioning.md` are implem
 
 ---
 
-## §1a What stage 2 delivered (commits `03b1e0c90`, `6d25a390f`, `a1a72228a`)
+## §1a Per-stage detail lives in the RFC, not here
 
-- `ClusterConfigValue` stores **per-(source, role) desired topology** (`AetherValue.TopologyEntry`). `coreCount()` is **derived, not stored** — the drift where a scale rewrote `coreCount` while `tomlContent` kept the old number is structurally impossible now, not merely fixed.
-- `ClusterTopologyManager.setDesiredCount(sourceName, role, count)` **replaces** `setDesiredSize(int)`.
-- `ScaleRequest(source, role, count, expectedVersion)` **replaces** `ScaleRequest(coreCount, expectedVersion)`; `aether cluster scale --source/--role/--count` replaces the positionals and `--core`.
-- Source **inference** when exactly one source declares the role; **refusal naming the candidates** when several do; **refusal of an undeclared `(source, role)`** so a typo cannot become a provisioning target (`withDesiredCount` appends, which is right for composing a topology and wrong for a scale).
-- Quorum arithmetic is core-only and evaluated against the resulting **cluster-wide** total. `withCoreTotal` is gone, replaced by `sourcesWithRole` + `declares`.
-- `GET /api/cluster/config` serves `desiredTopology`; dashboard **DESIRED TOPOLOGY** panel renders it and flags when a scale will need an explicit `--source`.
-
-**Evidence:** `./build.sh` green (49 lint findings, all baseline, 0 new); 832 node + 642 cli + 730 slice + 323 aether-config tests, 0 failures. `ScaleRequestContractTest` 3/3, `ClusterConfigRoutesScaleTest` 11/11, `ClusterScaleCommandTest` 3/3, `ClusterConfigKVTest$DesiredTopology` 8/8. **No scale has been executed against a live cluster** — the command was non-functional before this, so there is no prior live behaviour either.
+`docs/rfc/RFC-0017-cluster-owned-provisioning.md` §Migration carries the implementation notes for
+every stage (1–7), including the corrections to the original design claims (the gap table was
+rewritten from code during stage 4). `docs/rfc/RFC-0018-kv-lost-update-fence.md` carries stage 3's
+full design and the owner's O1–O3 decisions. This handover only records what those documents
+cannot: process traps (§2), the commit map (§3), open issues (§4), corrections (§5), decisions
+(§6), and standing hazards (§7).
 
 ## §2 Build traps — read before trusting a green
 
@@ -42,7 +40,8 @@ All seven stages of `docs/rfc/RFC-0017-cluster-owned-provisioning.md` are implem
 2. **Do not hand-roll `mvn ... -am`; run `./build.sh`.** `-am` force-rebuilds `integrations/cluster`, `integrations/dht`, `integrations/swim` from source while skipping the jbct bootstrap that `build.sh` does first. Result is a **false red**: `@Codec` processor errors plus `ClassCastException: String cannot be cast to TypeMirror` in `swim`, in modules not in the diff (they last changed 2026-07-17). Cost most of a cycle. For module tests after `build.sh`: `mvn test -pl <modules>` with **no** `-am` (`-am` also drags in Docker-dependent `sql-splitter`).
 3. **`build.sh` reformats Java in place** as part of its lint gate. After a run, **re-read a file before editing it** — an `Edit` prepared beforehand will fail to match.
 4. **`build.sh` does not run tests.** Compiling a module is not testing it.
-5. **A `@Nested` test class shows `Tests run: 0` in the OUTER surefire report.** That is normal, not a vacuous pass — check `Outer$Nested.txt`. Do not raise a false alarm on it, and do not accept a genuine 0 either.
+5. **A `@Nested` test class shows `Tests run: 0` in the OUTER surefire report.** That is normal, not a vacuous pass — check `Outer$Nested.txt`. Do not raise a false alarm on it, and do not accept a genuine 0 either. Corollary: a RENAMED nested class leaves the OLD class's failing report file on disk — check timestamps before believing a stale red.
+6. **build-runner agents stalled TWICE at the 600s stream watchdog** (stages 4 and 5) while `./build.sh` itself completed green on disk both times. Before re-running or diagnosing: check for orphan `mvn` processes, then read the scratchpad build log — the work may be done. The failure is agent-infra, not the build.
 
 Carried from earlier: `FirewallPresetsTest` used to assert `rulesFor_standard_allRulesUseAnyCidr` — that **every** rule of the default preset, management API included, uses `0.0.0.0/0`. The exposure was encoded as the requirement, so no failing test could ever have surfaced it. When a security fix meets a test that "passes", check which behaviour the test pins.
 
@@ -95,9 +94,11 @@ Worth noting the pattern: the operator-facing runbook was the *most* wrong of th
 
 ## §4 Issues
 
-Filed: **#579** (label precondition — fixed), **#580** (preset exposure — fixed), **#581** (RFC-0017 epic), **#582** (codec tag collisions).
+Filed this arc: **#579** (label precondition — FIXED), **#580** (preset exposure — FIXED), **#581** (RFC-0017 epic — all seven stages landed; close after the live run), **#582** (codec tag collisions — open, deliberately outside the arc).
 
-Open and load-bearing for RFC-0017: **#570** (unguarded read-modify-write — see §1), **#578** (`ClusterConfigApplier` no-ops 8/10 `DiffAction`s — still why firewall *edits* are discarded).
+**#570 CLOSED** (stage 3, RFC-0018 — the `VersionFenced` successor fence). **#241 commented, stays open** — stage 5 closed its worker-provisioning gap only; community-aware seeding/growth policy remain.
+
+**#578 (`ClusterConfigApplier` no-ops 8/10 `DiffAction`s) — narrowed but open.** `ScaleUp`/`ScaleDown` now route for ALL roles through the fenced write; the other 8 actions still `logApplied`-and-drop — firewall EDITS on a live cluster are still discarded (re-bootstrap to change ingress).
 
 ### NOT YET FILED — the CLI/server wire-contract gap (structural)
 
@@ -129,20 +130,30 @@ Claims of mine that turned out wrong; each was caught by checking rather than by
 - "Explicit codec tags would shrink the wire" — **wrong**, only tags below 128 are one varint byte and those slots are structural-tag headroom. Corrected on #582.
 - "`mvn install` is the safe one; `verify` is what provisions servers" — **wrong**, see §2.1. A subagent refused the instruction and was right.
 - "The CLI shape is unresolved and needs an owner call before anything can be wired" — half wrong. The CLI *already had* `<source> <role>` positionals; what was missing was that the server never received them. The open question was narrower than the previous handover implied.
+- "`LeaderReconciler` is a docs name, not a class" — **wrong**, it exists at `aether-deployment/.../membership/ntt/LeaderReconciler.java` (1598 lines); my grep pattern missed it. Corrected within minutes, but it briefly shaped the stage-5 seat question.
+- RFC-0017's original gap table overstated readiness three ways (`discoverPeers` had zero production consumers; `registerSelf` is inert — nothing populates `selfServerId`; the config enablement already existed) — corrected IN the RFC during stage 4, from code.
 
 Also corrected in the docs rather than inherited: the `aether cluster scale` example output in `cli.md` (`Core nodes: 5 -> 7`, `Config version: 8`) was **fabricated** — `OutputFormatter.printAction` prints only `Scale successful.` in TABLE format.
 
 
 ---
 
-## §6 Decisions recorded (owner)
+## §6 Decisions recorded
 
+**Owner:**
 - **REQ-5.1.8.3 stands as written.** Aether never opens cluster/management ports on its own initiative; an explicit `allow_ingress` rule is an operator decision applied like any other.
-- **Cores hold cloud credentials for every source they provision into.** No alternative survives multi-source clusters. Vault may mitigate — `SecretsProvider` seam exists (Aws/Gcp/Azure/File/Env/Composite/Caching; **no Vault, no Hetzner**). Limit: authenticating *to* a vault needs instance identity, which **Hetzner lacks**. Cheapest real mitigation, no code: **one cloud project per cluster**.
-- **Teardown: simple label sweep first**, scoped to `aether-cluster=<name>`, never bare, reusing `PROTECTED_CLUSTERS`. #579 is what makes it sound.
-- **Cluster label is a hard precondition** — done.
-- **Full RFC-0017 arc on rc3**, replacing rather than additive.
-- **Candidate tag stays put** until the arc lands.
+- **Cores hold cloud credentials for every source they provision into.** No alternative survives multi-source clusters. Cheapest real mitigation, no code: **one cloud project per cluster**.
+- **Teardown: simple label sweep first**, scoped, never bare — done (stage 6).
+- **Cluster label is a hard precondition** — done (#579).
+- **Full RFC-0017 arc on rc3**, replacing rather than additive — done.
+- **Candidate tag re-points when the arc lands** — pending the live run.
+- **CLI scale shape: flags with inferred source** (`--role`/`--count`, `--source` optional; refusal names candidates when ambiguous).
+- **RFC-0018 O1–O3** (fence ungated like its siblings; opt-in `VersionFenced` marker; CTM retries / REST 409s) — recorded in the RFC.
+
+**Mine, recorded for owner veto:**
+- **Stage 6 dropped the RFC's "scale to zero first" polite phase** as redundant — core-death-first ordering closes the re-provision race it existed for, and the sweep deletes every labelled VM regardless. Recorded in the RFC and CHANGELOG.
+- **Stage 7 scope: CLOUD sources only** — SSH keeps fixed-host registration, DOCKER keeps all roles (integration harness dependency).
+- **Discovery-assembly gate: exactly-one-cloud-core-source** (the wizard's only output); multi-core-source keeps the legacy SSH push — provider-native discovery cannot see across accounts.
 
 ---
 
