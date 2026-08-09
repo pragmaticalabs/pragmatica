@@ -28,6 +28,15 @@ public interface NodeLifecycleManager {
     Promise<Unit> restartNode(NodeId nodeId);
     boolean isCloudManaged();
 
+    /// RFC-0017 stage 5 — the worker reconciler's ACTUAL-inventory read: instances matching the
+    /// upper-layer tag filter (providers translate key conventions at their boundary, see
+    /// `NODE_ID_TAG`). Default refusal keeps non-provisioning fakes honest — a fake that
+    /// silently returned an empty list would read as "zero workers exist" and trigger phantom
+    /// provisioning.
+    default Promise<List<InstanceInfo>> listInstances(Map<String, String> tagFilter) {
+        return EnvironmentError.operationNotSupported("listInstances: no ComputeProvider").promise();
+    }
+
     @Contract
     default void resetProvisionerState(String clusterName) {}
 
@@ -67,6 +76,12 @@ record NodeLifecycleManagerRecord(Option<ComputeProvider> computeProvider) imple
 
                                         return provider.provision(spec);
                                     });
+    }
+
+    @Override
+    public Promise<List<InstanceInfo>> listInstances(Map<String, String> tagFilter) {
+        return computeProvider.fold(() -> EnvironmentError.operationNotSupported("listInstances: no ComputeProvider").promise(),
+                                    provider -> provider.listInstances(tagFilter));
     }
 
     @Override

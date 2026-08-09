@@ -44,6 +44,14 @@ public interface ClusterTopologyManager extends TopologyManager {
     void onMembershipDecision(MembershipDecision decision);
     void onSelfShutdown(TransportObservation.SelfShutdown selfShutdown);
     void onClusterConfigChanged();
+
+    /// RFC-0017 stage 5 — reconcile ACTUAL worker/spot cloud inventory toward the desired
+    /// per-(source, role) topology in cluster state. Leader-gated and serialized by the
+    /// implementation; a no-op everywhere else. Poked on every `ClusterConfigKey` commit and on
+    /// leader activation. Default no-op so test fakes and non-provisioning implementations are
+    /// untouched.
+    default void reconcileWorkerTopology() {}
+
     void onClusterPhaseChanged(ClusterPhase newPhase);
     void activate();
     void deactivate();
@@ -94,8 +102,8 @@ public interface ClusterTopologyManager extends TopologyManager {
     /// node is MEANT to carry, stamped explicitly end-to-end (ProvisionContext role → provider
     /// `AETHER_ROLE` env + `aether.role` label → the node's self-asserted SWIM role label →
     /// `MemberDescriptor.role`), never inherited from the provisioning host's environment or
-    /// hardcoded provider-side. Auto-heal replacements pass `NodeRole.CORE`; worker-pool
-    /// provisioning (#241) will pass `WORKER` when it lands.
+    /// hardcoded provider-side. Auto-heal replacements pass `NodeRole.CORE`; the
+    /// worker-topology reconcile pass (RFC-0017 stage 5) passes `WORKER`/`SPOT`.
     Promise<ProvisionDisposition> provisionReplacement(NodeId newNodeId,
                                                        Option<NodeId> failedPeer,
                                                        Set<NodeId> clusterMembers,
