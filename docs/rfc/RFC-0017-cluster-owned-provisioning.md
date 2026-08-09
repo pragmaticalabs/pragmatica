@@ -231,6 +231,22 @@ Staged, each stage independently landable and verifiable:
    - Scale-to-zero accepted end-to-end for worker/spot (CLI + REST) — drain-all is real, and C3's
      teardown scales to zero before sweeping.
 6. **C3 teardown** rework.
+   **Implemented 2026-08-09.** Notes from implementation:
+   - `aether cluster destroy` gains a cluster-scoped VM sweep AFTER the state-based cleanup and
+     before the SSH-key sweep, mirroring the #481 key-sweep shape: blank-name skip, handle-first
+     credentials (never raw `HCLOUD_TOKEN`), selector built from the cluster name — scoped BY
+     CONSTRUCTION, a bare listing is a stub failure in the tests — inventory printed before any
+     delete, 404s tolerated.
+   - **Ordering is load-bearing**: the state-based pass kills the CORES first, which kills the
+     leader's stage-5 worker reconciler; run the sweep first and a live leader would re-provision
+     the workers mid-destroy.
+   - **`PROTECTED_CLUSTERS` lives in the CLI too** (`BootstrapCleanup.PROTECTED_CLUSTERS`,
+     mirroring `tools/cloud-reaper.sh`): destroying `test-pg` FAILS loudly before any provider
+     call — protection in the tool, not the call site (#572).
+   - The RFC's "ask the cluster to scale to zero first" phase is DROPPED as redundant: the sweep
+     deletes every labelled VM regardless, and core-death-first already prevents the re-provision
+     race the polite phase existed to avoid. Destroy is terminal — there is no graceful-drain
+     value left to preserve.
 7. **Delete worker/spot provisioning from bootstrap** — the payoff, last.
 
 ## Open Questions
