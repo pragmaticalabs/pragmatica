@@ -1877,7 +1877,7 @@ aether cluster scale [--source <name>] [--role <role>] --count <N>
 | `--role` | `core`, `worker` or `spot`. Defaults to `core`. |
 | `--count` | Target node count for this source and role. |
 | `--yes`, `--force` | Skip interactive confirmation (required in non-interactive shells) |
-| `--json` | Output raw JSON |
+| `-o json` | Output raw JSON (`-o=<format>`; `--json` never existed — corrected 2026-08-09) |
 
 Examples:
 ```bash
@@ -1894,7 +1894,7 @@ Default output is the confirmation line only:
 Scale successful.
 ```
 
-Pass `--json` for the counts the server applied:
+Pass `-o json` for the counts the server applied:
 ```json
 {
   "success": true,
@@ -2260,7 +2260,7 @@ aether cluster upgrade --version <X.Y.Z>
 | Option | Description |
 |--------|-------------|
 | `--version` | Target version in X.Y.Z format |
-| `--json` | Output raw JSON |
+| `-o json` | Output raw JSON (`-o=<format>`; `--json` never existed — corrected 2026-08-09) |
 
 Example:
 ```bash

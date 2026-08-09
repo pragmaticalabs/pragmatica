@@ -355,7 +355,7 @@ reached no one.
 
   ```toml
   [source.x86-jvm.core]
-  instance_type = "cx22"          # x86
+  instance_type = "cx23"          # x86
   image = "aether-1.0.0-jvm-amd64"
 
   [source.arm-container.worker]

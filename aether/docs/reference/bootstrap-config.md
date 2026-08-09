@@ -169,6 +169,28 @@ Applied at bootstrap as a standalone cloud firewall associated with the source's
 > on nodes that are perfectly healthy. Verified live on 2026-08-05: from inside the host that exact
 > URL returned **HTTP 200** with the runtime running, while from outside it never connected.
 
+> **The cluster transport is QUIC — open the cluster port as `udp`, and SWIM as `udp`.** A `tcp`
+> rule on the cluster port reads plausibly and passes every pre-flight, but inbound QUIC is
+> dropped by the deny-by-default firewall and the cores can never dial each other: discovery
+> resolves all peers, SWIM gossip (if its UDP rule is present) partially connects, and the
+> formation gate still times out at `0 of N cores reported formation`. Live-proven 2026-08-09:
+> two full bootstraps failed exactly this way behind `in tcp 6000` before the rule was corrected.
+> The `standard`/`restrictive` presets emit `udp` for both since that date.
+>
+> ```toml
+> [[source.hetzner-eu.firewall.allow_ingress]]
+> port        = 6000                # operations.ports.cluster — QUIC
+> protocol    = "udp"
+> source_cidr = "0.0.0.0/0"         # nodes address each other by PUBLIC IP under manual networking
+> description = "Cluster (Rabia consensus over QUIC)"
+>
+> [[source.hetzner-eu.firewall.allow_ingress]]
+> port        = 6100                # operations.ports.swim
+> protocol    = "udp"
+> source_cidr = "0.0.0.0/0"
+> description = "SWIM gossip"
+> ```
+
 > **Bootstrap-only.** Editing `allow_ingress` on an existing cluster does not currently re-apply it
 > — `ClusterConfigApplier` discards the diffed action (#578). Re-bootstrap to change ingress rules.
 

@@ -259,6 +259,45 @@ Staged, each stage independently landable and verifiable:
    below is thereby answered: `--wait` means "core quorum formed"; the desired-vs-actual surface
    for worker convergence is the provisioning diagnostics + `GET /api/cluster/config` topology.
 
+## Live validation — 2026-08-09 (arc-final Hetzner run)
+
+All five deferred checks passed against published candidate assets (`fd50dbb69`), after the run
+itself surfaced and fixed three integration defects no in-JVM suite could see:
+
+1. **Cores-only bootstrap end-to-end** [verified: bootstrap5, cluster rfc17-final] — provision
+   created exactly 5 core VMs; 5/5 formed via label discovery (C4); operator topology committed at
+   configVersion 2 (seed replaced); 2 workers cluster-minted (`-r<clock36>` ids,
+   `aether-source=hetzner`) and joined READY with live core peers.
+2. **Typed scale live** [verified: same run] — worker 2→4 (+2 exact), 4→1 (~15s), 1→0, 0→2; every
+   transition exact, no over-provision.
+3. **Fence race** [verified: same run] — core VM deleted via provider API, `scale worker→3` fired
+   21s later into the auto-heal window: scale answered `previousCount:2,newCount:3,configVersion:7`,
+   replacement core minted <40s with the correct source label, final topology `{worker:3, core:5}` —
+   both edits survived, nothing silent.
+4. **Newest-first scale-down** [verified: same run] — 4→1 reaped the three newest ids; the oldest
+   survived (REQ-SCALE-03).
+5. **Destroy with unrecorded VMs** [verified: destroy4] — 6 cluster-minted workers absent from all
+   local state were found and swept 6/6 by the label sweep; account CLEAN (reaper dry-run zeros);
+   `test-pg` protection untouched.
+
+Defects the run found (all fixed on `release-1.0.0-rc3` the same day):
+- `986574f12` — the BootstrapModule self-seed was never replaced: `handleApplyConfig`'s `.orElse`
+  swallowed apply failures into `storeInitialConfig`, whose unfenced put the RFC-0018 fence
+  rejected SILENTLY while the route answered success. Worker topology died with a 200. Fix: route
+  on presence, replace the seed as a confirmed fenced successor, single confirmed write path.
+- `fd50dbb69` — CTM-minted VMs were stamped `aether-source=default`, invisible to the reconciler's
+  own `{cluster, source, role}` selector (`actual=0` forever: runaway up, structurally-impossible
+  down), and a trigger landing mid-pass was dropped despite the doc-comment's promised re-poke.
+  Fix: thread the entry's source name through `provisionReplacement`; pending-trigger replay.
+- Firewall presets opened the cluster port as `tcp` while the transport is QUIC/UDP — behind
+  deny-by-default, 0/5 cores ever formed (two full bootstraps failed this way). The preset test
+  had pinned the bug as the requirement.
+
+Why nothing earlier caught these: forge keeps all roles at bootstrap (DOCKER scope), so the
+seed-replace and worker-reconcile paths run ONLY on cloud bootstrap; the reconcile suite's fake
+provider filtered on role alone, so the source-label mismatch was invisible; and #574's live runs
+verified firewall attach/enforcement with no cluster forming behind the rules.
+
 ## Open Questions
 
 - Does `--wait` mean "core quorum formed" or "converged to full desired topology"?

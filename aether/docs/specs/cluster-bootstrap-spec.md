@@ -361,7 +361,7 @@ databases.default = "postgresql://user@rds.example.com:5432/app"
 
 [source.hetzner-eu-fsn1-dc14.core]
 count = 3
-instance_type = "cx22"
+instance_type = "cx23"
 runtime = "default"
 ```
 
@@ -462,17 +462,17 @@ Every source declares one or more **role sub-tables**. The allowed role names ar
 ```toml
 [source.hetzner-eu-fsn1-dc14.core]
 count = 3
-instance_type = "cx22"
+instance_type = "cx23"
 runtime = "default"
 
 [source.hetzner-eu-fsn1-dc14.worker]
 count = 5
-instance_type = "cx32"
+instance_type = "cx33"
 runtime = "default"
 
 [source.hetzner-eu-fsn1-dc14.spot]
 count = 10
-instance_type = "cx32"
+instance_type = "cx33"
 runtime = "default"
 ```
 
@@ -1333,7 +1333,7 @@ databases.default = "${env:DATABASE_URL}"
 
 [source.hetzner-eu-fsn1-dc14.core]
 count = 5
-instance_type = "cx22"
+instance_type = "cx23"
 runtime = "default"
 
 [source.hetzner-eu-fsn1-dc14.firewall]
@@ -1390,7 +1390,7 @@ load_balancer_ips = ["138.201.1.1"]
 
 [source.hetzner-eu-fsn1-dc14.core]
 count = 1
-instance_type = "cx22"
+instance_type = "cx23"
 runtime = "default"
 
 [source.hetzner-eu-fsn1-dc15]
@@ -1401,7 +1401,7 @@ load_balancer_ips = ["138.201.2.1"]
 
 [source.hetzner-eu-fsn1-dc15.core]
 count = 1
-instance_type = "cx22"
+instance_type = "cx23"
 runtime = "default"
 
 [source.aws-us-east-1a]
@@ -1535,12 +1535,12 @@ load_balancer_ips = ["138.201.1.1", "138.201.1.2"]
 
 [source.hetzner-eu-fsn1-dc14.core]
 count = 3
-instance_type = "cx22"
+instance_type = "cx23"
 runtime = "default"
 
 [source.hetzner-eu-fsn1-dc14.worker]
 count = 5
-instance_type = "cx32"
+instance_type = "cx33"
 runtime = "large"
 
 [source.hetzner-eu-fsn1-dc14.firewall]
