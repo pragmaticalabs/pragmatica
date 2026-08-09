@@ -1,8 +1,20 @@
 # Guarantees — Corrections Needed (worklist)
 
 > Overclaims and inaccuracies found while building [`guarantees.md`](./guarantees.md).
-> **Nothing here has been applied** — this is a review worklist. Each row: location · quoted claim · why it's wrong · honest rewrite.
+> Each row: location · quoted claim · why it's wrong · honest rewrite.
 > Grounded at `release-1.0.0-rc2` @ `e320881f0`, 2026-06-29.
+>
+> **Status 2026-08-10 — mostly APPLIED.** This file opened with "Nothing here has been applied"
+> for six weeks after that stopped being true; a worklist about claim accuracy was itself
+> inaccurate. Of the seven issues filed from it (#378–#384), **six are CLOSED**: #378 (sync-replication
+> off-by-one), #379 (KV `Remove` unfenced), #380 (DHTConfig strong-consistency docstring), #382
+> (DurableEntity "Linearizable get" javadoc), #383 (in-memory/snapshot-only persistence — documented,
+> build deferred to epic #349), #384 (DHT guarantee downgrade documented). **#381 remains open**
+> (`ConfigNotificationManager.notifyChange` has no caller — runtime config-change push is dead code),
+> milestone `v1.0.0-rc4`, and is a member of the dead-surface class tracked under #519.
+>
+> Re-grounding this file against current `HEAD` is part of **#496** (GA claims-vs-reality audit).
+> Until that runs, treat the rows below as historically accurate at rc2, not as current findings.
 
 Two kinds of item:
 - **DOC** — wording overclaim; fix the prose.
