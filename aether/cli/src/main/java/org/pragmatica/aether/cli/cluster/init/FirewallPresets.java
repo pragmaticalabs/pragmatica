@@ -48,7 +48,9 @@ public sealed interface FirewallPresets {
         var rules = new ArrayList<FirewallRule>();
 
         rules.add(rule(ports.appHttp(), "tcp", ANY_CIDR, "App HTTP"));
-        rules.add(rule(ports.cluster(), "tcp", ANY_CIDR, "Cluster (Rabia consensus)"));
+        // The cluster transport is QUIC — UDP. A tcp rule here left inbound QUIC dropped by the
+        // deny-by-default firewall: 0/5 cores ever formed behind it (live-proven 2026-08-09).
+        rules.add(rule(ports.cluster(), "udp", ANY_CIDR, "Cluster (Rabia consensus over QUIC)"));
         rules.add(rule(ports.swim(), "udp", ANY_CIDR, "SWIM gossip"));
         addAdminScoped(rules, ports, adminCidr);
 
@@ -61,7 +63,7 @@ public sealed interface FirewallPresets {
         var rules = new ArrayList<FirewallRule>();
 
         rules.add(rule(ports.appHttp(), "tcp", internalCidr, "App HTTP (internal)"));
-        rules.add(rule(ports.cluster(), "tcp", internalCidr, "Cluster (internal)"));
+        rules.add(rule(ports.cluster(), "udp", internalCidr, "Cluster (internal, QUIC)"));
         rules.add(rule(ports.swim(), "udp", internalCidr, "SWIM gossip (internal)"));
         addAdminScoped(rules, ports, adminCidr);
 

@@ -97,6 +97,9 @@ class FirewallPresetsTest {
 
         /// Nodes address each other by PUBLIC IP under `networking type = "manual"`, so narrowing
         /// the consensus ports would stop the cluster forming. They carry authenticated traffic.
+        /// The cluster transport is QUIC — UDP. This test previously pinned "tcp" here, encoding
+        /// the exposure as the requirement: behind a deny-by-default firewall 0/5 cores ever
+        /// formed (live-proven 2026-08-09).
         @Test
         void rulesFor_standard_leavesClusterMeshReachable() {
             var rules = FirewallPresets.rulesFor(FirewallPreset.STANDARD, Option.some(ADMIN), INTERNAL);
@@ -104,7 +107,7 @@ class FirewallPresetsTest {
             assertThat(rules).anySatisfy(rule -> {
                 assertThat(rule.port()).isEqualTo(PORTS.cluster());
                 assertThat(rule.sourceCidr()).isEqualTo(ANY);
-                assertThat(rule.protocol()).isEqualTo("tcp");
+                assertThat(rule.protocol()).isEqualTo("udp");
             }).anySatisfy(rule -> {
                 assertThat(rule.port()).isEqualTo(PORTS.swim());
                 assertThat(rule.protocol()).isEqualTo("udp");
