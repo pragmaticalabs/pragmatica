@@ -2907,7 +2907,7 @@ sources, "scale cores to 7" does not say where the new nodes go.
 **Validation.** Quorum arithmetic applies to `core` only — it is what keeps a majority reachable,
 and it is checked against the resulting **cluster-wide** core total, not the per-source count.
 Scaling one core source to 1 is accepted when another source carries 2, because the cluster total
-is 3. Worker and spot counts carry no quorum constraint and are required only to be at least 1.
+is 3. Worker and spot counts carry no quorum constraint and are required only to be non-negative — scaling a worker tier to zero (drain-all) is legitimate.
 
 **Refusals** (both HTTP 400):
 

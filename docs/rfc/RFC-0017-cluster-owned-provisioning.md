@@ -211,6 +211,25 @@ Staged, each stage independently landable and verifiable:
      across providers cannot find each other by label — a structural limit of provider-native
      discovery. Multi-core-source clusters keep the legacy SSH push.
 5. **Cores provision workers/spot** from the published spec.
+   **Implemented 2026-08-09.** Notes from implementation:
+   - A separate, deliberately simpler reconcile pass on the CTM (`reconcileWorkerTopology`), NOT
+     woven into the hardened core `LeaderReconciler`: a worker deficit is never quorum-ambiguous
+     and carries none of the cold-start/debounce machinery cores need. Leader-gated by the same
+     `active` guard as the membership actuator path; serialized against overlapping passes.
+   - ACTUAL is the provider's label inventory, not SWIM membership — for create/destroy decisions
+     "the VM exists" is the honest ground truth; a created-but-not-yet-joined worker must not be
+     double-provisioned.
+   - Triggers: every committed `ClusterConfigKey` change (ONE trigger source for scale/apply/
+     restore, same fan-out as the core reconciler) + leader activation (a scale committed under a
+     dead leader converges on handoff). Deferred provisions (open circuit, no visible peers)
+     surface on the next commit — matching `provisionReplacement`'s deferral semantics.
+   - Found and fixed while wiring: `provisionReplacement`'s spec hardcoded role `"core"` and
+     instance type `"default"` — survivable only while nothing but core replacements used it. Now
+     role-aware (role's own instance type from the role sub-table, fallback `"default"`).
+   - Surplus terminates NEWEST FIRST: reconciler-minted `-r<clock36>` ids sort after bootstrap
+     `-<index>` ids, so cluster-provisioned workers are reaped before bootstrap-provisioned ones.
+   - Scale-to-zero accepted end-to-end for worker/spot (CLI + REST) — drain-all is real, and C3's
+     teardown scales to zero before sweeping.
 6. **C3 teardown** rework.
 7. **Delete worker/spot provisioning from bootstrap** — the payoff, last.
 
