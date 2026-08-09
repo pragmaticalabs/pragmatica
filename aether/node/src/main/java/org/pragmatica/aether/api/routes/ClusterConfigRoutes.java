@@ -327,13 +327,25 @@ public final class ClusterConfigRoutes implements RouteSource {
         return new LoadBalancerStatusInfo("elected", ownerId.id(), appEndpoint, mgmtEndpoint);
     }
 
-    private Promise<Object> handleApplyConfig(ApplyConfigRequest request) {
+    /// Package-visible so the apply pipeline can be driven from a test with a constructed request,
+    /// exercising the real routing/store path without faking JSON deserialization.
+    Promise<Object> handleApplyConfig(ApplyConfigRequest request) {
         return parseAndValidateConfig(request.tomlContent()).async()
-                                     .flatMap(desired -> lookupClusterConfig().flatMap(stored -> processApply(stored,
-                                                                                                              desired,
-                                                                                                              request))
-                                                                            .orElse(() -> storeInitialConfig(desired,
-                                                                                                             request.tomlContent())));
+                                     .flatMap(desired -> routeApply(desired, request));
+    }
+
+    /// Whether anything is stored decides the route — and it is decided on the OPTION, never on a
+    /// failed lookup promise.
+    ///
+    /// This read `lookupClusterConfig().flatMap(processApply).orElse(storeInitialConfig)`, which
+    /// cannot tell the lookup's own NOT_FOUND from a refusal raised INSIDE `processApply`. Every
+    /// version conflict, immutable-field change and unfenced overwrite was therefore swallowed and
+    /// re-run as a first-time store, answering the operator with success for a request the cluster
+    /// had just rejected. Asking "is anything stored?" before the apply runs leaves an apply failure
+    /// nowhere to fall through to, so it propagates to the caller as the response.
+    private Promise<Object> routeApply(ClusterBootstrapConfig desired, ApplyConfigRequest request) {
+        return storedClusterConfig().fold(() -> storeInitialConfig(desired, request.tomlContent()),
+                                          stored -> processApply(stored, desired, request));
     }
 
     /// The desired shape the cluster reconciles toward: every (source, role) the operator declared,
@@ -354,39 +366,52 @@ public final class ClusterConfigRoutes implements RouteSource {
                       .toList();
     }
 
-    @SuppressWarnings("unchecked")
-    private Promise<Object> storeInitialConfig(ClusterBootstrapConfig desired, String tomlContent) {
-        var cluster = desired.cluster();
-        var coreCount = desired.derivedCoreCount();
-        var coreMin = desired.coreTopology().min().or(coreCount);
-        var coreMax = desired.coreTopology().max().or(coreCount);
-        var sourceType = desired.sources().values().stream().map(s -> s.type()
-                                                                       .value()).findFirst().orElse("unknown");
-        var configValue = new ClusterConfigValue(tomlContent,
-                                                 cluster.name(),
-                                                 cluster.version(),
-                                                 topologyOf(desired),
-                                                 coreMin,
-                                                 coreMax,
-                                                 sourceType,
-                                                 1,
-                                                 System.currentTimeMillis());
-        var command = (KVCommand<AetherKey>)(KVCommand<?>) new KVCommand.Put<>(ClusterConfigKey.CURRENT, configValue);
+    /// Version stamped on the first config a cluster ever commits.
+    private static final long INITIAL_CONFIG_VERSION = 1L;
 
-        return nodeSupplier.get()
-                           .<Object> apply(List.of(command))
-                           .map(_ -> (Object) new ApplyConfigResponse(1,
-                                                                      cluster.name(),
-                                                                      coreCount,
-                                                                      configValue.updatedAt()));
+    /// First store on a cluster with nothing committed yet — the SAME confirmed fenced put as every
+    /// other write ([#storeUpdatedConfig]), differing only in the version it stamps.
+    ///
+    /// This used to issue a bare `KVCommand.Put` and map the apply result to a success response
+    /// unconditionally. The RFC-0018 successor fence in the applier rejects a stale put SILENTLY —
+    /// invisible in the apply result under batch merging, exactly the trap [#storeFencedConfig]
+    /// exists to close — so a rejected first store answered the operator with a config version and a
+    /// timestamp for a write that never landed. Sharing the one write path means a rejection can
+    /// only surface as a failure, and there is no second place for the trap to reappear.
+    private Promise<Object> storeInitialConfig(ClusterBootstrapConfig desired, String tomlContent) {
+        return storeUpdatedConfig(desired, tomlContent, INITIAL_CONFIG_VERSION);
     }
 
     private Promise<Object> processApply(ClusterConfigValue stored,
                                          ClusterBootstrapConfig desired,
                                          ApplyConfigRequest request) {
+        if (isBootstrapSeed(stored)) {
+            return storeUpdatedConfig(desired, request.tomlContent(), stored.configVersion() + 1);
+        }
+
         return checkVersionAsync(stored.configVersion(),
                                  request.expectedVersion()).flatMap(_ -> rebuildStoredConfigAsync(stored))
                                 .flatMap(storedConfig -> executeDiff(stored, storedConfig, desired, request));
+    }
+
+    /// The BootstrapModule self-seed is REPLACED, never diffed — package-visible so the decision can
+    /// be unit-tested without standing up a node + KV store.
+    ///
+    /// Every node self-seeds a `ClusterConfigValue` at formation carrying `tomlContent=""` and a
+    /// core-only topology, so a cluster has a committed config before the operator's TOML ever
+    /// arrives. That seed holds no diffable document: [#rebuildStoredConfigAsync] parses
+    /// `tomlContent`, and the empty string cannot clear the parser's top-level `config_version`
+    /// gate — so every apply against a freshly formed cluster failed at exactly that point. Combined
+    /// with the swallowed-failure fall-through this route used to have, the operator's real TOML
+    /// (worker counts included) was dropped while the POST answered success, and RFC-0017 worker
+    /// provisioning had nothing to reconcile.
+    ///
+    /// Replacement is what BootstrapModule's own comment — "Bootstrap replaces it with the real
+    /// per-source spec at formation" — already promised; the version still advances by one, so the
+    /// RFC-0018 successor fence is satisfied and the write is confirmed like any other.
+    static boolean isBootstrapSeed(ClusterConfigValue stored) {
+        return stored.tomlContent()
+                     .isBlank();
     }
 
     /// Pure decision for the #289 fence — package-visible so it can be unit-tested without standing up
@@ -681,11 +706,18 @@ public final class ClusterConfigRoutes implements RouteSource {
     }
 
     private Promise<ClusterConfigValue> lookupClusterConfig() {
+        return storedClusterConfig().async(ConfigNotFoundError.NOT_FOUND);
+    }
+
+    /// Committed cluster config as an OPTION — absence is a state, not a failure.
+    ///
+    /// [#lookupClusterConfig] keeps the promise-shaped view for the read routes, which genuinely
+    /// want "no config" to be an error response. [#routeApply] needs the distinction preserved.
+    private Option<ClusterConfigValue> storedClusterConfig() {
         return nodeSupplier.get()
                            .kvStore()
                            .get(ClusterConfigKey.CURRENT)
-                           .flatMap(ClusterConfigRoutes::narrowToConfig)
-                           .async(ConfigNotFoundError.NOT_FOUND);
+                           .flatMap(ClusterConfigRoutes::narrowToConfig);
     }
 
     private static Option<ClusterConfigValue> narrowToConfig(AetherValue value) {
