@@ -8,6 +8,7 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.List;
+import java.util.Set;
 import java.util.function.LongConsumer;
 
 import org.pragmatica.aether.environment.ComputeProvider;
@@ -16,11 +17,13 @@ import org.pragmatica.aether.environment.InstanceId;
 import org.pragmatica.cloud.hetzner.HetznerClient;
 import org.pragmatica.cloud.hetzner.HetznerConfig;
 import org.pragmatica.cloud.hetzner.HetznerError;
+import org.pragmatica.cloud.hetzner.api.Server;
 import org.pragmatica.cloud.hetzner.api.SshKey;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.lang.Functions.Fn1;
 
 
@@ -289,6 +292,156 @@ sealed interface BootstrapCleanup {
             case HetznerError.ApiError apiError -> apiError.statusCode() == 404 || "not_found".equalsIgnoreCase(apiError.code());
             default -> false;
         };
+    }
+
+    /// RFC-0017 stage 6 / C3 — clusters whose VMs `aether cluster destroy` must NEVER sweep, no
+    /// matter what an operator types. Mirrors `tools/cloud-reaper.sh`'s `PROTECTED_CLUSTERS`
+    /// (added after #572, when a bare reap deleted the standing test-pg PostgreSQL VM): protection
+    /// lives in the TOOL, not the call site.
+    static final Set<String> PROTECTED_CLUSTERS = Set.of("test-pg");
+
+    /// RFC-0017 stage 6 / C3 — defensive cluster-scoped VM sweep. The state-based cleanup above
+    /// terminates only VMs the bootstrap state RECORDED; cluster-provisioned nodes (stage-5
+    /// workers, auto-heal replacements) are not in that state and would orphan as PAID VMs no
+    /// destroy could find. This sweep lists servers by `aether-cluster=<name>` — the selector is
+    /// built from the cluster name, scoped BY CONSTRUCTION, never a caller-supplied filter (#572
+    /// is what a bare reap costs) — prints the inventory it is about to delete, then deletes,
+    /// tolerating 404s for VMs the state-based pass already removed.
+    ///
+    /// Ordering is load-bearing: this runs AFTER the state-based cleanup, so the CORES die first —
+    /// which kills the leader's worker reconciler — and nothing re-provisions the workers this
+    /// sweep reaps. Run before core death, a live leader would see a worker deficit and replace
+    /// them mid-destroy.
+    static Result<Unit> sweepClusterVms(BootstrapState state, String clusterName) {
+        return sweepClusterVms(state, clusterName, CleanupResolvers.cleanupResolvers());
+    }
+
+    /// Full-control entry for tests: injects the env lookup and the token → HetznerClient factory,
+    /// mirroring the #481 SSH-key sweep seams. Handle-first credential resolution — never raw
+    /// `HCLOUD_TOKEN`.
+    static Result<Unit> sweepClusterVms(BootstrapState state,
+                                        String clusterName,
+                                        Fn1<String, String> getenv,
+                                        Fn1<HetznerClient, String> hetznerClientFactory) {
+        return sweepClusterVms(state,
+                               clusterName,
+                               CleanupResolvers.cleanupResolvers()
+                                               .withGetenv(getenv)
+                                               .withHetznerClientFactory(hetznerClientFactory));
+    }
+
+    // RET-06: `clusterName` may be absent/blank when the bootstrap state never captured it;
+    // the guarded skip is defensive scoping, not a business optional.
+    @SuppressWarnings({"JBCT-PAT-01", "JBCT-RET-06"})
+    static Result<Unit> sweepClusterVms(BootstrapState state, String clusterName, CleanupResolvers resolvers) {
+        if (clusterName == null || clusterName.isBlank()) {
+            System.out.println("  Skipping VM sweep: cluster name is blank (cannot scope the sweep).");
+
+            return Result.unitResult();
+        }
+
+        if (PROTECTED_CLUSTERS.contains(clusterName)) {
+            return Causes.cause("Refusing to sweep VMs of protected cluster '" + clusterName
+                               + "' — it hosts long-lived shared infrastructure (see tools/cloud-reaper.sh"
+                               + " PROTECTED_CLUSTERS and incident #572). Remove its resources manually if you"
+                               + " really mean it.").result();
+        }
+
+        var handle = state.sources()
+                          .values()
+                          .stream()
+                          .filter(candidate -> HETZNER_PROVIDER.equals(candidate.provider()))
+                          .findFirst()
+                          .orElse(null);
+
+        if (handle == null) {
+            System.out.println("  Skipping VM sweep: no persisted Hetzner source handle for cluster '" + clusterName
+                              + "' (nothing cloud-scoped to sweep).");
+
+            return Result.unitResult();
+        }
+
+        var selector = "aether-cluster=" + clusterName;
+
+        System.out.println("Sweeping cluster-labelled VMs (selector '" + selector + "')...");
+
+        return hetznerClientFromHandle(handle, resolvers).flatMap(client -> sweepVmsWithClient(client, selector));
+    }
+
+    @SuppressWarnings("JBCT-EX-01")
+    private static Result<Unit> sweepVmsWithClient(HetznerClient client, String selector) {
+        return client.listServers(selector)
+                     .await()
+                     .flatMap(servers -> deleteSweptServers(client, servers));
+    }
+
+    private static Result<Unit> deleteSweptServers(HetznerClient client, List<Server> servers) {
+        if (servers.isEmpty()) {
+            System.out.println("  No cluster-labelled VMs found to sweep.");
+
+            return Result.unitResult();
+        }
+
+        printVmInventory(servers);
+        var failures = new ArrayList<String>();
+
+        for (var server : servers) {
+            var result = deleteSweptServer(client, server);
+            var _ = result.onFailure(cause -> failures.add(server.name()
+                                                          + " (id=" + server.id()
+                                                          + "): " + cause.message()));
+        }
+
+        return finishVmSweep(servers.size(), List.copyOf(failures));
+    }
+
+    /// The inventory print is part of the contract, not decoration: an operator reading the destroy
+    /// transcript must be able to see EXACTLY what the sweep deleted — #572's lesson is that a
+    /// dry-run inventory is an inventory of what you can LOSE.
+    @Contract
+    private static void printVmInventory(List<Server> servers) {
+        System.out.printf("  Sweep inventory (%d VM(s)):%n", servers.size());
+        for (var server : servers) {
+            System.out.printf("    - %s (id=%d)%n", server.name(), server.id());
+        }
+    }
+
+    @SuppressWarnings("JBCT-EX-01")
+    private static Result<Unit> deleteSweptServer(HetznerClient client, Server server) {
+        return client.deleteServer(server.id())
+                     .await()
+                     .fold(cause -> tolerateServerAlreadyGone(cause, server),
+                           _ -> logSweptServer(server));
+    }
+
+    private static Result<Unit> logSweptServer(Server server) {
+        System.out.printf("    deleted VM %d (%s).%n", server.id(), server.name());
+
+        return Result.unitResult();
+    }
+
+    private static Result<Unit> tolerateServerAlreadyGone(Cause cause, Server server) {
+        if (isAlreadyGone(cause)) {
+            System.out.printf("    VM %d already gone — tolerated.%n", server.id());
+
+            return Result.unitResult();
+        }
+
+        System.err.printf("    WARN: failed to delete VM %d (%s): %s%n", server.id(), server.name(), cause.message());
+
+        return cause.result();
+    }
+
+    private static Result<Unit> finishVmSweep(int matchCount, List<String> failures) {
+        if (!failures.isEmpty()) {
+            System.err.printf("  VM sweep: %d of %d deletion(s) failed.%n", failures.size(), matchCount);
+
+            return Causes.cause("VM sweep failed for: " + String.join("; ", failures)).result();
+        }
+
+        System.out.printf("  VM sweep complete (%d swept).%n", matchCount);
+
+        return Result.unitResult();
     }
 
     private static Result<Unit> finishSweep(int matchCount, List<String> failures) {

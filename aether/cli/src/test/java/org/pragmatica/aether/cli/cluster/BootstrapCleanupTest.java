@@ -594,6 +594,100 @@ class BootstrapCleanupTest {
         assertEquals(List.of(42L), deleteCalls, "the sweep must still attempt the delete before tolerating 404");
     }
 
+    // --- RFC-0017 stage 6 / C3: cluster-scoped VM sweep ---
+
+    private static Server vmServer(long id, String name) {
+        return new Server(id, name, "running", null, null, null, null, Map.of("aether-cluster", "prod"));
+    }
+
+    /// The selector is built from the cluster name — scoped BY CONSTRUCTION. The sweep deletes
+    /// every VM the provider returns for it (the provider already filtered; a bare selector can
+    /// never be issued), resolves credentials handle-first, and prints an inventory first (the
+    /// #572 lesson: what the sweep sees is what you can LOSE).
+    @Test
+    void destroy_vmSweep_deletesClusterLabelledVms_viaScopedSelector() {
+        var deleteCalls = new ArrayList<Long>();
+        var selectors = new ArrayList<String>();
+        var envReads = new ArrayList<String>();
+        var factoryTokens = new ArrayList<String>();
+        var servers = List.of(vmServer(101L, "prod-worker-r123-0"), vmServer(102L, "prod-worker-r123-1"));
+        var client = new VmSweepingHetznerClient(servers, deleteCalls, Set.of(), selectors);
+        var state = stateWithHetznerHandle();
+        var env = Map.of(NON_DEFAULT_TOKEN_ENV, PROD_TOKEN_VALUE);
+
+        var result = BootstrapCleanup.sweepClusterVms(state,
+                                                      "prod",
+                                                      recordingGetenv(env, envReads),
+                                                      sweepingClientFactory(client, factoryTokens));
+
+        assertTrue(result.isSuccess(), () -> "VM sweep must succeed: " + result);
+        assertEquals(List.of("aether-cluster=prod"), selectors,
+                     "the sweep must list by the cluster-scoped label selector, never a bare listing");
+        assertEquals(List.of(101L, 102L), deleteCalls, "every cluster-labelled VM must be swept");
+        assertEquals(List.of(PROD_TOKEN_VALUE), factoryTokens,
+                     "sweep HetznerClient must be built handle-first, not from raw HCLOUD_TOKEN");
+        assertFalse(envReads.contains("HCLOUD_TOKEN"),
+                    "sweep must never read raw HCLOUD_TOKEN");
+    }
+
+    /// Protection lives in the TOOL, not the call site (#572: a bare reap deleted the standing
+    /// test-pg VM). A destroy aimed at a protected cluster must FAIL — loudly, keeping the
+    /// registry entry — and never reach the provider at all.
+    @Test
+    void destroy_vmSweep_protectedCluster_refusedBeforeAnyProviderCall() {
+        var factoryTokens = new ArrayList<String>();
+        var client = new VmSweepingHetznerClient(List.of(), new ArrayList<>(), Set.of(), new ArrayList<>());
+        var state = stateWithHetznerHandle();
+        var env = Map.of(NON_DEFAULT_TOKEN_ENV, PROD_TOKEN_VALUE);
+
+        var result = BootstrapCleanup.sweepClusterVms(state,
+                                                      "test-pg",
+                                                      recordingGetenv(env, new ArrayList<>()),
+                                                      sweepingClientFactory(client, factoryTokens));
+
+        assertTrue(result.isFailure(), "sweeping a protected cluster must fail, not skip silently");
+        result.onFailure(cause -> assertTrue(cause.message().contains("protected")
+                                             && cause.message().contains("test-pg"),
+                                             () -> "refusal must name the protection: " + cause.message()));
+        assertTrue(factoryTokens.isEmpty(), "no client may even be constructed for a protected cluster");
+    }
+
+    /// A VM the state-based cleanup already terminated surfaces as 404 — tolerated, so destroy
+    /// stays idempotent across the two passes.
+    @Test
+    void destroy_vmSweep_alreadyGoneVm_tolerated() {
+        var deleteCalls = new ArrayList<Long>();
+        var servers = List.of(vmServer(101L, "prod-core-0"), vmServer(102L, "prod-worker-r1-0"));
+        var client = new VmSweepingHetznerClient(servers, deleteCalls, Set.of(101L), new ArrayList<>());
+        var state = stateWithHetznerHandle();
+        var env = Map.of(NON_DEFAULT_TOKEN_ENV, PROD_TOKEN_VALUE);
+
+        var result = BootstrapCleanup.sweepClusterVms(state,
+                                                      "prod",
+                                                      recordingGetenv(env, new ArrayList<>()),
+                                                      sweepingClientFactory(client, new ArrayList<>()));
+
+        assertTrue(result.isSuccess(), () -> "an already-gone VM must be tolerated: " + result);
+        assertEquals(List.of(101L, 102L), deleteCalls, "both deletes must still be attempted");
+    }
+
+    /// A blank cluster name cannot scope a selector — the sweep SKIPS (success, nothing touched)
+    /// rather than issuing anything broader.
+    @Test
+    void destroy_vmSweep_blankClusterName_skipsWithoutProviderCalls() {
+        var factoryTokens = new ArrayList<String>();
+        var client = new VmSweepingHetznerClient(List.of(), new ArrayList<>(), Set.of(), new ArrayList<>());
+        var state = stateWithHetznerHandle();
+
+        var result = BootstrapCleanup.sweepClusterVms(state,
+                                                      "",
+                                                      recordingGetenv(Map.of(), new ArrayList<>()),
+                                                      sweepingClientFactory(client, factoryTokens));
+
+        assertTrue(result.isSuccess());
+        assertTrue(factoryTokens.isEmpty(), "a blank name must not reach the provider");
+    }
+
     // --- #521: a persisted handle that names NO credential env var ---
 
     private static BootstrapCleanup.CleanupResolvers resolversFor(List<String> fallbackProviders,
@@ -727,6 +821,59 @@ class BootstrapCleanupTest {
 
     /// Stub for the #481 sweep: records `listSshKeys` results and `deleteSshKey` calls; ids in `goneIds`
     /// surface as a Hetzner 404 `not_found` `ApiError` (already-gone). All other operations throw.
+    /// VM-sweep stub: only the label-scoped listing and server deletion are legal; everything else
+    /// is a stub failure so the sweep cannot silently widen its surface.
+    record VmSweepingHetznerClient(List<Server> servers,
+                                   List<Long> deleteCalls,
+                                   Set<Long> goneIds,
+                                   List<String> selectors) implements HetznerClient {
+        @Override public Promise<List<Server>> listServers(String labelSelector) {
+            selectors.add(labelSelector);
+            return Promise.success(servers);
+        }
+
+        @Override public Promise<Unit> deleteServer(long serverId) {
+            deleteCalls.add(serverId);
+            if (goneIds.contains(serverId)) {
+                return new HetznerError.ApiError(404, "not_found", "server not found").promise();
+            }
+            return Promise.success(Unit.unit());
+        }
+
+        @Override public Promise<List<SshKey>> listSshKeys() {throw failVm("listSshKeys");}
+        @Override public Promise<Unit> deleteSshKey(long sshKeyId) {throw failVm("deleteSshKey");}
+        @Override public Promise<SshKey> createSshKey(SshKey.CreateSshKeyRequest request) {throw failVm("createSshKey");}
+        @Override public Promise<Server> createServer(CreateServerRequest request) {throw failVm("createServer");}
+        @Override public Promise<Server> getServer(long serverId) {throw failVm("getServer");}
+        @Override public Promise<List<Server>> listServers() {throw failVm("listServers (bare — the sweep must always scope)");}
+        @Override public Promise<Unit> updateServerLabels(long serverId, Map<String, String> labels) {throw failVm("updateServerLabels");}
+        @Override public Promise<Unit> rebootServer(long serverId) {throw failVm("rebootServer");}
+        @Override public Promise<List<Network>> listNetworks() {throw failVm("listNetworks");}
+        @Override public Promise<Network> getNetwork(long networkId) {throw failVm("getNetwork");}
+        @Override public Promise<List<Firewall>> listFirewalls() {throw failVm("listFirewalls");}
+        @Override public Promise<Unit> applyFirewall(long firewallId, long serverId) {throw failVm("applyFirewall");}
+        @Override public Promise<List<Firewall>> listFirewalls(String labelSelector) {throw failVm("listFirewalls(selector)");}
+        @Override public Promise<Firewall> createFirewall(Firewall.CreateFirewallRequest request) {throw failVm("createFirewall");}
+        @Override public Promise<Unit> setFirewallRules(long firewallId, List<Firewall.Rule> rules) {throw failVm("setFirewallRules");}
+        @Override public Promise<Unit> deleteFirewall(long firewallId) {throw failVm("deleteFirewall");}
+        @Override public Promise<Unit> removeFirewallFromResources(long firewallId, long serverId) {throw failVm("removeFirewallFromResources");}
+        @Override public Promise<LoadBalancer> createLoadBalancer(LoadBalancer.CreateLoadBalancerRequest request) {throw failVm("createLoadBalancer");}
+        @Override public Promise<Unit> deleteLoadBalancer(long loadBalancerId) {throw failVm("deleteLoadBalancer");}
+        @Override public Promise<List<LoadBalancer>> listLoadBalancers() {throw failVm("listLoadBalancers");}
+        @Override public Promise<Unit> addTarget(long loadBalancerId, long serverId) {throw failVm("addTarget");}
+        @Override public Promise<Unit> removeTarget(long loadBalancerId, long serverId) {throw failVm("removeTarget");}
+        @Override public Promise<Unit> addIpTarget(long loadBalancerId, String ip) {throw failVm("addIpTarget");}
+        @Override public Promise<Unit> removeIpTarget(long loadBalancerId, String ip) {throw failVm("removeIpTarget");}
+        @Override public Promise<LoadBalancer> getLoadBalancer(long loadBalancerId) {throw failVm("getLoadBalancer");}
+        @Override public Promise<List<FloatingIp>> listFloatingIps() {throw failVm("listFloatingIps");}
+        @Override public Promise<FloatingIp> getFloatingIp(long floatingIpId) {throw failVm("getFloatingIp");}
+        @Override public Promise<Unit> assignFloatingIp(long floatingIpId, long serverId) {throw failVm("assignFloatingIp");}
+
+        private static AssertionError failVm(String name) {
+            return new AssertionError("Test stub: '" + name + "' must not be called by VM sweep");
+        }
+    }
+
     record SweepingHetznerClient(List<SshKey> keys, List<Long> deleteCalls, Set<Long> goneIds) implements HetznerClient {
         @Override public Promise<List<SshKey>> listSshKeys() {
             return Promise.success(keys);

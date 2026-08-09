@@ -46,6 +46,11 @@ class ClusterDestroyCommand implements Callable<Integer> {
     /// `resourceCleaner`/`stateLoader` so tests exercise it without a real cloud call.
     static BiFunction<BootstrapState, String, Result<Unit>> sshKeySweeper = BootstrapCleanup::sweepClusterSshKeys;
 
+    /// RFC-0017 stage 6 / C3 — cluster-scoped VM sweep seam. Reaps the cluster-labelled VMs the
+    /// bootstrap state never recorded (stage-5 cluster-provisioned workers, auto-heal
+    /// replacements); selector is built from the cluster name, never a bare filter.
+    static BiFunction<BootstrapState, String, Result<Unit>> vmSweeper = BootstrapCleanup::sweepClusterVms;
+
     /// #521 — registry-removal seam, injectable like `resourceCleaner`/`stateLoader` so a test can assert
     /// that a FAILED cloud cleanup leaves the entry in place (the operator's only remaining handle on VMs
     /// that are still billing) without writing to the real `~/.aether/clusters.toml`.
@@ -184,9 +189,24 @@ class ClusterDestroyCommand implements Callable<Integer> {
 
     private boolean runCleanup(BootstrapState state) {
         var cleanupOk = runResourceCleanup(state);
+        // RFC-0017 stage 6 / C3 — VM sweep AFTER the state-based cleanup (cores die first, killing
+        // the worker reconciler that would otherwise re-provision what the sweep reaps) and BEFORE
+        // the key sweep. Catches cluster-provisioned workers and auto-heal replacements the
+        // bootstrap state never recorded.
+        var vmSweepOk = runVmSweep(state);
         var sweepOk = runSshKeySweep(state);
 
-        return cleanupOk && sweepOk;
+        return cleanupOk
+               && vmSweepOk
+               && sweepOk;
+    }
+
+    private boolean runVmSweep(BootstrapState state) {
+        return vmSweeper.apply(state,
+                               state.clusterName())
+                        .onFailure(c -> System.err.println("VM sweep failed: " + c.message()))
+                        .onSuccess(_ -> System.out.println("VM sweep complete."))
+                        .isSuccess();
     }
 
     private boolean runResourceCleanup(BootstrapState state) {
