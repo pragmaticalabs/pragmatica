@@ -198,6 +198,63 @@ today depended on by no pom but its own, which is why nothing ships.
 **(c)** Add a first-class `@Entity`-style qualifier to the resource module — there is no counterpart
 to `@Http`/`@Notify`, so every author must hand-roll one (I0's fixture does exactly that).
 
+> **OWNER RULING 2026-08-10 — (c) REVERSED. There is no qualifier to ship; hand-rolling IS the pattern.**
+>
+> The framing above is wrong. `@Http` and `@Notify` are **parameterless** —
+> `@ResourceQualifier(type = HttpClient.class, config = "http")` bakes the section into the
+> meta-annotation at the DECLARATION site, so the use site is a bare `@Http` with no strings. That
+> works because there is one HTTP client and one `http` section. Durable entities are **per-keyspace**
+> (`entities.orders`, `entities.payments`), so one shipped qualifier cannot cover them — which is why
+> the first attempt grew a `config()` String member. **Strings at the use site are not this codebase's
+> style.**
+>
+> Correct shape: one author-declared annotation per keyspace, exactly as the fixture originally had.
+>
+> ```java
+> @ResourceQualifier(type = DurableEntity.class, config = "entities.orders")
+> @Retention(RUNTIME) @Target(PARAMETER)
+> public @interface OrderEntity {}
+> ```
+>
+> Used bare: `@OrderEntity DurableEntity<String, OrderState> orders`. A slice with several families
+> declares several qualifiers — better than repeated `config = "entities.x"` strings, and the section
+> name lives in exactly one place per keyspace.
+>
+> Actions: delete `Durable.java`, restore the fixture's `@OrderEntity`, and ship DOCUMENTATION of the
+> pattern in the resource module rather than an annotation.
+
+### Codec derivation — how entity state becomes serializable (OWNER RULING 2026-08-10)
+
+`PartitionFencedDurableEntity.commit` encodes state through the slice serializer, so the state type
+needs a registered codec. Measured on the forge run: four non-owners rejected correctly with
+`NotCurrentOwner` while the OWNER died on `StorageFailed: No codec registered for class …OrderState`.
+
+Why the obvious fixes are rejected:
+- **`@Codec` on the state type — inert AND wrong.** `FactoryClassGenerator.collectCodecTypeEntries`
+  walks `model.methods()` parameters and return types; it never scans for the annotation. Verified:
+  the factory regenerated with `@Codec` present and contained zero `OrderState`. Separately, `@Codec`
+  is INTERNAL and must not be exposed to users.
+- **Forcing the state type into a slice method signature** — makes users contort their API to satisfy
+  serialization, and destroys the fixture's property that entity state never crosses the boundary.
+- **A serialization path bypassing the slice registry** — no reflective/generic record codec exists;
+  `SliceCodec` resolves strictly by registered type. A runtime registration API would have the entity
+  minting codec tags, colliding with #582's tag-space problem.
+
+**Ruling: derive the codec from the resource-qualified parameter's TYPE ARGUMENTS.** The author
+already writes `@OrderEntity DurableEntity<String, OrderState> orders`, and the processor already
+parses that parameter (it generates the `provide(...)` call from it via
+`ResourceQualifierModel.fromParameter`) — it simply discards the type arguments, though
+`param.asType()` carries them. Collect them as codec types, exactly as `@CodecFor` does for external
+types (it already *"generates codecs automatically for enums and records"* and adds them to the
+startup validation checklist).
+
+Nothing internal is exposed, no string appears at a use site, no user annotation is required, and
+types that cannot be auto-generated fail on the existing startup checklist instead of at first write.
+
+**`ENVELOPE_FORMAT_VERSION` stays 1000 — do NOT bump.** The stamp is a set-membership compatibility
+gate on the manifest (its own comment: *"not a structural dispatch"*); this changes generated FACTORY
+code, not manifest structure, and name-derived codec tags mean adding a type shifts no existing tag.
+
 **(d)** Wire the factory to a fenced variant via the resource SPI's context channel.
 
 > **Correction 2026-08-10.** An earlier draft of this step said "constructs `PartitionFencedDurableEntity`
