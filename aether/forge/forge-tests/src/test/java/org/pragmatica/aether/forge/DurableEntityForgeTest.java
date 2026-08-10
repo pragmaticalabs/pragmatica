@@ -87,6 +87,7 @@ class DurableEntityForgeTest {
     private static final String ENTITY_SLICE = TestArtifacts.ENTITY_SLICE;
     private static final String BLUEPRINT_ID = "forge.test:durable-entity:1.0.0";
     private static final String ERROR_FALLBACK = "{\"error\":\"request failed\"}";
+    private static final int REASON_EXCERPT_LIMIT = 300;
 
     private EmberCluster cluster;
     private final HttpOperations http = jdkHttpOperations();
@@ -466,16 +467,37 @@ class DurableEntityForgeTest {
         return !body.contains("\"error\"") && body.contains("\"outcome\":\"absent\"");
     }
 
+    /// `slicesStatus()` cannot detect this failure: under `ALL_OR_NOTHING` a deterministic slice
+    /// failure rolls back the blueprint and the deployment map entry is removed along with it, so a
+    /// FAILED status here never appears and this predicate would never fire — the suite would run to
+    /// the full 240s `WAIT_TIMEOUT` and fail with "condition not met" instead of the real cause
+    /// (#345 I1a follow-up). The cluster-event stream is append-only and is NOT retracted by the
+    /// rollback, so it is the only surface that still carries the failure.
     private void failIfSliceFailed() {
-        var failed = cluster.slicesStatus()
-                            .stream()
-                            .anyMatch(status -> status.artifact().equals(ENTITY_SLICE) && status.state().equals("FAILED"));
+        for (int port : mgmtPorts()) {
+            var reason = deploymentFailedReason(httpGet(port, "/api/events"));
 
-        if (failed) {
-            throw new AssertionError("Durable-entity slice deployment FAILED: " + ENTITY_SLICE
-                                     + " — on a production node this is what a missing resource-durable-entity"
-                                     + " dependency looks like (#345 I1)");
+            if (reason != null) {
+                throw new AssertionError("Deployment of " + ENTITY_SLICE + " FAILED — event surface reason: " + excerpt(reason));
+            }
         }
+    }
+
+    /// Extracts `details.reason` from a `DEPLOYMENT_FAILED` cluster event for {@link #ENTITY_SLICE}
+    /// in an `/api/events` response body, or null if no such event is present (yet).
+    private static String deploymentFailedReason(String eventsBody) {
+        var matcher = Pattern.compile("\"type\"\\s*:\\s*\"DEPLOYMENT_FAILED\".*?\"artifact\"\\s*:\\s*\""
+                                      + Pattern.quote(ENTITY_SLICE)
+                                      + "\".*?\"reason\"\\s*:\\s*\"([^\"]*)\"", Pattern.DOTALL)
+                                .matcher(eventsBody);
+
+        return matcher.find() ? matcher.group(1) : null;
+    }
+
+    /// Caps a raw event reason to {@link #REASON_EXCERPT_LIMIT} characters so a large nested
+    /// exception chain in `details.reason` cannot blow up the assertion message.
+    private static String excerpt(String reason) {
+        return reason.length() <= REASON_EXCERPT_LIMIT ? reason : reason.substring(0, REASON_EXCERPT_LIMIT) + "...";
     }
 
     private boolean allNodesHealthy() {
@@ -517,6 +539,19 @@ class DurableEntityForgeTest {
                                  .header("Content-Type", "application/json")
                                  .POST(HttpRequest.BodyPublishers.ofString(body))
                                  .timeout(Duration.ofSeconds(15))
+                                 .build();
+
+        return http.sendString(request)
+                   .await()
+                   .map(HttpResult::body)
+                   .or(ERROR_FALLBACK);
+    }
+
+    private String httpGet(int port, String path) {
+        var request = HttpRequest.newBuilder()
+                                 .uri(URI.create("http://localhost:" + port + path))
+                                 .GET()
+                                 .timeout(Duration.ofSeconds(10))
                                  .build();
 
         return http.sendString(request)

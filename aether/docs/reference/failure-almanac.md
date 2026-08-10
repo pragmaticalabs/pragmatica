@@ -42,6 +42,7 @@ Failure modes surface through a small, fixed set of observables. Learn these onc
 | Quorum loss / minority partition | minority self-drain ≤45 s; recovery ≤60 s | 02-chaos C12–C16 |
 | Slow detection under sustained load | ~11 s nominal → up to ~80 s under load | guarantees.md §3 · **pending tighter bound (#94)** |
 | Provisioning stall under churn | fix landed; budget cloud-pending | **pending validation (#362)** |
+| Per-node deployment failure (`ALL_OR_NOTHING` rollback) | n/a — permanent until cause is fixed | `DurableEntityForgeTest` |
 | Stream owner failover (RF ≥ 2) | owner view ≤180 s; complete history ≤120 s | 02-chaos C17–C20 |
 | Stream owner failover (RF = 1, default) | none until owner returns | guarantees.md §4 |
 | Core network partition | eviction ~3 s; heal to N ≤30 s | 12-network C9/C10 |
@@ -101,6 +102,17 @@ Failure modes surface through a small, fixed set of observables. Learn these onc
 - **Budget:** **not yet pinned** — this is a cloud-gate-class scenario.
 - **Operator action:** manually reprovision if the cluster stays under target well beyond the ~180 s auto-heal budget.
 - **Proof anchor:** the fix landed ([#336](https://github.com/pragmaticalabs/pragmatica/issues/336), **closed** — OBSERVED birth-state + missed-pong). The recovery budget is **pending remote/cloud validation** ([#362](https://github.com/pragmaticalabs/pragmatica/issues/362), open).
+
+## Deployment
+
+### Per-node deployment failure under `ALL_OR_NOTHING` rollback
+
+- **Symptom:** `POST /api/blueprints` returned `"status": "applied"`, but the blueprint never reaches `DEPLOYED`. `GET /api/blueprints/status/{id}` and `GET /api/slices/status` show **nothing** for the failing artifact — not a FAILED entry — because the deploy was rolled back, not partially applied.
+- **Detection surface:** `GET /api/events` — one `DEPLOYMENT_FAILED` event per node that attempted and failed the slice load (`details.nodeId`, `details.reason`); a blueprint targeting N nodes that fails deterministically on all of them produces N events, not one. The deploy response and both status endpoints never carry this information — the event feed is the only surface that does.
+- **Automatic response:** under the default `ALL_OR_NOTHING` atomicity (`02-deployment.md` §Deployment Atomicity), a deterministic slice-load failure on any allocated node rolls back the entire blueprint and removes the deployment-map entry for that artifact — the same map `GET /api/slices/status` and `GET /api/blueprints/status/{id}` read from, so both go back to empty/PENDING rather than ever showing FAILED. The cluster-event stream is append-only and is not retracted by the rollback, so the `DEPLOYMENT_FAILED` record survives.
+- **Degraded / at risk:** the blueprint's slices are not running anywhere; no partial deployment is left behind (that is the point of `ALL_OR_NOTHING`). No data at risk.
+- **Operator action:** if a deploy stays PENDING past its expected time, check `GET /api/events` for `DEPLOYMENT_FAILED` before assuming the status endpoints would show a failure — they will not. Fix the cause named in `details.reason` and redeploy.
+- **Proof anchor:** `DurableEntityForgeTest` (forge-tests) — `failIfSliceFailed` fails fast on the `DEPLOYMENT_FAILED` event for a deliberately un-bundled `DurableEntity` resource provider, reproducing the "no resource provider registered for resource type" case end to end; fast-red in ~35 s (vs. the 240 s Awaitility timeout it replaced) when the provider is absent, unchanged green when present.
 
 ## Streams
 

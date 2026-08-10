@@ -437,6 +437,10 @@ curl "http://localhost:8080/api/events?sinceEpoch=3&sinceSeq=42"
 
 `DEPARTURE_PUSH_INCOMPLETE` (severity `WARNING`, issue #427) is emitted by a gracefully-departing node when its bounded departure-push (which forwards every locally-held DHT chunk to its new replicas before the node halts) could not confirm all chunks reached a surviving replica within the drain grace window. Like `SELF_DRAIN_INITIATED` it is NOT leader-gated — the leaving node is the only source of truth for its own unpushed chunks. `details` carries `nodeId`, `keysAtRisk` (count of unconfirmed chunks), and `sampleKeys` (a bounded, comma-joined hex sample of the at-risk keys, for operator follow-up). Best-effort: the keys are named rather than silently lost, but if the publish does not land before `Runtime.halt(2)`, the event is lost.
 
+`DEPLOYMENT_FAILED` is emitted **once per (artifact, node) pair** whose deployment attempt failed — `ClusterEventAggregator.handleDeploymentFailed` fires on each node-artifact KV transition to `FAILED`, so a blueprint spread across N nodes that fails deterministically on all of them produces N separate events, each with its own `nodeId` in `details.nodeId` and the failure text in `details.reason`. Because `cluster-events` is a single replicated stream, all N events are visible from `GET /api/events` on **any** node, not only the one that failed.
+
+This matters because none of the other deploy-facing surfaces show it: `POST /api/blueprints` only reports `"status": "applied"` on **acceptance**, before deployment is attempted, and is never updated with the outcome. Under the default `ALL_OR_NOTHING` mode (see [02-deployment.md](../architecture/02-deployment.md#deployment-atomicity)), a deterministic slice-load failure rolls back the entire blueprint and removes the deployment-map entry for that artifact — so `GET /api/slices/status` and `GET /api/blueprints/status/{id}` go back to showing **nothing** for it, not a FAILED status. **`GET /api/events` is the only surface that shows why a blueprint that was accepted never converges** — poll it, filtering for `DEPLOYMENT_FAILED`, when a deploy stays PENDING past its expected time. See the [Failure Almanac](failure-almanac.md#per-node-deployment-failure-under-all_or_nothing-rollback) for the worked example and operator playbook.
+
 **Severity Levels:** `INFO`, `WARNING`, `CRITICAL`
 
 ---
@@ -728,6 +732,8 @@ Publish (apply) a blueprint definition. The request body is the raw blueprint YA
   "slices": 3
 }
 ```
+
+> **`"applied"` means accepted, not deployed.** This response is written before allocation runs, and it is never updated with the outcome. Poll [`GET /api/blueprints/status/{id}`](#get-apiblueprintsstatusid) for progress; if a blueprint stays `PENDING` past its expected time, check [`GET /api/events`](#get-apievents) for `DEPLOYMENT_FAILED` — under the default `ALL_OR_NOTHING` mode a failure rolls back the whole blueprint, so the status endpoints go back to showing nothing rather than a FAILED slice, and the event feed is the only place the reason (`details.reason`) appears.
 
 ### GET /api/blueprints
 
