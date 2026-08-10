@@ -162,16 +162,35 @@ What the step actually is, therefore:
   a fast red, and it is a fixture fix, not a product fix.
 - **Then settle the one open product question** (see below) and fix only what it exposes.
 
-**OPEN — must be answered before writing any product code here.** Does `DeploymentFailed` actually
-reach `/api/events` in this scenario? There are two candidate paths and they are not equally safe:
-`handleDeterministicFailure`'s explicit `ctx.router().route(...)` (fires before rollback, not
-KV-dependent), and `ClusterEventAggregator`'s KV-watch path (`:612` `case FAILED ->
-handleDeploymentFailed`, emitting at `:644`) which keys on `NodeArtifactValue` reaching FAILED — and
-the rollback removes exactly those entries moments later, so the watch may be raced by the removal.
-If the event does land, the residual gap is narrow and honest: `POST /api/blueprints` answers
-`"applied"` with nothing tying that response to the later failure, which is a linkage/docs fix. If it
-does NOT land, the failure is genuinely unpublished anywhere durable, and that is a real defect
-deserving its own issue.
+**RESOLVED 2026-08-10 — the operator-facing surface works; there is no product defect here.**
+Same reproduction, polling `/api/events` on all five management ports instead of `slicesStatus()`:
+
+- A `DEPLOYMENT_FAILED` event appears for the artifact on **every** node and is identical across all
+  five, so it is not a single-node artifact.
+- **The diagnostic detail survives verbatim** — `No resource provider registered for resource type:
+  …DurableEntity. Bundle the module supplying a ResourceFactory for this type on the runtime
+  classpath.` appears in both `summary` and `details.reason`, not flattened to a bare state change.
+  Corroborated by construction: `ClusterEventAggregator.handleDeploymentFailed` (`:639`) reads
+  `value.failureReason()` into the summary and `buildFailedMetadata`.
+- **Path B delivered it** (the `ClusterEventAggregator` KV-watch), definitively — Path A's
+  `DeploymentEvent.DeploymentFailed` is a structurally different class that cannot produce this
+  shape. The owner-gate suppression seen for other event types did not affect it.
+- **Rollback does NOT retract it.** This is an append to the replicated `system:cluster-events`
+  stream, not a mutable status entry — which is precisely why it behaves differently from the
+  `slicesStatus()` case above. Polled every 3s for 227s: identical content, byte-identical length,
+  on all five ports, zero flicker.
+- Not tested: survival across a node restart / stream replay. Distinct question from the one H3
+  raised; note it rather than claim it.
+
+**So step (a) is a FIXTURE fix plus a docs note, and no product code:**
+
+1. Repoint `failIfSliceFailed` from `slicesStatus()` (a current-state view that a rolled-back deploy
+   correctly empties) to the `DEPLOYMENT_FAILED` event for the artifact. That is what converts I0's
+   4-minute timeout red into a fast red.
+2. Record the operator-facing reality in the docs: `POST /api/blueprints` answers `"applied"` on
+   acceptance, and a per-node deployment failure surfaces afterwards in the cluster-event feed, NOT
+   in slice status — which under `ALL_OR_NOTHING` correctly shows nothing, because the deployment did
+   not happen. Anyone diagnosing "deploy said applied, nothing serves" needs to be told where to look.
 
 **(b)** Add `resource-durable-entity` to `aether/node/pom.xml`, mirroring `resource-http`. It is
 today depended on by no pom but its own, which is why nothing ships.
