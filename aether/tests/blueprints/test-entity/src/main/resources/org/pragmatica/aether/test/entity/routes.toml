@@ -1,0 +1,20 @@
+prefix = "/api/entity"
+
+[security]
+# Test fixture: public routes so the forge proof can drive entity operations without auth setup.
+default = "public"
+override_policy = "strengthen_only"
+
+[routes]
+create = "POST /create"
+get = "POST /get"
+update = "POST /update"
+delete = "POST /delete"
+scheduleTimer = "POST /schedule-timer"
+
+# Every operation reports its outcome as data in EntityResponse, including failures, so a route
+# never needs to map a durable-entity cause onto a status code. A 500 from this slice therefore
+# means the SLICE broke, not that the entity refused an operation — which is what keeps
+# `failureType` assertions meaningful.
+[errors]
+default = 500

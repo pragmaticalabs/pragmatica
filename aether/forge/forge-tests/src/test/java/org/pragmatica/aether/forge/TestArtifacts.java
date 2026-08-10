@@ -57,5 +57,16 @@ final class TestArtifacts {
     /// `aether/tests/blueprints/test-stream-consumer` module.
     static final String STREAM_CONSUMER_SLICE = "org.pragmatica.aether.test:test-stream-consumer-consumer-slice:1.0.0";
 
+    /// The FIRST blueprint in the repository that declares a `DurableEntity` resource
+    /// (`aether/tests/blueprints/test-entity`, #345 increment I0). Until it existed no
+    /// `resources.toml` anywhere named a durable entity, so the whole `resource/durable-entity`
+    /// module — interface, SPI factory, and all three implementations — was unreachable from any
+    /// running node and every build stayed green regardless of whether it worked. The slice reports
+    /// each operation's outcome as data (including the `TimerNotSupported` refusal), so
+    /// [DurableEntityForgeTest] asserts on the entity's real behavior rather than on the absence of
+    /// an exception. Mirrors the [#STREAM_CONSUMER_SLICE] coordinate (fixed `1.0.0` blueprint
+    /// version, resolved from the local Maven repo).
+    static final String ENTITY_SLICE = "org.pragmatica.aether.test:test-entity-entity-slice:1.0.0";
+
     private TestArtifacts() {}
 }
