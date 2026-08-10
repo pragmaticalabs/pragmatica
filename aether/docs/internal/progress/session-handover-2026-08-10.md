@@ -1,10 +1,12 @@
-# Session handover — 2026-08-10 (triage sweep)
+# Session handover — 2026-08-10 (triage sweep, then the #345 arc opens)
 
-**Branch:** `release-1.0.0-rc3` · **HEAD:** `eed1469ab` · pushed · tree clean
-**Candidate tag:** `v1.0.0-rc3-candidate` → `5acb29ca7` (one docs commit behind HEAD; `eed1469ab` is
-markdown-only, so the published assets are current — re-point on the next code batch).
+**Branch:** `release-1.0.0-rc3` · **HEAD:** `b0e00d8b9` · pushed · tree clean
+**Candidate tag:** `v1.0.0-rc3-candidate` → `5acb29ca7`, now **well behind** — substantial node-side
+code has landed since (I0 + I1). **Re-point before any live cloud work.**
 
-Short session, no code changes. A release-pipeline assessment followed by the #376 triage sweep.
+Two arcs. Part A: a release-pipeline assessment and the #376 triage sweep (§1–§6 below). Part B: the
+owner ruled **Option A on #345** — build the durable-entity epic in full — and increments **I0 and I1
+landed** (§8).
 
 ---
 
@@ -86,3 +88,88 @@ fixed-but-open matters: the board is the artifact humans and agents reason from.
   `CLOUD_RESOURCES_PROVISIONED` and the reaper protects `test-pg` by default.)
 - #250 storage GC — DO NOT WIRE naively (see §2).
 - 11 stale worktrees under `.claude/worktrees/` pollute repo-wide greps.
+
+---
+
+## §8 Part B — #345 durable entity: Option A ruled, I0 + I1 landed
+
+**Owner ruling: Option A** — build the full epic (entity + durability + workflow + saga), on rc3,
+after a costed four-way assessment. rc4 is "no new features", so **rc3 does not close until this
+lands**. The re-grounded ladder (I0–I6) and every ruling below live in
+`issue-345-implementation-plan.md`, which is the authority — this section is the index.
+
+### Where it started
+
+`@DurableEntity` was **unloadable on any real node**. `resource-durable-entity` was a dependency of
+no pom but its own, so `ServiceLoader` never saw `DurableEntityFactory` and a slice declaring an
+entity failed at activation with `No resource provider registered`. Even reachable, the factory
+returned a bare `ConcurrentHashMap`. Catalog row 217 was corrected Partial → **Planned** on that
+basis before any code moved.
+
+### I0 — a fixture that RUNS (`5b0d65f71`)
+
+No slice anywhere declared a durable entity, so the module could not be falsified. `test-entity`
+blueprint + `DurableEntityForgeTest` (5-node Ember) pinned the broken baseline as characterization
+tests — notably **all five nodes accepting a create for the same key**, each with a distinct instance
+id. Red-when-absent proven. Also produced the first documented `resources.toml` entity syntax.
+
+### I1 — fenced single-writer, live (`c5d35282b`, catalog `44f7c80b4`, comment `b0e00d8b9`)
+
+Node classpath + qualifier + fenced factory + admission + ownership records + codec derivation.
+**Gate met: `DurableEntityForgeTest` 11/11 — five nodes contend for one key, exactly one accepted,
+four rejected.** Eight of the eleven assert that invariant continuously via the shared
+exactly-one-acceptance create helper, so the fence is under permanent coverage.
+
+### Rulings recorded (all in the plan doc, all with reasoning)
+
+- **A + C**: write-path owner admission (`NotCurrentOwner`) **plus** ownership records minted by the
+  existing leader-only stream writer. HRW-resolved ownership rejected — it reintroduces what
+  `CommittedPartitionOwnerSource` exists to replace.
+- **narrow C, not `createStream`**: extend the writer's partition list. `createStream` per keyspace
+  would allocate rings/WAL/reshuffle enrolment for a permanently-empty log and add empty partitions
+  to the unconverged reconciler-under-load loop. `entity:<keyspace>` namespacing is **mandatory** —
+  without it a same-named stream silently imposes its partition count, keying fence and ownership
+  arcs to different partitions.
+- **Absence policy, per collaborator**: missing fence → refuse provisioning loudly (safety); missing
+  barrier → provision, `BOUNDED_STALE` works, `LINEARIZABLE` returns a typed failure (freshness).
+- **(c) REVERSED**: no qualifier ships. `@Http`/`@Notify` are parameterless because there is one
+  section; entities are per-keyspace, so one author-declared qualifier per keyspace IS the pattern.
+  Strings at the use site are not this codebase's style.
+- **Codec derivation**: the slice-processor derives state-type codecs from the resource-qualified
+  parameter's type arguments. `@Codec` is INTERNAL and must not be exposed to users; forcing the
+  state type into a method signature contorts user APIs. Envelope stays **1000**.
+- **Publish seam at provisioning, not the deployment FSM** — the FSM is architecturally correct and
+  foreclosed by the envelope freeze. **Expiry condition recorded: move it post-GA.**
+
+### Still open in the epic
+
+I2 stream-path fence · **I3 fenced log on the disk tier — the one that makes state survive restart**
+· I4 timers (#351, hard-fail today) · I5 `PersistentWorkflow` (#353, zero code) · I6 Saga + audit +
+operator QUAD (#354/#355, zero code). Catalog row 217 is **Partial** and lists exactly these gaps.
+
+### Known limitations recorded, not papered over
+
+- Startup-checklist path (a non-generatable state type failing loudly at load) is unit-verified only
+  — no fixture has such a type. `[design intent — unverified]`.
+- Codec collection is **non-recursive** — a record type argument whose own components are user
+  records leaves those unregistered. Pre-existing, same as the method-parameter path.
+- `EntityKeyspaceRegistrar` unpublishes via `ResourceFactory.close`, which does not run when a node
+  dies → a keyspace can stay registered with nothing using it. No correctness impact; decide
+  follow-up issue vs documented-and-accepted.
+- The `CompositeAwareResourceProvider` promotion is load-bearing; its hard-refusal branch is read
+  from code, unexercised. Both facts are now in a comment at `generateStandardProvideCall`.
+
+### Process notes worth carrying
+
+**Three of my specifications were wrong and each was caught by an agent reading code, not the plan:**
+an epoch fence is staleness rejection, not admission control, so the original gate was unsatisfiable;
+`createStream` carried costs the convergence argument did not cover; and hand-rolled qualifiers were
+the pattern, not a gap. None surfaced from a failing test. All surfaced from "verify by content,
+report red over described green, try to disprove your own fix".
+
+Two errors of mine: a `git add -A` that swept an agent's in-flight work into a docs commit and
+briefly put step (b) on the branch without (d) — the silent-wrongness pairing I had explicitly
+forbidden; and inferring an agent was dead from `ListAgents` (which lists peer sessions, not
+in-process teammates) plus a raced `git status`, which had me editing a file underneath it. Use
+explicit paths while an agent is in the tree, and treat the tree — checked twice — as the only
+liveness signal.
