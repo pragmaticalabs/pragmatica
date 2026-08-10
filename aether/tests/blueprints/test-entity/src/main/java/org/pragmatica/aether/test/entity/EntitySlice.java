@@ -7,7 +7,6 @@ package org.pragmatica.aether.test.entity;
 import java.time.Duration;
 import java.util.UUID;
 
-import org.pragmatica.aether.resource.entity.Durable;
 import org.pragmatica.aether.resource.entity.DurableEntity;
 import org.pragmatica.aether.slice.annotation.Slice;
 import org.pragmatica.lang.Cause;
@@ -140,7 +139,7 @@ public interface EntitySlice {
     /// omitting this call would let a reader assume timers work.
     Promise<EntityResponse> scheduleTimer(KeyRequest request);
 
-    static EntitySlice entitySlice(@Durable(config = "entities.orders") DurableEntity<String, OrderState> orders) {
+    static EntitySlice entitySlice(@OrderEntity DurableEntity<String, OrderState> orders) {
         return new entitySlice(orders, UUID.randomUUID().toString());
     }
 

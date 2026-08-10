@@ -1178,6 +1178,8 @@ public sealed interface AetherKey extends StructuredKey {
 
     Fn1<Cause, String> STORAGE_BLOCK_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid storage-block key format: %s");
 
+    Fn1<Cause, String> ENTITY_KEYSPACE_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid entity-keyspace key format: %s");
+
     Fn1<Cause, String> STORAGE_REF_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid storage-ref key format: %s");
 
     Fn1<Cause, String> STORAGE_STATUS_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid storage-status key format: %s");
@@ -1357,6 +1359,47 @@ public sealed interface AetherKey extends StructuredKey {
                                                                               configSection,
                                                                               artifact,
                                                                               method));
+        }
+    }
+
+    /// Cluster-wide DECLARATION that a durable-entity keyspace is live somewhere in the cluster (#345 I1,
+    /// narrow C). It exists for one reason: the per-`(keyspace, partition)` ownership records that fence
+    /// entity writes are minted by a LEADER-ONLY reconcile pass, and the leader has no other way to learn
+    /// that a keyspace exists — `DurableEntityConfig` is per-slice and node-local. Every node that
+    /// provisions the keyspace writes the same key, so the put is idempotent (last-write-wins on an equal
+    /// value) and the record survives any single node leaving.
+    ///
+    /// `keyspace` is the RAW name from `resources.toml`; the `entity:` ownership-arc prefix is applied by
+    /// `EntityPartitionArc`, not stored here, so this key stays a statement about the DECLARATION and the
+    /// arc naming has exactly one owner.
+    ///
+    /// Deliberately NOT a stream: registering the keyspace via `createStream` would allocate off-heap
+    /// rings, a WAL and reshuffle/backfill enrolment for a log that carries zero appends until plan
+    /// Phase 3 moves entity state onto it.
+    record EntityKeyspaceRegistrationKey(String keyspace) implements AetherKey {
+        private static final String PREFIX = "entity-keyspace/";
+
+        @Override
+        public String asString() {
+            return PREFIX + keyspace;
+        }
+
+        @Override
+        public String toString() {
+            return asString();
+        }
+
+        public static EntityKeyspaceRegistrationKey entityKeyspaceRegistrationKey(String keyspace) {
+            return new EntityKeyspaceRegistrationKey(keyspace);
+        }
+
+        /// Rebuild from the snapshot IDENTITY (the part after the section prefix), which for this
+        /// single-component key IS the keyspace. No string surgery is needed, so this validates rather
+        /// than parses — an empty identity is the only malformed form.
+        public static Result<EntityKeyspaceRegistrationKey> fromIdentity(String identity) {
+            return identity.isEmpty()
+                   ? ENTITY_KEYSPACE_KEY_FORMAT_ERROR.apply(PREFIX + identity).result()
+                   : success(new EntityKeyspaceRegistrationKey(identity));
         }
     }
 

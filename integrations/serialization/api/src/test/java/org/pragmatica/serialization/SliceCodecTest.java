@@ -322,7 +322,8 @@ class SliceCodecTest {
                 () -> SliceCodec.validateRequiredTypes(codec, Set.of(Integer.class)));
 
             assertTrue(ex.getMessage().contains("java.lang.Integer"));
-            assertTrue(ex.getMessage().contains("@CodecFor"));
+            assertTrue(ex.getMessage().contains("record or an enum"),
+                       "the message must say how to obtain a codec, not name an annotation the author may never have written");
         }
 
         @Test

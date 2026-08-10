@@ -201,16 +201,22 @@ public interface SliceCodec extends Serializer, Deserializer {
         return result;
     }
 
-    /// Verify that all required types from @CodecFor declarations have registered codecs.
+    /// Verify that every type on the required-codec checklist has a registered codec.
     /// Call this at startup after building the full codec registry.
+    ///
+    /// The checklist has two sources, so the message names neither: `@CodecFor` declarations, and
+    /// type arguments the slice-processor derives from resource-qualified parameters (e.g. the state
+    /// type of a `DurableEntity<K, S>`). An author who never wrote `@CodecFor` can still land here,
+    /// so pointing them at that annotation would send them looking for something they do not have.
     static void validateRequiredTypes(SliceCodec codec, Set<Class<?>> requiredTypes) {
         var missing = requiredTypes.stream().filter(type -> !hasCodecFor(codec, type)).toList();
 
         if (!missing.isEmpty()) {
-            throw new IllegalStateException("Codecs declared via @CodecFor but not registered: " + missing.stream()
-                                                                                                          .map(Class::getName)
-                                                                                                          .collect(Collectors.joining(", "))
-                                           + ". Register manual codecs for these types.");
+            throw new IllegalStateException("Required codecs are not registered: " + missing.stream()
+                                                                                            .map(Class::getName)
+                                                                                            .collect(Collectors.joining(", "))
+                                           + ". A codec is generated automatically for a record or an enum;"
+                                           + " any other type needs a manual codec registered for it.");
         }
     }
 

@@ -80,17 +80,45 @@ public sealed interface DurableEntityError extends Cause {
         }
     }
 
-    /// A [ReadConsistency#LINEARIZABLE] [DurableEntity#get] reached a node that is NOT the committed
-    /// owner of the entity key's `(keyspace, partition)` ownership arc. No entity read-forward transport
-    /// exists yet (#345 item 1e-b), so the read is rejected here rather than forwarded; the caller
-    /// re-resolves the current owner and retries there. `committedOwner` names the node that IS the
-    /// committed owner. The read-side sibling of the stream's `StreamError.NotCurrentOwner`;
-    /// owner-forwarding an entity read cross-node is a follow-up.
+    /// An operation reached a node that is NOT the committed owner of the entity key's
+    /// `(keyspace, partition)` ownership arc. `committedOwner` names the node that IS.
+    ///
+    /// On the WRITE path (#345 I1) this is the admission check that makes the entity single-writer: the
+    /// per-partition epoch fence answers "is this writer's view current?", which rejects a DEPOSED owner
+    /// but waves through every live non-owner, since they all read the same committed epoch. Only an
+    /// owner check answers "is this writer the owner at all", and without it five nodes each accept a
+    /// create for one key and each believe they hold the only copy.
+    ///
+    /// On the READ path it rejects a [ReadConsistency#LINEARIZABLE] [DurableEntity#get] rather than
+    /// forwarding it: no entity read-forward transport exists yet (#345 item 1e-b). Either way the caller
+    /// re-resolves the current owner and retries there. The sibling of the stream's
+    /// `StreamError.NotCurrentOwner`; owner-forwarding an entity operation cross-node is a follow-up.
+    ///
+    /// Distinct from [OwnershipNotYetCommitted], where NOBODY owns the arc yet.
     record NotCurrentOwner(String key, String committedOwner) implements DurableEntityError {
         @Override
         public String message() {
-            return "Linearizable read for durable entity key '" + key
+            return "Durable entity operation for key '" + key
                  + "' reached a non-owner; committed owner is " + committedOwner;
+        }
+    }
+
+    /// No ownership record is committed for the entity key's `(keyspace, partition)` arc yet, so no node
+    /// can prove it is the owner and the write is refused.
+    ///
+    /// **This is TRANSIENT and self-clearing** — the distinction from [NotCurrentOwner], which is a stable
+    /// "someone else owns this, go there". Ownership records are minted by a leader-only reconcile pass,
+    /// so a freshly provisioned keyspace has a window in which no arc has an owner. Accepting writes
+    /// through that window would reopen exactly the hole the owner check closes — and at the check the
+    /// window is indistinguishable from an arc that will never have an owner, so admitting on absence
+    /// admits both. The caller retries; a fixture waits for ownership to converge rather than sleeping.
+    record OwnershipNotYetCommitted(String key, String keyspace, int partition) implements DurableEntityError {
+        @Override
+        public String message() {
+            return "Durable entity write for key '" + key
+                 + "' refused: no owner is committed yet for arc (" + keyspace
+                 + ", " + partition
+                 + ") — transient, retry once the ownership reconcile has converged";
         }
     }
 

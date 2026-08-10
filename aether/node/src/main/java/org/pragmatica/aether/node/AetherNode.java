@@ -13,6 +13,7 @@ import java.util.List;
 import java.util.Collection;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executor;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledFuture;
@@ -82,8 +83,12 @@ import org.pragmatica.aether.slice.delegation.TaskGroup;
 import org.pragmatica.aether.deployment.loadbalancer.LoadBalancerManager;
 import org.pragmatica.aether.deployment.node.NodeDeploymentManager;
 import org.pragmatica.aether.dht.AetherMaps;
+import org.pragmatica.aether.dht.CommittedPartitionOwnerSource;
+import org.pragmatica.aether.dht.EntityPartitionArc;
 import org.pragmatica.aether.dht.HighWaterOwnerEpochGate;
+import org.pragmatica.aether.dht.KvCommittedPartitionOwnerSource;
 import org.pragmatica.aether.dht.KvOwnerEpochSource;
+import org.pragmatica.aether.dht.PartitionOwnerEpochGate;
 import org.pragmatica.aether.endpoint.EndpointRegistry;
 import org.pragmatica.aether.endpoint.TopicSubscriptionRegistry;
 import org.pragmatica.aether.http.AppHttpServer;
@@ -96,6 +101,8 @@ import org.pragmatica.aether.resource.ResourceProvider;
 import org.pragmatica.aether.resource.SpiResourceProvider;
 import org.pragmatica.aether.resource.artifact.ArtifactStore;
 import org.pragmatica.aether.resource.artifact.MavenProtocolHandler;
+import org.pragmatica.aether.resource.entity.EntityKeyspaceRegistrar;
+import org.pragmatica.aether.resource.entity.EntityLinearizableBarrier;
 import org.pragmatica.aether.api.ObservabilityBaseline;
 import org.pragmatica.aether.api.ObservabilityConfigRegistry;
 import org.pragmatica.aether.invoke.AdaptiveSampler;
@@ -185,8 +192,10 @@ import org.pragmatica.aether.stream.segment.StorageSegmentSink;
 import org.pragmatica.aether.stream.segment.TieredStreamReader;
 import org.pragmatica.aether.slice.dependency.SliceRegistry;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.EntityKeyspaceRegistrationKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.StreamPartitionOwnershipKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.EntityKeyspaceRegistrationValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.StreamPartitionOwnershipValue;
 import org.pragmatica.aether.slice.repository.Repository;
 import org.pragmatica.aether.ttm.AdaptiveDecisionTree;
@@ -253,6 +262,7 @@ import org.pragmatica.dht.DeparturePushObserver;
 import org.pragmatica.dht.DHTTopologyListener;
 import org.pragmatica.dht.DistributedDHTClient;
 import org.pragmatica.dht.storage.MemoryStorageEngine;
+import org.pragmatica.dht.storage.StorageEngine;
 import org.pragmatica.consensus.net.quic.QuicClusterNetwork;
 import org.pragmatica.consensus.net.quic.QuicDisconnectListener;
 import org.pragmatica.consensus.net.quic.QuicPeerStateListener;
@@ -751,6 +761,15 @@ public interface AetherNode extends ManageableNode {
     /// third party, so partition ownership is polled; matching the reshuffle cadence keeps the
     /// handover window (during which the old and new owner may both deliver) at one tick.
     TimeSpan STREAM_CONSUMER_RECONCILE_INTERVAL = TimeSpan.timeSpan(5).seconds();
+    /// Durable-entity ownership reconcile (#345 I1, narrow C). Level-triggered, not event-triggered: a
+    /// keyspace is declared when a slice is DEPLOYED, which is not a membership change, so the
+    /// stream-side ownership pass (driven off `ReplicaSetController` reconciles) would not fire for it
+    /// and the arcs would stay unowned — leaving every entity write refused — until some unrelated
+    /// topology change happened to come along. Each tick re-asserts the local declarations and, on the
+    /// leader only, mints the arcs' ownership records; both halves are idempotent, so a steady-state tick
+    /// commits nothing. Matched to the reshuffle cadence so an entity arc's owner converges in the same
+    /// window a stream partition's does.
+    TimeSpan ENTITY_OWNERSHIP_RECONCILE_INTERVAL = TimeSpan.timeSpan(5).seconds();
 
     /// Per-node, restart-stable data dir for the disk-backed stream storage. Derived as a sibling of
     /// the node's artifact disk path (the artifacts/content convention, `StorageConfig.diskPath()`)
@@ -3532,6 +3551,33 @@ public interface AetherNode extends ManageableNode {
                                         committedStreamOwnerSource,
                                         ownershipEpochHighWater,
                                         linearizableBarrier);
+        // #345 I1(d): the durable-entity side of the same SPI channel. `DurableEntityFactory` refuses to
+        // provision without these, so a node that skipped this call fails an entity slice loudly at deploy
+        // instead of handing it a private unfenced map (the five-writers-per-key shape I0 measured). The
+        // barrier is gated on the SAME `[durable-entity] read-linearization` knob as the stream barrier
+        // above and reuses the same applier and timeout budget, so entity and stream linearizable rounds
+        // cannot disagree about how long a round may take.
+        var entityKeyspaces = new ConcurrentHashMap<String, Integer>();
+
+        registerEntityExtensions(resourceProviderSetup,
+                                 kvStore,
+                                 ownershipEpochHighWater,
+                                 (keyspace, partitionCount) -> declareEntityKeyspace(entityKeyspaces,
+                                                                                     keyspace,
+                                                                                     partitionCount),
+                                 streamingConfig.readLinearization() == ReadLinearizationMode.NO_OP_ROUND
+                                 ? Option.some(EntityLinearizableBarrier.noOpRound(clusterCommandApplier,
+                                                                                   streamingConfig.readForwardTimeout()))
+                                 : Option.none());
+        // #345 I1 narrow C: mint the ownership records the entity fence reads, reusing the stream-side
+        // writer, record family, leader gate and batching rather than an entity-specific driver — and
+        // WITHOUT registering each keyspace as a stream, which would allocate off-heap rings, a WAL and
+        // reshuffle/backfill enrolment for a log that carries zero appends until plan Phase 3.
+        periodicTasks.add(SharedScheduler.scheduleAtFixedRate(() -> reconcileEntityOwnership(entityKeyspaces,
+                                                                                             kvStore,
+                                                                                             streamOwnershipWriter,
+                                                                                             clusterCommandApplier),
+                                                              ENTITY_OWNERSHIP_RECONCILE_INTERVAL));
         var certRenewalScheduler = createCertRenewalScheduler(config,
                                                               clusterNode,
                                                               appHttpServer,
@@ -5402,6 +5448,174 @@ public interface AetherNode extends ManageableNode {
         spi.registerExtension(CommittedStreamOwnerSource.class, committedStreamOwnerSource);
         spi.registerExtension(OwnershipEpochHighWater.class, ownershipEpochHighWater);
         linearizableBarrier.onPresent(barrier -> spi.registerExtension(LinearizableBarrier.class, barrier));
+    }
+
+    /// #345 I1(d): expose the durable-entity fence collaborators on the SAME node-wide SPI extension
+    /// channel the stream side uses, so `DurableEntityFactory` can build a `PartitionFencedDurableEntity`
+    /// — per-`(keyspace, partition)` write fence AND owner-routed linearizable reads — instead of the
+    /// unfenced in-process map it returned before this landed.
+    ///
+    /// `NodeId`, `Serializer`, `Deserializer` and `OwnershipEpochHighWater` are already registered by
+    /// [#registerForwardExtensionsOnSpi]; only the three entity-specific collaborators are added here. The
+    /// entity's `EntityPartitionArc` is deliberately NOT one of them: its partition count is per-keyspace
+    /// config, so the factory builds it inside `provision`.
+    private static void registerEntityExtensions(ResourceProviderSetup resourceProviderSetup,
+                                                 KVStore<AetherKey, AetherValue> kvStore,
+                                                 OwnershipEpochHighWater ownershipEpochHighWater,
+                                                 EntityKeyspaceRegistrar entityKeyspaceRegistrar,
+                                                 Option<EntityLinearizableBarrier> entityBarrier) {
+        resourceProviderSetup.spiProvider()
+                             .onPresent(spi -> registerEntityExtensionsOnSpi(spi,
+                                                                             kvStore,
+                                                                             ownershipEpochHighWater,
+                                                                             entityKeyspaceRegistrar,
+                                                                             entityBarrier));
+    }
+
+    private static void registerEntityExtensionsOnSpi(SpiResourceProvider spi,
+                                                      KVStore<AetherKey, AetherValue> kvStore,
+                                                      OwnershipEpochHighWater ownershipEpochHighWater,
+                                                      EntityKeyspaceRegistrar entityKeyspaceRegistrar,
+                                                      Option<EntityLinearizableBarrier> entityBarrier) {
+        // The entity's fenced backing. ONE engine serves every keyspace: PartitionOwnerEpochGate re-derives
+        // the (keyspace, partition) arc from each DHT key's own bytes, so a single gate instance fences
+        // every arc the engine sees, and a key that carries no entity prefix falls through to plain HLC-LWW.
+        // Still MemoryStorageEngine — HA, not restart-durable; the fenced-log backing is plan Phase 3 (#349).
+        spi.registerExtension(StorageEngine.class,
+                              MemoryStorageEngine.memoryStorageEngine(PartitionOwnerEpochGate.partitionOwnerEpochGate(ownershipEpochHighWater)));
+        // One committed-ownership lookup drives BOTH entity halves: the factory reads `ownerEpoch` from it
+        // to stamp writes and `owner` from it to route LINEARIZABLE reads, so a stamp and a route can never
+        // come from different records. Reads the same Rabia-backed StreamPartitionOwnershipValue family the
+        // stream side uses — the entity keyspace reuses those arcs rather than minting a record type.
+        spi.registerExtension(CommittedPartitionOwnerSource.class,
+                              KvCommittedPartitionOwnerSource.kvCommittedPartitionOwnerSource(kvStore));
+        // Absent barrier is NOT fatal: BOUNDED_STALE reads still work and a LINEARIZABLE read is refused
+        // per-read with DurableEntityError.LinearizableUnavailable (#345 I1 owner ruling — a missing barrier
+        // costs freshness, a missing fence costs safety, so only the latter refuses the whole resource).
+        entityBarrier.onPresent(barrier -> spi.registerExtension(EntityLinearizableBarrier.class, barrier));
+        // The keyspace declaration seam. Mandatory, like the fence collaborators: without it a provisioned
+        // entity would never reach the leader's ownership reconcile, so every write would refuse forever
+        // with the transient cause — a permanent outage wearing a "retry me" message. Loud at deploy beats
+        // that.
+        spi.registerExtension(EntityKeyspaceRegistrar.class, entityKeyspaceRegistrar);
+    }
+
+    /// Record a locally-provisioned entity keyspace. Synchronous and IO-free, per the
+    /// [EntityKeyspaceRegistrar] contract: provisioning must return a resolved promise, and a slice load
+    /// that blocked on a consensus round would fail whenever the cluster was briefly unquorate.
+    /// [#reconcileEntityOwnership] does the committing, and keeps doing it until it sticks.
+    private static Unit declareEntityKeyspace(Map<String, Integer> entityKeyspaces,
+                                              String keyspace,
+                                              int partitionCount) {
+        entityKeyspaces.put(keyspace, partitionCount);
+
+        return Unit.unit();
+    }
+
+    /// #345 I1 narrow C — one level-triggered tick with two idempotent halves.
+    ///
+    /// **Half 1, every node:** re-assert this node's locally-declared keyspaces into committed KV. A
+    /// registration is what tells the LEADER a keyspace exists at all, and the leader may not host the
+    /// slice, so the declaration has to be cluster-visible. Re-asserting rather than writing once is the
+    /// `SystemStreamRegistrar` lesson: a single fire-and-forget apply that failed in a transient
+    /// unquorate window would strand the keyspace unowned forever, and its symptom — writes refusing
+    /// with a "transient, retry" message that never clears — would read as a stuck cluster rather than a
+    /// lost write.
+    ///
+    /// **Half 2, leader only:** mint the ownership records. Every COMMITTED registration (not just this
+    /// node's, so any leader can drive any keyspace) expands to its `entity:<keyspace>` arcs, and the
+    /// SHARED [StreamPartitionOwnershipWriter] decides each one. The writer self-gates on leadership
+    /// before reading any committed state and returns [Option#none] for an unchanged owner, so a
+    /// follower and a steady-state leader both emit nothing and the batch below is skipped.
+    @Contract
+    private static void reconcileEntityOwnership(Map<String, Integer> entityKeyspaces,
+                                                 KVStore<AetherKey, AetherValue> kvStore,
+                                                 StreamPartitionOwnershipWriter writer,
+                                                 Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> applier) {
+        // ScheduledExecutorService CANCELS a periodic task whose run throws, silently and permanently.
+        // This tick is the only thing that ever mints entity ownership records, so a single throw would
+        // leave every entity write refused forever with a cause that says "transient" — undiagnosable
+        // from the outside, because the symptom is indistinguishable from a slow reconcile. Catching here
+        // keeps the driver alive and names the failure. This is an adapter-boundary lift, not business
+        // logic swallowing an error.
+        try {
+            applyEntityRegistrations(kvStore, entityKeyspaces, applier);
+            var arcs = committedEntityArcs(kvStore);
+            var commands = writer.writeOwnershipChanges(arcs);
+
+            if (!commands.isEmpty()) {
+                LOG.info("Entity ownership: minting {} record(s) across {} declared arc(s)",
+                         commands.size(),
+                         arcs.size());
+            }
+
+            applyStreamOwnershipBatch(applier, commands);
+        } catch (RuntimeException e) {
+            LOG.warn("Entity ownership reconcile tick failed: {} — retried next tick", e.toString(), e);
+        }
+    }
+
+    /// Commit the registrations that are missing or carry a different partition count. An already-correct
+    /// registration emits nothing, so a converged cluster does no consensus work per tick.
+    @Contract
+    private static void applyEntityRegistrations(KVStore<AetherKey, AetherValue> kvStore,
+                                                 Map<String, Integer> entityKeyspaces,
+                                                 Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> applier) {
+        var pending = entityKeyspaces.entrySet()
+                                     .stream()
+                                     .filter(entry -> !isRegistrationCommitted(kvStore,
+                                                                               entry.getKey(),
+                                                                               entry.getValue()))
+                                     .<KVCommand<AetherKey>> map(entry -> registrationPut(entry.getKey(),
+                                                                                          entry.getValue()))
+                                     .toList();
+
+        if (pending.isEmpty()) {
+            return;
+        }
+
+        LOG.info("Entity keyspace: committing {} registration(s)", pending.size());
+        applier.apply(pending)
+               .onFailure(cause -> LOG.warn("Entity keyspace registration for {} keyspace(s) failed: {} — retried next tick",
+                                            pending.size(),
+                                            cause.message()));
+    }
+
+    private static boolean isRegistrationCommitted(KVStore<AetherKey, AetherValue> kvStore,
+                                                   String keyspace,
+                                                   int partitionCount) {
+        return kvStore.getTyped(EntityKeyspaceRegistrationKey.entityKeyspaceRegistrationKey(keyspace),
+                                EntityKeyspaceRegistrationValue.class)
+                      .map(value -> value.partitionCount() == partitionCount)
+                      .or(false);
+    }
+
+    private static KVCommand<AetherKey> registrationPut(String keyspace, int partitionCount) {
+        return new KVCommand.Put<AetherKey, AetherValue>(EntityKeyspaceRegistrationKey.entityKeyspaceRegistrationKey(keyspace),
+                                                         EntityKeyspaceRegistrationValue.entityKeyspaceRegistrationValue(partitionCount));
+    }
+
+    /// Every committed entity keyspace expanded to its ownership arcs, named through
+    /// [EntityPartitionArc#arcName] so the writer registers the IDENTICAL `entity:<keyspace>` coordinate
+    /// the write fence and the read pipeline resolve — and so an entity keyspace can never collide with a
+    /// stream of the same bare name.
+    private static List<PartitionKey> committedEntityArcs(KVStore<AetherKey, AetherValue> kvStore) {
+        var arcs = new ArrayList<PartitionKey>();
+
+        kvStore.forEach(EntityKeyspaceRegistrationKey.class,
+                        EntityKeyspaceRegistrationValue.class,
+                        (key, value) -> collectEntityArcs(arcs, key.keyspace(), value.partitionCount()));
+
+        return arcs;
+    }
+
+    @Contract
+    private static void collectEntityArcs(List<PartitionKey> arcs, String keyspace, int partitionCount) {
+        var arcName = EntityPartitionArc.arcName(keyspace);
+
+        for (var partition = 0; partition < partitionCount; partition++) {
+            arcs.add(new PartitionKey(arcName, partition));
+        }
     }
 
     /// Project the aggregator's materialised `ClusterEvent` view onto

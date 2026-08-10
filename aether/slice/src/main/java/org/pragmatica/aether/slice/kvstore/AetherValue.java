@@ -1112,6 +1112,17 @@ public sealed interface AetherValue {
         }
     }
 
+    /// Payload of an [AetherKey.EntityKeyspaceRegistrationKey] — the one fact the leader-only ownership
+    /// writer cannot derive for itself: how many `(entity:<keyspace>, partition)` arcs the keyspace
+    /// spreads over, so it can mint an ownership record for each. Taken from the keyspace's
+    /// `DurableEntityConfig.partitionCount` at provisioning time, which is the first moment it is known
+    /// (the manifest carries only the config SECTION name, not the section's contents).
+    record EntityKeyspaceRegistrationValue(int partitionCount) implements AetherValue {
+        public static EntityKeyspaceRegistrationValue entityKeyspaceRegistrationValue(int partitionCount) {
+            return new EntityKeyspaceRegistrationValue(partitionCount);
+        }
+    }
+
     record StreamRegistrationValue(NodeId nodeId, String consumerGroup, boolean batchMode, String eventType) implements AetherValue {
         public static StreamRegistrationValue streamRegistrationValue(NodeId nodeId,
                                                                       String consumerGroup,

@@ -2069,27 +2069,50 @@ public class FactoryClassGenerator {
                                        SliceModel model,
                                        Map<String, List<ProxyMethodInfo>> proxyMethodsCache,
                                        ImportTracker importTracker) {
-        var codecEntries = collectCodecTypeEntries(model, proxyMethodsCache, importTracker);
+        var plan = collectCodecPlan(model, proxyMethodsCache, importTracker);
+        var codecEntries = plan.entries();
 
         out.println();
         out.println("            @Override");
         out.println("            public SliceCodec codec(SliceCodec parent) {");
-        if (codecEntries.isEmpty()) {
+        if (plan.isEmpty()) {
             out.println("                return parent;");
-        } else {
-            out.println("                return SliceCodec.sliceCodec(parent, List.of(");
-            for (int i = 0; i < codecEntries.size(); i++) {
-                var comma = (i < codecEntries.size() - 1)
-                            ? ","
-                            : "";
+            out.println("            }");
 
-                generateTypeCodecEntry(out, codecEntries.get(i), comma);
-            }
-
-            out.println("                ));");
+            return;
         }
 
+        out.println("                return SliceCodec.sliceCodec(parent, List.of(");
+        for (int i = 0; i < codecEntries.size(); i++) {
+            var comma = (i < codecEntries.size() - 1)
+                        ? ","
+                        : "";
+
+            generateTypeCodecEntry(out, codecEntries.get(i), comma);
+        }
+
+        out.println(plan.requiredTypes().isEmpty()
+                    ? "                ));"
+                    : "                ),");
+        generateRequiredTypesArgument(out, plan.requiredTypes(), importTracker);
         out.println("            }");
+    }
+
+    /// Emit the startup checklist argument of `sliceCodec(parent, codecs, requiredTypes)`.
+    ///
+    /// These are types the slice must be able to serialize but whose codecs cannot be generated
+    /// here — the node has to supply them (`@CodecFor`). Listing them makes their absence fail at
+    /// slice load, naming the type, instead of at the first write with `No codec registered`.
+    private void generateRequiredTypesArgument(PrintWriter out, List<String> requiredTypes, ImportTracker importTracker) {
+        if (requiredTypes.isEmpty()) {
+            return;
+        }
+
+        var classLiterals = requiredTypes.stream()
+                                         .map(name -> name + ".class")
+                                         .collect(Collectors.joining(", "));
+
+        out.println("                    " + importTracker.use("java.util.Set") + ".of(" + classLiterals + "));");
     }
 
     private void generateTypeCodecEntry(PrintWriter out, CodecTypeEntry entry, String comma) {
@@ -2152,14 +2175,24 @@ public class FactoryClassGenerator {
         out.println("                        })" + comma);
     }
 
+    /// The two products of a codec sweep: the entries whose codecs this factory generates, and the
+    /// checklist of types it cannot generate but the slice still needs registered somewhere.
+    private record CodecPlan(List<CodecTypeEntry> entries, List<String> requiredTypes) {
+        boolean isEmpty() {
+            return entries.isEmpty() && requiredTypes.isEmpty();
+        }
+    }
+
     /// Collect TypeCodec entries for all serializable types in this slice.
-    /// Includes method parameter types, response types, multi-param request records, and publisher message types.
+    /// Includes method parameter types, response types, multi-param request records, publisher message
+    /// types, and the type arguments of resource-qualified factory parameters.
     /// Filters out JDK and Pragmatica framework types.
-    private List<CodecTypeEntry> collectCodecTypeEntries(SliceModel model,
-                                                         Map<String, List<ProxyMethodInfo>> proxyMethodsCache,
-                                                         ImportTracker importTracker) {
+    private CodecPlan collectCodecPlan(SliceModel model,
+                                       Map<String, List<ProxyMethodInfo>> proxyMethodsCache,
+                                       ImportTracker importTracker) {
         var seen = new LinkedHashSet<String>();
         var entries = new ArrayList<CodecTypeEntry>();
+        var requiredTypes = new ArrayList<String>();
 
         for (var method : model.methods()) {
             collectParameterCodecEntries(method, model, importTracker, seen, entries);
@@ -2169,8 +2202,75 @@ public class FactoryClassGenerator {
         collectPublisherMessageCodecEntries(model, importTracker, seen, entries);
         collectStreamEventCodecEntries(model, importTracker, seen, entries);
         collectDependencyProxyCodecEntries(proxyMethodsCache, importTracker, seen, entries);
+        // Last: a type already reachable from a method signature keeps the entry that walk produced.
+        collectResourceTypeArgumentCodecEntries(model, importTracker, seen, entries, requiredTypes);
 
-        return entries;
+        return new CodecPlan(entries, requiredTypes);
+    }
+
+    /// Collect codec entries for the type arguments of resource-qualified factory parameters.
+    ///
+    /// A resource such as `DurableEntity<String, OrderState>` serializes its type arguments through
+    /// the slice codec, yet the author never names them in a slice method signature — the fixture
+    /// this was found on deliberately keeps entity state off the HTTP boundary. Walking
+    /// `model.methods()` alone therefore leaves the state type without a codec and the first write
+    /// fails with `No codec registered`. The parameter's `DeclaredType` carries the arguments, so
+    /// collect ALL of them: key and state are both encoded.
+    ///
+    /// Subsumes the `Publisher<T>` / `StreamPublisher<T>` / `StreamAccess<T>` sweeps above; the
+    /// shared `seen` set makes the overlap idempotent.
+    private void collectResourceTypeArgumentCodecEntries(SliceModel model,
+                                                         ImportTracker importTracker,
+                                                         Set<String> seen,
+                                                         List<CodecTypeEntry> entries,
+                                                         List<String> requiredTypes) {
+        for (var dep : model.dependencies()) {
+            if (dep.isResource() && !dep.isConfigurationSection()) {
+                collectTypeArguments(dep.interfaceType(), importTracker, seen, entries, requiredTypes);
+            }
+        }
+    }
+
+    private void collectTypeArguments(TypeMirror resourceType,
+                                      ImportTracker importTracker,
+                                      Set<String> seen,
+                                      List<CodecTypeEntry> entries,
+                                      List<String> requiredTypes) {
+        if (! (resourceType instanceof DeclaredType dt)) {
+            return;
+        }
+
+        for (var typeArgument : dt.getTypeArguments()) {
+            addResourceTypeArgumentEntry(typeArgument, importTracker, seen, entries, requiredTypes);
+        }
+    }
+
+    private void addResourceTypeArgumentEntry(TypeMirror typeArgument,
+                                              ImportTracker importTracker,
+                                              Set<String> seen,
+                                              List<CodecTypeEntry> entries,
+                                              List<String> requiredTypes) {
+        // Type variables and wildcards name no class, so there is nothing to register and nothing to
+        // check for at startup either.
+        if (! (typeArgument instanceof DeclaredType dt) || ! (dt.asElement() instanceof TypeElement te)) {
+            return;
+        }
+
+        var qualifiedName = getQualifiedTypeName(typeArgument);
+
+        // FrameworkCodecs already registers String, the boxed primitives, List/Set/Map and the
+        // org.pragmatica.lang carriers, so those need neither generation nor a checklist entry.
+        if (isFrameworkOrJdkType(qualifiedName) || !seen.add(qualifiedName)) {
+            return;
+        }
+
+        if (te.getKind() != ElementKind.RECORD && te.getKind() != ElementKind.ENUM) {
+            requiredTypes.add(qualifiedName);
+
+            return;
+        }
+
+        entries.add(buildCodecEntryFromElement(te, qualifiedName, importTracker.use(qualifiedName), importTracker));
     }
 
     private void collectParameterCodecEntries(MethodModel method,

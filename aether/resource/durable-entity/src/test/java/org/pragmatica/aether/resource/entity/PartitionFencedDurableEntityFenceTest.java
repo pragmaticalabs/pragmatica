@@ -8,6 +8,8 @@ import io.netty.buffer.ByteBuf;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.pragmatica.aether.dht.CommittedPartitionOwnerSource;
+import org.pragmatica.aether.dht.CommittedPartitionOwnerSource.CommittedOwner;
 import org.pragmatica.aether.dht.EntityPartitionArc;
 import org.pragmatica.aether.dht.PartitionOwnerEpochGate;
 import org.pragmatica.aether.dht.PartitionOwnerEpochSource;
@@ -17,9 +19,13 @@ import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.cluster.state.kvstore.KVStore;
+import org.pragmatica.consensus.NodeId;
 import org.pragmatica.dht.storage.MemoryStorageEngine;
 import org.pragmatica.dht.storage.StorageEngine;
 import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.messaging.MessageRouter;
 import org.pragmatica.serialization.Deserializer;
@@ -27,6 +33,7 @@ import org.pragmatica.serialization.Serializer;
 
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.stream.IntStream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.fail;
@@ -57,6 +64,8 @@ class PartitionFencedDurableEntityFenceTest {
     private static final TimeSpan AWAIT = timeSpan(5).seconds();
     private static final String KEYSPACE = "orders";
     private static final int PARTITION_COUNT = 8;
+    private static final NodeId SELF = new NodeId("self-node");
+    private static final NodeId OTHER = new NodeId("other-node");
 
     /// Mutable per-partition owner-epoch source modeling this node's believed-current owner epoch for
     /// each partition. Flipping a partition to a strictly-older epoch (while that partition's high-water
@@ -110,11 +119,13 @@ class PartitionFencedDurableEntityFenceTest {
         entity = PartitionFencedDurableEntity.partitionFencedDurableEntity(engine, ownerEpoch, arc, intSerializer(), intDeserializer());
     }
 
-    /// Advance ONLY the `(keyspace, partition)` high-water to model a new owner taking over THAT
+    /// Advance ONLY the `(entity:<keyspace>, partition)` high-water to model a new owner taking over THAT
     /// partition at `epoch` — the SAME notification path `AetherNode` wires via
     /// `OwnershipEpochHighWater.onStreamPartitionOwnershipPut`. No governor / community / core-arc change.
+    /// The arc name goes through [EntityPartitionArc#arcName] so this advances the arc the entity actually
+    /// fences against; using the bare keyspace would advance a DIFFERENT arc and silently prove nothing.
     private void newPartitionOwnerTakesOver(int partition, Epoch epoch) {
-        highWater.advance(OwnershipDomain.streamPartition(KEYSPACE, partition), epoch);
+        highWater.advance(OwnershipDomain.streamPartition(EntityPartitionArc.arcName(KEYSPACE), partition), epoch);
     }
 
     /// Two keys that land in DIFFERENT partitions under [EntityPartitionArc], so advancing one
@@ -268,5 +279,196 @@ class PartitionFencedDurableEntityFenceTest {
 
     private static void failCause(Cause cause) {
         fail(cause.message());
+    }
+
+    /// A fully wired entity over the SHARED [#engine] / [#arc] / [#highWater] of this test — the shape
+    /// `DurableEntityFactory` provisions. Several handles may be built over the same engine to model
+    /// different nodes' views of ownership while sharing one store.
+    private DurableEntity<String, Integer> wired(NodeId self,
+                                                 CommittedPartitionOwnerSource committedOwners,
+                                                 Option<EntityLinearizableBarrier> barrier) {
+        return PartitionFencedDurableEntity.partitionFencedDurableEntity(engine,
+                                                                          ownerEpoch,
+                                                                          arc,
+                                                                          intSerializer(),
+                                                                          intDeserializer(),
+                                                                          self,
+                                                                          committedOwners,
+                                                                          Option.some(highWater),
+                                                                          barrier);
+    }
+
+    private static void seed(DurableEntity<String, Integer> entity) {
+        entity.create("o-1", 7)
+              .await(AWAIT)
+              .onFailure(PartitionFencedDurableEntityFenceTest::failCause);
+    }
+
+    private static CommittedPartitionOwnerSource committedOwner(NodeId owner) {
+        return (_, _) -> Option.some(new CommittedOwner(owner, Epoch.ZERO));
+    }
+
+    private static EntityLinearizableBarrier noOpBarrier() {
+        return (_, _) -> Promise.success(Unit.unit());
+    }
+
+    /// #345 I1(A) — owner ADMISSION on the write path. The per-partition epoch fence proven above rejects
+    /// a DEPOSED owner; it cannot reject a live NON-owner, because every node reads the same committed
+    /// record and stamps the same current epoch. Without this check five nodes each accept a create for
+    /// one key. See [EntityOwnerAdmission].
+    @Nested
+    class OwnerAdmission {
+        @Test
+        void create_admitted_whenSelfIsCommittedOwner() {
+            wired(SELF, committedOwner(SELF), Option.some(noOpBarrier())).create("o-1", 7)
+                                                                         .await(AWAIT)
+                                                                         .onFailure(PartitionFencedDurableEntityFenceTest::failCause)
+                                                                         .onSuccess(state -> assertThat(state).isEqualTo(7));
+        }
+
+        /// THE property the gate is about: a live non-owner is rejected, even though its epoch stamp is
+        /// perfectly current — which is exactly why the epoch fence alone cannot do this.
+        @Test
+        void create_rejectedWithNotCurrentOwner_whenAnotherNodeOwnsTheArc() {
+            wired(SELF, committedOwner(OTHER), Option.some(noOpBarrier())).create("o-1", 7)
+                                                                          .await(AWAIT)
+                                                                          .onSuccess(state -> fail("a non-owner must not accept a create, got " + state))
+                                                                          .onFailure(cause -> assertThat(cause).isInstanceOf(DurableEntityError.NotCurrentOwner.class));
+        }
+
+        /// One key, five nodes, one committed owner — one accepted and four rejected. The in-JVM analog of
+        /// the forge gate: five handles over ONE engine, each believing it is a different node.
+        @Test
+        void create_acceptedByExactlyOneNode_whenFiveContendForOneKey() {
+            var owners = committedOwner(new NodeId("node-2"));
+            var outcomes = IntStream.rangeClosed(1, 5)
+                                    .mapToObj(index -> wired(new NodeId("node-" + index), owners, Option.some(noOpBarrier())))
+                                    .map(entity -> entity.create("o-1", 7).await(AWAIT).isSuccess())
+                                    .toList();
+
+            assertThat(outcomes).describedAs("exactly the committed owner may accept").containsExactly(false,
+                                                                                                        true,
+                                                                                                        false,
+                                                                                                        false,
+                                                                                                        false);
+        }
+
+        @Test
+        void update_rejectedWithNotCurrentOwner_whenAnotherNodeOwnsTheArc() {
+            seed(wired(SELF, committedOwner(SELF), Option.some(noOpBarrier())));
+
+            wired(SELF, committedOwner(OTHER), Option.some(noOpBarrier())).update("o-1", value -> value + 1)
+                                                                          .await(AWAIT)
+                                                                          .onSuccess(state -> fail("a non-owner must not accept an update, got " + state))
+                                                                          .onFailure(cause -> assertThat(cause).isInstanceOf(DurableEntityError.NotCurrentOwner.class));
+        }
+
+        @Test
+        void delete_rejectedWithNotCurrentOwner_whenAnotherNodeOwnsTheArc() {
+            seed(wired(SELF, committedOwner(SELF), Option.some(noOpBarrier())));
+
+            wired(SELF, committedOwner(OTHER), Option.some(noOpBarrier())).delete("o-1")
+                                                                          .await(AWAIT)
+                                                                          .onSuccess(_ -> fail("a non-owner must not accept a delete"))
+                                                                          .onFailure(cause -> assertThat(cause).isInstanceOf(DurableEntityError.NotCurrentOwner.class));
+        }
+
+        /// The ownership-reconcile window: records are minted asynchronously, so a freshly provisioned
+        /// keyspace has a period with no owner on any arc. Admitting there would readmit every node at
+        /// once — the exact hole this closes — so it refuses, with a cause that says it is transient.
+        @Test
+        void create_rejectedWithOwnershipNotYetCommitted_whenNoOwnerIsCommitted() {
+            wired(SELF, CommittedPartitionOwnerSource.none(), Option.some(noOpBarrier())).create("o-1", 7)
+                                                                                         .await(AWAIT)
+                                                                                         .onSuccess(state -> fail("an unowned arc must not accept a write, got " + state))
+                                                                                         .onFailure(cause -> assertThat(cause).isInstanceOf(DurableEntityError.OwnershipNotYetCommitted.class));
+        }
+
+        /// The transient refusal is distinguishable from the stable one, so a caller can tell "retry here"
+        /// from "go somewhere else" without parsing prose.
+        @Test
+        void create_distinguishesTransientFromStableRefusal() {
+            var transientCause = wired(SELF, CommittedPartitionOwnerSource.none(), Option.some(noOpBarrier())).create("o-1", 7)
+                                                                                                              .await(AWAIT);
+            var stableCause = wired(SELF, committedOwner(OTHER), Option.some(noOpBarrier())).create("o-2", 7)
+                                                                                            .await(AWAIT);
+
+            transientCause.onFailure(cause -> assertThat(cause).isNotInstanceOf(DurableEntityError.NotCurrentOwner.class));
+            stableCause.onFailure(cause -> assertThat(cause).isNotInstanceOf(DurableEntityError.OwnershipNotYetCommitted.class));
+        }
+
+        /// Reads are deliberately NOT admitted: a BOUNDED_STALE read promises only this node's committed
+        /// prefix, which a non-owner can answer honestly (and the forge fixture's readiness probe needs).
+        @Test
+        void get_servesBoundedStale_evenWhenAnotherNodeOwnsTheArc() {
+            seed(wired(SELF, committedOwner(SELF), Option.some(noOpBarrier())));
+
+            wired(SELF, committedOwner(OTHER), Option.some(noOpBarrier())).get("o-1")
+                                                                          .await(AWAIT)
+                                                                          .onFailure(PartitionFencedDurableEntityFenceTest::failCause)
+                                                                          .onSuccess(state -> assertThat(state.or(-1)).isEqualTo(7));
+        }
+    }
+
+    /// #345 I1(d): the `LinearizableEntityServe` port. Before it, this class inherited
+    /// [DurableEntity]'s default `get(K, ReadConsistency)` and served a bare local read even when
+    /// `LINEARIZABLE` was requested — a shipped API silently ignoring its own argument, and the exact
+    /// claim-vs-reality gap the owner ruling refused to leave open. The pipeline is exercised in
+    /// [EntityLinearizableReadTest]; what is proven HERE is that the WIRED per-partition-fenced entity
+    /// routes through it at all, over the SAME arc its write fence uses.
+    @Nested
+    class LinearizableReads {
+        @Test
+        void get_servesLinearizable_whenSelfIsCommittedOwnerAndBarrierWired() {
+            var entity = wired(SELF, committedOwner(SELF), Option.some(noOpBarrier()));
+
+            entity.create("o-1", 7).await(AWAIT).onFailure(PartitionFencedDurableEntityFenceTest::failCause);
+
+            entity.get("o-1", ReadConsistency.LINEARIZABLE)
+                  .await(AWAIT)
+                  .onFailure(PartitionFencedDurableEntityFenceTest::failCause)
+                  .onSuccess(state -> assertThat(state.or(-1)).isEqualTo(7));
+        }
+
+        /// The write fence and the read pipeline agree on the arc, so a remote committed owner of the
+        /// KEY'S OWN partition rejects the read instead of serving this node's local copy. The state is
+        /// seeded through a SELF-owned handle over the SAME engine, because the remote-owned handle would
+        /// (correctly) refuse the create — write admission and read routing consult one ownership source.
+        @Test
+        void get_rejectsNotCurrentOwner_whenCommittedOwnerIsRemote() {
+            seed(wired(SELF, committedOwner(SELF), Option.some(noOpBarrier())));
+
+            wired(SELF, committedOwner(OTHER), Option.some(noOpBarrier())).get("o-1", ReadConsistency.LINEARIZABLE)
+                                                                          .await(AWAIT)
+                                                                          .onSuccess(state -> fail("a non-owner must reject a LINEARIZABLE read, got " + state))
+                                                                          .onFailure(cause -> assertThat(cause).isInstanceOf(DurableEntityError.NotCurrentOwner.class));
+        }
+
+        /// Barrier absent: `LINEARIZABLE` refuses rather than quietly serving the local read.
+        @Test
+        void get_rejectsLinearizableUnavailable_whenNoBarrierWired() {
+            var entity = wired(SELF, committedOwner(SELF), Option.none());
+
+            entity.create("o-1", 7).await(AWAIT).onFailure(PartitionFencedDurableEntityFenceTest::failCause);
+
+            entity.get("o-1", ReadConsistency.LINEARIZABLE)
+                  .await(AWAIT)
+                  .onSuccess(state -> fail("expected LinearizableUnavailable, got " + state))
+                  .onFailure(cause -> assertThat(cause).isInstanceOf(DurableEntityError.LinearizableUnavailable.class));
+        }
+
+        /// And BOUNDED_STALE on that same entity keeps working — the refusal is per-read, not per-resource.
+        @Test
+        void get_servesBoundedStale_whenNoBarrierWired() {
+            var entity = wired(SELF, committedOwner(SELF), Option.none());
+
+            entity.create("o-1", 7).await(AWAIT).onFailure(PartitionFencedDurableEntityFenceTest::failCause);
+
+            entity.get("o-1", ReadConsistency.BOUNDED_STALE)
+                  .await(AWAIT)
+                  .onFailure(PartitionFencedDurableEntityFenceTest::failCause)
+                  .onSuccess(state -> assertThat(state.or(-1)).isEqualTo(7));
+        }
+
     }
 }

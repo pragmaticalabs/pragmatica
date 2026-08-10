@@ -19,12 +19,15 @@ import org.pragmatica.aether.ember.EmberCluster;
 import org.pragmatica.config.ConfigurationProvider;
 import org.pragmatica.http.HttpOperations;
 import org.pragmatica.http.HttpResult;
+import org.awaitility.core.ConditionTimeoutException;
 import org.pragmatica.lang.Option;
 
 import java.net.URI;
 import java.net.http.HttpRequest;
 import java.time.Duration;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.regex.Pattern;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -58,18 +61,23 @@ import static org.pragmatica.http.JdkHttpOperations.jdkHttpOperations;
 /// provisions a `DurableEntity`, and the create / get / update / delete surface executes inside a
 /// live node with correct per-key semantics — plus the honest negative, that timers refuse.
 ///
-/// Also proven, and this is the BASELINE the later increments must flip: the provisioned entity is
-/// a per-process in-memory map with no ownership fence and no replication. Declaring
-/// `replication_factor = 3` changes nothing.
+/// ## What I1 changed here
 ///
-/// NOT proven, deliberately: that a DurableEntity slice can be deployed to a PRODUCTION node. It
-/// cannot. `resource-durable-entity` is a dependency of nothing but its own parent — unlike
-/// resource-http / resource-notification / resource-db-*, which `aether/node` declares so they land
-/// in the shaded runtime image. On a real node `SpiResourceProvider`'s ServiceLoader therefore never
-/// sees `DurableEntityFactory`, and `SliceClassLoader`'s parent chain cannot resolve `DurableEntity`
-/// at all. This test reaches the factory only because forge is single-JVM — `AetherNode.class
-/// .getClassLoader()` is the app classloader — and `forge-tests` declares the module test-scoped.
-/// Closing that gap is #345 I1; see the comment on that dependency in `forge-tests/pom.xml`.
+/// At I0 the provisioned entity was a per-process map with no ownership fence, and the headline
+/// measurement was that all five nodes accepted a create for one key. I1 replaced it with the fenced
+/// `PartitionFencedDurableEntity` and added owner admission, so exactly one node may now accept — see
+/// [#create_succeedsOnExactlyOneNode_forTheSameKey]. Because that property is asserted by the shared
+/// [#createOnOwner] helper, every test here that creates anything re-proves it as a side effect.
+///
+/// I1 also closed the deployability gap this test used to document: `resource-durable-entity` is now a
+/// dependency of `aether/node`, so `DurableEntityFactory` is on a production node's ServiceLoader path
+/// and `SliceClassLoader`'s parent chain resolves `DurableEntity`. setUp reaching its first test is what
+/// demonstrates it — provisioning REFUSES if any fence collaborator is missing, so a slice that loads is
+/// a slice that got a fully wired fenced entity.
+///
+/// Still NOT flipped, and still measured: state is per-node and dies with its holder
+/// ([#state_isUnrecoverable_afterTheOnlyNodeHoldingItStops]). The backing is `MemoryStorageEngine`;
+/// restart-durability is I3. `replication_factor` is no longer ignored — it is REFUSED above 1.
 @Tag("Heavy")
 @Execution(ExecutionMode.SAME_THREAD)
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
@@ -91,6 +99,8 @@ class DurableEntityForgeTest {
 
     private EmberCluster cluster;
     private final HttpOperations http = jdkHttpOperations();
+    private final AtomicInteger ownershipProbe = new AtomicInteger();
+    private final AtomicReference<List<String>> lastProbeAnswers = new AtomicReference<>(List.of());
 
     @BeforeAll
     void setUp() {
@@ -122,6 +132,28 @@ class DurableEntityForgeTest {
                .pollInterval(POLL_INTERVAL)
                .failFast(this::failIfSliceFailed)
                .until(this::entityReadyOnEveryNode);
+        // Ownership records are minted by a leader-only reconcile tick, so for a few seconds after deploy
+        // NO arc has a committed owner and every write is refused as transient. Poll for convergence on a
+        // throwaway key rather than sleeping: a sleep would either flake on a slow tick or hide a driver
+        // that never ran at all.
+        awaitOwnershipConvergence();
+    }
+
+    /// Wait for the ownership reconcile, and on expiry report WHAT the entity actually answered.
+    ///
+    /// A bare `ConditionTimeout` here would say only "not fulfilled in 4 minutes", which cannot
+    /// distinguish "the driver never ran" from "it ran and the write was refused for some other reason" —
+    /// and the entity reports every refusal as DATA in the response body, so the body is the only place
+    /// the answer exists. Keeping the last probe's bodies turns a dead end into a diagnosis.
+    private void awaitOwnershipConvergence() {
+        try {
+            await().atMost(WAIT_TIMEOUT)
+                   .pollInterval(POLL_INTERVAL)
+                   .failFast(this::failIfSliceFailed)
+                   .until(this::ownershipHasConverged);
+        } catch (ConditionTimeoutException e) {
+            throw new AssertionError("Entity ownership never converged; last probe answers: " + lastProbeAnswers.get(), e);
+        }
     }
 
     @AfterAll
@@ -143,11 +175,10 @@ class DurableEntityForgeTest {
     @Test
     @Order(1)
     void create_returnsStoredState_forNewKey() {
-        var response = create(firstPort(), "order-create", "placed", 100);
+        var accepted = createOnOwner("order-create", "placed", 100);
 
-        assertThat(outcome(response)).describedAs("create must succeed on a fresh key").isEqualTo("created");
-        assertThat(text(response, "status")).isEqualTo("placed");
-        assertThat(number(response, "amount")).isEqualTo(100);
+        assertThat(text(accepted.response(), "status")).isEqualTo("placed");
+        assertThat(number(accepted.response(), "amount")).isEqualTo(100);
     }
 
     /// Read-your-writes on the owner. The value must come back with both components intact — a bare
@@ -155,9 +186,9 @@ class DurableEntityForgeTest {
     @Test
     @Order(2)
     void get_returnsTheCreatedState_onTheSameNode() {
-        create(firstPort(), "order-get", "placed", 250);
+        var owner = createOnOwner("order-get", "placed", 250).port();
 
-        var response = get(firstPort(), "order-get");
+        var response = get(owner, "order-get");
 
         assertThat(outcome(response)).isEqualTo("found");
         assertThat(text(response, "status")).isEqualTo("placed");
@@ -169,25 +200,25 @@ class DurableEntityForgeTest {
     @Test
     @Order(3)
     void update_commitsTheMutatedState_forExistingKey() {
-        create(firstPort(), "order-update", "placed", 10);
+        var owner = createOnOwner("order-update", "placed", 10).port();
 
-        var updated = update(firstPort(), "order-update", 999);
+        var updated = update(owner, "order-update", 999);
 
         assertThat(outcome(updated)).isEqualTo("updated");
         assertThat(number(updated, "amount")).isEqualTo(999);
         assertThat(text(updated, "status")).describedAs("the mutator changes amount only").isEqualTo("placed");
-        assertThat(number(get(firstPort(), "order-update"), "amount")).describedAs("the mutation is committed, not just returned")
-                                                                      .isEqualTo(999);
+        assertThat(number(get(owner, "order-update"), "amount")).describedAs("the mutation is committed, not just returned")
+                                                                 .isEqualTo(999);
     }
 
     /// Delete removes the instance, and the subsequent read reports absence rather than failing.
     @Test
     @Order(4)
     void delete_makesTheSubsequentGetAbsent() {
-        create(firstPort(), "order-delete", "placed", 5);
+        var owner = createOnOwner("order-delete", "placed", 5).port();
 
-        assertThat(outcome(delete(firstPort(), "order-delete"))).isEqualTo("deleted");
-        assertThat(outcome(get(firstPort(), "order-delete"))).isEqualTo("absent");
+        assertThat(outcome(delete(owner, "order-delete"))).isEqualTo("deleted");
+        assertThat(outcome(get(owner, "order-delete"))).isEqualTo("absent");
     }
 
     // --- typed failures are real, not decorative -------------------------------
@@ -198,30 +229,40 @@ class DurableEntityForgeTest {
     @Test
     @Order(5)
     void create_failsWithKeyAlreadyExists_forDuplicateKeyOnOneNode() {
-        create(firstPort(), "order-duplicate", "placed", 1);
+        var owner = createOnOwner("order-duplicate", "placed", 1).port();
 
-        var duplicate = create(firstPort(), "order-duplicate", "placed", 2);
+        var duplicate = create(owner, "order-duplicate", "placed", 2);
 
         assertThat(outcome(duplicate)).isEqualTo("failed");
         assertThat(text(duplicate, "failureType")).isEqualTo("KeyAlreadyExists");
     }
 
+    /// Owner-aware because admission now precedes the key lookup: a non-owner answers `NotCurrentOwner`,
+    /// and only the owner gets far enough to report `KeyNotFound`. That precedence is correct, not a
+    /// regression — a node with no right to touch a key should not report on its contents. Asserting the
+    /// whole five-node shape rather than just the owner's answer also re-proves the fence for free.
     @Test
     @Order(6)
     void update_failsWithKeyNotFound_forUnknownKey() {
-        var response = update(firstPort(), "order-never-created", 1);
+        var failureTypes = appPorts().stream()
+                                     .map(port -> text(update(port, "order-never-created", 1), "failureType"))
+                                     .toList();
 
-        assertThat(outcome(response)).isEqualTo("failed");
-        assertThat(text(response, "failureType")).isEqualTo("KeyNotFound");
+        assertThat(failureTypes).describedAs("exactly the owner reports on the key's contents")
+                                .containsOnlyOnce("KeyNotFound");
+        assertThat(failureTypes).filteredOn(type -> !"KeyNotFound".equals(type))
+                                .describedAs("every non-owner is turned away before the lookup")
+                                .containsOnly("NotCurrentOwner");
     }
 
     @Test
     @Order(7)
     void delete_failsWithKeyNotFound_whenRepeated() {
-        create(firstPort(), "order-double-delete", "placed", 1);
-        delete(firstPort(), "order-double-delete");
+        var owner = createOnOwner("order-double-delete", "placed", 1).port();
 
-        var repeated = delete(firstPort(), "order-double-delete");
+        delete(owner, "order-double-delete");
+
+        var repeated = delete(owner, "order-double-delete");
 
         assertThat(outcome(repeated)).isEqualTo("failed");
         assertThat(text(repeated, "failureType")).isEqualTo("KeyNotFound");
@@ -234,7 +275,7 @@ class DurableEntityForgeTest {
     @Test
     @Order(8)
     void scheduleTimer_failsWithTimerNotSupported_onEveryNode() {
-        create(firstPort(), "order-timer", "placed", 1);
+        createOnOwner("order-timer", "placed", 1);
 
         var responses = appPorts().stream()
                                   .map(port -> scheduleTimer(port, "order-timer"))
@@ -260,11 +301,9 @@ class DurableEntityForgeTest {
     @Test
     @Order(9)
     void get_returnsAbsentOnEveryOtherNode_afterCreateOnOneNode() {
-        var ownerPort = firstPort();
-        var created = create(ownerPort, "order-isolated", "placed", 42);
-        var ownerInstance = text(created, "instance");
-
-        assertThat(outcome(created)).isEqualTo("created");
+        var accepted = createOnOwner("order-isolated", "placed", 42);
+        var ownerPort = accepted.port();
+        var ownerInstance = text(accepted.response(), "instance");
 
         var others = appPorts().stream()
                                .filter(port -> port != ownerPort)
@@ -275,31 +314,31 @@ class DurableEntityForgeTest {
         assertThat(others).allSatisfy(response -> {
             assertThat(text(response, "instance")).describedAs("must be a DIFFERENT slice instance, else the test is vacuous")
                                                   .isNotEqualTo(ownerInstance);
-            assertThat(outcome(response)).describedAs("state is process-local: replication_factor = 3 is accepted and ignored")
+            assertThat(outcome(response)).describedAs("state is process-local: single-replica, local-owner")
                                          .isEqualTo("absent");
         });
     }
 
-    /// There is NO ownership fence. Every node accepts a create for the SAME key and each believes
-    /// it holds the only copy — five single-writer entities for one key, not one.
+    /// The I1 gate, flipped. At I0 all five nodes accepted a create for the SAME key and each believed it
+    /// held the only copy — five single-writer entities for one key, not one. Exactly one may accept now:
+    /// only the committed owner of the key's `(entity:orders, partition)` arc is admitted, and the other
+    /// four are turned away with `NotCurrentOwner`.
     ///
-    /// This is the STEP-0 repro for I1: once `DurableEntityFactory` builds a
-    /// `PartitionFencedDurableEntity` from real cluster ownership, exactly one node may accept and
-    /// the rest must be rejected as deposed. This test then fails, and that failure is the gate.
+    /// The fence is what makes this true, but note WHICH half: the per-partition epoch fence rejects a
+    /// DEPOSED owner, and could never reject these four — they are live and read the same committed epoch
+    /// the owner does. Owner ADMISSION is what produces one-accepted-four-rejected. Both are wired; this
+    /// asserts the second.
+    ///
+    /// Deliberately a thin assertion over [#createOnOwner], the same helper every other create in this
+    /// suite goes through — so the property is checked continuously as a side effect of ordinary setup,
+    /// not only here.
     @Test
     @Order(10)
-    void create_succeedsOnEveryNode_forTheSameKey() {
-        var responses = appPorts().stream()
-                                  .map(port -> create(port, "order-unfenced", "placed", 7))
-                                  .toList();
+    void create_succeedsOnExactlyOneNode_forTheSameKey() {
+        var accepted = createOnOwner("order-fenced", "placed", 7);
 
-        assertThat(responses).describedAs("every node must have answered").hasSize(NODES);
-        assertThat(responses).allSatisfy(response -> assertThat(outcome(response))
-                .describedAs("no owner fence exists yet: every node accepts the same key")
-                .isEqualTo("created"));
-        assertThat(responses.stream().map(response -> text(response, "instance")).distinct().count())
-                .describedAs("five DISTINCT slice instances each accepted the write — the definition of unfenced")
-                .isEqualTo(NODES);
+        assertThat(text(accepted.response(), "status")).isEqualTo("placed");
+        assertThat(number(accepted.response(), "amount")).isEqualTo(7);
     }
 
     /// State lives on exactly one node and dies with it. Declared `replication_factor = 3`, survived
@@ -312,9 +351,8 @@ class DurableEntityForgeTest {
     @Test
     @Order(11)
     void state_isUnrecoverable_afterTheOnlyNodeHoldingItStops() {
-        var ownerPort = firstPort();
+        var ownerPort = createOnOwner("order-durability", "placed", 77).port();
 
-        assertThat(outcome(create(ownerPort, "order-durability", "placed", 77))).isEqualTo("created");
         assertThat(outcome(get(ownerPort, "order-durability"))).isEqualTo("found");
 
         var ownerNodeId = nodeIdForAppPort(ownerPort);
@@ -337,6 +375,77 @@ class DurableEntityForgeTest {
         assertThat(survivors).allSatisfy(response -> assertThat(outcome(response))
                 .describedAs("no replica holds the state — one graceful stop destroyed it permanently")
                 .isEqualTo("absent"));
+    }
+
+    // --- the fence invariant, asserted on every create ---------------------------
+
+    /// The port that accepted a create, plus its response body.
+    private record Accepted(int port, String response) {}
+
+    /// Create `key` by offering it to EVERY node and requiring that exactly one accepts.
+    ///
+    /// This is the shared create helper rather than a special case in the fence test, and that is
+    /// deliberate: tests 1–5, 7–9 and 11 all need a successful create as a precondition anyway, so routing
+    /// them through here makes every one of them assert the single-writer invariant continuously, for free.
+    ///
+    /// It is also independent of the production owner resolution. Asking the cluster who owns the arc and
+    /// then writing there would make the test partly self-confirming — it would pass even if that
+    /// resolution were wrong, as long as it were wrong the same way on both sides. Offering the write to
+    /// all five and counting acceptances cannot be fooled that way.
+    ///
+    /// Every rejection must be `NotCurrentOwner`. `OwnershipNotYetCommitted` would mean the arc has no
+    /// committed owner — a real defect once setUp has waited for convergence — so it is failed on
+    /// explicitly rather than lumped in with "not accepted".
+    private Accepted createOnOwner(String key, String status, int amount) {
+        var responses = appPorts().stream()
+                                  .map(port -> new Accepted(port, create(port, key, status, amount)))
+                                  .toList();
+        var accepted = responses.stream()
+                                .filter(entry -> "created".equals(outcome(entry.response())))
+                                .toList();
+
+        assertThat(responses).describedAs("every node must have answered").hasSize(NODES);
+        assertThat(accepted).describedAs("exactly one node may accept a create for '%s'; got %s",
+                                          key,
+                                          outcomesOf(responses))
+                            .hasSize(1);
+        assertThat(rejectionTypesOf(responses)).describedAs("every non-owner must be turned away as a non-owner, not as an unowned arc")
+                                               .containsOnly("NotCurrentOwner");
+
+        return accepted.getFirst();
+    }
+
+    private static List<String> outcomesOf(List<Accepted> responses) {
+        return responses.stream()
+                        .map(entry -> outcome(entry.response()))
+                        .toList();
+    }
+
+    private static List<String> rejectionTypesOf(List<Accepted> responses) {
+        return responses.stream()
+                        .filter(entry -> !"created".equals(outcome(entry.response())))
+                        .map(entry -> text(entry.response(), "failureType"))
+                        .toList();
+    }
+
+    /// True once the leader's ownership reconcile has minted records for the entity arcs — detected by a
+    /// throwaway create being ACCEPTED somewhere rather than refused everywhere as
+    /// `OwnershipNotYetCommitted`. Uses a fresh key per attempt so a successful probe never collides with
+    /// a previous one and reports `KeyAlreadyExists`.
+    private boolean ownershipHasConverged() {
+        var key = "__ownership_probe_" + ownershipProbe.incrementAndGet() + "__";
+
+        // Deliberately NOT via outcome(): that throws on a transport-level error body, and this predicate
+        // runs while the cluster is still settling, so one slow node would abort setUp instead of simply
+        // reporting "not converged yet". A failed request is not-yet-converged; only a literal accepted
+        // create counts.
+        var answers = appPorts().stream()
+                                .map(port -> create(port, key, "probe", 0))
+                                .toList();
+
+        lastProbeAnswers.set(answers);
+
+        return answers.stream().anyMatch(response -> response.contains("\"outcome\":\"created\""));
     }
 
     // --- entity operations -----------------------------------------------------

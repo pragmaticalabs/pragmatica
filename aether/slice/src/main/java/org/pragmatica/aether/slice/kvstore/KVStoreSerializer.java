@@ -188,6 +188,7 @@ public final class KVStoreSerializer {
             case StreamPartitionAssignmentKey _ -> "stream-assign";
             case StreamCursorCheckpointKey _ -> "stream-cursor";
             case StreamRegistrationKey _ -> "stream-reg";
+            case EntityKeyspaceRegistrationKey _ -> "entity-keyspace";
             case ClusterConfigKey _ -> "cluster-config";
             case StorageStatusKey _ -> "storage-status";
             case StorageBlockKey _ -> "storage-block";
@@ -260,6 +261,7 @@ public final class KVStoreSerializer {
             case StreamPartitionAssignmentValue v -> serializeStreamPartitionAssignment(v);
             case StreamCursorCheckpointValue v -> serializeStreamCursorCheckpoint(v);
             case StreamRegistrationValue v -> serializeStreamRegistration(v);
+            case EntityKeyspaceRegistrationValue v -> serializeEntityKeyspaceRegistration(v);
             case ClusterConfigValue v -> serializeClusterConfig(v);
             case StorageStatusValue v -> serializeStorageStatus(v);
             case StorageBlockValue v -> serializeStorageBlock(v);
@@ -561,6 +563,7 @@ public final class KVStoreSerializer {
             case "stream-assign" -> parseStreamPartitionAssignmentEntry(identity, rawValue);
             case "stream-cursor" -> parseStreamCursorCheckpointEntry(identity, rawValue);
             case "stream-reg" -> parseStreamRegistrationEntry(identity, rawValue);
+            case "entity-keyspace" -> parseEntityKeyspaceRegistrationEntry(identity, rawValue);
             case "stream-registry" -> parseStreamRegistryEntry(identity, rawValue);
             case "blueprint-stream-bindings" -> parseBlueprintStreamBindingsEntry(identity, rawValue);
             case "cloud-credentials" -> parseCloudCredentialsEntry(identity, rawValue);
@@ -1225,6 +1228,28 @@ public final class KVStoreSerializer {
     private static String serializeStreamRegistration(StreamRegistrationValue v) {
         return v.nodeId()
                 .id() + PIPE + v.consumerGroup() + PIPE + v.batchMode() + PIPE + v.eventType();
+    }
+
+    private static String serializeEntityKeyspaceRegistration(EntityKeyspaceRegistrationValue v) {
+        return Integer.toString(v.partitionCount());
+    }
+
+    /// Single-field value, so no `PIPE` split: the whole raw form is the partition count.
+    ///
+    /// **This arm is NOT load-bearing, and it is NOT required to compile.** `toToml`/`fromToml` have zero
+    /// production callers (#538) — only tests — so nothing in a running node reaches it; KV snapshots go
+    /// through `KVStore.makeSnapshot`/`restoreSnapshot` and the node codec instead, which is what actually
+    /// carries an entity-keyspace registration across a restart. The two serialize-side arms for this type
+    /// ARE required: their switches are exhaustive over the sealed `AetherKey`/`AetherValue` with no
+    /// `default`, so omitting them breaks the build. This parse arm is added anyway, deliberately, so the
+    /// type is not the one asymmetric member of the surface — serializing to a tag that parses back as
+    /// `UnknownKeyType` is a trap for whoever revives or deletes it.
+    private static Result<Map.Entry<AetherKey, AetherValue>> parseEntityKeyspaceRegistrationEntry(String identity,
+                                                                                                  String raw) {
+        return Number.parseInt(raw.trim())
+                     .mapError(_ -> new SerializationError.ParseFailure("entity-keyspace value requires an integer partition count, got " + raw))
+                     .flatMap(partitionCount -> EntityKeyspaceRegistrationKey.fromIdentity(identity).map(key -> entry(key,
+                                                                                                                      new EntityKeyspaceRegistrationValue(partitionCount))));
     }
 
     private static Result<Map.Entry<AetherKey, AetherValue>> parseClusterConfigEntry(String identity, String raw) {

@@ -62,6 +62,7 @@ class SliceProcessorTest {
             package org.pragmatica.serialization;
 
             import java.util.List;
+            import java.util.Set;
 
             public interface SliceCodec {
                 static int deterministicTag(String className) {
@@ -70,6 +71,7 @@ class SliceProcessorTest {
                 static void writeCompact(Object buf, int value) {}
                 static int readCompact(Object buf) { return 0; }
                 static SliceCodec sliceCodec(SliceCodec parent, List<TypeCodec<?>> codecs) { return parent; }
+                static SliceCodec sliceCodec(SliceCodec parent, List<TypeCodec<?>> codecs, Set<Class<?>> requiredTypes) { return parent; }
                 record TypeCodec<T>(Class<T> type, int tag, TypeWriter<T> writer, TypeReader<T> reader) {}
                 interface TypeWriter<T> { void writeBody(SliceCodec codec, Object buf, T value); }
                 interface TypeReader<T> { T readBody(SliceCodec codec, Object buf); }
@@ -1166,6 +1168,187 @@ class SliceProcessorTest {
         assertThat(factoryContent).contains("ctx.resources().provide(DatabaseConnector.class, \"database.primary\")");
         assertThat(factoryContent).contains("record inventoryService(MethodHandle<");
         assertThat(factoryContent).contains("OrderRepository.orderRepository(db, inventory)");
+    }
+
+    // ========== Resource Type Argument Codec Derivation Tests ==========
+
+    /// A `DurableEntity<K, S>`-shaped resource: the state type crosses the serialization boundary
+    /// without ever appearing in a slice method signature, which is exactly the case the
+    /// method-walking codec sweep misses.
+    private static final JavaFileObject DURABLE_ENTITY = JavaFileObjects.forSourceString(
+            "test.infra.DurableEntity",
+            """
+            package test.infra;
+
+            import org.pragmatica.lang.Promise;
+
+            public interface DurableEntity<K, S> {
+                Promise<S> create(K key, S initial);
+            }
+            """);
+
+    private static JavaFileObject entityQualifier(String name, String config) {
+        return JavaFileObjects.forSourceString("test.annotation." + name,
+                                               """
+            package test.annotation;
+            import org.pragmatica.aether.slice.annotation.ResourceQualifier;
+            import java.lang.annotation.*;
+            @ResourceQualifier(type = test.infra.DurableEntity.class, config = "%s")
+            @Retention(RetentionPolicy.RUNTIME)
+            @Target(ElementType.PARAMETER)
+            public @interface %s {}
+            """.formatted(config, name));
+    }
+
+    @Test
+    void codec_generatesEntriesForRecordAndEnumTypeArguments_whenParameterIsResourceQualified() throws Exception {
+        var orderState = JavaFileObjects.forSourceString("test.state.OrderState",
+                                                         """
+            package test.state;
+            public record OrderState(String status, int amount) {}
+            """);
+        var auditLevel = JavaFileObjects.forSourceString("test.state.AuditLevel",
+                                                         """
+            package test.state;
+            public enum AuditLevel { OFF, FULL }
+            """);
+        var source = JavaFileObjects.forSourceString("test.EntitySlice",
+                                                     """
+            package test;
+            import org.pragmatica.aether.slice.annotation.Slice;
+            import org.pragmatica.lang.Promise;
+            import test.annotation.OrderEntity;
+            import test.annotation.AuditEntity;
+            import test.infra.DurableEntity;
+            import test.state.AuditLevel;
+            import test.state.OrderState;
+            @Slice
+            public interface EntitySlice {
+                Promise<String> create(String orderId);
+                static EntitySlice entitySlice(@OrderEntity DurableEntity<String, OrderState> orders,
+                                               @AuditEntity DurableEntity<String, AuditLevel> audit) { return null; }
+            }
+            """);
+
+        var sources = commonSources();
+
+        sources.add(DURABLE_ENTITY);
+        sources.add(entityQualifier("OrderEntity", "entities.orders"));
+        sources.add(entityQualifier("AuditEntity", "entities.audit"));
+        sources.add(orderState);
+        sources.add(auditLevel);
+        sources.add(source);
+
+        Compilation compilation = javac().withProcessors(new SliceProcessor()).compile(sources);
+
+        assertCompilation(compilation).succeeded();
+
+        var factoryContent = compilation.generatedSourceFile("test.EntitySliceFactory")
+                                        .get().getCharContent(false).toString();
+
+        // The record state type gets a component-wise codec even though no method mentions it.
+        assertThat(factoryContent).contains("new SliceCodec.TypeCodec<test.state.OrderState>(test.state.OrderState.class");
+        assertThat(factoryContent).contains("codec.write(buf, val.status())");
+        assertThat(factoryContent).contains("return new test.state.OrderState(status, amount);");
+        // The enum state type gets the ordinal codec.
+        assertThat(factoryContent).contains("new SliceCodec.TypeCodec<test.state.AuditLevel>(test.state.AuditLevel.class");
+        assertThat(factoryContent).contains("test.state.AuditLevel.values()[SliceCodec.readCompact(buf)]");
+        // The String key is served by FrameworkCodecs, so no entry and no checklist for it.
+        assertThat(factoryContent).doesNotContain("java.lang.String.class");
+        assertThat(factoryContent).doesNotContain("Set.of(");
+    }
+
+    @Test
+    void codec_addsStartupChecklistEntry_whenResourceTypeArgumentCannotBeGenerated() throws Exception {
+        var opaqueState = JavaFileObjects.forSourceString("test.state.OpaqueState",
+                                                          """
+            package test.state;
+            public interface OpaqueState { String describe(); }
+            """);
+        var source = JavaFileObjects.forSourceString("test.EntitySlice",
+                                                     """
+            package test;
+            import org.pragmatica.aether.slice.annotation.Slice;
+            import org.pragmatica.lang.Promise;
+            import test.annotation.OrderEntity;
+            import test.infra.DurableEntity;
+            import test.state.OpaqueState;
+            @Slice
+            public interface EntitySlice {
+                Promise<String> create(String orderId);
+                static EntitySlice entitySlice(@OrderEntity DurableEntity<String, OpaqueState> orders) { return null; }
+            }
+            """);
+
+        var sources = commonSources();
+
+        sources.add(DURABLE_ENTITY);
+        sources.add(entityQualifier("OrderEntity", "entities.orders"));
+        sources.add(opaqueState);
+        sources.add(source);
+
+        Compilation compilation = javac().withProcessors(new SliceProcessor()).compile(sources);
+
+        assertCompilation(compilation).succeeded();
+
+        var factoryContent = compilation.generatedSourceFile("test.EntitySliceFactory")
+                                        .get().getCharContent(false).toString();
+
+        // Nothing to generate for an interface — it goes on the startup checklist so slice load
+        // fails naming the type, instead of the first write failing with "No codec registered".
+        assertThat(factoryContent).contains("Set.of(test.state.OpaqueState.class));");
+        assertThat(factoryContent).doesNotContain("new SliceCodec.TypeCodec<test.state.OpaqueState>");
+        assertThat(factoryContent).contains("import java.util.Set;");
+    }
+
+    @Test
+    void codec_generatesNoEntries_whenResourceParameterHasNoTypeArguments() throws Exception {
+        var primaryDb = JavaFileObjects.forSourceString("test.annotation.PrimaryDb",
+                                                        """
+            package test.annotation;
+            import org.pragmatica.aether.slice.annotation.ResourceQualifier;
+            import java.lang.annotation.*;
+            @ResourceQualifier(type = test.infra.DatabaseConnector.class, config = "database.primary")
+            @Retention(RetentionPolicy.RUNTIME)
+            @Target(ElementType.PARAMETER)
+            public @interface PrimaryDb {}
+            """);
+        var databaseConnector = JavaFileObjects.forSourceString("test.infra.DatabaseConnector",
+                                                                """
+            package test.infra;
+            import org.pragmatica.lang.Promise;
+            public interface DatabaseConnector { Promise<String> query(String sql); }
+            """);
+        var source = JavaFileObjects.forSourceString("test.OrderRepository",
+                                                     """
+            package test;
+            import org.pragmatica.aether.slice.annotation.Slice;
+            import org.pragmatica.lang.Promise;
+            import test.annotation.PrimaryDb;
+            import test.infra.DatabaseConnector;
+            @Slice
+            public interface OrderRepository {
+                Promise<String> findOrder(String orderId);
+                static OrderRepository orderRepository(@PrimaryDb DatabaseConnector db) { return null; }
+            }
+            """);
+
+        var sources = commonSources();
+
+        sources.add(primaryDb);
+        sources.add(databaseConnector);
+        sources.add(source);
+
+        Compilation compilation = javac().withProcessors(new SliceProcessor()).compile(sources);
+
+        assertCompilation(compilation).succeeded();
+
+        var factoryContent = compilation.generatedSourceFile("test.OrderRepositoryFactory")
+                                        .get().getCharContent(false).toString();
+
+        // A raw resource contributes nothing; the codec override stays as it was before derivation.
+        assertThat(factoryContent).contains("return parent;");
+        assertThat(factoryContent).doesNotContain("Set.of(");
     }
 
     // ========== Duplicate Detection Tests ==========

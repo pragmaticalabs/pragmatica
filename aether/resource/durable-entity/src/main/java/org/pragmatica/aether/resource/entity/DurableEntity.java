@@ -33,6 +33,39 @@ import org.pragmatica.lang.Unit;
 ///     substrate is not yet wired (#277) it degrades to the local read, which on a single owner already
 ///     reflects every acknowledged write.
 ///
+/// ## Binding a keyspace into a slice
+///
+/// There is no shipped `@Entity` qualifier, and that is deliberate. `@Http` and `@Notify` are
+/// parameterless because each names a single fixed section — `@ResourceQualifier(type = ...,
+/// config = "http")` bakes the section into the meta-annotation at the DECLARATION site, so the use
+/// site carries no string. Durable entities are **per-keyspace** (`entities.orders`,
+/// `entities.payments`), so one shipped qualifier could not cover them without growing a
+/// `config = "..."` member, and strings at the use site are not this codebase's style.
+///
+/// The pattern is therefore **one author-declared annotation per keyspace**:
+///
+/// ```
+/// @ResourceQualifier(type = DurableEntity.class, config = "entities.orders")
+/// @Retention(RUNTIME) @Target(PARAMETER)
+/// public @interface OrderEntity {}
+/// ```
+///
+/// Used bare at the factory parameter, with no string in sight:
+///
+/// ```
+/// static OrderSlice orderSlice(@OrderEntity DurableEntity<String, OrderState> orders) { ... }
+/// ```
+///
+/// A slice holding several families declares several qualifiers — `@OrderEntity`,
+/// `@PaymentEntity` — each naming its own `[entities.<keyspace>]` section in exactly one place.
+/// The section named must exist in the blueprint's `resources.toml`.
+///
+/// **Serialization comes for free.** The slice processor collects the type arguments of every
+/// resource-qualified parameter as codec types, so `K` and `S` above (`String`, `OrderState`) are
+/// registered in the slice's `SliceCodec` without any author annotation. Records and enums have
+/// their codecs generated; a state type that is neither must have a codec supplied by the node
+/// (`@CodecFor`), and its absence fails at slice load with a named type rather than at first write.
+///
 /// ## Slice boundary (this cut)
 ///
 /// This is the **HA-only, in-memory** first functional cut (spec §4.4, plan Phase 2b): state lives
