@@ -247,6 +247,22 @@ paper over it.
 > (`AetherNode:1951`, `KVCommand`-generic so it is directly reusable) plus a timeout —
 > `DurableEntityConfig` carries no timeout knob today, so either add one or borrow an existing value.
 > `EntityPartitionArc` stays per-config, built inside `provision` from `keyspace`/`partitionCount`.
+>
+> **OWNER RULING 2026-08-10 — absence policy, per collaborator, because they are not equivalent:**
+>
+> | Absent | Cost | Behaviour |
+> |---|---|---|
+> | Fence (`PartitionOwnerEpochSource` / epoch gate) | **safety** — accepts writes from a deposed owner; the five-writers-per-key case I0 measured | **Refuse provisioning, loudly.** A slice declaring a durable entity fails to start rather than starting wrong. Silent fallback would reintroduce the defect behind a green build, and a future refactor dropping one `registerExtension` would do it invisibly. |
+> | Barrier (`EntityLinearizableBarrier`) | **freshness only** — `roundThenServe` skips the round, still runs `guardOwnerEpoch`, serves locally | **Provision normally. `BOUNDED_STALE` reads work. `LINEARIZABLE` returns a typed failure** — a new `DurableEntityError` variant; the sealed type has `StaleOwner` / `NotCurrentOwner` / `StaleEpochRead` but nothing for "the guarantee you asked for cannot be met here". |
+>
+> This is the consistency-lens rule applied literally: name the precise guarantee per OPERATION rather
+> than one label for the resource. The entity can honestly offer bounded-stale reads while refusing to
+> pretend about linearizable ones. Refusing the whole resource over a freshness loss overstates the
+> harm; serving a silently weaker read than the caller requested is the thing this ruling exists to
+> prevent.
+>
+> Consequence: `EntityLinearizableBarrier`'s factory is load-bearing for a fully working feature, so it
+> lands in I1 rather than being deferred.
 
 **(e)** Either honor `DurableEntityConfig.replicationFactor` or refuse it loudly — today it is
 accepted and silently ignored.
