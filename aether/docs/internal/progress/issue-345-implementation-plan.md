@@ -291,12 +291,44 @@ paper over it.
 > it reintroduces the on-the-fly HRW that `CommittedPartitionOwnerSource` exists to replace, trading a
 > guarantee for speed there is no schedule pressure to buy.
 >
-> **Transient to handle explicitly:** ownership records are minted asynchronously by a leader-only pass,
-> so immediately after provisioning there is a window with NO committed owner — indistinguishable, at
-> the check, from a misconfigured keyspace that will never have one. Allowing writes through that window
-> reopens the five-writers hole; refusing them makes early writes fail until the driver converges. Pick
-> refusal with a typed, clearly transient failure, and have the fixture wait for ownership to converge
-> before asserting. Do not let this become a silent window or a flaky test.
+> **REFINEMENT 2026-08-10 — "C" means NARROW C: extend the writer's partition list, do NOT create a
+> stream per keyspace.** Found while building it, verified in code.
+>
+> `createStream(StreamConfig)` is the only door into the reconcile loop, and per keyspace it performs
+> partition-cap admission against the cluster-wide aggregate guard, reserves off-heap ring memory
+> (`perPartitionFloorBytes × partitions held`, failing the keyspace outright when the stream pool is
+> full), commits a `StreamConfigKey`, and enrols every held partition in reshuffle, backfill, retention,
+> watermark tracking, WAL truncation, replication and the tiered reader.
+>
+> In I3 that allocation is load-bearing — the rings and WAL carry the entity's own log. **In I1 the
+> stream would carry zero appends, permanently.** We would pay for an empty log purely to make a leader
+> write one ownership record, and we would add N empty partitions per keyspace to the reshuffle /
+> deficit-fill loop — the reconciler-under-load class that is still unconverged and has dragged
+> unrelated suites red before. That asymmetry, not the convergence argument, is what fails.
+>
+> The writer does not need any of it: `writeOwnershipChanges(List<PartitionKey>)` takes an arbitrary
+> partition list and `decide(...)` is pure — neither references `StreamPartitionManager` or
+> `StreamCatalog`. So hand the writer the entity keyspaces' arcs alongside the stream partitions. Same
+> record family, same leader-only gate, same batching, same `OwnershipEpochHighWater` — everything the
+> convergence argument was actually about — with none of the empty-log cost. When I3 makes the keyspace
+> a real stream, the records are already in the right family under the right key, so nothing is discarded.
+>
+> **Namespacing is mandatory, not cosmetic.** `StreamPartitionOwnershipKey(name, partition)` keys on a
+> bare name, so entity keyspace `orders` and stream `orders` collide. Under `createStream` that collision
+> is SILENT AND WRONG: `ensureConfigCommitted` makes the entity adopt the *stream's* partition count
+> while `EntityPartitionArc` is built from the entity's own, so the write fence and the ownership arcs
+> would key different partitions. Prefix entity arcs as `entity:<keyspace>`; I3's stream adopts the same
+> prefix.
+>
+> **Irreducible under either variant:** a cluster-wide registry of live entity keyspaces and their
+> partition counts, because `DurableEntityConfig` is per-slice and node-local while the writer is
+> leader-only.
+>
+> **Interim state, accepted deliberately:** (A) lands before the ownership mechanism, so until narrow C
+> is in, every entity write on a real node fails with the transient no-owner cause. That is
+> loud-and-non-functional instead of silent-and-wrong, and it closes the hazard the accidental
+> `pom.xml` commit opened. Forge test 10 measures 0-accepted / 5-rejected in that window and is NOT
+> rewritten to 1/4 until narrow C makes that outcome real.
 
 **(e)** Either honor `DurableEntityConfig.replicationFactor` or refuse it loudly — today it is
 accepted and silently ignored.
