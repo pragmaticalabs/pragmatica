@@ -198,9 +198,36 @@ today depended on by no pom but its own, which is why nothing ships.
 **(c)** Add a first-class `@Entity`-style qualifier to the resource module — there is no counterpart
 to `@Http`/`@Notify`, so every author must hand-roll one (I0's fixture does exactly that).
 
-**(d)** `DurableEntityFactory` constructs `PartitionFencedDurableEntity` from real cluster ownership
-sources (`EntityPartitionArc`, `CommittedPartitionOwnerSource`, `OwnershipEpochHighWater` — all
-exist; the node already builds the epoch gate at `AetherNode:428`).
+**(d)** Wire the factory to a fenced variant via the resource SPI's context channel.
+
+> **Correction 2026-08-10.** An earlier draft of this step said "constructs `PartitionFencedDurableEntity`
+> from `EntityPartitionArc`, `CommittedPartitionOwnerSource`, `OwnershipEpochHighWater`". Those are
+> **the wrong collaborators** — they belong to `InMemoryDurableEntity`'s wired constructor, not to
+> `PartitionFencedDurableEntity`. Two distinct wired variants exist and they are not interchangeable:
+>
+> | | `InMemoryDurableEntity` (wired ctor) | `PartitionFencedDurableEntity` |
+> |---|---|---|
+> | Needs | `NodeId`, `EntityPartitionArc`, `CommittedPartitionOwnerSource`, `Option<OwnershipEpochHighWater>`, `Option<EntityLinearizableBarrier>` | `StorageEngine`, `PartitionOwnerEpochSource`, `EntityPartitionArc`, `Serializer`, `Deserializer` |
+> | Fence | coarse — the single `"core"` governor arc; MISSES a same-generation owner reshuffle | per-`(keyspace, partition)` owner epoch; CATCHES that reshuffle |
+> | Reads | `LinearizableEntityServe` — owner-routed, barrier round, epoch guard | **no override of `get(K, ReadConsistency)`** — inherits `DurableEntity:86`'s default and serves a bare local `storage.get` even when LINEARIZABLE is requested |
+> | Storage | in-process map | `StorageEngine` — today only `MemoryStorageEngine`, so still not restart-durable |
+>
+> Neither is complete. The stronger fence and the linearizable read pipeline live in *different*
+> classes, and no variant has both.
+
+**Mechanism (verified, no new seam):** `ResourceFactory:17` already exposes
+`default Promise<T> provision(C config, ProvisioningContext context)`; `SpiResourceProvider.registerExtension`
+fills a node-wide map merged into every context. `StreamAccessFactory` is the working template and is
+wired in `AetherNode.registerForwardExtensionsOnSpi` under a comment naming **"#345 item 1e-c"** — this
+epic's own stream side already landed the pattern. `Serializer` and `Deserializer` are already
+registered there; `NodeId` and `OwnershipEpochHighWater` too.
+
+**Decision required before coding:** which variant does I1 wire? The I1 gate is about the FENCE
+(`create_succeedsOnEveryNode_forTheSameKey` flipping), which argues for `PartitionFencedDurableEntity`
+and its stronger per-partition epoch. The cost of that choice is that a caller requesting
+`ReadConsistency.LINEARIZABLE` silently gets a local read — a claim-vs-reality gap that must then be
+either closed (port `LinearizableEntityServe` onto it) or documented as a known limitation. Do not
+paper over it.
 
 **(e)** Either honor `DurableEntityConfig.replicationFactor` or refuse it loudly — today it is
 accepted and silently ignored.
