@@ -131,16 +131,47 @@ features precisely because `build.sh` stayed green with no consumer running.
 
 **I1 — wire the fenced entity. Do these IN ORDER; the order is load-bearing.**
 
-**(a) Make activation failure visible FIRST.** I0 demonstrated that a slice whose resource type is
-absent from the runtime classpath fails at `SliceFactory.invokeFactory` with
-`No resource provider registered for resource type: …DurableEntity`, while
-`POST /api/blueprints` has already answered `"applied"` — and the failure never reaches the cluster
-slice-status surface. This is ONE defect with two faces: the same invisibility is why I0's
-`failIfSliceFailed` (which polls `slicesStatus()`) never fires, so the red-gate falls back to a
-4-minute awaitility timeout instead of failing in seconds. Fixing the surface fixes both.
-**It must come first**, because step (b) removes the only reproduction that currently exists — after
-the dependency lands, the observability hole survives untested until some future resource type trips
-over it. Observability-first is the project doctrine here, not a preference.
+**(a) Make the deploy failure observable to the operator — but NOT as originally written.**
+
+> **Correction 2026-08-10, from live diagnosis.** The first version of this step said "activation
+> failure never reaches the cluster slice-status surface" and called it an observability hole. That
+> premise was an inference from I0 and it is WRONG. Verified mechanism, with live 5-node evidence:
+>
+> 1. `NodeDeploymentState.handleLoadingFailure` (`:394`) → `transitionToFailed` → FAILED **is** written to KV.
+> 2. `ClusterDeploymentState.Active.handleDeterministicFailure` (`:1300`) routes a `DeploymentFailed`
+>    event via `ctx.router()`, and then — because atomicity is `ALL_OR_NOTHING` — calls
+>    `rollbackBlueprintForArtifact` (`:2004`).
+> 3. Rollback issues `KVCommand.Remove` per instance (`removeNodeArtifactKey`, `:1518`);
+>    `IndexedDeploymentMap.onNodeArtifactRemove` (`DeploymentMap.java:58`) does `index.remove(...)`.
+> 4. `allDeployments()` therefore has nothing to group, so the `.reduce(FAILED, higherState)`
+>    aggregation — which is correct code — never runs on a non-empty list.
+>
+> Observed live: `slicesStatus()` reports `size=1, state=UNLOADING` for ~5s, then `size=0` for the
+> rest of the run. The artifact string matches `ENTITY_SLICE` byte-for-byte, so the predicate was
+> never the problem.
+>
+> **`slicesStatus()` emptying is arguably CORRECT** — under `ALL_OR_NOTHING` the deployment did not
+> happen, and that surface reports current state, not history. So there is no "make slicesStatus show
+> FAILED" fix to make, and doing it would fight the atomicity contract.
+
+What the step actually is, therefore:
+
+- **Fix the fixture to poll the right surface.** `failIfSliceFailed` polls `slicesStatus()`, a
+  current-state view that a rolled-back deploy correctly empties. It must instead watch the failure
+  record — the `DeploymentFailed` cluster event. This is what converts I0's 4-minute timeout red into
+  a fast red, and it is a fixture fix, not a product fix.
+- **Then settle the one open product question** (see below) and fix only what it exposes.
+
+**OPEN — must be answered before writing any product code here.** Does `DeploymentFailed` actually
+reach `/api/events` in this scenario? There are two candidate paths and they are not equally safe:
+`handleDeterministicFailure`'s explicit `ctx.router().route(...)` (fires before rollback, not
+KV-dependent), and `ClusterEventAggregator`'s KV-watch path (`:612` `case FAILED ->
+handleDeploymentFailed`, emitting at `:644`) which keys on `NodeArtifactValue` reaching FAILED — and
+the rollback removes exactly those entries moments later, so the watch may be raced by the removal.
+If the event does land, the residual gap is narrow and honest: `POST /api/blueprints` answers
+`"applied"` with nothing tying that response to the later failure, which is a linkage/docs fix. If it
+does NOT land, the failure is genuinely unpublished anywhere durable, and that is a real defect
+deserving its own issue.
 
 **(b)** Add `resource-durable-entity` to `aether/node/pom.xml`, mirroring `resource-http`. It is
 today depended on by no pom but its own, which is why nothing ships.
