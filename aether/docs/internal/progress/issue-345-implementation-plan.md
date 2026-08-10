@@ -69,3 +69,99 @@ I own merges → commit directly on `release-1.0.0-rc2` in risk-first **gated ba
 2. **Cloud gating** — Phase 1 (1a–1e) runs a Hetzner cloud pass as the *terminal* gate (reconciler-under-load class). Forge first, cloud last.
 3. **Wire compat — collapsed.** No backward-compat constraint → add `ownerEpoch` directly to the wire `DHTMessage` put-request and the in-memory `VersionedEntry`; no tolerant-reader / versioned-message / two-phase rollout. The entry carries two orthogonal numbers: HLC `version` (last-write-wins) + `ownerEpoch` (fence).
 4. **#349 scope** — include **path (a)** (fenced log on the existing `LocalDiskTier`/S3 stream substrate) as **P3** → the entity ships restart-durable. **Defer option (c)** (persistent DHT engine) to its own epic.
+
+
+---
+
+# OWNER RULING 2026-08-10 — Option A: full epic, entity + durability + workflow + saga
+
+Scope decision after a costed four-way assessment (A full epic / B durability-only / C wire the
+already-built fence / D ship as-is): **Option A. Production readiness matters.**
+
+Consistent with the GA north star (2026-07-20: no time pressure, quality primary, four axes).
+This epic stays on **rc3** — it is feature work, and rc4 is explicitly "no new features", so rc3
+does not close until this lands.
+
+## Re-grounding — what changed since the June plan
+
+`issue-345-implementation-plan.md` was written 2026-06-24. Four things are different now:
+
+1. **Phase 3's prerequisite is DONE.** The plan's Phase 3 targets "a fenced log on a stream
+   partition sealed to the existing `LocalDiskTier`/S3 tier". In June that seal was
+   `EvictionListener.NOOP`. It is now wired: `StorageFactory` composes memory + DHT + `LocalDiskTier`
+   for streams, `SnapshotManager.restoreFromLatest()` runs at boot, and `PartitionWal` is on the
+   production write path. Observed initializing on live cloud nodes 2026-08-09.
+2. **Phase 2a is DONE** — `PerKeySerialExecutor` (lock-free tail-chaining) is real and shared by all
+   three entity impls. Spec §11's table still marks piece 2 MISSING; the table is stale.
+3. **The envelope freeze applies and is NOT threatened.** `@DurableEntity` involves zero
+   slice-processor code (verified: no hits in `jbct/slice-processor/src/main`), so this arc needs no
+   `ENVELOPE_FORMAT_VERSION` bump. The freeze at 1000 holds.
+4. **The #277 coordination section is obsolete** — #277 is closed.
+
+## Verified starting state
+
+| Piece | State |
+|---|---|
+| 1a KV fence | code-present (`staleEpochWrite`/`EpochBearing`) |
+| 1b stream-path fence | MISSING |
+| 2a per-key serialization | **DONE** |
+| 2b entity core + SPI | code-present, **structurally unreachable** — see below |
+| 2c durable timers (#351) | zero code — every impl hard-fails `TimerNotSupported` |
+| 3 restart-durability | zero code; prerequisite now met |
+| 4a PersistentWorkflow (#353) | zero code |
+| 4b Saga + audit (#354/#355) | zero code |
+
+**The unreachability is the load-bearing fact.** `DurableEntityFactory.provision()` unconditionally
+returns the *no-arg* `InMemoryDurableEntity` — a bare `ConcurrentHashMap`, `linearizableServe =
+none()`. The wired constructor, `FencedDurableEntity` and `PartitionFencedDurableEntity` are fully
+coded and tested, and their only non-test callers are three test files. `grep -rl "DurableEntity"
+aether/node` returns nothing. Every ownership input those variants need already exists
+(`EntityPartitionArc`, `CommittedPartitionOwnerSource`, `PartitionOwnerEpochGate`,
+`OwnershipEpochHighWater`) and the node already constructs the epoch gate at `AetherNode:428`.
+
+**No slice anywhere declares a DurableEntity resource** — no TOML, no example, no fixture. Nothing
+would run this code even if it were wired. That governs increment 0 below.
+
+## Increment ladder (risk-first, one gate each, no big-bang)
+
+**I0 — a fixture that RUNS.** An example slice declaring and exercising a DurableEntity, driven in
+Forge. Without it every later increment is unfalsifiable — this project has shipped silently-inert
+features precisely because `build.sh` stayed green with no consumer running.
+*Gate: entity ops observable in a Forge run.*
+
+**I1 — wire the fenced entity.** `DurableEntityFactory` constructs `PartitionFencedDurableEntity`
+from real cluster ownership sources; node bootstrap supplies them. Either honor
+`DurableEntityConfig.replicationFactor` or refuse it loudly — today it is accepted and silently
+ignored.
+*Gate: Forge — a deposed partition owner is REJECTED on a same-generation reshuffle (the STEP-0
+repro flips); then the cloud gate the plan requires for fence work.*
+
+**I2 — piece 1b, the stream-path fence.** Required before entity state may live on a log.
+*Gate: unit + Forge.*
+
+**I3 — Phase 3, fenced log on a stream partition → disk tier.** Entity state moves from
+KV-snapshot to a fenced log; fold-to-snapshot and tail; governor owns the fold; same `DurableEntity`
+API, no author churn (spec §4.4). This is #349 path (a) for entity state — coordinate there.
+*Gate: Forge kill-9 of the owner, state survives; then cloud.* **This also supplies the
+crash-durability evidence currently missing for `PartitionWal` — today only unit-tested.**
+
+**I4 — durable per-entity timers (#351).** *Gate: timer survives owner handover AND restart.*
+
+**I5 — PersistentWorkflow facade (#353).**
+
+**I6 — Saga + journaled run-once step + audit stream + operator API (#354, #355).** The operator API
+is subject to the QUAD invariant — REST + CLI + docs + dashboard surface (or a recorded dormant-slot
+decision).
+*Gate: the plan's acceptance bar — a sample workflow and saga survive `kill -9` of the owner, and
+100k entities stay within budget on a 5-node cluster.*
+
+## Standing constraints for this arc
+
+- **Claim discipline per increment**: catalog row 217 and `guarantees.md` get an evidence tag as each
+  gate passes — never ahead of it. Row 217 stays "Partial" until I3 is cloud-green.
+- **The spec's rejected alternative stays rejected**: a durable default on fenced-KV-on-DHT "quietly
+  assumes a durable DHT that does not exist". Option (c), a persistent DHT `StorageEngine`, remains
+  out of scope as its own epic.
+- Separately and independently: `StorageBackedPersistence` (AHSE-backed Rabia snapshots) is built,
+  unit-tested and orphaned. Wiring it bounds consensus-KV loss on full-cluster restart. It is NOT a
+  substitute for anything above — snapshot granularity, not per-write durability.
