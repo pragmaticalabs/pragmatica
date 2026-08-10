@@ -229,6 +229,25 @@ and its stronger per-partition epoch. The cost of that choice is that a caller r
 either closed (port `LinearizableEntityServe` onto it) or documented as a known limitation. Do not
 paper over it.
 
+> **OWNER RULING 2026-08-10: `PartitionFencedDurableEntity` AND port `LinearizableEntityServe` onto
+> it.** One class ends up with both properties rather than a gate that passes without earning its
+> guarantee, and no shipped API is left silently ignoring a `ReadConsistency` argument.
+>
+> Consequence — the collaborator set is the UNION of the two variants:
+> `StorageEngine`, `PartitionOwnerEpochSource`, `EntityPartitionArc`, `Serializer`, `Deserializer`
+> (already required) plus `NodeId`, `CommittedPartitionOwnerSource`, `Option<OwnershipEpochHighWater>`,
+> `Option<EntityLinearizableBarrier>` (needed by `LinearizableEntityServe`).
+>
+> Already registered as SPI extensions: `NodeId`, `OwnershipEpochHighWater`, `Serializer`,
+> `Deserializer`. To construct and register: `KvCommittedPartitionOwnerSource` (needs only the built
+> `kvStore`; zero call sites today) and `EntityLinearizableBarrier` — which has **no factory at all**,
+> only a bare `@FunctionalInterface` whose javadoc says the production binding arrives "with the
+> durable-entity node wiring". It needs a ~10-line factory mirroring
+> `LinearizableBarrier.noOpRound(applier, timeout)`, reusing the node-wide `clusterCommandApplier`
+> (`AetherNode:1951`, `KVCommand`-generic so it is directly reusable) plus a timeout —
+> `DurableEntityConfig` carries no timeout knob today, so either add one or borrow an existing value.
+> `EntityPartitionArc` stays per-config, built inside `provision` from `keyspace`/`partitionCount`.
+
 **(e)** Either honor `DurableEntityConfig.replicationFactor` or refuse it loudly — today it is
 accepted and silently ignored.
 
