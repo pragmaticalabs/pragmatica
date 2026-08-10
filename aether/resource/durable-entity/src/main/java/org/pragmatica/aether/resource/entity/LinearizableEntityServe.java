@@ -27,13 +27,16 @@ import org.pragmatica.lang.Unit;
 /// The pipeline for a key: resolve the key's `(keyspace, partition)` arc → read the arc's COMMITTED owner
 /// → if a REMOTE node is the committed owner, reject [DurableEntityError.NotCurrentOwner] (no entity
 /// read-forward transport exists in 1e-b — forwarding is a follow-up) → if SELF is the committed owner,
-/// fast-fail on the pre-round epoch fence, run the no-op round (when a [EntityLinearizableBarrier] is
-/// wired), re-check the POST-round epoch fence (the decision point, current because the round has applied
-/// every ownership change committed before it), then serve the local value. A fence-free / barrier-free /
-/// no-committed-record configuration degrades each stage to a pass or to the local read, so the un-wired
-/// in-memory cut and existing tests keep serving their local read — which on a single owner already
-/// reflects every acknowledged write. Every rejection is a typed [DurableEntityError] so the caller
-/// re-resolves the owner and retries; nothing blocks the thread.
+/// fast-fail on the pre-round epoch fence, run the no-op round, re-check the POST-round epoch fence (the
+/// decision point, current because the round has applied every ownership change committed before it),
+/// then serve the local value. A fence-free / no-committed-record configuration degrades to a pass or to
+/// the local read, so an un-wired arc keeps serving — which on a single owner already reflects every
+/// acknowledged write. A BARRIER-free configuration does NOT degrade: the round cannot be ordered, so the
+/// requested guarantee cannot be met and the read is rejected with
+/// [DurableEntityError.LinearizableUnavailable] rather than served locally under the stronger name
+/// (#345 I1 owner ruling — the two absences are not equivalent, since a missing barrier costs freshness
+/// on a read the caller explicitly asked to be fresh). Every rejection is a typed [DurableEntityError] so
+/// the caller re-resolves the owner and retries; nothing blocks the thread.
 ///
 /// Unlike the stream pipeline, there is no replica catch-up gate — the in-memory entity has no replica
 /// registry; the catch-up gate is stream-replication-specific and arrives with the entity's quorum
@@ -101,10 +104,11 @@ final class LinearizableEntityServe<K, S> {
         return guardOwnerEpoch(committed, key, domain).fold(Cause::promise, _ -> roundThenServe(committed, key, domain));
     }
 
-    /// Issue the no-op round (when a barrier is wired) and only then re-decide; with no barrier the
-    /// pipeline degrades to the post-round decision directly (un-wired / non-cluster behaviour).
+    /// Issue the no-op round and only then re-decide. With NO barrier the round cannot be ordered, so the
+    /// requested guarantee is unmeetable and the read is refused — never quietly downgraded to the local
+    /// read, which would answer a `LINEARIZABLE` request with `BOUNDED_STALE` data.
     private Promise<Option<S>> roundThenServe(CommittedOwner committed, K key, StreamPartition domain) {
-        return barrier.fold(() -> postRoundServe(committed, key, domain),
+        return barrier.fold(() -> linearizableUnavailable(key),
                             round -> awaitRoundThenServe(round, committed, key, domain));
     }
 
@@ -148,6 +152,10 @@ final class LinearizableEntityServe<K, S> {
 
     private static <S> Promise<Option<S>> notCurrentOwner(Object key, NodeId owner) {
         return new DurableEntityError.NotCurrentOwner(String.valueOf(key), owner.id()).promise();
+    }
+
+    private static <S> Promise<Option<S>> linearizableUnavailable(Object key) {
+        return new DurableEntityError.LinearizableUnavailable(String.valueOf(key)).promise();
     }
 
     private static String epochText(Epoch epoch) {

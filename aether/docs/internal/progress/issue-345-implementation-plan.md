@@ -263,6 +263,40 @@ paper over it.
 >
 > Consequence: `EntityLinearizableBarrier`'s factory is load-bearing for a fully working feature, so it
 > lands in I1 rather than being deferred.
+>
+> **OWNER RULING 2026-08-10 — how the gate actually gets earned (A + C).**
+>
+> Found during implementation, verified in code: **the specified gate was impossible.** An epoch fence
+> is staleness rejection, not admission control. `PartitionOwnerEpochGate` rejects only a *strictly
+> older* stamp, so it rejects a DEPOSED owner — five LIVE nodes all read the same committed epoch,
+> stamp the same value, and all commit. `PartitionFencedDurableEntity` has zero references to
+> `NotCurrentOwner`/`committedOwner`/`selfNodeId`. Worse, no ownership record exists for an entity
+> keyspace at all: `driveStreamOwnership` (`AetherNode:990`) is fed solely by `ReplicaSetController`'s
+> reconciled `(stream, partition)` list, so on a real node `currentOwnerEpoch → Epoch.ZERO` and
+> `committedOwner → none()` everywhere, leaving the fence wired but inert.
+>
+> Ruling — both halves:
+> - **(A) Write-path owner admission.** `create`/`update`/`delete` reject when the committed owner of
+>   the key's arc is not self, with `NotCurrentOwner`. Uses `NodeId` + `CommittedPartitionOwnerSource`,
+>   both already in the union collaborator set. This is what actually produces one-accepted-four-rejected.
+> - **(C) Mint ownership records by reusing the stream driver** — register the entity keyspace in the
+>   `StreamPartitionOwnershipKey` family so the proven leader-only `ReplicaSetController` +
+>   `StreamPartitionOwnershipWriter` path commits the records the entity classes already read, rather
+>   than building an entity-specific driver.
+>
+> Rationale for C over a bespoke driver: **I3 puts entity state on a stream partition anyway.** Reusing
+> the stream ownership family is convergent with where this epic lands, not a shortcut toward it — the
+> rings/WAL allocation that looks like a side effect in I1 becomes the substrate in I3. A bespoke
+> entity driver is the part most likely to be discarded. HRW-resolved ownership (option B) was rejected:
+> it reintroduces the on-the-fly HRW that `CommittedPartitionOwnerSource` exists to replace, trading a
+> guarantee for speed there is no schedule pressure to buy.
+>
+> **Transient to handle explicitly:** ownership records are minted asynchronously by a leader-only pass,
+> so immediately after provisioning there is a window with NO committed owner — indistinguishable, at
+> the check, from a misconfigured keyspace that will never have one. Allowing writes through that window
+> reopens the five-writers hole; refusing them makes early writes fail until the driver converges. Pick
+> refusal with a typed, clearly transient failure, and have the fixture wait for ownership to converge
+> before asserting. Do not let this become a silent window or a flaky test.
 
 **(e)** Either honor `DurableEntityConfig.replicationFactor` or refuse it loudly — today it is
 accepted and silently ignored.

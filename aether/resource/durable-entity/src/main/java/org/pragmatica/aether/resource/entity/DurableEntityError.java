@@ -109,4 +109,21 @@ public sealed interface DurableEntityError extends Cause {
                  + " is stale (deposed) — arc high-water is " + highWaterEpoch;
         }
     }
+
+    /// A [ReadConsistency#LINEARIZABLE] read reached an entity provisioned WITHOUT an
+    /// [EntityLinearizableBarrier], so the no-op consensus round that makes the post-round epoch fence
+    /// current cannot be ordered. The guarantee the caller asked for cannot be met here, and the
+    /// alternative — quietly serving the local [ReadConsistency#BOUNDED_STALE] read under the stronger
+    /// name — is the thing this variant exists to prevent. Distinct in kind from every sibling above:
+    /// those report that an OPERATION was refused, this reports that a requested GUARANTEE is
+    /// unavailable on this node. [ReadConsistency#BOUNDED_STALE] reads of the same key are unaffected,
+    /// so the caller either accepts bounded staleness or retries where the barrier is wired.
+    record LinearizableUnavailable(String key) implements DurableEntityError {
+        @Override
+        public String message() {
+            return "Linearizable read for durable entity key '" + key
+                 + "' cannot be served: no linearizable barrier is wired on this node, so the no-op "
+                 + "consensus round cannot be ordered — request BOUNDED_STALE to read the local committed prefix";
+        }
+    }
 }

@@ -2,7 +2,7 @@
 #
 # Packaged into the blueprint JAR as META-INF/resources.toml by the JBCT maven-plugin. At deploy
 # time BlueprintService stores this content in the KV-Store; each node's slice loader resolves the
-# @OrderEntity qualifier's `config = "entities.orders"` lookup against it.
+# @Durable qualifier's `config = "entities.orders"` lookup against it.
 #
 # THIS IS THE FIRST DurableEntity RESOURCE DECLARATION IN THE REPOSITORY. Before it, nothing
 # anywhere named a durable entity, so `resource/durable-entity` was unreachable from any running

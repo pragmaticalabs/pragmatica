@@ -127,6 +127,21 @@
             <artifactId>resource-notification</artifactId>
             <version>${project.version}</version>
         </dependency>
+        <!--
+            #345 I1(b): without this, a slice declaring a `@Durable DurableEntity` cannot load on a
+            production node at all — `resource-durable-entity` was a dependency of nothing but its
+            own parent, so the shaded runtime image carried neither `DurableEntityFactory` (invisible
+            to `SpiResourceProvider`'s ServiceLoader) nor the `DurableEntity` type itself (unresolvable
+            through `SliceClassLoader`'s parent chain). It lands together with the SPI wiring in
+            `AetherNode.registerEntityExtensionsOnSpi`: on its own it would convert a loud activation
+            failure into a silent wrong behaviour — a slice that deploys and then gives every node its
+            own private, unfenced copy of every entity.
+        -->
+        <dependency>
+            <groupId>org.pragmatica-lite.aether</groupId>
+            <artifactId>resource-durable-entity</artifactId>
+            <version>${project.version}</version>
+        </dependency>
         <dependency>
             <groupId>org.pragmatica-lite.aether</groupId>
             <artifactId>resource-db-async</artifactId>
