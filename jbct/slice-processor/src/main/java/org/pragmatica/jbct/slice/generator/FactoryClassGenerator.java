@@ -1612,6 +1612,17 @@ public class FactoryClassGenerator {
         var qualifiedTypeName = qualifier.resourceType().toString();
         var typeName = importTracker.use(qualifiedTypeName);
         var configSection = escapeJavaString(qualifier.configSection());
+        // The else-arm's two-argument call still reaches the context overload at runtime:
+        // `SliceLoadingContext.CompositeAwareResourceProvider` promotes it whenever a slice-composite is
+        // present, and `CodecAwareResourceProvider` then injects the slice codec as Serializer/Deserializer
+        // (#526) — which is how a resource's type-argument codecs reach it. Only publisher/stream resources
+        // need the context spelled out here, because they carry a key extractor this generator computes.
+        //
+        // If that promotion ever stops happening, the result is a HARD provisioning refusal, not a silent
+        // downgrade: `DurableEntityFactory.provision(config)` (context-free) refuses rather than rebuilding
+        // the unfenced entity. That refusal is load-bearing — do not "fix" it into a fallback. (Read from
+        // the code, not exercised: no test stands up a composite-absent node. The promotion itself IS
+        // exercised — the 2026-08-10 forge run's entity could not have written without it.)
         var provideCall = resource.isPublisher() || resource.isStreamResource()
                           ? "ctx.resources().provide(" + typeName
                            + ".class, \"" + configSection
