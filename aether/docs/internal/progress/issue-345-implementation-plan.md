@@ -367,3 +367,52 @@ decision).
 - Separately and independently: `StorageBackedPersistence` (AHSE-backed Rabia snapshots) is built,
   unit-tested and orphaned. Wiring it bounds consensus-KV loss on full-cluster restart. It is NOT a
   substitute for anything above — snapshot granularity, not per-write durability.
+
+---
+
+## Narrow C — decomposition and the publish-seam ruling (2026-08-10)
+
+Six steps. 1, 4 and 6 are mechanical; 2 is the substantial one; 3 carried the only judgement call.
+
+1. **Namespacing inside `EntityPartitionArc`** — store `entity:` + keyspace internally and expose the
+   arc name, so `dhtKey`, `arcOf(String)`, `arcOf(byte[])` (the gate's parse site) and the ownership
+   key agree by construction. One construction site, no call site able to forget it. `parseArc` splits
+   on `/`, so `:` in the name is safe.
+2. **Registry key/value** — a new `AetherKey` + `AetherValue` variant carrying `(keyspace, partitionCount)`.
+   The irreducible piece: both types are sealed, so `KVStoreSerializer` needs the type tag, the snapshot
+   writer and a `parse*Entry` reader. Load-bearing consensus serialization; mechanical but not small.
+   **Watch for dead surface** — #538 records that `KVStoreSerializer`'s TOML arm has ~1,535 lines and
+   zero production callers, so adding a variant may touch one live path and one dead one. Say which.
+3. **Publish / unpublish seam — at PROVISIONING, not in the deployment FSM.** See ruling below.
+4. **Leader driver** — append registered keyspaces' arcs to the list handed to `writeOwnershipChanges`
+   at the `driveStreamOwnership` call site, so entity arcs ride the existing leader gate and the
+   existing single consensus batch. This is the entirety of "reuse the stream driver".
+5. **Fixture rewrite** — admission changes the contract for tests 1–7 and 9–11, not just #10: writes
+   must reach the committed owner, which differs per key. Use an **exactly-one-acceptance** create
+   helper (attempt on all nodes, require exactly one success) rather than resolving the owner with the
+   same logic production uses — the latter is self-confirming, the former is independent of it AND
+   makes every test that creates anything a continuous fence assertion. Poll for ownership convergence;
+   never sleep.
+6. **Flip test 10** to one-accepted / four-rejected, and re-audit the other ten against the actual run.
+
+### Ruling — why the publish seam is at provisioning
+
+The deployment FSM is the architecturally correct home (it mirrors `StreamRegistrationKey`), and it is
+**foreclosed by the envelope freeze**, not chosen against on merit. `partitionCount` lives in
+`resources.toml` and is known only after the config binds inside `provision`; the manifest carries only
+the config SECTION name. Carrying it through the deployment layer would require either adding it to the
+manifest — a `ManifestGenerator` output-structure change, hence an `ENVELOPE_FORMAT_VERSION` bump, which
+is FROZEN at 1000 until GA by owner ruling — or teaching `NodeDeploymentState` to parse
+`META-INF/resources.toml` and duplicate the binder inside the control plane.
+
+So the factory takes a commit seam as an extension and `ResourceFactory.close` unpublishes. Writes are
+idempotent LWW, so N nodes registering the same keyspace is harmless.
+
+**Expiry condition, recorded so this does not become folklore: move the seam into the deployment FSM
+once the envelope unfreezes post-GA.** A layering compromise with its expiry written down is
+acceptable; an unexplained one calcifies.
+
+**Known limitation of this seam:** `ResourceFactory.close` does not run when a node dies, so a keyspace
+can remain registered with nothing using it and the leader will keep minting ownership records for it.
+No correctness impact — wasted records only. Decide follow-up issue vs documented-and-accepted once the
+increment lands.
