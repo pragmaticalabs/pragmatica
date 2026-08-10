@@ -129,12 +129,36 @@ Forge. Without it every later increment is unfalsifiable — this project has sh
 features precisely because `build.sh` stayed green with no consumer running.
 *Gate: entity ops observable in a Forge run.*
 
-**I1 — wire the fenced entity.** `DurableEntityFactory` constructs `PartitionFencedDurableEntity`
-from real cluster ownership sources; node bootstrap supplies them. Either honor
-`DurableEntityConfig.replicationFactor` or refuse it loudly — today it is accepted and silently
-ignored.
-*Gate: Forge — a deposed partition owner is REJECTED on a same-generation reshuffle (the STEP-0
-repro flips); then the cloud gate the plan requires for fence work.*
+**I1 — wire the fenced entity. Do these IN ORDER; the order is load-bearing.**
+
+**(a) Make activation failure visible FIRST.** I0 demonstrated that a slice whose resource type is
+absent from the runtime classpath fails at `SliceFactory.invokeFactory` with
+`No resource provider registered for resource type: …DurableEntity`, while
+`POST /api/blueprints` has already answered `"applied"` — and the failure never reaches the cluster
+slice-status surface. This is ONE defect with two faces: the same invisibility is why I0's
+`failIfSliceFailed` (which polls `slicesStatus()`) never fires, so the red-gate falls back to a
+4-minute awaitility timeout instead of failing in seconds. Fixing the surface fixes both.
+**It must come first**, because step (b) removes the only reproduction that currently exists — after
+the dependency lands, the observability hole survives untested until some future resource type trips
+over it. Observability-first is the project doctrine here, not a preference.
+
+**(b)** Add `resource-durable-entity` to `aether/node/pom.xml`, mirroring `resource-http`. It is
+today depended on by no pom but its own, which is why nothing ships.
+
+**(c)** Add a first-class `@Entity`-style qualifier to the resource module — there is no counterpart
+to `@Http`/`@Notify`, so every author must hand-roll one (I0's fixture does exactly that).
+
+**(d)** `DurableEntityFactory` constructs `PartitionFencedDurableEntity` from real cluster ownership
+sources (`EntityPartitionArc`, `CommittedPartitionOwnerSource`, `OwnershipEpochHighWater` — all
+exist; the node already builds the epoch gate at `AetherNode:428`).
+
+**(e)** Either honor `DurableEntityConfig.replicationFactor` or refuse it loudly — today it is
+accepted and silently ignored.
+
+*Gate: `DurableEntityForgeTest` test 10 `create_succeedsOnEveryNode_forTheSameKey` MUST flip to
+failing — five nodes each accepting a create for the same key must become one accepted and four
+rejected. A deposed partition owner is REJECTED on a same-generation reshuffle (the STEP-0 repro
+flips). Then the cloud gate the plan requires for fence work.*
 
 **I2 — piece 1b, the stream-path fence.** Required before entity state may live on a log.
 *Gate: unit + Forge.*
