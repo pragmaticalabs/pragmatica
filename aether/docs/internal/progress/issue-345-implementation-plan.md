@@ -430,13 +430,29 @@ flips). Then the cloud gate the plan requires for fence work.*
 case: same-term transfer with the deposed owner **still alive** (`:242`). Delete `ensureNotStale` and it
 goes red. `OwnershipFenceBaselineTest` is the STEP-0 scaffolding.*
 
-> ⚠ **The gate is wired but NOT continuously guarded.** forge-tests sets surefire `<skip>true</skip>`
+> ⚠ **The gate is green, but NOT continuously guarded.** forge-tests sets surefire `<skip>true</skip>`
 > (correct — the module holds only integration tests), and failsafe's `**/*Test.java` include does pick
 > this class up (it carries no `@Tag`, and `${failsafe.excludedGroups}` is defined in no pom, so nothing
 > excludes it). But `build.sh` only `compile test-compile`s forge-tests (`build.sh:65`) and never runs
-> them — its own closing text tells you to invoke `mvn verify -Pwith-e2e -pl aether/forge/forge-tests`
-> by hand (`build.sh:90`). So a green `build.sh` says nothing about this fence. Same trap as the
-> declarative-consumers regression.
+> them — its own closing text tells you to invoke it by hand (`build.sh:90`). **So a green `build.sh`
+> says nothing about this fence.** Same trap as the declarative-consumers regression.
+>
+> **Executed 2026-08-11 on the LAN build host** (x86_64, Java 25, Maven 3.9.12), module-scoped so the
+> reactor — and therefore `HetznerCloudIT` — is never touched:
+>
+> ```
+> mvn -f aether/forge/forge-tests/pom.xml verify \
+>     -Dit.test=StreamOwnershipDriverFenceTest -Dfailsafe.excludedGroups=
+> ```
+>
+> Result: **Tests run: 2, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 36.16 s** — both
+> `driverAutoCommitsOwnership_andStaleEpochAppendIsRejected` and
+> `sameTermOwnerTransfer_deposedButAliveOwnerIsFenced`, confirmed against
+> `target/failsafe-reports/…StreamOwnershipDriverFenceTest.txt`, not console output alone. The 36 s
+> elapsed is itself evidence the 5-node Ember formation really ran rather than skipping.
+> `[verified: aether/forge/forge-tests/src/test/java/org/pragmatica/aether/forge/StreamOwnershipDriverFenceTest.java]`
+>
+> Still open: nothing re-runs this on every build. Wiring it into a CI gate remains a separate decision.
 
 **I3 — Phase 3, fenced log on a stream partition → disk tier.** Entity state moves from
 KV-snapshot to a fenced log; fold-to-snapshot and tail; governor owns the fold; same `DurableEntity`
