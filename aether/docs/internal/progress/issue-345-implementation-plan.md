@@ -16,11 +16,11 @@ Forge test: two owners for a partition across a forced governor handover; assert
 ### Phase 1 — the fence (foundational, consensus-adjacent, Forge→cloud gated)
 | # | Item | Anchor | Cx | Risk |
 |---|---|---|---|---|
-| 1a | Generalize `staleLeaderWrite` → add an `EpochBearing` accessor across the `AetherValue` sealed types (governor `communityEpoch` + ownership `ownerEpoch`); gate any epoch-bearing key in the Rabia applier | `KVStore.java:93-98` / `handlePut:76-83`; `AetherValue.java:36,460,1274` | M | **HIGH** — runs inside the Rabia applier on every replica; must stay deterministic |
+| 1a | Generalize `staleLeaderWrite` → add an `EpochBearing` accessor across the `AetherValue` sealed types (governor `communityEpoch` + ownership `ownerEpoch`); gate any epoch-bearing key in the Rabia applier | `KVStore.java:111` `staleLeaderWrite` / `:126` `staleEpochWrite`, composed `:102`; `handlePut:81`; `EpochBearing` implementors `AetherValue.java:600,1548,1599` (all corrected 2026-08-10; previously cited `:93-98`/`:76-83` and `:36,460,1274`) | M | **HIGH** — runs inside the Rabia applier on every replica; must stay deterministic |
 | 1b | Per-ownership-domain high-water table (CP-seeded, monotonic, **per-domain not per-key** so it fences new-key inserts too) | new in-memory table | M | **HIGH** — seeding/advance under governor churn (reconciler-under-load class) |
 | 1c | DHT data-plane fence — epoch on `VersionedEntry`; thread through put | `MemoryStorageEngine.java:36,59-76`, `DistributedDHTClient.java:108`, `DHTNode.java:179` | L | **HIGH** — every DHT write; ⚠ replication-payload compat |
-| 1d | **Stream append fence — per-stream-partition reshuffle epoch (#265-entangled).** `ownerEpoch` on `appendToPartition`, gate before `buffer.append` against the **stream-partition** domain high-water. **Requires building the per-stream-partition ownership epoch primitive** — a persisted, consensus-written stream-ownership record whose epoch advances on owner change (reshuffle). No such record exists today (HRW computed on the fly), so this is the start of #265's reshuffle-ring work. Flips STEP-0. | `StreamPartitionManager.java:558-566` | **L** | **HIGH** |
-| 1e | Owner-routed linearizable reads + takeover catch-up + typed causes (`StaleEpoch`/`NotCurrentOwner`) | `ReplicaSetController.ownerFor:329` | M | MED |
+| 1d | **Stream append fence — per-stream-partition reshuffle epoch (#265-entangled).** `ownerEpoch` on `appendToPartition`, gate before `buffer.append` against the **stream-partition** domain high-water. **DONE 2026-07-16** — the consensus-written `StreamPartitionOwnership` record, the leader-gated driver, and the append gate all landed; the #265 reshuffle-ring work this row feared it would "start" was absorbed with it, and same-term reshuffle is proven. Flips STEP-0. | `StreamPartitionManager.java:1215-1223` (was cited `:558-566`) | **L** | **HIGH** |
+| 1e | Owner-routed linearizable reads + takeover catch-up + typed causes (`StaleEpoch`/`NotCurrentOwner`) | `ReplicaSetController.ownerFor:435` (was cited `:329`) | M | MED |
 | 1f | **Ownership/epoch observability triad** — `GET /api/ownership/{domain}` → owner `NodeId` + current `Epoch` per partition/domain (REST→CLI→Docs, invariant #1). Per **observability-first** doctrine; also unblocks the Phase-1 *cloud* handover test (no public owner/epoch accessor exists today — STEP-0 had to reconstruct ownership from pure HRW) | M | LOW |
 
 > **STEP-0 flip (P1d):** the baseline's `publishLocal` call gains the stale `ownerEpoch` argument and the assertion flips from accepted→rejected (`StaleEpochAppend`). This needs the real owner-epoch wiring (STEP-0 uses fabricated `Epoch` constants as modeling stand-ins) — so the flip rides 1b (high-water) + 1d (epoch on the append) and benefits from 1f (real owner/epoch query).
@@ -103,7 +103,8 @@ does not close until this lands.
 | Piece | State |
 |---|---|
 | 1a KV fence | code-present (`staleEpochWrite`/`EpochBearing`) |
-| 1b stream-path fence | MISSING |
+| 1b per-domain high-water table | **DONE** — `OwnershipEpochHighWater`, built `AetherNode:437`, fed by KV put handlers `:4967-4971` |
+| 1d stream-path fence | **DONE 2026-07-16** — see the correction below; this row read "MISSING" until 2026-08-10 |
 | 2a per-key serialization | **DONE** |
 | 2b entity core + SPI | code-present, **structurally unreachable** — see below |
 | 2c durable timers (#351) | zero code — every impl hard-fails `TimerNotSupported` |
@@ -274,8 +275,10 @@ code, not manifest structure, and name-derived codec tags mean adding a type shi
 
 **Mechanism (verified, no new seam):** `ResourceFactory:17` already exposes
 `default Promise<T> provision(C config, ProvisioningContext context)`; `SpiResourceProvider.registerExtension`
-fills a node-wide map merged into every context. `StreamAccessFactory` is the working template and is
-wired in `AetherNode.registerForwardExtensionsOnSpi` under a comment naming **"#345 item 1e-c"** — this
+fills a node-wide map merged into every context. `StreamAccessFactory` is the working template — though
+**not**, as this paragraph claimed until 2026-08-10, "wired in `AetherNode.registerForwardExtensionsOnSpi`":
+it is a `META-INF/services` `ResourceFactory`, and what that method registers (`:5448-5450`) are the
+extensions it *consumes*. The comment naming **"#345 item 1e-c"** is at `AetherNode:5443` — this
 epic's own stream side already landed the pattern. `Serializer` and `Deserializer` are already
 registered there; `NodeId` and `OwnershipEpochHighWater` too.
 
@@ -395,8 +398,45 @@ failing — five nodes each accepting a create for the same key must become one 
 rejected. A deposed partition owner is REJECTED on a same-generation reshuffle (the STEP-0 repro
 flips). Then the cloud gate the plan requires for fence work.*
 
-**I2 — piece 1b, the stream-path fence.** Required before entity state may live on a log.
-*Gate: unit + Forge.*
+**I2 — the stream-path fence. SATISFIED BY PRIOR WORK (verified 2026-08-10 at `0b265154f`). Do not build.**
+
+> **Correction 2026-08-10.** This entry previously read "I2 — piece 1b, the stream-path fence. Required
+> before entity state may live on a log." Two errors: it mislabelled the item (**1b** is the per-domain
+> high-water table; **1d** is the stream fence), and it described as unbuilt something that landed
+> **2026-07-16**. Grounded against the tree, not the doc:
+>
+> - **The fence is at the commit point.** `appendToPartition` (`StreamPartitionManager.java:1215`) opens
+>   with `ensureNotStale` (`:1221`) — ahead of both `buffer.append` (`:1223`) and the WAL fsync
+>   (`:1224`), as spec §5b requires.
+> - **It is armed on real nodes.** `ensureNotStale` folds on an `Option`, so an absent high-water would
+>   silently pass — but the production factory (`:316-325`) takes a non-`Option` high-water and wraps it
+>   `Option.some(...)`, and `AetherNode:3038-3046` passes the real one. The `none()` branch is the
+>   secondary/test factory only.
+> - **Ownership is consensus-written, not HRW-on-the-fly.** `StreamPartitionOwnershipWriter` is
+>   leader-gated (`AetherNode:3283`) and driven from the reconcile seam (`:3301` → `driveStreamOwnership`
+>   `:1009`). HRW only *proposes* (`ReplicaSetController.ownerFor:435`); the writer commits.
+> - **Replication fences identically** — `appendReplicated` (`:1186`) gates the sending owner's token.
+>
+> Residual, recorded not papered over: the gate is **check-then-act**, so an epoch advance racing
+> `:1221`→`:1223` can admit one write. Inherent to the design; not an I2 gap.
+>
+> The only unfenced stream write path is `StreamConsensusCommand` (no `Epoch`, spec Open Question 5), and
+> it is **moot — dead surface**: `StreamPublisherFactory:88,117` always passes `Option.none()`, so
+> `publishStrong` fails `CONSENSUS_PATH_UNAVAILABLE` on every real node. File separately as dead surface;
+> Open Question 5 is unresolvable as written.
+
+*Gate (already exists): `StreamOwnershipDriverFenceTest` — the driver auto-commits ownership on a real
+`NodeRemoved` reconcile, then a stale-epoch append is rejected with `StaleEpochAppend`. It proves the hard
+case: same-term transfer with the deposed owner **still alive** (`:242`). Delete `ensureNotStale` and it
+goes red. `OwnershipFenceBaselineTest` is the STEP-0 scaffolding.*
+
+> ⚠ **The gate is wired but NOT continuously guarded.** forge-tests sets surefire `<skip>true</skip>`
+> (correct — the module holds only integration tests), and failsafe's `**/*Test.java` include does pick
+> this class up (it carries no `@Tag`, and `${failsafe.excludedGroups}` is defined in no pom, so nothing
+> excludes it). But `build.sh` only `compile test-compile`s forge-tests (`build.sh:65`) and never runs
+> them — its own closing text tells you to invoke `mvn verify -Pwith-e2e -pl aether/forge/forge-tests`
+> by hand (`build.sh:90`). So a green `build.sh` says nothing about this fence. Same trap as the
+> declarative-consumers regression.
 
 **I3 — Phase 3, fenced log on a stream partition → disk tier.** Entity state moves from
 KV-snapshot to a fenced log; fold-to-snapshot and tail; governor owns the fold; same `DurableEntity`
@@ -441,9 +481,12 @@ Six steps. 1, 4 and 6 are mechanical; 2 is the substantial one; 3 carried the on
    **Watch for dead surface** — #538 records that `KVStoreSerializer`'s TOML arm has ~1,535 lines and
    zero production callers, so adding a variant may touch one live path and one dead one. Say which.
 3. **Publish / unpublish seam — at PROVISIONING, not in the deployment FSM.** See ruling below.
-4. **Leader driver** — append registered keyspaces' arcs to the list handed to `writeOwnershipChanges`
-   at the `driveStreamOwnership` call site, so entity arcs ride the existing leader gate and the
-   existing single consensus batch. This is the entirety of "reuse the stream driver".
+4. **Leader driver** — append registered keyspaces' arcs to the list handed to `writeOwnershipChanges`,
+   so entity arcs ride the existing leader gate and the existing single consensus batch. This is the
+   entirety of "reuse the stream driver". **Correction 2026-08-10:** this step said "at the
+   `driveStreamOwnership` call site"; as landed, the tree uses a *separate* scheduled
+   `reconcileEntityOwnership` (`AetherNode:3576`, body `:5531`) that reuses `writeOwnershipChanges`.
+   Same reuse, different seam — entity arcs are deliberately not minted through the stream driver.
 5. **Fixture rewrite** — admission changes the contract for tests 1–7 and 9–11, not just #10: writes
    must reach the committed owner, which differs per key. Use an **exactly-one-acceptance** create
    helper (attempt on all nodes, require exactly one success) rather than resolving the owner with the
