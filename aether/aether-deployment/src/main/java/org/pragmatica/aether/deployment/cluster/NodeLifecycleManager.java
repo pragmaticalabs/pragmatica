@@ -40,12 +40,26 @@ public interface NodeLifecycleManager {
     @Contract
     default void resetProvisionerState(String clusterName) {}
 
+    /// Cap-less construction — no fleet bound is enforced. Retained for callers that provision
+    /// against a non-cloud provider (Docker/forge), where an unbounded fleet is not a cost hazard.
     static NodeLifecycleManager nodeLifecycleManager(Option<ComputeProvider> computeProvider) {
-        return new NodeLifecycleManagerRecord(computeProvider);
+        return new NodeLifecycleManagerRecord(computeProvider, Option.empty(), Option.empty());
+    }
+
+    /// #298 — construction WITH an operator-set fleet cap. The cap is enforced only when BOTH a
+    /// cluster name and a `maxNodes` value are present: the count is scoped by the cluster tag, so
+    /// without a name there is no correct scope to count within. A cap configured without a cluster
+    /// name is a misconfiguration and is reported at construction rather than silently ignored.
+    static NodeLifecycleManager nodeLifecycleManager(Option<ComputeProvider> computeProvider,
+                                                     Option<String> clusterName,
+                                                     Option<Integer> maxNodes) {
+        return new NodeLifecycleManagerRecord(computeProvider, clusterName, maxNodes);
     }
 }
 
-record NodeLifecycleManagerRecord(Option<ComputeProvider> computeProvider) implements NodeLifecycleManager {
+record NodeLifecycleManagerRecord(Option<ComputeProvider> computeProvider,
+                                  Option<String> clusterName,
+                                  Option<Integer> maxNodes) implements NodeLifecycleManager {
     private static final Logger log = LoggerFactory.getLogger(NodeLifecycleManagerRecord.class);
     // Upper-layer canonical tag key for binding a cloud instance to its assigned NodeId.
     // Each ComputeProvider translates this dotted key to its native label/tag convention
@@ -55,6 +69,10 @@ record NodeLifecycleManagerRecord(Option<ComputeProvider> computeProvider) imple
     // direct hyphenated lookups here — provider translation lives inside each provider's
     // listInstances/labelsFor pair so this layer stays provider-agnostic.
     private static final String NODE_ID_TAG = "aether.node-id";
+    // #298 — upper-layer canonical cluster tag, translated per-provider exactly like NODE_ID_TAG
+    // (HetznerComputeProvider.labelsFor stamps `aether-cluster`). Counting on this tag is what
+    // scopes the fleet cap to THIS cluster rather than everything in the cloud account.
+    private static final String CLUSTER_TAG = "aether.cluster";
 
     @Override
     public Promise<ActionResult> executeAction(NodeAction action) {
@@ -69,13 +87,72 @@ record NodeLifecycleManagerRecord(Option<ComputeProvider> computeProvider) imple
     @Override
     public Promise<InstanceInfo> provisionNode(ProvisionSpec spec) {
         return computeProvider.fold(() -> EnvironmentError.operationNotSupported("provisionNode: no ComputeProvider").promise(),
-                                    provider -> {
-                                        log.info("Provisioning new instance: size={}, pool={}",
-                                                 spec.instanceSize(),
-                                                 spec.pool());
+                                    provider -> capGuardedProvision(provider, spec));
+    }
 
-                                        return provider.provision(spec);
-                                    });
+    /// #298 — the fleet cap gate. Every provisioning path in the system funnels through
+    /// `provisionNode`: the CTM auto-heal reconciler, bootstrap, and the CLI wave reprovision. Placing
+    /// the guard here (rather than on the `CloudProvider.checkQuota` SPI the ticket named) is
+    /// deliberate — that SPI has no production consumer and every implementation returns
+    /// `QuotaStatus.unknown()`, whose `sufficient` field is `true`, so a gate built on it could never
+    /// refuse anything.
+    ///
+    /// With no cap configured this is a straight pass-through and costs nothing.
+    private Promise<InstanceInfo> capGuardedProvision(ComputeProvider provider, ProvisionSpec spec) {
+        return maxNodes.fold(() -> doProvision(provider, spec),
+                             cap -> scopedCapCheck(provider, spec, cap));
+    }
+
+    /// A cap needs a scope. Counting every instance the provider can see would over-count a shared
+    /// cloud account and refuse legitimate auto-heal, so enforcement requires the cluster tag. A cap
+    /// configured without a cluster name is reported loudly — it is a misconfiguration, and going
+    /// quiet here would leave an operator believing a bound is in force when none is.
+    private Promise<InstanceInfo> scopedCapCheck(ComputeProvider provider, ProvisionSpec spec, int cap) {
+        return clusterName.fold(() -> {
+                                    log.error("Fleet cap of {} is configured but this node has no cluster name — "
+                                              + "the cap CANNOT be enforced and provisioning proceeds unbounded. "
+                                              + "Set AETHER_CLUSTER_NAME so the cap has a scope to count within.",
+                                              cap);
+
+                                    return doProvision(provider, spec);
+                                },
+                                name -> countThenProvision(provider, spec, cap, name));
+    }
+
+    /// A cap read that FAILS is not permission to provision — an unreachable provider API must not
+    /// silently disable the guard, which is the exact shape of a surface that looks wired and has no
+    /// effect. The `listInstances` failure propagates and the provision does not happen.
+    private Promise<InstanceInfo> countThenProvision(ComputeProvider provider,
+                                                     ProvisionSpec spec,
+                                                     int cap,
+                                                     String name) {
+        return provider.listInstances(Map.of(CLUSTER_TAG, name))
+                       .flatMap(instances -> enforceCap(provider, spec, cap, instances.size(), name));
+    }
+
+    private Promise<InstanceInfo> enforceCap(ComputeProvider provider,
+                                             ProvisionSpec spec,
+                                             int cap,
+                                             int observed,
+                                             String name) {
+        if (observed >= cap) {
+            log.warn("Provisioning REFUSED for cluster {}: node cap {} reached ({} already provisioned)",
+                     name,
+                     cap,
+                     observed);
+
+            return EnvironmentError.nodeCapExceeded(name, cap, observed).promise();
+        }
+
+        return doProvision(provider, spec);
+    }
+
+    private Promise<InstanceInfo> doProvision(ComputeProvider provider, ProvisionSpec spec) {
+        log.info("Provisioning new instance: size={}, pool={}",
+                 spec.instanceSize(),
+                 spec.pool());
+
+        return provider.provision(spec);
     }
 
     @Override

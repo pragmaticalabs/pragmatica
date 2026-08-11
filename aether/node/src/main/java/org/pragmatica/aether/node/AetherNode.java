@@ -1768,7 +1768,13 @@ public interface AetherNode extends ManageableNode {
                                                                                      config.self(),
                                                                                      delegateRouter);
         var computeProvider = config.environment().flatMap(EnvironmentIntegration::compute);
-        var lifecycleManager = NodeLifecycleManager.nodeLifecycleManager(computeProvider);
+        // #298 — fleet cap. Scoped by cluster name (stamped by Main from the boot-gated
+        // AETHER_CLUSTER_NAME) and bounded by autoHeal().maxNodes(). Both absent by default, in
+        // which case this is exactly the previous unbounded behavior.
+        var lifecycleManager = NodeLifecycleManager.nodeLifecycleManager(computeProvider,
+                                                                        config.clusterName(),
+                                                                        config.autoHeal()
+                                                                              .maxNodes());
         var deploymentMap = DeploymentMap.deploymentMap();
         var healthSinkRef = new AtomicReference<HealthSignalSink>(HealthSignalSink.noop());
         HealthSignalSink stableHealthSink = signal -> healthSinkRef.get()

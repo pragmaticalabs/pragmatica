@@ -74,7 +74,8 @@ public record AetherNodeConfig(TopologyConfig topology,
                                Option<BackupConfig> backupConfig,
                                Option<MembershipConfig> membership,
                                StreamingConfig streaming,
-                               ClusterFormationConfig clusterFormation) {
+                               ClusterFormationConfig clusterFormation,
+                               Option<String> clusterName) {
     /// Cluster-wide deployment defaults. `canaryEvaluationInterval` / `defaultCanaryStages` drive
     /// progressive rollout; `communitySizing` is the leader's per-community target size and viability
     /// floor (worker-membership-spec §3.3 / §4.1) read by the cluster deployment FSM. A test/dev
@@ -135,8 +136,54 @@ public record AetherNodeConfig(TopologyConfig topology,
                                         backupConfig,
                                         membership,
                                         streaming,
-                                        clusterFormation);
+                                        clusterFormation,
+                                        Option.empty());
         };
+    }
+
+    /// #298 — this node's cluster identity. Absent in the builder because the authoritative source
+    /// is the `AETHER_CLUSTER_NAME` environment variable, which `Main` already boot-gates
+    /// (`enforceClusterNamePresent` aborts startup when it is missing or malformed) and validates
+    /// against the lowercase-DNS-label `CLUSTER_NAME_PATTERN`. `Main` stamps it here so runtime
+    /// components get it from config rather than re-reading the environment.
+    ///
+    /// This is the runtime `[cluster] name` that `Main.verifyClusterLabelConsistency` was written
+    /// in anticipation of — that method's doc notes it was waiting on the field existing outside
+    /// bootstrap config.
+    ///
+    /// Absent means "not stamped": an in-process harness (Ember/forge) that never goes through
+    /// `Main`. The fleet cap declines to enforce rather than guess a scope in that case.
+    public AetherNodeConfig withClusterName(String clusterName) {
+        return new AetherNodeConfig(topology,
+                                    protocol,
+                                    sliceAction,
+                                    sliceConfig,
+                                    managementPort,
+                                    artifactRepo,
+                                    cache,
+                                    tls,
+                                    quicTls,
+                                    ttm,
+                                    rollback,
+                                    appHttp,
+                                    controllerConfig,
+                                    configProvider,
+                                    environment,
+                                    autoHeal,
+                                    observability,
+                                    atomicity,
+                                    activationGated,
+                                    timeouts,
+                                    certificateProvider,
+                                    workerConfig,
+                                    deploymentDefaults,
+                                    managementHttpProtocol,
+                                    storageConfig,
+                                    backupConfig,
+                                    membership,
+                                    streaming,
+                                    clusterFormation,
+                                    Option.some(clusterName));
     }
 
     public interface SelfStage {

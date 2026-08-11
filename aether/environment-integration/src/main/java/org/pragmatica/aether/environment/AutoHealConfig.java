@@ -4,6 +4,7 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.environment;
 
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.io.TimeSpan;
 
@@ -18,7 +19,8 @@ public record AutoHealConfig(TimeSpan retryInterval,
                              TimeSpan provisioningTimeout,
                              TimeSpan provisionStabilityWindow,
                              TimeSpan decommissionedRetention,
-                             TimeSpan swimHintsTtl) {
+                             TimeSpan swimHintsTtl,
+                             Option<Integer> maxNodes) {
     public static final TimeSpan DEFAULT_STALE_OBSERVATION_TTL = timeSpan(30).seconds();
     public static final int DEFAULT_QUIC_MISS_PROMOTION_THRESHOLD = 10;
     public static final TimeSpan DEFAULT_PROVISIONING_TIMEOUT = timeSpan(60).seconds();
@@ -140,6 +142,31 @@ public record AutoHealConfig(TimeSpan retryInterval,
                                           provisioningTimeout,
                                           provisionStabilityWindow,
                                           decommissionedRetention,
-                                          swimHintsTtl));
+                                          swimHintsTtl,
+                                          NO_CAP));
+    }
+
+    /// #298 — no fleet cap by default. A default numeric cap would silently refuse provisioning on
+    /// any existing cluster larger than the number we picked, so absence means "unbounded" and the
+    /// cap is opt-in. Set it via [#withMaxNodes].
+    public static final Option<Integer> NO_CAP = Option.empty();
+
+    /// #298 — operator-set ceiling on the number of nodes this cluster may have provisioned.
+    /// Enforced at the single provisioning chokepoint (`NodeLifecycleManager.provisionNode`), which
+    /// every path funnels through: the auto-heal reconciler, bootstrap, and CLI wave reprovision.
+    ///
+    /// This is a cost/blast-radius guardrail, not a scheduler input — nothing consults it when
+    /// deciding a target size, so a cap below the cluster's desired size shows up as refused
+    /// provisions rather than a resized cluster.
+    public AutoHealConfig withMaxNodes(int maxNodes) {
+        return new AutoHealConfig(retryInterval,
+                                  startupCooldown,
+                                  staleObservationTtl,
+                                  quicMissPromotionThreshold,
+                                  provisioningTimeout,
+                                  provisionStabilityWindow,
+                                  decommissionedRetention,
+                                  swimHintsTtl,
+                                  Option.some(maxNodes));
     }
 }

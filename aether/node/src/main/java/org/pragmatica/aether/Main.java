@@ -108,7 +108,11 @@ public record Main(String[] args) {
                                      .backupConfig(resolveBackup(aetherConfig))
                                      .membership(resolveMembership(aetherConfig))
                                      .streaming(resolveStreaming(aetherConfig))
-                                     .build();
+                                     .build()
+                                     // #298 — stamp the boot-gated cluster identity onto runtime config.
+                                     // enforceClusterNamePresent() above already aborted the boot if this
+                                     // were missing or malformed, so the value is present and validated.
+                                     .withClusterName(resolveClusterName());
         var node = AetherNode.aetherNode(config).expect("Failed to initialize Aether node at startup");
 
         registerShutdownHook(node);
@@ -191,6 +195,15 @@ public record Main(String[] args) {
     @Contract
     private void enforceClusterNamePresent() {
         verifyClusterNamePresent(System.getenv("AETHER_CLUSTER_NAME")).onFailure(this::abortBoot);
+    }
+
+    /// #298 — the cluster name for runtime config, read from the same env var the boot gate keys on.
+    /// Reached only after [#enforceClusterNamePresent] has passed, so the value is present and
+    /// matches [#CLUSTER_NAME_PATTERN]; the `.or("")` is a total-function fallback, not a real case.
+    private static String resolveClusterName() {
+        return Option.option(System.getenv("AETHER_CLUSTER_NAME"))
+                     .filter(name -> !name.isBlank())
+                     .or("");
     }
 
     /// Pure, unit-testable guard: present + format-valid cluster name → success; missing,
