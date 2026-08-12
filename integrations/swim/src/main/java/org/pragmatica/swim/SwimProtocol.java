@@ -1377,7 +1377,24 @@ public final class SwimProtocol implements SwimMessageHandler {
     private void handleAnnounce(InetSocketAddress sender, Announce announce) {
         var expectedName = config.clusterName();
 
-        if (!expectedName.isEmpty() && !expectedName.equals(announce.clusterName())) {
+        // Cross-cluster ANNOUNCE gate. Both sides must CLAIM a name for the comparison to mean
+        // anything: an empty expectation is "this node was not told its cluster", and an empty
+        // announced name is "the sender did not tell us its cluster" — neither is evidence of a
+        // mismatch, and treating them as one would reject honest peers.
+        //
+        // That asymmetry is what makes arming this upgrade-safe. During a mixed-version window a
+        // named node accepts an unnamed peer's ANNOUNCE, and an unnamed node short-circuits on its
+        // own empty expectation, so membership survives in both directions; the gate becomes
+        // effective only once every node carries a name. Protection is absent during the window,
+        // which is exactly the status quo — never a regression.
+        //
+        // Note this is the ONLY cross-cluster ANNOUNCE isolation: the transport's
+        // `isAnnounceAllowed` is a per-source RATE LIMITER, not an allowlist. Accepting a foreign
+        // ANNOUNCE clears tombstones and introduces the sender as an observed member, so the
+        // realistic failure this catches is a stale or copy-pasted seed list pointing at another
+        // cluster's addresses — the wire-level counterpart to `Main.verifyClusterLabelConsistency`.
+        if (!expectedName.isEmpty() && !announce.clusterName().isEmpty()
+            && !expectedName.equals(announce.clusterName())) {
             LOG.warn("ANNOUNCE from {} rejected: cluster name mismatch (got '{}', expected '{}')",
                      announce.nodeInfo().id().id(),
                      announce.clusterName(),

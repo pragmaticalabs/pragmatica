@@ -2438,7 +2438,15 @@ public interface AetherNode extends ManageableNode {
         var swimConfig = SwimConfig.fromTimeouts(swimTimeouts.period(),
                                                  swimTimeouts.probeTimeout(),
                                                  swimTimeouts.suspectTimeout())
-                                   .withSwimPortOffset(CoreSwimHealthDetector.SWIM_PORT_OFFSET);
+                                   .withSwimPortOffset(CoreSwimHealthDetector.SWIM_PORT_OFFSET)
+                                   // Arm the cross-cluster ANNOUNCE gate. `fromTimeouts` inherits
+                                   // DEFAULT's empty cluster name, and empty means "no gating" — so
+                                   // until this call the guard existed, was wired, and rejected
+                                   // nothing. The name is also what `announceJoin` stamps on
+                                   // outbound ANNOUNCEs below, so both sides of the comparison come
+                                   // from here. Absent (in-process harnesses that never pass through
+                                   // Main) leaves it inert exactly as before.
+                                   .withClusterName(config.clusterName().or(""));
         // Phase-aware SWIM cold-boot suppression (D.3, 2026-05-11). SWIM suppresses
         // FAULTY-for-never-HEALTHY peers ONLY while the cluster is in `COLD_BOOT`
         // (initial formation, never reached quorum). In `NORMAL` and `RECOVERING`,
