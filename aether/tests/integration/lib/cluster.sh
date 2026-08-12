@@ -3485,7 +3485,7 @@ restore_cluster_baseline() {
     # value (e.g. 03-scaling, or a suite that disabled auto-heal and let
     # nodes go DECOMMISSIONED).
     if ! scale_cluster "$target"; then
-        log_warn "restore_cluster_baseline: scale_cluster ${target} failed (cluster may already be at target — proceeding to wait)"
+        log_warn "restore_cluster_baseline: scale_cluster ${target} FAILED — the cluster was not resized and later tests may inherit un-reconciled replacement nodes (see #594; the scale_cluster warning above carries the HTTP status and body)"
     fi
 
     local floor=$((target - 1))
@@ -3695,7 +3695,7 @@ scale_cluster() {
     url="${scale_ep}/api/cluster/scale"
     http_status=$(curl -sk -m 90 -o "$body_file" -w '%{http_code}' \
                       -X POST -H "X-API-Key: ${API_KEY}" -H "Content-Type: application/json" \
-                      -d "{\"coreCount\":${target},\"expectedVersion\":0}" "$url")
+                      -d "{\"role\":\"core\",\"count\":${target},\"expectedVersion\":0}" "$url")
     rc=$?
     local body
     body=$(head -c 500 "$body_file" 2>/dev/null)
@@ -3705,7 +3705,7 @@ scale_cluster() {
         return 1
     fi
     if [ -z "$http_status" ] || [ "$http_status" -lt 200 ] 2>/dev/null || [ "$http_status" -ge 300 ] 2>/dev/null; then
-        log_warn "scale_cluster: POST /api/cluster/scale returned HTTP ${http_status:-<empty>} (e.g. quorum unavailable / version conflict / 5xx). Body: ${body}"
+        log_warn "scale_cluster: POST /api/cluster/scale REJECTED with HTTP ${http_status:-<empty>} — the cluster was NOT rescaled. Body: ${body}"
         return 1
     fi
     log_info "Scale result: HTTP ${http_status} ${body}" >&2
