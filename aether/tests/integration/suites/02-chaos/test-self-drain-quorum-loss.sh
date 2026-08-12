@@ -928,12 +928,12 @@ test_drain_trigger_log_signature_present() {
     if wait_for_self_drain_event "$s1" "$baseline" "$SELF_DRAIN_EVENT_TIMEOUT_S"; then
         log_pass "SELF_DRAIN_INITIATED observed via /api/events for ${s1}"
     else
-        log_warn "No SELF_DRAIN_INITIATED event observed on /api/events for ${s1} within ${SELF_DRAIN_EVENT_TIMEOUT_S}s — Rabia publish may have lost the race against Runtime.halt(2); exit-code-2 assertion above remains the hard contract"
+        log_warn "No SELF_DRAIN_INITIATED event observed on /api/events for ${s1} after ${SELF_DRAIN_WAIT_ELAPSED:-?}s (budget ${SELF_DRAIN_EVENT_TIMEOUT_S}s x TIMEOUT_SCALE) — Rabia publish may have lost the race against Runtime.halt(2); exit-code-2 assertion above remains the hard contract"
     fi
     if wait_for_self_drain_event "$s2" "$baseline" "$SELF_DRAIN_EVENT_TIMEOUT_S"; then
         log_pass "SELF_DRAIN_INITIATED observed via /api/events for ${s2}"
     else
-        log_warn "No SELF_DRAIN_INITIATED event observed on /api/events for ${s2} within ${SELF_DRAIN_EVENT_TIMEOUT_S}s — Rabia publish may have lost the race against Runtime.halt(2); exit-code-2 assertion above remains the hard contract"
+        log_warn "No SELF_DRAIN_INITIATED event observed on /api/events for ${s2} after ${SELF_DRAIN_WAIT_ELAPSED:-?}s (budget ${SELF_DRAIN_EVENT_TIMEOUT_S}s x TIMEOUT_SCALE) — Rabia publish may have lost the race against Runtime.halt(2); exit-code-2 assertion above remains the hard contract"
     fi
 }
 

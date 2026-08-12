@@ -47,6 +47,37 @@ topology_now() {
 # departure event isn't there. We query every direct node port and concatenate.
 # Empty string for $since means "all buffered".
 # Usage: topology_events_since "$baseline"
+# Cache for the CTM-replacement port discovery below. The discovery costs an SSH
+# roundtrip plus a `docker ps` and one `docker port` per container, and
+# `topology_events_since` is called from 1-second poll loops — so an uncached call
+# put an SSH roundtrip on a hot path, once per second, at exactly the moment the
+# host is least responsive (immediately after a chaos test SIGKILLed several nodes
+# and auto-heal is provisioning replacements).
+#
+# Measured 2026-08-13: this turned a step budgeted at 240s into 3176s, and that step
+# only ever emits a soft `log_warn` — 53 minutes spent on a signal the test states is
+# not its contract. Ephemeral replacement ports do not change on a 1-second cadence,
+# so a short TTL loses nothing and removes the roundtrip from the loop.
+_TOPOLOGY_PORTS_CACHE=""
+_TOPOLOGY_PORTS_CACHE_AT=0
+_TOPOLOGY_PORTS_TTL="${TOPOLOGY_PORTS_TTL:-30}"
+
+_topology_discover_replacement_ports() {
+    local now=$SECONDS
+    if [ -n "$_TOPOLOGY_PORTS_CACHE" ] && [ $((now - _TOPOLOGY_PORTS_CACHE_AT)) -lt "$_TOPOLOGY_PORTS_TTL" ]; then
+        printf '%s' "$_TOPOLOGY_PORTS_CACHE"
+        return 0
+    fi
+
+    local found
+    found=$(remote_exec "docker ps --filter 'label=aether.cluster=${CLUSTER_ID}' --format '{{.Names}}' | while read -r n; do docker port \"\$n\" 8080/tcp 2>/dev/null | sed -n '1s/.*:\\([0-9][0-9]*\\)\$/\\1/p'; done" 2>/dev/null || true)
+
+    _TOPOLOGY_PORTS_CACHE="$found"
+    _TOPOLOGY_PORTS_CACHE_AT=$now
+
+    printf '%s' "$found"
+}
+
 topology_events_since() {
     local since="${1:-}"
     local count="${NODE_COUNT:-5}"
@@ -87,7 +118,7 @@ topology_events_since() {
         # maps back to a fixed slot.
         if [ -n "${CLUSTER_ID:-}" ] && command -v remote_exec >/dev/null 2>&1; then
             local discovered hp u
-            discovered=$(remote_exec "docker ps --filter 'label=aether.cluster=${CLUSTER_ID}' --format '{{.Names}}' | while read -r n; do docker port \"\$n\" 8080/tcp 2>/dev/null | sed -n '1s/.*:\\([0-9][0-9]*\\)\$/\\1/p'; done" 2>/dev/null || true)
+            discovered=$(_topology_discover_replacement_ports)
             for hp in $discovered; do
                 u="http://${TARGET_HOST}:${hp}"
                 case " ${base_urls[*]-} " in
@@ -385,11 +416,23 @@ observe_quorum_window() {
 # lost (the scenario this event covers), the publish may not commit before the
 # halt lands. We therefore poll on a generous budget and tolerate timeout — the
 # CALLER decides whether timeout is a test failure or a known limitation.
+# Poll /api/events for this node's SELF_DRAIN_INITIATED, bounded by wall clock.
+#
+# The deadline is checked BEFORE and AFTER the fetch. Checking only before bounds when
+# an iteration may START, not when the loop ends — so one slow fetch overshoots the
+# budget by however long it takes, and the caller's "within Ns" message becomes a lie.
+# Measured 2026-08-13: a nominal 120s budget ran 1588s per survivor because each
+# iteration carried an SSH roundtrip (since cached — see
+# `_topology_discover_replacement_ports`).
+#
+# Echoes actual elapsed seconds on stdout so callers can report what really happened
+# rather than repeating the budget they asked for.
 wait_for_self_drain_event() {
     local node_id="$1" baseline="$2" timeout="${3:-60}"
     node_id=$(to_node_id "$node_id")
     timeout=$((timeout * ${TIMEOUT_SCALE:-1}))
-    local deadline=$((SECONDS + timeout))
+    local started=$SECONDS
+    local deadline=$((started + timeout))
     while [ $SECONDS -lt $deadline ]; do
         local events
         events=$(topology_events_since "$baseline" 2>/dev/null) || events=""
@@ -397,11 +440,16 @@ wait_for_self_drain_event() {
             local count
             count=$(topology_count_node_events "$events" SELF_DRAIN_INITIATED "$node_id")
             if [ "$count" -gt 0 ]; then
+                SELF_DRAIN_WAIT_ELAPSED=$((SECONDS - started))
                 return 0
             fi
         fi
+        # Post-work deadline check: a single fetch can outlast the whole budget, and
+        # sleeping again after that has already overshot compounds it.
+        [ $SECONDS -lt $deadline ] || break
         sleep 1
     done
+    SELF_DRAIN_WAIT_ELAPSED=$((SECONDS - started))
     return 1
 }
 
