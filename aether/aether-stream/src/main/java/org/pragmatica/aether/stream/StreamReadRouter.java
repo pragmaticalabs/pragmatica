@@ -15,6 +15,7 @@ import org.pragmatica.aether.stream.forward.StreamForwardClient;
 import org.pragmatica.aether.stream.forward.StreamReadForwardMetrics;
 import org.pragmatica.aether.stream.replication.ReplicaDescriptor;
 import org.pragmatica.aether.stream.replication.ReplicaRegistry;
+import org.pragmatica.aether.stream.replication.ReplicationState;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
@@ -151,11 +152,16 @@ public final class StreamReadRouter {
     /// can tell a complete view from a partial one; when it is `false`, `hrwOwner` names the node to
     /// re-query. A Leaf: pure assembly off already-computed router/partition state, no I/O, no
     /// hot-path cost.
+    ///
+    /// #593: THIS node's own row is answered from local truth rather than from the registry — see
+    /// [#selfRowOverride]. The registry can never advance a node's own entry (acks come from peers,
+    /// and a node does not ack to itself), so without the substitution an owner reports itself
+    /// permanently `SYNCING` at `-1` while serving a complete partition.
     public ReplicaSetView replicaSnapshot(String streamName, int partition) {
         var owner = ownerResolver.resolve(streamName, partition);
         var descriptors = replicaRegistry.map(registry -> registry.replicasFor(streamName, partition)).or(List.of());
         var replicas = descriptors.stream()
-                                  .map(descriptor -> toReplicaView(descriptor, owner))
+                                  .map(descriptor -> toReplicaView(descriptor, owner, selfRowOverride(streamName, partition, descriptor)))
                                   .sorted(Comparator.comparing(ReplicaView::nodeId))
                                   .toList();
 
@@ -168,12 +174,44 @@ public final class StreamReadRouter {
                                   replicas);
     }
 
-    private static ReplicaView toReplicaView(ReplicaDescriptor descriptor, Option<NodeId> owner) {
+    private static ReplicaView toReplicaView(ReplicaDescriptor descriptor,
+                                             Option<NodeId> owner,
+                                             Option<LocalReplicaState> selfOverride) {
         return new ReplicaView(descriptor.nodeId().id(),
-                               descriptor.state().name(),
-                               descriptor.confirmedOffset(),
+                               selfOverride.map(LocalReplicaState::state).or(descriptor.state().name()),
+                               selfOverride.map(LocalReplicaState::confirmedOffset).or(descriptor.confirmedOffset()),
                                owner.map(descriptor.nodeId()::equals).or(false));
     }
+
+    /// This node's OWN row, answered from local truth instead of the peer-ack registry (#593).
+    ///
+    /// `ReplicaRegistry.registerReplica` seeds every descriptor at `SYNCING` / `confirmedOffset = -1`
+    /// and only `updateWatermark` advances it — and that is driven by ACKS ARRIVING FROM PEERS
+    /// (`DefaultReplicationManager.handleAck`). A node never acks to itself, so its own descriptor
+    /// stays at the seed value for the lifetime of the partition. On the OWNER that produced a view
+    /// which read as permanently broken replication while the partition was in fact complete:
+    /// measured on a live 5-node cluster, an owner reporting `SYNCING` / `-1` for itself while
+    /// `ownerHeadOffset` was 24, a peer replica was `CAUGHT_UP` at 23, and all 24 events were
+    /// readable in order. The data was never the problem; the row describing it was.
+    ///
+    /// The answering node has authoritative local knowledge of exactly ONE row — its own — so that is
+    /// the only row substituted. Every peer row still comes from the registry, where an ack is the
+    /// honest source. When this node does not hold the partition locally, nothing is substituted and
+    /// the registry's value stands: absence of a local ring is not evidence about what a peer holds.
+    private Option<LocalReplicaState> selfRowOverride(String streamName, int partition, ReplicaDescriptor descriptor) {
+        if (!selfNodeId.equals(descriptor.nodeId())) {
+            return Option.empty();
+        }
+
+        return partitionManager.partitionBuffer(streamName, partition)
+                               .map(buffer -> new LocalReplicaState(ReplicationState.CAUGHT_UP.name(), buffer.headOffset()));
+    }
+
+    /// Carrier for the locally-derived substitution above: the state this node is genuinely in for a
+    /// partition it holds, and the offset it has genuinely durably got (the ring head, not head+1 —
+    /// `confirmedOffset` is a watermark of what IS present, matching the peer-ack semantics it sits
+    /// beside in the same list).
+    private record LocalReplicaState(String state, long confirmedOffset) {}
 
     /// Module-local carrier for the assembled replica-state snapshot. `ownerNodeId` is empty during the
     /// bootstrap window (placement not yet known); `servedByOwner` is true only when the answering node
