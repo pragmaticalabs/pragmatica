@@ -92,10 +92,11 @@ record NodeLifecycleManagerRecord(Option<ComputeProvider> computeProvider,
 
     /// #298 — the fleet cap gate. Every provisioning path in the system funnels through
     /// `provisionNode`: the CTM auto-heal reconciler, bootstrap, and the CLI wave reprovision. Placing
-    /// the guard here (rather than on the `CloudProvider.checkQuota` SPI the ticket named) is
-    /// deliberate — that SPI has no production consumer and every implementation returns
-    /// `QuotaStatus.unknown()`, whose `sufficient` field is `true`, so a gate built on it could never
-    /// refuse anything.
+    /// the guard here (rather than on the `checkQuota` SPI the ticket named) is deliberate, and the
+    /// SPI has since been deleted for the reasons that forced the choice: it had no production
+    /// consumer, there was no bulk provisioning path for it to guard, and every implementation
+    /// returned a status whose `sufficient` flag was unconditionally `true` — so a gate built on it
+    /// could never have refused anything.
     ///
     /// With no cap configured this is a straight pass-through and costs nothing.
     private Promise<InstanceInfo> capGuardedProvision(ComputeProvider provider, ProvisionSpec spec) {

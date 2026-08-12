@@ -500,7 +500,7 @@ The `spot` role carries specific restrictions because spot/preemptible instances
 
 **REQ-5.1.7.1**: Spot sub-tables on `ssh`, `forge`, or `docker` sources are a pre-flight error (PF-15).
 
-**REQ-5.1.7.2**: Cloud providers that do not support preemptible instances reject spot sub-tables at pre-flight via `CloudProvider.supportsPreemptible()` (PF-16). Hetzner returns `false` and therefore rejects spot at pre-flight. AWS / GCP / Azure are schema-recognized in v1 but `provisionSpot` remains a stub that errors during Phase 2 execution (see KL-10).
+**REQ-5.1.7.2**: Cloud providers that do not support preemptible instances reject spot sub-tables at pre-flight via `ClusterBootstrapConfigValidator.SPOT_UNSUPPORTED_REASONS` (PF-16) — a static map keyed on `CloudProviderName`, which is the single place to extend when a provider's spot arm lands. Hetzner is in that map and therefore rejects spot at pre-flight. AWS has a real spot arm; GCP / Azure are schema-recognized but remain listed as unsupported until their client surfaces support it (see KL-10). (Corrected 2026-08-12: this requirement previously cited `CloudProvider.supportsPreemptible()`. That method was implemented by all five providers and called by nothing — the gate has always been the validator map — and the `CloudProvider` SPI has since been deleted as dead surface.)
 
 **REQ-5.1.7.3**: Elected LB sources MUST contain at least one `core` or `worker` sub-table (PF-14). A source with only a `spot` sub-table cannot hold a floating IP.
 
@@ -840,14 +840,14 @@ The bootstrap command `aether cluster bootstrap --config <file>` executes six se
 
 | Source Type | Action                                                                                  |
 |-------------|-----------------------------------------------------------------------------------------|
-| Cloud       | For each role sub-table, call `CloudProvider.provision` (or `provisionSpot` for spot). Wait for `running` status. Then create firewall rules (see below). |
+| Cloud       | For each role sub-table, call `CloudProviderSupport.provisionVia(ComputeProvider, NodeGroupConfig)` (spot is expressed as `InstanceType.SPOT` on the resolved `ProvisionRequest`, not a separate method). Wait for `running` status. Then create firewall rules (see below). |
 | SSH         | No-op for node provisioning. Hosts already exist.                                        |
 | Forge       | No-op for node provisioning. Ember nodes are created in-process during Phase 4.          |
 | Docker      | For each role sub-table, create containers via `DockerComputeProvider`. Wait for `running` status. |
 
 **Firewall step (per source, after node provisioning)**:
 
-- If `[source.X.firewall]` is declared, call `CloudProvider.openIngress(port, cidr, description, sourceId)` for each entry.
+- If `[source.X.firewall]` is declared, call `ComputeProvider.openIngress(sourceId, port, protocol, sourceCidr, description)` for each entry. (Ingress moved from the deleted `CloudProvider` SPI to `ComputeProvider` — see the CHANGELOG 'Dead `CloudProvider` ingress SPI' entry.)
 - Else if `load_balancer = "elected"` and no `[source.X.firewall]` block exists, auto-create `{ port = app_http, source_cidr = "0.0.0.0/0" }` and log a warning (REQ-5.1.8.2).
 - Cluster and management ports are never touched — see REQ-5.1.8.3.
 
@@ -855,7 +855,7 @@ The bootstrap command `aether cluster bootstrap --config <file>` executes six se
 
 **REQ-8.2.2**: If any VM fails to reach `running` status within `operations.timeouts.health_check`, the phase fails.
 
-**REQ-8.2.3**: A spot sub-table on a provider whose `CloudProvider.supportsPreemptible()` returned `false` MUST have been rejected at pre-flight (PF-16). A spot sub-table on a provider whose `provisionSpot` is a v1 stub (AWS/GCP/Azure) fails the phase with a clear "spot provisioning not implemented in v1 for provider X" error. Tracked as KL-10.
+**REQ-8.2.3**: A spot sub-table on a provider listed in `ClusterBootstrapConfigValidator.SPOT_UNSUPPORTED_REASONS` MUST have been rejected at pre-flight (PF-16). A spot sub-table on a provider whose `provisionSpot` is a v1 stub (AWS/GCP/Azure) fails the phase with a clear "spot provisioning not implemented in v1 for provider X" error. Tracked as KL-10.
 
 ### Phase 3: Collect Addresses
 
@@ -1249,7 +1249,7 @@ Each bootstrap phase records completion state to enable resume on failure.
 
 `aether cluster destroy` cleans up:
 - Provisioned VMs (cloud) / stopped containers (forge)
-- Firewall rules created via `CloudProvider.closeIngress`
+- Firewall rules created via `ComputeProvider.closeIngress`
 - Bootstrap state file
 - Cluster registry entry
 - Local API key file
