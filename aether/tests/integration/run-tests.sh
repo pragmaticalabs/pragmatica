@@ -78,7 +78,11 @@ CLUSTER_A_SUITES=(00 04 06 07 08 09 10 11 14 15)
 #   12 network   — partition tests, but partitions heal (reversible)
 #   03 scaling   — scale-up exercises the provisionNode path that can stall under churn
 #   02 chaos     — test-kill-multiple is the proven 2-node-burst wedge → runs LAST
-CLUSTER_B_SUITES=(05 13 12 03 02)
+# 02y (#508 stream crash-durability) runs on cluster B but is DELIBERATELY its own suite
+# rather than a member of 02-chaos: the 8th test of that suite fails whichever test it is
+# (see #593, and #594 for the probable cause). Listing it here means it gets its own
+# cluster-B pass instead of inheriting six chaos tests' worth of un-reconciled churn.
+CLUSTER_B_SUITES=(05 13 12 03 02 02y)
 
 # ---------------------------------------------------------------------------
 # Argument parsing
