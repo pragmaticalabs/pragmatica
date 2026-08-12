@@ -49,6 +49,14 @@ fi
 
 # --- teardown (order matters: LB targets → LB → servers → network → SSH key) ---
 
+# --- cost inputs, captured BEFORE anything is deleted ---
+# The cost summary at the end multiplies by fleet size. That has to be read now: once the
+# servers are gone, driver_server_count_by_label returns 0 and the estimate silently
+# collapses back to single-node cost — which is the bug this replaces.
+BILLED_NODES=$(driver_server_count_by_label "$LABEL" 2>/dev/null || echo 0)
+BILLED_TYPE=$(driver_server_type_by_label "$LABEL" 2>/dev/null || echo "")
+log "Cost inputs: ${BILLED_NODES} server(s), type=${BILLED_TYPE:-<unknown>}"
+
 log "Removing Hetzner load balancer..."
 for lb_id in $(driver_lb_ids_by_label "$LABEL"); do
     driver_delete_lb "$lb_id" && log "  Deleted LB $lb_id" || fail "  Failed to delete LB $lb_id"
@@ -82,8 +90,14 @@ if [ -n "$START_TIME" ]; then
     NOW=$(date +%s)
     ELAPSED_S=$((NOW - START_TIME))
     ELAPSED_H=$(echo "scale=2; $ELAPSED_S / 3600" | bc 2>/dev/null || echo "?")
-    COST=$(echo "scale=2; $ELAPSED_H * $(driver_cost_estimate)" | bc 2>/dev/null || echo "?")
-    log "Cluster was up for ${ELAPSED_H} hours. Estimated cost: \$${COST}"
+    # elapsed x per-node-hour rate x NODE COUNT. The node count was the missing factor:
+    # without it a 100-node run reported the cost of one node, understating by exactly N
+    # (a ~$14 run reads as ~$0.14). Auto-provisioned replacements are included because the
+    # count is read from the live label selector, not from the configured topology.
+    RATE=$(driver_cost_estimate "$BILLED_TYPE")
+    COST=$(echo "scale=2; $ELAPSED_H * $RATE * ${BILLED_NODES:-1}" | bc 2>/dev/null || echo "?")
+    log "Cluster was up for ${ELAPSED_H}h x ${BILLED_NODES:-?} node(s) @ EUR ${RATE}/node-h — estimated cost: EUR ${COST}"
+    log "  (estimate only: excludes load balancers, volumes, snapshots, and egress overage)"
 else
     log "No start time recorded — cannot estimate cost."
 fi

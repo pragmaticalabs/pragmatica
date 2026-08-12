@@ -26,9 +26,46 @@
 driver_require_cli() { command -v hcloud >/dev/null 2>&1; }
 
 # ---------------------------------------------------------------------------
-# RFC op: driver_cost_estimate — per-hour rate literal used by the cost summary.
-# ---------------------------------------------------------------------------
-driver_cost_estimate() { echo "0.071"; }
+# RFC op: driver_cost_estimate — per-hour EUR rate for ONE server of a given type.
+#
+#   $1 = instance type (e.g. cx23). Optional; omitted falls back to the conservative
+#        default below.
+#
+# Previously this was a single literal (0.071) independent of instance type AND of fleet
+# size, so a 100-node run reported the cost of one node — wrong by exactly N. The caller
+# is responsible for multiplying by the node count (see teardown-cloud.sh); this op
+# answers only "what does one of these cost per hour".
+#
+# Rates are approximate, EUR, and dated: Hetzner raised cloud prices in June 2026 (up to
+# 3.1x on some lines) and the CX22 line was superseded by CX23. Derived from monthly list
+# prices / 730. US locations run ~20% higher and include far less traffic — treat these as
+# an EU-location floor, not a quote.
+#
+# UNKNOWN TYPES DELIBERATELY FALL BACK HIGH AND LOUD. The defect being fixed here is
+# under-reporting cost; a silent low default would reintroduce it in a new form.
+driver_cost_estimate() {
+    local instance_type="${1:-}"
+    case "$instance_type" in
+        cx22)  echo "0.0060" ;;   # legacy/deprecated (superseded by cx23)
+        cx23)  echo "0.0075" ;;
+        cx33)  echo "0.0150" ;;
+        cax11) echo "0.0062" ;;   # ARM (Ampere), DE/FI only
+        cax21) echo "0.0120" ;;
+        cpx11) echo "0.0070" ;;
+        cpx21) echo "0.0130" ;;
+        cpx31) echo "0.0250" ;;
+        cpx32) echo "0.0280" ;;
+        ccx13) echo "0.0180" ;;   # dedicated vCPU
+        ccx23) echo "0.0336" ;;
+        ccx33) echo "0.0672" ;;
+        ccx63) echo "1.3678" ;;
+        "")
+            echo "0.0710" ;;      # no type supplied — conservative default (the historical literal)
+        *)
+            echo "driver_cost_estimate: unknown instance type '${instance_type}' — using conservative 0.0710/h; the estimate may OVERSTATE cost. Add the type to the table in lib/driver-hetzner.sh." >&2
+            echo "0.0710" ;;
+    esac
+}
 
 # ---------------------------------------------------------------------------
 # RFC op: driver_provider_toml — the Hetzner-source bootstrap TOML.
@@ -116,4 +153,7 @@ driver_network_ids_by_label() { hcloud network list --selector "$1" -o noheader 
 driver_delete_network()       { hcloud network delete "$1"; }
 driver_delete_sshkey()        { hcloud ssh-key delete "$1"; }
 driver_server_count_by_label(){ hcloud server list --selector "$1" -o noheader 2>/dev/null | wc -l | tr -d ' '; }
+# Dominant server type behind a label — the cost summary needs a type, not just a count.
+# Reports the most common type so a fleet with a stray odd node still prices sensibly.
+driver_server_type_by_label(){ hcloud server list --selector "$1" -o noheader -o columns=type 2>/dev/null | sort | uniq -c | sort -rn | head -1 | awk '{print $2}'; }
 driver_show_servers_by_label(){ hcloud server list --selector "$1"; }

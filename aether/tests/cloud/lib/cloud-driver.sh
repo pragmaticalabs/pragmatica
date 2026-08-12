@@ -23,7 +23,12 @@
 #   driver_reap_by_label       driver_reap_list_* / driver_*_ids_by_label /
 #                              driver_delete_* / driver_orphan_core_server_ids /
 #                              driver_server_count_by_label / driver_show_servers_by_label
-#   driver_cost_estimate       driver_cost_estimate
+#   driver_cost_estimate       driver_cost_estimate [instance_type]
+#                              Returns the per-hour rate for ONE server of that type.
+#                              Callers MUST multiply by the fleet size themselves — the
+#                              op deliberately does not know the node count, and omitting
+#                              that factor understates a run by exactly N (fixed 2026-08-12).
+#                              An unknown type must fall back HIGH and warn, never low.
 #   (preflight)                driver_require_cli
 #
 # All eight RFC §5 ops ARE implemented by the Hetzner driver (part 1); there are
