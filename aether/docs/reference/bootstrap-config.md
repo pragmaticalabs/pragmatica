@@ -65,6 +65,11 @@ enabled          = true
 retry_interval   = "30s"
 startup_cooldown = "15s"
 
+# --- Cost guardrail (#298): refuse provisioning past 12 nodes for this cluster.
+# Opt-in — omit it and provisioning stays unbounded, as it always has. See "Fleet cap" below.
+[source.hetzner-eu.node_config.cluster]
+max_nodes = 12
+
 # --- Trap (a): without this, JVM nodes default to API_KEY security mode and the
 # bootstrap's own cluster-config write is rejected with 401 Unauthorized. See "Traps" below.
 [source.hetzner-eu.node_config.app-http]
@@ -267,6 +272,42 @@ to the VM. You do not write `[cloud.*]` by hand in a bootstrap-config file; if y
 so, you're editing the wrong schema.
 
 ## Traps
+
+### Fleet cap — bounding what a cluster may provision (#298)
+
+`[cluster] max_nodes` is a ceiling on how many nodes a cluster may have provisioned. It is enforced at
+`NodeLifecycleManager.provisionNode`, the single chokepoint **every** provisioning path funnels through
+— the auto-heal reconciler, bootstrap, and `aether cluster` wave reprovision alike — by counting the
+cluster's live instances (scoped by the `aether-cluster` label) before each provision and refusing with
+`EnvironmentError.NodeCapExceeded` once the count reaches the cap.
+
+It is a **node-level** setting, so for a cloud source it is supplied through the `node_config` overlay:
+
+```toml
+[source.<name>.node_config.cluster]
+max_nodes = 12
+```
+
+For a hand-managed node it goes directly in that node's `aether.toml` under `[cluster]`.
+
+**Opt-in, and unbounded by default.** Omitting `max_nodes` (or setting `0`) preserves today's behaviour
+exactly. There is deliberately no numeric default: any default we picked would silently refuse
+provisioning on an existing cluster already larger than it — an outage on upgrade, not a guardrail.
+
+**What the cap does and does not promise.** The check reads the live count and then provisions, so the
+guarantee is *"bounded by `max_nodes` plus whatever was concurrently in flight"* — not *"never exceeds
+`max_nodes`"*. It bounds the runaway case, which is sequential reconciler passes; it is not a barrier
+against a deliberate parallel burst. A cap read that **fails** refuses the provision rather than allowing
+it, so an unreachable provider API cannot silently disable the guard.
+
+**Operator recovery when it fires:** raise `max_nodes`, or terminate instances until the cluster is under
+the cap. Provisioning resumes on the next reconcile pass with no further action. The refusal is logged at
+WARN naming the cluster, the cap, and the observed count.
+
+> **`[operations.auto_heal]` is bootstrap-only and does NOT reach a running node.** Its `retry_interval` /
+> `startup_cooldown` values are parsed and validated into `AutoHealSpec`, but nothing renders them into the
+> composed per-node `aether.toml`, so every node runs `AutoHealConfig.DEFAULT`. Do not use that section to
+> try to set the fleet cap — use `node_config.cluster` as above. (Recorded 2026-08-12 while wiring #298.)
 
 ### (a) `security_mode = "NONE"` — why dev/eval bootstrap needs it
 

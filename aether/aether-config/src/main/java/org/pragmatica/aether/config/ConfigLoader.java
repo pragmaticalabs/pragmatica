@@ -205,6 +205,7 @@ public final class ConfigLoader {
         doc.getInt("cluster", "nodes").onPresent(builder::nodes);
         doc.getString("cluster", "tls").map(ConfigLoader::toBooleanValue).onPresent(builder::tls);
         doc.getInt("cluster", "core_max").onPresent(builder::coreMax);
+        doc.getInt("cluster", "max_nodes").onPresent(builder::maxNodes);
         builder.ports(portsFromDocument(doc));
     }
 

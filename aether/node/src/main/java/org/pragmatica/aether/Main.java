@@ -18,6 +18,8 @@ import java.util.regex.Pattern;
 import java.util.stream.IntStream;
 
 import org.pragmatica.aether.config.AetherConfig;
+import org.pragmatica.aether.config.ClusterConfig;
+import org.pragmatica.aether.environment.AutoHealConfig;
 import org.pragmatica.aether.config.AppHttpConfig;
 import org.pragmatica.aether.config.BackupConfig;
 import org.pragmatica.aether.config.ConfigLoader;
@@ -112,7 +114,8 @@ public record Main(String[] args) {
                                      // #298 — stamp the boot-gated cluster identity onto runtime config.
                                      // enforceClusterNamePresent() above already aborted the boot if this
                                      // were missing or malformed, so the value is present and validated.
-                                     .withClusterName(resolveClusterName());
+                                     .withClusterName(resolveClusterName())
+                                     .withAutoHeal(resolveAutoHeal(aetherConfig));
         var node = AetherNode.aetherNode(config).expect("Failed to initialize Aether node at startup");
 
         registerShutdownHook(node);
@@ -316,6 +319,20 @@ public record Main(String[] args) {
     private static Option<MembershipConfig> resolveMembership(Option<AetherConfig> aetherConfig) {
         return aetherConfig.flatMap(AetherConfig::membership)
                            .map(Main::liftMembershipBinding);
+    }
+
+    /// #298 — carry `[cluster] max_nodes` into the auto-heal config the node runs with. Until this
+    /// existed the builder fell through to `AutoHealConfig.DEFAULT`, so no auto-heal setting was
+    /// operator-tunable at all and the fleet cap had no way to be set outside a test.
+    ///
+    /// `UNBOUNDED` (0, the same "unset" sentinel `coreMax` uses) leaves the cap absent, which is
+    /// what every existing config gets — provisioning stays unbounded until an operator opts in.
+    private static AutoHealConfig resolveAutoHeal(Option<AetherConfig> aetherConfig) {
+        return aetherConfig.map(AetherConfig::cluster)
+                           .map(ClusterConfig::maxNodes)
+                           .filter(maxNodes -> maxNodes > ClusterConfig.UNBOUNDED)
+                           .map(AutoHealConfig.DEFAULT::withMaxNodes)
+                           .or(AutoHealConfig.DEFAULT);
     }
 
     private static MembershipConfig liftMembershipBinding(MembershipConfigBinding binding) {

@@ -153,6 +153,43 @@ public record AetherNodeConfig(TopologyConfig topology,
     ///
     /// Absent means "not stamped": an in-process harness (Ember/forge) that never goes through
     /// `Main`. The fleet cap declines to enforce rather than guess a scope in that case.
+    /// #298 — replace the auto-heal config after construction. The builder is a STAGED chain and
+    /// `autoHeal` sits six stages after `streaming`, where `Main` stops and lets `default build()`
+    /// fill the remainder; reaching it mid-chain would force `Main` to supply six unrelated stages
+    /// it has no opinion about. Same post-build shape as [#withClusterName].
+    public AetherNodeConfig withAutoHeal(AutoHealConfig autoHeal) {
+        return new AetherNodeConfig(topology,
+                                    protocol,
+                                    sliceAction,
+                                    sliceConfig,
+                                    managementPort,
+                                    artifactRepo,
+                                    cache,
+                                    tls,
+                                    quicTls,
+                                    ttm,
+                                    rollback,
+                                    appHttp,
+                                    controllerConfig,
+                                    configProvider,
+                                    environment,
+                                    autoHeal,
+                                    observability,
+                                    atomicity,
+                                    activationGated,
+                                    timeouts,
+                                    certificateProvider,
+                                    workerConfig,
+                                    deploymentDefaults,
+                                    managementHttpProtocol,
+                                    storageConfig,
+                                    backupConfig,
+                                    membership,
+                                    streaming,
+                                    clusterFormation,
+                                    clusterName);
+    }
+
     public AetherNodeConfig withClusterName(String clusterName) {
         return new AetherNodeConfig(topology,
                                     protocol,
