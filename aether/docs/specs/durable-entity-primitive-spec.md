@@ -2,9 +2,9 @@
 
 *The primitive for durable workflows & sagas.*
 
-**Version:** 0.3.0
-**Status:** Draft — **decision-complete** (author-facing API pinned; all §14 sign-off items resolved). v0.3.0 closes S1/S2/S4/S5 (signals in v1 §6.6, retention defaults, C hidden, per-call read consistency §8.1). See changelog.
-**Date:** 2026-06-27 (updated 2026-07-04)
+**Version:** 0.4.0
+**Status:** Draft — **decision-complete** (author-facing API pinned; all §14 sign-off items resolved). v0.4.0 reconciles §5.1/§5.3 with the shipped surface (#432): the error hierarchy is `DurableEntityError`, not `EntityCause`, and the pinned six-case set was incomplete — see §5.3. v0.3.0 closed S1/S2/S4/S5 (signals in v1 §6.6, retention defaults, C hidden, per-call read consistency §8.1). See changelog.
+**Date:** 2026-06-27 (updated 2026-08-13)
 **Author:** design-stream
 **Epic:** #345
 **Supersedes:** #190 (the Persistent-Workflow draft is carried forward here as the *workflow specialization*, §6)
@@ -235,11 +235,17 @@ correct trade-off stated explicitly: single-writer = serialized = bounded throug
  * S — state type (immutable value: record or sealed interface)
  */
 public interface DurableEntity<K, S> {
-    /** Create a new entity; fails with EntityAlreadyExists if the key is taken. */
+    /** Create a new entity; fails with KeyAlreadyExists if the key is taken. */
     Promise<S>           create(K key, S initial);
 
-    /** Owner-routed read of committed state; bounded-stale during handover (not yet linearizable — see §8). Returns Option.none() if absent. */
+    /** Owner-routed read of committed state at the default consistency. Returns Option.none() if absent. */
     Promise<Option<S>>   get(K key);
+
+    /**
+     * Per-call read consistency (§8.1). LINEARIZABLE fails with LinearizableUnavailable rather than
+     * silently degrading; BOUNDED_STALE is served from the replica set and is NOT forwarded (#596).
+     */
+    default Promise<Option<S>> get(K key, ReadConsistency consistency) { ... }
 
     /**
      * Fenced single-writer mutation. The mutator is a PURE S→S function (no IO).
@@ -318,23 +324,56 @@ public Promise<OrderState> cancel(
 
 ### 5.3 Error types
 
+**Reconciled with the shipped surface 2026-08-13 (#432).** This section previously pinned a
+`EntityCause` hierarchy of six cases that never shipped under those names. The shipped type is
+authoritative and is reproduced here; anything pattern-matching the old names does not compile.
+
+The divergence was not the implementation drifting from a correct design — the pinned set was
+*incomplete*. Ownership, fencing and read-consistency each produce failures an author must be able to
+distinguish, and those only became apparent while building I0–I3. Renaming the shipped cases to the
+old names would still have left those cases unpinned, so the spec yields to the code here.
+
 ```java
 /** Sealed Cause hierarchy for DurableEntity operations. */
-public sealed interface EntityCause extends Cause {
+public sealed interface DurableEntityError extends Cause {
     /** create() called for a key that already exists. */
-    record EntityAlreadyExists(String key)         implements EntityCause { ... }
+    record KeyAlreadyExists(String key) implements DurableEntityError { ... }
     /** get()/update()/delete() called for a key that does not exist. */
-    record EntityNotFound(String key)              implements EntityCause { ... }
-    /** update() rejected because the current state is terminal. */
-    record EntityTerminated(String key)            implements EntityCause { ... }
-    /** Fenced write rejected (stale owner epoch — should be transient/retried). */
-    record StaleOwnerEpoch(String key)             implements EntityCause { ... }
-    /** delete() called on a non-terminal entity. */
-    record EntityNotTerminal(String key)           implements EntityCause { ... }
+    record KeyNotFound(String key) implements DurableEntityError { ... }
     /** Timer not found (cancelled, fired, or wrong token). */
-    record TimerNotFound(String key, TimerToken t) implements EntityCause { ... }
+    record TimerNotFound(String key) implements DurableEntityError { ... }
+    /** Durable timers are not implemented yet (#351) — hard failure, never a silent no-op. */
+    record TimerNotSupported(String key) implements DurableEntityError { ... }
+    /** Fenced write rejected: the presented owner epoch is stale. Transient — re-resolve and retry. */
+    record StaleOwner(String key, String presentedEpoch) implements DurableEntityError { ... }
+    /** The durable substrate failed the operation; carries the underlying cause. */
+    record StorageFailed(String key, Cause cause) implements DurableEntityError { ... }
+    /** This node is not the committed owner of the key's partition. STABLE — ask the named owner. */
+    record NotCurrentOwner(String key, String committedOwner) implements DurableEntityError { ... }
+    /** Ownership for the key's partition has not been committed yet. TRANSIENT — retry here. */
+    record OwnershipNotYetCommitted(String key, String keyspace, int partition) implements DurableEntityError { ... }
+    /** A LINEARIZABLE read presented an epoch below the high water mark. */
+    record StaleEpochRead(String key, String presentedEpoch, String highWaterEpoch) implements DurableEntityError { ... }
+    /** LINEARIZABLE was requested but the barrier is unavailable — never silently degraded to a weaker read. */
+    record LinearizableUnavailable(String key) implements DurableEntityError { ... }
 }
 ```
+
+`NotCurrentOwner` vs `OwnershipNotYetCommitted` is the load-bearing distinction: the first is stable
+and means *go elsewhere*, the second is transient and means *retry here*. Collapsing them into one
+"retry" cause produces a message that never clears — that exact defect shipped once and was fixed in
+I3 (`FoldInProgress` returned where `PartitionNotHeld` was meant).
+
+**Not implemented, deliberately unpinned:** the entity-lifecycle cases `EntityTerminated` and
+`EntityNotTerminal` from the old listing have no shipped equivalent, because the terminal-state
+predicate that `delete()` describes in §5.1 is not built yet. They are listed here as intended, NOT
+as available; they belong with the lifecycle work, and the case names should be settled when that
+lands rather than pre-pinned a second time.
+
+**Reachability caveat (#596):** every one of these is only observable on the partition's owner. There
+is no owner-forwarding for writes or bounded-stale reads, so a caller that reaches a non-owner gets
+`NotCurrentOwner` and must re-resolve itself — and behind a pinning load balancer it cannot.
+
 
 ---
 
@@ -979,6 +1018,27 @@ gate is the guard-rail. Fixes #382 (javadoc overclaim) via the honest per-level 
 - **Per-partition fenced leader:** Restate first-principles (Bifrost, epoch fencing) — https://www.restate.dev/blog/building-a-modern-durable-execution-engine-from-first-principles · CockroachDB range leases — https://www.cockroachlabs.com/docs/stable/architecture/replication-layer · Spanner — https://cloud.google.com/spanner/docs/whitepapers
 - **Durable-execution model (no-replay vs replay):** Vanlightly, demystifying determinism — https://jack-vanlightly.com/blog/2025/11/24/demystifying-determinism-in-durable-execution · DBOS architecture — https://docs.dbos.dev/architecture
 - **Internal:** #345 (fence epic), #349 (durability epic), #190 (superseded workflow draft), #265/#261 (streaming substrate), `StateMachineDefinition`, `EpochBearing`, `KVStore`.
+
+---
+
+## Changelog — v0.4.0 (2026-08-13)
+
+**§5.1/§5.3 reconciled with the shipped surface (#432).** The spec claimed authority over an error
+hierarchy that never shipped under those names, and the book copied it verbatim — teaching authors a
+surface that does not compile.
+
+| What | Why |
+|---|---|
+| `EntityCause` → `DurableEntityError`, all ten shipped cases listed (§5.3) | The pinned six-case set was not merely renamed, it was INCOMPLETE: ownership (`NotCurrentOwner`, `OwnershipNotYetCommitted`), fencing (`StaleOwner`) and read consistency (`StaleEpochRead`, `LinearizableUnavailable`) each produce failures an author must distinguish, and they only emerged while building I0–I3. Renaming the six would have left the other four unpinned, so the spec yields to proven code rather than the reverse. |
+| `EntityTerminated` / `EntityNotTerminal` marked intended-but-unbuilt | The terminal-state predicate `delete()` relies on is not implemented. Listing them as available would repeat the original defect; they get pinned when the lifecycle work lands. |
+| §5.1 gains the `get(K, ReadConsistency)` overload | It exists in §8.1 and in shipped `DurableEntity.java:119`; only the §5.1 snippet omitted it — an internal inconsistency independent of the naming question. |
+| Reachability caveat added to §5.3 | Every case is observable only on the partition owner; there is no owner-forwarding (#596). |
+
+**Decision record:** the issue offered (a) rename shipped code to the pinned names, or (b) amend the
+spec, and assigned the call to the design stream. This is (b), chosen on the completeness argument
+above plus lower risk — the shipped cases are integration-proven, and renaming a public error surface
+mid-rc3 breaks author code for a naming preference. An owner ruling settles it if (a) is still wanted;
+reverting is a spec edit, no code churn.
 
 ---
 
