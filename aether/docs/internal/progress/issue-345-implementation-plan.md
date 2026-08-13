@@ -501,12 +501,20 @@ docker `02y-stream-crash` suite. The SIGKILL tier for entities remains outstandi
 **Known gaps, explicitly not closed by this increment:**
 
 1. **SIGKILL crash durability for entities** — belongs beside #508's `02y-stream-crash` docker suite.
-2. **`BOUNDED_STALE` read forwarding.** A node not holding a partition now refuses rather than lying
-   with `absent`. The LINEARIZABLE path already routes to the committed owner; the bounded-stale path
-   does not, so read availability is the replica set rather than the cluster.
-3. **Checkpoint writes are not directly evidenced.** Only failures are logged, so a silently
-   non-writing driver looks identical to a working one in the Forge log — an observability gap that
-   matters because the checkpoint is the only thing bounding an entity log.
+   **CLOSED 2026-08-13**: `02w-entity-crash` hard-killed (`docker kill`) the owner with creates in
+   flight; every ACKED entity read back with its exact written value. The assertions are gated on a
+   CONFIRMED kill — an earlier run passed them without any kill having happened, because the node-pick
+   fail-fasted and nothing checked that the crash occurred.
+2. **Owner-forwarding — WIDER than recorded here, now #596.** This gap was written as
+   `BOUNDED_STALE` read forwarding only. The `02w` run showed the WRITE path has the same hole and it
+   bites harder: a durable entity is reachable only on its partition owner, there is no forwarding and
+   no client-side resolution, so behind the LB-fronted app endpoint (which pins to one instance) 37 of
+   40 creates were refused `NotCurrentOwner`. Streams already have `ForwardingReadRouter`; entities
+   have no equivalent. Cross-node slice code is refused for the same reason.
+3. **Checkpoint writes are not directly evidenced.** **CLOSED 2026-08-13**: `GET /api/entity/checkpoints`
+   + `aether entity checkpoints` report per-keyspace `writes`/`failures`/`checkpointedThrough`, and the
+   `02w` suite reads them as a liveness sensor (`node-1=34w/0f` live). Writes must be summed
+   CLUSTER-WIDE: a node hosting the keyspace but folding no partition correctly reports zero.
 4. **Simultaneous restart of the owner AND every replica** can leave the post-checkpoint tail
    recoverable only on the original owner; ownership landing elsewhere refuses loudly rather than
    losing data quietly.
