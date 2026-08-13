@@ -3743,6 +3743,7 @@ public interface AetherNode extends ManageableNode {
                                                                                     () -> node.kvStore());
                 var managementServer = ManagementServer.managementServer(config.managementPort(),
                                                                          () -> node,
+                                                                         entityCheckpointDriver,
                                                                          alertManager,
                                                                          configRegistry,
                                                                          traceStore,

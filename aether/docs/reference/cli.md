@@ -2441,6 +2441,31 @@ node and union the results.
 
 ---
 
+## Durable Entities
+
+### `aether entity checkpoints`
+
+Show this node's durable-entity checkpoint progress (#345 I3).
+
+Reads `GET /api/entity/checkpoints`, which is LOCAL — each node checkpoints only the partitions it folds,
+so this reports the node you queried. Point `--node` / the management endpoint at a specific node to see
+that node's view.
+
+```bash
+aether entity checkpoints
+```
+
+A checkpoint is the only thing that bounds an entity log: until a partition is checkpointed, the retention
+floor reclaims nothing for it. **`writes` climbing is the signal that the driver is alive** — writes and
+reads keep succeeding even when checkpointing has stopped, so a flat `writes` under load is the fault to
+act on. `failures` and `checkpointedThrough` say which partitions are stuck; a partition this node has
+never folded is absent rather than reported as offset 0.
+
+```
+KEYSPACE   PARTITIONS   WRITES   FAILURES   CHECKPOINTED THROUGH
+orders     8            214      0          0:1841 3:990 5:1502
+```
+
 ## Storage
 
 Inspect and snapshot the node's Hierarchical Storage Engine instances (#207) — the

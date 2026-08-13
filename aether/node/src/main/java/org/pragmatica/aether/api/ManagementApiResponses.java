@@ -920,6 +920,23 @@ public sealed interface ManagementApiResponses {
     /// the node hosts no versioned slice.
     record VersionsResponse(List<VersionedSliceView> slices) {}
 
+    /// #345 I3 — what THIS node has checkpointed for each durable-entity keyspace it folds.
+    ///
+    /// `writes` is the positive signal: it must climb while a keyspace is taking writes. A driver that
+    /// stopped leaves it flat while everything else still looks healthy, which is the failure this
+    /// surface exists to make visible. `failures` and `checkpointedThrough` localise it — a partition
+    /// whose offset stops advancing while others move is stuck on its own, not cluster-wide.
+    ///
+    /// A partition this node has never folded is ABSENT from `checkpointedThrough` rather than reported
+    /// as `0`: "nothing to say about it" and "checkpointed through offset 0" are different claims.
+    record EntityCheckpointsResponse(List<EntityKeyspaceCheckpointView> keyspaces) {}
+
+    record EntityKeyspaceCheckpointView(String keyspace,
+                                        int partitionCount,
+                                        long writes,
+                                        long failures,
+                                        Map<Integer, Long> checkpointedThrough) {}
+
     /// Per-slice version registry projection in [VersionsResponse]. `slice` is the deployed artifact
     /// coordinate; `apiPrefix` is the version-agnostic base prefix; `requireVersionHeader` and
     /// `defaultVersion` are the header-mode detection knobs (`defaultVersion` is `Option.none()` /

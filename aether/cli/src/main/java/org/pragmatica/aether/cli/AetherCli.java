@@ -56,7 +56,7 @@ import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Option.some;
 
 
-@Command(name = "aether", mixinStandardHelpOptions = true, versionProvider = AetherVersionProvider.class, description = "Command-line interface for Aether cluster management", subcommands = {AetherCli.StatusCommand.class, AetherCli.NodesCommand.class, AetherCli.SlicesCommand.class, AetherCli.MetricsCommand.class, AetherCli.HealthCommand.class, AetherCli.ScaleCommand.class, AetherCli.BlueprintCommand.class, AetherCli.ArtifactCommand.class, AetherCli.InvocationMetricsCommand.class, AetherCli.ControllerCommand.class, AetherCli.AlertsCommand.class, AetherCli.ThresholdsCommand.class, AetherCli.TracesCommand.class, AetherCli.ObservabilityCommand.class, AetherCli.LoggingCommand.class, AetherCli.ConfigCommand.class, AetherCli.ScheduledTasksCommand.class, AetherCli.EventsCommand.class, AetherCli.WorkersCommand.class, AetherCli.BackupCommand.class, AetherCli.BackupSingularCommand.class, AetherCli.SchemaCommand.class, AetherCli.AbTestCommand.class, AetherCli.StreamCommand.class, org.pragmatica.aether.cli.stream.StreamCommand.class, AetherCli.CertCommand.class, AetherCli.RoutesCommand.class, AetherCli.VersionsCommand.class, AetherCli.DhtCommand.class, org.pragmatica.aether.cli.deploy.DeployCommand.class, org.pragmatica.aether.cli.cluster.ClusterCommand.class, org.pragmatica.aether.cli.storage.StorageCommand.class, org.pragmatica.aether.cli.whoami.WhoamiCommand.class, org.pragmatica.aether.cli.ttm.TtmCommand.class, GenerateCompletion.class})
+@Command(name = "aether", mixinStandardHelpOptions = true, versionProvider = AetherVersionProvider.class, description = "Command-line interface for Aether cluster management", subcommands = {AetherCli.StatusCommand.class, AetherCli.NodesCommand.class, AetherCli.SlicesCommand.class, AetherCli.MetricsCommand.class, AetherCli.HealthCommand.class, AetherCli.ScaleCommand.class, AetherCli.BlueprintCommand.class, AetherCli.ArtifactCommand.class, AetherCli.InvocationMetricsCommand.class, AetherCli.ControllerCommand.class, AetherCli.AlertsCommand.class, AetherCli.ThresholdsCommand.class, AetherCli.TracesCommand.class, AetherCli.ObservabilityCommand.class, AetherCli.LoggingCommand.class, AetherCli.ConfigCommand.class, AetherCli.ScheduledTasksCommand.class, AetherCli.EventsCommand.class, AetherCli.WorkersCommand.class, AetherCli.BackupCommand.class, AetherCli.BackupSingularCommand.class, AetherCli.SchemaCommand.class, AetherCli.AbTestCommand.class, AetherCli.StreamCommand.class, org.pragmatica.aether.cli.stream.StreamCommand.class, AetherCli.CertCommand.class, AetherCli.RoutesCommand.class, AetherCli.VersionsCommand.class, AetherCli.DhtCommand.class, AetherCli.EntityCommand.class, org.pragmatica.aether.cli.deploy.DeployCommand.class, org.pragmatica.aether.cli.cluster.ClusterCommand.class, org.pragmatica.aether.cli.storage.StorageCommand.class, org.pragmatica.aether.cli.whoami.WhoamiCommand.class, org.pragmatica.aether.cli.ttm.TtmCommand.class, GenerateCompletion.class})
 @Contract
 public class AetherCli implements Runnable {
     private static final String DEFAULT_ADDRESS = "localhost:8080";
@@ -4135,6 +4135,33 @@ public class AetherCli implements Runnable {
                 return OutputFormatter.printAction(response,
                                                    abParent.parent.outputOptions(),
                                                    "A/B test " + testId + " concluded with winner: " + winner);
+            }
+        }
+    }
+
+    /// #345 I3 — durable-entity checkpoint observability.
+    ///
+    /// A checkpoint is the only thing that bounds an entity log: until a partition is checkpointed the
+    /// retention floor reclaims nothing for it. A driver that silently stopped shows no other symptom —
+    /// writes and reads keep succeeding — so `writes` climbing is the signal an operator needs, and a
+    /// keyspace whose `writes` stays flat under load is the thing to act on.
+    @Command(name = "entity", description = "Inspect durable entity keyspaces", subcommands = {EntityCommand.CheckpointsCommand.class})
+    static class EntityCommand {
+        @CommandLine.ParentCommand
+        AetherCli parent;
+
+        /// LOCAL route: each node checkpoints only the partitions it folds, so this reports the
+        /// RECEIVING node's own work. Query a specific node's management port to see that node's view.
+        @Command(name = "checkpoints", description = "Show this node's durable-entity checkpoint progress")
+        static class CheckpointsCommand implements Callable<Integer> {
+            @CommandLine.ParentCommand
+            private EntityCommand entityParent;
+
+            @Override
+            public Integer call() {
+                var response = entityParent.parent.fetch(ENTITY_CHECKPOINTS);
+
+                return OutputFormatter.printQuery(response, entityParent.parent.outputOptions());
             }
         }
     }

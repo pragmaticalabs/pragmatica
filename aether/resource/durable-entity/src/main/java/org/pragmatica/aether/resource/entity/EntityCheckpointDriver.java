@@ -5,8 +5,12 @@
 package org.pragmatica.aether.resource.entity;
 
 import java.util.List;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.atomic.AtomicLong;
 
+import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
 
 import org.slf4j.Logger;
@@ -42,7 +46,60 @@ public final class EntityCheckpointDriver {
         return new EntityCheckpointDriver();
     }
 
-    private record Registration(String keyspace, int partitionCount, EntityFold fold, EntityLogSubstrate substrate) {}
+    private record Registration(String keyspace,
+                                int partitionCount,
+                                EntityFold fold,
+                                EntityLogSubstrate substrate,
+                                Map<Integer, Long> checkpointedThrough,
+                                AtomicLong writes,
+                                AtomicLong failures) {
+        static Registration registration(String keyspace,
+                                         int partitionCount,
+                                         EntityFold fold,
+                                         EntityLogSubstrate substrate) {
+            return new Registration(keyspace,
+                                    partitionCount,
+                                    fold,
+                                    substrate,
+                                    new ConcurrentHashMap<>(),
+                                    new AtomicLong(),
+                                    new AtomicLong());
+        }
+    }
+
+    /// What this node has actually checkpointed, per keyspace (#345 I3 observability).
+    ///
+    /// The point of this surface is that a driver which silently STOPPED is otherwise indistinguishable
+    /// from one that is working: writes keep succeeding, reads keep succeeding, and the only symptom —
+    /// an entity log that is never reclaimed — appears hours later as disk growth with nothing pointing
+    /// here. `writes` climbing is the positive signal that was missing; `failures` and
+    /// `checkpointedThrough` say which partitions are stuck and how far behind.
+    ///
+    /// Assembled ON REQUEST from counters the tick already maintains — no hot-path cost.
+    public record CheckpointSnapshot(List<KeyspaceCheckpoints> keyspaces) {}
+
+    /// @param checkpointedThrough last offset durably checkpointed per partition; a partition this node
+    ///                            has never folded is ABSENT rather than reported as 0, because "nothing
+    ///                            to say about it" and "checkpointed through offset 0" are different
+    ///                            claims and an operator must be able to tell them apart
+    public record KeyspaceCheckpoints(String keyspace,
+                                      int partitionCount,
+                                      long writes,
+                                      long failures,
+                                      Map<Integer, Long> checkpointedThrough) {}
+
+    /// Point-in-time view for the management API.
+    public CheckpointSnapshot snapshot() {
+        return new CheckpointSnapshot(registrations.stream().map(EntityCheckpointDriver::keyspaceSnapshot).toList());
+    }
+
+    private static KeyspaceCheckpoints keyspaceSnapshot(Registration registration) {
+        return new KeyspaceCheckpoints(registration.keyspace(),
+                                       registration.partitionCount(),
+                                       registration.writes().get(),
+                                       registration.failures().get(),
+                                       Map.copyOf(registration.checkpointedThrough()));
+    }
 
     /// Register a provisioned keyspace's fold for periodic checkpointing. Idempotent per keyspace: a
     /// second registration of the same keyspace is ignored, so re-provisioning does not double the
@@ -54,7 +111,7 @@ public final class EntityCheckpointDriver {
             return;
         }
 
-        registrations.add(new Registration(keyspace, partitionCount, fold, substrate));
+        registrations.add(Registration.registration(keyspace, partitionCount, fold, substrate));
         LOG.info("Entity checkpoint: keyspace '{}' registered over {} partition(s)", keyspace, partitionCount);
     }
 
@@ -100,12 +157,29 @@ public final class EntityCheckpointDriver {
                                     partition,
                                     through,
                                     registration.fold().snapshot(partition))
-                    .onFailure(cause -> LOG.warn("Entity checkpoint for '{}' partition {} through offset {} failed: {}"
-                                                + " — retried next tick; the log cannot be reclaimed below the last"
-                                                + " successful checkpoint until it succeeds",
-                                                 registration.keyspace(),
-                                                 partition,
-                                                 through,
-                                                 cause.message()));
+                    .onSuccess(_ -> recordWrite(registration, partition, through))
+                    .onFailure(cause -> recordFailure(registration, partition, through, cause));
+    }
+
+    /// The positive signal. Without a success counter, a driver that silently stopped looks exactly like
+    /// one that is working — writes and reads keep succeeding either way, and the only symptom is an
+    /// entity log that is never reclaimed, appearing hours later as disk growth with nothing pointing
+    /// here.
+    @Contract
+    private static void recordWrite(Registration registration, int partition, long through) {
+        registration.checkpointedThrough().put(partition, through);
+        registration.writes().incrementAndGet();
+    }
+
+    @Contract
+    private static void recordFailure(Registration registration, int partition, long through, Cause cause) {
+        registration.failures().incrementAndGet();
+        LOG.warn("Entity checkpoint for '{}' partition {} through offset {} failed: {}"
+                + " — retried next tick; the log cannot be reclaimed below the last successful checkpoint"
+                + " until it succeeds",
+                 registration.keyspace(),
+                 partition,
+                 through,
+                 cause.message());
     }
 }

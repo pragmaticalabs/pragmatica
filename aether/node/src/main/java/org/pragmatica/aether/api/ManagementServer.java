@@ -92,6 +92,8 @@ import org.pragmatica.aether.stream.StreamPartitionManager;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.http.HttpMethod;
 import org.pragmatica.http.HttpStatus;
+import org.pragmatica.aether.api.routes.EntityCheckpointRoutes;
+import org.pragmatica.aether.resource.entity.EntityCheckpointDriver;
 import org.pragmatica.http.routing.RouteSource;
 import org.pragmatica.http.server.HttpServer;
 import org.pragmatica.http.server.HttpServerConfig;
@@ -128,6 +130,7 @@ public interface ManagementServer {
 
     static ManagementServer managementServer(int port,
                                              Supplier<ManageableNode> nodeSupplier,
+                                             EntityCheckpointDriver entityCheckpointDriver,
                                              AlertManager alertManager,
                                              ObservabilityConfigRegistry configRegistry,
                                              InvocationTraceStore traceStore,
@@ -151,6 +154,7 @@ public interface ManagementServer {
                                              Supplier<Set<NodeId>> pendingDrainsSupplier) {
         return new ManagementServerImpl(port,
                                         nodeSupplier,
+                                        entityCheckpointDriver,
                                         alertManager,
                                         configRegistry,
                                         traceStore,
@@ -218,6 +222,7 @@ class ManagementServerImpl implements ManagementServer {
 
     ManagementServerImpl(int port,
                          Supplier<ManageableNode> nodeSupplier,
+                         EntityCheckpointDriver entityCheckpointDriver,
                          AlertManager alertManager,
                          ObservabilityConfigRegistry configRegistry,
                          InvocationTraceStore traceStore,
@@ -299,6 +304,7 @@ class ManagementServerImpl implements ManagementServer {
         routeSources.add(ClusterTopologyRoutes.clusterTopologyRoutes(nodeSupplier));
         routeSources.add(ClusterJournalRoutes.clusterJournalRoutes(nodeSupplier));
         routeSources.add(ClusterGenerationRoutes.clusterGenerationRoutes(nodeSupplier));
+        routeSources.add(EntityCheckpointRoutes.entityCheckpointRoutes(entityCheckpointDriver));
         routeSources.add(ClusterAwaitQuiescedRoute.clusterAwaitQuiescedRoute(nodeSupplier));
         routeSources.add(nodeSupplier.get()
                                      .clusterTopologyManager()

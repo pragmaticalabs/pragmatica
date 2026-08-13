@@ -171,6 +171,12 @@ public enum ManagementRoute {
     // ports answered with one identical delegate view). Static prefix `/api/streams/replicas/local` is
     // matched before `/api/streams/replicas/{name}/{partition}` by the longest-static-prefix rule.
     STREAM_REPLICAS_LOCAL(GET, "/api/streams/replicas/local", List.of("name", "partition"), LOCAL),
+    // #345 I3 per-node durable-entity checkpoint observability. LOCAL, not delegate-routed: each node
+    // checkpoints only the partitions IT folds, so a delegate's answer would describe a different node's
+    // work. The surface exists because a checkpoint driver that silently stopped is otherwise
+    // indistinguishable from a working one — writes and reads keep succeeding, and the only symptom is an
+    // entity log that is never reclaimed, surfacing hours later as disk growth.
+    ENTITY_CHECKPOINTS(GET, "/api/entity/checkpoints", List.of(), LOCAL),
     // #265 increment 0 per-node hydration observability. Static prefix `/api/streams/hydration` (0
     // params) is matched before `/api/streams/{name}` (STREAM_GET, 1 param) by the longest-static-prefix
     // rule in RouteMatcher, so there is no collision. taskGroup(STREAMING) lands it on a STREAMING-capable

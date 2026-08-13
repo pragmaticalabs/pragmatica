@@ -4361,6 +4361,61 @@ GET /api/streams/replicas/local/{name}/{partition}
 ### Stream Hydration Snapshot
 
 ```
+GET /api/entity/checkpoints
+```
+
+**Auth:** ALL_AUTHENTICATED · **Routing:** LOCAL (never delegate-routed)
+
+Per-node durable-entity checkpoint observability (#345 I3). Each node checkpoints only the partitions it
+FOLDS, so a delegate's answer would describe a different node's work — query a specific node's management
+port to see that node's view.
+
+**Why this surface exists.** A checkpoint is the only thing that ever bounds an entity log: the retention
+floor refuses to reclaim any segment at or above a partition's committed checkpoint, so until one is
+written nothing is reclaimed at all. A checkpoint driver that silently stopped produces no immediate
+symptom — writes succeed, reads succeed, failover still works — and surfaces hours later as unbounded disk
+growth with nothing pointing at the cause. Before this endpoint the driver logged only FAILURES, so a
+driver that never ran and one that ran perfectly produced identical output.
+
+**What to read.** `writes` is the positive signal: it must climb while a keyspace is taking writes. Flat
+`writes` under load is the fault condition. `failures` and `checkpointedThrough` localise it — a partition
+whose offset stops advancing while its siblings move is stuck on its own, not cluster-wide. A partition
+this node has never folded is ABSENT from `checkpointedThrough` rather than reported as `0`: "nothing to
+say about it" and "checkpointed through offset 0" are different claims. An empty `keyspaces` list means
+this node hosts no durable-entity keyspace — a true answer, not an error.
+
+Assembled ON REQUEST from counters the checkpoint tick already maintains; no hot-path accounting is added.
+
+**Dashboard: dormant slot, decided explicitly (QUAD invariant, #494).** No panel is added. The dashboard is
+ontology-shaped — it presents cluster-wide dimensions — and this is a PER-NODE diagnostic whose value is in
+comparing one node's counters against its own history, not in a cluster aggregate. Summing `writes` across
+nodes would produce a number that looks meaningful and is not: nodes checkpoint different partitions, so the
+sum answers no operator question. Per the 2026-07-20 owner ruling, a dormant dimension must show a true
+degenerate value rather than a fabricated one, and there is no honest degenerate rendering here — so the
+slot stays dormant with this decision recorded, and the CLI plus this endpoint are the operator surface.
+Revisit if a cluster-wide "keyspaces with stalled checkpointing" alert is wanted; that is a different
+(aggregatable) question and would earn a panel.
+
+**Response:**
+```json
+{
+  "keyspaces": [
+    {
+      "keyspace": "orders",
+      "partitionCount": 8,
+      "writes": 214,
+      "failures": 0,
+      "checkpointedThrough": {"0": 1841, "3": 990, "5": 1502}
+    }
+  ]
+}
+```
+
+---
+
+### Stream hydration
+
+```
 GET /api/streams/hydration
 ```
 
