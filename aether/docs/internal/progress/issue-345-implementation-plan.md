@@ -454,11 +454,62 @@ goes red. `OwnershipFenceBaselineTest` is the STEP-0 scaffolding.*
 >
 > Still open: nothing re-runs this on every build. Wiring it into a CI gate remains a separate decision.
 
-**I3 — Phase 3, fenced log on a stream partition → disk tier.** Entity state moves from
-KV-snapshot to a fenced log; fold-to-snapshot and tail; governor owns the fold; same `DurableEntity`
-API, no author churn (spec §4.4). This is #349 path (a) for entity state — coordinate there.
-*Gate: Forge kill-9 of the owner, state survives; then cloud.* **This also supplies the
-crash-durability evidence currently missing for `PartitionWal` — today only unit-tested.**
+**I3 — Phase 3, fenced log on a stream partition → disk tier. LANDED 2026-08-13.** Entity state moved
+from a process-local `StorageEngine` to a fenced, fsync-durable, REPLICATED log; the in-memory state is
+a fold of it; same `DurableEntity` API, no author churn (spec §4.4).
+
+*Gate as executed:* `DurableEntityForgeTest` **11/11 on a live 5-node Ember cluster** — after the owning
+node is killed, survivors serve the exact written value. Note this is a FAILOVER gate, not kill-9: Forge
+cannot hard-kill (`stop()` always closes the WAL), which is why #508's SIGKILL evidence lives in the
+docker `02y-stream-crash` suite. The SIGKILL tier for entities remains outstanding.
+
+**Corrections to this entry's original text, from building it:**
+
+- *"governor owns the fold"* (spec §4.4) was NOT followed. The partition OWNER already holds the folded
+  state; a governor-owned fold would mean shipping it. Owner-driven, deliberately.
+- *"fold-to-snapshot and tail"* understated the dependency. A checkpoint is not an optimisation here —
+  `RetentionEnforcer` is built once per node with ONE age policy and never reads per-stream config, so
+  without a checkpoint-derived retention floor an entity's segments are deleted a fixed interval after
+  its last write. Snapshot + floor are what make the log safe to trim at all.
+- **The replication decision was not in this plan and changes the guarantee.** Owner ruling 2026-08-13:
+  entity streams replicate (`replicas = replicationFactor`, `minSyncReplicas = min(2, rf)`), because the
+  un-sealed tail lives only in the owner's local WAL and a new owner cannot reach it — `replicas = 1`
+  yields "survives restart", not "survives node loss". `replication_factor` is therefore HONOURED, not
+  refused as I1(e) had it.
+- **The registry did NOT need to carry `replicationFactor`**, contrary to the narrow-C note calling a
+  cluster-wide registry irreducible for this: the provisioning node holds the bound config and
+  `createStream` commits a `StreamConfigKey` that propagates. No sealed-`AetherValue` change was needed
+  for it. (One WAS added for the checkpoint POINTER — see below.)
+- **`ReplicaSetController.reconcile()` is event-driven only**, so the entity tick's minting half was NOT
+  retired as the narrow-C expiry note implied. Retiring it would strand a keyspace deployed into a
+  steady-state cluster with writes refusing forever. The two drivers differ in TRIGGER, not decision.
+
+**Traps found while building, recorded so they are not re-learned:**
+
+- `RetentionPolicy.maxCount` is the RING CAPACITY — `buildRing` passes it straight to
+  `OffHeapRingBuffer`, and `floorBytes = HEADER + 24 * capacity + firstSegment`. A `Long.MAX_VALUE`
+  "infinite retention" OVERFLOWS that into a ~40-byte control segment and throws on the first index
+  write. It is not a config that retains everything; it is a config that cannot allocate.
+- Codec tags are `(fqcn.hashCode() & 0x7FFFFFFF) % 16256 + 128`. `AetherValue.EntityCheckpointValue`
+  collided with `HealthHintWire` at tag 7612 and poisoned `NodeCodecs` static init — invisible to the
+  owning module's own 731-test build, because only the full node assembly registers both. Renamed to
+  `EntityFoldCheckpointValue`. `@Codec.tag()` exists but is DEAD SURFACE: the generator emits
+  `deterministicTag(fqn)` unconditionally and never reads it.
+- A node outside a partition's replica set must report a STABLE cause (`PartitionNotHeld`), not
+  `FoldInProgress` — the latter is a "retry me" that never clears.
+
+**Known gaps, explicitly not closed by this increment:**
+
+1. **SIGKILL crash durability for entities** — belongs beside #508's `02y-stream-crash` docker suite.
+2. **`BOUNDED_STALE` read forwarding.** A node not holding a partition now refuses rather than lying
+   with `absent`. The LINEARIZABLE path already routes to the committed owner; the bounded-stale path
+   does not, so read availability is the replica set rather than the cluster.
+3. **Checkpoint writes are not directly evidenced.** Only failures are logged, so a silently
+   non-writing driver looks identical to a working one in the Forge log — an observability gap that
+   matters because the checkpoint is the only thing bounding an entity log.
+4. **Simultaneous restart of the owner AND every replica** can leave the post-checkpoint tail
+   recoverable only on the original owner; ownership landing elsewhere refuses loudly rather than
+   losing data quietly.
 
 **I4 — durable per-entity timers (#351).** *Gate: timer survives owner handover AND restart.*
 
