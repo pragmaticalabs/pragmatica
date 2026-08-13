@@ -63,7 +63,7 @@ public final class DurableEntityFactory implements ResourceFactory<DurableEntity
 
     @Override
     public Promise<DurableEntity> provision(DurableEntityConfig config, ProvisioningContext context) {
-        return fenceCollaborators(config, context).map(fence -> fencedEntity(config, context, fence))
+        return fenceCollaborators(config, context).flatMap(fence -> fencedEntity(config, context, fence))
                                  .async();
     }
 
@@ -71,7 +71,7 @@ public final class DurableEntityFactory implements ResourceFactory<DurableEntity
     /// node missing several extensions reports all of them at once instead of one per redeploy.
     private static Result<FenceCollaborators> fenceCollaborators(DurableEntityConfig config,
                                                                  ProvisioningContext context) {
-        return all(required(context, StorageEngine.class, config),
+        return all(required(context, EntityLogSubstrate.class, config),
                    required(context, CommittedPartitionOwnerSource.class, config),
                    required(context, OwnershipEpochHighWater.class, config),
                    required(context, EntityKeyspaceRegistrar.class, config),
@@ -91,47 +91,81 @@ public final class DurableEntityFactory implements ResourceFactory<DurableEntity
     /// The fenced entity: one [EntityPartitionArc] shared by the write fence and the linearizable read
     /// pipeline, so the two can never disagree about which ownership arc a key belongs to. The arc is
     /// per-config (it carries this keyspace's own partition count) rather than a node-wide extension.
-    private static DurableEntity fencedEntity(DurableEntityConfig config,
-                                              ProvisioningContext context,
-                                              FenceCollaborators fence) {
+    ///
+    /// The durable log is materialized BEFORE the entity is handed back, and a failure to materialize it
+    /// REFUSES provisioning. An entity whose log could not be created has no durability at all — the same
+    /// class of silent wrongness as an absent fence — so the #345 I1 ruling applies unchanged: a slice
+    /// declaring a durable entity fails to start rather than starting wrong.
+    ///
+    /// The epoch STAMP is gone from this path. Until I3 the entity stamped each write with the partition's
+    /// committed owner epoch and the storage engine's gate checked it; now the log's own append gate
+    /// derives and checks that epoch itself, over the same arc, ahead of both the ring append and the WAL
+    /// fsync. One fence, at the point the data actually lands.
+    private static Result<DurableEntity> fencedEntity(DurableEntityConfig config,
+                                                      ProvisioningContext context,
+                                                      FenceCollaborators fence) {
         // Declare the keyspace BEFORE handing back the entity. Synchronous and IO-free (see
         // EntityKeyspaceRegistrar): it records intent, and the node's level-triggered driver commits and
         // re-asserts it. Until the leader mints ownership records from it, every write on this entity
         // refuses with the transient OwnershipNotYetCommitted rather than being admitted unfenced.
         fence.registrar().declare(config.keyspace(), config.partitionCount());
 
-        return PartitionFencedDurableEntity.partitionFencedDurableEntity(fence.storage(),
-                                                                         ownerEpochSource(fence.committedOwners(),
-                                                                                          EntityPartitionArc.arcName(config.keyspace())),
-                                                                         EntityPartitionArc.entityPartitionArc(config.keyspace(),
-                                                                                                               config.partitionCount()),
-                                                                         fence.serializer(),
-                                                                         fence.deserializer(),
-                                                                         fence.self(),
-                                                                         fence.committedOwners(),
-                                                                         Option.some(fence.epochHighWater()),
-                                                                         context.extension(EntityLinearizableBarrier.class)
-                                                                                .option());
+        return fence.substrate()
+                    .ensureLog(config.keyspace(),
+                               config.partitionCount(),
+                               config.replicationFactor(),
+                               config.minSyncReplicas())
+                    .mapError(cause -> new DurableEntityProvisioningError.LogUnavailable(config.keyspace(),
+                                                                                         cause))
+                    .map(_ -> buildEntity(config, context, fence));
     }
 
-    /// The write-fence stamp for a partition: the committed `StreamPartitionOwnershipValue.ownerEpoch` of
-    /// the keyspace's arc, read through the SAME committed-owner lookup the read path routes on — one
-    /// source, so the stamped epoch and the routed owner can never come from different records. Equivalent
-    /// to `KvPartitionOwnerEpochSource` over the same KV store, without needing the store itself as a
-    /// second extension. [Epoch#ZERO] — the unfenced floor, never rejected and never advancing a
-    /// high-water — for an arc with no committed ownership record yet.
+    private static DurableEntity buildEntity(DurableEntityConfig config,
+                                             ProvisioningContext context,
+                                             FenceCollaborators fence) {
+        var entity = PartitionFencedDurableEntity.<Object, Object> partitionFencedDurableEntity(config.keyspace(),
+                                                                                                fence.substrate(),
+                                                                                                EntityPartitionArc.entityPartitionArc(config.keyspace(),
+                                                                                                                                      config.partitionCount()),
+                                                                                                fence.serializer(),
+                                                                                                fence.deserializer(),
+                                                                                                fence.self(),
+                                                                                                fence.committedOwners(),
+                                                                                                Option.some(fence.epochHighWater()),
+                                                                                                context.extension(EntityLinearizableBarrier.class)
+                                                                                                       .option());
+
+        registerForCheckpointing(config, context, fence, entity);
+
+        return entity;
+    }
+
+    /// Hand the entity's fold to the node's checkpoint driver, if one is registered.
     ///
-    /// `arcName` is the NAMESPACED `entity:<keyspace>` name, matching what [EntityPartitionArc] embeds in
-    /// the DHT key bytes and what the ownership writer registers — so the stamp, the gate's re-derived arc
-    /// and the committed record are one coordinate.
-    private static PartitionOwnerEpochSource ownerEpochSource(CommittedPartitionOwnerSource committedOwners,
-                                                              String arcName) {
-        return partition -> committedOwners.committedOwner(arcName, partition)
-                                           .map(CommittedOwner::ownerEpoch)
-                                           .or(Epoch.ZERO);
+    /// OPTIONAL rather than mandatory, and the asymmetry with the fence is deliberate. An absent fence
+    /// costs SAFETY, so provisioning refuses. An absent checkpoint driver costs BOUNDEDNESS: every write
+    /// is still durable, fenced and replicated, and every read is still correct — the log simply never
+    /// gets reclaimed and recovery replays further back. That is a real cost and it is why the node always
+    /// registers one, but it is not a reason to refuse a resource that would otherwise work correctly.
+    ///
+    /// Unit tests provision without a driver and must keep working; the shape of the refusal has to match
+    /// the size of the loss.
+    private static void registerForCheckpointing(DurableEntityConfig config,
+                                                 ProvisioningContext context,
+                                                 FenceCollaborators fence,
+                                                 DurableEntity<?, ?> entity) {
+        if (! (entity instanceof PartitionFencedDurableEntity<?, ?> fenced)) {
+            return;
+        }
+
+        context.extension(EntityCheckpointDriver.class)
+               .onSuccess(driver -> driver.register(config.keyspace(),
+                                                    config.partitionCount(),
+                                                    fenced.fold(),
+                                                    fence.substrate()));
     }
 
-    private record FenceCollaborators(StorageEngine storage,
+    private record FenceCollaborators(EntityLogSubstrate substrate,
                                       CommittedPartitionOwnerSource committedOwners,
                                       OwnershipEpochHighWater epochHighWater,
                                       EntityKeyspaceRegistrar registrar,

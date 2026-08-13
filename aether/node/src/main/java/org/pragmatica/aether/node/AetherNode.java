@@ -101,7 +101,9 @@ import org.pragmatica.aether.resource.ResourceProvider;
 import org.pragmatica.aether.resource.SpiResourceProvider;
 import org.pragmatica.aether.resource.artifact.ArtifactStore;
 import org.pragmatica.aether.resource.artifact.MavenProtocolHandler;
+import org.pragmatica.aether.resource.entity.EntityCheckpointDriver;
 import org.pragmatica.aether.resource.entity.EntityKeyspaceRegistrar;
+import org.pragmatica.aether.resource.entity.EntityLogSubstrate;
 import org.pragmatica.aether.resource.entity.EntityLinearizableBarrier;
 import org.pragmatica.aether.api.ObservabilityBaseline;
 import org.pragmatica.aether.api.ObservabilityConfigRegistry;
@@ -192,9 +194,11 @@ import org.pragmatica.aether.stream.segment.StorageSegmentSink;
 import org.pragmatica.aether.stream.segment.TieredStreamReader;
 import org.pragmatica.aether.slice.dependency.SliceRegistry;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.EntityCheckpointKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.EntityKeyspaceRegistrationKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.StreamPartitionOwnershipKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.EntityFoldCheckpointValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.EntityKeyspaceRegistrationValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.StreamPartitionOwnershipValue;
 import org.pragmatica.aether.slice.repository.Repository;
@@ -770,6 +774,15 @@ public interface AetherNode extends ManageableNode {
     /// commits nothing. Matched to the reshuffle cadence so an entity arc's owner converges in the same
     /// window a stream partition's does.
     TimeSpan ENTITY_OWNERSHIP_RECONCILE_INTERVAL = TimeSpan.timeSpan(5).seconds();
+    /// How often each entity partition folds to a durable checkpoint (#345 I3).
+    ///
+    /// This is a safety bound, not a tuning knob. A new owner recovers from the checkpoint plus whatever
+    /// of the log its own ring still holds, so the interval must stay comfortably INSIDE ring retention —
+    /// if the checkpoint falls further behind than the ring reaches back, the records in between are on no
+    /// reachable node and the fold refuses rather than serving state missing committed writes. Thirty
+    /// seconds against a ring measured in minutes leaves a wide margin; raising it narrows the margin
+    /// toward that refusal.
+    TimeSpan ENTITY_CHECKPOINT_INTERVAL = TimeSpan.timeSpan(30).seconds();
 
     /// Per-node, restart-stable data dir for the disk-backed stream storage. Derived as a sibling of
     /// the node's artifact disk path (the artifacts/content convention, `StorageConfig.diskPath()`)
@@ -1772,9 +1785,8 @@ public interface AetherNode extends ManageableNode {
         // AETHER_CLUSTER_NAME) and bounded by autoHeal().maxNodes(). Both absent by default, in
         // which case this is exactly the previous unbounded behavior.
         var lifecycleManager = NodeLifecycleManager.nodeLifecycleManager(computeProvider,
-                                                                        config.clusterName(),
-                                                                        config.autoHeal()
-                                                                              .maxNodes());
+                                                                         config.clusterName(),
+                                                                         config.autoHeal().maxNodes());
         var deploymentMap = DeploymentMap.deploymentMap();
         var healthSinkRef = new AtomicReference<HealthSignalSink>(HealthSignalSink.noop());
         HealthSignalSink stableHealthSink = signal -> healthSinkRef.get()
@@ -3144,7 +3156,10 @@ public interface AetherNode extends ManageableNode {
         var streamSegmentReader = SegmentReader.segmentReader(streamStorage, streamSegmentIndex);
         var streamRetentionEnforcer = RetentionEnforcer.retentionEnforcer(streamStorage,
                                                                           streamSegmentIndex,
-                                                                          DEFAULT_STREAM_RETENTION_MS);
+                                                                          DEFAULT_STREAM_RETENTION_MS,
+                                                                          (stream, partition) -> entityRetentionFloor(kvStore,
+                                                                                                                      stream,
+                                                                                                                      partition));
         // A6: streamReplicaRegistry is created earlier (above StreamPartitionManager) so it can be
         // shared with the now-active DefaultReplicationManager. The same registry instance is the one
         // the A2 ReplicaSetController populates from HRW placement.
@@ -3572,6 +3587,19 @@ public interface AetherNode extends ManageableNode {
         // above and reuses the same applier and timeout budget, so entity and stream linearizable rounds
         // cannot disagree about how long a round may take.
         var entityKeyspaces = new ConcurrentHashMap<String, Integer>();
+        var entityCheckpointDriver = EntityCheckpointDriver.entityCheckpointDriver();
+        // #345 I3: entity state lives on a fenced, fsync-durable, replicated stream partition, and its
+        // checkpoints are blocks in stream storage pointed at from consensus KV. The catch-up source is
+        // the same one the partition manager gates replica release on — a fold must not trust its local
+        // head offset until the cluster agrees this node's copy is complete.
+        var entityLogSubstrate = StreamEntityLogSubstrate.streamEntityLogSubstrate(streamPartitionManager,
+                                                                                   (stream, partition) -> streamCatchupView(streamReplicaRegistry,
+                                                                                                                            config.self(),
+                                                                                                                            stream,
+                                                                                                                            partition),
+                                                                                   streamStorage,
+                                                                                   kvStore,
+                                                                                   clusterCommandApplier);
 
         registerEntityExtensions(resourceProviderSetup,
                                  kvStore,
@@ -3582,7 +3610,13 @@ public interface AetherNode extends ManageableNode {
                                  streamingConfig.readLinearization() == ReadLinearizationMode.NO_OP_ROUND
                                  ? Option.some(EntityLinearizableBarrier.noOpRound(clusterCommandApplier,
                                                                                    streamingConfig.readForwardTimeout()))
-                                 : Option.none());
+                                 : Option.none(),
+                                 entityLogSubstrate,
+                                 entityCheckpointDriver);
+        // The only thing that ever bounds an entity log: until a partition is checkpointed, the retention
+        // floor refuses to reclaim any of its segments (correctly — nothing has been folded anywhere), so
+        // a node that never ticks grows its entity logs without limit.
+        periodicTasks.add(SharedScheduler.scheduleAtFixedRate(entityCheckpointDriver::tick, ENTITY_CHECKPOINT_INTERVAL));
         // #345 I1 narrow C: mint the ownership records the entity fence reads, reusing the stream-side
         // writer, record family, leader gate and batching rather than an entity-specific driver — and
         // WITHOUT registering each keyspace as a stream, which would allocate off-heap rings, a WAL and
@@ -5477,30 +5511,37 @@ public interface AetherNode extends ManageableNode {
                                                  KVStore<AetherKey, AetherValue> kvStore,
                                                  OwnershipEpochHighWater ownershipEpochHighWater,
                                                  EntityKeyspaceRegistrar entityKeyspaceRegistrar,
-                                                 Option<EntityLinearizableBarrier> entityBarrier) {
+                                                 Option<EntityLinearizableBarrier> entityBarrier,
+                                                 EntityLogSubstrate entityLogSubstrate,
+                                                 EntityCheckpointDriver entityCheckpointDriver) {
         resourceProviderSetup.spiProvider()
                              .onPresent(spi -> registerEntityExtensionsOnSpi(spi,
                                                                              kvStore,
                                                                              ownershipEpochHighWater,
                                                                              entityKeyspaceRegistrar,
-                                                                             entityBarrier));
+                                                                             entityBarrier,
+                                                                             entityLogSubstrate,
+                                                                             entityCheckpointDriver));
     }
 
     private static void registerEntityExtensionsOnSpi(SpiResourceProvider spi,
                                                       KVStore<AetherKey, AetherValue> kvStore,
                                                       OwnershipEpochHighWater ownershipEpochHighWater,
                                                       EntityKeyspaceRegistrar entityKeyspaceRegistrar,
-                                                      Option<EntityLinearizableBarrier> entityBarrier) {
-        // The entity's fenced backing. ONE engine serves every keyspace: PartitionOwnerEpochGate re-derives
-        // the (keyspace, partition) arc from each DHT key's own bytes, so a single gate instance fences
-        // every arc the engine sees, and a key that carries no entity prefix falls through to plain HLC-LWW.
-        // Still MemoryStorageEngine — HA, not restart-durable; the fenced-log backing is plan Phase 3 (#349).
-        spi.registerExtension(StorageEngine.class,
-                              MemoryStorageEngine.memoryStorageEngine(PartitionOwnerEpochGate.partitionOwnerEpochGate(ownershipEpochHighWater)));
-        // One committed-ownership lookup drives BOTH entity halves: the factory reads `ownerEpoch` from it
-        // to stamp writes and `owner` from it to route LINEARIZABLE reads, so a stamp and a route can never
-        // come from different records. Reads the same Rabia-backed StreamPartitionOwnershipValue family the
-        // stream side uses — the entity keyspace reuses those arcs rather than minting a record type.
+                                                      Option<EntityLinearizableBarrier> entityBarrier,
+                                                      EntityLogSubstrate entityLogSubstrate,
+                                                      EntityCheckpointDriver entityCheckpointDriver) {
+        // The entity's DURABLE backing (#345 I3). Entity state is the fold of a fenced, fsync-durable,
+        // replicated log — one stream named entity:<keyspace> per keyspace — so it now survives both a
+        // restart of its owner and the loss of that owner. This replaces the MemoryStorageEngine that
+        // backed the entity through I1: that engine was HA-only, its contents died with the process, and
+        // the epoch fence that sat on it has moved to the log's own append gate over the SAME arc.
+        spi.registerExtension(EntityLogSubstrate.class, entityLogSubstrate);
+        // One committed-ownership lookup drives BOTH entity halves: admission reads `owner` from it to
+        // decide who may write, and the LINEARIZABLE read path routes on the same record, so a write
+        // admission and a read route can never come from different records. Reads the same Rabia-backed
+        // StreamPartitionOwnershipValue family the stream side uses — the entity keyspace reuses those
+        // arcs rather than minting a record type.
         spi.registerExtension(CommittedPartitionOwnerSource.class,
                               KvCommittedPartitionOwnerSource.kvCommittedPartitionOwnerSource(kvStore));
         // Absent barrier is NOT fatal: BOUNDED_STALE reads still work and a LINEARIZABLE read is refused
@@ -5512,6 +5553,40 @@ public interface AetherNode extends ManageableNode {
         // with the transient cause — a permanent outage wearing a "retry me" message. Loud at deploy beats
         // that.
         spi.registerExtension(EntityKeyspaceRegistrar.class, entityKeyspaceRegistrar);
+        // The checkpoint driver. Optional at the factory (an absent driver costs boundedness, not
+        // correctness) but ALWAYS registered here — without it no entity log is ever reclaimed and the
+        // retention floor pins every segment forever.
+        spi.registerExtension(EntityCheckpointDriver.class, entityCheckpointDriver);
+    }
+
+    /// How far a stream's sealed log may be reclaimed without destroying state something still needs
+    /// (#345 I3).
+    ///
+    /// Non-entity streams get [Long#MAX_VALUE] — no floor, so the age policy alone decides and retention
+    /// behaves exactly as it did before this existed.
+    ///
+    /// An `entity:<keyspace>` partition instead reports its COMMITTED checkpoint's `throughOffset`.
+    /// Everything at or below that is already folded into a durable snapshot and is genuinely garbage;
+    /// everything above it is still the only copy of a mutation. Without this the enforcer — which is
+    /// built once per node with a single age policy and never reads per-stream config — would delete an
+    /// entity's segments a fixed interval after its last write, silently destroying the state of any key
+    /// not recently touched.
+    ///
+    /// A keyspace with NO committed checkpoint reclaims nothing (`-1`): nothing has been folded anywhere
+    /// yet, so every record is still load-bearing. The log grows until the first checkpoint, which is the
+    /// correct trade — bounded growth is the checkpoint's job, and until one exists the only safe answer
+    /// is to keep everything.
+    private static long entityRetentionFloor(KVStore<AetherKey, AetherValue> kvStore, String stream, int partition) {
+        if (!stream.startsWith(EntityPartitionArc.ARC_PREFIX)) {
+            return Long.MAX_VALUE;
+        }
+
+        var keyspace = stream.substring(EntityPartitionArc.ARC_PREFIX.length());
+
+        return kvStore.getTyped(EntityCheckpointKey.entityCheckpointKey(keyspace, partition),
+                                EntityFoldCheckpointValue.class)
+                      .map(EntityFoldCheckpointValue::throughOffset)
+                      .or(-1L);
     }
 
     /// Record a locally-provisioned entity keyspace. Synchronous and IO-free, per the

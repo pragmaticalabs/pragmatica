@@ -1180,6 +1180,8 @@ public sealed interface AetherKey extends StructuredKey {
 
     Fn1<Cause, String> ENTITY_KEYSPACE_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid entity-keyspace key format: %s");
 
+    Fn1<Cause, String> ENTITY_CHECKPOINT_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid entity-checkpoint key format: %s");
+
     Fn1<Cause, String> STORAGE_REF_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid storage-ref key format: %s");
 
     Fn1<Cause, String> STORAGE_STATUS_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid storage-status key format: %s");
@@ -1988,6 +1990,61 @@ public sealed interface AetherKey extends StructuredKey {
             var idPart = key.substring(PREFIX.length());
 
             return BlueprintId.blueprintId(idPart).map(BlueprintStreamBindingsKey::new);
+        }
+    }
+
+    /// Locates the newest fold checkpoint of one entity `(keyspace, partition)` (#345 I3).
+    ///
+    /// ## Why the pointer lives in consensus KV and the snapshot itself does not
+    /// The checkpoint's BYTES go into stream storage, whose tier chain ends in a DHT tier, so the block
+    /// is retrievable from any node by its content id. What is NOT cluster-visible is the NAME: stream
+    /// storage's `MetadataStore` is in-memory and snapshotted to that node's own disk, and `SegmentIndex`
+    /// is rebuilt at boot from that same local snapshot. A checkpoint recorded as a storage ref would
+    /// therefore be findable only on the node that wrote it — useless in the one case a checkpoint
+    /// exists for, which is a DIFFERENT node taking the partition over.
+    ///
+    /// So the small pointer goes where consensus makes it visible to everyone, and the large payload
+    /// stays out of consensus. Splitting them this way keeps the consensus write to a few dozen bytes per
+    /// checkpoint rather than the whole folded state.
+    ///
+    /// `keyspace` is the RAW name from `resources.toml`, matching [EntityKeyspaceRegistrationKey]; the
+    /// `entity:` arc prefix belongs to `EntityPartitionArc` and is not stored here.
+    record EntityCheckpointKey(String keyspace, int partition) implements AetherKey {
+        private static final String PREFIX = "entity-checkpoint/";
+        private static final String SEP = "/";
+
+        @Override
+        public String asString() {
+            return PREFIX + keyspace + SEP + partition;
+        }
+
+        @Override
+        public String toString() {
+            return asString();
+        }
+
+        public static EntityCheckpointKey entityCheckpointKey(String keyspace, int partition) {
+            return new EntityCheckpointKey(keyspace, partition);
+        }
+
+        /// Rebuild from the snapshot IDENTITY (the part after the section prefix), which is
+        /// `<keyspace>/<partition>`.
+        ///
+        /// Split on the LAST separator, not the first: a keyspace name is author-supplied and this key
+        /// stores it raw, so splitting on the first separator would mis-parse any keyspace containing
+        /// one. The partition is always the final component.
+        public static Result<EntityCheckpointKey> fromIdentity(String identity) {
+            var lastSep = identity.lastIndexOf(SEP);
+
+            if (lastSep <= 0 || lastSep == identity.length() - 1) {
+                return ENTITY_CHECKPOINT_KEY_FORMAT_ERROR.apply(PREFIX + identity).result();
+            }
+
+            var keyspace = identity.substring(0, lastSep);
+
+            return Number.parseInt(identity.substring(lastSep + 1))
+                         .mapError(_ -> ENTITY_CHECKPOINT_KEY_FORMAT_ERROR.apply(PREFIX + identity))
+                         .map(partition -> new EntityCheckpointKey(keyspace, partition));
         }
     }
 }

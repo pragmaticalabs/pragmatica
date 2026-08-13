@@ -97,6 +97,11 @@ class DurableEntityForgeTest {
     private static final String ERROR_FALLBACK = "{\"error\":\"request failed\"}";
     private static final int REASON_EXCERPT_LIMIT = 300;
 
+    /// Distinct probe keys per convergence round. The fixture declares 8 partitions, and these keys hash
+    /// across them, so readiness reflects the whole keyspace rather than whichever partition one key
+    /// happened to land on.
+    private static final int PARTITION_PROBE_KEYS = 12;
+
     private EmberCluster cluster;
     private final HttpOperations http = jdkHttpOperations();
     private final AtomicInteger ownershipProbe = new AtomicInteger();
@@ -300,23 +305,48 @@ class DurableEntityForgeTest {
     /// I3 (restart-durable state on a fenced log) must flip this.
     @Test
     @Order(9)
-    void get_returnsAbsentOnEveryOtherNode_afterCreateOnOneNode() {
+    void get_isServedByMoreThanOneNode_afterCreateOnOne() {
         var accepted = createOnOwner("order-isolated", "placed", 42);
-        var ownerPort = accepted.port();
         var ownerInstance = text(accepted.response(), "instance");
 
-        var others = appPorts().stream()
-                               .filter(port -> port != ownerPort)
-                               .map(port -> get(port, "order-isolated"))
+        // Polled, not sampled: a replica serves only once it has folded the partition, and taking one
+        // reading immediately after the create would measure the fold's latency rather than whether the
+        // state replicated at all.
+        await().atMost(WAIT_TIMEOUT)
+               .pollInterval(POLL_INTERVAL)
+               .until(() -> serversOf("order-isolated").size() > 1);
+
+        var servers = serversOf("order-isolated");
+
+        assertThat(servers).describedAs("entity state is replicated after I3, so more than the owner must serve it")
+                           .hasSizeGreaterThan(1);
+
+        var instances = servers.stream()
+                               .map(response -> text(response, "instance"))
+                               .distinct()
                                .toList();
 
-        assertThat(others).describedAs("a 5-node cluster must give us four other nodes to ask").hasSize(NODES - 1);
-        assertThat(others).allSatisfy(response -> {
-            assertThat(text(response, "instance")).describedAs("must be a DIFFERENT slice instance, else the test is vacuous")
-                                                  .isNotEqualTo(ownerInstance);
-            assertThat(outcome(response)).describedAs("state is process-local: single-replica, local-owner")
-                                         .isEqualTo("absent");
+        assertThat(instances).describedAs("the answers must come from DIFFERENT slice instances, else the test is vacuous")
+                             .hasSizeGreaterThan(1);
+        assertThat(instances).describedAs("and one of them is not the node that accepted the write")
+                             .anySatisfy(instance -> assertThat(instance).isNotEqualTo(ownerInstance));
+
+        // The value is the assertion. A replica that answered with anything other than what was written
+        // would be worse than one that refused.
+        assertThat(servers).allSatisfy(response -> {
+            assertThat(text(response, "status")).isEqualTo("placed");
+            assertThat(number(response, "amount")).isEqualTo(42);
         });
+    }
+
+    /// Every node currently serving `key`, by response body. A node that does not hold the key's partition
+    /// refuses rather than answering "absent", so this filters on a positive answer instead of counting
+    /// negatives — "absent" and "I cannot say" are different claims and must not be summed.
+    private List<String> serversOf(String key) {
+        return appPorts().stream()
+                         .map(port -> get(port, key))
+                         .filter(response -> response.contains("\"outcome\":\"found\""))
+                         .toList();
     }
 
     /// The I1 gate, flipped. At I0 all five nodes accepted a create for the SAME key and each believed it
@@ -350,7 +380,7 @@ class DurableEntityForgeTest {
     /// absent mechanism. Ordered last because it shrinks the cluster.
     @Test
     @Order(11)
-    void state_isUnrecoverable_afterTheOnlyNodeHoldingItStops() {
+    void state_survivesTheLossOfTheNodeThatOwnedIt() {
         var ownerPort = createOnOwner("order-durability", "placed", 77).port();
 
         assertThat(outcome(get(ownerPort, "order-durability"))).isEqualTo("found");
@@ -367,14 +397,43 @@ class DurableEntityForgeTest {
                .pollInterval(POLL_INTERVAL)
                .until(() -> !appPorts().contains(ownerPort));
 
-        var survivors = appPorts().stream()
+        // Ownership must move and the new owner must rebuild the partition from the log before it can
+        // answer, so the read is POLLED rather than taken once. A fold in progress reports itself as a
+        // transient refusal — polling is what distinguishes "still replaying" from "gone", and taking a
+        // single reading immediately after the kill would conflate them.
+        await().atMost(WAIT_TIMEOUT)
+               .pollInterval(POLL_INTERVAL)
+               .until(() -> survivorsAnswering("order-durability").contains("found"));
+
+        // Assert on the DATA, not on a status field. #508 passed throughout a run in which a status-gated
+        // test failed on the same cluster at the same moment; the value is the thing that either survived
+        // or did not.
+        var recovered = appPorts().stream()
                                   .map(port -> get(port, "order-durability"))
+                                  .filter(response -> "found".equals(outcome(response)))
                                   .toList();
 
-        assertThat(survivors).describedAs("the surviving nodes must still answer").isNotEmpty();
-        assertThat(survivors).allSatisfy(response -> assertThat(outcome(response))
-                .describedAs("no replica holds the state — one graceful stop destroyed it permanently")
-                .isEqualTo("absent"));
+        assertThat(recovered).describedAs("at least one surviving node must serve the entity after failover")
+                             .isNotEmpty();
+        assertThat(recovered).allSatisfy(response -> {
+            assertThat(text(response, "status")).describedAs("the recovered state must be the state that was written")
+                                                .isEqualTo("placed");
+            assertThat(number(response, "amount")).describedAs("the recovered amount must be the amount that was written")
+                                                  .isEqualTo(77);
+        });
+    }
+
+    private List<String> survivorsAnswering(String key) {
+        return appPorts().stream()
+                         .map(port -> get(port, key))
+                         .map(DurableEntityForgeTest::outcomeOrPending)
+                         .toList();
+    }
+
+    /// `outcome` throws on a transport-level error body, and this runs while ownership is still moving, so
+    /// a node mid-handover would abort the poll instead of simply reporting "not yet".
+    private static String outcomeOrPending(String response) {
+        return response.contains("\"outcome\":\"found\"") ? "found" : "pending";
     }
 
     // --- the fence invariant, asserted on every create ---------------------------
@@ -432,8 +491,22 @@ class DurableEntityForgeTest {
     /// throwaway create being ACCEPTED somewhere rather than refused everywhere as
     /// `OwnershipNotYetCommitted`. Uses a fresh key per attempt so a successful probe never collides with
     /// a previous one and reports `KeyAlreadyExists`.
+    /// Convergence means every PARTITION can accept a write, not merely one.
+    ///
+    /// Ownership records are minted per `(entity:orders, partition)` arc, and the write barrier
+    /// additionally needs that partition's replica set populated before `minSyncReplicas` can be met. A
+    /// single probe key exercises exactly ONE partition and says nothing about the other seven — which is
+    /// how a run reached the tests with some partitions still unable to accept a write, and failed there
+    /// instead of here. Probing a spread of keys turns that into a readiness condition rather than a
+    /// mid-suite surprise.
     private boolean ownershipHasConverged() {
-        var key = "__ownership_probe_" + ownershipProbe.incrementAndGet() + "__";
+        var round = ownershipProbe.incrementAndGet();
+
+        return java.util.stream.IntStream.range(0, PARTITION_PROBE_KEYS)
+                                         .allMatch(index -> probeAccepted("__ownership_probe_" + round + "_" + index + "__"));
+    }
+
+    private boolean probeAccepted(String key) {
 
         // Deliberately NOT via outcome(): that throws on a transport-level error body, and this predicate
         // runs while the cluster is still settling, so one slow node would abort setUp instead of simply
@@ -570,10 +643,23 @@ class DurableEntityForgeTest {
         return ports.size() == NODES && ports.stream().allMatch(this::entityReady);
     }
 
+    /// A node is ready once its entity resource ANSWERS — either with a state verdict, or by saying
+    /// plainly that it does not hold the key's partition.
+    ///
+    /// Before I3 every node kept a private map and answered `absent` for any key, so readiness could
+    /// require `absent` everywhere. Entity state is replicated now and a partition lives on a subset of
+    /// nodes, so a node outside that subset genuinely cannot answer — and it says so, stably, rather than
+    /// pretending the key does not exist. Requiring `absent` from all five would wait forever for a lie.
+    ///
+    /// What this still catches is the thing it was written for: a node whose entity resource failed to
+    /// provision returns a transport-level error and never becomes ready.
     private boolean entityReady(int port) {
         var body = get(port, "__readiness_probe__");
 
-        return !body.contains("\"error\"") && body.contains("\"outcome\":\"absent\"");
+        return !body.contains("\"error\"")
+               && (body.contains("\"outcome\":\"absent\"")
+                   || body.contains("\"outcome\":\"found\"")
+                   || body.contains("PartitionNotHeld"));
     }
 
     /// `slicesStatus()` cannot detect this failure: under `ALL_OR_NOTHING` a deterministic slice

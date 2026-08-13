@@ -11,12 +11,16 @@ import org.pragmatica.lang.Cause;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.fail;
 
-/// #345 I1(e) — `replication_factor` is REFUSED rather than accepted and ignored.
+/// #345 I3 — `replication_factor` is HONOURED, and the guarantee it buys is derived from it.
 ///
-/// Before this, `DurableEntityConfig` carried the field with a default of 3, `DurableEntityFactory`
-/// ignored it entirely, and the I0 fixture declared 3 while getting exactly one un-replicated
-/// process-local copy that died with its node. Nothing in the build could tell. These tests pin the
-/// refusal to the CONFIG factory rather than to provisioning because the record binder
+/// History, because the direction reversed and the reason matters. Originally the field was accepted and
+/// silently ignored: the I0 fixture declared 3 and got exactly one un-replicated process-local copy that
+/// died with its node, and nothing in the build could tell. I1 made that loud by REFUSING anything but
+/// `1`, which was honest while entity state lived in a process-local `StorageEngine`. I3 moved entity
+/// state onto a fenced, fsync-durable, replicated stream partition, so the field became honourable and
+/// the refusal became the wrong answer.
+///
+/// These tests pin the rules to the CONFIG factory rather than to provisioning because the record binder
 /// (`ProviderBasedConfigService.bindToClass`) prefers a static `durableEntityConfig(...)` returning
 /// `Result` over the canonical constructor — so the rule runs at BIND time and a rejected blueprint
 /// fails slice loading with a named cause instead of producing a config object nobody can honour.
@@ -26,37 +30,79 @@ class DurableEntityConfigTest {
 
     @Nested
     class ReplicationFactor {
+        /// The exact value the I0 fixture declared, and the exact value that was first ignored and then
+        /// refused. It is now carried through to the backing stream's `replicas`.
         @Test
-        void durableEntityConfig_succeeds_forTheSupportedFactor() {
-            DurableEntityConfig.durableEntityConfig(KEYSPACE, PARTITIONS, DurableEntityConfig.SUPPORTED_REPLICATION_FACTOR)
+        void durableEntityConfig_honoursReplicationFactor_forThreeReplicas() {
+            DurableEntityConfig.durableEntityConfig(KEYSPACE, PARTITIONS, 3)
+                               .onFailure(DurableEntityConfigTest::failCause)
+                               .onSuccess(config -> assertThat(config.replicationFactor()).isEqualTo(3));
+        }
+
+        @Test
+        void durableEntityConfig_honoursReplicationFactor_forSingleReplica() {
+            DurableEntityConfig.durableEntityConfig(KEYSPACE, PARTITIONS, 1)
                                .onFailure(DurableEntityConfigTest::failCause)
                                .onSuccess(config -> assertThat(config.replicationFactor()).isEqualTo(1));
         }
 
-        /// The exact value the I0 fixture declared, and the exact value that used to be silently ignored.
+        /// Zero copies has no meaning — a partition with no replicas has no owner to write to.
         @Test
-        void durableEntityConfig_refusesReplicationNotSupported_forThreeReplicas() {
-            DurableEntityConfig.durableEntityConfig(KEYSPACE, PARTITIONS, 3)
-                               .onSuccess(DurableEntityConfigTest::failAccepted)
-                               .onFailure(DurableEntityConfigTest::assertReplicationNotSupported);
-        }
-
-        /// Zero replicas is refused too — the refusal is "not the supported factor", not "too many".
-        @Test
-        void durableEntityConfig_refusesReplicationNotSupported_forZeroReplicas() {
+        void durableEntityConfig_refusesInvalidReplicationFactor_forZero() {
             DurableEntityConfig.durableEntityConfig(KEYSPACE, PARTITIONS, 0)
                                .onSuccess(DurableEntityConfigTest::failAccepted)
-                               .onFailure(DurableEntityConfigTest::assertReplicationNotSupported);
+                               .onFailure(DurableEntityConfigTest::assertInvalidReplicationFactor);
         }
 
-        /// The message states both the rejected value and the supported one, so an operator reading a
-        /// `DEPLOYMENT_FAILED` event learns what to write instead.
         @Test
-        void durableEntityConfig_namesRequestedAndSupported_inTheRefusal() {
-            DurableEntityConfig.durableEntityConfig(KEYSPACE, PARTITIONS, 3)
+        void durableEntityConfig_refusesInvalidReplicationFactor_forNegative() {
+            DurableEntityConfig.durableEntityConfig(KEYSPACE, PARTITIONS, -1)
                                .onSuccess(DurableEntityConfigTest::failAccepted)
-                               .onFailure(cause -> assertThat(cause.message()).contains("replication_factor = 3")
-                                                                              .contains("keeps 1 replica"));
+                               .onFailure(DurableEntityConfigTest::assertInvalidReplicationFactor);
+        }
+
+        @Test
+        void durableEntityConfig_namesTheRejectedValue_inTheRefusal() {
+            DurableEntityConfig.durableEntityConfig(KEYSPACE, PARTITIONS, 0)
+                               .onSuccess(DurableEntityConfigTest::failAccepted)
+                               .onFailure(cause -> assertThat(cause.message()).contains("replication_factor = 0"));
+        }
+    }
+
+    /// The derivation is the whole difference between "survives owner restart" and "survives owner
+    /// death", so it is pinned per value rather than assumed from the formula.
+    @Nested
+    class MinSyncReplicas {
+        /// One copy waits for no peer: the write is acked once it is fsync-durable on the owner alone.
+        /// State survives a restart of that node and does NOT survive its death.
+        @Test
+        void minSyncReplicas_isOne_forSingleReplica() {
+            assertMinSyncReplicas(1, 1);
+        }
+
+        /// Two or more copies wait for the owner plus exactly one peer — `awaitReplication` blocks on
+        /// `minSyncReplicas - 1` distinct non-self acks, so this is one peer ack, not two.
+        @Test
+        void minSyncReplicas_isTwo_forTwoReplicas() {
+            assertMinSyncReplicas(2, 2);
+        }
+
+        /// Raising the replica count raises durability and availability, NOT the write barrier: a higher
+        /// factor must not silently make every write wait on more peers.
+        @Test
+        void minSyncReplicas_staysTwo_forThreeReplicas() {
+            assertMinSyncReplicas(3, 2);
+        }
+
+        @Test
+        void minSyncReplicas_staysTwo_forFiveReplicas() {
+            assertMinSyncReplicas(5, 2);
+        }
+
+        private static void assertMinSyncReplicas(int replicationFactor, int expected) {
+            DurableEntityConfig.durableEntityConfig(KEYSPACE, PARTITIONS, replicationFactor)
+                               .onFailure(DurableEntityConfigTest::failCause)
+                               .onSuccess(config -> assertThat(config.minSyncReplicas()).isEqualTo(expected));
         }
     }
 
@@ -100,18 +146,23 @@ class DurableEntityConfigTest {
         }
     }
 
+    /// The default must be the SAFE reading of "durable entity": a declaration that names only a keyspace
+    /// gets state that survives losing a node. A default of 1 would hand the weaker guarantee to everyone
+    /// who did not think about the field — which is the failure mode this whole item exists to close.
     private static void assertDefaults(DurableEntityConfig config) {
         assertThat(config.keyspace()).isEqualTo(KEYSPACE);
         assertThat(config.partitionCount()).isPositive();
-        assertThat(config.replicationFactor()).isEqualTo(DurableEntityConfig.SUPPORTED_REPLICATION_FACTOR);
+        assertThat(config.replicationFactor()).isEqualTo(DurableEntityConfig.DEFAULT_REPLICATION_FACTOR);
+        assertThat(config.replicationFactor()).isGreaterThan(1);
+        assertThat(config.minSyncReplicas()).isEqualTo(2);
     }
 
     /// The factory validates with [Result#all], which composes every violation into one cause so a
     /// blueprint breaking several rules reports all of them at once. The refusal is therefore asserted
     /// over [Cause#stream] — uniform for a composite and for a single cause — rather than by matching the
     /// outer instance, which for a composite would be the wrapper, not the domain refusal.
-    private static void assertReplicationNotSupported(Cause cause) {
-        assertThat(cause.stream()).hasAtLeastOneElementOfType(DurableEntityProvisioningError.ReplicationNotSupported.class);
+    private static void assertInvalidReplicationFactor(Cause cause) {
+        assertThat(cause.stream()).hasAtLeastOneElementOfType(DurableEntityProvisioningError.InvalidReplicationFactor.class);
     }
 
     private static void assertInvalidPartitionCount(Cause cause) {

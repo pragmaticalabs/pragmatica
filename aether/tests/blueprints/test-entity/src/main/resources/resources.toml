@@ -25,9 +25,16 @@ keyspace = "orders"
 # cluster puts several arcs on every node.
 partition_count = 8
 
-# REFUSED, not ignored (#345 I1e). This cut is single-replica local-owner — one StorageEngine per
-# node, nothing spanning nodes until the fenced-log backing (#349) — so 1 is the only factor it can
-# honor, and DurableEntityConfig rejects anything else with ReplicationNotSupported at bind time.
-# I0 declared 3 here and got exactly one un-replicated copy: accepted, recorded, and silently
-# meaningless. Declaring the truth is the whole point of the change.
-replication_factor = 1
+# HONOURED (#345 I3), after two earlier readings of this same field. I0 declared 3 here and got
+# exactly one un-replicated process-local copy: accepted, recorded, and silently meaningless. I1
+# made that loud by refusing anything but 1, which was the honest answer while entity state lived in
+# a per-node StorageEngine that nothing spanned. I3 moved entity state onto a fenced, fsync-durable,
+# replicated stream partition, so the field finally buys what it always claimed to.
+#
+# This is the total number of copies of each partition INCLUDING the owner, and it becomes the
+# backing stream's `replicas`. At 3, DurableEntityConfig.minSyncReplicas() derives 2 — the owner plus
+# one peer must hold a record before the write acks — which is what makes state survive the OWNER'S
+# DEATH and not merely its restart. Declaring 1 here would still be legal and would still be durable
+# across a restart, but a new owner would recover only to the last checkpoint; that is the weaker
+# guarantee and it has to be asked for on purpose.
+replication_factor = 3

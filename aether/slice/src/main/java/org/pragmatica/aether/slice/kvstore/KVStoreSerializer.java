@@ -189,6 +189,7 @@ public final class KVStoreSerializer {
             case StreamCursorCheckpointKey _ -> "stream-cursor";
             case StreamRegistrationKey _ -> "stream-reg";
             case EntityKeyspaceRegistrationKey _ -> "entity-keyspace";
+            case EntityCheckpointKey _ -> "entity-checkpoint";
             case ClusterConfigKey _ -> "cluster-config";
             case StorageStatusKey _ -> "storage-status";
             case StorageBlockKey _ -> "storage-block";
@@ -262,6 +263,7 @@ public final class KVStoreSerializer {
             case StreamCursorCheckpointValue v -> serializeStreamCursorCheckpoint(v);
             case StreamRegistrationValue v -> serializeStreamRegistration(v);
             case EntityKeyspaceRegistrationValue v -> serializeEntityKeyspaceRegistration(v);
+            case EntityFoldCheckpointValue v -> serializeEntityCheckpoint(v);
             case ClusterConfigValue v -> serializeClusterConfig(v);
             case StorageStatusValue v -> serializeStorageStatus(v);
             case StorageBlockValue v -> serializeStorageBlock(v);
@@ -564,6 +566,7 @@ public final class KVStoreSerializer {
             case "stream-cursor" -> parseStreamCursorCheckpointEntry(identity, rawValue);
             case "stream-reg" -> parseStreamRegistrationEntry(identity, rawValue);
             case "entity-keyspace" -> parseEntityKeyspaceRegistrationEntry(identity, rawValue);
+            case "entity-checkpoint" -> parseEntityCheckpointEntry(identity, rawValue);
             case "stream-registry" -> parseStreamRegistryEntry(identity, rawValue);
             case "blueprint-stream-bindings" -> parseBlueprintStreamBindingsEntry(identity, rawValue);
             case "cloud-credentials" -> parseCloudCredentialsEntry(identity, rawValue);
@@ -1232,6 +1235,32 @@ public final class KVStoreSerializer {
 
     private static String serializeEntityKeyspaceRegistration(EntityKeyspaceRegistrationValue v) {
         return Integer.toString(v.partitionCount());
+    }
+
+    private static String serializeEntityCheckpoint(EntityFoldCheckpointValue v) {
+        return v.throughOffset() + PIPE + v.blockIdHex() + PIPE + v.timestamp();
+    }
+
+    /// Mirror of [#serializeEntityCheckpoint]. Carries the same NOT-load-bearing caveat as
+    /// [#parseEntityKeyspaceRegistrationEntry] below: `toToml`/`fromToml` have zero production callers
+    /// (#538), so a running node never reaches this arm — the live path for an entity checkpoint pointer
+    /// is `KVStore.makeSnapshot`/`restoreSnapshot` through the generated node codec. The two
+    /// serialize-side arms ARE required to compile, because their switches are exhaustive over the sealed
+    /// types with no `default`. This parse arm is added for symmetry, so the type is not one that
+    /// serializes to a tag which reads back as `UnknownKeyType`.
+    private static Result<Map.Entry<AetherKey, AetherValue>> parseEntityCheckpointEntry(String identity, String raw) {
+        var parts = raw.split("(?<!\\\\)\\|", -1);
+
+        if (parts.length != 3) {
+            return parseFailure("entity-checkpoint value requires 3 fields, got " + parts.length);
+        }
+
+        return Number.parseLong(parts[0])
+                     .flatMap(throughOffset -> Number.parseLong(parts[2]).map(timestamp -> new EntityFoldCheckpointValue(throughOffset,
+                                                                                                                         parts[1],
+                                                                                                                         timestamp)))
+                     .mapError(_ -> new SerializationError.ParseFailure("entity-checkpoint value requires numeric offset and timestamp, got " + raw))
+                     .flatMap(value -> EntityCheckpointKey.fromIdentity(identity).map(key -> entry(key, value)));
     }
 
     /// Single-field value, so no `PIPE` split: the whole raw form is the partition count.

@@ -1849,4 +1849,40 @@ public sealed interface AetherValue {
             }
         }
     }
+
+    /// Payload of an [AetherKey.EntityCheckpointKey] — where a partition's folded state lives and how far
+    /// forward it accounts for (#345 I3).
+    ///
+    /// `blockIdHex` names a block in the node's stream storage, whose tier chain ends in a DHT tier, so
+    /// any node can fetch it. `throughOffset` is the LAST log offset folded into that block: a recovering
+    /// owner loads the block and then replays from `throughOffset + 1`.
+    ///
+    /// The offset is what makes this safe to act on. A recovering node compares `throughOffset + 1`
+    /// against the earliest offset it can still read, and refuses when the two do not meet — see
+    /// `EntityLogSubstrate#earliestRetainedOffset`. Storing the block id without the offset would leave a
+    /// reader unable to tell a complete recovery from one silently missing every mutation in the gap.
+    ///
+    /// ## Why the name says "Fold", and why that is not cosmetic
+    /// Codec tags are derived from the fully-qualified type name —
+    /// `SliceCodec.deterministicTag` is `(fqn.hashCode() & 0x7FFFFFFF) % 16256 + 128` — and the tag space
+    /// is small enough that distinct names collide. The obvious name for this type, `EntityCheckpointValue`,
+    /// hashes to tag 7612, which `org.pragmatica.cluster.metrics.HealthHintWire` already claims; registering
+    /// both throws at `NodeCodecs` static init and poisons every test that touches it. `HealthHintWire`'s
+    /// own doc records that it was kept top-level to dodge an earlier collision, so renaming to clear a tag
+    /// is the established remedy here rather than an improvisation.
+    ///
+    /// Renaming is the ONLY remedy available: `@Codec` declares a `tag()` attribute, but
+    /// `FactoryClassGenerator` emits `deterministicTag(fqn)` unconditionally for records, enums and opaque
+    /// types and never reads it — the attribute is dead surface. If it is ever made live, this type should
+    /// take an explicit tag and the name becomes a free choice again.
+    ///
+    /// @param throughOffset last log offset folded into the snapshot
+    /// @param blockIdHex    content id of the snapshot block in stream storage
+    /// @param timestamp     wall-clock ms the checkpoint was written, for operator diagnosis only —
+    ///                      never for ordering, which is `throughOffset`'s job
+    record EntityFoldCheckpointValue(long throughOffset, String blockIdHex, long timestamp) implements AetherValue {
+        public static EntityFoldCheckpointValue entityFoldCheckpointValue(long throughOffset, String blockIdHex) {
+            return new EntityFoldCheckpointValue(throughOffset, blockIdHex, System.currentTimeMillis());
+        }
+    }
 }

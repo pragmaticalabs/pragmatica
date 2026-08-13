@@ -104,8 +104,8 @@ class DurableEntityFactoryTest {
         }
 
         @Test
-        void provision_refusesWithFenceUnavailable_whenStorageEngineMissing() {
-            assertRefusesWithout(StorageEngine.class);
+        void provision_refusesWithFenceUnavailable_whenLogSubstrateMissing() {
+            assertRefusesWithout(EntityLogSubstrate.class);
         }
 
         @Test
@@ -136,10 +136,10 @@ class DurableEntityFactoryTest {
         @Test
         void provision_namesTheMissingCollaborator_inTheRefusal() {
             config().onFailure(DurableEntityFactoryTest::failCause)
-                    .onSuccess(config -> new DurableEntityFactory().provision(config, contextWithout(StorageEngine.class))
+                    .onSuccess(config -> new DurableEntityFactory().provision(config, contextWithout(EntityLogSubstrate.class))
                                                                    .await(AWAIT)
                                                                    .onSuccess(DurableEntityFactoryTest::failUnfenced)
-                                                                   .onFailure(cause -> assertThat(cause.message()).contains(StorageEngine.class.getSimpleName())
+                                                                   .onFailure(cause -> assertThat(cause.message()).contains(EntityLogSubstrate.class.getSimpleName())
                                                                                                                   .contains(KEYSPACE)));
         }
     }
@@ -198,7 +198,7 @@ class DurableEntityFactoryTest {
         var highWater = OwnershipEpochHighWater.ownershipEpochHighWater(emptyStore());
 
         return ProvisioningContext.provisioningContext()
-                                  .withExtension(StorageEngine.class, fencedEngine(highWater))
+                                  .withExtension(EntityLogSubstrate.class, inMemoryLog())
                                   .withExtension(CommittedPartitionOwnerSource.class, selfOwnsEveryArc())
                                   .withExtension(OwnershipEpochHighWater.class, highWater)
                                   .withExtension(EntityKeyspaceRegistrar.class, recordingRegistrar())
@@ -217,7 +217,7 @@ class DurableEntityFactoryTest {
         var highWater = OwnershipEpochHighWater.ownershipEpochHighWater(emptyStore());
         var context = ProvisioningContext.provisioningContext();
 
-        context = addUnless(context, omitted, StorageEngine.class, fencedEngine(highWater));
+        context = addUnless(context, omitted, EntityLogSubstrate.class, inMemoryLog());
         context = addUnless(context, omitted, CommittedPartitionOwnerSource.class, selfOwnsEveryArc());
         context = addUnless(context, omitted, OwnershipEpochHighWater.class, highWater);
         context = addUnless(context, omitted, EntityKeyspaceRegistrar.class, recordingRegistrar());
@@ -234,8 +234,69 @@ class DurableEntityFactoryTest {
         return omitted.equals(type) ? context : context.withExtension(type, value);
     }
 
-    private static StorageEngine fencedEngine(OwnershipEpochHighWater highWater) {
-        return MemoryStorageEngine.memoryStorageEngine(PartitionOwnerEpochGate.partitionOwnerEpochGate(highWater));
+    /// A minimal in-memory log. The factory's job is to REFUSE without its collaborators and to build a
+    /// working entity with them; the fence itself is proven against a fence-enforcing substrate in
+    /// PartitionFencedDurableEntityFenceTest, so this one only has to behave like a log.
+    private static EntityLogSubstrate inMemoryLog() {
+        var records = new java.util.concurrent.ConcurrentHashMap<Integer, java.util.List<byte[]>>();
+
+        return new EntityLogSubstrate() {
+            @Override
+            public Result<Unit> ensureLog(String keyspace, int partitionCount, int replicationFactor, int minSyncReplicas) {
+                return Result.unitResult();
+            }
+
+            @Override
+            public Promise<Long> append(String keyspace, int partition, byte[] record) {
+                var partitionRecords = records.computeIfAbsent(partition, _ -> new java.util.ArrayList<>());
+
+                partitionRecords.add(record);
+
+                return Promise.success((long) partitionRecords.size() - 1);
+            }
+
+            @Override
+            public Promise<java.util.List<byte[]>> read(String keyspace, int partition, long fromOffset, int maxRecords) {
+                var partitionRecords = records.getOrDefault(partition, java.util.List.of());
+                var start = (int) fromOffset;
+
+                return Promise.success(start >= partitionRecords.size()
+                                       ? java.util.List.of()
+                                       : java.util.List.copyOf(partitionRecords.subList(start,
+                                                                                        Math.min(partitionRecords.size(),
+                                                                                                 start + maxRecords))));
+            }
+
+            @Override
+            public long headOffset(String keyspace, int partition) {
+                return records.getOrDefault(partition, java.util.List.of()).size() - 1L;
+            }
+
+            @Override
+            public long earliestRetainedOffset(String keyspace, int partition) {
+                return records.getOrDefault(partition, java.util.List.of()).isEmpty() ? -1L : 0L;
+            }
+
+            @Override
+            public boolean holdsPartition(String keyspace, int partition) {
+                return true;
+            }
+
+            @Override
+            public boolean localLogComplete(String keyspace, int partition) {
+                return true;
+            }
+
+            @Override
+            public Promise<Unit> saveCheckpoint(String keyspace, int partition, long throughOffset, byte[] snapshot) {
+                return Promise.unitPromise();
+            }
+
+            @Override
+            public Promise<Option<EntityCheckpoint>> loadCheckpoint(String keyspace, int partition) {
+                return Promise.success(Option.none());
+            }
+        };
     }
 
     private static KVStore<AetherKey, AetherValue> emptyStore() {

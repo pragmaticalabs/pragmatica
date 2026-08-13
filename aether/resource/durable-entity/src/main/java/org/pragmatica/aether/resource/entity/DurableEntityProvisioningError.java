@@ -11,27 +11,43 @@ import org.pragmatica.lang.Cause;
 /// durable-entity module, distinct from [DurableEntityError] because none of these is scoped to an
 /// entity key: they describe a resource that never came into existence.
 ///
-/// Both variants exist to make a previously SILENT wrong behaviour loud (#345 I1). A cause raised here
+/// Every variant exists to make a previously SILENT wrong behaviour loud (#345 I1). A cause raised here
 /// reaches the operator as `SliceLoadingFailure.Fatal` — `ResourceCreationFailed` for a provisioning
 /// refusal, `ConfigurationFailed` for a config refusal — and lands verbatim in the cluster-event feed's
 /// `DEPLOYMENT_FAILED` record, so a slice that cannot get the guarantees it declared fails to start
 /// instead of starting wrong.
 public sealed interface DurableEntityProvisioningError extends Cause {
-    /// The blueprint declared `replication_factor` greater than the one replica this cut actually keeps.
+    /// `replication_factor` must be at least one — it becomes the backing stream's `replicas`, the total
+    /// copies of each partition INCLUDING the owner, and a partition with no copies has no owner to write
+    /// to.
     ///
-    /// Before I1 the field was accepted and silently ignored: the I0 fixture declared 3 and got a single
-    /// process-local copy that died with its node. Refusing is the honest reading of the field — the
-    /// entity cannot replicate anything until the fenced-log slice (plan Phase 3 / #349) gives it a
-    /// backing that spans nodes, and a declaration that asks for durability it will not get is exactly
-    /// the claim-vs-reality gap the arc exists to close. The field is KEPT rather than deleted so the
-    /// config surface stays stable across that slice.
-    record ReplicationNotSupported(int requested, int supported) implements DurableEntityProvisioningError {
+    /// **This replaced `ReplicationNotSupported` in #345 I3.** Until I3 the field was refused above `1`,
+    /// because the entity committed to a single process-local `StorageEngine` and could not replicate
+    /// anything; refusing was the honest reading at the time. I3 moved entity state onto a fenced,
+    /// fsync-durable, REPLICATED stream partition, so the field is now honoured — which is what closes
+    /// the gap the refusal was standing in for. See [DurableEntityConfig#minSyncReplicas()] for what each
+    /// value buys.
+    record InvalidReplicationFactor(int requested) implements DurableEntityProvisioningError {
         @Override
         public String message() {
-            return "Durable entity replication_factor = " + requested
-                 + " is not supported: this cut keeps " + supported
-                 + " replica (single-replica, local-owner, HA-only) — declare " + supported
-                 + ", or wait for the restart-durable fenced-log backing (#349) to honour a higher factor";
+            return "Durable entity replication_factor = " + requested + " is invalid: must be at least 1";
+        }
+    }
+
+    /// The keyspace's durable log could not be materialized, so the entity would have had nowhere to
+    /// persist anything.
+    ///
+    /// Refused rather than degraded, on the same reasoning as [FenceUnavailable]: an entity with no log is
+    /// an entity with no durability, and starting one would mean serving a resource that answers to the
+    /// name "durable entity" while holding state no restart survives. The realistic cause is a cluster
+    /// whose stream partition budget or ring pool is exhausted, which is an operator-actionable condition
+    /// rather than a code fault — so the underlying cause is carried through verbatim.
+    record LogUnavailable(String keyspace, Cause reason) implements DurableEntityProvisioningError {
+        @Override
+        public String message() {
+            return "Durable entity keyspace '" + keyspace
+                 + "' cannot be provisioned: its durable log could not be created — " + reason.message()
+                 + "; refusing rather than serving an entity that persists nothing";
         }
     }
 
