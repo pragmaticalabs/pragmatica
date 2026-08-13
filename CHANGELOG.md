@@ -7,6 +7,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ## [1.0.0-rc3] - Unreleased
 
 ### Added
+- **Per-node durable-entity checkpoint observability — #345 I3.** `GET /api/entity/checkpoints` and
+  `aether entity checkpoints` report, per keyspace this node folds, the number of successful checkpoint
+  `writes`, `failures`, and the last offset `checkpointedThrough` for each partition. The surface exists
+  because a checkpoint driver that silently stopped had NO other symptom: writes still ack, reads still
+  serve, failover still works, and the only consequence — an entity log that is never reclaimed, because
+  the retention floor refuses to reclaim anything at or above a partition's committed checkpoint —
+  surfaces hours later as disk growth with nothing pointing at the cause. Before this the driver logged
+  only FAILURES, so a driver that never ran and a driver that ran perfectly produced identical output;
+  `writes` is the positive signal that separates them. Assembled on request from counters the tick already
+  maintains, so there is no hot-path cost. The route is LOCAL rather than delegate-routed: each node
+  checkpoints only the partitions IT folds, so a delegate's answer would describe a different node's work.
+  A partition this node never folded is ABSENT from `checkpointedThrough` rather than reported as `0`
+  ("nothing to say about it" and "checkpointed through offset 0" are different claims). Dashboard is an
+  explicit DORMANT slot: summing `writes` across nodes answers no operator question — revisit if a
+  cluster-wide "stalled checkpointing" alert is wanted, which IS aggregatable.
+  `[design intent — unverified: no test exercises the counters or the route; the surface is built and
+  lint/build green, and its live gate rides on the 02w-entity-crash suite, which has never yet passed a
+  full run]`
 - **Durable entity state on a fenced, replicated log — #345 I3.** `@DurableEntity` state now survives the
   loss of the node that owned it. Each keyspace becomes a real stream named `entity:<keyspace>` (the same
   coordinate the write fence, linearizable reads and ownership records already key on, so I1's narrow-C
