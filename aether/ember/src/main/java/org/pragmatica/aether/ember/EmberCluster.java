@@ -754,10 +754,11 @@ public final class EmberCluster {
         // (via withRaisedSwimTimeouts); otherwise none — forge nodes use MembershipConfig defaults
         org.pragmatica.aether.config.StreamingConfig.streamingConfig(),
                                           org.pragmatica.consensus.net.ClusterFormationConfig.defaults(),
-                                          // #298 — in-process nodes never pass through Main, so no cluster
-                                          // name is stamped and the fleet cap stays inert here. Forge has no
-                                          // cloud provider to cap in the first place.
-                                          Option.empty());
+
+        // #298 — in-process nodes never pass through Main, so no cluster
+        // name is stamped and the fleet cap stays inert here. Forge has no
+        // cloud provider to cap in the first place.
+        Option.empty());
         // Single-JVM hosting: when this node's SelfDrainCoordinator completes its drain
         // phase, do NOT halt the JVM (would kill all other in-process nodes). Stop the
         // node gracefully and remove it from the cluster's registry instead.

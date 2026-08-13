@@ -100,8 +100,7 @@ record NodeLifecycleManagerRecord(Option<ComputeProvider> computeProvider,
     ///
     /// With no cap configured this is a straight pass-through and costs nothing.
     private Promise<InstanceInfo> capGuardedProvision(ComputeProvider provider, ProvisionSpec spec) {
-        return maxNodes.fold(() -> doProvision(provider, spec),
-                             cap -> scopedCapCheck(provider, spec, cap));
+        return maxNodes.fold(() -> doProvision(provider, spec), cap -> scopedCapCheck(provider, spec, cap));
     }
 
     /// A cap needs a scope. Counting every instance the provider can see would over-count a shared
@@ -111,8 +110,8 @@ record NodeLifecycleManagerRecord(Option<ComputeProvider> computeProvider,
     private Promise<InstanceInfo> scopedCapCheck(ComputeProvider provider, ProvisionSpec spec, int cap) {
         return clusterName.fold(() -> {
                                     log.error("Fleet cap of {} is configured but this node has no cluster name — "
-                                              + "the cap CANNOT be enforced and provisioning proceeds unbounded. "
-                                              + "Set AETHER_CLUSTER_NAME so the cap has a scope to count within.",
+                                             + "the cap CANNOT be enforced and provisioning proceeds unbounded. "
+                                             + "Set AETHER_CLUSTER_NAME so the cap has a scope to count within.",
                                               cap);
 
                                     return doProvision(provider, spec);
@@ -128,7 +127,11 @@ record NodeLifecycleManagerRecord(Option<ComputeProvider> computeProvider,
                                                      int cap,
                                                      String name) {
         return provider.listInstances(Map.of(CLUSTER_TAG, name))
-                       .flatMap(instances -> enforceCap(provider, spec, cap, instances.size(), name));
+                       .flatMap(instances -> enforceCap(provider,
+                                                        spec,
+                                                        cap,
+                                                        instances.size(),
+                                                        name));
     }
 
     private Promise<InstanceInfo> enforceCap(ComputeProvider provider,
@@ -149,9 +152,7 @@ record NodeLifecycleManagerRecord(Option<ComputeProvider> computeProvider,
     }
 
     private Promise<InstanceInfo> doProvision(ComputeProvider provider, ProvisionSpec spec) {
-        log.info("Provisioning new instance: size={}, pool={}",
-                 spec.instanceSize(),
-                 spec.pool());
+        log.info("Provisioning new instance: size={}, pool={}", spec.instanceSize(), spec.pool());
 
         return provider.provision(spec);
     }

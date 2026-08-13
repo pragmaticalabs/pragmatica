@@ -161,7 +161,9 @@ public final class StreamReadRouter {
         var owner = ownerResolver.resolve(streamName, partition);
         var descriptors = replicaRegistry.map(registry -> registry.replicasFor(streamName, partition)).or(List.of());
         var replicas = descriptors.stream()
-                                  .map(descriptor -> toReplicaView(descriptor, owner, selfRowOverride(streamName, partition, descriptor)))
+                                  .map(descriptor -> toReplicaView(descriptor,
+                                                                   owner,
+                                                                   selfRowOverride(streamName, partition, descriptor)))
                                   .sorted(Comparator.comparing(ReplicaView::nodeId))
                                   .toList();
 
@@ -204,7 +206,8 @@ public final class StreamReadRouter {
         }
 
         return partitionManager.partitionBuffer(streamName, partition)
-                               .map(buffer -> new LocalReplicaState(ReplicationState.CAUGHT_UP.name(), buffer.headOffset()));
+                               .map(buffer -> new LocalReplicaState(ReplicationState.CAUGHT_UP.name(),
+                                                                    buffer.headOffset()));
     }
 
     /// Carrier for the locally-derived substitution above: the state this node is genuinely in for a

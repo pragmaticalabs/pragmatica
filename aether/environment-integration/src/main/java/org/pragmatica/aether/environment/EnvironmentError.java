@@ -159,9 +159,11 @@ public sealed interface EnvironmentError extends Cause {
 
         @Override
         public String message() {
-            return "Provisioning refused for cluster '" + clusterName + "': node cap " + cap
-                   + " reached (" + observed + " already provisioned). Raise max_nodes for the source "
-                   + "or terminate instances to go below the cap.";
+            return "Provisioning refused for cluster '" + clusterName
+                 + "': node cap " + cap
+                 + " reached (" + observed
+                 + " already provisioned). Raise max_nodes for the source "
+                 + "or terminate instances to go below the cap.";
         }
     }
 

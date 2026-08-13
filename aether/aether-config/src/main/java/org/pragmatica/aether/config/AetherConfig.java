@@ -405,7 +405,6 @@ public record AetherConfig(ClusterConfig cluster,
             var withNodes = option(nodes).map(base::withNodes).or(base);
             var withTls = option(tls).map(withNodes::withTls).or(withNodes);
             var withPorts = option(ports).map(withTls::withPorts).or(withTls);
-
             var withCoreMax = option(coreMax).map(withPorts::withCoreMax).or(withPorts);
 
             return option(maxNodes).map(withCoreMax::withMaxNodes)
