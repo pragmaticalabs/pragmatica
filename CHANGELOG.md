@@ -27,6 +27,31 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   green-looking tests asserting a string nothing emits.
   `[verified: ./build.sh green, lint 49/0 new; renamed across 34 files with zero old names remaining]`
 
+### Changed
+- **Codec tag space split into a manually-assigned system range and a hashed user range.** Tags are
+  VLQ-encoded, so the tag VALUE decides its wire cost (`0..127` = 1 byte, `128..16383` = 2,
+  `16384..2097151` = 3), and that is now spent deliberately: **system `0..16383`** for framework and
+  Aether protocol types — enumerable, framework-owned, hand-assigned, never renumbered and never
+  reused — and **user `16384..2097151`** for slice-generated codecs, hash-derived because they grow
+  without bound as applications add types.
+  The old scheme put everything in ONE 16256-slot space, which is birthday-bound at roughly 127
+  types: with ~100 codec types the collision probability was already ~27%, and it hit for real —
+  `AetherValue.EntityCheckpointValue` and `HealthHintWire` both hashed to tag **7612**, poisoning
+  `NodeCodecs` static init and erroring 48 unrelated tests, invisibly to the owning module's own
+  build. That exact pair is verified to collide under the old derivation and not under the new one.
+  Also replaced `String.hashCode()` with FNV-1a: our FQCNs share long prefixes
+  (`org.pragmatica.aether.resource.entity.Entity…`) and `hashCode` clusters badly on precisely that
+  shape, wasting a space that was already too small.
+  **Collisions are now structurally impossible except within a single blueprint.** The two ranges are
+  disjoint, so a slice type can never collide with a system type; and `sliceCodec(parent, codecs)`
+  gives every slice its own registry layered over the shared system parent, so two blueprints' types
+  never meet. Only types WITHIN one blueprint share a registry.
+  User tags are held in a map rather than a flat array — an array spanning the wide range would be
+  ~16MB per slice, and every slice builds its own registry. System tags keep the flat-array index,
+  since they carry the cluster's own protocol traffic and are the hot path.
+  `[verified: ./build.sh green, lint 49/0 new; the historical 7612 collision reproduced under the old
+  derivation and resolved under the new]`
+
 ### Added
 - **SIGKILL crash-durability gate for durable entities — #345 I3.** New `02w-entity-crash` suite: a
   partition owner is hard-killed (`docker kill`, no graceful hooks) with entity creates in flight, and

@@ -53,7 +53,35 @@ public interface SliceCodec extends Serializer, Deserializer {
     int TAG_TUPLE = 19;
     int TAG_MAP = 20;
     // --- Tag space ---
+    ///
+    /// Tags are VLQ-encoded ([#writeCompact]), so the tag VALUE decides its wire cost:
+    /// `0..127` is 1 byte, `128..16383` is 2, `16384..2097151` is 3. The split below spends that
+    /// deliberately.
+    ///
+    /// **SYSTEM range `0..16383` — manually assigned, never reused.** Framework and Aether protocol
+    /// types live here: DHT lookups, SWIM gossip, Rabia rounds, KV commands. They are enumerable,
+    /// framework-owned, and do not grow with user code, so hand-assignment is tractable and buys the
+    /// cheap 1-2 byte encodings for the highest-frequency traffic in the system. A tag here is a WIRE
+    /// CONTRACT: once assigned it is never renumbered and never reused for a different type, because
+    /// two nodes disagreeing on a tag is undiagnosable corruption rather than a clean failure.
+    ///
+    /// **USER range `16384..2097151` — hash-derived from the FQCN.** Slice-generated codecs live
+    /// here. They grow without bound as applications add types, so they cannot be hand-assigned, and
+    /// a wide space is what keeps collisions negligible: at ~100 types the birthday probability is
+    /// about 0.25%, where the old single 16256-slot space was already at ~27% — and that one bit us
+    /// for real (`EntityCheckpointValue` landed on `HealthHintWire`'s tag 7612 and poisoned
+    /// `NodeCodecs` static init, erroring 48 unrelated tests, invisibly to the owning module's own
+    /// build).
+    ///
+    /// The two ranges are DISJOINT, so a slice type can never collide with a system type. Two
+    /// different blueprints cannot collide either: [#sliceCodec] gives each slice its own registry
+    /// layered over the shared system parent, so their types never meet. The only collision left
+    /// possible is between types WITHIN one blueprint, which is why that is checked at assembly time.
+    int SYSTEM_TAG_MAX = 16383;
     int TAG_SPACE_SIZE = 16384;
+    int USER_TAG_BASE = 16384;
+    int USER_TAG_LIMIT = 1 << 21;
+    int USER_TAG_SPACE_SIZE = USER_TAG_LIMIT - USER_TAG_BASE;
     // --- Stream header ---
     int MAGIC = 0xAE01;
     int FORMAT_VERSION = 1;
@@ -127,8 +155,21 @@ public interface SliceCodec extends Serializer, Deserializer {
     }
 
     // --- Tag computation ---
+    /// Hash-derived tag in the USER range for a slice-generated type.
+    ///
+    /// FNV-1a rather than `String.hashCode()`: our FQCNs share long prefixes
+    /// (`org.pragmatica.aether.resource.entity.Entity…`), and `String.hashCode` clusters badly on
+    /// exactly that shape, so it wasted a space that was already too small. FNV-1a avalanches, which
+    /// gets the collision rate to the theoretical birthday bound instead of well above it.
     static int deterministicTag(String className) {
-        return (className.hashCode() & 0x7FFFFFFF) % 16256 + 128;
+        long hash = 0xcbf29ce484222325L;
+
+        for (var i = 0; i < className.length(); i++) {
+            hash ^= className.charAt(i);
+            hash *= 0x100000001b3L;
+        }
+
+        return USER_TAG_BASE + (int) Long.remainderUnsigned(hash, USER_TAG_SPACE_SIZE);
     }
 
     // --- String helpers ---
@@ -176,18 +217,23 @@ public interface SliceCodec extends Serializer, Deserializer {
     static SliceCodec sliceCodec(SliceCodec parent, List<TypeCodec<?>> codecs) {
         var byClass = new HashMap<Class<?>, TypeCodec<?>>();
         var tagArray = new TypeCodec<?>[TAG_SPACE_SIZE];
+        // USER-range tags are sparse across ~2M slots, so they get a map rather than an array: a flat
+        // array covering that range would be ~16MB PER SLICE, and every slice builds its own registry.
+        // The map holds only what a blueprint actually declares — tens of entries, not millions.
+        var userTags = new HashMap<Integer, TypeCodec<?>>();
 
         if (parent instanceof CodecHolder holder) {
             byClass.putAll(holder.byClass());
             copyTagArray(holder.tagArray(), tagArray);
+            userTags.putAll(holder.userTags());
         }
 
         for (var codec : codecs) {
             byClass.put(codec.type(), codec);
-            validateAndSetTag(tagArray, codec);
+            validateAndSetTag(tagArray, userTags, codec);
         }
 
-        return new CodecHolder(Map.copyOf(byClass), tagArray);
+        return new CodecHolder(Map.copyOf(byClass), tagArray, Map.copyOf(userTags));
     }
 
     /// Build a codec registry and validate that all required types have registered codecs.
@@ -234,16 +280,20 @@ public interface SliceCodec extends Serializer, Deserializer {
         System.arraycopy(source, 0, target, 0, source.length);
     }
 
-    private static void validateAndSetTag(TypeCodec<?>[] tagArray, TypeCodec<?> codec) {
+    private static void validateAndSetTag(TypeCodec<?>[] tagArray,
+                                          Map<Integer, TypeCodec<?>> userTags,
+                                          TypeCodec<?> codec) {
         int tag = codec.tag();
 
-        if (tag < 0 || tag >= TAG_SPACE_SIZE) {
+        if (tag < 0 || tag >= USER_TAG_LIMIT) {
             throw new IllegalArgumentException("Tag %d for %s is out of range [0, %d)".formatted(tag,
                                                                                                  codec.type().getName(),
-                                                                                                 TAG_SPACE_SIZE));
+                                                                                                 USER_TAG_LIMIT));
         }
 
-        var existing = tagArray[tag];
+        var existing = tag <= SYSTEM_TAG_MAX
+                       ? tagArray[tag]
+                       : userTags.get(tag);
 
         if (existing != null && !existing.type().equals(codec.type())) {
             throw new IllegalArgumentException("Tag collision: tag %d claimed by both %s and %s".formatted(tag,
@@ -253,19 +303,27 @@ public interface SliceCodec extends Serializer, Deserializer {
                                                                                                                 .getName()));
         }
 
-        tagArray[tag] = codec;
+        if (tag <= SYSTEM_TAG_MAX) {
+            tagArray[tag] = codec;
+        } else {
+            userTags.put(tag, codec);
+        }
     }
 }
 
 final class CodecHolder implements SliceCodec {
     private final Map<Class<?>, SliceCodec.TypeCodec<?>> byClass;
     private final SliceCodec.TypeCodec<?>[] tagArray;
+    private final Map<Integer, SliceCodec.TypeCodec<?>> userTags;
     private final ConcurrentHashMap<Class<?>, SliceCodec.TypeCodec<?>> classCache;
     private volatile SliceCodec.TypeCodec<?> lastLookup;
 
-    CodecHolder(Map<Class<?>, SliceCodec.TypeCodec<?>> byClass, SliceCodec.TypeCodec<?>[] tagArray) {
+    CodecHolder(Map<Class<?>, SliceCodec.TypeCodec<?>> byClass,
+                SliceCodec.TypeCodec<?>[] tagArray,
+                Map<Integer, SliceCodec.TypeCodec<?>> userTags) {
         this.byClass = byClass;
         this.tagArray = tagArray;
+        this.userTags = userTags;
         this.classCache = new ConcurrentHashMap<>(byClass);
     }
 
@@ -275,6 +333,10 @@ final class CodecHolder implements SliceCodec {
 
     SliceCodec.TypeCodec<?>[] tagArray() {
         return tagArray;
+    }
+
+    Map<Integer, SliceCodec.TypeCodec<?>> userTags() {
+        return userTags;
     }
 
     @Override
@@ -378,11 +440,11 @@ final class CodecHolder implements SliceCodec {
 
     @Override
     public SliceCodec.TypeCodec<?> lookupByTag(int tag) {
-        if (tag < 0 || tag >= tagArray.length) {
-            throw new IllegalArgumentException("No codec registered for tag: " + tag);
-        }
-
-        var codec = tagArray[tag];
+        // System tags keep the flat-array index — they carry the cluster's own protocol traffic and
+        // are the hot path. User tags are sparse and take a map lookup.
+        var codec = tag >= 0 && tag < tagArray.length
+                    ? tagArray[tag]
+                    : userTags.get(tag);
 
         if (codec == null) {
             throw new IllegalArgumentException("No codec registered for tag: " + tag);
