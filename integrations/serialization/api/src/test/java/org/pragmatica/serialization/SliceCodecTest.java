@@ -175,8 +175,12 @@ class SliceCodecTest {
             assertEquals(tag1, tag2);
         }
 
+        /// Pins the range CONTRACT, not a band that happened to be true: a hash-derived tag must land
+        /// in the USER range and never in the SYSTEM range. That disjointness is what makes a
+        /// slice-generated type structurally unable to collide with a hand-assigned framework tag —
+        /// the guarantee is the point, so it is asserted from both sides.
         @Test
-        void deterministicTag_differentInputs_inRange() {
+        void deterministicTag_differentInputs_landInUserRangeNeverSystem() {
             var names = List.of(
                 "com.example.Alpha",
                 "com.example.Beta",
@@ -188,9 +192,27 @@ class SliceCodecTest {
             for (var name : names) {
                 var tag = SliceCodec.deterministicTag(name);
 
-                assertTrue(tag >= 128, "Tag %d for %s below 128".formatted(tag, name));
-                assertTrue(tag <= 16383, "Tag %d for %s above 16383".formatted(tag, name));
+                assertTrue(tag >= SliceCodec.USER_TAG_BASE,
+                           "Tag %d for %s is in the SYSTEM range — hash-derived tags must never be".formatted(tag, name));
+                assertTrue(tag < SliceCodec.USER_TAG_LIMIT,
+                           "Tag %d for %s is beyond the user range".formatted(tag, name));
+                assertTrue(tag > SliceCodec.SYSTEM_TAG_MAX,
+                           "Tag %d for %s could collide with a hand-assigned system tag".formatted(tag, name));
             }
+        }
+
+        /// The collision that actually cost a debugging cycle (#345 I3): under the old
+        /// `(hashCode % 16256) + 128` derivation these two FQCNs both produced tag 7612, which poisoned
+        /// `NodeCodecs` static init and errored 48 unrelated tests — invisibly to the owning module's
+        /// own build, because only the full node assembly registers both. Pinned so a future change to
+        /// the derivation cannot silently reintroduce it.
+        @Test
+        void deterministicTag_theHistoricalCollisionPair_noLongerCollides() {
+            var checkpointValue = SliceCodec.deterministicTag("org.pragmatica.aether.slice.kvstore.AetherValue.EntityCheckpointValue");
+            var healthHint = SliceCodec.deterministicTag("org.pragmatica.cluster.metrics.HealthHintWire");
+
+            assertTrue(checkpointValue != healthHint,
+                       "EntityCheckpointValue and HealthHintWire collided again at tag %d".formatted(checkpointValue));
         }
     }
 
