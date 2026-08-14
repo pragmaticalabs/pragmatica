@@ -1,6 +1,6 @@
 # Session handover — 2026-08-14: auto-heal had been dead for two days, and the 02w gate finally landed
 
-**Branch:** `release-1.0.0-rc3` · **HEAD:** `34375904a` · **NOT pushed** (16 commits) · **tree clean**
+**Branch:** `release-1.0.0-rc3` · **HEAD:** `e0e023828` · **NOT pushed** (21 commits) · **tree clean**
 
 Follows `session-handover-2026-08-13-part2.md`, which handed over an uncommitted checkpoint-observability
 QUAD, an unproven `02w-entity-crash` suite, and two unexplained observations. All three are resolved.
@@ -115,20 +115,70 @@ by construction, and its 481s timeout said nothing about ownership. Fresh keys p
 - `host_port_for_container <name> <inport>` resolves a node's host-mapped port via `docker port`; use
   it rather than deriving `base + index` (host mapping differs per cluster: A→8070.., B→8080..).
 
-## §6 In flight at handover
+## §6 The full run, and the harness defects it exposed
 
-A full 15-suite run (`--env remote --skip-build`) was launched after the auto-heal fix, log at
-`scratchpad/full-run.log`. Cluster A was green (00-smoke 2/0, 07 4/0, 09 3/0, 08 5/0) and cluster B was
-into 13-edge-cases. **Its value is that it is the first full run with auto-heal actually working** —
-previously-flaky destructive suites may behave differently, and any suite that kills a node now has a
-real chance of recovery. Check the tail before trusting older flakiness notes.
+A full 15-suite run (`--env remote`, 13320s) landed **13 suites green, 4 with failures** — and every
+failure was root-caused to something other than the day's product changes:
 
-Note `02w-entity-crash` now restarts the node it killed in `cleanup` (`start_node`), because cluster B
-is `restart: "no"` and `restore_cluster_baseline` only escalates to a full restart when NO leader is
+| Suite | Cause |
+|---|---|
+| `06-deployment` 2p/3f | **#598** — parallel cluster-A suites race for the cluster-global `database` datasource; the loser gets 409 and its tests fail four steps later with an unrelated signature |
+| `03-scaling` 2p/1f | Known baseline, documented verbatim in earlier handovers: stalls at 6, 0.00% error rate, data intact, self-resolves |
+| `02-chaos` 6p/1f | CTM now provisions a replacement that **never joins membership** — the next link in the chain, visible only because #597 made provisioning work at all |
+| `02y` / `02w` | Harness pinned app traffic to a killed node |
+
+**The run's real value was finding three defects in work landed EARLIER THE SAME DAY**, none of which a
+standalone green run could reveal:
+
+1. `02w`'s endpoint resolver enumerated by NAME PATTERN (`aether-b-node-{1..5}`), missing CTM's
+   ULID-named replacements. Those DO publish app ports — on ephemeral high ports (36647), not the
+   compose-fixed 8080..8084 range. `first_seed_host_app_port`'s comment claiming they "carry no
+   host-mapped app port at all" is outdated.
+2. Endpoints were resolved ONCE. After the suite's own kill every call burned `_api_call`'s 30s
+   timeout against a dead port, turning a 360s budget into 1254s and a 480s budget into 4990s.
+3. The readiness probe still used the PINNED endpoint — the actual reason `02w` failed. The slice was
+   healthy; the probe could not reach it.
+
+Fixed by `node_app_endpoints` (lib/cluster.sh), which enumerates running containers dynamically and
+resolves each one's host-mapped app port. **Both suites are now green against it:**
+
+- `02w-entity-crash` **1p/0f in 220s** (was 6524s): 5 endpoints, 40/40 creates ACKED, **59 ACKED
+  entities survived SIGKILL with exact values**, checkpoints on 4 nodes.
+- `02y-stream-crash` **1p/0f**: 40/40 pre-kill publishes, **79 ACKED events survived, 0 missing**, all
+  4 partitions contiguous and ordered.
+
+**The two suites needed OPPOSITE fixes, and this is the part to carry forward.** `02w` needed
+ROTATION — entities are owner-pinned with no forwarding (#596), so the client must find the owner.
+`02y` needed STICKINESS with failover — a keyless publish round-robins from the publisher instance's
+own counter, so driving every publish through ONE port is what spreads events deterministically across
+partitions (`StreamSlice`'s header says so). Rotating publishes there would have silently broken the
+"events spread across partitions" and contiguity assertions that ARE #508's evidence. Only endpoint
+DISCOVERY is shared; the calling policy is per-suite and must be derived from what the suite asserts.
+
+A first `02y` run reported 39/40 publishes with no explanation, because the version I wrote wrapped
+both attempts in `2>/dev/null` — reintroducing, hours later, the exact silent-stderr trap I had spent
+the morning removing from `02w`. With the diagnostic restored the re-run came back **40/40**, so that
+one was environmental. The lesson is the suppression, not the flake.
+
+## §7 In flight at handover
+
+Nothing running. The remote host is clean (0 containers, 0 networks).
+
+Next, in the order I would take them:
+1. **#596** — blocked on a DESIGN call, not effort: entity `update` takes `Fn1<S,S>` and a lambda
+   cannot cross nodes, so forwarding is either caller-routing or a command-shaped API. Options and a
+   recommendation are on the issue.
+2. **#598 item 3** — `publish_blueprint_or_fail` got a 409 and its test still PASSED. Both it and
+   `publish_blueprint` look correct on inspection, so something between the 409 and the return value
+   swallows it. A helper named `_or_fail` that does not fail is a truthfulness bug in the harness.
+3. **#509** — un-masked by #597; re-test deliberately rather than trusting "does not reproduce".
+4. **02-chaos's replacement-never-joins failure** — the next link the auto-heal fix exposed.
+
+`02w-entity-crash` restarts the node it killed in `cleanup` (`start_node`), because cluster B is
+`restart: "no"` and `restore_cluster_baseline` only escalates to a full restart when NO leader is
 reachable — a single-node kill leaves the leader healthy, so it waits out its budget on a node that can
 never return. **Other destructive suites do not do this**: `02-chaos` (6 kills), `13-edge-cases` (3),
-`02y-stream-crash` (1) all kill without restarting; only `12-network` is symmetric. With auto-heal fixed
-they should now recover via CTM replacement, which is exactly what this run tests.
+`02y-stream-crash` (1) all kill without restarting; only `12-network` is symmetric.
 
 ## §7 Standing hazards (carried forward)
 
