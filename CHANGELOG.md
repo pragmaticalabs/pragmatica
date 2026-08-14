@@ -7,6 +7,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ## [1.0.0-rc3] - Unreleased
 
 ### Added
+- **SIGKILL crash-durability gate for durable entities — #345 I3.** New `02w-entity-crash` suite: a
+  partition owner is hard-killed (`docker kill`, no graceful hooks) with entity creates in flight, and
+  every ACKED entity must read back with its EXACT written value. **Result: 56 acked, 0 missing, 0
+  corrupted; 40/40 pre-kill creates ACKED and 16/40 acked across the kill window.**
+  `[verified: aether/tests/integration/suites/02w-entity-crash — 1 passed, 0 failed on a 5-node remote
+  Docker cluster]` This is the gate Forge structurally cannot provide: every in-JVM stop routes through
+  `AetherNode.stop()` → `close()`, which closes the WAL cleanly, so graceful and hard stop are
+  durability-EQUIVALENT in-JVM and the crash-mid-fsync boundary is unreachable there (established for
+  streams in #431/#508).
+  Two non-vacuity gates, both added after they caught real hollow passes: assertions are gated on a
+  CONFIRMED kill (an earlier run passed "all 4 ACKED entities survived the crash" when the node-pick
+  had fail-fasted and **no kill ever happened**), and on a non-empty ACK set (#508's original shape
+  reported "0 acked, 0 missing" as PASS).
+  The suite addresses partition OWNERS directly rather than the LB-fronted app endpoint, because entity
+  operations are not owner-forwarded (#596); that workaround should be removed when forwarding lands, so
+  the suite exercises the product's routing rather than the harness's.
 - **Per-node durable-entity checkpoint observability — #345 I3.** `GET /api/entity/checkpoints` and
   `aether entity checkpoints` report, per keyspace this node folds, the number of successful checkpoint
   `writes`, `failures`, and the last offset `checkpointedThrough` for each partition. The surface exists
@@ -22,9 +38,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   ("nothing to say about it" and "checkpointed through offset 0" are different claims). Dashboard is an
   explicit DORMANT slot: summing `writes` across nodes answers no operator question — revisit if a
   cluster-wide "stalled checkpointing" alert is wanted, which IS aggregatable.
-  `[design intent — unverified: no test exercises the counters or the route; the surface is built and
-  lint/build green, and its live gate rides on the 02w-entity-crash suite, which has never yet passed a
-  full run]`
+  `[verified: aether/tests/integration/suites/02w-entity-crash]` — read live as a liveness sensor on a
+  5-node remote Docker cluster: `node-1=222w/0f node-2=44w/0f node-4=143w/0f`. Writes must be summed
+  CLUSTER-WIDE, because a node hosting the keyspace while folding no partition correctly reports zero;
+  a per-node assertion would fail on a healthy cluster.
 - **Durable entity state on a fenced, replicated log — #345 I3.** `@DurableEntity` state now survives the
   loss of the node that owned it. Each keyspace becomes a real stream named `entity:<keyspace>` (the same
   coordinate the write fence, linearizable reads and ownership records already key on, so I1's narrow-C

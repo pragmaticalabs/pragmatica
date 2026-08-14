@@ -502,9 +502,16 @@ docker `02y-stream-crash` suite. The SIGKILL tier for entities remains outstandi
 
 1. **SIGKILL crash durability for entities** — belongs beside #508's `02y-stream-crash` docker suite.
    **CLOSED 2026-08-13**: `02w-entity-crash` hard-killed (`docker kill`) the owner with creates in
-   flight; every ACKED entity read back with its exact written value. The assertions are gated on a
-   CONFIRMED kill — an earlier run passed them without any kill having happened, because the node-pick
-   fail-fasted and nothing checked that the crash occurred.
+   flight; **56 ACKED entities read back with their exact written values, 0 missing, 0 corrupted**
+   (suite 1 passed / 0 failed). The assertions are gated on a CONFIRMED kill — an earlier run passed
+   them without any kill having happened, because the node-pick fail-fasted and nothing checked that
+   the crash occurred.
+   Getting there required fixing the harness twice over, and both bugs were self-inflicted measurement
+   errors rather than product faults: it drove the LB-fronted app endpoint, which PINS to one slice
+   instance (all 42 failure bodies carried one `"instance"` id), so 37 of 40 creates were refused by a
+   non-owner; and its convergence probe re-created the SAME keys every poll, so after the first success
+   every later poll got `KeyAlreadyExists` and counted it a failure, making convergence unreachable by
+   construction. Ack rate went 4/40 → 40/40 once it addressed owners directly.
 2. **Owner-forwarding — WIDER than recorded here, now #596.** This gap was written as
    `BOUNDED_STALE` read forwarding only. The `02w` run showed the WRITE path has the same hole and it
    bites harder: a durable entity is reachable only on its partition owner, there is no forwarding and
