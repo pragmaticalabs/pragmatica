@@ -22,10 +22,10 @@ import org.pragmatica.lang.Unit;
 /// entity-module analog of the stream's `LinearizableOwnerServe`, built over the SAME shared ownership
 /// substrate (the `StreamPartitionOwnershipValue` record family via [CommittedPartitionOwnerSource], the
 /// [OwnershipEpochHighWater] fence, and the [EntityPartitionArc] key→arc mapping) but entity-shaped: it
-/// serves the `Option<S>` state for a single key and rejects with [DurableEntityError] causes.
+/// serves the `Option<S>` state for a single key and rejects with [EntityError] causes.
 ///
 /// The pipeline for a key: resolve the key's `(keyspace, partition)` arc → read the arc's COMMITTED owner
-/// → if a REMOTE node is the committed owner, reject [DurableEntityError.NotCurrentOwner] (no entity
+/// → if a REMOTE node is the committed owner, reject [EntityError.NotCurrentOwner] (no entity
 /// read-forward transport exists in 1e-b — forwarding is a follow-up) → if SELF is the committed owner,
 /// fast-fail on the pre-round epoch fence, run the no-op round, re-check the POST-round epoch fence (the
 /// decision point, current because the round has applied every ownership change committed before it),
@@ -33,9 +33,9 @@ import org.pragmatica.lang.Unit;
 /// the local read, so an un-wired arc keeps serving — which on a single owner already reflects every
 /// acknowledged write. A BARRIER-free configuration does NOT degrade: the round cannot be ordered, so the
 /// requested guarantee cannot be met and the read is rejected with
-/// [DurableEntityError.LinearizableUnavailable] rather than served locally under the stronger name
+/// [EntityError.LinearizableUnavailable] rather than served locally under the stronger name
 /// (#345 I1 owner ruling — the two absences are not equivalent, since a missing barrier costs freshness
-/// on a read the caller explicitly asked to be fresh). Every rejection is a typed [DurableEntityError] so
+/// on a read the caller explicitly asked to be fresh). Every rejection is a typed [EntityError] so
 /// the caller re-resolves the owner and retries; nothing blocks the thread.
 ///
 /// Unlike the stream pipeline, there is no replica catch-up gate — the in-memory entity has no replica
@@ -147,15 +147,15 @@ final class LinearizableEntityServe<K, S> {
     }
 
     private static Result<Unit> staleEpochRead(Object key, Epoch committed, Epoch highWater) {
-        return new DurableEntityError.StaleEpochRead(String.valueOf(key), epochText(committed), epochText(highWater)).result();
+        return new EntityError.StaleEpochRead(String.valueOf(key), epochText(committed), epochText(highWater)).result();
     }
 
     private static <S> Promise<Option<S>> notCurrentOwner(Object key, NodeId owner) {
-        return new DurableEntityError.NotCurrentOwner(String.valueOf(key), owner.id()).promise();
+        return new EntityError.NotCurrentOwner(String.valueOf(key), owner.id()).promise();
     }
 
     private static <S> Promise<Option<S>> linearizableUnavailable(Object key) {
-        return new DurableEntityError.LinearizableUnavailable(String.valueOf(key)).promise();
+        return new EntityError.LinearizableUnavailable(String.valueOf(key)).promise();
     }
 
     private static String epochText(Epoch epoch) {

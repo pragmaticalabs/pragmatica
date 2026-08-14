@@ -5546,7 +5546,7 @@ public interface AetherNode extends ManageableNode {
         spi.registerExtension(CommittedPartitionOwnerSource.class,
                               KvCommittedPartitionOwnerSource.kvCommittedPartitionOwnerSource(kvStore));
         // Absent barrier is NOT fatal: BOUNDED_STALE reads still work and a LINEARIZABLE read is refused
-        // per-read with DurableEntityError.LinearizableUnavailable (#345 I1 owner ruling — a missing barrier
+        // per-read with EntityError.LinearizableUnavailable (#345 I1 owner ruling — a missing barrier
         // costs freshness, a missing fence costs safety, so only the latter refuses the whole resource).
         entityBarrier.onPresent(barrier -> spi.registerExtension(EntityLinearizableBarrier.class, barrier));
         // The keyspace declaration seam. Mandatory, like the fence collaborators: without it a provisioned

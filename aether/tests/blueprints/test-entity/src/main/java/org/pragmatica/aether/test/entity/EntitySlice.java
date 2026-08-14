@@ -80,8 +80,8 @@ public interface EntitySlice {
     /// A single flat shape for every outcome, so a test asserts on `outcome`/`failureType` rather
     /// than on HTTP status codes or error prose.
     ///
-    /// `failureType` is the [Cause]'s simple class name — `TimerNotSupported`, `KeyAlreadyExists`,
-    /// `KeyNotFound`. Asserting on the TYPE rather than on `failure` (the rendered message) keeps
+    /// `failureType` is the [Cause]'s simple class name — `TimerNotSupported`, `EntityAlreadyExists`,
+    /// `EntityNotFound`. Asserting on the TYPE rather than on `failure` (the rendered message) keeps
     /// the proof anchored to the sealed cause hierarchy instead of to wording that may be reworded.
     record EntityResponse(String instance,
                           String outcome,

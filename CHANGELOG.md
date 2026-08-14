@@ -6,6 +6,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [1.0.0-rc3] - Unreleased
 
+### Changed
+- **Durable-entity error surface renamed to entity-centric names (#432).** `DurableEntityError` →
+  `EntityError` (symmetric with the sibling `StreamError`), `DurableEntityProvisioningError` →
+  `EntityProvisioningError`, `KeyNotFound` → `EntityNotFound`, `KeyAlreadyExists` →
+  `EntityAlreadyExists`, `StaleOwner` → `StaleOwnerEpoch`, and `TimerNotFound` gained the
+  `TimerToken` so a caller holding several timers can tell WHICH was not found.
+  The spec had pinned one set of names and the code shipped another; v0.4.0 closed that by amending
+  the spec, and this closes it the other way where the shipped name was the weaker one — spec and
+  code now agree, and the book teaches the same surface.
+  **The line drawn on what NOT to rename:** the same name for the same CONCEPT across subsystems is a
+  feature — `StreamError.NotCurrentOwner` and `EntityError.NotCurrentOwner` say the same thing about a
+  partition owner. The same name for DIFFERENT concepts is the defect, and `KeyNotFound` was three
+  unrelated things (JWKS keys in `SecurityError`, config keys in `ConfigError`, entity keys). So
+  `NotCurrentOwner`, `StaleEpochRead`, `OwnershipNotYetCommitted`, `LinearizableUnavailable`,
+  `StorageFailed` and `TimerNotSupported` are unchanged.
+  Note the record's simple name IS the wire value (the fixture slice reports
+  `cause.getClass().getSimpleName()`), so this changed strings asserted by `DurableEntityForgeTest`
+  and the `02w-entity-crash` suite; both moved with it. A Java-only rename would have left two
+  green-looking tests asserting a string nothing emits.
+  `[verified: ./build.sh green, lint 49/0 new; renamed across 34 files with zero old names remaining]`
+
 ### Added
 - **SIGKILL crash-durability gate for durable entities — #345 I3.** New `02w-entity-crash` suite: a
   partition owner is hard-killed (`docker kill`, no graceful hooks) with entity creates in flight, and

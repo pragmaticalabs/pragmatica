@@ -58,11 +58,6 @@ amount_for() {
     printf '%d' "$(( $1 * 7 + 3 ))"
 }
 
-# `app_post` round-robins across nodes, and only the committed owner of a key's
-# arc may accept a create — so a single attempt lands on a non-owner most of the
-# time and is refused with NotCurrentOwner. Retrying until one node accepts is
-# what turns that into a create; it is NOT a durability retry, and the ack it
-# records is a single node's single acceptance.
 # Per-node app endpoints, newline-separated (see `node_app_endpoints` in lib/cluster.sh for why
 # the LB cannot be trusted and why containers are enumerated dynamically).
 #
@@ -104,7 +99,7 @@ entity_post_any() {
 # Rotates over every node so a key's committed owner is actually reached. Two passes:
 # ownership can commit between them, and a node killed mid-suite simply fails its leg.
 #
-# `KeyAlreadyExists` is treated as OUR create having landed, not as a failure. These
+# `EntityAlreadyExists` is treated as OUR create having landed, not as a failure. These
 # keys are unique to this run and nothing else writes them, so the only way the key can
 # exist is that one of our own attempts was accepted and its response never reached us
 # (a lost ack — the node was killed, or the connection reset). Counting that as a
@@ -117,14 +112,14 @@ create_entity() {
     amount="$(amount_for "$idx")"
     payload="{\"orderId\":\"${key}\",\"status\":\"placed\",\"amount\":${amount}}"
 
-    # `KeyAlreadyExists` counts as OUR create having landed. These keys are unique to this run and
+    # `EntityAlreadyExists` counts as OUR create having landed. These keys are unique to this run and
     # nothing else writes them, so the only way the key can exist is that one of our own attempts
     # was accepted and its response never reached us (a lost ack — the node was killed, or the
     # connection reset). Counting that as failure UNDER-counts acks, which is what made the first
     # run report 4/40. The durability assertion re-reads the value, so a wrong guess here cannot
     # manufacture a pass.
     if body=$(entity_post_any "/api/entity/create" "$payload" \
-                              '"outcome"[[:space:]]*:[[:space:]]*"created"|"failureType"[[:space:]]*:[[:space:]]*"KeyAlreadyExists"'); then
+                              '"outcome"[[:space:]]*:[[:space:]]*"created"|"failureType"[[:space:]]*:[[:space:]]*"EntityAlreadyExists"'); then
         return 0
     fi
 
@@ -145,10 +140,6 @@ create_range_recording_acks() {
     done
 }
 
-# A node outside the key's replica set answers PartitionNotHeld — a STABLE
-# refusal, not "absent" — so this looks for a positive answer across attempts
-# rather than summing negatives. "I do not hold this" and "this does not exist"
-# are different claims and must not be conflated.
 read_amount() {
     local key="$1" body
 
@@ -219,7 +210,7 @@ test_deploy_entity_blueprint() {
 # be met. Probing ONE key certifies ONE partition, so this probes a spread.
 #
 # Each poll uses a FRESH key block. The first version reused keys 900-911 every poll,
-# so once a key existed every later poll got `KeyAlreadyExists` — which it counted as a
+# so once a key existed every later poll got `EntityAlreadyExists` — which it counted as a
 # failure, making convergence UNREACHABLE by construction. It timed out at 481s for
 # that reason alone, with nothing to say about ownership. A probe whose own success
 # poisons its next attempt measures nothing.

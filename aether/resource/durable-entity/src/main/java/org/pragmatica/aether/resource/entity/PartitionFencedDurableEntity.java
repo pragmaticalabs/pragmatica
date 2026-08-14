@@ -180,12 +180,12 @@ final class PartitionFencedDurableEntity<K, S> implements DurableEntity<K, S> {
 
     @Override
     public Promise<TimerToken> scheduleTimer(K key, Duration delay, Fn1<S, S> onFire) {
-        return new DurableEntityError.TimerNotSupported(String.valueOf(key)).promise();
+        return new EntityError.TimerNotSupported(String.valueOf(key)).promise();
     }
 
     @Override
     public Promise<Unit> cancelTimer(K key, TimerToken token) {
-        return new DurableEntityError.TimerNotSupported(String.valueOf(key)).promise();
+        return new EntityError.TimerNotSupported(String.valueOf(key)).promise();
     }
 
     /// Every operation waits for its partition's fold before touching state. A partition still replaying
@@ -284,7 +284,7 @@ final class PartitionFencedDurableEntity<K, S> implements DurableEntity<K, S> {
 
     /// Two translations, both preserving vocabulary callers already depend on.
     ///
-    /// A fence rejection becomes [DurableEntityError.StaleOwner] — the cause this entity has always
+    /// A fence rejection becomes [EntityError.StaleOwnerEpoch] — the cause this entity has always
     /// raised for a deposed owner. The fence moved from the storage engine to the log in I3; the cause a
     /// caller sees must not move with it.
     ///
@@ -300,8 +300,8 @@ final class PartitionFencedDurableEntity<K, S> implements DurableEntity<K, S> {
         }
 
         return cause instanceof EntityLogError.StaleOwnerAppend stale
-               ? new DurableEntityError.StaleOwner(String.valueOf(key), stale.detail())
-               : new DurableEntityError.StorageFailed(String.valueOf(key), cause);
+               ? new EntityError.StaleOwnerEpoch(String.valueOf(key), stale.detail())
+               : new EntityError.StorageFailed(String.valueOf(key), cause);
     }
 
     private int partitionOf(K key) {
@@ -311,8 +311,8 @@ final class PartitionFencedDurableEntity<K, S> implements DurableEntity<K, S> {
     /// A codec fault for `key`'s state, rendered as a typed cause. [Serializer]/[Deserializer] report by
     /// throwing (their contract calls a codec miss a fatal misconfiguration), so this is the boundary
     /// where that exception becomes a value.
-    private DurableEntityError codecFailed(K key, Throwable throwable) {
-        return new DurableEntityError.StorageFailed(String.valueOf(key), Causes.fromThrowable(throwable));
+    private EntityError codecFailed(K key, Throwable throwable) {
+        return new EntityError.StorageFailed(String.valueOf(key), Causes.fromThrowable(throwable));
     }
 
     @SuppressWarnings("unchecked")
@@ -321,10 +321,10 @@ final class PartitionFencedDurableEntity<K, S> implements DurableEntity<K, S> {
     }
 
     private static <S> Promise<S> keyAlreadyExists(Object key) {
-        return new DurableEntityError.KeyAlreadyExists(String.valueOf(key)).promise();
+        return new EntityError.EntityAlreadyExists(String.valueOf(key)).promise();
     }
 
     private static <S> Promise<S> keyNotFound(Object key) {
-        return new DurableEntityError.KeyNotFound(String.valueOf(key)).promise();
+        return new EntityError.EntityNotFound(String.valueOf(key)).promise();
     }
 }

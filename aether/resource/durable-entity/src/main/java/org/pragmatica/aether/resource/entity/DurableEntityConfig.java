@@ -4,8 +4,8 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.resource.entity;
 
-import org.pragmatica.aether.resource.entity.DurableEntityProvisioningError.InvalidPartitionCount;
-import org.pragmatica.aether.resource.entity.DurableEntityProvisioningError.InvalidReplicationFactor;
+import org.pragmatica.aether.resource.entity.EntityProvisioningError.InvalidPartitionCount;
+import org.pragmatica.aether.resource.entity.EntityProvisioningError.InvalidReplicationFactor;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Verify;
 

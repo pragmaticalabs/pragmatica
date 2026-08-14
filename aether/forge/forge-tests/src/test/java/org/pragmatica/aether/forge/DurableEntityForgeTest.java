@@ -228,7 +228,7 @@ class DurableEntityForgeTest {
 
     // --- typed failures are real, not decorative -------------------------------
 
-    /// `KeyAlreadyExists` is enforced, so the entity genuinely holds state rather than accepting
+    /// `EntityAlreadyExists` is enforced, so the entity genuinely holds state rather than accepting
     /// every write. This is the sensor that stops the whole suite from passing against a no-op
     /// implementation.
     @Test
@@ -239,11 +239,11 @@ class DurableEntityForgeTest {
         var duplicate = create(owner, "order-duplicate", "placed", 2);
 
         assertThat(outcome(duplicate)).isEqualTo("failed");
-        assertThat(text(duplicate, "failureType")).isEqualTo("KeyAlreadyExists");
+        assertThat(text(duplicate, "failureType")).isEqualTo("EntityAlreadyExists");
     }
 
     /// Owner-aware because admission now precedes the key lookup: a non-owner answers `NotCurrentOwner`,
-    /// and only the owner gets far enough to report `KeyNotFound`. That precedence is correct, not a
+    /// and only the owner gets far enough to report `EntityNotFound`. That precedence is correct, not a
     /// regression — a node with no right to touch a key should not report on its contents. Asserting the
     /// whole five-node shape rather than just the owner's answer also re-proves the fence for free.
     @Test
@@ -254,8 +254,8 @@ class DurableEntityForgeTest {
                                      .toList();
 
         assertThat(failureTypes).describedAs("exactly the owner reports on the key's contents")
-                                .containsOnlyOnce("KeyNotFound");
-        assertThat(failureTypes).filteredOn(type -> !"KeyNotFound".equals(type))
+                                .containsOnlyOnce("EntityNotFound");
+        assertThat(failureTypes).filteredOn(type -> !"EntityNotFound".equals(type))
                                 .describedAs("every non-owner is turned away before the lookup")
                                 .containsOnly("NotCurrentOwner");
     }
@@ -270,7 +270,7 @@ class DurableEntityForgeTest {
         var repeated = delete(owner, "order-double-delete");
 
         assertThat(outcome(repeated)).isEqualTo("failed");
-        assertThat(text(repeated, "failureType")).isEqualTo("KeyNotFound");
+        assertThat(text(repeated, "failureType")).isEqualTo("EntityNotFound");
     }
 
     /// Timers are declared in the API (spec §5) and implemented nowhere (spec §4.5, plan Phase 2c).
@@ -490,7 +490,7 @@ class DurableEntityForgeTest {
     /// True once the leader's ownership reconcile has minted records for the entity arcs — detected by a
     /// throwaway create being ACCEPTED somewhere rather than refused everywhere as
     /// `OwnershipNotYetCommitted`. Uses a fresh key per attempt so a successful probe never collides with
-    /// a previous one and reports `KeyAlreadyExists`.
+    /// a previous one and reports `EntityAlreadyExists`.
     /// Convergence means every PARTITION can accept a write, not merely one.
     ///
     /// Ownership records are minted per `(entity:orders, partition)` arc, and the write barrier

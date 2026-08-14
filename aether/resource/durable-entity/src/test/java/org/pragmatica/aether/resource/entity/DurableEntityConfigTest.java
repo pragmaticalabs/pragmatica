@@ -162,11 +162,11 @@ class DurableEntityConfigTest {
     /// over [Cause#stream] — uniform for a composite and for a single cause — rather than by matching the
     /// outer instance, which for a composite would be the wrapper, not the domain refusal.
     private static void assertInvalidReplicationFactor(Cause cause) {
-        assertThat(cause.stream()).hasAtLeastOneElementOfType(DurableEntityProvisioningError.InvalidReplicationFactor.class);
+        assertThat(cause.stream()).hasAtLeastOneElementOfType(EntityProvisioningError.InvalidReplicationFactor.class);
     }
 
     private static void assertInvalidPartitionCount(Cause cause) {
-        assertThat(cause.stream()).hasAtLeastOneElementOfType(DurableEntityProvisioningError.InvalidPartitionCount.class);
+        assertThat(cause.stream()).hasAtLeastOneElementOfType(EntityProvisioningError.InvalidPartitionCount.class);
     }
 
     private static void failAccepted(DurableEntityConfig config) {

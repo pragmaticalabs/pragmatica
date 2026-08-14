@@ -28,9 +28,9 @@ import org.pragmatica.lang.Unit;
 /// entity needs both, and this supplies the second.
 ///
 /// ## The two refusals, and why they are different causes
-///   - a REMOTE committed owner → [DurableEntityError.NotCurrentOwner]: stable, the caller re-resolves
+///   - a REMOTE committed owner → [EntityError.NotCurrentOwner]: stable, the caller re-resolves
 ///     and retries THERE;
-///   - NO committed owner → [DurableEntityError.OwnershipNotYetCommitted]: transient, the caller retries
+///   - NO committed owner → [EntityError.OwnershipNotYetCommitted]: transient, the caller retries
 ///     HERE once the leader-only ownership reconcile has minted a record for the arc.
 ///
 /// The absent-record case refuses rather than admits, deliberately. Ownership records are minted
@@ -81,10 +81,10 @@ final class EntityOwnerAdmission {
     }
 
     private static Result<Unit> notCurrentOwner(Object key, NodeId owner) {
-        return new DurableEntityError.NotCurrentOwner(String.valueOf(key), owner.id()).result();
+        return new EntityError.NotCurrentOwner(String.valueOf(key), owner.id()).result();
     }
 
     private static Result<Unit> ownershipNotYetCommitted(Object key, StreamPartition domain) {
-        return new DurableEntityError.OwnershipNotYetCommitted(String.valueOf(key), domain.stream(), domain.partition()).result();
+        return new EntityError.OwnershipNotYetCommitted(String.valueOf(key), domain.stream(), domain.partition()).result();
     }
 }

@@ -25,7 +25,7 @@ import org.pragmatica.lang.io.TimeSpan;
 ///
 /// The round runs ONLY at the committed owner, ONLY for `LINEARIZABLE` reads, at the serve point — no
 /// cost to [ReadConsistency#BOUNDED_STALE] reads. When no barrier is wired the `LINEARIZABLE` arm does
-/// NOT degrade to a local read: it rejects with [DurableEntityError.LinearizableUnavailable], because a
+/// NOT degrade to a local read: it rejects with [EntityError.LinearizableUnavailable], because a
 /// silently weaker read served under the stronger name is worse than a refusal (#345 I1 owner ruling).
 @FunctionalInterface
 public interface EntityLinearizableBarrier {
@@ -42,7 +42,7 @@ public interface EntityLinearizableBarrier {
     /// on one arc share a single round via the content-derived batch id; the applier ignores the key.
     ///
     /// Unlike the stream barrier this does NOT rename an expiry to a domain cause: every failure in this
-    /// module's vocabulary is keyed by an entity key ([DurableEntityError#key]), and a round is scoped to
+    /// module's vocabulary is keyed by an entity key ([EntityError#key]), and a round is scoped to
     /// an ARC, not a key. The expiry therefore reaches the caller as the transport-level timeout it is.
     static EntityLinearizableBarrier noOpRound(Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> applier,
                                                TimeSpan timeout) {

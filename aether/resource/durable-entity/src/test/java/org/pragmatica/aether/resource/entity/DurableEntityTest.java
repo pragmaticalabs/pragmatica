@@ -104,24 +104,24 @@ class DurableEntityTest {
 
             entity.create("a", 9)
                   .await(AWAIT)
-                  .onSuccess(state -> fail("expected KeyAlreadyExists, got " + state))
-                  .onFailure(cause -> assertThat(cause).isInstanceOf(DurableEntityError.KeyAlreadyExists.class));
+                  .onSuccess(state -> fail("expected EntityAlreadyExists, got " + state))
+                  .onFailure(cause -> assertThat(cause).isInstanceOf(EntityError.EntityAlreadyExists.class));
         }
 
         @Test
         void update_fails_whenKeyNotFound() {
             entity().update("absent", value -> value + 1)
                     .await(AWAIT)
-                    .onSuccess(state -> fail("expected KeyNotFound, got " + state))
-                    .onFailure(cause -> assertThat(cause).isInstanceOf(DurableEntityError.KeyNotFound.class));
+                    .onSuccess(state -> fail("expected EntityNotFound, got " + state))
+                    .onFailure(cause -> assertThat(cause).isInstanceOf(EntityError.EntityNotFound.class));
         }
 
         @Test
         void delete_fails_whenKeyNotFound() {
             entity().delete("absent")
                     .await(AWAIT)
-                    .onSuccess(state -> fail("expected KeyNotFound, got " + state))
-                    .onFailure(cause -> assertThat(cause).isInstanceOf(DurableEntityError.KeyNotFound.class));
+                    .onSuccess(state -> fail("expected EntityNotFound, got " + state))
+                    .onFailure(cause -> assertThat(cause).isInstanceOf(EntityError.EntityNotFound.class));
         }
     }
 
@@ -132,7 +132,7 @@ class DurableEntityTest {
             entity().scheduleTimer("a", Duration.ofSeconds(1), value -> value + 1)
                     .await(AWAIT)
                     .onSuccess(token -> fail("expected TimerNotSupported, got " + token))
-                    .onFailure(cause -> assertThat(cause).isInstanceOf(DurableEntityError.TimerNotSupported.class));
+                    .onFailure(cause -> assertThat(cause).isInstanceOf(EntityError.TimerNotSupported.class));
         }
 
         @Test
@@ -140,7 +140,7 @@ class DurableEntityTest {
             entity().cancelTimer("a", new DurableEntity.TimerToken("t1"))
                     .await(AWAIT)
                     .onSuccess(unit -> fail("expected TimerNotSupported, got " + unit))
-                    .onFailure(cause -> assertThat(cause).isInstanceOf(DurableEntityError.TimerNotSupported.class));
+                    .onFailure(cause -> assertThat(cause).isInstanceOf(EntityError.TimerNotSupported.class));
         }
     }
 

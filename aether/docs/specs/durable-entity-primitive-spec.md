@@ -2,7 +2,7 @@
 
 *The primitive for durable workflows & sagas.*
 
-**Version:** 0.4.0
+**Version:** 0.5.0
 **Status:** Draft — **decision-complete** (author-facing API pinned; all §14 sign-off items resolved). v0.4.0 reconciles §5.1/§5.3 with the shipped surface (#432): the error hierarchy is `DurableEntityError`, not `EntityCause`, and the pinned six-case set was incomplete — see §5.3. v0.3.0 closed S1/S2/S4/S5 (signals in v1 §6.6, retention defaults, C hidden, per-call read consistency §8.1). See changelog.
 **Date:** 2026-06-27 (updated 2026-08-13)
 **Author:** design-stream
@@ -235,7 +235,7 @@ correct trade-off stated explicitly: single-writer = serialized = bounded throug
  * S — state type (immutable value: record or sealed interface)
  */
 public interface DurableEntity<K, S> {
-    /** Create a new entity; fails with KeyAlreadyExists if the key is taken. */
+    /** Create a new entity; fails with EntityAlreadyExists if the key is taken. */
     Promise<S>           create(K key, S initial);
 
     /** Owner-routed read of committed state at the default consistency. Returns Option.none() if absent. */
@@ -335,27 +335,27 @@ old names would still have left those cases unpinned, so the spec yields to the 
 
 ```java
 /** Sealed Cause hierarchy for DurableEntity operations. */
-public sealed interface DurableEntityError extends Cause {
+public sealed interface EntityError extends Cause {
     /** create() called for a key that already exists. */
-    record KeyAlreadyExists(String key) implements DurableEntityError { ... }
+    record EntityAlreadyExists(String key) implements EntityError { ... }
     /** get()/update()/delete() called for a key that does not exist. */
-    record KeyNotFound(String key) implements DurableEntityError { ... }
+    record EntityNotFound(String key) implements EntityError { ... }
     /** Timer not found (cancelled, fired, or wrong token). */
-    record TimerNotFound(String key) implements DurableEntityError { ... }
+    record TimerNotFound(String key, TimerToken token) implements EntityError { ... }
     /** Durable timers are not implemented yet (#351) — hard failure, never a silent no-op. */
-    record TimerNotSupported(String key) implements DurableEntityError { ... }
+    record TimerNotSupported(String key) implements EntityError { ... }
     /** Fenced write rejected: the presented owner epoch is stale. Transient — re-resolve and retry. */
-    record StaleOwner(String key, String presentedEpoch) implements DurableEntityError { ... }
+    record StaleOwnerEpoch(String key, String presentedEpoch) implements EntityError { ... }
     /** The durable substrate failed the operation; carries the underlying cause. */
-    record StorageFailed(String key, Cause cause) implements DurableEntityError { ... }
+    record StorageFailed(String key, Cause cause) implements EntityError { ... }
     /** This node is not the committed owner of the key's partition. STABLE — ask the named owner. */
-    record NotCurrentOwner(String key, String committedOwner) implements DurableEntityError { ... }
+    record NotCurrentOwner(String key, String committedOwner) implements EntityError { ... }
     /** Ownership for the key's partition has not been committed yet. TRANSIENT — retry here. */
-    record OwnershipNotYetCommitted(String key, String keyspace, int partition) implements DurableEntityError { ... }
+    record OwnershipNotYetCommitted(String key, String keyspace, int partition) implements EntityError { ... }
     /** A LINEARIZABLE read presented an epoch below the high water mark. */
-    record StaleEpochRead(String key, String presentedEpoch, String highWaterEpoch) implements DurableEntityError { ... }
+    record StaleEpochRead(String key, String presentedEpoch, String highWaterEpoch) implements EntityError { ... }
     /** LINEARIZABLE was requested but the barrier is unavailable — never silently degraded to a weaker read. */
-    record LinearizableUnavailable(String key) implements DurableEntityError { ... }
+    record LinearizableUnavailable(String key) implements EntityError { ... }
 }
 ```
 
@@ -871,10 +871,10 @@ read-linearization = "no-op-round"   # "no-op-round" (default) | "lease"
   `LinearizableEntityServe` re-runs the same owner-side pipeline (committed-owner routing → no-op
   round → post-round epoch fence) over the SHARED `StreamPartitionOwnershipValue` ownership substrate
   (`CommittedPartitionOwnerSource` / `OwnershipEpochHighWater` / `EntityPartitionArc`), entity-shaped
-  and rejecting with typed `DurableEntityError` causes. A read reaching a non-owner is rejected
-  `DurableEntityError.NotCurrentOwner` (owner-forwarding an entity read cross-node needs transport
+  and rejecting with typed `EntityError` causes. A read reaching a non-owner is rejected
+  `EntityError.NotCurrentOwner` (owner-forwarding an entity read cross-node needs transport
   that does not exist yet — a follow-up); a deposed owner is rejected
-  `DurableEntityError.StaleEpochRead`; and the un-wired in-memory cut (production cluster wiring is
+  `EntityError.StaleEpochRead`; and the un-wired in-memory cut (production cluster wiring is
   #277) degrades a LINEARIZABLE read to the local read, which on a single owner already reflects every
   acknowledged write.
 - **`lease`** — **FUTURE (rejected at config parse until validated).** The owner serves LINEARIZABLE
@@ -1018,6 +1018,33 @@ gate is the guard-rail. Fixes #382 (javadoc overclaim) via the honest per-level 
 - **Per-partition fenced leader:** Restate first-principles (Bifrost, epoch fencing) — https://www.restate.dev/blog/building-a-modern-durable-execution-engine-from-first-principles · CockroachDB range leases — https://www.cockroachlabs.com/docs/stable/architecture/replication-layer · Spanner — https://cloud.google.com/spanner/docs/whitepapers
 - **Durable-execution model (no-replay vs replay):** Vanlightly, demystifying determinism — https://jack-vanlightly.com/blog/2025/11/24/demystifying-determinism-in-durable-execution · DBOS architecture — https://docs.dbos.dev/architecture
 - **Internal:** #345 (fence epic), #349 (durability epic), #190 (superseded workflow draft), #265/#261 (streaming substrate), `StateMachineDefinition`, `EpochBearing`, `KVStore`.
+
+---
+
+## Changelog — v0.5.0 (2026-08-14)
+
+**Error surface renamed to entity-centric names; spec and code now agree (#432 closed).**
+
+v0.4.0 closed the divergence by amending the spec to the shipped names. The owner's call was to close
+it the other way where the shipped names were the weaker ones, so the CODE moved instead:
+
+| Was (shipped) | Now | Why |
+|---|---|---|
+| `DurableEntityError` | `EntityError` | symmetric with the sibling `StreamError`; `DurableEntityProvisioningError` → `EntityProvisioningError` with it |
+| `KeyNotFound` | `EntityNotFound` | **three** distinct `KeyNotFound` types existed — JWKS keys (`SecurityError`), config keys (`ConfigError`), entity keys. Same name, three meanings |
+| `KeyAlreadyExists` | `EntityAlreadyExists` | the thing that exists is an entity, not a key |
+| `StaleOwner` | `StaleOwnerEpoch` | the epoch is what is stale, not the owner |
+| `TimerNotFound(key)` | `TimerNotFound(key, TimerToken)` | a caller holding several timers cannot act on "a timer was not found" |
+
+**Deliberately NOT renamed:** `NotCurrentOwner`, `StaleEpochRead`, `OwnershipNotYetCommitted`,
+`LinearizableUnavailable`, `StorageFailed`, `TimerNotSupported`. The line drawn: the same name for the
+same CONCEPT across subsystems is a feature — `StreamError.NotCurrentOwner` and
+`EntityError.NotCurrentOwner` mean exactly the same thing about a partition owner. The same name for
+DIFFERENT concepts is the defect, which is what `KeyNotFound` was.
+
+Note the record's simple name is the wire value (`cause.getClass().getSimpleName()` in the fixture
+slice), so the rename changed strings asserted by `DurableEntityForgeTest` and the `02w-entity-crash`
+integration suite; both were updated with it.
 
 ---
 

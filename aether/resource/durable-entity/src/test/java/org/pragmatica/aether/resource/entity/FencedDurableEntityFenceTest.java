@@ -37,7 +37,7 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 ///
 ///   - a write stamped at the CURRENT committed owner epoch COMMITS and reads back;
 ///   - after a new owner takes over (the high-water advances), the now-DEPOSED owner's update is
-///     REJECTED with [DurableEntityError.StaleOwner] — the split-brain guarantee of spec §6.
+///     REJECTED with [EntityError.StaleOwnerEpoch] — the split-brain guarantee of spec §6.
 ///
 /// This is the single-JVM gate the plan reserves for the fence work; it needs no cluster because the
 /// engine enforces the fence at its own commit point (enforce-at-replica).
@@ -154,7 +154,7 @@ class FencedDurableEntityFenceTest {
             entity.update("o-1", value -> value + 5)
                   .await(AWAIT)
                   .onSuccess(state -> fail("Deposed owner's update must be rejected, got " + state))
-                  .onFailure(cause -> assertThat(cause).isInstanceOf(DurableEntityError.StaleOwner.class));
+                  .onFailure(cause -> assertThat(cause).isInstanceOf(EntityError.StaleOwnerEpoch.class));
         }
 
         @Test
@@ -165,7 +165,7 @@ class FencedDurableEntityFenceTest {
             entity.create("o-2", 1)
                   .await(AWAIT)
                   .onSuccess(state -> fail("Deposed owner's create must be rejected, got " + state))
-                  .onFailure(cause -> assertThat(cause).isInstanceOf(DurableEntityError.StaleOwner.class));
+                  .onFailure(cause -> assertThat(cause).isInstanceOf(EntityError.StaleOwnerEpoch.class));
         }
 
         @Test

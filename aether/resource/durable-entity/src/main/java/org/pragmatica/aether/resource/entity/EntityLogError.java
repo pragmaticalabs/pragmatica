@@ -7,8 +7,8 @@ package org.pragmatica.aether.resource.entity;
 import org.pragmatica.lang.Cause;
 
 
-/// Failures of the entity's durable log substrate (#345 I3) — distinct from [DurableEntityError], which
-/// is scoped to a caller's operation on a key, and from [DurableEntityProvisioningError], which
+/// Failures of the entity's durable log substrate (#345 I3) — distinct from [EntityError], which
+/// is scoped to a caller's operation on a key, and from [EntityProvisioningError], which
 /// describes a resource that never came into existence. These describe the LOG under a working entity.
 public sealed interface EntityLogError extends Cause {
     /// A log record could not be parsed. Reaching this means the bytes at an offset are not what this
@@ -39,7 +39,7 @@ public sealed interface EntityLogError extends Cause {
     ///
     /// This is the write fence firing, and it exists in this vocabulary so the entity module can
     /// recognise it without depending on the stream module's error types. The entity translates it to
-    /// [DurableEntityError.StaleOwner], which is the cause callers have always seen for this case and
+    /// [EntityError.StaleOwnerEpoch], which is the cause callers have always seen for this case and
     /// which must not change just because the fence moved from the storage engine to the log.
     record StaleOwnerAppend(String keyspace, int partition, String detail) implements EntityLogError {
         @Override

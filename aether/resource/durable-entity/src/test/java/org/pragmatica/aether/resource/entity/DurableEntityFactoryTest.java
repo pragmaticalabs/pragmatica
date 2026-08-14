@@ -327,7 +327,7 @@ class DurableEntityFactoryTest {
     /// asserted over [Cause#stream] — uniform for a composite and for a single cause — rather than by
     /// matching the outer instance, which for a composite would be the wrapper, not the domain refusal.
     private static void assertFenceUnavailable(Cause cause) {
-        assertThat(cause.stream()).hasAtLeastOneElementOfType(DurableEntityProvisioningError.FenceUnavailable.class);
+        assertThat(cause.stream()).hasAtLeastOneElementOfType(EntityProvisioningError.FenceUnavailable.class);
     }
 
     private static void failUnfenced(Object entity) {

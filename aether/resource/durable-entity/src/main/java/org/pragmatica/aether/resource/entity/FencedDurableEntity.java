@@ -30,7 +30,7 @@ import org.pragmatica.serialization.Serializer;
 ///
 ///   - **Fenced single-writer correctness.** Commits go through [StorageEngine#putVersioned] with the
 ///     owner epoch; a stale-owner stamp is rejected with [DHTError.StaleEpochWrite], surfaced here as
-///     [DurableEntityError.StaleOwner]. This is the split-brain guarantee spec §6 requires.
+///     [EntityError.StaleOwnerEpoch]. This is the split-brain guarantee spec §6 requires.
 ///   - **Per-key serialization.** Same-key operations are totally ordered via the same lock-free
 ///     tail-chaining idiom as [InMemoryDurableEntity]; different keys proceed in parallel.
 ///   - **HA, not restart-durable.** The engine is the in-memory `MemoryStorageEngine`; restart
@@ -101,12 +101,12 @@ final class FencedDurableEntity<K, S> implements DurableEntity<K, S> {
 
     @Override
     public Promise<TimerToken> scheduleTimer(K key, Duration delay, Fn1<S, S> onFire) {
-        return new DurableEntityError.TimerNotSupported(String.valueOf(key)).promise();
+        return new EntityError.TimerNotSupported(String.valueOf(key)).promise();
     }
 
     @Override
     public Promise<Unit> cancelTimer(K key, TimerToken token) {
-        return new DurableEntityError.TimerNotSupported(String.valueOf(key)).promise();
+        return new EntityError.TimerNotSupported(String.valueOf(key)).promise();
     }
 
     private Promise<S> doCreate(K key, S initial) {
@@ -135,8 +135,8 @@ final class FencedDurableEntity<K, S> implements DurableEntity<K, S> {
 
     /// Encode `next` and commit it under the owner-epoch fence, returning `next` on success. A stale
     /// owner stamp is rejected by [StorageEngine#putVersioned] with [DHTError.StaleEpochWrite] and
-    /// translated to [DurableEntityError.StaleOwner]; any other backing failure becomes
-    /// [DurableEntityError.StorageFailed].
+    /// translated to [EntityError.StaleOwnerEpoch]; any other backing failure becomes
+    /// [EntityError.StorageFailed].
     private Promise<S> commit(K key, S next) {
         return storage.putVersioned(dhtKey(key),
                                     serializer.encode(next),
@@ -155,7 +155,7 @@ final class FencedDurableEntity<K, S> implements DurableEntity<K, S> {
 
     private Cause translateCommitFailure(K key, Cause cause) {
         return cause instanceof DHTError.StaleEpochWrite stale
-               ? new DurableEntityError.StaleOwner(String.valueOf(key), epochText(stale))
+               ? new EntityError.StaleOwnerEpoch(String.valueOf(key), epochText(stale))
                : storageFailed(key, cause);
     }
 
@@ -163,8 +163,8 @@ final class FencedDurableEntity<K, S> implements DurableEntity<K, S> {
         return stale.epochTerm() + ":" + stale.epochCounter();
     }
 
-    private DurableEntityError storageFailed(K key, Cause cause) {
-        return new DurableEntityError.StorageFailed(String.valueOf(key), cause);
+    private EntityError storageFailed(K key, Cause cause) {
+        return new EntityError.StorageFailed(String.valueOf(key), cause);
     }
 
     @SuppressWarnings("unchecked")
@@ -177,10 +177,10 @@ final class FencedDurableEntity<K, S> implements DurableEntity<K, S> {
     }
 
     private static <S> Promise<S> keyAlreadyExists(Object key) {
-        return new DurableEntityError.KeyAlreadyExists(String.valueOf(key)).promise();
+        return new EntityError.EntityAlreadyExists(String.valueOf(key)).promise();
     }
 
     private static <S> Promise<S> keyNotFound(Object key) {
-        return new DurableEntityError.KeyNotFound(String.valueOf(key)).promise();
+        return new EntityError.EntityNotFound(String.valueOf(key)).promise();
     }
 }

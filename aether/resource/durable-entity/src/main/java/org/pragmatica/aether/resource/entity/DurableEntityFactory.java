@@ -57,8 +57,8 @@ public final class DurableEntityFactory implements ResourceFactory<DurableEntity
 
     @Override
     public Promise<DurableEntity> provision(DurableEntityConfig config) {
-        return new DurableEntityProvisioningError.FenceUnavailable(config.keyspace(),
-                                                                   "a ProvisioningContext carrying the node's fence extensions").promise();
+        return new EntityProvisioningError.FenceUnavailable(config.keyspace(),
+                                                            "a ProvisioningContext carrying the node's fence extensions").promise();
     }
 
     @Override
@@ -84,8 +84,8 @@ public final class DurableEntityFactory implements ResourceFactory<DurableEntity
     /// context's generic "does not contain" cause to the domain refusal an operator can act on.
     private static <T> Result<T> required(ProvisioningContext context, Class<T> type, DurableEntityConfig config) {
         return context.extension(type)
-                      .mapError(_ -> new DurableEntityProvisioningError.FenceUnavailable(config.keyspace(),
-                                                                                         type.getSimpleName()));
+                      .mapError(_ -> new EntityProvisioningError.FenceUnavailable(config.keyspace(),
+                                                                                  type.getSimpleName()));
     }
 
     /// The fenced entity: one [EntityPartitionArc] shared by the write fence and the linearizable read
@@ -115,8 +115,8 @@ public final class DurableEntityFactory implements ResourceFactory<DurableEntity
                                config.partitionCount(),
                                config.replicationFactor(),
                                config.minSyncReplicas())
-                    .mapError(cause -> new DurableEntityProvisioningError.LogUnavailable(config.keyspace(),
-                                                                                         cause))
+                    .mapError(cause -> new EntityProvisioningError.LogUnavailable(config.keyspace(),
+                                                                                  cause))
                     .map(_ -> buildEntity(config, context, fence));
     }
 

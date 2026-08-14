@@ -123,12 +123,12 @@ final class InMemoryDurableEntity<K, S> implements DurableEntity<K, S> {
 
     @Override
     public Promise<TimerToken> scheduleTimer(K key, Duration delay, Fn1<S, S> onFire) {
-        return new DurableEntityError.TimerNotSupported(String.valueOf(key)).promise();
+        return new EntityError.TimerNotSupported(String.valueOf(key)).promise();
     }
 
     @Override
     public Promise<Unit> cancelTimer(K key, TimerToken token) {
-        return new DurableEntityError.TimerNotSupported(String.valueOf(key)).promise();
+        return new EntityError.TimerNotSupported(String.valueOf(key)).promise();
     }
 
     private Promise<S> doCreate(K key, S initial) {
@@ -161,10 +161,10 @@ final class InMemoryDurableEntity<K, S> implements DurableEntity<K, S> {
     }
 
     private static <S> Promise<S> keyAlreadyExists(Object key) {
-        return new DurableEntityError.KeyAlreadyExists(String.valueOf(key)).promise();
+        return new EntityError.EntityAlreadyExists(String.valueOf(key)).promise();
     }
 
     private static <S> Promise<S> keyNotFound(Object key) {
-        return new DurableEntityError.KeyNotFound(String.valueOf(key)).promise();
+        return new EntityError.EntityNotFound(String.valueOf(key)).promise();
     }
 }

@@ -78,7 +78,7 @@ class EntityLinearizableReadTest {
                     .get(KEY, ReadConsistency.LINEARIZABLE)
                     .await(AWAIT)
                     .onSuccess(state -> fail("expected NotCurrentOwner, got " + state))
-                    .onFailure(cause -> assertThat(cause).isInstanceOf(DurableEntityError.NotCurrentOwner.class));
+                    .onFailure(cause -> assertThat(cause).isInstanceOf(EntityError.NotCurrentOwner.class));
         }
 
         /// No committed record (legacy / unowned arc): LINEARIZABLE degrades to the local read. This
@@ -107,7 +107,7 @@ class EntityLinearizableReadTest {
                     .get(KEY, ReadConsistency.LINEARIZABLE)
                     .await(AWAIT)
                     .onSuccess(state -> fail("expected LinearizableUnavailable, got " + state))
-                    .onFailure(cause -> assertThat(cause).isInstanceOf(DurableEntityError.LinearizableUnavailable.class));
+                    .onFailure(cause -> assertThat(cause).isInstanceOf(EntityError.LinearizableUnavailable.class));
         }
 
         /// The refusal is per-READ, not per-resource: the SAME entity still serves BOUNDED_STALE.
@@ -130,7 +130,7 @@ class EntityLinearizableReadTest {
                     .get(KEY, ReadConsistency.LINEARIZABLE)
                     .await(AWAIT)
                     .onSuccess(state -> fail("expected StaleEpochRead, got " + state))
-                    .onFailure(cause -> assertThat(cause).isInstanceOf(DurableEntityError.StaleEpochRead.class));
+                    .onFailure(cause -> assertThat(cause).isInstanceOf(EntityError.StaleEpochRead.class));
         }
     }
 
@@ -146,7 +146,7 @@ class EntityLinearizableReadTest {
                     .get(KEY, ReadConsistency.LINEARIZABLE)
                     .await(AWAIT)
                     .onSuccess(state -> fail("expected StaleEpochRead, got " + state))
-                    .onFailure(cause -> assertThat(cause).isInstanceOf(DurableEntityError.StaleEpochRead.class));
+                    .onFailure(cause -> assertThat(cause).isInstanceOf(EntityError.StaleEpochRead.class));
         }
 
         /// Equal committed epoch is NOT stale — a genuinely-current owner is never spuriously fenced.
@@ -177,7 +177,7 @@ class EntityLinearizableReadTest {
                     .get(KEY, ReadConsistency.LINEARIZABLE)
                     .await(AWAIT)
                     .onSuccess(state -> fail("expected StaleEpochRead after the round observed the deposal, got " + state))
-                    .onFailure(cause -> assertThat(cause).isInstanceOf(DurableEntityError.StaleEpochRead.class));
+                    .onFailure(cause -> assertThat(cause).isInstanceOf(EntityError.StaleEpochRead.class));
         }
 
         /// Control: an owner still current after the round serves — the round is not a blanket reject, and

@@ -39,7 +39,7 @@ import static org.junit.jupiter.api.Assertions.fail;
 ///
 /// The ENFORCEMENT POINT moved; the GUARANTEE did not, and neither did the cause a caller sees. So this
 /// test still pins exactly the properties the storage-engine version pinned — a deposed owner rejected
-/// with [DurableEntityError.StaleOwner], the current owner accepted, and the fence proven per-partition
+/// with [EntityError.StaleOwnerEpoch], the current owner accepted, and the fence proven per-partition
 /// rather than coarse — but against the log, which is where writes now land.
 ///
 /// ## The non-negotiable acceptance (the gap the coarse fence misses)
@@ -89,7 +89,7 @@ class PartitionFencedDurableEntityFenceTest {
     class DeposedPartitionOwnerSameGeneration {
         /// The write fence firing. The key's partition reshuffled to a new owner — its high-water advanced
         /// while this node's epoch did not — so the append is refused and surfaces as the SAME
-        /// [DurableEntityError.StaleOwner] callers saw before the fence moved.
+        /// [EntityError.StaleOwnerEpoch] callers saw before the fence moved.
         @Test
         void update_rejectedWithStaleOwner_afterSameGenerationReshuffle() {
             var entity = unwiredEntity();
@@ -254,7 +254,7 @@ class PartitionFencedDurableEntityFenceTest {
             entityAs(SELF, CommittedPartitionOwnerSource.none()).create("k1", 1)
                                                                 .await()
                                                                 .onSuccess(_ -> fail("an unowned arc must not accept a write"))
-                                                                .onFailure(cause -> assertThat(cause.stream()).hasAtLeastOneElementOfType(DurableEntityError.OwnershipNotYetCommitted.class));
+                                                                .onFailure(cause -> assertThat(cause.stream()).hasAtLeastOneElementOfType(EntityError.OwnershipNotYetCommitted.class));
         }
 
         /// The transient refusal stays distinguishable from the stable one, so a caller can tell "retry
@@ -263,11 +263,11 @@ class PartitionFencedDurableEntityFenceTest {
         void create_distinguishesTransientFromStableRefusal() {
             entityAs(SELF, CommittedPartitionOwnerSource.none()).create("k1", 1)
                                                                 .await()
-                                                                .onFailure(cause -> assertThat(cause).isNotInstanceOf(DurableEntityError.NotCurrentOwner.class));
+                                                                .onFailure(cause -> assertThat(cause).isNotInstanceOf(EntityError.NotCurrentOwner.class));
 
             wiredEntity(OTHER).create("k2", 1)
                               .await()
-                              .onFailure(cause -> assertThat(cause).isNotInstanceOf(DurableEntityError.OwnershipNotYetCommitted.class));
+                              .onFailure(cause -> assertThat(cause).isNotInstanceOf(EntityError.OwnershipNotYetCommitted.class));
         }
 
         /// Reads are deliberately NOT admitted: a BOUNDED_STALE read promises only this node's committed
@@ -317,7 +317,7 @@ class PartitionFencedDurableEntityFenceTest {
             entity.get("k1", ReadConsistency.LINEARIZABLE)
                   .await()
                   .onSuccess(state -> fail("expected LinearizableUnavailable, got " + state))
-                  .onFailure(cause -> assertThat(cause.stream()).hasAtLeastOneElementOfType(DurableEntityError.LinearizableUnavailable.class));
+                  .onFailure(cause -> assertThat(cause.stream()).hasAtLeastOneElementOfType(EntityError.LinearizableUnavailable.class));
         }
 
         /// ...and BOUNDED_STALE on that same entity keeps working — the refusal is per-read, not
@@ -382,11 +382,11 @@ class PartitionFencedDurableEntityFenceTest {
     }
 
     private static void assertNotCurrentOwner(Cause cause) {
-        assertThat(cause.stream()).hasAtLeastOneElementOfType(DurableEntityError.NotCurrentOwner.class);
+        assertThat(cause.stream()).hasAtLeastOneElementOfType(EntityError.NotCurrentOwner.class);
     }
 
     private static void assertStaleOwner(Cause cause) {
-        assertThat(cause.stream()).hasAtLeastOneElementOfType(DurableEntityError.StaleOwner.class);
+        assertThat(cause.stream()).hasAtLeastOneElementOfType(EntityError.StaleOwnerEpoch.class);
     }
 
     private static void failCause(Cause cause) {

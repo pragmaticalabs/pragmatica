@@ -78,7 +78,7 @@ import org.pragmatica.lang.Unit;
 public interface DurableEntity<K, S> {
     /// Create a new entity instance for `key` with `initial` state.
     ///
-    /// Fails with [DurableEntityError.KeyAlreadyExists] if the key already holds state. The create
+    /// Fails with [EntityError.EntityAlreadyExists] if the key already holds state. The create
     /// is applied inside the per-key serialization, so concurrent creates on the same key are
     /// totally ordered and exactly one wins.
     ///
@@ -125,7 +125,7 @@ public interface DurableEntity<K, S> {
     /// The mutator runs **on the owner, inside the per-key serialization** (spec §4.3): same-key
     /// updates are totally ordered, so the read-modify-write is race-free without locks. The
     /// mutator must be a pure `S → S` with no IO; side effects belong to the caller consuming the
-    /// returned state (spec §10). Fails with [DurableEntityError.KeyNotFound] if the key holds no
+    /// returned state (spec §10). Fails with [EntityError.EntityNotFound] if the key holds no
     /// state.
     ///
     /// @param key     entity key
@@ -137,7 +137,7 @@ public interface DurableEntity<K, S> {
     /// Schedule a one-shot timer that applies `onFire` to the entity state after `delay`.
     ///
     /// Durable per-entity timers are owned by a later slice (spec §4.5, plan Phase 2c). The HA-only
-    /// in-memory cut declines this with [DurableEntityError.TimerNotSupported]; the signature is
+    /// in-memory cut declines this with [EntityError.TimerNotSupported]; the signature is
     /// declared here to keep the API faithful to spec §5.
     ///
     /// @param key    entity key
@@ -150,7 +150,7 @@ public interface DurableEntity<K, S> {
     /// Cancel a previously scheduled timer.
     ///
     /// Durable per-entity timers are owned by a later slice (spec §4.5, plan Phase 2c). The HA-only
-    /// in-memory cut declines this with [DurableEntityError.TimerNotSupported]; the signature is
+    /// in-memory cut declines this with [EntityError.TimerNotSupported]; the signature is
     /// declared here to keep the API faithful to spec §5.
     ///
     /// @param key   entity key
@@ -161,7 +161,7 @@ public interface DurableEntity<K, S> {
 
     /// Delete the entity instance for `key`.
     ///
-    /// Applied inside the per-key serialization. Fails with [DurableEntityError.KeyNotFound] if the
+    /// Applied inside the per-key serialization. Fails with [EntityError.EntityNotFound] if the
     /// key holds no state.
     ///
     /// @param key entity key
