@@ -138,9 +138,19 @@ publish_marker() {
 
     # The pin may have just been killed — re-pick ONCE and retry, so the sticky choice survives a
     # crash without becoming a rotation.
+    #
+    # The retry does NOT suppress stderr: `_api_call` logs status + the first 300 bytes of any error
+    # body there, and that is the only account of WHY a publish failed. Suppressing both attempts
+    # (as the first version of this did) left "39 of 40 ACKED" with nothing to explain the missing
+    # one — the same silent-stderr trap this suite's siblings were fixed for.
     pick_publish_endpoint || return 1
-    body=$(_api_call POST "${STREAM_PUBLISH_ENDPOINT}/api/stream-mp/publish" "$payload" 2>/dev/null)
-    printf '%s' "$body" | grep -q '"status"[[:space:]]*:[[:space:]]*"published"'
+    body=$(_api_call POST "${STREAM_PUBLISH_ENDPOINT}/api/stream-mp/publish" "$payload")
+    if printf '%s' "$body" | grep -q '"status"[[:space:]]*:[[:space:]]*"published"'; then
+        return 0
+    fi
+
+    log_warn "publish ${idx}: not ACKED after re-pick; last body: $(printf '%s' "$body" | head -c 200)" >&2
+    return 1
 }
 
 # Publish [start .. start+count-1], appending ACKED indices to $outfile.
