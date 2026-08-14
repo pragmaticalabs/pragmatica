@@ -73,9 +73,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   unrecoverable. `max_nodes` is opt-in and absent by default, so the default path is the broken one.
   Distinct from #509, which is deficit-fill firing too EAGERLY; this is it never firing successfully.
   `[verified: aether/environment-integration/.../AutoHealConfigStaticInitTest — 5/5, module 59/0; the
-  null was proven directly against the shipped jar before the fix, and the broken behaviour was
-  reproduced live on a 5-node cluster]` `[design intent — unverified: that a replacement is now
-  actually provisioned end-to-end on a live cluster]`
+  null was proven directly against the shipped jar before the fix, and both the broken and the fixed
+  behaviour were reproduced live on a 5-node remote Docker cluster — killing a non-leader now yields a
+  replacement container (`aether-b-node-01kzytd81s…`) at t=41s and the cluster returns to NO_DEFICIT,
+  where the same kill previously sat at deficit=1 indefinitely]`
 - **Entity state could be deleted by stream retention — #345 I3.** `RetentionEnforcer` is built once per
   node with a single age policy and never reads per-stream config, so an entity's sealed segments would
   have been deleted a fixed interval after its last write, silently destroying the state of any key not
