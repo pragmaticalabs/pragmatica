@@ -65,14 +65,82 @@ marker_for() {
     printf '%s-%05d-Z' "$MARKER_PREFIX" "$1"
 }
 
+# Per-node app endpoints (see `node_app_endpoints` in lib/cluster.sh).
+#
+# This suite used to drive `app_post`, i.e. the single pinned APP_ENDPOINT. In a full run 02y comes
+# straight after 02-chaos, which KILLS nodes — so the pin routinely points at a dead port. Measured
+# 2026-08-14: 0 of 40 publishes ACKED against a cluster that was completely healthy (5 members,
+# NORMAL, leader elected, and the stream's own deploy gate passed 4s earlier). Every assertion
+# downstream then failed for want of data, reading as a stream-durability defect.
+#
+# Transport only — no assertion changed. Reads are additionally safe to rotate because replicated
+# streams forward to the owner (`ForwardingReadRouter`), so any node can serve a partition read.
+STREAM_APP_ENDPOINTS=""
+
+refresh_stream_endpoints() {
+    STREAM_APP_ENDPOINTS="$(node_app_endpoints || printf '')"
+    [ -n "$STREAM_APP_ENDPOINTS" ]
+}
+
+# POST to each node until `matcher` matches; echoes the matching body. Re-resolves once between
+# passes so a kill landing mid-sweep does not strand the suite on stale endpoints.
+stream_post_any() {
+    local path="$1" payload="$2" matcher="$3" pass ep body last=""
+
+    [ -n "$STREAM_APP_ENDPOINTS" ] || refresh_stream_endpoints || return 1
+
+    for pass in 1 2; do
+        while IFS= read -r ep; do
+            [ -z "$ep" ] && continue
+            body=$(_api_call POST "${ep}${path}" "$payload" 2>/dev/null) || continue
+            if printf '%s' "$body" | grep -qE "$matcher"; then
+                printf '%s' "$body"
+                return 0
+            fi
+            last="$body"
+        done <<< "$STREAM_APP_ENDPOINTS"
+        [ "$pass" -eq 1 ] && refresh_stream_endpoints >/dev/null 2>&1
+    done
+
+    [ -n "$last" ] && printf '%s' "$last"
+    return 1
+}
+
 # Publish one marker through the app-HTTP route. Returns 0 only when the publish
 # ACKED (HTTP success AND status=published) — that ack is the durability claim we
 # later hold the system to, so it must not be inferred loosely.
+#
+# STICKY endpoint, deliberately NOT rotated. A keyless publish round-robins across the four
+# partitions from the publisher instance's own counter, so driving every publish through ONE port is
+# what spreads events deterministically over all partitions (see `StreamSlice`'s header). Rotating
+# would give each node an independent counter and quietly undermine the "events spread across
+# partitions" and per-partition contiguity assertions this suite exists to make.
+#
+# The fix is therefore to keep ONE endpoint but ensure it is a LIVE one: re-pick only when the
+# current pin stops answering, which is what the old `app_post` pin could not do.
+STREAM_PUBLISH_ENDPOINT=""
+
+pick_publish_endpoint() {
+    STREAM_PUBLISH_ENDPOINT="$(node_app_endpoints 2>/dev/null | head -1)"
+    [ -n "$STREAM_PUBLISH_ENDPOINT" ]
+}
+
 publish_marker() {
-    local idx="$1" body
-    body=$(app_post "/api/stream-mp/publish" "{\"payload\":\"$(marker_for "$idx")\"}" 2>/dev/null) || return 1
-    printf '%s' "$body" | grep -q '"status"[[:space:]]*:[[:space:]]*"published"' || return 1
-    return 0
+    local idx="$1" body payload
+    payload="{\"payload\":\"$(marker_for "$idx")\"}"
+
+    [ -n "$STREAM_PUBLISH_ENDPOINT" ] || pick_publish_endpoint || return 1
+
+    body=$(_api_call POST "${STREAM_PUBLISH_ENDPOINT}/api/stream-mp/publish" "$payload" 2>/dev/null)
+    if printf '%s' "$body" | grep -q '"status"[[:space:]]*:[[:space:]]*"published"'; then
+        return 0
+    fi
+
+    # The pin may have just been killed — re-pick ONCE and retry, so the sticky choice survives a
+    # crash without becoming a rotation.
+    pick_publish_endpoint || return 1
+    body=$(_api_call POST "${STREAM_PUBLISH_ENDPOINT}/api/stream-mp/publish" "$payload" 2>/dev/null)
+    printf '%s' "$body" | grep -q '"status"[[:space:]]*:[[:space:]]*"published"'
 }
 
 # Publish [start .. start+count-1], appending ACKED indices to $outfile.
@@ -92,8 +160,11 @@ publish_range_recording_acks() {
 # turn a durability failure into a read-window artifact.
 read_partition_raw() {
     local partition="$1"
-    app_post "/api/stream-mp/read" \
-        "{\"partition\":${partition},\"fromOffset\":0,\"maxEvents\":100000}" 2>/dev/null || printf ''
+    # `"events"` rather than a success flag: an empty partition legitimately returns an empty list,
+    # and treating that as "no node answered" would rotate past the node that told the truth.
+    stream_post_any "/api/stream-mp/read" \
+        "{\"partition\":${partition},\"fromOffset\":0,\"maxEvents\":100000}" \
+        '"events"' || printf ''
 }
 
 # Emit "offset payload" per event of a partition, in response order.
