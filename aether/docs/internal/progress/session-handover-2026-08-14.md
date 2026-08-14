@@ -1,6 +1,6 @@
 # Session handover — 2026-08-14: auto-heal had been dead for two days, and the 02w gate finally landed
 
-**Branch:** `release-1.0.0-rc3` · **HEAD:** `e0e023828` · **NOT pushed** (21 commits) · **tree clean**
+**Branch:** `release-1.0.0-rc3` · **PUSHED** · superseded by `session-handover-2026-08-14-part2.md` (owner decisions, the #432 rename, and the codec tag space)
 
 Follows `session-handover-2026-08-13-part2.md`, which handed over an uncommitted checkpoint-observability
 QUAD, an unproven `02w-entity-crash` suite, and two unexplained observations. All three are resolved.
