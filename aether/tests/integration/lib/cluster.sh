@@ -1226,6 +1226,57 @@ first_seed_host_app_port() {
     return 1
 }
 
+# Every RUNNING cluster-node container's host-mapped APP endpoint, one per line.
+#
+# Why this exists: `APP_ENDPOINT` is a single pinned host:port (the nginx LB, or one node).
+# The LB PINS — measured 2026-08-13, all 42 failure bodies from one suite carried the SAME slice
+# `"instance"` id — and a pinned NODE is simply dead once a chaos suite kills it. Both shapes
+# produce the same signature: a healthy cluster that the harness cannot reach, reported as a
+# product failure. `02y-stream-crash` published 0/40 events and `02w-entity-crash` never saw its
+# slice answer, both against clusters that were fine.
+#
+# Enumerated DYNAMICALLY rather than derived as `<prefix><1..N>`: CTM-provisioned replacements are
+# ULID-named (`aether-b-node-01KZZ…`) and DO publish an app port — on an ephemeral high port
+# (36647) rather than the compose-fixed 8080..8084 range, which is why a name-pattern sweep misses
+# exactly the nodes a chaos suite just created. If those own the partitions under test, every
+# request is refused and no reachable endpoint can serve it.
+#
+# Newline-separated stdout rather than a global array: bash 3.2 (macOS) errors on `"${arr[@]}"`
+# for an EMPTY array under `set -u`, so a string keeps callers free of that trap.
+# Returns non-zero and prints nothing when no endpoint resolves.
+node_app_endpoints() {
+    local inport="${APP_PORT:-8070}"
+    [ "${CLOUD_MODE:-false}" = "true" ] && return 1
+
+    local prefix="${CLUSTER_NAME:-aether-${CLUSTER_ID:-b}-node-}"
+    local names name hp out="" saved_ifs
+
+    names=$(remote_exec "docker ps --filter name='${prefix}' --filter status=running --format '{{.Names}}'" 2>/dev/null | tr -d '\r')
+    [ -z "$names" ] && return 1
+
+    # NOT a `while read` loop, and the lookup's stdin is closed — both deliberate.
+    # `host_port_for_container` -> `remote_exec` -> `ssh` with no `-n`, and ssh SLURPS STDIN.
+    # Inside a stdin-fed loop it eats the remaining container names, so the loop runs exactly
+    # ONCE: measured 2026-08-14, a healthy 5-node cluster reported "1 per-node app endpoint
+    # resolved" and the suite degraded to the single-endpoint behaviour this helper exists to
+    # replace. Iterating a newline-split list keeps the names out of stdin entirely; `</dev/null`
+    # is the belt to that braces, and protects any future caller that reintroduces a read loop.
+    saved_ifs="$IFS"
+    IFS=$'\n'
+    for name in $names; do
+        [ -z "$name" ] && continue
+        hp=$(host_port_for_container "$name" "$inport" </dev/null) || hp=""
+        if [ -n "$hp" ]; then
+            out="${out}http://${TARGET_HOST}:${hp}
+"
+        fi
+    done
+    IFS="$saved_ifs"
+
+    [ -z "$out" ] && return 1
+    printf '%s' "$out"
+}
+
 # Retarget APP_ENDPOINT to a node that hosts an ACTIVE slice belonging to <coords>.
 # After SliceState.ROUTING was introduced, ACTIVE means routes have propagated
 # cluster-wide — but tests pinning APP_ENDPOINT to node-1 still 404 when the slice

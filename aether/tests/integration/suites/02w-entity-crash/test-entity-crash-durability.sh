@@ -63,43 +63,42 @@ amount_for() {
 # time and is refused with NotCurrentOwner. Retrying until one node accepts is
 # what turns that into a create; it is NOT a durability retry, and the ack it
 # records is a single node's single acceptance.
-# Per-node app endpoints, resolved from each container's host-mapped app port.
+# Per-node app endpoints, newline-separated (see `node_app_endpoints` in lib/cluster.sh for why
+# the LB cannot be trusted and why containers are enumerated dynamically).
 #
-# `APP_ENDPOINT` points at the nginx LB, and the LB PINS: all 42 failure bodies in the
-# first full run carried the SAME `"instance"` id, so the "round-robins across nodes"
-# this suite assumed never happened — every request reached one slice instance.
-#
-# That matters because the entity write path does NOT forward: `DurableEntityError`
-# states plainly that "owner-forwarding an entity operation cross-node is a follow-up",
-# and `EntityOwnerAdmission` refuses a non-owner with `NotCurrentOwner` documented as
-# "stable, the caller re-resolves". Re-resolving is therefore the CLIENT's job — and a
-# client pinned to one instance by a load balancer cannot do it. Resolving each node's
-# own app port is what makes re-resolution possible, so this suite tests the contract
-# the product actually ships rather than one it does not.
-#
-# Ports come from `host_port_for_container` (a `docker port` lookup) rather than a
-# derived `base + index`: the host-side mapping differs per cluster (A -> 8070.., B ->
-# 8080..) and CTM replacements publish no app port at all.
-ENTITY_APP_ENDPOINTS=()
+# RE-RESOLVED on demand rather than once at deploy: this suite KILLS a node, and a stale endpoint
+# list makes every later call burn `_api_call`'s full 30s timeout against a dead port. Measured
+# 2026-08-14 in a full run — resolving once turned a 360s readiness budget into 1254s and a 480s
+# convergence budget into 4990s, and the suite reported a product failure against a healthy cluster.
+ENTITY_APP_ENDPOINTS=""
 
-resolve_app_endpoints() {
-    local prefix="${CLUSTER_NAME:-aether-${CLUSTER_ID:-b}-node-}"
-    local n hp
-    ENTITY_APP_ENDPOINTS=()
+refresh_app_endpoints() {
+    ENTITY_APP_ENDPOINTS="$(node_app_endpoints || printf '')"
+    [ -n "$ENTITY_APP_ENDPOINTS" ]
+}
 
-    for n in $(seq 1 "${NODE_COUNT:-5}"); do
-        # Neither stderr suppression nor a blanket success-swallow here (R2):
-        # `host_port_for_container` already silences its own lookup noise and returns
-        # 0-with-empty-output when a container has no mapping. It returns NON-zero only
-        # for an empty name or cloud mode — distinct cases that a blanket swallow would
-        # flatten into "no port" while also hiding any genuine stderr.
-        hp=$(host_port_for_container "${prefix}${n}" "${APP_PORT:-8070}") || hp=""
-        if [ -n "$hp" ]; then
-            ENTITY_APP_ENDPOINTS[${#ENTITY_APP_ENDPOINTS[@]}]="http://${TARGET_HOST}:${hp}"
-        fi
+# POST to each node in turn until `matcher` matches the body. Echoes the matching body.
+# Re-resolves once, mid-sweep, if nothing matched — that covers a kill landing between passes.
+entity_post_any() {
+    local path="$1" payload="$2" matcher="$3" pass ep body last=""
+
+    [ -n "$ENTITY_APP_ENDPOINTS" ] || refresh_app_endpoints || return 1
+
+    for pass in 1 2; do
+        while IFS= read -r ep; do
+            [ -z "$ep" ] && continue
+            body=$(_api_call POST "${ep}${path}" "$payload" 2>/dev/null) || continue
+            if printf '%s' "$body" | grep -qE "$matcher"; then
+                printf '%s' "$body"
+                return 0
+            fi
+            last="$body"
+        done <<< "$ENTITY_APP_ENDPOINTS"
+        [ "$pass" -eq 1 ] && refresh_app_endpoints >/dev/null 2>&1
     done
 
-    [ "${#ENTITY_APP_ENDPOINTS[@]}" -gt 0 ]
+    [ -n "$last" ] && printf '%s' "$last"
+    return 1
 }
 
 # Rotates over every node so a key's committed owner is actually reached. Two passes:
@@ -113,26 +112,24 @@ resolve_app_endpoints() {
 # in the durability assertion is what confirms the value, so a wrong guess here cannot
 # manufacture a pass.
 create_entity() {
-    local idx="$1" key amount payload body ep pass last_body=""
+    local idx="$1" key amount payload body
     key="$(key_for "$idx")"
     amount="$(amount_for "$idx")"
     payload="{\"orderId\":\"${key}\",\"status\":\"placed\",\"amount\":${amount}}"
 
-    if [ "${#ENTITY_APP_ENDPOINTS[@]}" -eq 0 ]; then
-        resolve_app_endpoints || return 1
+    # `KeyAlreadyExists` counts as OUR create having landed. These keys are unique to this run and
+    # nothing else writes them, so the only way the key can exist is that one of our own attempts
+    # was accepted and its response never reached us (a lost ack — the node was killed, or the
+    # connection reset). Counting that as failure UNDER-counts acks, which is what made the first
+    # run report 4/40. The durability assertion re-reads the value, so a wrong guess here cannot
+    # manufacture a pass.
+    if body=$(entity_post_any "/api/entity/create" "$payload" \
+                              '"outcome"[[:space:]]*:[[:space:]]*"created"|"failureType"[[:space:]]*:[[:space:]]*"KeyAlreadyExists"'); then
+        return 0
     fi
 
-    for pass in 1 2; do
-        for ep in "${ENTITY_APP_ENDPOINTS[@]}"; do
-            body=$(_api_call POST "${ep}/api/entity/create" "$payload" 2>/dev/null) || continue
-            printf '%s' "$body" | grep -q '"outcome"[[:space:]]*:[[:space:]]*"created"' && return 0
-            printf '%s' "$body" | grep -q '"failureType"[[:space:]]*:[[:space:]]*"KeyAlreadyExists"' && return 0
-            last_body="$body"
-        done
-    done
-
-    if [ -n "$last_body" ]; then
-        log_warn "create ${key}: no node accepted across ${#ENTITY_APP_ENDPOINTS[@]} endpoints x2 passes; last body: $(printf '%s' "$last_body" | head -c 200)" >&2
+    if [ -n "$body" ]; then
+        log_warn "create ${key}: no node accepted; last body: $(printf '%s' "$body" | head -c 200)" >&2
     fi
     return 1
 }
@@ -153,34 +150,23 @@ create_range_recording_acks() {
 # rather than summing negatives. "I do not hold this" and "this does not exist"
 # are different claims and must not be conflated.
 read_amount() {
-    local key="$1" body payload ep pass last_body=""
-    payload="{\"orderId\":\"${key}\"}"
+    local key="$1" body
 
-    if [ "${#ENTITY_APP_ENDPOINTS[@]}" -eq 0 ]; then
-        resolve_app_endpoints || { printf ''; return 1; }
+    # A node outside the key's replica set answers `PartitionNotHeld` — a STABLE refusal meaning
+    # "ask another node", NOT "absent". Summing negatives across nodes would read a live entity as
+    # lost and turn the durability assertion into a false alarm, so this looks for a POSITIVE
+    # answer from any node.
+    #
+    # Every log helper writes to STDOUT and this function's stdout IS the parsed amount, so
+    # diagnostics must be redirected or they silently corrupt the compared value.
+    if body=$(entity_post_any "/api/entity/get" "{\"orderId\":\"${key}\"}" \
+                              '"outcome"[[:space:]]*:[[:space:]]*"found"'); then
+        printf '%s' "$body" | sed -E 's/.*"amount"[[:space:]]*:[[:space:]]*(-?[0-9]+).*/\1/'
+        return 0
     fi
 
-    # Same rotation as create, and for a sharper reason: `BOUNDED_STALE` reads are NOT
-    # forwarded either, so a node outside the key's replica set answers `PartitionNotHeld`
-    # — a STABLE refusal meaning "ask another node", NOT "absent". Summing negatives
-    # across nodes would read a live entity as lost and turn the durability assertion
-    # into a false alarm, so this looks for a POSITIVE answer from any node.
-    #
-    # Every log helper writes to STDOUT and this function's stdout IS the parsed amount,
-    # so diagnostics must be redirected or they silently corrupt the compared value.
-    for pass in 1 2; do
-        for ep in "${ENTITY_APP_ENDPOINTS[@]}"; do
-            body=$(_api_call POST "${ep}/api/entity/get" "$payload" 2>/dev/null) || continue
-            if printf '%s' "$body" | grep -q '"outcome"[[:space:]]*:[[:space:]]*"found"'; then
-                printf '%s' "$body" | sed -E 's/.*"amount"[[:space:]]*:[[:space:]]*(-?[0-9]+).*/\1/'
-                return 0
-            fi
-            last_body="$body"
-        done
-    done
-
-    if [ -n "$last_body" ]; then
-        log_warn "read ${key}: no node returned it; last body: $(printf '%s' "$last_body" | head -c 200)" >&2
+    if [ -n "$body" ]; then
+        log_warn "read ${key}: no node returned it; last body: $(printf '%s' "$body" | head -c 200)" >&2
     fi
     printf ''
     return 1
@@ -204,20 +190,24 @@ test_deploy_entity_blueprint() {
     await_generation_quiesced >/dev/null 2>&1 || log_warn "generation not quiesced before deploy — proceeding"
     deploy_blueprint "$ENTITY_BP" >/dev/null 2>&1 || true
 
-    if ! wait_for "entity slice answering" \
-        '[ -n "$(app_post "/api/entity/get" "{\"orderId\":\"__probe__\"}" 2>/dev/null)" ]' 180; then
-        log_fail "entity slice never became reachable"
+    # Resolve endpoints FIRST. The readiness probe used to go through `app_post`, i.e. the pinned
+    # APP_ENDPOINT — which in a full run points at whichever node a previous chaos suite killed.
+    # Measured 2026-08-14: the slice was deployed and healthy, the probe never reached it, and the
+    # suite burned 1254s against a 360s budget before declaring the product broken.
+    if ! refresh_app_endpoints; then
+        log_fail "could not resolve any per-node app endpoint — cannot reach the cluster"
         return 1
     fi
 
-    # Resolve the per-node endpoints ONCE, loudly. Everything downstream depends on
-    # reaching each node directly; if this yields nothing the suite would otherwise
-    # degrade into "no node accepted" failures that look like a product defect.
-    if ! resolve_app_endpoints; then
-        log_fail "could not resolve any per-node app endpoint — cannot reach owners directly"
+    # Probe every node: the slice need not be placed on all of them, so ANY node answering is
+    # readiness. `__probe__` does not exist, and a "not found" answer still proves the route is wired.
+    if ! wait_for "entity slice answering on some node" \
+        'refresh_app_endpoints >/dev/null 2>&1; entity_post_any "/api/entity/get" "{\"orderId\":\"__probe__\"}" "\"outcome\"" >/dev/null' 240; then
+        log_fail "entity slice never became reachable on any node"
         return 1
     fi
-    log_pass "entity blueprint deployed; ${#ENTITY_APP_ENDPOINTS[@]} per-node app endpoints resolved"
+
+    log_pass "entity blueprint deployed; $(printf '%s' "$ENTITY_APP_ENDPOINTS" | grep -c .) per-node app endpoints resolved"
 }
 
 # Ownership is minted per (entity:orders, partition) arc, and the write barrier
