@@ -58,6 +58,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   `[verified: aether/resource/durable-entity/src/test/java/org/pragmatica/aether/resource/entity/DurableEntityConfigTest.java]`
 
 ### Fixed
+- **Auto-heal never replaced a failed node — a static-init-order bug that reported success the whole
+  time (#597).** `AutoHealConfig.DEFAULT.maxNodes()` was `null` rather than `Option.empty()`: static
+  initialisers run in textual order, and `DEFAULT`'s initialiser reached the `NO_CAP` constant
+  (declared 117 lines below it) while that constant was still null. Every provisioning path funnels
+  through `NodeLifecycleManagerRecord.capGuardedProvision`, whose first act is `maxNodes.fold(...)` —
+  so every auto-heal replacement threw NPE, and **a killed node was never replaced**.
+  What made it survive is that nothing reported it: the NPE was swallowed by the scheduler's
+  `runGuarded` ("task recurrence preserved"), so the circuit breaker recorded `consecutiveFailures: 0`,
+  and `/api/cluster/provisioning` kept reporting `lastReason: NONE_PROVISIONING` — which means "a
+  provision is PERMITTED", not "nothing is provisioning". Every gate read healthy while the deficit sat
+  unfilled. Observed live at `deficit=1` for 271s in a targeted repro and for **~70 minutes** during a
+  full `02w-entity-crash` run, which is what made `restore_cluster_baseline` declare cluster B
+  unrecoverable. `max_nodes` is opt-in and absent by default, so the default path is the broken one.
+  Distinct from #509, which is deficit-fill firing too EAGERLY; this is it never firing successfully.
+  `[verified: aether/environment-integration/.../AutoHealConfigStaticInitTest — 5/5, module 59/0; the
+  null was proven directly against the shipped jar before the fix, and the broken behaviour was
+  reproduced live on a 5-node cluster]` `[design intent — unverified: that a replacement is now
+  actually provisioned end-to-end on a live cluster]`
 - **Entity state could be deleted by stream retention — #345 I3.** `RetentionEnforcer` is built once per
   node with a single age policy and never reads per-stream config, so an entity's sealed segments would
   have been deleted a fixed interval after its last write, silently destroying the state of any key not
