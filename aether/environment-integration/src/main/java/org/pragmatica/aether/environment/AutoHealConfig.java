@@ -31,6 +31,19 @@ public record AutoHealConfig(TimeSpan retryInterval,
     // running SwimHintsRegistry (AetherNode wires config.autoHeal().swimHintsTtl()); lowered
     // from 60s so the hint backstop is short-lived. Kept in sync with AutoHealSpec.
     public static final TimeSpan DEFAULT_SWIM_HINTS_TTL = timeSpan(15).seconds();
+    /// #298 — no fleet cap by default. A default numeric cap would silently refuse provisioning on
+    /// any existing cluster larger than the number we picked, so absence means "unbounded" and the
+    /// cap is opt-in. Set it via [#withMaxNodes].
+    ///
+    /// MUST be declared BEFORE [#DEFAULT]. Static initialisers run in textual order, and `DEFAULT`'s
+    /// initialiser reaches this constant through `autoHealConfig(...)`. While it sat below `DEFAULT`
+    /// it was still `null` at that moment, so `DEFAULT.maxNodes()` was a NULL `Option` — and every
+    /// auto-heal replacement then died on `maxNodes.fold(...)` in
+    /// `NodeLifecycleManagerRecord.capGuardedProvision`. The NPE was swallowed by the scheduler's
+    /// `runGuarded` ("task recurrence preserved"), so the circuit breaker never saw a failure, the
+    /// provisioning API kept reporting a permitted provision, and a killed node was simply never
+    /// replaced. Nothing about that was visible at the call site. Do not move this back down.
+    public static final Option<Integer> NO_CAP = Option.empty();
 
     public static final AutoHealConfig DEFAULT = autoHealConfig(timeSpan(10).seconds(),
                                                                 timeSpan(15).seconds(),
@@ -145,11 +158,6 @@ public record AutoHealConfig(TimeSpan retryInterval,
                                           swimHintsTtl,
                                           NO_CAP));
     }
-
-    /// #298 — no fleet cap by default. A default numeric cap would silently refuse provisioning on
-    /// any existing cluster larger than the number we picked, so absence means "unbounded" and the
-    /// cap is opt-in. Set it via [#withMaxNodes].
-    public static final Option<Integer> NO_CAP = Option.empty();
 
     /// #298 — operator-set ceiling on the number of nodes this cluster may have provisioned.
     /// Enforced at the single provisioning chokepoint (`NodeLifecycleManager.provisionNode`), which
