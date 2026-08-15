@@ -1,6 +1,6 @@
 # Session handover — 2026-08-15: peglib 0.7.1 bump, half landed, chain + interface CST work remains
 
-**Branch:** `feat/peglib-0.7.1` (off `release-1.0.0-rc3` at `19b76827f`) · **3 commits** · **NOT pushed** · tree clean
+**Branch:** `feat/peglib-0.7.1` (off `release-1.0.0-rc3` at `19b76827f`) · **7 commits** · **NOT pushed** · tree clean
 **Build is RED and deliberately so** — `jbct-format` and `jbct-lint` fail. Everything else is green.
 
 **Task:** bump peglib 0.6.2 → 0.7.1 in pragmatica, integrate the upstream Java grammar changes, keep the
@@ -18,7 +18,7 @@ jbct tools working. Owner rulings: adopt the grammar in the **same pass** as the
 | JBCT Core | ✅ green, 135 |
 | JBCT Init / Derive | ✅ green |
 | JBCT Slice Processor | ✅ green, 298 |
-| **JBCT Formatter** | ❌ **4 failures** — §3 |
+| **JBCT Formatter** | ❌ **3 failures**, 2 fixtures (`Lambdas`, `LambdaBlockArgs`) — §3 |
 | **JBCT Linter** | ❌ **13 failing test classes** — §4 |
 | JBCT CLI / Maven Plugin | ⏭ SKIPPED (never reached; blocked behind format+lint) |
 | `aether/pg-tools` | ⏭ untouched — §5 |
@@ -26,7 +26,7 @@ jbct tools working. Owner rulings: adopt the grammar in the **same pass** as the
 Baseline before any change was BUILD SUCCESS across all 11 modules, so every failure is attributable
 to this branch.
 
-## §2 What landed (3 commits)
+## §2 What landed
 
 **`ed941ab59` — the bump and CST adaptation.**
 
@@ -49,45 +49,53 @@ to this branch.
 **`18f212252`** — `parseRecordAsTypeName` asserted a snippet javac rejects in all four positions.
 Replaced with what javac agrees with, plus a pin on the remaining divergence (§7).
 
-## §3 Formatter — 4 failures, cause fully diagnosed, design settled
+**`ea3677851`** — the statement-chain refactor. Details in §3.
 
-Fixtures: **`Lambdas.java`, `LambdaBlockArgs.java`, `StatementChains.java`** (idempotency) + 1
-`FlowFormatterTest$GoldenExampleComparison`. **No content is lost — every diff is a missing line break:**
+## §3 Formatter — chain refactor LANDED; 2 lambda fixtures remain
+
+**Done (`ea3677851`).** The §3 design was implemented and it worked: statement-position chains break
+and align again, and **`StatementChains.java` is green with no golden edits.**
+
+What landed in `FlowPrinter`:
+
+- `printStmtExpr` + `case STMT_EXPR` in both dispatch switches.
+- `callChainLinks(...)` walks the right-recursive `CallChain` spine collecting `CHAIN_OP`/`CALL_OP`.
+- `mergeDotNameWithInvocation(...)` merges `.name` + following invocation into one **logical link**, so
+  `a.b().c(y)` counts 2 links as a statement exactly as it does as an expression. Without this the same
+  source breaks differently by position and the goldens fail.
+- `printChainWithPrimary(primary, links, nestedDotMethodCount)` is now the shared body; both
+  `printPostfixWithPrimary` and `printStmtExpr` feed it. `printMethodChainAligned` and its call sites
+  moved from `List<Cursor>` to `List<List<Cursor>>`; a link is identified by its head node.
+- Note there are **two** POSTFIX entry points — `printPostfix` (switch-dispatched) and
+  `printPostfixWithPrimary` (helper). Both had to be adapted; the first was easy to miss.
+
+**Still failing: `Lambdas.java` and `LambdaBlockArgs.java`** (2 idempotency + 1
+`FlowFormatterTest$GoldenExampleComparison`). Both are chains that should break inside a lambda body or
+an assignment RHS:
 
 ```
-Expected: entries.stream()\n                             .anyMatch(spec -> …)
-Actual:   entries.stream().anyMatch(spec -> …)
+Expected: return input.map(s -> s.trim()\n                               .toUpperCase());
+Actual:   return input.map(s -> s.trim().toUpperCase());
 ```
 
-**Cause — statement-position chains no longer use `Postfix` at all** (peglib 0.7.1, JLS 14.8 rework,
-deliberate and confirmed upstream):
+These are **expression position**, whose CST shape is byte-identical to 0.6.2 — so the *shape* is not the
+cause; the *break decision* is. Two candidates, both unverified:
 
-```
-a.b().c();                        return a.b().c();
-STMT_EXPR(B)                      POSTFIX(B)              ← unchanged from 0.6.2
-  PRIMARY(B) [a.b]                  PRIMARY(B) [a.b]
-  CALL_CHAIN(B)                     POST_OP(L) [()]
-    CHAIN_OP(L) [()]                POST_OP(L) [.c()]
-    CALL_CHAIN(B)
-      CHAIN_OP(L) [.c]
-      CALL_CHAIN(B) → CALL_OP(L) [()]
-```
+1. **`firstPostOpHasComplexArgs` bails on `!(first instanceof Cursor.Branch)`** — the `viewAt` trap (§6).
+   An argument-less `POST_OP[()]` is Leaf-viewed, so it returns false, which can let the
+   `chainLinkCount == 2 && isStaticFactoryReceiver && !complexArgs` early-out keep the chain inline.
+   This predates the bump, so it only explains the failure if something else changed alongside it.
+2. **`Expr <- Lambda / Assignment`** hoisted `Lambda` out of `Primary`, so a lambda is no longer wrapped
+   in `POSTFIX → PRIMARY`. `printNodeContent` dispatches a fixed kind set that does **not** include
+   `EXPR`; worth checking what the default arm does with the lambda body now that its parent chain is
+   shallower.
 
-`FlowPrinter` has no case for `STMT_EXPR`/`CALL_CHAIN`/`CHAIN_OP`/`CALL_OP`, and its whole chain
-apparatus keys on `childrenByRule(postfix, POST_OP)` — which finds zero, so `chainLinkCount < 2` and the
-chain never breaks. **Expression position is byte-identical to 0.6.2 and already works.**
+**Next step is bisection, not analysis.** I twice reasoned from the tree instead of measuring and was
+wrong both times — this project's own "bisection-first, theorize never" rule applies. Write a throwaway
+test that formats the minimal snippet
+`class C { Result<String> m(Option<String> in) { return in.map(s -> s.trim().toUpperCase()); } }`
+and narrow from there. **Print `node.kind()`, never the view type** (§6).
 
-**The design (agreed, not yet implemented):** walk the right-recursive `CALL_CHAIN` spine collecting
-operator nodes, then **merge a dot-name `CHAIN_OP` with its following invocation op into one logical
-link**. This matters — peglib flagged that the shapes *group operators differently*: `.c()` is **one**
-`PostOp` but **two** nodes (`CHAIN_OP[.c]` + `CALL_OP[()]`), so `a.b().c()` naively scores 2 links as an
-expression and **3** as a statement, and the same source would break differently by position. Merging
-makes the counts identical and every existing break/align decision carries over untouched.
-
-Mechanically: `printMethodChainAligned` and `countDotMethodChainLinks` move from `List<Cursor>` to
-`List<List<Cursor>>` (a link = its node group); the `POSTFIX` call site wraps each `POST_OP` as a
-singleton. The aligner's internals — anchors, broken-args handling, leading comments — stay as-is; only
-the iteration unit changes.
 
 ## §4 Linter — 13 failing test classes, cause identified, NOT designed yet
 
