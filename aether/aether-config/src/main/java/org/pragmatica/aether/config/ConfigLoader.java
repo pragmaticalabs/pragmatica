@@ -616,6 +616,8 @@ public final class ConfigLoader {
 
     private static TimeoutsConfig.ClusterTimeouts parseClusterTimeouts(TomlDocument doc,
                                                                        TimeoutsConfig.ClusterTimeouts d) {
+        // Ordering of core_absence vs community_absence (#590) is checked by ConfigValidator, so an
+        // inverted pair is reported alongside every other config error instead of aborting the parse.
         return new TimeoutsConfig.ClusterTimeouts(parseTimeSpan(doc, "timeouts.cluster", "hello", d.hello()),
                                                   parseTimeSpan(doc,
                                                                 "timeouts.cluster",
@@ -628,7 +630,12 @@ public final class ConfigLoader {
                                                   parseTimeSpan(doc,
                                                                 "timeouts.cluster",
                                                                 "channel_protection",
-                                                                d.channelProtection()));
+                                                                d.channelProtection()),
+                                                  parseTimeSpan(doc, "timeouts.cluster", "core_absence", d.coreAbsence()),
+                                                  parseTimeSpan(doc,
+                                                                "timeouts.cluster",
+                                                                "community_absence",
+                                                                d.communityAbsence()));
     }
 
     private static TimeoutsConfig.ConsensusTimeouts parseConsensusTimeouts(TomlDocument doc,
