@@ -66,7 +66,12 @@ class SliceProcessorTest {
 
             public interface SliceCodec {
                 static int deterministicTag(String className) {
-                    return (className.hashCode() & 0x7FFFFFFF) % 16256 + 128;
+                    long hash = 0xcbf29ce484222325L;
+                    for (var i = 0; i < className.length(); i++) {
+                        hash ^= className.charAt(i);
+                        hash *= 0x100000001b3L;
+                    }
+                    return 16384 + (int) Long.remainderUnsigned(hash, (1 << 21) - 16384);
                 }
                 static void writeCompact(Object buf, int value) {}
                 static int readCompact(Object buf) { return 0; }
