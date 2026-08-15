@@ -2046,6 +2046,15 @@ aether cluster provisioning --format json
 
 Show the queried node's membership diagnostics — the responding node's authoritative membership-FSM lifecycle view plus its quorum-loss self-drain readiness. Renders a per-peer table (each tracked peer's FSM state, role, incarnation, and whether it is in the strict `Member`-only quorum set and the counted `Member`+`Suspect` set) followed by the summary counts (strict member count, quorum threshold, below-threshold flag, armed latch). Use to diagnose SWIM-under-concurrent-loss — per survivor, which peers are SUSPECT/DEAD and whether this node's self-drain window is armed and below threshold. **Per-node local view** (not leader-forwarded) — target a specific node (`-c <host>`) to read its view. Wraps `GET /api/cluster/membership`.
 
+Since #590 the response also carries `coreAbsence` — the **community tier's** fence, alongside the core tier's. It answers "is this node about to dissolve because it has lost the core", with `remainingMs` counting down to the local dissolve. Like the quorum-loss summary fields, it lives at the response root, so it is shown by `--format json` rather than in the per-peer table:
+
+```bash
+# Is this node about to fence itself? (the field to watch during a suspected partition)
+aether cluster membership -c <suspect-host> --format json | jq .coreAbsence
+```
+
+`coreAbsence.armed: false` means the node has never heard the core — cold-starting, **not** isolated. `fenced: true` means the local dissolve has already fired and the node has stopped serving; recovery is a re-join. Query the *suspect* node directly: a node losing the core is precisely the one whose view the leader cannot fetch for you.
+
 ```bash
 aether cluster membership
 

@@ -7,6 +7,7 @@ package org.pragmatica.aether.api;
 import java.util.List;
 import java.util.Map;
 
+import org.pragmatica.aether.worker.isolation.CoreAbsenceSnapshot;
 import org.pragmatica.hlc.HlcTimestamp;
 import org.pragmatica.lang.Option;
 
@@ -624,12 +625,19 @@ public sealed interface ManagementApiResponses {
     /// peer the FSM tracks (including DEAD, retained for incarnation-fenced rejoin), sorted by
     /// `nodeId` for stable output. When the local `QuorumLossDetector` is not yet wired the
     /// threshold/below/armed fields carry sensible zero/false defaults.
+    ///
+    /// `coreAbsence` (#590) is the community tier's equivalent fence on the same per-node footing: the
+    /// core-tier fields above answer "is this CORE node about to self-drain on quorum loss", and
+    /// `coreAbsence` answers "is this node about to dissolve because it has lost the core". Both are
+    /// deliberately on this LOCAL endpoint, because a leader-forwarded read cannot reach the node whose
+    /// isolation is in question.
     record ClusterMembershipResponse(String nodeId,
                                      int strictCoreMemberCount,
                                      int countedCoreMemberCount,
                                      int requiredThreshold,
                                      boolean belowThreshold,
                                      boolean armed,
+                                     CoreAbsenceSnapshot coreAbsence,
                                      List<MembershipNodeDetail> members) {}
 
     /// Per-peer membership detail as seen by the answering node's `MembershipFsm`: the lifecycle

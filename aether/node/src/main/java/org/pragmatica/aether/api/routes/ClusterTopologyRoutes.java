@@ -13,6 +13,7 @@ import java.util.Set;
 import java.util.function.Supplier;
 import java.util.stream.Stream;
 
+import org.pragmatica.aether.worker.isolation.CoreAbsenceSnapshot;
 import org.pragmatica.aether.api.ManagementApiResponses.AutoHealStatusResponse;
 import org.pragmatica.aether.api.ManagementApiResponses.AutoHealToggleResponse;
 import org.pragmatica.aether.api.ManagementApiResponses.CircuitBreakerResetResponse;
@@ -172,6 +173,10 @@ public final class ClusterTopologyRoutes implements RouteSource {
 
     private static final QuorumLossSnapshot QUORUM_LOSS_UNWIRED = new QuorumLossSnapshot(0, 0, false, false);
 
+    /// #590 — what an unwired core-absence detector reports: never armed, never fenced, no countdown.
+    /// `-1` reads as "no measurement", distinct from a genuine zero.
+    private static final CoreAbsenceSnapshot CORE_ABSENCE_UNWIRED = new CoreAbsenceSnapshot(false, false, -1L, -1L, 0L);
+
     private static ClusterMembershipResponse assembleMembershipResponse(ManageableNode node) {
         var fsm = node.membershipFsm();
         var snapshot = node.quorumLossSnapshot().or(QUORUM_LOSS_UNWIRED);
@@ -183,6 +188,7 @@ public final class ClusterTopologyRoutes implements RouteSource {
                                              snapshot.requiredThreshold(),
                                              snapshot.belowThreshold(),
                                              snapshot.armed(),
+                                             node.coreAbsenceSnapshot().or(CORE_ABSENCE_UNWIRED),
                                              members);
     }
 
