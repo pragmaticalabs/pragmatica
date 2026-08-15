@@ -28,6 +28,7 @@ import java.util.function.Supplier;
 import java.util.stream.Collectors;
 import java.net.InetSocketAddress;
 
+import org.pragmatica.aether.worker.isolation.CoreAbsenceSnapshot;
 import org.pragmatica.aether.api.AlertManager;
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.api.ClusterEvent;
@@ -211,6 +212,7 @@ import org.pragmatica.aether.worker.deployment.WorkerDeploymentManager;
 import org.pragmatica.aether.worker.governor.CommunityMembershipFilter;
 import org.pragmatica.aether.worker.governor.DecisionRelay;
 import org.pragmatica.aether.worker.governor.GovernorAnnouncer;
+import org.pragmatica.aether.worker.isolation.CoreAbsenceDetector;
 import org.pragmatica.aether.worker.governor.GovernorMesh;
 import org.pragmatica.aether.worker.group.GroupMembershipTracker;
 import org.pragmatica.aether.worker.metrics.CommunityMetricsSnapshot;
@@ -1308,6 +1310,7 @@ public interface AetherNode extends ManageableNode {
                           LeaderReconciler leaderReconciler,
                           MembershipFsm membershipFsm,
                           QuorumLossDetector quorumLossDetector,
+                          CoreAbsenceDetector coreAbsenceDetector,
                           TransitionJournal transitionJournal,
                           Runnable startSwimTrigger,
                           Option<ManagementServer> managementServer,
@@ -1395,6 +1398,9 @@ public interface AetherNode extends ManageableNode {
                 certRenewalScheduler.onPresent(CertificateRenewalScheduler::stop);
                 swimHealthDetector.stop();
                 presenceSampler.stop();
+                // #590: cancel the core-absence tick. Forge runs many nodes in ONE JVM on a shared
+                // scheduler, so a tick left armed after stop() outlives its node.
+                coreAbsenceDetector.stop();
                 discoveryProvider.onPresent(this::deregisterFromDiscovery);
 
                 return managementServer.map(ManagementServer::stop)
@@ -1620,6 +1626,11 @@ public interface AetherNode extends ManageableNode {
             @Override
             public Option<QuorumLossSnapshot> quorumLossSnapshot() {
                 return Option.option(quorumLossDetector).map(QuorumLossSnapshot::from);
+            }
+
+            @Override
+            public Option<CoreAbsenceSnapshot> coreAbsenceSnapshot() {
+                return Option.option(coreAbsenceDetector).map(CoreAbsenceSnapshot::from);
             }
 
             @Override
@@ -2740,6 +2751,28 @@ public interface AetherNode extends ManageableNode {
         // window lets all nodes reform; a genuine minority still self-fences once the window elapses.
         quorumLossDetector.setColdBootSupplier(swimIsBootingSupplier);
         metricsCollector.setDrainCommandHandler(() -> commandedDrain(drainProcedure, nodeReportedStateHolder));
+        // #590 community tier: the core spokesman pings on `pingInterval`, so the SILENCE of that ping
+        // is this node's core-liveness signal — the only one that does not depend on the node being
+        // able to write to the core, which under isolation it cannot. Observed per node rather than
+        // per governor, mirroring quorumLossDetector: no intra-community coordination, and a
+        // partitioned subset fences exactly itself. The core independently stops placing work here on
+        // the strictly longer `community_absence` window, which is the no-double-active ordering.
+        var coreAbsenceDetector = CoreAbsenceDetector.coreAbsenceDetector(config.timeouts().cluster().coreAbsence(),
+                                                                          config.timeouts().cluster().pingInterval());
+
+        coreAbsenceDetector.setCoreAbsenceListener(_ -> drainProcedure.initiate(DrainReason.CORE_ABSENCE));
+        metricsCollector.setCorePingObserver(coreAbsenceDetector::recordCorePing);
+        coreAbsenceDetector.start();
+        // #590 core half, same exchange in the other direction: every live node answers the leader's
+        // broadcast ping, so pong silence is the leader's OWN observation that a community member has
+        // gone. It replaces `GovernorAnnouncementValue.memberCount` as the FSM's liveness input —
+        // that field is the community's self-report and FREEZES under partition instead of expiring,
+        // which is why an unreachable community stayed ACTIVE and kept being given work.
+        var communityAbsenceNanos = config.timeouts().cluster().communityAbsence().nanos();
+
+        clusterDeploymentManager.setCommunityLiveness(node -> metricsCollector.sinceLastPongNanos(node)
+                                                                              .map(since -> since >= communityAbsenceNanos)
+                                                                              .or(false));
         // QUIC reconnect feeds NTT's soft up-bias (unchanged) AND the FSM's peer-connected tap.
         Consumer<NodeId> nttConnectTap = ((Consumer<NodeId>) presenceSampler::onQuicReconnect).andThen(membershipFsm::onPeerConnected);
         // QUIC disconnect feeds BOTH NTT's soft down-bias (unchanged) AND the liveness half of the
@@ -3688,6 +3721,7 @@ public interface AetherNode extends ManageableNode {
                                   leaderReconciler,
                                   membershipFsm,
                                   quorumLossDetector,
+                                  coreAbsenceDetector,
                                   transitionJournal,
                                   startSwimTrigger,
                                   Option.empty(),
@@ -3826,6 +3860,7 @@ public interface AetherNode extends ManageableNode {
                                       leaderReconciler,
                                       membershipFsm,
                                       quorumLossDetector,
+                                      coreAbsenceDetector,
                                       transitionJournal,
                                       startSwimTrigger,
                                       Option.some(managementServer),

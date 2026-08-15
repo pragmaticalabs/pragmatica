@@ -1797,16 +1797,47 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
             }
         }
 
-        /// Observed live membership of a community = its governor announcement's member count
-        /// (worker-membership-spec §3.3). No announcement (no governor yet) reads as `0`, which keeps
-        /// a FORMING community below the floor and demotes an ACTIVE community to DEGRADED.
+        /// Observed live membership of a community (worker-membership-spec §3.3), corrected for
+        /// core-observed absence (#590).
+        ///
+        /// The announcement's `memberCount` is the community's own SELF-REPORT, and under a
+        /// core/community partition the governor cannot rewrite it — so it freezes at its last healthy
+        /// value instead of expiring, and the community stayed `ACTIVE` forever while unreachable. The
+        /// reported count is therefore reduced by the members the leader has positively observed to be
+        /// absent (pong silence beyond `timeouts.cluster.community_absence`).
+        ///
+        /// Deliberately a SUBTRACTION from `memberCount` rather than a recount of `members()`: the two
+        /// are independent fields and `governorAnnouncementValue(governorId, memberCount)` leaves
+        /// `members` empty with a non-zero count, so recounting would read 0 live members for a
+        /// perfectly healthy community. With nothing absent this returns exactly what it returned
+        /// before.
+        ///
+        /// No announcement (no governor yet) still reads as `0`, which keeps a FORMING community below
+        /// the floor and demotes an ACTIVE one to DEGRADED.
         private int communityLiveMembers(String communityId) {
             return ctx.kvStore()
                       .get(GovernorAnnouncementKey.forCommunity(communityId))
                       .filter(GovernorAnnouncementValue.class::isInstance)
                       .map(GovernorAnnouncementValue.class::cast)
-                      .map(GovernorAnnouncementValue::memberCount)
+                      .map(this::observedLiveMembers)
                       .or(0);
+        }
+
+        /// `memberCount` minus the positively-absent members. When the announcement carries no member
+        /// list there is only one identity to check — the governor's own — which still detects the
+        /// case this exists for: a whole community that has gone silent.
+        private int observedLiveMembers(GovernorAnnouncementValue announcement) {
+            var liveness = ctx.communityLiveness();
+
+            if (announcement.members().isEmpty()) {
+                return liveness.isAbsent(announcement.governorId())
+                       ? 0
+                       : announcement.memberCount();
+            }
+
+            var absent = (int) announcement.members().stream().filter(liveness::isAbsent).count();
+
+            return Math.max(0, announcement.memberCount() - absent);
         }
 
         /// Pure per-community state edge (worker-membership-spec §3.3). FORMING/DEGRADED promote to
