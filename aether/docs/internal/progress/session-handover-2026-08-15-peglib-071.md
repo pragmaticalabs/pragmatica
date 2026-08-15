@@ -1,17 +1,17 @@
-# Session handover — 2026-08-15: peglib 0.7.1 bump, half landed, chain + interface CST work remains
+# Session handover — 2026-08-15: peglib 0.7.1 bump; jbct tools GREEN, pg-tools + 0.7.2 re-pin remain
 
-**Branch:** `feat/peglib-0.7.1` (off `release-1.0.0-rc3` at `19b76827f`) · **8 commits** · **NOT pushed** · tree clean
-**Build is RED and deliberately so** — `jbct-format` (3 failures / 2 fixtures) and `jbct-lint` (13 classes)
-fail. Everything else is green. Baseline before this branch was BUILD SUCCESS, so all of it is attributable.
+**Branch:** `feat/peglib-0.7.1` (off `release-1.0.0-rc3` at `19b76827f`) · **11 commits** · **NOT pushed** · tree clean
+**Build is GREEN** — all 11 modules BUILD SUCCESS, including JBCT CLI and Maven Plugin, which had never
+been reached before (they were SKIPPED behind the format+lint failures).
 
-**Resume at §9.** The bump, the grammar sync and the statement-chain refactor are done and committed;
-what is left is two lambda fixtures, the linter's interface blindness, and the never-reached CLI/plugin
-verification. Nothing is blocked on an outside answer — the peglib exchange is closed (§8).
+**Resume at §9.** The formatter and linter work described below is DONE and committed. What remains is
+`pg-tools` (§5, untouched, independent), the expected 0.7.2 re-pin (§9.5), and one verification that is
+genuinely blocked (§9.3). Nothing is blocked on an outside answer — the peglib exchange is closed (§8).
 
 **Task:** bump peglib 0.6.2 → 0.7.1 in pragmatica, integrate the upstream Java grammar changes, keep the
 jbct tools working. Owner rulings: adopt the grammar in the **same pass** as the bump (not staged), and
 **`aether/pg-tools` is in scope** (not started). Golden formatter tests are the contract — **adapt
-`FlowPrinter`, never re-baseline the goldens.**
+`FlowPrinter`, never re-baseline the goldens.** That contract held: the goldens are byte-unchanged.
 
 ---
 
@@ -23,13 +23,11 @@ jbct tools working. Owner rulings: adopt the grammar in the **same pass** as the
 | JBCT Core | ✅ green, 135 |
 | JBCT Init / Derive | ✅ green |
 | JBCT Slice Processor | ✅ green, 298 |
-| **JBCT Formatter** | ❌ **3 failures**, 2 fixtures (`Lambdas`, `LambdaBlockArgs`) — §3 |
-| **JBCT Linter** | ❌ **13 failing test classes** — §4 |
-| JBCT CLI / Maven Plugin | ⏭ SKIPPED (never reached; blocked behind format+lint) |
+| **JBCT Formatter** | ✅ **green, 67** — was 3 failures / 2 fixtures (§3) |
+| **JBCT Linter** | ✅ **green, 691** — was 13 failing test classes (§4) |
+| **JBCT CLI / Maven Plugin** | ✅ **green** — CLI also exercised over 2135 files; plugin caveat in §9.3 |
 | `aether/pg-tools` | ⏭ untouched — §5 |
 
-Baseline before any change was BUILD SUCCESS across all 11 modules, so every failure is attributable
-to this branch.
 
 ## §2 What landed
 
@@ -74,51 +72,76 @@ What landed in `FlowPrinter`:
 - Note there are **two** POSTFIX entry points — `printPostfix` (switch-dispatched) and
   `printPostfixWithPrimary` (helper). Both had to be adapted; the first was easy to miss.
 
-**Still failing: `Lambdas.java` and `LambdaBlockArgs.java`** (2 idempotency + 1
-`FlowFormatterTest$GoldenExampleComparison`). Both are chains that should break inside a lambda body or
-an assignment RHS:
+**Still failing: `Lambdas.java` and `LambdaBlockArgs.java`** — **RESOLVED in `833235534`.** The cause was
+candidate 2, confirmed by bisection, not by reading the tree:
 
 ```
 Expected: return input.map(s -> s.trim()\n                               .toUpperCase());
 Actual:   return input.map(s -> s.trim().toUpperCase());
 ```
 
-These are **expression position**, whose CST shape is byte-identical to 0.6.2 — so the *shape* is not the
-cause; the *break decision* is. Two candidates, both unverified:
-
-1. **`firstPostOpHasComplexArgs` bails on `!(first instanceof Cursor.Branch)`** — the `viewAt` trap (§6).
-   An argument-less `POST_OP[()]` is Leaf-viewed, so it returns false, which can let the
-   `chainLinkCount == 2 && isStaticFactoryReceiver && !complexArgs` early-out keep the chain inline.
-   This predates the bump, so it only explains the failure if something else changed alongside it.
-2. **`Expr <- Lambda / Assignment`** hoisted `Lambda` out of `Primary`, so a lambda is no longer wrapped
-   in `POSTFIX → PRIMARY`. `printNodeContent` dispatches a fixed kind set that does **not** include
-   `EXPR`; worth checking what the default arm does with the lambda body now that its parent chain is
-   shallower.
-
-**Next step is bisection, not analysis.** I twice reasoned from the tree instead of measuring and was
-wrong both times — this project's own "bisection-first, theorize never" rule applies. Write a throwaway
-test that formats the minimal snippet
-`class C { Result<String> m(Option<String> in) { return in.map(s -> s.trim().toUpperCase()); } }`
-and narrow from there. **Print `node.kind()`, never the view type** (§6).
+The lambda body's CST is byte-identical to 0.6.2 (`POSTFIX → PRIMARY[s.trim] POST_OP[()] POST_OP[.toUpperCase()]`),
+so the shape was never the issue — the **dispatch path** was. `Expr <- Lambda / Assignment` hoisted `Lambda`
+out of `Primary`, so an argument lambda now arrives via `POST_OP → ARGS → EXPR → LAMBDA`. `printArgs` prints
+child expressions with `printNodeContent`, whose `LAMBDA` arm is `printLambdaContent` — which, unlike
+`printLambda`, **never entered the tail context** that makes chains break. Under 0.6.2 the lambda sat under
+`PRIMARY`, and `printPrimary` reached it through `printNode` → `printLambda` → tail context. Both entry
+points now share one walker (`printLambdaWith`) that establishes the context; they still differ only in how
+non-body children print. **67 formatter tests green, no golden edits.**
 
 
-## §4 Linter — 13 failing test classes, cause identified, NOT designed yet
+## §4 Linter — RESOLVED in `6be655136`; the diagnosis in this section was incomplete
 
-The signature is `Expected rule JBCT-NAM-01 but found: []` — **rules silently stop firing.**
+The signature was `Expected rule JBCT-NAM-01 but found: []` — **rules silently stopped firing.**
 
-Same root as the formatter's interface bug: the grammar split `InterfaceBody`/`InterfaceMember`/
-`InterfaceFieldDecl`/`InterfaceVarDecl` out of `ClassBody`/`ClassMember`. A dozen lint rules walk
-`CLASS_BODY`/`CLASS_MEMBER` (`CstInjectionRule`, `CstReturnKindRule`, `CstValueObjectFactoryRule`,
-`CstZoneThreeVerbsRule`, `CstConstructorBypassRule`, `FileTypeClassifier`, `ScopeScan`, …). **JBCT's
-subject matter is interfaces** — `@Slice public interface`, use cases, steps — so those rules now miss
-their primary target entirely.
+The section's original framing (a dozen rules walking `CLASS_BODY`/`CLASS_MEMBER`) named a real but
+**minor** part of it. Two corrections worth carrying forward:
 
-Tree-wide there are only **4** `INTERFACE_*` references, all added by this branch in `FlowPrinter`.
+- **Records lost the same levels as interfaces.** Pre-bump `RecordMember <- CompactConstructor /
+  ClassMember`, so records nested a full `ClassMember → Member`. Now `RecordMember` holds `MethodDecl`
+  directly. Records are JBCT value objects, which is why `CstMemberOrderingRuleTest$ValueObject` was
+  among the failures.
+- **The `MEMBER` level, not `CLASS_MEMBER`, was the dominant loss.** For a class the modifier-bearing
+  wrapper (`ClassMember`) and the declaration (`Member`) are two nodes; for an interface or record they
+  **collapse into one**. `CstNodes.findAllMethods`/`isMethodMember` keyed on `MEMBER` and so returned
+  **empty for every interface** — 48 call sites across 27 files inherited that.
 
-**Suggested approach (unvalidated):** add a `CstNodes` helper that yields type-body members uniformly
-across `CLASS_BODY`/`INTERFACE_BODY`/`RECORD_BODY`/`ENUM_BODY`, mirroring how `parameterNodes` contained
-the `Params` change, then migrate the rules to it. Contain the change in one helper rather than
-patching a dozen rules independently.
+Fixed by reconciling the shapes in `CstNodes` (`isMemberDecl`, `isMemberWrapper`, `enclosingMember`,
+`enclosingMethodMember`, `typeBodyMembers`, `isFieldDecl`, `memberDeclText`), mirroring how
+`parameterNodes` contained the `Params` change, then migrating ~20 rule sites. **691 lint tests green.**
+
+**Two traps the collapse sets — both were live defects, expect them again elsewhere:**
+
+1. **An ancestor-only wrapper lookup walks straight past an interface/record member**, because there the
+   member IS its own wrapper. `enclosingMember`/`enclosingMethodMember` therefore match the node itself
+   (`selfOrAncestor`). Without it `CstReturnKindRule.isPrivateMethod` read `false` for every
+   interface/record method and JBCT-RET-01 over-reported by 144.
+2. **A wrapper's text spans annotations**, so any heuristic that regexes a declaration mis-reads it:
+   `@SuppressWarnings("…")` supplies the first `(` and `)`. JBCT-NAM-01 reported
+   `Factory method 'SuppressWarnings'`; JBCT-LOG-02's `indexOf("Logger ") < indexOf(")")` silently
+   inverted. **`memberDeclText` is the fix** — it anchors on the `MethodDecl` and is byte-identical to
+   `text(member)` for a class, so class-side behaviour cannot move.
+
+**Verification — the differential corpus run is the instrument to reuse.** Build the CLI at the
+pre-change commit in a worktree, lint the *same* tree with both binaries, diff normalized findings:
+
+```bash
+git worktree add --detach <wt> ed941ab59^ && (cd <wt> && mvn -f jbct/pom.xml package -DskipTests -Djbct.skip=true)
+java -jar <wt>/jbct/jbct-cli/target/jbct.jar lint aether --format json > before.json
+java -jar jbct/jbct-cli/target/jbct.jar          lint aether --format json > after.json
+```
+
+Result: the bump had silently dropped **1962 of 13274 findings**; after the fix **every rule matches its
+pre-bump count exactly**, zero genuinely lost. 175 findings shifted by exactly −1 line — the anchor moved
+from the declaration to the wrapper carrying its annotations. That shift is inherent to the collapse and
+is not a defect. Note the JSON has a trailing summary line after the array, so parse with `raw_decode`.
+
+**Known residual (deliberate, not a defect).** ~15 sites still read raw `text(method)`/`text(member)`.
+They were left alone because the corpus proves they do not diverge, and changing them would be
+speculative — but each is a latent instance of trap 2 if it does declaration-shaped analysis. A reviewer
+pass over that list is queued; `CstConstructorBypassRule:104`, `FileTypeClassifier:453` and
+`CstNestedRecordFactoryRule:57,63` are *correct as-is* since they genuinely need the modifiers.
+
 
 ## §5 `aether/pg-tools` — in scope, not started
 
@@ -155,6 +178,10 @@ It is fully independent of the jbct work and can be taken in parallel.
   A CST dump taken that way showed the *old* `PARAMS → PARAM` shape and I nearly reasoned from it. This
   is the shared-`~/.m2` hazard from CLAUDE.md, arriving via the test path rather than an install.
   **Every verification run in this repo needs `-am`.**
+- **A green test suite does not prove a rule still fires.** The bump dropped 1962 corpus findings while
+  every suite outside `jbct-lint` stayed green, and 13 lint classes failed only because they happened to
+  assert on interfaces. Behaviour that is "does this rule see this construct at all" needs a corpus
+  differential (§4), not unit tests.
 - **Params went flat → nested**: `Params <- ReceiverParam? OrdinaryParams`, `OrdinaryParams <-
   (PlainParam ',')* LastParam`. `CstNodes.parameterNodes` flattens it and **excludes `ReceiverParam`** —
   the explicit `this` receiver declares no variable, so it is not a parameter for naming, reassignment or
@@ -193,27 +220,34 @@ reference", so its grammar-imports example is the first thing a new user copies 
 
 **A peglib 0.7.2 is expected** — a grammar-*instantiation* fix, confirmed by upstream as **behaviour
 unchanged**. So it does **not** move `RULE_TABLE`, the CST shape, or the generated API: `RuleKind` stays
-valid and §3's merge design holds. **Do not wait for it.** Re-pinning is an independent mechanical step
-(change the property, run the `generate-parser` profile, run `regen_rulekind.py`, rebuild) and cannot
-invalidate the work below.
+valid. Re-pinning is an independent mechanical step (change the property, run the `generate-parser`
+profile, run `regen_rulekind.py`, rebuild).
 
-1. **Finish the formatter** (§3) — the chain refactor is DONE; what remains is the 2 lambda fixtures
-   (`Lambdas`, `LambdaBlockArgs`). **Bisect, do not analyse** — §3 has the minimal snippet and two
-   unverified candidates. Verify with `mvn -f jbct/pom.xml -pl jbct-format -am test`; they must go green
-   **without any golden edits**.
-2. **Linter interface-awareness** (§4) — larger blast radius, needs a design pass first.
-3. **CLI + maven plugin** — never reached; they are the stated acceptance criterion and are still
-   unverified. `jbct.jar` in `jbct-cli/target/` predates this branch.
-4. **`pg-tools`** (§5) — independent, can be taken any time.
+1. ~~Finish the formatter~~ — **DONE** (`833235534`), §3. 67 tests, no golden edits.
+2. ~~Linter interface-awareness~~ — **DONE** (`6be655136`), §4. 691 tests; corpus-verified against the
+   pre-bump binary.
+3. **CLI + Maven Plugin** — the CLI is now genuinely exercised: `jbct lint` ran over 2135 aether files
+   repeatedly as the verification instrument, from a jar packaged at HEAD. **The plugin is only
+   unit-verified.** Exercising `mvn jbct:check -pl <module>` end-to-end against *this branch's* rules
+   would require `mvn install`, which the shared `~/.m2` forbids (it would swap the other stream's
+   toolchain silently). That verification is therefore **blocked pending coordination**, not forgotten —
+   raise it with the main stream rather than working around it.
+4. **`pg-tools`** (§5) — independent, untouched, can be taken any time. Still the largest remaining item.
 5. **Re-pin to 0.7.2** when it ships. While in that file: `jbct-parser/pom.xml` uses the property name
    `peglib.maven.plugin.version` for **both** the runtime dependency and the plugin — a misnomer that
    becomes a footgun if the two ever need to diverge. Renaming to `peglib.version` is a natural fold-in
-   there; deliberately not done on this branch to avoid cosmetic churn while it is red.
+   there; deliberately not done while the branch was red, and now simply not yet done.
+6. **JBCT-EX-02 burn-down** (`c3a16c26b`) — the repaired rule surfaces **53 previously-invisible
+   `error`-severity violations**: 49 in tests, 4 in production (`AbstractMultiPartitionStream` ×2,
+   `AbstractStreamOwnerFailover`, `AetherUp`). Landed as its own commit precisely so this burn-down can
+   be scheduled separately. Anything gating on a clean lint run will go red until it is done.
 
-**Why 1 comes before 5:** green goldens are the instrument you will want pointed at 0.7.2. A pure
-CST-shape change with no new rules would slip past `regen_rulekind.py` (which only proves the RULE SET
-is unchanged) — the formatter goldens are what actually detect it, and they only work as a sensor once
-they pass.
+**The goldens are now the sensor for 0.7.2.** A pure CST-shape change with no new rules slips past
+`regen_rulekind.py` (which only proves the RULE SET is unchanged); the formatter goldens detect it, and
+they only work as a sensor now that they pass. The **differential corpus run in §4 is the second
+sensor** — it is what caught 1962 silently-dropped findings that every test suite was blind to, and it
+should be re-run across the 0.7.2 re-pin.
 
 Nothing is pushed and no PR is open. Per project convention this ships as a PR against
-`release-1.0.0-rc3` once the tools are green.
+`release-1.0.0-rc3`.
+
