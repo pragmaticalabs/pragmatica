@@ -27,14 +27,24 @@ public class CstOrElseThrowRule implements CstLintRule {
         if (!ctx.shouldLint(packageName(root))) {
             return Stream.empty();
         }
-        // Find Primary nodes containing orElseThrow
-        return findAll(root, RuleKind.PRIMARY).stream()
-                      .filter(this::isOrElseThrow)
+
+        return findAll(root, this::spellsOrElseThrow).stream()
                       .map(node -> createDiagnostic(node, ctx));
     }
 
-    private boolean isOrElseThrow(Cursor node) {
-        return text(node).contains(".orElseThrow");
+    /// Exactly one node spells the call, but which one depends on its position in the chain.
+    /// A chained `....findFirst().orElseThrow()` spells it as a `PostOp` (expression) or a
+    /// `ChainOp` (statement); only a direct `x.orElseThrow()` keeps it inside the `Primary`'s
+    /// qualified name. Matching the narrowest spelling yields one diagnostic per call — a
+    /// `contains` test against `Primary` alone missed every chained call, and against every
+    /// node kind would re-report the same call on each enclosing expression level.
+    private boolean spellsOrElseThrow(Cursor node) {
+        if (node.kindIsAny(RuleKind.POST_OP, RuleKind.CHAIN_OP)) {
+            return text(node).trim()
+                             .startsWith(".orElseThrow");
+        }
+
+        return node.kindIs(RuleKind.QUALIFIED_NAME) && text(node).contains(".orElseThrow");
     }
 
     private Diagnostic createDiagnostic(Cursor node, LintContext ctx) {
