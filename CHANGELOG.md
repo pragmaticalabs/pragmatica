@@ -150,6 +150,58 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   `[verified: aether/resource/durable-entity/src/test/java/org/pragmatica/aether/resource/entity/DurableEntityConfigTest.java]`
 
 ### Fixed
+- **A worker community did not dissolve when it lost the core, and the core did not notice it had lost
+  the community (#590).** The CP contract at the community tier was unimplemented, not merely
+  unvalidated — and it was unimplemented on BOTH sides, which the ticket did not record.
+  **Community side:** `writeDissolved()` had exactly two callers, both gated on the community shrinking
+  to zero members. That is a membership-shrink mechanism, not a partition response. SWIM is
+  intra-community gossip, so a community cut off from the core still sees all of its own members alive,
+  the emptiness condition never fires, and it keeps serving — the "rogue autonomous community" the
+  contract exists to make impossible. **Core side:** the per-community FSM's "observed live membership"
+  read `GovernorAnnouncementValue.memberCount`, a field the community writes about ITSELF. Under
+  partition the governor cannot rewrite it, so it does not expire — it FREEZES at its last healthy
+  value. The core therefore kept the community `ACTIVE` and kept placing work on nodes it could not
+  reach. `GovernorAnnouncementKey` is never removed by anything, and
+  `SpokesmanPingLoop.currentReports()` — the one genuinely receipt-based signal the core collected —
+  had zero consumers. Both sides blind, in the same way and for the same reason: a status field was
+  trusted in place of an observation.
+  **One mechanism, both directions.** The leader already broadcasts `ClusterSyncPing` cluster-wide and
+  every live node answers; that exchange now carries liveness both ways, with no new wire type. A node
+  that has seen no *term-accepted* ping for `timeouts.cluster.core_absence` (default 10s) dissolves
+  LOCALLY through `DrainProcedure.initiate(CORE_ABSENCE)` — no consensus write, which is the whole
+  point, since announcing dissolve normally means writing `GovernorAnnouncementKey` through the core.
+  Pings failing term fencing do not refresh liveness, so a partitioned-away former leader cannot hold a
+  community open. Detection is PER NODE, mirroring `QuorumLossDetector`: no intra-community
+  coordination, no dependence on the governor surviving, and a partitioned SUBSET fences exactly itself.
+  An arm-after-first-ping latch means a node that has never heard the core is treated as cold-starting,
+  not isolated — without it every community would dissolve during formation.
+  On the core side, `ClusterSyncCollector.sinceLastPongNanos` feeds a `CommunityLivenessView` that the
+  FSM consults instead of the self-report; absent members are SUBTRACTED from the reported count rather
+  than recounted from `members()`, because the two are independent fields and the common
+  `governorAnnouncementValue(governorId, memberCount)` factory leaves `members` empty — recounting
+  would have read zero live members for every healthy community.
+  **`core_absence` must be strictly less than `community_absence`** (default 20s) and the config load
+  REFUSES an inverted or equal pair rather than clamping it. That inequality is the no-double-active
+  guarantee: the community stops serving before the core hands its slices to anyone else.
+  Observability per the observability-first rule: `coreAbsence` (`armed` / `fenced` /
+  `sinceLastPingMs` / `remainingMs` / `thresholdMs`) on `GET /api/cluster/membership`, deliberately on
+  that LOCAL endpoint beside the core tier's own quorum-loss fence — a node losing the core is precisely
+  the one a leader-forwarded read cannot reach during the incident it describes.
+  `[verified: aether/node/.../CoreAbsenceDetectorTest 13/13;
+  aether/aether-deployment/.../ClusterDeploymentStateCommunityFsmTest$CoreObservedAbsence 6/6;
+  aether/aether-config/.../ClusterTimeoutsAbsenceOrderingTest 5/5. Mutation-checked both ways: making
+  the FSM ignore observed absence turns exactly the 2 new-behaviour cases red with all 4 regression
+  guards still green, and removing the cold-start latch turns exactly
+  `evaluate_noPingEverReceived_neverFences` red with the other 12 green]`
+  `[design intent — unverified: the ORDERING under a real partition. Forge is single-JVM and cannot
+  sever the cluster network, so "the community stopped serving before the core re-placed its work" is
+  believed, not demonstrated, pending a docker/cloud partition run (#367). With an empty `members` list
+  only TOTAL isolation of a community is detected, not a partial one — a limit of the announcement
+  shape, not of the read side.]`
+  **Doc correction this forced:** `known-limitations.md` described dissolve-on-core-isolation as
+  awaiting *proof*, implying a built mechanism waiting on a test run. There was no mechanism to prove.
+  That page is the designated single source other docs reference, so the wording had propagated as
+  "wired".
 - **`WorkerCodecs.workerCodecs()` threw on every call.** `SwimConfig` carries `TimeSpan` fields, so
   `SwimCodecs.REQUIRED_TYPES` demands a `TimeSpan` codec; `NodeCodecs` registers one manually and this
   registry never did, so the startup checklist rejected it unconditionally
