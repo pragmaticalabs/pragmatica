@@ -134,7 +134,17 @@ java -jar jbct/jbct-cli/target/jbct.jar          lint aether --format json > aft
 Result: the bump had silently dropped **1962 of 13274 findings**; after the fix **every rule matches its
 pre-bump count exactly**, zero genuinely lost. 175 findings shifted by exactly −1 line — the anchor moved
 from the declaration to the wrapper carrying its annotations. That shift is inherent to the collapse and
-is not a defect. Note the JSON has a trailing summary line after the array, so parse with `raw_decode`.
+is not a defect.
+
+**Two traps when reusing this instrument:**
+
+- The JSON emits a trailing non-JSON summary line after the array — parse with `raw_decode`, not `load`.
+- **The `file` field is a BASENAME, never a path**, and 21 of 2141 aether basenames collide (2.2% of
+  findings). Diff as a **multiset** over `(file, line, column, ruleId)` — a set-based diff silently
+  collapses ~880 duplicate triples and can hide a change in one of two colliding files behind the other.
+  The multiset form proves per-rule count identity and 1:1 pairing of every moved finding; it still
+  cannot prove file-level identity for the colliding 2.2%, which needs a filesystem walk to resolve
+  basenames to paths on both sides.
 
 **Known residual (deliberate, not a defect).** ~15 sites still read raw `text(method)`/`text(member)`.
 They were left alone because the corpus proves they do not diverge, and changing them would be
