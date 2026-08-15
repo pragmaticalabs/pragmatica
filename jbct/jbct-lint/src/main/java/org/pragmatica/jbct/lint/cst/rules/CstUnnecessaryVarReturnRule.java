@@ -61,7 +61,7 @@ public class CstUnnecessaryVarReturnRule implements CstLintRule {
                 continue;
             }
             // Check that the variable is not referenced elsewhere in the method
-            var methodText = text(method);
+            var methodText = memberDeclText(method);
             var varRefPattern = Pattern.compile("\\b" + Pattern.quote(varName) + "\\b");
             var varRefMatcher = varRefPattern.matcher(methodText);
             var refCount = 0;

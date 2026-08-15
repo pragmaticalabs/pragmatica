@@ -812,7 +812,7 @@ public final class MethodShapeClassifier {
         var out = new ArrayList<ZoneMixing>();
 
         for (var method : findAllMethods(root)) {
-            var masked = MapperSafety.blankNonCode(text(method));
+            var masked = MapperSafety.blankNonCode(memberDeclText(method));
 
             if (!masked.contains(".flatMap(") && !masked.contains(".map(")) {
                 continue;

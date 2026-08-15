@@ -160,7 +160,7 @@ public class CstValueObjectFactoryRule implements CstLintRule {
     }
 
     private boolean isWithMethodReturningSelf(Cursor method, String recordName) {
-        var methodText = text(method);
+        var methodText = memberDeclText(method);
         var nameMatcher = METHOD_NAME_PATTERN.matcher(methodText);
 
         if (!nameMatcher.find()) return false;

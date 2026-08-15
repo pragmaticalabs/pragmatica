@@ -80,7 +80,7 @@ public class CstStaticImportRule implements CstLintRule {
     }
 
     private Stream<Diagnostic> findQualifiedCalls(Cursor method, Set<String> staticImports, LintContext ctx) {
-        var methodText = text(method);
+        var methodText = memberDeclText(method);
         var matcher = QUALIFIED_CALL.matcher(methodText);
 
         return Stream.iterate(matcher.find(),

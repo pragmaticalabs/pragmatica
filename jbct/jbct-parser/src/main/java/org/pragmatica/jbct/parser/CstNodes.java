@@ -306,14 +306,36 @@ public final class CstNodes {
                : findAncestorAny(root, node, kinds);
     }
 
-    /// The member wrappers declared directly by `typeDecl`'s body, whichever body spelling
-    /// the type kind uses.
+    /// The member wrappers declared directly by a type's body, whichever body spelling the
+    /// type kind uses.
+    ///
+    /// Accepts either the `TypeKind` or the `*Decl` beneath it: a nested type is a bare
+    /// `TypeKind` whose child is the `ClassDecl`/`InterfaceDecl` that actually holds the
+    /// body, so looking only at direct children silently returns nothing for every caller
+    /// that passes a `TypeKind` — which is what `findFirstInterface` and friends return.
     public static List<Cursor> typeBodyMembers(Cursor typeDecl) {
-        return children(typeDecl).stream()
-                                 .filter(child -> child.kindIsAny(TYPE_BODY_KINDS))
-                                 .flatMap(body -> children(body).stream())
-                                 .filter(CstNodes::isMemberWrapper)
-                                 .toList();
+        return typeBody(typeDecl).map(body -> children(body).stream()
+                                                            .filter(CstNodes::isMemberWrapper)
+                                                            .toList())
+                                 .or(List.of());
+    }
+
+    private static Option<Cursor> typeBody(Cursor typeDecl) {
+        for (var child : children(typeDecl)) {
+            if (child.kindIsAny(TYPE_BODY_KINDS)) {
+                return Option.some(child);
+            }
+        }
+
+        for (var child : children(typeDecl)) {
+            for (var grandChild : children(child)) {
+                if (grandChild.kindIsAny(TYPE_BODY_KINDS)) {
+                    return Option.some(grandChild);
+                }
+            }
+        }
+
+        return Option.none();
     }
 
     /// Text of a member's DECLARATION, excluding the annotations and modifiers that an
@@ -322,9 +344,25 @@ public final class CstNodes {
     /// that regex this text read the same string whatever type kind the member lives in.
     /// Most of them extract a method name, and without this an annotation's own parentheses
     /// (`@SuppressWarnings("...")`) precede the real signature and can capture the match.
+    ///
+    /// The declaration is the member's first non-`Annotation` child, which holds for a
+    /// constructor, a field and a nested type as well as a method — keying on `MethodDecl`
+    /// alone left every other member shape reading its annotations as if they were the
+    /// declaration.
     public static String memberDeclText(Cursor member) {
-        return childByRule(member, RuleKind.METHOD_DECL).map(CstNodes::text)
-                                                        .or(() -> text(member));
+        return memberDecl(member).map(CstNodes::text)
+                                 .or(() -> text(member));
+    }
+
+    /// The declaration a member holds — its first child that is not an annotation. Modifiers
+    /// are tokens rather than child nodes, so they fall outside this span too, exactly as
+    /// they do for a class's `Member` node.
+    public static Option<Cursor> memberDecl(Cursor member) {
+        return children(member).stream()
+                               .filter(child -> !child.kindIs(RuleKind.ANNOTATION))
+                               .findFirst()
+                               .map(Option::some)
+                               .orElseGet(Option::none);
     }
 
     public static List<Cursor> findAllMethods(Cursor root) {

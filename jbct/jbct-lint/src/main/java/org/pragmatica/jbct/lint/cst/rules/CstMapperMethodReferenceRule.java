@@ -148,7 +148,7 @@ public class CstMapperMethodReferenceRule implements CstLintRule {
                                            Map<Integer, Set<String>> partialSingletons,
                                            LintContext ctx) {
         var enclosingType = enclosingTypeIdx(root, method);
-        var methodText = MapperSafety.blankNonCode(text(method));
+        var methodText = MapperSafety.blankNonCode(memberDeclText(method));
         var matcher = METHOD_REF_IN_MAPPER.matcher(methodText);
         var diagnostics = new ArrayList<Diagnostic>();
 

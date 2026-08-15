@@ -160,7 +160,7 @@ public class CstParsingUtilitiesRule implements CstLintRule {
     }
 
     private Stream<Diagnostic> findJdkParsing(Cursor method, LintContext ctx) {
-        var methodText = text(method);
+        var methodText = memberDeclText(method);
         var matcher = COMBINED_PATTERN.matcher(methodText);
 
         return Stream.iterate(matcher.find(),

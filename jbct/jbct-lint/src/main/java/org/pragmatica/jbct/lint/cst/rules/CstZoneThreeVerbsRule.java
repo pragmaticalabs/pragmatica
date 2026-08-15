@@ -104,7 +104,7 @@ public class CstZoneThreeVerbsRule implements CstLintRule {
             return false;
         }
         // Check if it's a simple method (no monadic chains = leaf)
-        var methodText = text(method);
+        var methodText = memberDeclText(method);
         var hasMonadicChain = methodText.contains(".map(") || methodText.contains(".flatMap(") || methodText.contains(".fold(");
         // Leaf functions typically don't have monadic chains (they're at the bottom)
         return ! hasMonadicChain;

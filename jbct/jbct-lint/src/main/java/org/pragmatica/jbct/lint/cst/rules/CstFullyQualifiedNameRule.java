@@ -36,7 +36,7 @@ public class CstFullyQualifiedNameRule implements CstLintRule {
     }
 
     private Stream<Diagnostic> findFqcnInMethod(Cursor method, LintContext ctx) {
-        var methodText = text(method);
+        var methodText = memberDeclText(method);
         var matcher = FQCN_PATTERN.matcher(methodText);
 
         return Stream.iterate(matcher.find(),

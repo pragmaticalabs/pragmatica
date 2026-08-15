@@ -42,7 +42,7 @@ public class CstAlwaysSuccessResultRule implements CstLintRule {
     }
 
     private boolean alwaysReturnsSuccess(Cursor method) {
-        var methodText = text(method);
+        var methodText = memberDeclText(method);
         // Check if only uses Result.success() and never failure
         boolean hasSuccess = methodText.contains("Result.success(");
         boolean hasFailure = methodText.contains("Result.failure(") || methodText.contains(".result()") ||
