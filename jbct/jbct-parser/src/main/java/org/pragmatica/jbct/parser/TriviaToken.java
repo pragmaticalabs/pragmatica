@@ -1,6 +1,6 @@
 package org.pragmatica.jbct.parser;
 
-import org.pragmatica.peg.v6.token.TokenArray;
+import org.pragmatica.peg.token.TokenArray;
 
 
 /// View over a single trivia token in a TokenArray. Trivia tokens are produced by the v6

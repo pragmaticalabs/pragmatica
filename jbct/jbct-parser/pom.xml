@@ -17,7 +17,7 @@
     <description>Java 25 PEG parser with CST output for JBCT tools (v6 lex-then-parse pipeline)</description>
 
     <properties>
-        <peglib.maven.plugin.version>0.6.2</peglib.maven.plugin.version>
+        <peglib.maven.plugin.version>0.7.1</peglib.maven.plugin.version>
     </properties>
 
     <dependencies>
@@ -61,7 +61,7 @@
                                 <id>generate-java25-parser-v6</id>
                                 <phase>generate-sources</phase>
                                 <goals>
-                                    <goal>generate-v6</goal>
+                                    <goal>generate</goal>
                                 </goals>
                                 <configuration>
                                     <grammarFile>${project.basedir}/src/main/resources/grammars/java25.peg</grammarFile>

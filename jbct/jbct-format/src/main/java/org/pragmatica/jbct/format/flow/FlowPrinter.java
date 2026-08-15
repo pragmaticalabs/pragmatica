@@ -17,7 +17,7 @@ import org.pragmatica.jbct.parser.Cursor;
 import org.pragmatica.jbct.parser.RuleKind;
 import org.pragmatica.jbct.shared.ImportGroups;
 import org.pragmatica.lang.Option;
-import org.pragmatica.peg.v6.token.TokenArray;
+import org.pragmatica.peg.token.TokenArray;
 
 import static org.pragmatica.jbct.parser.CstNodes.*;
 
@@ -351,8 +351,9 @@ final class FlowPrinter {
             case ENUM_BODY -> printEnumBody(br);
             case RECORD_BODY -> printRecordBody(br);
             case MEMBER -> printMember(br);
-            case FIELD_DECL -> printFieldDecl(br);
+            case FIELD_DECL, INTERFACE_FIELD_DECL -> printFieldDecl(br);
             case CLASS_BODY -> printClassBody(br);
+            case INTERFACE_BODY -> printInterfaceBody(br);
             case ANNOTATION_BODY -> printAnnotationBody(br);
             case BLOCK -> printBlock(br);
             case STMT -> printStmt(br);
@@ -362,9 +363,11 @@ final class FlowPrinter {
             case POST_OP -> printPostOp(br);
             case ARGS -> printArgs(br);
             case LAMBDA -> printLambda(br);
-            case LAMBDA_PARAM -> printLambdaParam(br);
-            case PARAM -> printParam(br);
-            case PARAMS -> printParams(br);
+            case TYPED_LAMBDA_PARAM, VAR_LAMBDA_PARAM -> printLambdaParam(br);
+            case PLAIN_PARAM, LAST_PARAM, RECEIVER_PARAM -> printParam(br);
+            // `Params` wraps its entries in `OrdinaryParams`, which carries the separating
+            // commas. Route the wrapper through the same logic so break-on-comma still sees them.
+            case PARAMS, ORDINARY_PARAMS -> printParams(br);
             case PRIMARY -> printPrimary(br);
             case RECORD_DECL -> printRecordDecl(br);
             case RECORD_COMPONENTS -> printRecordComponents(br);
@@ -457,7 +460,7 @@ final class FlowPrinter {
     /// record members, enum constants, local var/type decls, annotation members).
     private static boolean annotationsBreakOnNewlineInParent(RuleKind kind) {
         return switch (kind) {
-            case TYPE_DECL, CLASS_MEMBER, ANNOTATION_MEMBER, ANNOTATION_ELEM_DECL, RECORD_MEMBER, ENUM_CONST, LOCAL_VAR, LOCAL_VAR_NO_SEMI, LOCAL_TYPE_DECL -> true;
+            case TYPE_DECL, CLASS_MEMBER, INTERFACE_MEMBER, ANNOTATION_MEMBER, ANNOTATION_ELEM_DECL, RECORD_MEMBER, ENUM_CONST, LOCAL_VAR, LOCAL_VAR_NO_SEMI, LOCAL_TYPE_DECL -> true;
             default -> false;
         };
     }
@@ -633,6 +636,13 @@ final class FlowPrinter {
     // ===== Type bodies =====
     private void printClassBody(Cursor.Branch classBody) {
         printBracedBody(classBody, RuleKind.CLASS_MEMBER);
+    }
+
+    /// Interfaces used to reuse `ClassBody`. The grammar now gives them their own
+    /// `InterfaceBody <- '{' InterfaceMember* '}'`, so they need the same braced-body
+    /// treatment keyed on `InterfaceMember` — without this they print inline.
+    private void printInterfaceBody(Cursor.Branch interfaceBody) {
+        printBracedBody(interfaceBody, RuleKind.INTERFACE_MEMBER);
     }
 
     private void printAnnotationBody(Cursor.Branch annotBody) {
@@ -2137,7 +2147,9 @@ final class FlowPrinter {
                        new TokenWalker() {
             @Override
             public void onChild(Cursor child) {
-                           if (child.kindIs(RuleKind.PARAM)) {
+                           if (child.kindIs(RuleKind.PLAIN_PARAM)
+                               || child.kindIs(RuleKind.LAST_PARAM)
+                               || child.kindIs(RuleKind.RECEIVER_PARAM)) {
                            printNodeContent(child);
                        } else {
                            printNode(child);
@@ -2628,7 +2640,7 @@ final class FlowPrinter {
             case Cursor.Branch br -> {
                 switch (br.kind()) {
                     case LAMBDA -> printLambdaContent(br);
-                    case LAMBDA_PARAM -> printLambdaParam(br);
+                    case TYPED_LAMBDA_PARAM, VAR_LAMBDA_PARAM -> printLambdaParam(br);
                     case ARGS -> printArgs(br);
                     case BLOCK -> printBlock(br);
                     case POSTFIX -> printPostfix(br);
@@ -2636,17 +2648,18 @@ final class FlowPrinter {
                     case TERNARY -> printTernary(br);
                     case ADDITIVE -> printAdditive(br);
                     case LOG_AND -> printLogAnd(br);
-                    case PARAMS -> printParams(br);
+                    case PARAMS, ORDINARY_PARAMS -> printParams(br);
                     case RECORD_COMPONENTS -> printRecordComponents(br);
                     case TYPE_ARGS -> printTypeArgs(br);
                     case TYPE_PARAMS -> printTypeParams(br);
                     case SWITCH_BLOCK -> printSwitchBlock(br);
                     case UNARY -> printUnary(br);
-                    case FIELD_DECL -> printFieldDecl(br);
-                    case PARAM -> printParam(br);
+                    case FIELD_DECL, INTERFACE_FIELD_DECL -> printFieldDecl(br);
+                    case PLAIN_PARAM, LAST_PARAM, RECEIVER_PARAM -> printParam(br);
                     case ENUM_BODY -> printEnumBody(br);
                     case RECORD_BODY -> printRecordBody(br);
                     case CLASS_BODY -> printClassBody(br);
+                    case INTERFACE_BODY -> printInterfaceBody(br);
                     case ANNOTATION_BODY -> printAnnotationBody(br);
                     case PRIMARY -> printPrimary(br);
                     case RECORD_DECL -> printRecordDecl(br);

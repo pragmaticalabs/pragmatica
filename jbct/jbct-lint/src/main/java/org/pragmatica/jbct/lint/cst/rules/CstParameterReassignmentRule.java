@@ -126,7 +126,7 @@ public class CstParameterReassignmentRule implements CstLintRule {
     }
 
     private void collectParamNames(Cursor params, Set<String> names) {
-        for (var param : childrenByRule(params, RuleKind.PARAM)) {
+        for (var param : parameterNodes(params)) {
             lastIdentifier(text(param).trim()).ifPresent(names::add);
         }
     }

@@ -723,7 +723,7 @@ public final class MethodShapeClassifier {
     private static Set<String> collectParamNames(Cursor params) {
         var names = new HashSet<String>();
 
-        for (var param : childrenByRule(params, RuleKind.PARAM)) {
+        for (var param : parameterNodes(params)) {
             var matcher = PARAM_NAME_TAIL.matcher(text(param).stripTrailing());
 
             if (matcher.find()) {

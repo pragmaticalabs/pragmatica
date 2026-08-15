@@ -235,6 +235,28 @@ public final class CstNodes {
         return childByRule(methodMember, RuleKind.METHOD_DECL).flatMap(md -> childByRule(md, RuleKind.PARAMS));
     }
 
+    /// Return the individual declared parameters of a `Params` node, in source order.
+    ///
+    /// The grammar nests these rather than listing them flat: `Params` holds an optional
+    /// `ReceiverParam` followed by `OrdinaryParams`, and `OrdinaryParams` holds
+    /// `PlainParam*` then a single `LastParam` (which is also where varargs live). Callers
+    /// that want "the parameters of this method" want that sequence flattened, so this
+    /// walks the nesting for them.
+    ///
+    /// A `ReceiverParam` (the explicit `this` receiver, JLS 8.4.1) is deliberately
+    /// EXCLUDED: it declares no variable, so it is not a parameter for the purposes of
+    /// naming, reassignment or nullability analysis.
+    public static List<Cursor> parameterNodes(Cursor params) {
+        var results = new ArrayList<Cursor>();
+
+        for (var ordinary : childrenByRule(params, RuleKind.ORDINARY_PARAMS)) {
+            results.addAll(childrenByRule(ordinary, RuleKind.PLAIN_PARAM));
+            results.addAll(childrenByRule(ordinary, RuleKind.LAST_PARAM));
+        }
+
+        return results;
+    }
+
     /// Return the `Block` body of a method member, if any.
     /// Walks MEMBER → METHOD_DECL → BLOCK.
     public static Option<Cursor> methodBody(Cursor methodMember) {

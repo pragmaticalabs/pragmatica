@@ -1,8 +1,8 @@
 package org.pragmatica.jbct.parser.v6;
 
-import org.pragmatica.peg.v6.cst.CstArray;
-import org.pragmatica.peg.v6.cst.ParseResult;
-import org.pragmatica.peg.v6.token.TokenArray;
+import org.pragmatica.peg.cst.CstArray;
+import org.pragmatica.peg.cst.ParseResult;
+import org.pragmatica.peg.token.TokenArray;
 
 import java.io.IOException;
 import java.nio.file.Files;

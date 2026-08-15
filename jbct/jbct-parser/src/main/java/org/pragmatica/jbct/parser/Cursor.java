@@ -7,8 +7,8 @@ import java.util.stream.IntStream;
 import java.util.stream.Stream;
 import java.util.stream.StreamSupport;
 
-import org.pragmatica.peg.v6.cst.CstArray;
-import org.pragmatica.peg.v6.token.TokenArray;
+import org.pragmatica.peg.cst.CstArray;
+import org.pragmatica.peg.token.TokenArray;
 
 
 /// Navigation primitive over the v6 flat-`int[]` CST. A Cursor pairs a `CstArray` with a

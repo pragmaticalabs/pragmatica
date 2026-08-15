@@ -91,7 +91,7 @@ public class CstNullableParameterRule implements CstLintRule {
         var names = new HashSet<String>();
         // Only this method's own (direct) parameters — not parameters of nested local/anonymous
         // type methods, whose bodies are scanned separately.
-        var params = methodParams(method).map(node -> childrenByRule(node, RuleKind.PARAM))
+        var params = methodParams(method).map(node -> parameterNodes(node))
                                          .or(List.of());
 
         for (var param : params) {
