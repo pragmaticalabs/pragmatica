@@ -79,7 +79,7 @@ public sealed interface NodeCodecs {
         all.add(isoDateTimeCodec());
         var requiredTypes = collectRequiredTypes();
 
-        return SliceCodec.sliceCodec(parent, all, requiredTypes);
+        return SliceCodec.systemCodec(parent, all, requiredTypes);
     }
 
     private static Set<Class<?>> collectRequiredTypes() {

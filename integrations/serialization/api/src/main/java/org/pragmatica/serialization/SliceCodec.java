@@ -58,12 +58,13 @@ public interface SliceCodec extends Serializer, Deserializer {
     /// `0..127` is 1 byte, `128..16383` is 2, `16384..2097151` is 3. The split below spends that
     /// deliberately.
     ///
-    /// **SYSTEM range `0..16383` — manually assigned, never reused.** Framework and Aether protocol
-    /// types live here: DHT lookups, SWIM gossip, Rabia rounds, KV commands. They are enumerable,
-    /// framework-owned, and do not grow with user code, so hand-assignment is tractable and buys the
-    /// cheap 1-2 byte encodings for the highest-frequency traffic in the system. A tag here is a WIRE
-    /// CONTRACT: once assigned it is never renumbered and never reused for a different type, because
-    /// two nodes disagreeing on a tag is undiagnosable corruption rather than a clean failure.
+    /// **SYSTEM range `0..16383` — manually assigned in [SystemTags], never reused.** Framework and
+    /// Aether protocol types live here: DHT lookups, SWIM gossip, Rabia rounds, KV commands. They are
+    /// enumerable, framework-owned, and do not grow with user code, so hand-assignment is tractable and
+    /// buys the cheap 1-2 byte encodings for the highest-frequency traffic in the system. A tag here is
+    /// a WIRE CONTRACT: once assigned it is never renumbered and never reused for a different type,
+    /// because two nodes disagreeing on a tag is undiagnosable corruption rather than a clean failure.
+    /// [#systemCodec] refuses to build a system registry containing a type that was never pinned.
     ///
     /// **USER range `16384..2097151` — hash-derived from the FQCN.** Slice-generated codecs live
     /// here. They grow without bound as applications add types, so they cannot be hand-assigned, and
@@ -155,13 +156,30 @@ public interface SliceCodec extends Serializer, Deserializer {
     }
 
     // --- Tag computation ---
+    /// The wire tag for `className`: its hand-assigned [SystemTags] entry when it has one, otherwise a
+    /// hash-derived tag in the USER range.
+    ///
+    /// Generated codecs call this at class-init, which is why the lookup lives HERE rather than in the
+    /// generator: pinning a type becomes a one-line edit to one registry file, with no regenerated
+    /// code, no churn across the `@Codec` annotations, and no envelope-version question.
+    static int deterministicTag(String className) {
+        var pinned = SystemTags.tagFor(className);
+
+        return pinned == SystemTags.NOT_PINNED
+               ? hashedTag(className)
+               : pinned;
+    }
+
     /// Hash-derived tag in the USER range for a slice-generated type.
     ///
     /// FNV-1a rather than `String.hashCode()`: our FQCNs share long prefixes
     /// (`org.pragmatica.aether.resource.entity.Entity…`), and `String.hashCode` clusters badly on
     /// exactly that shape, so it wasted a space that was already too small. FNV-1a avalanches, which
     /// gets the collision rate to the theoretical birthday bound instead of well above it.
-    static int deterministicTag(String className) {
+    ///
+    /// Separate from [#deterministicTag] so the hash's own properties stay testable: pinning a name in
+    /// [SystemTags] must not silently turn a hash assertion into an assertion about the registry.
+    static int hashedTag(String className) {
         long hash = 0xcbf29ce484222325L;
 
         for (var i = 0; i < className.length(); i++) {
@@ -245,6 +263,35 @@ public interface SliceCodec extends Serializer, Deserializer {
         validateRequiredTypes(result, requiredTypes);
 
         return result;
+    }
+
+    /// Build the SYSTEM codec registry — the shared parent that every slice registry layers over.
+    ///
+    /// Identical to [#sliceCodec(SliceCodec, List, Set)] except that it refuses a type whose tag is not
+    /// hand-assigned in [SystemTags]. That refusal is what makes the pinning obligation enforceable
+    /// instead of aspirational, and it is why the system set never has to be recovered by grepping for
+    /// `@Codec`: adding a framework codec without a pin fails the build and the message names the type.
+    ///
+    /// An unpinned framework type is wrong on two counts. It pays three wire bytes on the cluster's own
+    /// highest-frequency traffic, and its identity becomes hostage to a rename or a change of hash
+    /// function — for a value that two nodes must agree on to communicate at all.
+    static SliceCodec systemCodec(SliceCodec parent, List<TypeCodec<?>> codecs, Set<Class<?>> requiredTypes) {
+        var unpinned = codecs.stream()
+                             .filter(codec -> codec.tag() > SYSTEM_TAG_MAX)
+                             .map(codec -> codec.type().getName().replace('$', '.'))
+                             .distinct()
+                             .sorted()
+                             .toList();
+
+        if (!unpinned.isEmpty()) {
+            throw new IllegalStateException("System types with no hand-assigned tag: " + String.join(", ", unpinned)
+                                            + ". Every type in the system registry needs a pin in SystemTags"
+                                            + " (system range is [0, " + SYSTEM_TAG_MAX + "]); these fell through to the hash"
+                                            + " and landed in the user range. Add each to the block for its subsystem taking"
+                                            + " the next free tag — never renumber or reuse an existing one.");
+        }
+
+        return sliceCodec(parent, codecs, requiredTypes);
     }
 
     /// Verify that every type on the required-codec checklist has a registered codec.

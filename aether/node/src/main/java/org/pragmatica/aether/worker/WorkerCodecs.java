@@ -69,7 +69,7 @@ public sealed interface WorkerCodecs {
         all.add(timeSpanCodec());
         var requiredTypes = collectRequiredTypes();
 
-        return SliceCodec.sliceCodec(parent, all, requiredTypes);
+        return SliceCodec.systemCodec(parent, all, requiredTypes);
     }
 
     private static Set<Class<?>> collectRequiredTypes() {

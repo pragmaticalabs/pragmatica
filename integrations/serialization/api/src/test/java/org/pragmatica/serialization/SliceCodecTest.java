@@ -206,13 +206,52 @@ class SliceCodecTest {
         /// `NodeCodecs` static init and errored 48 unrelated tests — invisibly to the owning module's
         /// own build, because only the full node assembly registers both. Pinned so a future change to
         /// the derivation cannot silently reintroduce it.
+        ///
+        /// Asserted against [SliceCodec#hashedTag], not [SliceCodec#deterministicTag]: both names are
+        /// now pinned in [SystemTags], so going through `deterministicTag` would assert that two table
+        /// entries differ — true, but a different and much weaker claim than the one this test exists
+        /// to make about the hash.
         @Test
-        void deterministicTag_theHistoricalCollisionPair_noLongerCollides() {
-            var checkpointValue = SliceCodec.deterministicTag("org.pragmatica.aether.slice.kvstore.AetherValue.EntityCheckpointValue");
-            var healthHint = SliceCodec.deterministicTag("org.pragmatica.cluster.metrics.HealthHintWire");
+        void hashedTag_theHistoricalCollisionPair_noLongerCollides() {
+            var checkpointValue = SliceCodec.hashedTag("org.pragmatica.aether.slice.kvstore.AetherValue.EntityCheckpointValue");
+            var healthHint = SliceCodec.hashedTag("org.pragmatica.cluster.metrics.HealthHintWire");
 
             assertTrue(checkpointValue != healthHint,
                        "EntityCheckpointValue and HealthHintWire collided again at tag %d".formatted(checkpointValue));
+        }
+
+        /// The slice-processor carries its own copy of this derivation so it can report a collision at
+        /// compile time without dragging `serialization-api` onto every application's annotation
+        /// processor path (see `CodecTagSpace`). Both sides pin this same probe, so a change to either
+        /// copy fails a build rather than silently degrading the compile-time check.
+        @Test
+        void hashedTag_pinnedProbeValue() {
+            assertEquals(1785154, SliceCodec.hashedTag("com.example.CollisionProbe"));
+        }
+
+        /// The pinned table wins over the hash, and it is the SYSTEM range it puts the type in — that
+        /// redirection is the whole of Phase 2, and without it every framework type silently pays three
+        /// wire bytes and stays hostage to a rename.
+        @Test
+        void deterministicTag_pinnedSystemType_returnsHandAssignedTag() {
+            var name = "org.pragmatica.consensus.NodeId";
+            var tag = SliceCodec.deterministicTag(name);
+
+            assertEquals(SystemTags.tagFor(name), tag);
+            assertTrue(tag <= SliceCodec.SYSTEM_TAG_MAX,
+                       "Pinned type %s landed on %d, outside the system range".formatted(name, tag));
+            assertTrue(tag != SliceCodec.hashedTag(name),
+                       "Pinned type %s still came back from the hash".formatted(name));
+        }
+
+        /// A name with no table entry must still reach the hash — the pinning is a lookup in front of
+        /// the derivation, not a replacement for it.
+        @Test
+        void deterministicTag_unpinnedType_fallsThroughToTheHash() {
+            var name = "com.example.NotASystemType";
+
+            assertEquals(SystemTags.NOT_PINNED, SystemTags.tagFor(name));
+            assertEquals(SliceCodec.hashedTag(name), SliceCodec.deterministicTag(name));
         }
     }
 
