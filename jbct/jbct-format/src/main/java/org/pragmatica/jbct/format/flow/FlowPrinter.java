@@ -2222,6 +2222,15 @@ final class FlowPrinter {
 
     // ===== Lambda =====
     private void printLambda(Cursor.Branch lambda) {
+        printLambdaWith(lambda, this::printNode);
+    }
+
+    /// A lambda BODY is a tail context — chains inside it break vertically — and both entry
+    /// points must establish it. Since peglib 0.7.1 hoisted `Lambda` out of `Primary`
+    /// (`Expr <- Lambda / Assignment`), an argument lambda is reached through
+    /// `printNodeContent` rather than `printNode`, so a content-only variant that skipped the
+    /// tail context silently stopped breaking those chains.
+    private void printLambdaWith(Cursor.Branch lambda, java.util.function.Consumer<Cursor> printHead) {
         walkTokensWith(lambda,
                        new TokenWalker() {
             boolean afterArrow = false;
@@ -2229,14 +2238,13 @@ final class FlowPrinter {
             @Override
             public void onChild(Cursor child) {
                            if (afterArrow) {
-                           // Lambda body: enter tail context so chains inside break vertically.
                            try (var scope = alignment.enterTailContext()) {
                            printNodeContent(child);
                        }
 
                            afterArrow = false;
                        } else {
-                           printNode(child);
+                           printHead.accept(child);
                        }
                        }
 
@@ -2831,22 +2839,7 @@ final class FlowPrinter {
     }
 
     private void printLambdaContent(Cursor.Branch lambda) {
-        walkTokensWith(lambda,
-                       new TokenWalker() {
-            @Override
-            public void onChild(Cursor child) {
-                           printNodeContent(child);
-                       }
-
-            @Override
-            public void onToken(int kind, String text) {
-                           if ("->".equals(text)) {
-                           emit(" -> ");
-                       } else {
-                           emitToken(text);
-                       }
-                       }
-        });
+        printLambdaWith(lambda, this::printNodeContent);
     }
 
     // ===== Comment emission (inline, but never affects layout decisions) =====
