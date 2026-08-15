@@ -100,7 +100,7 @@ public class CstMapperMethodReferenceRule implements CstLintRule {
                 continue;
             }
 
-            var name = extractMethodName(text(method)).or("");
+            var name = extractMethodName(memberDeclText(method)).or("");
 
             if (name.isEmpty()) {
                 continue;

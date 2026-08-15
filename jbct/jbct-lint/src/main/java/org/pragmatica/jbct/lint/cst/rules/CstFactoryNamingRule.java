@@ -61,11 +61,11 @@ public class CstFactoryNamingRule implements CstLintRule {
     }
 
     private boolean isCorrectlyNamed(Cursor method, String expectedName) {
-        return extractMethodName(text(method)).equals(expectedName);
+        return extractMethodName(memberDeclText(method)).equals(expectedName);
     }
 
     private Diagnostic createDiagnostic(Cursor method, String typeName, String expectedName, LintContext ctx) {
-        var actualName = extractMethodName(text(method));
+        var actualName = extractMethodName(memberDeclText(method));
 
         return Diagnostic.diagnostic(RULE_ID,
                                      ctx.severityFor(RULE_ID),

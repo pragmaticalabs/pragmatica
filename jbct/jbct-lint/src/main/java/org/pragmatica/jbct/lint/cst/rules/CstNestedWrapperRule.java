@@ -53,7 +53,7 @@ public class CstNestedWrapperRule implements CstLintRule {
         var typeText = text(type).trim();
 
         return detectNestedWrapper(typeText).map(nestedPattern -> {
-            var methodName = extractMethodName(text(method));
+            var methodName = extractMethodName(memberDeclText(method));
 
             return createDiagnostic(method, methodName, nestedPattern, ctx);
         });

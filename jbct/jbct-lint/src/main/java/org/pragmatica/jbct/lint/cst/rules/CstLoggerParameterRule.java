@@ -33,7 +33,9 @@ public class CstLoggerParameterRule implements CstLintRule {
     }
 
     private boolean hasLoggerParameter(Cursor method) {
-        var methodText = text(method);
+        // The DECLARATION text, not the member's: an annotation's own ')' would otherwise
+        // precede the parameter list and defeat the positional check below.
+        var methodText = memberDeclText(method);
 
         return methodText.contains("Logger ")
                && methodText.contains("(")
@@ -41,7 +43,7 @@ public class CstLoggerParameterRule implements CstLintRule {
     }
 
     private Diagnostic createDiagnostic(Cursor method, LintContext ctx) {
-        var methodName = extractMethodName(text(method));
+        var methodName = extractMethodName(memberDeclText(method));
 
         return Diagnostic.diagnostic(RULE_ID,
                                      ctx.severityFor(RULE_ID),

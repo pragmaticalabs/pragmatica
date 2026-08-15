@@ -49,7 +49,7 @@ public class CstAwaitRule implements CstLintRule {
     }
 
     private Diagnostic createDiagnostic(Cursor root, Cursor stmt, LintContext ctx) {
-        var methodName = findAncestor(root, stmt, RuleKind.MEMBER).map(member -> extractMethodName(text(member)))
+        var methodName = enclosingMethodMember(root, stmt).map(member -> extractMethodName(memberDeclText(member)))
                                      .or("(unknown)");
 
         return Diagnostic.diagnostic(RULE_ID,

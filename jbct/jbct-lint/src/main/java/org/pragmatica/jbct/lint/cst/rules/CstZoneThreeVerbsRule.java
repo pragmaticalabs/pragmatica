@@ -91,9 +91,9 @@ public class CstZoneThreeVerbsRule implements CstLintRule {
     }
 
     private boolean isLeafFunction(Cursor method, Cursor root) {
-        // Find the class member containing this method
-        return findAncestor(root, method, RuleKind.CLASS_MEMBER).filter(classMember -> isPrivateLeafMethod(classMember,
-                                                                                                           method))
+        // Find the member wrapper containing this method
+        return enclosingMember(root, method).filter(classMember -> isPrivateLeafMethod(classMember,
+                                                                                       method))
                            .isPresent();
     }
 
@@ -111,7 +111,7 @@ public class CstZoneThreeVerbsRule implements CstLintRule {
     }
 
     private Stream<Diagnostic> checkMethodName(Cursor method, LintContext ctx) {
-        var methodName = extractMethodName(text(method));
+        var methodName = extractMethodName(memberDeclText(method));
 
         if (methodName.isEmpty()) {
             return Stream.empty();

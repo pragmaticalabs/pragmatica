@@ -45,12 +45,12 @@ public class CstTestMethodNamingRule implements CstLintRule {
 
         return findAllMethods(root).stream()
                              .filter(method -> isTestMethod(root, method))
-                             .filter(method -> !matchesTestNaming(extractMethodName(text(method))))
+                             .filter(method -> !matchesTestNaming(extractMethodName(memberDeclText(method))))
                              .map(method -> createDiagnostic(method, ctx));
     }
 
     private boolean isTestMethod(Cursor root, Cursor method) {
-        return hasTestAnnotation(method) || findAncestor(root, method, RuleKind.CLASS_MEMBER).map(this::hasTestAnnotation)
+        return hasTestAnnotation(method) || enclosingMember(root, method).map(this::hasTestAnnotation)
                                                         .or(false);
     }
 
@@ -90,7 +90,7 @@ public class CstTestMethodNamingRule implements CstLintRule {
     }
 
     private Diagnostic createDiagnostic(Cursor method, LintContext ctx) {
-        var name = extractMethodName(text(method));
+        var name = extractMethodName(memberDeclText(method));
 
         return Diagnostic.diagnostic(RULE_ID,
                                      ctx.severityFor(RULE_ID),

@@ -4,6 +4,7 @@ import java.util.List;
 import java.util.Set;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
+import java.util.function.Predicate;
 import java.util.stream.Stream;
 
 import org.pragmatica.jbct.lint.Diagnostic;
@@ -11,6 +12,7 @@ import org.pragmatica.jbct.lint.LintContext;
 import org.pragmatica.jbct.lint.cst.CstLintRule;
 import org.pragmatica.jbct.lint.cst.filetype.FileType;
 import org.pragmatica.jbct.lint.cst.filetype.FileTypeClassifier;
+import org.pragmatica.jbct.parser.CstNodes;
 import org.pragmatica.jbct.parser.Cursor;
 import org.pragmatica.jbct.parser.RuleKind;
 
@@ -97,7 +99,7 @@ public class CstInjectionRule implements CstLintRule {
     }
 
     private Stream<Diagnostic> injectionDiagnostics(Cursor root, Cursor typeKind, LintContext ctx) {
-        var mutableFields = directOf(root, typeKind, RuleKind.FIELD_DECL).stream()
+        var mutableFields = directOf(root, typeKind, CstNodes::isFieldDecl).stream()
                                    .filter(field -> isMutableInstanceField(root, field))
                                    .map(field -> fieldDiagnostic(field, ctx));
         var setters = FileTypeClassifier.directMethods(root, typeKind)
@@ -108,8 +110,8 @@ public class CstInjectionRule implements CstLintRule {
         return Stream.concat(mutableFields, setters);
     }
 
-    private List<Cursor> directOf(Cursor root, Cursor typeKind, RuleKind kind) {
-        return findAll(typeKind, kind).stream()
+    private List<Cursor> directOf(Cursor root, Cursor typeKind, Predicate<Cursor> predicate) {
+        return findAll(typeKind, predicate).stream()
                      .filter(node -> FileTypeClassifier.directlyEncloses(root, typeKind, node))
                      .toList();
     }
@@ -121,7 +123,7 @@ public class CstInjectionRule implements CstLintRule {
     }
 
     private String fieldModifiers(Cursor root, Cursor field) {
-        return findAncestor(root, field, RuleKind.CLASS_MEMBER).map(wrapper -> text(wrapper))
+        return enclosingMember(root, field).map(wrapper -> text(wrapper))
                             .or(text(field));
     }
 

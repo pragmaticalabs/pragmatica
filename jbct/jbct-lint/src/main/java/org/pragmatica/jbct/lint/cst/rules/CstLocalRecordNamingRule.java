@@ -48,7 +48,7 @@ public class CstLocalRecordNamingRule implements CstLintRule {
     }
 
     private boolean isLocalRecord(Cursor root, Cursor record) {
-        return findAncestor(root, record, RuleKind.MEMBER).filter(CstNodes::isMethodMember)
+        return enclosingMethodMember(root, record).filter(CstNodes::isMethodMember)
                            .isPresent();
     }
 

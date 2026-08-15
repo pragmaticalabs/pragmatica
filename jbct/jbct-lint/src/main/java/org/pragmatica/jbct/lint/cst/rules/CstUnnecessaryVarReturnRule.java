@@ -6,6 +6,7 @@ import java.util.stream.Stream;
 import org.pragmatica.jbct.lint.Diagnostic;
 import org.pragmatica.jbct.lint.LintContext;
 import org.pragmatica.jbct.lint.cst.CstLintRule;
+import org.pragmatica.jbct.parser.CstNodes;
 import org.pragmatica.jbct.parser.Cursor;
 import org.pragmatica.jbct.parser.RuleKind;
 
@@ -33,7 +34,7 @@ public class CstUnnecessaryVarReturnRule implements CstLintRule {
             return Stream.empty();
         }
 
-        return findAll(root, RuleKind.MEMBER).stream()
+        return findAll(root, CstNodes::isMemberDecl).stream()
                       .flatMap(method -> analyzeMethod(root, method, ctx));
     }
 
@@ -78,7 +79,7 @@ public class CstUnnecessaryVarReturnRule implements CstLintRule {
     }
 
     private Diagnostic createDiagnostic(Cursor root, Cursor stmt, String varName, LintContext ctx) {
-        var methodName = findAncestor(root, stmt, RuleKind.MEMBER).map(member -> extractMethodName(text(member)))
+        var methodName = enclosingMethodMember(root, stmt).map(member -> extractMethodName(memberDeclText(member)))
                                      .or("(unknown)");
 
         return Diagnostic.diagnostic(RULE_ID,

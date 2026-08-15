@@ -168,7 +168,7 @@ public final class SuppressionExtractor {
                 return Option.some(node);
             }
 
-            if (node.kindIs(RuleKind.CLASS_MEMBER) || node.kindIs(RuleKind.MEMBER)) {
+            if (isMemberLevel(node)) {
                 return Option.some(outermostClassMember(path, i));
             }
 
@@ -186,7 +186,7 @@ public final class SuppressionExtractor {
         for (int i = startIndex - 1; i >= 0; i--) {
             var parent = path.get(i);
 
-            if (parent.kindIs(RuleKind.CLASS_MEMBER) || parent.kindIs(RuleKind.MEMBER)) {
+            if (isMemberLevel(parent)) {
                 result = parent;
             } else {
                 break;

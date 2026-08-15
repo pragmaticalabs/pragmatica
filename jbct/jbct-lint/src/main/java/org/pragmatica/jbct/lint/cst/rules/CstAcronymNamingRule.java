@@ -65,7 +65,7 @@ public class CstAcronymNamingRule implements CstLintRule {
     }
 
     private Stream<Diagnostic> checkMethodName(Cursor method, LintContext ctx) {
-        var matcher = METHOD_NAME_PATTERN.matcher(text(method));
+        var matcher = METHOD_NAME_PATTERN.matcher(memberDeclText(method));
 
         if (!matcher.find()) {
             return Stream.empty();

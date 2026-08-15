@@ -71,9 +71,25 @@ public final class CstNodes {
         return findAncestorPath(root, target).flatMap(path -> findAncestorInPath(path, kind));
     }
 
+    /// Find the nearest ancestor of `target` matching ANY of `kinds`. Nearest wins, so the
+    /// order of `kinds` does not matter — this is a search for one node, not a preference.
+    public static Option<Cursor> findAncestorAny(Cursor root, Cursor target, RuleKind... kinds) {
+        return findAncestorPath(root, target).flatMap(path -> findAncestorInPathAny(path, kinds));
+    }
+
     private static Option<Cursor> findAncestorInPath(List<Cursor> path, RuleKind kind) {
         for (int i = path.size() - 2; i >= 0; i--) {
             if (path.get(i).kindIs(kind)) {
+                return Option.some(path.get(i));
+            }
+        }
+
+        return Option.none();
+    }
+
+    private static Option<Cursor> findAncestorInPathAny(List<Cursor> path, RuleKind... kinds) {
+        for (int i = path.size() - 2; i >= 0; i--) {
+            if (path.get(i).kindIsAny(kinds)) {
                 return Option.some(path.get(i));
             }
         }
@@ -206,31 +222,123 @@ public final class CstNodes {
     }
 
     // ===== Member-shape detection =====
-    /// True for a `Member` node that represents a method declaration. Under v6, the
-    /// Member node wraps a single `MethodDecl` child (or `ConstructorDecl`, `FieldDecl`,
-    /// `TypeKind`). A method member is one whose first child is `MethodDecl`.
-    public static boolean isMethodMember(Cursor node) {
-        if (!node.kindIs(RuleKind.MEMBER)) {
-            return false;
-        }
+    /// Classes and enums spell a member as `ClassMember -> Member -> MethodDecl`. Interfaces
+    /// and records hold the `MethodDecl` DIRECTLY under `InterfaceMember` / `RecordMember`,
+    /// with no `Member` level at all. Rules ask structural questions — "the method members of
+    /// this type", "the member enclosing this statement" — whose answers must not depend on
+    /// which spelling the enclosing type happens to use, so the shapes are reconciled here
+    /// rather than at each call site.
+    ///
+    /// Nodes that hold a member declaration directly; `MEMBER` is the class/enum spelling.
+    private static final RuleKind[] METHOD_MEMBER_KINDS = {RuleKind.MEMBER,
+                                                           RuleKind.INTERFACE_MEMBER,
+                                                           RuleKind.RECORD_MEMBER};
 
-        return hasChildOfRule(node, RuleKind.METHOD_DECL);
+    /// Member wrappers carrying the annotations and modifiers that `MEMBER` excludes. For
+    /// interfaces and records this is the SAME node that holds the declaration.
+    private static final RuleKind[] MEMBER_WRAPPER_KINDS = {RuleKind.CLASS_MEMBER,
+                                                            RuleKind.INTERFACE_MEMBER,
+                                                            RuleKind.RECORD_MEMBER};
+
+    /// Field declarations, across every type kind that can hold one.
+    private static final RuleKind[] FIELD_DECL_KINDS = {RuleKind.FIELD_DECL,
+                                                        RuleKind.INTERFACE_FIELD_DECL,
+                                                        RuleKind.RECORD_STATIC_FIELD};
+
+    /// Every node that sits at member level, wrapper or declaration. Callers walking a path
+    /// through the member layers — a class member nests a `Member`, an interface member does
+    /// not — use this to recognise the layers without caring how many there are.
+    private static final RuleKind[] MEMBER_LEVEL_KINDS = {RuleKind.MEMBER,
+                                                          RuleKind.CLASS_MEMBER,
+                                                          RuleKind.INTERFACE_MEMBER,
+                                                          RuleKind.RECORD_MEMBER};
+
+    /// Bodies that hold members, across every type kind that has one.
+    private static final RuleKind[] TYPE_BODY_KINDS = {RuleKind.CLASS_BODY,
+                                                       RuleKind.INTERFACE_BODY,
+                                                       RuleKind.RECORD_BODY,
+                                                       RuleKind.ENUM_BODY};
+
+    /// True for any member-level node — a member wrapper or the declaration it holds.
+    public static boolean isMemberLevel(Cursor node) {
+        return node.kindIsAny(MEMBER_LEVEL_KINDS);
+    }
+
+    /// True for a node that holds a member declaration directly, whatever the declaration is.
+    public static boolean isMemberDecl(Cursor node) {
+        return node.kindIsAny(METHOD_MEMBER_KINDS);
+    }
+
+    /// True for a member wrapper — the node carrying a member's annotations and modifiers.
+    public static boolean isMemberWrapper(Cursor node) {
+        return node.kindIsAny(MEMBER_WRAPPER_KINDS);
+    }
+
+    /// True for a field declaration in any type kind.
+    public static boolean isFieldDecl(Cursor node) {
+        return node.kindIsAny(FIELD_DECL_KINDS);
+    }
+
+    /// True for a member node that represents a method declaration, in any type kind.
+    public static boolean isMethodMember(Cursor node) {
+        return isMemberDecl(node) && hasChildOfRule(node, RuleKind.METHOD_DECL);
+    }
+
+    /// The member wrapper enclosing `node` — the node carrying its annotations and modifiers.
+    ///
+    /// Matches `node` ITSELF when it is already a wrapper. In a class the wrapper and the
+    /// declaration are two nodes (`ClassMember` over `Member`), so an ancestor search finds
+    /// the wrapper; in an interface or record they are ONE node, and an ancestor-only search
+    /// would walk straight past it and report "no modifiers".
+    public static Option<Cursor> enclosingMember(Cursor root, Cursor node) {
+        return selfOrAncestor(root, node, MEMBER_WRAPPER_KINDS);
+    }
+
+    /// The declaration-holding member enclosing `node`, i.e. the node a method accessor such
+    /// as [#methodBody] can be applied to. Matches `node` itself when it already is one.
+    public static Option<Cursor> enclosingMethodMember(Cursor root, Cursor node) {
+        return selfOrAncestor(root, node, METHOD_MEMBER_KINDS);
+    }
+
+    private static Option<Cursor> selfOrAncestor(Cursor root, Cursor node, RuleKind... kinds) {
+        return node.kindIsAny(kinds)
+               ? Option.some(node)
+               : findAncestorAny(root, node, kinds);
+    }
+
+    /// The member wrappers declared directly by `typeDecl`'s body, whichever body spelling
+    /// the type kind uses.
+    public static List<Cursor> typeBodyMembers(Cursor typeDecl) {
+        return children(typeDecl).stream()
+                                 .filter(child -> child.kindIsAny(TYPE_BODY_KINDS))
+                                 .flatMap(body -> children(body).stream())
+                                 .filter(CstNodes::isMemberWrapper)
+                                 .toList();
+    }
+
+    /// Text of a member's DECLARATION, excluding the annotations and modifiers that an
+    /// `InterfaceMember` / `RecordMember` node also spans. Byte-identical to `text(member)`
+    /// for a class member, whose `Member` node covers exactly the declaration — so callers
+    /// that regex this text read the same string whatever type kind the member lives in.
+    /// Most of them extract a method name, and without this an annotation's own parentheses
+    /// (`@SuppressWarnings("...")`) precede the real signature and can capture the match.
+    public static String memberDeclText(Cursor member) {
+        return childByRule(member, RuleKind.METHOD_DECL).map(CstNodes::text)
+                                                        .or(() -> text(member));
     }
 
     public static List<Cursor> findAllMethods(Cursor root) {
-        return findAll(root, RuleKind.MEMBER).stream()
-                      .filter(CstNodes::isMethodMember)
-                      .toList();
+        return findAll(root, CstNodes::isMethodMember);
     }
 
     /// Return the `Type` (return-type) node for a method member. Walks
-    /// MEMBER → METHOD_DECL → TYPE.
+    /// member → METHOD_DECL → TYPE.
     public static Option<Cursor> methodReturnType(Cursor methodMember) {
         return childByRule(methodMember, RuleKind.METHOD_DECL).flatMap(md -> childByRule(md, RuleKind.TYPE));
     }
 
     /// Return the `Params` node for a method member, if any.
-    /// Walks MEMBER → METHOD_DECL → PARAMS.
+    /// Walks member → METHOD_DECL → PARAMS.
     public static Option<Cursor> methodParams(Cursor methodMember) {
         return childByRule(methodMember, RuleKind.METHOD_DECL).flatMap(md -> childByRule(md, RuleKind.PARAMS));
     }
@@ -258,19 +366,19 @@ public final class CstNodes {
     }
 
     /// Return the `Block` body of a method member, if any.
-    /// Walks MEMBER → METHOD_DECL → BLOCK.
+    /// Walks member → METHOD_DECL → BLOCK.
     public static Option<Cursor> methodBody(Cursor methodMember) {
         return childByRule(methodMember, RuleKind.METHOD_DECL).flatMap(md -> childByRule(md, RuleKind.BLOCK));
     }
 
     /// Return the `Throws` clause of a method member, if any.
-    /// Walks MEMBER → METHOD_DECL → THROWS.
+    /// Walks member → METHOD_DECL → THROWS.
     public static Option<Cursor> methodThrows(Cursor methodMember) {
         return childByRule(methodMember, RuleKind.METHOD_DECL).flatMap(md -> childByRule(md, RuleKind.THROWS));
     }
 
     public static Option<Cursor> findFirstMethod(Cursor root) {
-        return findFirst(root, node -> node.kindIs(RuleKind.MEMBER) && isMethodMember(node));
+        return findFirst(root, CstNodes::isMethodMember);
     }
 
     public static boolean containsMethod(Cursor root) {

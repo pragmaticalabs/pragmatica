@@ -55,7 +55,7 @@ public class CstNullReturnRule implements CstLintRule {
         var line = startLine(stmt);
         var column = startColumn(stmt);
         // Find enclosing method name
-        var methodName = findAncestor(root, stmt, RuleKind.MEMBER).map(member -> extractMethodName(text(member)))
+        var methodName = enclosingMethodMember(root, stmt).map(member -> extractMethodName(memberDeclText(member)))
                                      .or("(unknown)");
 
         return Diagnostic.diagnostic(RULE_ID,

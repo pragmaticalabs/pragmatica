@@ -225,7 +225,7 @@ public class CstDiscardedResultRule implements CstLintRule {
     }
 
     private Diagnostic createDiagnostic(Cursor root, Cursor stmt, LintContext ctx) {
-        var methodName = findAncestor(root, stmt, RuleKind.MEMBER).map(md -> extractMethodName(text(md)))
+        var methodName = enclosingMethodMember(root, stmt).map(md -> extractMethodName(memberDeclText(md)))
                                      .or("(unknown)");
         var stmtText = text(stmt).trim();
         var discardedType = isDiscardedFactory(stripStringLiterals(stmtText))
