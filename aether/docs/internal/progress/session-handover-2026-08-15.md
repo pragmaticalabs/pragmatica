@@ -1,11 +1,18 @@
 # Session handover — 2026-08-15: codec Phase 2, #590 built and then repaired, and what 02y caught
 
-**Branch:** `release-1.0.0-rc3` · **HEAD:** `fe335e6d9` · **PUSHED** · **tree clean** · candidate tag
-re-pointed to HEAD
+**Branch:** `release-1.0.0-rc3` · **HEAD:** `64be64eaa` (this handover) · last code change `fe335e6d9` ·
+**ALL PUSHED** · **tree clean**
+
+**Candidate tag sits at `fe335e6d9`, one commit behind HEAD — deliberately.** It tracks the last CODE
+change; re-pointing again for a docs-only commit would be a second re-point in quick succession, which
+is what races the Release asset uploads. Not an oversight, do not "fix" it.
 
 Nine commits across two work items from the owner-set pipeline (codec Phase 2 → #590 → 02y/02w → zone
 test). Both items landed; the second one shipped a severe defect that the integration suite caught and
 that is now fixed and pushed. **§4 is the part to read if you read nothing else.**
+
+The session ran past midnight; work dated here as 2026-08-15 continued into 08-16 with no further code
+changes.
 
 ---
 
@@ -152,7 +159,19 @@ persist, they are the known issue. Do not assert either way before that run.
   *Partial*. Recommendation: dormant-slot for the per-node countdown (structurally unfetchable during
   the incident it describes), with the leader-side "which communities the core has stopped counting" as
   the real future panel.
+- **Re-run of 02y against `fe335e6d9`** — requested, not yet authorised at session end. See §5; it is
+  the only thing that resolves the causation question, and it is cheap (remote Docker, pre-flight
+  already done and clean).
 - Nothing has been posted to #494 or #590.
+
+## §6a Memory updated this session
+
+- **NEW** `feedback-mutation-testing-cannot-check-your-premise` — the §4 lesson, generalised.
+- **CORRECTED** `feedback_guard_the_tool_you_invoke_not_your_wrapper` — its index line claimed, in the
+  present tense, that `run-tests.sh` teardown bare-reaps on any failure. Verified at HEAD that it does
+  not: every reap is name-scoped, `PROTECTED_CLUSTERS` guards `test-pg`, `lib/cluster.sh:2414` skips
+  `aether-test-pg*`. The #572 hazard was fixed in `14d1da8e3`; the durable lesson (audit the CALLEE's
+  blast radius) stands, the live hazard does not.
 
 ## §7 Doc corrections made
 
