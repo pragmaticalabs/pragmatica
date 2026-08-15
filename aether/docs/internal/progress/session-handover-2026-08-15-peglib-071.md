@@ -177,6 +177,12 @@ reference", so its grammar-imports example is the first thing a new user copies 
 
 ## §9 Suggested order for the next session
 
+**A peglib 0.7.2 is expected** — a grammar-*instantiation* fix, confirmed by upstream as **behaviour
+unchanged**. So it does **not** move `RULE_TABLE`, the CST shape, or the generated API: `RuleKind` stays
+valid and §3's merge design holds. **Do not wait for it.** Re-pinning is an independent mechanical step
+(change the property, run the `generate-parser` profile, run `regen_rulekind.py`, rebuild) and cannot
+invalidate the work below.
+
 1. **Formatter chain refactor** (§3) — design is settled, it's the delicate part, do it fresh. Verify with
    `mvn -f jbct/pom.xml -pl jbct-format -am test` and expect the 4 fixtures to go green **without any
    golden edits**.
@@ -184,6 +190,10 @@ reference", so its grammar-imports example is the first thing a new user copies 
 3. **CLI + maven plugin** — never reached; they are the stated acceptance criterion and are still
    unverified. `jbct.jar` in `jbct-cli/target/` predates this branch.
 4. **`pg-tools`** (§5) — independent, can be taken any time.
+5. **Re-pin to 0.7.2** when it ships. While in that file: `jbct-parser/pom.xml` uses the property name
+   `peglib.maven.plugin.version` for **both** the runtime dependency and the plugin — a misnomer that
+   becomes a footgun if the two ever need to diverge. Renaming to `peglib.version` is a natural fold-in
+   there; deliberately not done on this branch to avoid cosmetic churn while it is red.
 
 Nothing is pushed and no PR is open. Per project convention this ships as a PR against
 `release-1.0.0-rc3` once the tools are green.
