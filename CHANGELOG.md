@@ -171,10 +171,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   LOCALLY through `DrainProcedure.initiate(CORE_ABSENCE)` — no consensus write, which is the whole
   point, since announcing dissolve normally means writing `GovernorAnnouncementKey` through the core.
   Pings failing term fencing do not refresh liveness, so a partitioned-away former leader cannot hold a
-  community open. Detection is PER NODE, mirroring `QuorumLossDetector`: no intra-community
-  coordination, no dependence on the governor surviving, and a partitioned SUBSET fences exactly itself.
-  An arm-after-first-ping latch means a node that has never heard the core is treated as cold-starting,
-  not isolated — without it every community would dissolve during formation.
+  community open. Detection is PER NODE and **WORKER-ONLY**, mirroring `QuorumLossDetector`: no
+  intra-community coordination, no dependence on the governor surviving, and a partitioned SUBSET
+  fences exactly itself. An arm-after-first-ping latch means a node that has never heard the core is
+  treated as cold-starting, not isolated — without it every community would dissolve during formation.
+  **The worker-only restriction is load-bearing and was learned the hard way.** This first shipped
+  wired on EVERY node, which suite 02y caught. Ping dispatch is leader-only
+  (`ClusterSyncState`: "a non-leader tick is a no-op") and a broadcast never reaches its own sender, so
+  on the core tier the signal is structurally absent twice over: a node that wins an election receives
+  no pings ever again, and every survivor of a dead leader receives none until re-election. Ungated,
+  both drained after `core_absence`. The fence is now gated by a fail-safe suppressor sampled at FIRING
+  time — only a node positively known NOT to be a core member may fire it, an unresolved core view
+  reads as suppress, and an unwired gate leaves the detector inert. Core liveness was always
+  `QuorumLossDetector`'s job.
   On the core side, `ClusterSyncCollector.sinceLastPongNanos` feeds a `CommunityLivenessView` that the
   FSM consults instead of the self-report; absent members are SUBTRACTED from the reported count rather
   than recounted from `members()`, because the two are independent fields and the common

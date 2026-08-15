@@ -9,6 +9,7 @@ import java.util.List;
 import java.util.concurrent.Delayed;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import org.junit.jupiter.api.BeforeEach;
@@ -34,6 +35,7 @@ class CoreAbsenceDetectorTest {
     private TestTimeSource timeSource;
     private ManualScheduler scheduler;
     private AtomicInteger fenceCount;
+    private AtomicBoolean suppressed;
     private CoreAbsenceDetector detector;
 
     @BeforeEach
@@ -41,8 +43,12 @@ class CoreAbsenceDetectorTest {
         timeSource = new TestTimeSource();
         scheduler = new ManualScheduler();
         fenceCount = new AtomicInteger();
+        // Default the gate OPEN — these tests exercise a worker, the only role this fence is for.
+        // The gate's own fail-safe default is covered in FenceSuppression.
+        suppressed = new AtomicBoolean(false);
         detector = coreAbsenceDetector(CORE_ABSENCE, CHECK_INTERVAL, timeSource, scheduler);
         detector.setCoreAbsenceListener(_ -> fenceCount.incrementAndGet());
+        detector.setFenceSuppressor(suppressed::get);
         detector.start();
     }
 
@@ -139,6 +145,68 @@ class CoreAbsenceDetectorTest {
 
             assertTrue(detector.isFenced());
             assertEquals(1, fenceCount.get());
+        }
+    }
+
+    /// The gate that stops a CORE node fencing itself. Found by suite 02y after this shipped: the
+    /// `ClusterSyncPing` is leader-broadcast and leader-only, and a broadcast never reaches its own
+    /// sender — so a leader receives NO pings, and during an election nobody does. Ungated, an armed
+    /// node that won an election drained itself ten seconds later, and every survivor of a dead leader
+    /// did the same. Core liveness belongs to `QuorumLossDetector`; this fence is the community tier's.
+    @Nested
+    class FenceSuppression {
+
+        /// The regression test. A node whose gate says "you are core" must never fence, no matter how
+        /// long the pings have been absent — which for a leader is forever.
+        @Test
+        void evaluate_suppressed_neverFencesHoweverStale() {
+            detector.recordCorePing();
+            suppressed.set(true);
+
+            for (var tick = 0; tick < 50; tick++) {
+                timeSource.advanceTimeMillis(1_000);
+                scheduler.fireAll();
+            }
+
+            assertFalse(detector.isFenced());
+            assertEquals(0, fenceCount.get());
+        }
+
+        /// Suppression must DEFER, not DROP. The #415 failure was a deferred one-shot intent that was
+        /// never re-armed, stranding the fence permanently; a periodic re-check makes that
+        /// unrepresentable, and this pins it.
+        @Test
+        void evaluate_suppressionLifted_fencesOnALaterTick() {
+            detector.recordCorePing();
+            suppressed.set(true);
+            timeSource.advanceTimeMillis(30_000);
+            scheduler.fireAll();
+
+            assertEquals(0, fenceCount.get());
+            suppressed.set(false);
+            timeSource.advanceTimeMillis(1_000);
+            scheduler.fireAll();
+
+            assertTrue(detector.isFenced());
+            assertEquals(1, fenceCount.get());
+        }
+
+        /// The fail-safe default: a detector whose gate was never wired dissolves nothing. Wiring is a
+        /// step someone can forget, and forgetting it must fail CLOSED.
+        @Test
+        void evaluate_suppressorNeverWired_isInert() {
+            var unwiredScheduler = new ManualScheduler();
+            var unwiredFences = new AtomicInteger();
+            var unwired = coreAbsenceDetector(CORE_ABSENCE, CHECK_INTERVAL, timeSource, unwiredScheduler);
+
+            unwired.setCoreAbsenceListener(_ -> unwiredFences.incrementAndGet());
+            unwired.start();
+            unwired.recordCorePing();
+            timeSource.advanceTimeMillis(60_000);
+            unwiredScheduler.fireAll();
+
+            assertFalse(unwired.isFenced());
+            assertEquals(0, unwiredFences.get());
         }
     }
 

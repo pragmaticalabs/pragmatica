@@ -2761,6 +2761,18 @@ public interface AetherNode extends ManageableNode {
                                                                           config.timeouts().cluster().pingInterval());
 
         coreAbsenceDetector.setCoreAbsenceListener(_ -> drainProcedure.initiate(DrainReason.CORE_ABSENCE));
+        // FAIL-SAFE GATE. The ping is leader-broadcast and leader-only, and a broadcast never reaches
+        // its own sender — so on the CORE tier the signal is structurally absent twice over: the leader
+        // never receives its own pings, and during an election nobody receives any. Ungated this drained
+        // the new leader ten seconds after every election. Core liveness is quorumLossDetector's job;
+        // this fence is the COMMUNITY tier's, so only a node positively known NOT to be core may fire it.
+        // An empty/unresolved core view reads as SUPPRESS — fencing on an unknown view is the dangerous
+        // direction, and the view is empty during boot.
+        coreAbsenceDetector.setFenceSuppressor(() -> {
+            var cores = topologyObserver.coreNodes();
+
+            return cores.isEmpty() || cores.contains(config.self());
+        });
         metricsCollector.setCorePingObserver(coreAbsenceDetector::recordCorePing);
         coreAbsenceDetector.start();
         // #590 core half, same exchange in the other direction: every live node answers the leader's

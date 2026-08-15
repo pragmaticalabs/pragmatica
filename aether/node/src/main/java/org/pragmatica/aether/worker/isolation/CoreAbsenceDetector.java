@@ -6,6 +6,7 @@ package org.pragmatica.aether.worker.isolation;
 
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
 
 import org.pragmatica.aether.deployment.membership.ntt.NttTimerScheduler;
@@ -45,10 +46,16 @@ import static org.pragmatica.lang.concurrent.AtomicHolder.atomicHolder;
 /// cannot be expressed through it at all. This detector therefore drives a purely local decision, as
 /// the core tier's own minority self-fence already does.
 ///
-/// ## Per node, not per governor
-/// Every node runs its own detector, mirroring `QuorumLossDetector`. A governor-only decision would
+/// ## Per node, not per governor — but WORKER nodes only
+/// Every worker runs its own detector, mirroring `QuorumLossDetector`. A governor-only decision would
 /// need intra-community coordination to reach followers and would strand them if the governor itself
 /// died; per-node observation also means a partitioned SUBSET of a community fences exactly itself.
+///
+/// CORE nodes must never fence on this signal, and [#setFenceSuppressor] is what stops them. Ping
+/// dispatch is LEADER-ONLY and a broadcast never reaches its own sender, so on the core tier the
+/// signal is structurally absent in two ordinary situations — the leader receives no pings at all, and
+/// during an election nobody does. This detector shipped ungated and suite 02y caught it: the fix is
+/// the gate, and core liveness stays `QuorumLossDetector`'s job, which is what it was always for.
 ///
 /// ## Discipline inherited from the core tier's fence
 /// - **Arm-after-first-ping latch.** `lastPingNanos` starts EMPTY, and that emptiness is the latch —
@@ -81,6 +88,20 @@ public final class CoreAbsenceDetector {
     private final AtomicHolder<ScheduledFuture<?>> tickFuture = atomicHolder();
     private final AtomicBoolean fenced = new AtomicBoolean();
     private final AtomicBoolean running = new AtomicBoolean();
+    /// Fail-safe gate. Returns `true` to SUPPRESS the fence, and defaults to always-suppress so a
+    /// detector whose gate was never wired can never dissolve anything.
+    ///
+    /// This exists because the ping is LEADER-BROADCAST and leader-only
+    /// (`ClusterSyncState`: "ping DISPATCH is leader-only ... a non-leader tick is a no-op"), and a
+    /// broadcast does not reach its own sender. So on the CORE tier the signal is structurally absent
+    /// in two ordinary situations: the leader never receives its own pings, and while a leader is
+    /// being re-elected nobody receives any. Ungated, this detector drained the new leader ten seconds
+    /// after every election, and every survivor ten seconds after a leader died.
+    ///
+    /// Core liveness is `QuorumLossDetector`'s job and always was. This fence belongs to the COMMUNITY
+    /// tier, so it is armed only for a node positively known NOT to be a core member — "unknown" reads
+    /// as suppress, because fencing on an unresolved view is the dangerous direction.
+    private volatile BooleanSupplier fenceSuppressor = () -> true;
     private volatile Consumer<CoreAbsenceIntent> listener = CoreAbsenceDetector::ignoreIntent;
 
     private CoreAbsenceDetector(TimeSpan coreAbsence,
@@ -120,6 +141,14 @@ public final class CoreAbsenceDetector {
     @Contract
     public void setCoreAbsenceListener(Consumer<CoreAbsenceIntent> newListener) {
         listener = newListener;
+    }
+
+    /// Wire the gate that decides whether this node may fence at all — `true` SUPPRESSES. Sampled at
+    /// FIRING time, not at wiring time, because core membership is a live view that is empty during
+    /// boot. Until this is wired the detector is inert by construction.
+    @Contract
+    public void setFenceSuppressor(BooleanSupplier suppressor) {
+        fenceSuppressor = suppressor;
     }
 
     @Contract
@@ -205,6 +234,13 @@ public final class CoreAbsenceDetector {
 
     @Contract
     private void fence(long age) {
+        // Sampled HERE rather than at schedule time: the gate is a live view, and the periodic tick
+        // means a suppressed evaluation is simply retried on the next pass (#415 — a deferral must
+        // never become a drop).
+        if (fenceSuppressor.getAsBoolean()) {
+            return;
+        }
+
         if (!fenced.compareAndSet(false, true)) {
             return;
         }
