@@ -1,7 +1,12 @@
 # Session handover — 2026-08-15: peglib 0.7.1 bump, half landed, chain + interface CST work remains
 
-**Branch:** `feat/peglib-0.7.1` (off `release-1.0.0-rc3` at `19b76827f`) · **7 commits** · **NOT pushed** · tree clean
-**Build is RED and deliberately so** — `jbct-format` and `jbct-lint` fail. Everything else is green.
+**Branch:** `feat/peglib-0.7.1` (off `release-1.0.0-rc3` at `19b76827f`) · **8 commits** · **NOT pushed** · tree clean
+**Build is RED and deliberately so** — `jbct-format` (3 failures / 2 fixtures) and `jbct-lint` (13 classes)
+fail. Everything else is green. Baseline before this branch was BUILD SUCCESS, so all of it is attributable.
+
+**Resume at §9.** The bump, the grammar sync and the statement-chain refactor are done and committed;
+what is left is two lambda fixtures, the linter's interface blindness, and the never-reached CLI/plugin
+verification. Nothing is blocked on an outside answer — the peglib exchange is closed (§8).
 
 **Task:** bump peglib 0.6.2 → 0.7.1 in pragmatica, integrate the upstream Java grammar changes, keep the
 jbct tools working. Owner rulings: adopt the grammar in the **same pass** as the bump (not staged), and
@@ -138,8 +143,9 @@ It is fully independent of the jbct work and can be taken in parallel.
 - **`RuleKind` is a hand-maintained enum mirroring `Java25ParserV6.RULE_TABLE` *by index*.** A grammar
   change silently desynchronises it — `ROOT` resolved to `UNKNOWN` and only one test noticed. It went
   108 → **140** constants; exactly **2** disappeared (`PARAM`, `LAMBDA_PARAM`). Regenerate it whenever the
-  grammar moves. Script used: `scratchpad/regen_rulekind.py` (parses `RULE_TABLE`, CamelCase →
-  UPPER_SNAKE, `_ROOT` → `ROOT`, `--write` to apply).
+  grammar moves — the script is committed at **`jbct/jbct-parser/regen_rulekind.py`**: run it with the
+  generated parser and the enum as arguments to see the added/removed delta, add `--write` to apply.
+  A zero delta proves the RULE SET is unchanged; it does **not** prove the tree shape is (see §9).
 - **`viewAt` returns `Leaf` for any node with no child nodes — including genuine rule nodes.** A probe
   that labels nodes by `instanceof Cursor.Branch` prints `leaf` and hides the kind. This cost most of a
   session: I concluded operator nodes weren't being materialised when they were. **Always print
@@ -191,9 +197,10 @@ valid and §3's merge design holds. **Do not wait for it.** Re-pinning is an ind
 (change the property, run the `generate-parser` profile, run `regen_rulekind.py`, rebuild) and cannot
 invalidate the work below.
 
-1. **Formatter chain refactor** (§3) — design is settled, it's the delicate part, do it fresh. Verify with
-   `mvn -f jbct/pom.xml -pl jbct-format -am test` and expect the 4 fixtures to go green **without any
-   golden edits**.
+1. **Finish the formatter** (§3) — the chain refactor is DONE; what remains is the 2 lambda fixtures
+   (`Lambdas`, `LambdaBlockArgs`). **Bisect, do not analyse** — §3 has the minimal snippet and two
+   unverified candidates. Verify with `mvn -f jbct/pom.xml -pl jbct-format -am test`; they must go green
+   **without any golden edits**.
 2. **Linter interface-awareness** (§4) — larger blast radius, needs a design pass first.
 3. **CLI + maven plugin** — never reached; they are the stated acceptance criterion and are still
    unverified. `jbct.jar` in `jbct-cli/target/` predates this branch.
@@ -202,6 +209,11 @@ invalidate the work below.
    `peglib.maven.plugin.version` for **both** the runtime dependency and the plugin — a misnomer that
    becomes a footgun if the two ever need to diverge. Renaming to `peglib.version` is a natural fold-in
    there; deliberately not done on this branch to avoid cosmetic churn while it is red.
+
+**Why 1 comes before 5:** green goldens are the instrument you will want pointed at 0.7.2. A pure
+CST-shape change with no new rules would slip past `regen_rulekind.py` (which only proves the RULE SET
+is unchanged) — the formatter goldens are what actually detect it, and they only work as a sensor once
+they pass.
 
 Nothing is pushed and no PR is open. Per project convention this ships as a PR against
 `release-1.0.0-rc3` once the tools are green.
