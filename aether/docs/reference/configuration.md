@@ -363,6 +363,29 @@ target_rf = 3
 | `cooldown_rate` | int | `10000` | Max entries/sec during replication warmup |
 | `target_rf` | int | `3` | Target replication factor (0 = full replication) |
 
+## Streaming Configuration
+
+```toml
+[streaming]
+publish_forward_timeout = "5s"
+read_forward_timeout = "2s"
+max_read_response_bytes = "28MB"
+reshuffle_concurrency = 2
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `publish_forward_timeout` | timespan | `5s` | Wait for a publish forwarded to the partition owner |
+| `read_forward_timeout` | timespan | `2s` | Wait for a read forwarded to the partition owner |
+| `max_read_response_bytes` | data size | `28MB` | Cap on a single forwarded-read response |
+| `reshuffle_concurrency` | int | `2` | Partitions one node may hold in materialize+backfill at once. Must be `>= 1` |
+
+`reshuffle_concurrency` paces backfill work so a large reshuffle cannot flood a node. Raise it when
+partitions queue behind slow backfills; lower it when backfill traffic competes with serving. A partition
+that cannot get a slot is queued, not rejected, and the caller sees a retryable paced error naming this
+key. A slot held past a bounded tenure while others are queued is preempted — the backfill continues but
+stops counting against this limit — so a stalled backfill cannot starve the queue indefinitely.
+
 ## Cloud Configuration
 
 Cloud provider integration is configured via the `[cloud]` TOML section. See [Cloud Integration](cloud-integration.md) for the full operator guide.

@@ -32,6 +32,7 @@ public final class ConfigValidator {
         nodeErrors(config.node(), errors);
         absenceWindowErrors(config.timeouts().cluster(),
                             errors);
+        streamingErrors(config.streaming(), errors);
         if (config.tlsEnabled()) {
             config.tls().onPresent(tls -> tlsErrors(tls, errors));
         }
@@ -52,6 +53,16 @@ public final class ConfigValidator {
                        + "timeouts.cluster.community_absence (%s): a community has to stop serving before the core "
                        + "re-places its slices, or both run at once").formatted(cluster.coreAbsence(),
                                                                                 cluster.communityAbsence()));
+        }
+    }
+
+    /// `reshuffle_concurrency` bounds how many partitions one node materializes+backfills at once. Zero or
+    /// negative would stall every REPLICA materialization permanently — the exact starvation the bound
+    /// exists to pace — so it is rejected here rather than silently floored, and joins the collected report
+    /// with every other config problem.
+    private static void streamingErrors(StreamingConfig streaming, List<String> errors) {
+        if (streaming.reshuffleConcurrency() < 1) {
+            errors.add("streaming.reshuffle_concurrency must be >= 1 (0 would stall every replica backfill). Got: " + streaming.reshuffleConcurrency());
         }
     }
 

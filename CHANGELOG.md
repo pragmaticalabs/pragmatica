@@ -7,6 +7,44 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ## [1.0.0-rc3] - Unreleased
 
 ### Fixed
+- **A stalled backfill held its reshuffle slot forever, starving the partitions queued behind it.** A slot
+  was released only when the partition stopped being a not-caught-up REPLICA — and `PartitionBackfill`
+  retries forever once its bounded wait elapses with a committed owner present (the #445 distrust gate), so
+  the release condition was exactly the condition that would never become true. Slot tenure was unbounded.
+  Measured 2026-08-16 (`02y-stream-crash`, remote cluster B): `entity:orders[4]` and `[6]` held BOTH of a
+  node's two slots continuously for 4m55s with **zero** releases in the entire log, while
+  `multipart-events[0]` and `[2]` — the partitions that node was the designated replica for — sat queued
+  behind them, never became in-sync, and were lost outright when their owner was SIGKILLed. 56 pacing
+  defers were logged (29 on partition 0, 27 on partition 2) across ~28 redrive attempts each.
+  A slot held past `RESHUFFLE_SLOT_MAX_TICKS` is now preempted: the backfill KEEPS RUNNING and keeps
+  retrying, it simply stops counting against the concurrency bound. Preemption is gated on a non-empty
+  queue, so a preempted worker is SWAPPED for a waiting one rather than multiplying concurrency — with
+  nothing queued the pacing bound is untouched.
+  **Trade, deliberate:** this bounds TENURE rather than detecting the stall, so a legitimately slow but
+  progressing backfill can also be preempted. Harmless — it continues — and it fixes starvation from any
+  cause rather than only the retry-forever one.
+  Permit accounting is the subtle part and is pinned by its own test: slot acquisition is idempotent VIA
+  `inFlightMaterializations` membership, so a preempted ref that re-entered the acquire path would take a
+  SECOND permit while only one is ever released, draining the pool. A preempted-set preserves that
+  idempotence.
+  `[verified: unit + mutation — StreamReshuffleLifecycleTest$StalledSlotPreemption 3/3; removing the
+  preempt step from the reconcile tick turns exactly the starvation and permit-accounting tests red and
+  leaves the empty-queue control green. aether-config 333/0, aether-stream 665/0, aether/node 868/0,
+  ./build.sh green with 0 new lint. NOT integration-verified.]`
+
+### Added
+- **`[streaming] reshuffle_concurrency` is now a real config key.** It bounds how many partitions one node
+  holds in materialize+backfill at once. It was a hard-coded `static final int` with no binding of any
+  kind, while the paced-materialization error message named `reshuffle_concurrency` as though it were a
+  setting — an operator whose backfills were starving went looking for a knob that did not exist, and had
+  no way to raise the bound. Parsed by `ConfigLoader`, rejected below 1 by `ConfigValidator` (0 would stall
+  every replica backfill permanently) so it joins the same collected report as every other config error,
+  and wired in `AetherNode` BEFORE any materialization since it replaces the permit pool wholesale. The
+  paced error now reports the limit actually in force rather than a compile-time constant. The `[streaming]`
+  section was entirely undocumented and is now in `configuration.md` with all four of its keys.
+  `[verified: aether-config 333/0; ./build.sh green, 0 new lint]`
+
+### Fixed
 - **Forwarded stream publishes bypassed `min-sync-replicas`, losing ACKED events on a single node kill.**
   Both writers route on LOCAL RING PRESENCE rather than ownership: `DefaultStreamPublisher.publishEventual`
   and `StreamWriteRouter.publish` each await replication only on the arm where the node already holds the

@@ -3118,6 +3118,11 @@ public interface AetherNode extends ManageableNode {
                                                                                    streamSegmentIndex::lastSealedOffset);
 
         streamPartitionManagerRef.set(streamPartitionManager);
+        // `[streaming] reshuffle_concurrency` — set BEFORE any materialization, since it replaces the permit
+        // pool wholesale. Until 2026-08-16 this bound was a compile-time constant while the paced-materialize
+        // error message named it as a config key, so an operator whose backfills were starving had nothing to
+        // turn. ConfigValidator rejects < 1 up front.
+        streamPartitionManager.reshuffleConcurrency(config.streaming().reshuffleConcurrency());
         // stream-offheap-budget-spec §4.5c / reconciliation #14: route off-heap budget exhaustion
         // (create-floor + growth) OUT of aether-stream via the injected Consumer<Exhaustion> sink and
         // INTO the cluster-event aggregator, which stamps this node's id and emits a

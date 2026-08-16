@@ -160,8 +160,13 @@ public final class ConfigLoader {
         var publishTimeout = parseTimeSpan(doc, "streaming", "publish_forward_timeout", defaults.publishForwardTimeout());
         var readTimeout = parseTimeSpan(doc, "streaming", "read_forward_timeout", defaults.readForwardTimeout());
         var maxBytes = parseDataSize(doc, "streaming", "max_read_response_bytes", defaults.maxReadResponseBytes());
+        var reshuffleConcurrency = parseInt(doc, "streaming", "reshuffle_concurrency", defaults.reshuffleConcurrency());
 
-        builder.streaming(StreamingConfig.streamingConfig(publishTimeout, readTimeout, maxBytes));
+        builder.streaming(StreamingConfig.streamingConfig(publishTimeout,
+                                                          readTimeout,
+                                                          maxBytes,
+                                                          defaults.readLinearization(),
+                                                          reshuffleConcurrency));
     }
 
     private static long parseDataSize(TomlDocument doc, String section, String key, long defaultValue) {

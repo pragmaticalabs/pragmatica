@@ -12,8 +12,14 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 public record StreamingConfig(TimeSpan publishForwardTimeout,
                               TimeSpan readForwardTimeout,
                               long maxReadResponseBytes,
-                              ReadLinearizationMode readLinearization) {
+                              ReadLinearizationMode readLinearization,
+                              int reshuffleConcurrency) {
     public static final long DEFAULT_MAX_READ_RESPONSE_BYTES = 28L * 1024 * 1024;
+    /// How many partitions one node may hold in materialize+backfill at once (`reshuffle_concurrency`).
+    /// One-at-a-time starves a large reshuffle; unbounded floods backfill. Was a hard-coded constant with
+    /// no binding until 2026-08-16, while the paced-materialization error message named it as though it
+    /// were a knob.
+    public static final int DEFAULT_RESHUFFLE_CONCURRENCY = 2;
 
     /// The default `LINEARIZABLE`-read mechanism (spec §8.1): the no-op consensus round (#345 item
     /// 1e-a). The alternative `lease` mechanism is rejected at config parse until validated.
@@ -31,7 +37,8 @@ public record StreamingConfig(TimeSpan publishForwardTimeout,
         return new StreamingConfig(timeSpan(5).seconds(),
                                    timeSpan(2).seconds(),
                                    DEFAULT_MAX_READ_RESPONSE_BYTES,
-                                   DEFAULT_READ_LINEARIZATION);
+                                   DEFAULT_READ_LINEARIZATION,
+                                   DEFAULT_RESHUFFLE_CONCURRENCY);
     }
 
     public static StreamingConfig streamingConfig(TimeSpan publishForwardTimeout,
@@ -40,20 +47,41 @@ public record StreamingConfig(TimeSpan publishForwardTimeout,
         return new StreamingConfig(publishForwardTimeout,
                                    readForwardTimeout,
                                    maxReadResponseBytes,
-                                   DEFAULT_READ_LINEARIZATION);
+                                   DEFAULT_READ_LINEARIZATION,
+                                   DEFAULT_RESHUFFLE_CONCURRENCY);
     }
 
     public static StreamingConfig streamingConfig(TimeSpan publishForwardTimeout,
                                                   TimeSpan readForwardTimeout,
                                                   long maxReadResponseBytes,
                                                   ReadLinearizationMode readLinearization) {
-        return new StreamingConfig(publishForwardTimeout, readForwardTimeout, maxReadResponseBytes, readLinearization);
+        return new StreamingConfig(publishForwardTimeout,
+                                   readForwardTimeout,
+                                   maxReadResponseBytes,
+                                   readLinearization,
+                                   DEFAULT_RESHUFFLE_CONCURRENCY);
+    }
+
+    public static StreamingConfig streamingConfig(TimeSpan publishForwardTimeout,
+                                                  TimeSpan readForwardTimeout,
+                                                  long maxReadResponseBytes,
+                                                  ReadLinearizationMode readLinearization,
+                                                  int reshuffleConcurrency) {
+        return new StreamingConfig(publishForwardTimeout,
+                                   readForwardTimeout,
+                                   maxReadResponseBytes,
+                                   readLinearization,
+                                   reshuffleConcurrency);
     }
 
     /// The same streaming config with the `LINEARIZABLE`-read mechanism replaced — used by the config
     /// loader to apply the parsed `[durable-entity] read-linearization` knob onto the streaming config.
     public StreamingConfig withReadLinearization(ReadLinearizationMode readLinearization) {
-        return new StreamingConfig(publishForwardTimeout, readForwardTimeout, maxReadResponseBytes, readLinearization);
+        return new StreamingConfig(publishForwardTimeout,
+                                   readForwardTimeout,
+                                   maxReadResponseBytes,
+                                   readLinearization,
+                                   reshuffleConcurrency);
     }
 
     /// Bounded wait for a caught-up source to appear before a cold-start replica self-promotes. Derived
