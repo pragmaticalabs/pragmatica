@@ -31,6 +31,28 @@ public final class CstNodes {
                               node.spanEnd());
     }
 
+    /// The node's non-trivia tokens, concatenated — its text with comments and whitespace
+    /// removed.
+    ///
+    /// A node's SPAN can reach past its last real token into trailing trivia, so [#text] on a
+    /// bare annotation followed by a line comment returns `"Contract  // reason"` rather than
+    /// `"Contract"`. Any comparison of a node's text against a NAME must go through this:
+    /// matching on [#text] silently fails the moment someone writes a comment on that line,
+    /// which reads as the annotation having no effect at all.
+    public static String tokenText(Cursor node) {
+        var tokens = node.cst()
+                         .tokens();
+        var builder = new StringBuilder();
+
+        for (int t = node.firstTokenIdx(); t <= node.lastTokenIdx(); t++) {
+            if (!tokens.isTrivia(t)) {
+                builder.append(tokens.textAt(t));
+            }
+        }
+
+        return builder.toString();
+    }
+
     // ===== Rule predicates =====
     public static boolean isRule(Cursor node, RuleKind kind) {
         return node.kindIs(kind);

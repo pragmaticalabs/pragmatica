@@ -67,7 +67,7 @@ public final class SuppressionExtractor {
         var annotations = findAll(root, RuleKind.ANNOTATION);
 
         for (var annotation : annotations) {
-            var name = findFirst(annotation, RuleKind.QUALIFIED_NAME).map(qn -> text(qn).trim()).or("");
+            var name = findFirst(annotation, RuleKind.QUALIFIED_NAME).map(qn -> tokenText(qn).trim()).or("");
 
             if (CONTRACT_NAMES.contains(name)) {
                 addScope(root, annotation, lines, src, CONTRACT_SUPPRESSED_RULES, suppressions);
