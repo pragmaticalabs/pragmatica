@@ -24,7 +24,7 @@ jbct tools working. Owner rulings: adopt the grammar in the **same pass** as the
 | JBCT Init / Derive | ✅ green |
 | JBCT Slice Processor | ✅ green, 298 |
 | **JBCT Formatter** | ✅ **green, 67** — was 3 failures / 2 fixtures (§3) |
-| **JBCT Linter** | ✅ **green, 691** — was 13 failing test classes (§4) |
+| **JBCT Linter** | ✅ **green, 703** — was 13 failing test classes (§4) |
 | **JBCT CLI / Maven Plugin** | ✅ **green** — CLI also exercised over 2135 files; plugin caveat in §9.3 |
 | `aether/pg-tools` | ⏭ untouched — §5 |
 
@@ -132,9 +132,10 @@ java -jar jbct/jbct-cli/target/jbct.jar          lint aether --format json > aft
 ```
 
 Result: the bump had silently dropped **1962 of 13274 findings**; after the fix **every rule matches its
-pre-bump count exactly**, zero genuinely lost. 175 findings shifted by exactly −1 line — the anchor moved
-from the declaration to the wrapper carrying its annotations. That shift is inherent to the collapse and
-is not a defect.
+pre-bump count exactly, and every finding matches by file, line AND column**, with two intended
+exceptions — JBCT-EX-02 (§9.6) and one JBCT-ORD-01 column, where a record's `RecordStaticField` node
+spans its modifiers while the old `FieldDecl` began at the type, so the anchor now covers the whole
+declaration.
 
 **Two traps when reusing this instrument:**
 
@@ -142,15 +143,33 @@ is not a defect.
 - **The `file` field is a BASENAME, never a path**, and 21 of 2141 aether basenames collide (2.2% of
   findings). Diff as a **multiset** over `(file, line, column, ruleId)` — a set-based diff silently
   collapses ~880 duplicate triples and can hide a change in one of two colliding files behind the other.
-  The multiset form proves per-rule count identity and 1:1 pairing of every moved finding; it still
-  cannot prove file-level identity for the colliding 2.2%, which needs a filesystem walk to resolve
-  basenames to paths on both sides.
 
-**Known residual (deliberate, not a defect).** ~15 sites still read raw `text(method)`/`text(member)`.
-They were left alone because the corpus proves they do not diverge, and changing them would be
-speculative — but each is a latent instance of trap 2 if it does declaration-shaped analysis. A reviewer
-pass over that list is queued; `CstConstructorBypassRule:104`, `FileTypeClassifier:453` and
-`CstNestedRecordFactoryRule:57,63` are *correct as-is* since they genuinely need the modifiers.
+**An adversarial review pass found 5 defects the corpus could not**, because aether happens not to
+contain the triggering shapes. All are fixed; `MemberShapeRegressionTest` (12 paired
+class/interface/record cases) pins them:
+
+1. `typeBodyMembers` looked for the body among DIRECT children, but a nested type is a bare `TypeKind`
+   whose child is the `InterfaceDecl` that holds the body — so it returned `[]` for every caller passing
+   a `TypeKind`, which is what `findFirstInterface` returns. UC-01's multi-method exemption was dead.
+2. `memberDeclText` keyed on `MethodDecl`, so a **constructor** or **field** member fell back to
+   annotation-spanning text — a record constructor was reported as `method 'Deprecated'`. It now takes
+   the first non-`Annotation` child, which covers every member shape.
+3. + 4. `CstValueObjectFactoryRule` and `CstFullyQualifiedNameRule` read raw `text(method)`: an
+   annotation defeated VO-01's builder exemption, and STY-03 flagged `@java.lang.Deprecated` as a fully
+   qualified name in a method body. **Nine sites doing declaration-shaped analysis were switched**;
+   five that genuinely need the modifiers (`CstConstructorBypassRule:104`, `CstFactoryNamingRule:57`,
+   `CstNestedRecordFactoryRule:57,63`, `FileTypeClassifier:453`) correctly keep the wrapper text.
+5. Diagnostics anchored on the wrapper, so an annotated interface method reported the annotation's line
+   where a class reported the signature's. `anchorOf` fixes it and is a no-op for non-members, so a
+   helper shared between members and type declarations can route every anchor through it.
+
+**Lesson worth keeping: "the corpus shows no divergence" is necessary, not sufficient.** It proves no
+regression against THIS tree; it cannot prove correctness for a shape the tree does not contain. Four of
+the five above were latent in exactly that gap.
+
+**Known gap, deliberately not implemented:** JBCT-EX-02 does not flag a method *reference*
+(`Optional::orElseThrow`). It never did — that is a feature, not a regression, and expanding it was out
+of scope for this branch.
 
 
 ## §5 `aether/pg-tools` — in scope, not started
