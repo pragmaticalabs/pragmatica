@@ -125,8 +125,31 @@ final class DefaultStreamForwardHandler implements StreamForwardHandler {
                                           request.partition(),
                                           request.payload(),
                                           request.timestamp())
+                        .async()
+                        .flatMap(offset -> awaitMinSync(request, offset))
                         .onSuccess(offset -> sendSuccessResponse(request, offset))
                         .onFailure(cause -> sendPublishFailure(request, cause));
+    }
+
+    /// The min-sync barrier belongs HERE, on the owner, because this is where the ack for a forwarded
+    /// publish is produced. Both writer paths ([org.pragmatica.aether.stream.DefaultStreamPublisher] and
+    /// [org.pragmatica.aether.stream.StreamWriteRouter]) route on LOCAL RING PRESENCE, not ownership, and
+    /// each awaits replication only on its local-append arm — so before this, every publish that was
+    /// forwarded to the owner acked on the owner's local fsync ALONE, silently dropping `min-sync-replicas`
+    /// to 1. Measured 2026-08-16 (02y-stream-crash, remote cluster B): 80/80 events ACKED, then a SIGKILL of
+    /// the node owning partitions 0 and 2 lost BOTH partitions whole — 41 acked events gone, with the
+    /// designated replica still `SYNCING` and never having acked a single one. Gating here fixes both
+    /// writer paths at once and makes a forwarded ack mean exactly what a local ack means.
+    private Promise<Long> awaitMinSync(PublishForward request, long offset) {
+        var minSyncReplicas = partitionManager.minSyncReplicasFor(request.streamName());
+
+        return minSyncReplicas > 1
+               ? partitionManager.awaitReplication(request.streamName(),
+                                                   request.partition(),
+                                                   offset,
+                                                   minSyncReplicas - 1)
+                                 .map(_ -> offset)
+               : Promise.success(offset);
     }
 
     @Contract

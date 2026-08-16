@@ -8,6 +8,11 @@ package org.pragmatica.aether.stream.forward;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.pragmatica.aether.slice.ConsistencyMode;
+import org.pragmatica.aether.slice.RetentionPolicy;
+import org.pragmatica.aether.slice.StreamCompression;
+import org.pragmatica.aether.slice.StreamConfig;
+import org.pragmatica.aether.stream.EvictionListener;
 import org.pragmatica.aether.stream.StreamPartitionManager;
 import org.pragmatica.aether.stream.forward.StreamForwardMessage.PublishForward;
 import org.pragmatica.aether.stream.forward.StreamForwardMessage.PublishForwardResponse;
@@ -25,6 +30,8 @@ import static org.pragmatica.aether.stream.StreamPartitionManager.streamPartitio
 import static org.pragmatica.aether.stream.forward.StreamForwardHandler.streamForwardHandler;
 import static org.pragmatica.aether.stream.forward.StreamForwardMessage.PublishForward.publishForward;
 import static org.pragmatica.aether.stream.forward.StreamForwardMessage.ReadForward.readForward;
+import static org.pragmatica.aether.stream.replication.ReplicaRegistry.replicaRegistry;
+import static org.pragmatica.aether.stream.replication.ReplicationManager.replicationManager;
 
 
 class StreamForwardHandlerTest {
@@ -215,6 +222,74 @@ class StreamForwardHandlerTest {
             assertThat(response.success()).isTrue();
             assertThat(response.truncated()).isTrue();
             assertThat(response.events()).hasSizeLessThan(10);
+        }
+    }
+
+    /// The forwarded-publish ack must carry the SAME `min-sync-replicas` guarantee a local publish carries.
+    /// Before the owner-side barrier, `onPublishForward` acked on the owner's local append alone, so every
+    /// write routed to an owner silently ran at min-sync 1. Live evidence (02y-stream-crash, 2026-08-16):
+    /// 80/80 ACKED, then one SIGKILL took two whole partitions with it — 41 acked events lost.
+    ///
+    /// These wire a REAL [org.pragmatica.aether.stream.replication.ReplicationManager] over an EMPTY
+    /// [org.pragmatica.aether.stream.replication.ReplicaRegistry] deliberately: the NOOP manager's
+    /// `awaitReplication` returns success unconditionally, so a test on the default bare manager would
+    /// pass whether or not the barrier exists.
+    @Nested
+    class MinSyncBarrierTests {
+        private StreamPartitionManager barrierManager;
+
+        private StreamForwardHandler handlerFor(int minSyncReplicas) {
+            barrierManager = streamPartitionManager(Long.MAX_VALUE,
+                                                    EvictionListener.NOOP,
+                                                    replicationManager(GOVERNOR, replicaRegistry()));
+            barrierManager.createStream(configWithMinSync(minSyncReplicas));
+
+            return streamForwardHandler(GOVERNOR,
+                                        barrierManager,
+                                        (target, message) -> sentMessages.add(new SentMessage(target, message)));
+        }
+
+        private static StreamConfig configWithMinSync(int minSyncReplicas) {
+            return StreamConfig.streamConfig(STREAM,
+                                             1,
+                                             RetentionPolicy.retentionPolicy(1000, 1024 * 1024, 60_000),
+                                             "latest",
+                                             1_048_576L,
+                                             ConsistencyMode.EVENTUAL,
+                                             2,
+                                             minSyncReplicas,
+                                             StreamCompression.NONE,
+                                             Option.none());
+        }
+
+        @Test
+        void onPublishForward_minSyncTwoWithNoInSyncReplica_doesNotAck() {
+            var handler = handlerFor(2);
+            var request = publishForward(REQUESTER, CORRELATION_ID, STREAM, PARTITION, PAYLOAD, TIMESTAMP);
+
+            handler.onPublishForward(request);
+
+            assertThat(sentMessages).hasSize(1);
+            var response = (PublishForwardResponse) sentMessages.getFirst().message();
+            assertThat(response.success())
+                .as("min-sync-replicas=2 with no in-sync replica must NOT ack — acking here is the data-loss bug")
+                .isFalse();
+            assertThat(response.correlationId()).isEqualTo(CORRELATION_ID);
+        }
+
+        @Test
+        void onPublishForward_minSyncOne_acksWithoutAwaitingReplication() {
+            var handler = handlerFor(1);
+            var request = publishForward(REQUESTER, CORRELATION_ID, STREAM, PARTITION, PAYLOAD, TIMESTAMP);
+
+            handler.onPublishForward(request);
+
+            assertThat(sentMessages).hasSize(1);
+            var response = (PublishForwardResponse) sentMessages.getFirst().message();
+            assertThat(response.success())
+                .as("min-sync-replicas<=1 carries no peer-ack barrier and must stay a plain local-append ack")
+                .isTrue();
+            assertThat(response.offset()).isGreaterThanOrEqualTo(0L);
         }
     }
 

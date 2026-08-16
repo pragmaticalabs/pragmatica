@@ -6,6 +6,34 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [1.0.0-rc3] - Unreleased
 
+### Fixed
+- **Forwarded stream publishes bypassed `min-sync-replicas`, losing ACKED events on a single node kill.**
+  Both writers route on LOCAL RING PRESENCE rather than ownership: `DefaultStreamPublisher.publishEventual`
+  and `StreamWriteRouter.publish` each await replication only on the arm where the node already holds the
+  partition ring, and otherwise forward to the HRW owner. On the owner the forward landed in
+  `StreamForwardHandler.onPublishForward` → `StreamPartitionManager.publishForwarded` → `publishLocal` and
+  was acked with **no `awaitReplication` anywhere** — so every forwarded publish acked on the owner's local
+  fsync alone, silently running at min-sync 1 however the stream was configured.
+  Found by `02y-stream-crash` on remote cluster B (5 nodes, 4 partitions, min-sync-replicas=2): 80/80
+  publishes ACKED, then a `docker kill` of the node owning partitions 0 and 2 lost **both partition logs
+  whole** — 41 acked events. A replacement node's later cold backfill pulled p0=2/p1=22/p2=1/p3=19 events,
+  the surplus being exactly the 5 post-crash liveness writes, proving p0 and p2 held none of the original 80
+  anywhere in the cluster. The reads were accurate rather than a probe artifact: survivors answered
+  `500 Stream partition is not owned by this node`, not a false empty list.
+  The barrier now sits on the OWNER, in `onPublishForward`, because that is where the ack for a forwarded
+  publish is produced — one gate covering both writer paths. `awaitReplication` is bounded (immediate
+  `NOT_ENOUGH_REPLICAS` when targets < minAcks, else a 5s pending-ack timeout), so gating there cannot leak.
+  **This makes the ack honest, not the cluster healthy:** where a replica is starved by
+  `reshuffle_concurrency` pacing and never reaches in-sync, such publishes now FAIL instead of falsely
+  acking — the same run shows 56 pacing defers (29 on partition 0, 27 on partition 2) with the designated
+  replica stuck `SYNCING` for ~4.5 minutes. That starvation is a separate, still-open defect.
+  `[verified: unit + mutation — StreamForwardHandlerTest$MinSyncBarrierTests; reverting the production
+  change turns onPublishForward_minSyncTwoWithNoInSyncReplica_doesNotAck red and leaves the min-sync≤1
+  control green. The tests wire a REAL ReplicationManager over an empty ReplicaRegistry deliberately: the
+  NOOP manager's awaitReplication returns success unconditionally, so a test on the default bare
+  streamPartitionManager would pass with or without the barrier. aether-stream 662/0, aether/node 868/0,
+  ./build.sh green with 0 new lint. NOT integration-verified.]`
+
 ### Changed
 - **Durable-entity error surface renamed to entity-centric names (#432).** `DurableEntityError` →
   `EntityError` (symmetric with the sibling `StreamError`), `DurableEntityProvisioningError` →
