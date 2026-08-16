@@ -28,11 +28,18 @@ package org.pragmatica.aether.deployment.cluster;
 /// - [`#COMMANDED`] — leader/CTM-commanded drain delivered via the cluster-sync ping's GLOBAL
 ///   `drainNodes` set (membership-architecture-v2-spec B5a). The receiving node self-checks
 ///   `drainNodes.contains(self)` and initiates its local `DrainProcedure` (CAS-guarded, idempotent).
+/// - [`#CORE_ABSENCE`] — this node saw no term-accepted `ClusterSyncPing` for
+///   `timeouts.cluster.core_absence`, so it has lost the core and dissolves locally (#590). The
+///   community tier's analogue of `QUORUM_LOSS`, and local for the same reason the core tier's fence
+///   is: announcing dissolve normally means writing `GovernorAnnouncementKey` through consensus — the
+///   very thing an isolated community cannot do. Paired with the core's own longer
+///   `timeouts.cluster.community_absence` window, which is what keeps the two from being live at once.
 public enum DrainReason {
     OPERATOR_COMMAND,
     OVERPROVISION_SCALE_DOWN,
     OVERPROVISION_PARTITION_HEAL,
     JOIN_GRACE_REAP,
     QUORUM_LOSS,
-    COMMANDED
+    COMMANDED,
+    CORE_ABSENCE
 }

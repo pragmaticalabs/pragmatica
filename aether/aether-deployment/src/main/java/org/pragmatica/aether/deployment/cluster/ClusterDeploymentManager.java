@@ -13,6 +13,7 @@ import java.util.function.Supplier;
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.config.CommunitySizing;
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentContext;
+import org.pragmatica.aether.deployment.cluster.fsm.CommunityLivenessView;
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.ActivationDirectivePutReceived;
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.ActivationDirectiveRemoveReceived;
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.Activate;
@@ -77,6 +78,13 @@ public interface ClusterDeploymentManager {
     Promise<Unit> activate();
     Promise<Unit> deactivate();
     boolean isActive();
+
+    /// #590 — inject the leader's OBSERVED community-liveness view, replacing the community's own
+    /// frozen self-report as the input to the per-community FSM. Narrow on purpose: the caller needs
+    /// this one seam, not the whole deployment context. Wired in `AetherNode` once the cluster-sync
+    /// collector exists; unwired deployments keep the pre-#590 behaviour.
+    @Contract
+    void setCommunityLiveness(CommunityLivenessView view);
 
     @Contract
     @MessageReceiver
@@ -483,6 +491,12 @@ public interface ClusterDeploymentManager {
 
         public ClusterDeploymentContext context() {
             return ctx;
+        }
+
+        @Override
+        @Contract
+        public void setCommunityLiveness(CommunityLivenessView view) {
+            ctx.setCommunityLiveness(view);
         }
 
         @Override

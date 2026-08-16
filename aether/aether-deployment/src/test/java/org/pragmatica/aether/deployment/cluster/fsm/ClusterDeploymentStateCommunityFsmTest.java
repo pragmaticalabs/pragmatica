@@ -11,6 +11,8 @@ import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager.Deploym
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.Activate;
 import org.pragmatica.aether.deployment.schema.SchemaOrchestratorService;
 import org.pragmatica.aether.slice.generation.HealthSignalSink;
+import org.pragmatica.aether.slice.generation.Epoch;
+import org.pragmatica.hlc.HlcTimestamp;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.CommunityKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.GovernorAnnouncementKey;
@@ -67,6 +69,7 @@ class ClusterDeploymentStateCommunityFsmTest {
 
     private RecordingClusterNode cluster;
     private InMemoryKvStore kvStore;
+    private ClusterDeploymentContext context;
     private FsmTestHarness<ClusterDeploymentState, ClusterFsmEvent> harness;
 
     @BeforeEach
@@ -77,7 +80,8 @@ class ClusterDeploymentStateCommunityFsmTest {
         Function<NodeId, Option<String>> noSource = nodeId -> Option.none();
 
         Function<Fsm<ClusterDeploymentState, ClusterFsmEvent>, ClusterDeploymentState> factory =
-                fsm -> new ClusterDeploymentContext(fsm,
+                fsm -> {
+                    context = new ClusterDeploymentContext(fsm,
                                                     SELF,
                                                     cluster,
                                                     kvStore,
@@ -93,7 +97,10 @@ class ClusterDeploymentStateCommunityFsmTest {
                                                     1,
                                                     timeSpan(300).seconds(),
                                                     System::currentTimeMillis,
-                                                    noSource).dormant();
+                                                    noSource);
+
+                    return context.dormant();
+                };
         harness = FsmTestHarness.harness("community-fsm-" + SELF.id(), factory);
         harness.dispatch(new Activate());
     }
@@ -163,6 +170,139 @@ class ClusterDeploymentStateCommunityFsmTest {
             var puts = communityPutsFor("orders-w-0");
 
             assertThat(puts).as("a DEGRADED community that regains the floor is promoted to ACTIVE").hasSize(1);
+            assertThat(puts.getFirst().state()).isEqualTo(CommunityState.ACTIVE);
+        }
+    }
+
+    /// #590 — the FSM's liveness input is the leader's OBSERVATION, not the community's self-report.
+    ///
+    /// The bug these pin: `GovernorAnnouncementValue.memberCount` is written BY the community. Under a
+    /// core/community partition the governor cannot write, so that field does not decay — it freezes
+    /// at its last healthy value. The community therefore stayed ACTIVE indefinitely and the core kept
+    /// placing work on nodes it could not reach.
+    @Nested
+    class CoreObservedAbsence {
+
+        private void absent(NodeId... nodes) {
+            var absentSet = Set.of(nodes);
+
+            context.setCommunityLiveness(absentSet::contains);
+        }
+
+        private void seedAnnouncementWithMembers(String communityId, int memberCount, List<NodeId> members) {
+            kvStore.put(GovernorAnnouncementKey.forCommunity(communityId),
+                        new GovernorAnnouncementValue(GOVERNOR,
+                                                      memberCount,
+                                                      members,
+                                                      "",
+                                                      0L,
+                                                      0L,
+                                                      Epoch.ZERO,
+                                                      Epoch.ZERO,
+                                                      HlcTimestamp.ZERO,
+                                                      false));
+        }
+
+        /// The regression guard for the whole change: with no liveness signal wired, the FSM must
+        /// behave EXACTLY as it did before. A demotion path that fires without evidence behind it
+        /// would be worse than the bug.
+        @Test
+        void reconcile_livenessUnwired_leavesViableCommunityActive() {
+            seedCommunity("orders-w-0", CommunityState.ACTIVE);
+            seedAnnouncement("orders-w-0", VIABLE);
+
+            reconcile();
+
+            assertThat(communityPutsFor("orders-w-0"))
+                    .as("unwired liveness must not manufacture a demotion")
+                    .isEmpty();
+        }
+
+        /// The partition case, with the announcement carrying no member list — which is what
+        /// `governorAnnouncementValue(governorId, memberCount)` produces, so it is the common shape.
+        /// The governor is then the one identity available to check, and a silent governor means a
+        /// silent community.
+        @Test
+        void reconcile_governorAbsentAndNoMemberList_demotesDespiteHealthySelfReport() {
+            seedCommunity("orders-w-0", CommunityState.ACTIVE);
+            seedAnnouncement("orders-w-0", VIABLE);
+            absent(GOVERNOR);
+
+            reconcile();
+
+            var puts = communityPutsFor("orders-w-0");
+
+            assertThat(puts).as("a community whose governor has gone silent is demoted even though its "
+                                + "own memberCount still reads viable").hasSize(1);
+            assertThat(puts.getFirst().state()).isEqualTo(CommunityState.DEGRADED);
+        }
+
+        @Test
+        void reconcile_governorPresentAndNoMemberList_staysActive() {
+            seedCommunity("orders-w-0", CommunityState.ACTIVE);
+            seedAnnouncement("orders-w-0", VIABLE);
+            absent(new NodeId("some-unrelated-node"));
+
+            reconcile();
+
+            assertThat(communityPutsFor("orders-w-0"))
+                    .as("absence of an unrelated node says nothing about this community")
+                    .isEmpty();
+        }
+
+        /// With a member list present, absence is subtracted per member. Exactly one silent member
+        /// takes a 3-member community to 2, below the floor.
+        @Test
+        void reconcile_oneMemberAbsent_dropsCountBelowFloor() {
+            var alpha = new NodeId("node-alpha");
+            var beta = new NodeId("node-beta");
+            var gamma = new NodeId("node-gamma");
+
+            seedCommunity("orders-w-0", CommunityState.ACTIVE);
+            seedAnnouncementWithMembers("orders-w-0", VIABLE, List.of(alpha, beta, gamma));
+            absent(gamma);
+
+            reconcile();
+
+            var puts = communityPutsFor("orders-w-0");
+
+            assertThat(puts).as("3 reported - 1 observed absent = 2, below the floor of 3").hasSize(1);
+            assertThat(puts.getFirst().state()).isEqualTo(CommunityState.DEGRADED);
+        }
+
+        /// The subtraction must not alter the healthy path: all members answering leaves the reported
+        /// count untouched.
+        @Test
+        void reconcile_allMembersPresent_countIsTheReportedCount() {
+            var alpha = new NodeId("node-alpha");
+            var beta = new NodeId("node-beta");
+            var gamma = new NodeId("node-gamma");
+
+            seedCommunity("orders-w-0", CommunityState.ACTIVE);
+            seedAnnouncementWithMembers("orders-w-0", VIABLE, List.of(alpha, beta, gamma));
+            absent(new NodeId("node-elsewhere"));
+
+            reconcile();
+
+            assertThat(communityPutsFor("orders-w-0"))
+                    .as("no member absent — the community is unchanged")
+                    .isEmpty();
+        }
+
+        /// A DEGRADED community whose members come back is promoted again, so a healed partition
+        /// recovers rather than latching. The community-side fence is terminal per node, but the
+        /// core's view of the community is not.
+        @Test
+        void reconcile_absentMembersReturn_promotesBackToActive() {
+            seedCommunity("orders-w-0", CommunityState.DEGRADED);
+            seedAnnouncement("orders-w-0", VIABLE);
+            absent();
+
+            reconcile();
+
+            var puts = communityPutsFor("orders-w-0");
+
+            assertThat(puts).as("a community that answers again is promoted back to ACTIVE").hasSize(1);
             assertThat(puts.getFirst().state()).isEqualTo(CommunityState.ACTIVE);
         }
     }

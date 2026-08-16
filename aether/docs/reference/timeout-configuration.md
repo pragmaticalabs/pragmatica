@@ -80,6 +80,14 @@ All configurable timeouts in a single table, grouped by TOML section.
 | `reconciliation_interval` | `5s` | Interval for cluster state reconciliation |
 | `ping_interval` | `1s` | Interval for cluster health check pings |
 | `channel_protection` | `15s` | Grace period before closing an idle cluster channel |
+| `core_absence` | `10s` | #590 — silence after which a node concludes it has lost the core and **dissolves itself locally** (stops serving, drains). Measured from the last term-accepted `ClusterSyncPing`; a node that has never heard the core is cold-starting and never fences. Must clear the worst-case leader-election gap, since pings originate from the leader and an election is a legitimate silence |
+| `community_absence` | `20s` | #590 — silence after which the **core** stops counting a member as live and re-places its community's slices. Measured from the last `ClusterSyncPong`. Replaces the community's own self-reported member count, which freezes rather than expires under partition |
+
+> **`core_absence` must be strictly less than `community_absence`** — the config load **refuses** an
+> inverted or equal pair rather than clamping it. This is the no-double-active ordering: the community
+> has to stop serving before the core hands its work to other nodes, and the gap between the two is the
+> hand-off margin. Both defaults are multiples of the 1s `ping_interval`, the cadence at which the
+> evidence actually arrives; a threshold below that interval would fence on a single missed ping.
 
 ### `[timeouts.consensus]`
 

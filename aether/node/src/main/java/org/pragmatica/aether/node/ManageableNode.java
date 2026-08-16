@@ -9,6 +9,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.function.Supplier;
 
+import org.pragmatica.aether.worker.isolation.CoreAbsenceSnapshot;
 import org.pragmatica.aether.api.ClusterEventAggregator;
 import org.pragmatica.aether.backup.BackupService;
 import org.pragmatica.aether.controller.ControlLoop;
@@ -154,6 +155,16 @@ public interface ManageableNode {
     /// below quorum?" without log-scraping. Default `Option.none()` keeps `ManageableNode` test
     /// proxies compiling; the production node record supplies the live view.
     default Option<QuorumLossSnapshot> quorumLossSnapshot() {
+        return Option.none();
+    }
+
+    /// #590 — this node's LOCAL core-absence view: has it ever heard the core, how long since the last
+    /// accepted `ClusterSyncPing`, and how long until it dissolves itself. The community-tier twin of
+    /// [#quorumLossSnapshot], and PER-NODE for the same reason — plus a sharper one. A node nearing its
+    /// core-absence fence is by definition one the core is losing contact with, so a leader-forwarded
+    /// answer is unobtainable during exactly the incident it describes; an operator polls the suspect
+    /// node directly. Default `Option.none()` keeps `ManageableNode` test proxies compiling.
+    default Option<CoreAbsenceSnapshot> coreAbsenceSnapshot() {
         return Option.none();
     }
 

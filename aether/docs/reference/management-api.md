@@ -2564,6 +2564,13 @@ Membership diagnostics — the responding node's authoritative `MembershipFsm` l
   "requiredThreshold": 3,
   "belowThreshold": true,
   "armed": true,
+  "coreAbsence": {
+    "armed": true,
+    "fenced": false,
+    "sinceLastPingMs": 6200,
+    "remainingMs": 3800,
+    "thresholdMs": 10000
+  },
   "members": [
     {"nodeId": "core-1", "state": "Member",  "incarnation": 1, "role": "core", "strictCore": true,  "countsTowardEffective": true},
     {"nodeId": "core-3", "state": "Suspect", "incarnation": 2, "role": "core", "strictCore": false, "countsTowardEffective": true},
@@ -2580,12 +2587,26 @@ Membership diagnostics — the responding node's authoritative `MembershipFsm` l
 | `requiredThreshold` | Simple-majority quorum threshold `coreCount / 2 + 1` (`0` while core count unknown at bootstrap) |
 | `belowThreshold` | Whether the strict count is currently below threshold |
 | `armed` | Whether this node has ever observed a quorate count (cold-start latch; a never-quorate node never self-drains). "Observed" is literal since #557: the count is reachability-derived, so the latch cannot arm on configuration alone |
+| `coreAbsence` | #590 — the COMMUNITY tier's fence, the twin of the core-tier fields above. The core broadcasts `ClusterSyncPing` cluster-wide; a node that stops receiving them has lost the core and dissolves itself locally, without the consensus write an isolated community could never complete |
+| `coreAbsence.armed` | Whether a term-accepted core ping has ever arrived. `false` means this node has never heard the core and is cold-starting — **not** isolated. Without this latch every community would fence itself during formation |
+| `coreAbsence.fenced` | Whether the local dissolve has already fired. Terminal: recovery is a re-join, not a node deciding on its own that it is serving again |
+| `coreAbsence.sinceLastPingMs` | Age of the last term-accepted ping (`-1` if none ever arrived). Pings from a stale leader are rejected by term fencing and do **not** refresh this, so a partitioned-away former leader cannot hold a community open |
+| `coreAbsence.remainingMs` | Time left before this node fences itself (`-1` when unarmed or already fenced). **The field to watch during a suspected partition** |
+| `coreAbsence.thresholdMs` | The configured `timeouts.cluster.core_absence` |
 | `members[]` | Every tracked peer (DEAD retained for incarnation-fenced rejoin) |
 | `members[].state` | FSM lifecycle state (`Observed` / `Member` / `Suspect` / `Departing` / `Dead`) |
 | `members[].incarnation` | Member incarnation |
 | `members[].role` | `core` / `worker` / `unknown` |
 | `members[].strictCore` | In the strict `Member`-only quorum set |
 | `members[].countsTowardEffective` | In the `Member` + `Suspect` counted set |
+
+> **Why core-absence is on a LOCAL endpoint and not the leader's.** A node approaching its core-absence
+> fence is, by definition, one the core is losing contact with — so a leader-forwarded answer is the one
+> answer nobody can obtain during the incident it describes. Query the suspect node's own management
+> port. The leader's complementary view (which communities the core has stopped counting, on the longer
+> `timeouts.cluster.community_absence` window) is what re-places slices; the two windows are ordered
+> `core_absence < community_absence`, refused at config load otherwise, so a community always stops
+> serving before its work is handed to anyone else.
 
 ### GET /api/ownership/{domain}
 

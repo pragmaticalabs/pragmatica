@@ -42,15 +42,61 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   Also replaced `String.hashCode()` with FNV-1a: our FQCNs share long prefixes
   (`org.pragmatica.aether.resource.entity.Entity…`) and `hashCode` clusters badly on precisely that
   shape, wasting a space that was already too small.
-  **Collisions are now structurally impossible except within a single blueprint.** The two ranges are
-  disjoint, so a slice type can never collide with a system type; and `sliceCodec(parent, codecs)`
-  gives every slice its own registry layered over the shared system parent, so two blueprints' types
-  never meet. Only types WITHIN one blueprint share a registry.
+  **Collisions are now structurally impossible except within a single slice's registry.** The two
+  ranges are disjoint, so a slice type can never collide with a system type; and `slice.codec(parent)`
+  gives every slice its own registry layered over the shared system parent
+  (`DependencyResolver#resolveBridge`), so two slices never see each other's types — including two
+  slices in the same blueprint. What remains is one slice's own list, which can include an injected
+  slice's request/response types.
   User tags are held in a map rather than a flat array — an array spanning the wide range would be
   ~16MB per slice, and every slice builds its own registry. System tags keep the flat-array index,
   since they carry the cluster's own protocol traffic and are the hot path.
   `[verified: ./build.sh green, lint 49/0 new; the historical 7612 collision reproduced under the old
   derivation and resolved under the new]`
+- **System codec tags are hand-assigned rather than hashed — codec tag space Phase 2.** Phase 1 split
+  the space; this fills the system half. All **280** framework and Aether protocol types now carry an
+  explicit tag in one registry, `org.pragmatica.serialization.SystemTags`, which
+  `SliceCodec.deterministicTag` consults before falling through to the hash (unchanged, now named
+  `hashedTag`). Generated codecs already called `deterministicTag` at class-init, so pinning is a
+  one-line edit to one file: no regenerated code, no churn across the `@Codec` annotations, and **no
+  envelope-version bump** (envelope stays 1000).
+  **A tag is a wire contract and hashing gave it none of the stability that requires** — it moved with
+  a class rename, a package move, or a change of hash function. Two nodes disagreeing about what a tag
+  means is undiagnosable corruption rather than a clean failure.
+  **Wire cost.** Every one of these types previously sat in the 3-byte user range. 89 of them —
+  consensus rounds, SWIM gossip, DHT lookups, KV commands, stream replication and the value objects
+  nested inside all of them — now occupy `21..109` and cost **one** byte; the remaining 191 occupy
+  `128..1659` and cost two. `110..127` is held free so a future hot type can still be promoted into
+  one byte, and `2112..16383` is reserved. `[mechanism: tags are VLQ-encoded, so a tag ≤ 127 is one
+  byte and ≤ 16383 is two]`
+  **The obligation is enforced, not merely documented.** `SliceCodec.systemCodec()` refuses to build a
+  system registry containing a type that fell through to the hash and names it, so the system set
+  never has to be rediscovered by hand — grep cannot answer that question (it returns 134 `@Codec`
+  annotations against 76 registered types and mixes in test artifacts). `SystemTags` rejects a
+  duplicate name AND a duplicate tag at class-init. A rename now leaves its entry unmatched and fails
+  the build, which is the intended behaviour: whether the wire identity travels with the name is a
+  human decision, not a hash's.
+  `[verified: aether/node/src/test/java/org/pragmatica/aether/node/SystemCodecPinningTest.java —
+  builds both production system registries the way AetherNode does and asserts every registered type
+  is hand-assigned, plus the one-byte-window property;
+  integrations/serialization/api/src/test/java/org/pragmatica/serialization/SystemTagsTest.java 6/0;
+  852/0 aether/node, 301/0 slice-processor, 40/0 serialization-api; ./build.sh green, 0 new lint]`
+  `[design intent — unverified: cross-node interop on the new system tags. Phase 1's live 5-node smoke
+  run exercised consensus, membership, KV and one slice; streams, entities and the DHT have the
+  densest codec hierarchies and are covered by suites 02y/02w, not yet re-run on Phase 2]`
+- **Slice codec tag collisions are reported at compile time instead of at slice load.** The
+  slice-processor now derives the tag for every type in a slice's generated codec list and fails the
+  build naming both types when two coincide. The registry already rejected this at load
+  (`SliceCodec#validateAndSetTag`), which is correct but late — the developer learned it from a
+  deploy. The collision domain is one slice's registry, not a blueprint's: each slice layers directly
+  over the shared system parent. The processor carries its own copy of the derivation
+  (`CodecTagSpace`) because consumers put only `slice-processor` on `annotationProcessorPaths`, so
+  reaching `SliceCodec` would drag `serialization-api` and Netty onto every application's
+  annotation-processor path; both copies pin the same probe value so a divergence fails a build rather
+  than silently degrading the check. `[verified:
+  jbct/slice-processor/src/test/java/org/pragmatica/jbct/slice/generator/CodecTagSpaceTest.java 3/0 +
+  SliceCodecTest#hashedTag_pinnedProbeValue; ./build.sh compiles every slice in the repo — examples,
+  test blueprints and e2e slices — with no collision reported]`
 
 ### Added
 - **SIGKILL crash-durability gate for durable entities — #345 I3.** New `02w-entity-crash` suite: a
@@ -104,6 +150,80 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   `[verified: aether/resource/durable-entity/src/test/java/org/pragmatica/aether/resource/entity/DurableEntityConfigTest.java]`
 
 ### Fixed
+- **A worker community did not dissolve when it lost the core, and the core did not notice it had lost
+  the community (#590).** The CP contract at the community tier was unimplemented, not merely
+  unvalidated — and it was unimplemented on BOTH sides, which the ticket did not record.
+  **Community side:** `writeDissolved()` had exactly two callers, both gated on the community shrinking
+  to zero members. That is a membership-shrink mechanism, not a partition response. SWIM is
+  intra-community gossip, so a community cut off from the core still sees all of its own members alive,
+  the emptiness condition never fires, and it keeps serving — the "rogue autonomous community" the
+  contract exists to make impossible. **Core side:** the per-community FSM's "observed live membership"
+  read `GovernorAnnouncementValue.memberCount`, a field the community writes about ITSELF. Under
+  partition the governor cannot rewrite it, so it does not expire — it FREEZES at its last healthy
+  value. The core therefore kept the community `ACTIVE` and kept placing work on nodes it could not
+  reach. `GovernorAnnouncementKey` is never removed by anything, and
+  `SpokesmanPingLoop.currentReports()` — the one genuinely receipt-based signal the core collected —
+  had zero consumers. Both sides blind, in the same way and for the same reason: a status field was
+  trusted in place of an observation.
+  **One mechanism, both directions.** The leader already broadcasts `ClusterSyncPing` cluster-wide and
+  every live node answers; that exchange now carries liveness both ways, with no new wire type. A node
+  that has seen no *term-accepted* ping for `timeouts.cluster.core_absence` (default 10s) dissolves
+  LOCALLY through `DrainProcedure.initiate(CORE_ABSENCE)` — no consensus write, which is the whole
+  point, since announcing dissolve normally means writing `GovernorAnnouncementKey` through the core.
+  Pings failing term fencing do not refresh liveness, so a partitioned-away former leader cannot hold a
+  community open. Detection is PER NODE and **WORKER-ONLY**, mirroring `QuorumLossDetector`: no
+  intra-community coordination, no dependence on the governor surviving, and a partitioned SUBSET
+  fences exactly itself. An arm-after-first-ping latch means a node that has never heard the core is
+  treated as cold-starting, not isolated — without it every community would dissolve during formation.
+  **The worker-only restriction is load-bearing and was learned the hard way.** This first shipped
+  wired on EVERY node, which suite 02y caught. Ping dispatch is leader-only
+  (`ClusterSyncState`: "a non-leader tick is a no-op") and a broadcast never reaches its own sender, so
+  on the core tier the signal is structurally absent twice over: a node that wins an election receives
+  no pings ever again, and every survivor of a dead leader receives none until re-election. Ungated,
+  both drained after `core_absence`. The fence is now gated by a fail-safe suppressor sampled at FIRING
+  time — only a node positively known NOT to be a core member may fire it, an unresolved core view
+  reads as suppress, and an unwired gate leaves the detector inert. Core liveness was always
+  `QuorumLossDetector`'s job.
+  On the core side, `ClusterSyncCollector.sinceLastPongNanos` feeds a `CommunityLivenessView` that the
+  FSM consults instead of the self-report; absent members are SUBTRACTED from the reported count rather
+  than recounted from `members()`, because the two are independent fields and the common
+  `governorAnnouncementValue(governorId, memberCount)` factory leaves `members` empty — recounting
+  would have read zero live members for every healthy community.
+  **`core_absence` must be strictly less than `community_absence`** (default 20s) and the config load
+  REFUSES an inverted or equal pair rather than clamping it. That inequality is the no-double-active
+  guarantee: the community stops serving before the core hands its slices to anyone else.
+  Observability per the observability-first rule: `coreAbsence` (`armed` / `fenced` /
+  `sinceLastPingMs` / `remainingMs` / `thresholdMs`) on `GET /api/cluster/membership`, deliberately on
+  that LOCAL endpoint beside the core tier's own quorum-loss fence — a node losing the core is precisely
+  the one a leader-forwarded read cannot reach during the incident it describes.
+  `[verified: aether/node/.../CoreAbsenceDetectorTest 13/13;
+  aether/aether-deployment/.../ClusterDeploymentStateCommunityFsmTest$CoreObservedAbsence 6/6;
+  aether/aether-config/.../ClusterTimeoutsAbsenceOrderingTest 5/5. Mutation-checked both ways: making
+  the FSM ignore observed absence turns exactly the 2 new-behaviour cases red with all 4 regression
+  guards still green, and removing the cold-start latch turns exactly
+  `evaluate_noPingEverReceived_neverFences` red with the other 12 green]`
+  `[design intent — unverified: the ORDERING under a real partition. Forge is single-JVM and cannot
+  sever the cluster network, so "the community stopped serving before the core re-placed its work" is
+  believed, not demonstrated, pending a docker/cloud partition run (#367). With an empty `members` list
+  only TOTAL isolation of a community is detected, not a partial one — a limit of the announcement
+  shape, not of the read side.]`
+  **Doc correction this forced:** `known-limitations.md` described dissolve-on-core-isolation as
+  awaiting *proof*, implying a built mechanism waiting on a test run. There was no mechanism to prove.
+  That page is the designated single source other docs reference, so the wording had propagated as
+  "wired".
+- **`WorkerCodecs.workerCodecs()` threw on every call.** `SwimConfig` carries `TimeSpan` fields, so
+  `SwimCodecs.REQUIRED_TYPES` demands a `TimeSpan` codec; `NodeCodecs` registers one manually and this
+  registry never did, so the startup checklist rejected it unconditionally
+  (`Required codecs are not registered: org.pragmatica.lang.io.TimeSpan`). It went unnoticed because
+  the registry has **no production caller** — it exists for the worker-community tier and nothing
+  constructs it yet, so no test and no node ever ran the code. Found by the Phase 2 pinning test,
+  which builds both system registries precisely because `WorkerCodecs` carries four sub-registries
+  `NodeCodecs` does not (`MutationCodecsNode`, `BootstrapCodecsNode`, `HeartbeatCodecsNode`,
+  `NetworkCodecsNode`) — without it those types would have gone unpinned with nothing to say so. The
+  registered codec is byte-identical to `NodeCodecs#timeSpanCodec`, since a worker and a core exchange
+  these values. `[verified:
+  aether/node/.../SystemCodecPinningTest#workerCodecs_everySystemType_hasAHandAssignedTag — red before
+  the fix with this exact message, green after; aether/node 852/0]`
 - **Auto-heal never replaced a failed node — a static-init-order bug that reported success the whole
   time (#597).** `AutoHealConfig.DEFAULT.maxNodes()` was `null` rather than `Option.empty()`: static
   initialisers run in textual order, and `DEFAULT`'s initialiser reached the `NO_CAP` constant

@@ -41,12 +41,40 @@ Aether's behavior **under sustained overload is not yet characterized**, and **s
 
 ## Multi-community / hierarchical scaling barrier — under validation
 
-Aether's two-layer topology (a 5–9-node Rabia core plus SWIM-gossip worker communities that scale horizontally) is **designed and wired**, but the **multi-community barrier has not yet been crossed under load and chaos**. The first crossing — a 3-node core with 3×3 worker communities, chaos aimed at the core — is **under validation** (#367) and is the headline GA gate.
+Aether's two-layer topology (a 5–9-node Rabia core plus SWIM-gossip worker communities that scale horizontally) is **designed and wired for the steady state** — communities form, elect governors, and receive placed work — but its **partition response only landed in #590**, and the **multi-community barrier has not yet been crossed under load and chaos**. The first crossing — a 3-node core with 3×3 worker communities, chaos aimed at the core — is **under validation** (#367) and is the headline GA gate.
+
+> **Correction, 2026-08-15 (#590).** This section previously described dissolve-on-core-isolation as
+> awaiting *proof*. That was wrong in a way worth recording: there was no mechanism to prove. Neither
+> side of the detection existed. A community could not notice it had lost the core (`writeDissolved()`
+> fired only when a community shrank to zero members, never on partition), and the core could not
+> notice it had lost a community — its "observed live membership" read
+> `GovernorAnnouncementValue.memberCount`, a field the community writes about ITSELF, which under
+> partition freezes at its last healthy value instead of expiring. Both sides were blind, and the
+> wording implied a built mechanism waiting on a test run. The mechanism now exists (see below); the
+> end-to-end proof genuinely is still pending.
 
 We neither claim it works nor hide that it is the open frontier. Until #367 produces its three outputs, the validated topology is a **single-community** deployment on a core of 5–9 nodes. Specifically pending:
 
-- **Worker-community dissolve-on-core-isolation** — the partition contract in [`../architecture/14-consistency-and-partitions.md`](../architecture/14-consistency-and-partitions.md) is proven today only at the single-tier core; its hierarchical proof is gated on #367.
-- **The dissolve-timeout (`split_timeout`) tuning curve** for hierarchical topologies — the recommended default for multi-community clusters comes out of this run.
+- **Worker-community dissolve-on-core-isolation** — the mechanism landed in #590 and is **unit- and
+  mutation-verified, not integration-verified**. The core broadcasts `ClusterSyncPing` cluster-wide and
+  every live node answers; that one exchange now carries liveness both ways. A worker that has seen no
+  term-accepted ping for `timeouts.cluster.core_absence` (default 10s) dissolves LOCALLY — it never has
+  to write to the core, which is the point, since announcing dissolve normally means a consensus write
+  the isolated community cannot complete. The core independently stops counting a member it has had no
+  pong from for `timeouts.cluster.community_absence` (default 20s) and re-places the community's slices.
+  `core_absence < community_absence` is refused at config load, and that inequality is the whole
+  no-double-active guarantee: the community stops serving before the core hands its work to anyone else.
+  `[verified: CoreAbsenceDetectorTest 13/13, ClusterDeploymentStateCommunityFsmTest$CoreObservedAbsence
+  6/6, ClusterTimeoutsAbsenceOrderingTest 5/5 — each mutation-checked: removing the cold-start latch or
+  the observed-absence read turns exactly the guarding tests red]`
+  `[design intent — unverified: the ORDERING under a real partition. No in-JVM harness can produce one —
+  Forge is single-JVM and cannot sever the cluster network — so "the community stopped serving before
+  the core re-placed its work" is believed, not demonstrated, until a docker/cloud partition run.
+  Gated on #367.]`
+- **The dissolve-timeout tuning curve** for hierarchical topologies — the recommended
+  `core_absence`/`community_absence` pair for multi-community clusters comes out of this run. The
+  defaults are multiples of the 1s ping cadence, chosen to clear a leader-election gap (pings originate
+  from the leader, so an election is a legitimate silence), not measured against a real partition.
 - **Core coordination-load slope** at 1→2→3 communities — the real "how far does it scale" answer, and whether the hierarchy has a ceiling to know about before GA.
 
 ### The scaling numbers (single source)

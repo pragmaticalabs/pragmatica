@@ -1862,19 +1862,18 @@ public sealed interface AetherValue {
     /// `EntityLogSubstrate#earliestRetainedOffset`. Storing the block id without the offset would leave a
     /// reader unable to tell a complete recovery from one silently missing every mutation in the gap.
     ///
-    /// ## Why the name says "Fold", and why that is not cosmetic
-    /// Codec tags are derived from the fully-qualified type name —
-    /// `SliceCodec.deterministicTag` is `(fqn.hashCode() & 0x7FFFFFFF) % 16256 + 128` — and the tag space
-    /// is small enough that distinct names collide. The obvious name for this type, `EntityCheckpointValue`,
-    /// hashes to tag 7612, which `org.pragmatica.cluster.metrics.HealthHintWire` already claims; registering
-    /// both throws at `NodeCodecs` static init and poisons every test that touches it. `HealthHintWire`'s
-    /// own doc records that it was kept top-level to dodge an earlier collision, so renaming to clear a tag
-    /// is the established remedy here rather than an improvisation.
+    /// ## Why the name says "Fold" — historical, and now load-bearing for a different reason
+    /// This type was named to dodge a tag collision. Codec tags were derived purely by hashing the
+    /// fully-qualified type name into a 16256-slot space, and the obvious name, `EntityCheckpointValue`,
+    /// hashed to 7612 — already claimed by `org.pragmatica.cluster.metrics.HealthHintWire`. Registering
+    /// both threw at `NodeCodecs` static init and poisoned every test that touched it.
     ///
-    /// Renaming is the ONLY remedy available: `@Codec` declares a `tag()` attribute, but
-    /// `FactoryClassGenerator` emits `deterministicTag(fqn)` unconditionally for records, enums and opaque
-    /// types and never reads it — the attribute is dead surface. If it is ever made live, this type should
-    /// take an explicit tag and the name becomes a free choice again.
+    /// That derivation is gone. System types now carry hand-assigned tags in
+    /// `org.pragmatica.serialization.SystemTags`, so this type's tag no longer depends on its name and
+    /// the collision cannot recur. The name still matters, but the reason inverted: the SystemTags key
+    /// IS the fully-qualified name, so a rename leaves the entry unmatched, drops the type into the
+    /// hashed user range, and fails the build at `SliceCodec#systemCodec`. Renaming is therefore a
+    /// deliberate two-step — rename, then re-key — and a tag, once assigned, is never renumbered.
     ///
     /// @param throughOffset last log offset folded into the snapshot
     /// @param blockIdHex    content id of the snapshot block in stream storage

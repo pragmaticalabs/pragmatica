@@ -62,6 +62,11 @@ public final class ClusterDeploymentContext {
     /// communities under the default size; legacy constructors default it to
     /// [CommunitySizing#DEFAULT] (target 100, floor 3) so existing call sites are unchanged.
     private final CommunitySizing communitySizing;
+    /// #590 core-absence read-seam. Late-wired rather than constructor-injected, matching the
+    /// `setDrainTargets` / `setColdBootSupplier` idiom: the collector that backs it is built well after
+    /// the deployment context, and every existing call site (production and test) keeps the
+    /// pre-#590 behaviour until `AetherNode` supplies the real view.
+    private volatile CommunityLivenessView communityLiveness = CommunityLivenessView.unwired();
     private final ClusterDeploymentState dormant;
     private final ClusterDeploymentState stopped;
 
@@ -307,6 +312,19 @@ public final class ClusterDeploymentContext {
     /// [CommunitySizing#DEFAULT] (target 100, floor 3).
     public CommunitySizing communitySizing() {
         return communitySizing;
+    }
+
+    /// The leader's observed community-liveness view (#590). Defaults to
+    /// [CommunityLivenessView#unwired], which reports nothing absent.
+    public CommunityLivenessView communityLiveness() {
+        return communityLiveness;
+    }
+
+    /// Inject the observed community-liveness view. The pre-wiring default is
+    /// [CommunityLivenessView#unwired]; pass that explicitly to restore it rather than clearing.
+    @Contract
+    public void setCommunityLiveness(CommunityLivenessView view) {
+        communityLiveness = view;
     }
 
     public Set<NodeId> seedNodes() {

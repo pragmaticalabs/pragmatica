@@ -14,6 +14,7 @@ import javax.lang.model.type.DeclaredType;
 import javax.lang.model.type.TypeMirror;
 import javax.lang.model.util.Elements;
 import javax.lang.model.util.Types;
+import javax.tools.Diagnostic;
 import javax.tools.JavaFileObject;
 import java.io.PrintWriter;
 import java.io.StringWriter;
@@ -2083,6 +2084,8 @@ public class FactoryClassGenerator {
         var plan = collectCodecPlan(model, proxyMethodsCache, importTracker);
         var codecEntries = plan.entries();
 
+        reportTagCollisions(model, codecEntries);
+
         out.println();
         out.println("            @Override");
         out.println("            public SliceCodec codec(SliceCodec parent) {");
@@ -2107,6 +2110,36 @@ public class FactoryClassGenerator {
                     : "                ),");
         generateRequiredTypesArgument(out, plan.requiredTypes(), importTracker);
         out.println("            }");
+    }
+
+    /// Fail the build when two types in this slice's registry derive the same wire tag.
+    ///
+    /// This is the check moved as early as it can go. The registry itself rejects the collision at
+    /// slice LOAD (`SliceCodec#validateAndSetTag`), which is correct but late: the developer learns
+    /// about it from a deploy, not from `mvn install`. The collision domain is one slice's registry —
+    /// each slice layers directly over the shared system parent (`DependencyResolver#resolveBridge`),
+    /// so two slices in a blueprint never see each other's types, and a slice type can never reach a
+    /// system tag because the two ranges are disjoint. That leaves this list, which the processor
+    /// already holds in full.
+    ///
+    /// The remedy is a rename: the tag is derived from the fully-qualified name, and `@Codec(tag = ...)`
+    /// is not read by this generator.
+    private void reportTagCollisions(SliceModel model, List<CodecTypeEntry> codecEntries) {
+        var byTag = new LinkedHashMap<Integer, String>();
+
+        for (var entry : codecEntries) {
+            var name = entry.qualifiedName();
+            var existing = byTag.putIfAbsent(CodecTagSpace.hashedTag(name), name);
+
+            if (existing != null && !existing.equals(name)) {
+                processingEnv.getMessager()
+                             .printMessage(Diagnostic.Kind.ERROR,
+                                           "Codec tag collision in slice %s: %s and %s both derive tag %d. Wire tags come from the fully-qualified type name, so rename one of them.".formatted(model.simpleName(),
+                                                                                                                                                                                              existing,
+                                                                                                                                                                                              name,
+                                                                                                                                                                                              CodecTagSpace.hashedTag(name)));
+            }
+        }
     }
 
     /// Emit the startup checklist argument of `sliceCodec(parent, codecs, requiredTypes)`.
