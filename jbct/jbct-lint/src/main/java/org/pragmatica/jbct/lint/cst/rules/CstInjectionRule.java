@@ -156,8 +156,8 @@ public class CstInjectionRule implements CstLintRule {
         return Diagnostic.diagnostic(RULE_ID,
                                      ctx.severityFor(RULE_ID),
                                      ctx.fileName(),
-                                     startLine(method),
-                                     startColumn(method),
+                                     startLine(anchorOf(method)),
+                                     startColumn(anchorOf(method)),
                                      "Setter '" + FileTypeClassifier.methodName(method)
                                     + "' in a step/use-case implementation — inject through the factory",
                                      "Dependencies are passed to the factory, not set after construction. Replace the "

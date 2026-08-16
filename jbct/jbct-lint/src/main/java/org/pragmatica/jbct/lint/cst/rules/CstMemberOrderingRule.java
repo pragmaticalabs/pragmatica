@@ -170,8 +170,8 @@ public class CstMemberOrderingRule implements CstLintRule {
         return Diagnostic.diagnostic(RULE_ID,
                                      ctx.severityFor(RULE_ID),
                                      ctx.fileName(),
-                                     startLine(member),
-                                     startColumn(member),
+                                     startLine(anchorOf(member)),
+                                     startColumn(anchorOf(member)),
                                      "Member is out of order for a " + describe(fileType),
                                      expectedOrder(fileType));
     }

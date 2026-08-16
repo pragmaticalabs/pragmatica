@@ -51,8 +51,8 @@ public class CstFullyQualifiedNameRule implements CstLintRule {
         return Diagnostic.diagnostic(RULE_ID,
                                      ctx.severityFor(RULE_ID),
                                      ctx.fileName(),
-                                     startLine(method),
-                                     startColumn(method),
+                                     startLine(anchorOf(method)),
+                                     startColumn(anchorOf(method)),
                                      "Fully qualified name '" + fqcn + "' - use import instead",
                                      "FQCNs reduce readability. Add an import and use the simple name.");
     }

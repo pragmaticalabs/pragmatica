@@ -171,8 +171,8 @@ public class CstZoneThreeVerbsRule implements CstLintRule {
         return Diagnostic.diagnostic(RULE_ID,
                                      ctx.severityFor(RULE_ID),
                                      ctx.fileName(),
-                                     startLine(node),
-                                     startColumn(node),
+                                     startLine(anchorOf(node)),
+                                     startColumn(anchorOf(node)),
                                      "Leaf function '" + methodName + "' uses Zone 2 verb '" + verb + "'",
                                      "Leaf functions should use Zone 3 implementation verbs. "
                                     + "Consider using a more specific verb like: " + suggestedVerb

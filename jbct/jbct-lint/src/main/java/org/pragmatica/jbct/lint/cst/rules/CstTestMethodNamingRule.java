@@ -95,8 +95,8 @@ public class CstTestMethodNamingRule implements CstLintRule {
         return Diagnostic.diagnostic(RULE_ID,
                                      ctx.severityFor(RULE_ID),
                                      ctx.fileName(),
-                                     startLine(method),
-                                     startColumn(method),
+                                     startLine(anchorOf(method)),
+                                     startColumn(anchorOf(method)),
                                      "Test method '" + name + "' should be named method_[scenario_]expectation",
                                      "Test names use at least two underscore-separated segments — the method or "
                                     + "scenario under test and the expected outcome, optionally with a scenario in "

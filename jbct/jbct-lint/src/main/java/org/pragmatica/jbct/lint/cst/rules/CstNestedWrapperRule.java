@@ -103,8 +103,8 @@ public class CstNestedWrapperRule implements CstLintRule {
         return Diagnostic.diagnostic(RULE_ID,
                                      ctx.severityFor(RULE_ID),
                                      ctx.fileName(),
-                                     startLine(method),
-                                     startColumn(method),
+                                     startLine(anchorOf(method)),
+                                     startColumn(anchorOf(method)),
                                      "Method '" + methodName + "' uses forbidden nested wrapper " + pattern,
                                      "JBCT prohibits redundant nesting. " + suggestion)
                          .withExample(getExample(pattern))

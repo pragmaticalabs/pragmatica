@@ -88,8 +88,8 @@ public class CstNestedRecordFactoryRule implements CstLintRule {
         return Diagnostic.diagnostic(RULE_ID,
                                      ctx.severityFor(RULE_ID),
                                      ctx.fileName(),
-                                     startLine(method),
-                                     startColumn(method),
+                                     startLine(anchorOf(method)),
+                                     startColumn(anchorOf(method)),
                                      "Factory method '" + methodName + "' uses nested record implementation",
                                      "Return lambdas directly instead of nested record implementations.")
                          .withExample("""

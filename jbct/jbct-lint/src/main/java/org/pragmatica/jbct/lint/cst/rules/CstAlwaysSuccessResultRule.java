@@ -58,8 +58,8 @@ public class CstAlwaysSuccessResultRule implements CstLintRule {
         return Diagnostic.diagnostic(RULE_ID,
                                      ctx.severityFor(RULE_ID),
                                      ctx.fileName(),
-                                     startLine(method),
-                                     startColumn(method),
+                                     startLine(anchorOf(method)),
+                                     startColumn(anchorOf(method)),
                                      "Method '" + methodName + "' always returns Result.success(); return T directly",
                                      "If a method can never fail, wrapping in Result adds unnecessary complexity.")
                          .withExample("""

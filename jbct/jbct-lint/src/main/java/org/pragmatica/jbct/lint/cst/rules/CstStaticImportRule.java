@@ -103,8 +103,8 @@ public class CstStaticImportRule implements CstLintRule {
         return Diagnostic.diagnostic(RULE_ID,
                                      ctx.severityFor(RULE_ID),
                                      ctx.fileName(),
-                                     startLine(node),
-                                     startColumn(node),
+                                     startLine(anchorOf(node)),
+                                     startColumn(anchorOf(node)),
                                      "Use static import for " + typeName + "." + methodName + "()",
                                      "Add 'import static org.pragmatica.lang." + typeName
                                     + "." + methodName

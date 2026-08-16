@@ -47,8 +47,8 @@ public class CstZoneMixingRule implements CstLintRule {
         return Diagnostic.diagnostic(RULE_ID,
                                      ctx.severityFor(RULE_ID),
                                      ctx.fileName(),
-                                     startLine(mixing.method()),
-                                     startColumn(mixing.method()),
+                                     startLine(anchorOf(mixing.method())),
+                                     startColumn(anchorOf(mixing.method())),
                                      "Zone mixing in chain - Zone 3 verbs found: " + verbList,
                                      "Sequencer chains should use Zone 2 methods. "
                                     + "Wrap Zone 3 operations ('" + verbList

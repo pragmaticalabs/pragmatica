@@ -52,8 +52,8 @@ public class CstShapeMixedRule implements CstLintRule {
         return Diagnostic.diagnostic(RULE_ID,
                                      ctx.severityFor(RULE_ID),
                                      ctx.fileName(),
-                                     startLine(method),
-                                     startColumn(method),
+                                     startLine(anchorOf(method)),
+                                     startColumn(anchorOf(method)),
                                      "Method blends two JBCT patterns at one altitude — " + reason,
                                      "The book's single-pattern-per-function rule wants one of Leaf/Sequencer/Fork-Join/"
                                     + "Condition/Iteration/Aspect per method. Extract the second pattern into its own "

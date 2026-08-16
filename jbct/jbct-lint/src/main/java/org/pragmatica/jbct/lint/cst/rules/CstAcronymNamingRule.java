@@ -143,8 +143,8 @@ public class CstAcronymNamingRule implements CstLintRule {
         return Diagnostic.diagnostic(RULE_ID,
                                      ctx.severityFor(RULE_ID),
                                      ctx.fileName(),
-                                     startLine(node),
-                                     startColumn(node),
+                                     startLine(anchorOf(node)),
+                                     startColumn(anchorOf(node)),
                                      kind + " '" + name + "' uses all-caps acronym; prefer '" + suggested + "'",
                                      "Acronyms in identifiers should use PascalCase for readability. "
                                     + "Example: HTTPClient → HttpClient, XMLParser → XmlParser, URLEncoder → UrlEncoder.")

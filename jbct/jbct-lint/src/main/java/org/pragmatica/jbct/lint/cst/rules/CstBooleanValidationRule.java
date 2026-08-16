@@ -66,8 +66,8 @@ public class CstBooleanValidationRule implements CstLintRule {
         return Diagnostic.diagnostic(RULE_ID,
                                      ctx.severityFor(RULE_ID),
                                      ctx.fileName(),
-                                     startLine(method),
-                                     startColumn(method),
+                                     startLine(anchorOf(method)),
+                                     startColumn(anchorOf(method)),
                                      "Boolean validation method '" + FileTypeClassifier.methodName(method)
                                     + "' on a domain type — parse, don't validate",
                                      "Construct the type only when valid through a static factory returning Result<T>, "

@@ -137,8 +137,8 @@ public class CstNullableParameterRule implements CstLintRule {
         return Diagnostic.diagnostic(RULE_ID,
                                      ctx.severityFor(RULE_ID),
                                      ctx.fileName(),
-                                     startLine(method),
-                                     startColumn(method),
+                                     startLine(anchorOf(method)),
+                                     startColumn(anchorOf(method)),
                                      "Parameter '" + paramName
                                     + "' in method '" + methodName
                                     + "' is checked for null - use Option<T> instead",

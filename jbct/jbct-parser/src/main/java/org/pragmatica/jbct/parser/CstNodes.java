@@ -354,6 +354,23 @@ public final class CstNodes {
                                  .or(() -> text(member));
     }
 
+    /// The node a diagnostic about `member` should point at — its declaration, falling back
+    /// to the member itself.
+    ///
+    /// A class's `Member` node already starts at the declaration, but an `InterfaceMember` /
+    /// `RecordMember` also spans the annotations, so anchoring on the member directly would
+    /// report an annotated interface method one line earlier than the identical method in a
+    /// class. Rules anchor through this so the reported position does not depend on which
+    /// type kind the member happens to live in.
+    ///
+    /// A no-op for anything that is not a member, so a rule whose diagnostic helper is shared
+    /// between members and type declarations can route every anchor through it.
+    public static Cursor anchorOf(Cursor member) {
+        return isMemberLevel(member)
+               ? memberDecl(member).or(member)
+               : member;
+    }
+
     /// The declaration a member holds — its first child that is not an annotation. Modifiers
     /// are tokens rather than child nodes, so they fall outside this span too, exactly as
     /// they do for a class's `Member` node.

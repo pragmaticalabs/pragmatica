@@ -70,8 +70,8 @@ public class CstFactoryNamingRule implements CstLintRule {
         return Diagnostic.diagnostic(RULE_ID,
                                      ctx.severityFor(RULE_ID),
                                      ctx.fileName(),
-                                     startLine(method),
-                                     startColumn(method),
+                                     startLine(anchorOf(method)),
+                                     startColumn(anchorOf(method)),
                                      "Factory method '" + actualName + "' should be named '" + expectedName + "'",
                                      "JBCT naming convention: " + typeName + "." + expectedName + "(...)");
     }

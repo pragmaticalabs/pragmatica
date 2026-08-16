@@ -45,8 +45,8 @@ public class CstVoidTypeRule implements CstLintRule {
         return Diagnostic.diagnostic(RULE_ID,
                                      ctx.severityFor(RULE_ID),
                                      ctx.fileName(),
-                                     startLine(method),
-                                     startColumn(method),
+                                     startLine(anchorOf(method)),
+                                     startColumn(anchorOf(method)),
                                      "Method '" + methodName + "' uses Void; use Unit instead",
                                      "JBCT uses Unit instead of Void for side-effect returns.");
     }

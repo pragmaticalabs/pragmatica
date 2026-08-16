@@ -48,8 +48,8 @@ public class CstLoggerParameterRule implements CstLintRule {
         return Diagnostic.diagnostic(RULE_ID,
                                      ctx.severityFor(RULE_ID),
                                      ctx.fileName(),
-                                     startLine(method),
-                                     startColumn(method),
+                                     startLine(anchorOf(method)),
+                                     startColumn(anchorOf(method)),
                                      "Method '" + methodName + "' has Logger parameter - use class-level logger",
                                      "Each component should own its logger as a final field.");
     }

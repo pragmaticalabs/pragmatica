@@ -83,8 +83,8 @@ public class CstReturnKindRule implements CstLintRule {
         return Diagnostic.diagnostic(RULE_ID,
                                      ctx.severityFor(RULE_ID),
                                      ctx.fileName(),
-                                     startLine(method),
-                                     startColumn(method),
+                                     startLine(anchorOf(method)),
+                                     startColumn(anchorOf(method)),
                                      "Method '" + methodName
                                     + "' returns void; JBCT requires Result<Unit> or Promise<Unit>",
                                      "In JBCT, void methods should return Result<Unit> (sync) or Promise<Unit> (async).")
@@ -107,8 +107,8 @@ public class CstReturnKindRule implements CstLintRule {
         return Diagnostic.diagnostic(RULE_ID,
                                      ctx.severityFor(RULE_ID),
                                      ctx.fileName(),
-                                     startLine(method),
-                                     startColumn(method),
+                                     startLine(anchorOf(method)),
+                                     startColumn(anchorOf(method)),
                                      "Method '" + methodName
                                     + "' returns " + typeName
                                     + "; use " + replacement
