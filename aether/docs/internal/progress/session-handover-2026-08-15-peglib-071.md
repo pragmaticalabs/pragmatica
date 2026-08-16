@@ -54,7 +54,7 @@ Replaced with what javac agrees with, plus a pin on the remaining divergence (§
 
 **`ea3677851`** — the statement-chain refactor. Details in §3.
 
-## §3 Formatter — chain refactor LANDED; 2 lambda fixtures remain
+## §3 Formatter — RESOLVED: statement chains (`ea3677851`) and lambda-body chains (`833235534`)
 
 **Done (`ea3677851`).** The §3 design was implemented and it worked: statement-position chains break
 and align again, and **`StatementChains.java` is green with no golden edits.**
@@ -72,7 +72,7 @@ What landed in `FlowPrinter`:
 - Note there are **two** POSTFIX entry points — `printPostfix` (switch-dispatched) and
   `printPostfixWithPrimary` (helper). Both had to be adapted; the first was easy to miss.
 
-**Still failing: `Lambdas.java` and `LambdaBlockArgs.java`** — **RESOLVED in `833235534`.** The cause was
+**`Lambdas.java` and `LambdaBlockArgs.java` — resolved in `833235534`.** The cause was
 candidate 2, confirmed by bisection, not by reading the tree:
 
 ```
@@ -108,7 +108,7 @@ The section's original framing (a dozen rules walking `CLASS_BODY`/`CLASS_MEMBER
 
 Fixed by reconciling the shapes in `CstNodes` (`isMemberDecl`, `isMemberWrapper`, `enclosingMember`,
 `enclosingMethodMember`, `typeBodyMembers`, `isFieldDecl`, `memberDeclText`), mirroring how
-`parameterNodes` contained the `Params` change, then migrating ~20 rule sites. **691 lint tests green.**
+`parameterNodes` contained the `Params` change, then migrating ~20 rule sites. **703 lint tests green.**
 
 **Two traps the collapse sets — both were live defects, expect them again elsewhere:**
 
