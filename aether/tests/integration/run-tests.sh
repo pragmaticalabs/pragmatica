@@ -10,6 +10,13 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+# NOTE: REPO_ROOT is the AETHER directory, not the repository root (every path built from it below is
+# aether-relative, and the tools/ calls compensate with `${REPO_ROOT}/..`). build.sh lives at the actual
+# repository root, so it needs its own variable. Until 2026-08-16 the Step-1 build guard tested
+# `${REPO_ROOT}/build.sh`, which never exists — so the harness NEVER built, `--skip-build` was a no-op,
+# and every run silently used whatever jars happened to be on disk. That is how a run on 2026-08-15
+# tested a build from BEFORE the fix it was meant to verify.
+MONOREPO_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
 
 # Set TARGET_HOST default before sourcing common.sh (which requires it)
 : "${TARGET_HOST:=localhost}"
@@ -950,9 +957,16 @@ log_step "Lint integration tests"
 "${SCRIPT_DIR}/lib/contract-test.sh"
 
 # --- Step 1: Build ---
-if [ "$SKIP_BUILD" = false ] && [ -x "${REPO_ROOT}/build.sh" ]; then
+if [ "$SKIP_BUILD" = false ]; then
+    if [ ! -x "${MONOREPO_ROOT}/build.sh" ]; then
+        log_error "build.sh not found or not executable at ${MONOREPO_ROOT}/build.sh — refusing to run against jars of unknown provenance"
+        log_error "  (pass --skip-build to run deliberately against whatever is already built)"
+        exit 1
+    fi
     log_step "Building project"
-    "${REPO_ROOT}/build.sh"
+    "${MONOREPO_ROOT}/build.sh"
+else
+    log_warn "--skip-build: running against the jars already on disk. Their provenance is NOT verified — confirm they contain the change under test (javap the symbol; mtime is not evidence)."
 fi
 
 # --- Compute selected suites early so cluster bootstrap can be skipped per-cluster ---
