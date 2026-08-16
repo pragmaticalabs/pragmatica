@@ -221,6 +221,69 @@ class ClusterDeploymentStateActiveTest {
         }
     }
 
+    /// The remediator judges a slice by `sliceStates()` — an in-memory PROJECTION on the leader — and used
+    /// to destroy it without ever consulting the authority it mirrors, the committed `NodeArtifactValue`.
+    /// When the projection missed a transition the slice looked stuck forever, because the map it was
+    /// judged by was the same map that had failed to advance.
+    ///
+    /// Measured 2026-08-16 (02y-stream-crash, remote cluster B): node-2's slice was ACTIVE and serving —
+    /// its own log records `test-stream-multipart-stream-slice/publish depth=0 duration=25.591363ms` at
+    /// 23:15:15 — and the leader force-UNLOADed it 35s later as "stuck ACTIVATING".
+    @Nested
+    class StaleViewProtection {
+
+        private SliceNodeKey divergedSlice(long enteredAt, SliceState committed) {
+            injectedClock.set(enteredAt);
+            seedNodeArtifact(NODE_A, SliceState.ACTIVATING, enteredAt);
+            harness.dispatch(new Activate());
+
+            var sliceKey = SliceNodeKey.sliceNodeKey(ARTIFACT, NODE_A);
+
+            // What the cluster actually committed.
+            kvStore.put(NodeArtifactKey.nodeArtifactKey(NODE_A, ARTIFACT),
+                        NodeArtifactValue.nodeArtifactValue(committed, enteredAt));
+            // What the leader's projection still believes — the divergence, restated explicitly so the test
+            // does not depend on whether the KV put happens to notify this FSM.
+            activeState().sliceStates().put(sliceKey, SliceState.ACTIVATING);
+            activeState().transitionalStateTimestamps().put(sliceKey, enteredAt);
+
+            // Well past the stuck threshold (3 x the 90s ACTIVATING timeout).
+            injectedClock.set(enteredAt + (90_000L * 3) + 1_000L);
+            cluster.commands.clear();
+
+            return sliceKey;
+        }
+
+        @Test
+        void committedStateSettled_whileViewSaysActivating_adoptsCommittedStateAndIssuesNoUnload() {
+            var sliceKey = divergedSlice(1_000_000L, SliceState.ACTIVE);
+
+            activeState().stuckRemediator().detectStuckTransitionalStates();
+
+            assertThat(cluster.commands)
+                    .as("a slice the cluster committed as ACTIVE must never be force-unloaded — it may be serving traffic")
+                    .isEmpty();
+            assertThat(activeState().sliceStates())
+                    .as("the stale projection must adopt the committed state instead")
+                    .containsEntry(sliceKey, SliceState.ACTIVE);
+            assertThat(activeState().transitionalStateTimestamps())
+                    .as("adopting a settled state must also stop the stuck timer")
+                    .doesNotContainKey(sliceKey);
+        }
+
+        @Test
+        void committedStateStillTransitional_remediatesExactlyAsBefore() {
+            var sliceKey = divergedSlice(2_000_000L, SliceState.ACTIVATING);
+
+            activeState().stuckRemediator().detectStuckTransitionalStates();
+
+            assertThat(cluster.commands)
+                    .as("when the KV AGREES the slice is still transitional it is genuinely stuck and must still be remediated")
+                    .isNotEmpty();
+            assertThat(activeState().sliceStates()).doesNotContainKey(sliceKey);
+        }
+    }
+
     /// M4 not-yet-wired sentinel guard (cluster-topology-overhaul Wave 9 item 5). During the boot
     /// window the CDM core-membership supplier yields `MembershipFsm.MEMBERSHIP_NOT_WIRED`; a
     /// stale-entry cleanup that races the wiring must NO-OP rather than read the unresolved

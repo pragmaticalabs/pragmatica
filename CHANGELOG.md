@@ -7,6 +7,35 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ## [1.0.0-rc3] - Unreleased
 
 ### Fixed
+- **The leader force-unloaded a healthy, serving slice on the strength of a stale in-memory view.**
+  `StuckTransitionalRemediator` judged a slice by `Active.sliceStates()` — a leader-local PROJECTION — and
+  destroyed it without ever re-reading the authority it mirrors, the committed `NodeArtifactValue` in the
+  KV-Store. When the projection missed a transition the slice looked stuck forever, because the map it was
+  judged by was the same map that had failed to advance.
+  Measured 2026-08-16 (`02y-stream-crash`, remote cluster B): node-2's activation chain SUCCEEDED and the
+  slice was serving traffic — node-2's own log records
+  `test-stream-multipart-stream-slice/publish depth=0 duration=25.591363ms` at 23:15:15 — yet the leader
+  still read ACTIVATING and force-UNLOADed it 35s later at 23:15:50, failing the deploy gate.
+  **The activation chain's 120s guard was never the problem, contrary to first reading.** `Promise.timeout`
+  arms a one-shot `fail()` against the SAME promise instance and returns `this`; `resolve()` is CAS-guarded,
+  so it is a deadline on that instance and a no-op once resolved. It did not misfire — the chain had already
+  succeeded, so there was nothing to fire at.
+  The remediator now re-reads the committed state before acting. **Fail-safe direction:** remediation is
+  skipped ONLY when the KV positively reports a SETTLED (non-transitional) state; an absent key, an
+  unreadable value, or a KV that agrees the slice is still transitional all fall through to the previous
+  behaviour. So a genuinely stuck slice is still recovered, and the change can only ever spare a slice the
+  cluster has already committed as settled.
+  **Reachable on an ordinary deploy** — node-4's SIGKILL landed at 23:15:55.833, five seconds AFTER
+  remediation, with consensus healthy and quorum intact. The chaos did not cause it.
+  This is the same shape as #593's `SYNCING` seed, #508's status field and #590's frozen `memberCount`: a
+  local or self-reported value read as observed truth. Not addressed here: the remediator's threshold is
+  `3 × 90s = 270s` against the deploy gate's 240s, so it cannot rescue a deploy in time even when correct;
+  and ACTIVATING still has no node-local remediation arm of its own.
+  `[verified: unit + mutation — ClusterDeploymentStateActiveTest$StaleViewProtection 2/2; bypassing the KV
+  confirmation turns the stale-view test red and leaves the still-transitional control green.
+  aether-deployment 829/0, aether/node 868/0, ./build.sh green with 0 new lint. NOT integration-verified.]`
+
+### Fixed
 - **A stalled backfill held its reshuffle slot forever, starving the partitions queued behind it.** A slot
   was released only when the partition stopped being a not-caught-up REPLICA — and `PartitionBackfill`
   retries forever once its bounded wait elapses with a committed owner present (the #445 distrust gate), so

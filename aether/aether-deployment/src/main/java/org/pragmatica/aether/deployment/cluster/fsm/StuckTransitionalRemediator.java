@@ -8,7 +8,9 @@ import java.util.Map;
 
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentState.Active;
 import org.pragmatica.aether.slice.SliceState;
+import org.pragmatica.aether.slice.kvstore.AetherKey.NodeArtifactKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceNodeKey;
+import org.pragmatica.aether.slice.kvstore.AetherValue.NodeArtifactValue;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 
@@ -56,7 +58,61 @@ record StuckTransitionalRemediator(Active active) {
     }
 
     private void issueStuckRemediationCommand(SliceNodeKey sliceKey) {
-        Option.option(sliceStates().get(sliceKey)).onPresent(state -> executeStuckRemediation(sliceKey, state));
+        Option.option(sliceStates().get(sliceKey)).onPresent(state -> remediateAgainstCommittedState(sliceKey, state));
+    }
+
+    /// CONFIRM AGAINST THE AUTHORITY BEFORE DESTROYING. `sliceStates()` is an in-memory PROJECTION on the
+    /// leader, not the authority — the authority is the committed `NodeArtifactValue` in the KV-Store. When
+    /// the projection misses a transition the slice looks stuck forever, because the map it is judged by is
+    /// the same map that failed to advance, and nothing here ever re-reads the KV.
+    ///
+    /// Measured 2026-08-16 (02y-stream-crash, remote cluster B): node-2's activation chain SUCCEEDED and the
+    /// slice served traffic — its own log shows `test-stream-multipart-stream-slice/publish depth=0
+    /// duration=25.591363ms` at 23:15:15 — yet the leader's projection still read ACTIVATING and force-UNLOADed
+    /// it 35s later, at 23:15:50. A healthy, serving slice was destroyed on the strength of a stale view. The
+    /// activation chain's own 120s guard was never involved: `Promise.timeout` is a deadline on that promise
+    /// instance, and the chain had already resolved successfully.
+    ///
+    /// This is the same shape as #593's `SYNCING` seed and #590's frozen `memberCount` — a local or
+    /// self-reported value read as observed truth. Everything looks healthy right up until something acts on it.
+    ///
+    /// FAIL-SAFE DIRECTION: remediation is skipped ONLY when the KV positively reports a SETTLED
+    /// (non-transitional) state. An absent key, an unreadable value, or a KV that agrees the slice is still
+    /// transitional all fall through to the original behaviour — so a genuinely stuck slice is still
+    /// recovered, and this can only ever spare a slice the cluster has already committed as settled.
+    private void remediateAgainstCommittedState(SliceNodeKey sliceKey, SliceState state) {
+        var settled = committedState(sliceKey).filter(committed -> !committed.isTransitional());
+
+        if (settled.isPresent()) {
+            settled.onPresent(committed -> adoptCommittedState(sliceKey, committed));
+
+            return;
+        }
+
+        executeStuckRemediation(sliceKey, state);
+    }
+
+    /// The committed state for this slice, straight from the KV-Store — the authority the in-memory
+    /// projection is supposed to mirror.
+    private Option<SliceState> committedState(SliceNodeKey sliceKey) {
+        return active.ctx()
+                     .kvStore()
+                     .get(NodeArtifactKey.nodeArtifactKey(sliceKey.nodeId(),
+                                                          sliceKey.artifact()))
+                     .filter(NodeArtifactValue.class::isInstance)
+                     .map(NodeArtifactValue.class::cast)
+                     .map(NodeArtifactValue::state);
+    }
+
+    /// Repair the stale projection instead of destroying the slice, and say so loudly: a divergence between
+    /// the leader's view and the committed state is itself the defect worth seeing in the log.
+    private void adoptCommittedState(SliceNodeKey sliceKey, SliceState committed) {
+        log.warn("NOT remediating {} on {}: the committed KV state is {}, so the in-memory view was stale, not the slice stuck — adopting the committed state instead of unloading a slice the cluster considers settled",
+                 sliceKey.artifact(),
+                 sliceKey.nodeId(),
+                 committed);
+        transitionalStateTimestamps().remove(sliceKey);
+        sliceStates().put(sliceKey, committed);
     }
 
     private void executeStuckRemediation(SliceNodeKey sliceKey, SliceState state) {
