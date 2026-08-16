@@ -151,6 +151,10 @@ class/interface/record cases) pins them:
 1. `typeBodyMembers` looked for the body among DIRECT children, but a nested type is a bare `TypeKind`
    whose child is the `InterfaceDecl` that holds the body — so it returned `[]` for every caller passing
    a `TypeKind`, which is what `findFirstInterface` returns. UC-01's multi-method exemption was dead.
+   **Pre-bump had the same shape error** (`childByRule(iface, CLASS_BODY)` on a `TypeKind`), which is why
+   the corpus diff stayed clean either way — so fixing it *activates* an exemption that has never run.
+   Zero effect on this corpus (UC-01 is 0 before and after), but on other code UC-01 can now correctly
+   report FEWER findings than pre-bump. Like §9.6 that is a repair, not a restoration.
 2. `memberDeclText` keyed on `MethodDecl`, so a **constructor** or **field** member fell back to
    annotation-spanning text — a record constructor was reported as `method 'Deprecated'`. It now takes
    the first non-`Annotation` child, which covers every member shape.
