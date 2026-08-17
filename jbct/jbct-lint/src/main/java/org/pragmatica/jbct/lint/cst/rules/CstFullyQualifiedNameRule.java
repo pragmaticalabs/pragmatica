@@ -35,8 +35,12 @@ public class CstFullyQualifiedNameRule implements CstLintRule {
                              .flatMap(method -> findFqcnInMethod(method, ctx));
     }
 
+    /// A qualified name spelled inside a string literal or a comment is DATA, not code — most
+    /// often a fixture in a test that feeds Java source to the linter itself. Masking the
+    /// non-code spans first is what the sibling rules already do; without it this rule reports
+    /// every `import` line written inside a text block.
     private Stream<Diagnostic> findFqcnInMethod(Cursor method, LintContext ctx) {
-        var methodText = text(method);
+        var methodText = MapperSafety.blankNonCode(text(method));
         var matcher = FQCN_PATTERN.matcher(methodText);
 
         return Stream.iterate(matcher.find(),
