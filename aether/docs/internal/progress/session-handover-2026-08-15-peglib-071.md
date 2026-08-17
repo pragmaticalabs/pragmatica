@@ -1,12 +1,12 @@
-# Session handover — 2026-08-15: peglib 0.7.1 bump; jbct tools GREEN, pg-tools + 0.7.2 re-pin remain
+# Session handover — 2026-08-15: peglib bumped to 0.7.2; jbct tools GREEN, pg-tools remains
 
-**Branch:** `feat/peglib-0.7.1` (off `release-1.0.0-rc3` at `19b76827f`) · **11 commits** · **NOT pushed** · tree clean
+**Branch:** `feat/peglib-0.7.1` (off `release-1.0.0-rc3`, since merged with it) · **pushed as PR #600**
 **Build is GREEN** — all 11 modules BUILD SUCCESS, including JBCT CLI and Maven Plugin, which had never
 been reached before (they were SKIPPED behind the format+lint failures).
 
-**Resume at §9.** The formatter and linter work described below is DONE and committed. What remains is
-`pg-tools` (§5, untouched, independent), the expected 0.7.2 re-pin (§9.5), and one verification that is
-genuinely blocked (§9.3). Nothing is blocked on an outside answer — the peglib exchange is closed (§8).
+**Resume at §9.** The formatter, the linter and the 0.7.2 re-pin are DONE and committed. What remains is
+`pg-tools` (§5, untouched, independent) and one verification that is genuinely blocked (§9.3). Nothing is
+blocked on an outside answer — the peglib exchange is closed (§8).
 
 **Task:** bump peglib 0.6.2 → 0.7.1 in pragmatica, integrate the upstream Java grammar changes, keep the
 jbct tools working. Owner rulings: adopt the grammar in the **same pass** as the bump (not staged), and
@@ -33,7 +33,7 @@ jbct tools working. Owner rulings: adopt the grammar in the **same pass** as the
 
 **`ed941ab59` — the bump and CST adaptation.**
 
-- `peglib-runtime` + `peglib-maven-plugin` 0.6.2 → **0.7.1**; mojo goal `generate-v6` → **`generate`**
+- `peglib-runtime` + `peglib-maven-plugin` 0.6.2 → **0.7.1**, later re-pinned to **0.7.2** (§9.5); mojo goal `generate-v6` → **`generate`**
   (the only config change needed — jbct already used `lexerClassName`/`parserClassName`/`visitorClassName`;
   0.7.1 has no `className` or `errorReporting` params).
 - **`java25.peg` re-synced from upstream**, 205 → 399 lines. jbct's copy was an explicit downstream sync
@@ -251,10 +251,9 @@ reference", so its grammar-imports example is the first thing a new user copies 
 
 ## §9 Suggested order for the next session
 
-**A peglib 0.7.2 is expected** — a grammar-*instantiation* fix, confirmed by upstream as **behaviour
-unchanged**. So it does **not** move `RULE_TABLE`, the CST shape, or the generated API: `RuleKind` stays
-valid. Re-pinning is an independent mechanical step (change the property, run the `generate-parser`
-profile, run `regen_rulekind.py`, rebuild).
+**peglib 0.7.2 is now pinned** (item 5 below). Upstream described it as behaviour-unchanged for our
+usage — `%import` composition, plugin import resolution, and a single-flight parser cache — and that
+was **verified rather than trusted**; see item 5 for how, and repeat it for 0.7.3.
 
 1. ~~Finish the formatter~~ — **DONE** (`833235534`), §3. 67 tests, no golden edits.
 2. ~~Linter interface-awareness~~ — **DONE** (`6be655136`), §4. 691 tests; corpus-verified against the
@@ -266,10 +265,23 @@ profile, run `regen_rulekind.py`, rebuild).
    toolchain silently). That verification is therefore **blocked pending coordination**, not forgotten —
    raise it with the main stream rather than working around it.
 4. **`pg-tools`** (§5) — independent, untouched, can be taken any time. Still the largest remaining item.
-5. **Re-pin to 0.7.2** when it ships. While in that file: `jbct-parser/pom.xml` uses the property name
-   `peglib.maven.plugin.version` for **both** the runtime dependency and the plugin — a misnomer that
-   becomes a footgun if the two ever need to diverge. Renaming to `peglib.version` is a natural fold-in
-   there; deliberately not done while the branch was red, and now simply not yet done.
+5. ~~Re-pin to 0.7.2~~ — **DONE** (`85c4c595d`). Upstream's "behaviour unchanged" was verified, not
+   trusted, and the verification is worth repeating for 0.7.3:
+   - `Java25ParserV6` and `Java25Visitor` regenerate **byte-identical**.
+   - `Java25Lexer` differs by 104 lines that are a **pure permutation** of the 54 keyword-map
+     entries — sorted `r0.put(...)` sets are identical and **no non-`r0.put` line changed at all**.
+     Prove it that way; a line count alone looks alarming.
+   - `regen_rulekind.py` delta zero, and regeneration is **deterministic** (checked by regenerating
+     twice — worth re-checking, since 0.7.2 made generation fork-join and jbct commits generated
+     sources).
+   - Both sensors clean: goldens green, and the §4 corpus differential **identical** — 14236
+     findings, 0 lost, 0 new, no per-rule change.
+   - **Trap:** the first corpus run showed 392 lost / 420 new. That was NOT 0.7.2 — the baseline
+     predated the merge from `release-1.0.0-rc3`, so the aether tree itself had grown. Always
+     rebuild BOTH sides against the SAME tree (a worktree at the pre-change commit).
+
+   The property was renamed `peglib.maven.plugin.version` → **`peglib.version`** at the same time;
+   it always governed both the runtime dependency and the plugin, and the old name said otherwise.
 6. **JBCT-EX-02 burn-down** (`c3a16c26b`) — the repaired rule surfaces **53 previously-invisible
    `error`-severity violations**: 49 in tests, 4 in production (`AbstractMultiPartitionStream` ×2,
    `AbstractStreamOwnerFailover`, `AetherUp`). Landed as its own commit precisely so this burn-down can
