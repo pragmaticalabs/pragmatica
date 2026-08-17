@@ -64,7 +64,7 @@ We neither claim it works nor hide that it is the open frontier. Until #367 prod
   pong from for `timeouts.cluster.community_absence` (default 20s) and re-places the community's slices.
   `core_absence < community_absence` is refused at config load, and that inequality is the whole
   no-double-active guarantee: the community stops serving before the core hands its work to anyone else.
-  `[verified: CoreAbsenceDetectorTest 13/13, ClusterDeploymentStateCommunityFsmTest$CoreObservedAbsence
+  `[verified: CoreAbsenceDetectorTest 16/16, ClusterDeploymentStateCommunityFsmTest$CoreObservedAbsence
   6/6, ClusterTimeoutsAbsenceOrderingTest 5/5 — each mutation-checked: removing the cold-start latch or
   the observed-absence read turns exactly the guarding tests red]`
   `[design intent — unverified: the ORDERING under a real partition. No in-JVM harness can produce one —

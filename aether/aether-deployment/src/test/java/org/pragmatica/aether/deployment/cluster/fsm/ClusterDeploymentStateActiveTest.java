@@ -229,6 +229,61 @@ class ClusterDeploymentStateActiveTest {
     /// Measured 2026-08-16 (02y-stream-crash, remote cluster B): node-2's slice was ACTIVE and serving —
     /// its own log records `test-stream-multipart-stream-slice/publish depth=0 duration=25.591363ms` at
     /// 23:15:15 — and the leader force-UNLOADed it 35s later as "stuck ACTIVATING".
+    /// The orphan sweep decides "no matching blueprint" from `active.blueprints()`, a leader-local
+    /// projection rebuilt only on `Active` entry — nothing re-derives it during a term. One missed
+    /// `AppBlueprintPut` therefore makes every slice of that artifact look orphaned for the leader's
+    /// whole term, and the sweep force-UNLOADs them cluster-wide on each reconcile tick. Same shape as
+    /// the stuck-slice remediator that destroyed a serving slice: judge by a projection, act destructively.
+    @Nested
+    class OrphanSweepStaleProjection {
+
+        @Test
+        void blueprintMissingFromProjectionButTargetCommitted_doesNotUnload() {
+            seedNodeArtifact(NODE_A, SliceState.ACTIVE, injectedClock.get());
+            harness.dispatch(new Activate());
+
+            var sliceKey = SliceNodeKey.sliceNodeKey(ARTIFACT, NODE_A);
+
+            // The projection loses the blueprint (a missed put / a rename that cleared it), while the
+            // cluster's committed SliceTarget still says this exact version should be running.
+            activeState().blueprints().remove(ARTIFACT);
+            activeState().sliceStates().put(sliceKey, SliceState.ACTIVE);
+            cluster.commands.clear();
+
+            activeState().staleEntryCleaner().cleanupOrphanedSliceEntries();
+
+            assertThat(cluster.commands)
+                    .as("the committed SliceTarget still names this artifact — the projection was stale, so nothing may be unloaded")
+                    .isEmpty();
+            assertThat(activeState().sliceStates())
+                    .as("a slice the cluster still targets must not be dropped from the view either")
+                    .containsKey(sliceKey);
+        }
+
+        @Test
+        void noCommittedTarget_stillCleansUpAsBefore() {
+            seedNodeArtifact(NODE_A, SliceState.ACTIVE, injectedClock.get());
+            harness.dispatch(new Activate());
+
+            // A DIFFERENT artifact, never seeded: absent from the projection AND absent from the KV, so
+            // it is genuinely orphaned rather than merely unseen by a stale view.
+            var strayArtifact = Artifact.artifact("org.example:slice-stray:1.0.0").unwrap();
+            var strayKey = SliceNodeKey.sliceNodeKey(strayArtifact, NODE_A);
+
+            activeState().sliceStates().put(strayKey, SliceState.ACTIVE);
+            cluster.commands.clear();
+
+            activeState().staleEntryCleaner().cleanupOrphanedSliceEntries();
+
+            assertThat(cluster.commands)
+                    .as("with no committed target the slice IS orphaned and must still be cleaned up")
+                    .isNotEmpty();
+            assertThat(activeState().sliceStates())
+                    .as("a genuinely orphaned entry is dropped from the view")
+                    .doesNotContainKey(strayKey);
+        }
+    }
+
     @Nested
     class StaleViewProtection {
 

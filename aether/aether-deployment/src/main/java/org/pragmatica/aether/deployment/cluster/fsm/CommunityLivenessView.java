@@ -4,6 +4,8 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.deployment.cluster.fsm;
 
+import java.util.List;
+
 import org.pragmatica.consensus.NodeId;
 
 
@@ -33,6 +35,17 @@ public interface CommunityLivenessView {
     /// window. `false` covers both "recently heard from" and "no evidence either way" — an absent
     /// verdict must be positively observed, never inferred from missing data.
     boolean isAbsent(NodeId node);
+
+    /// `members` minus those positively observed absent. Lives here rather than at each call site because
+    /// #590's whole failure shape is a community's SELF-REPORTED membership being consumed as observed
+    /// truth: under partition the governor cannot rewrite its announcement, so the list does not expire,
+    /// it FREEZES. Every consumer that places work must filter through the same predicate, and a filter
+    /// copied per call site is one refactor away from a consumer that quietly stops filtering.
+    default List<NodeId> liveMembers(List<NodeId> members) {
+        return members.stream()
+                      .filter(node -> !isAbsent(node))
+                      .toList();
+    }
 
     /// The pre-wiring default: nothing is ever absent, so the FSM behaves exactly as it did before
     /// #590. Tests and any deployment that has not wired the collector keep the old semantics rather

@@ -7,6 +7,88 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ## [1.0.0-rc3] - Unreleased
 
 ### Fixed
+- **The orphan sweep force-unloaded slices cluster-wide off a projection nothing re-derives.**
+  `StaleEntryCleaner.cleanupOrphanedSliceEntries` classified a slice as orphaned purely from
+  `active.blueprints()` — a leader-local map rebuilt only on `Active` entry, never re-derived during a
+  term — and then issued UNLOAD for every slice of that artifact. It runs on each reconcile tick, so a
+  single missed `AppBlueprintPut` (or a rename path that cleared the entry and lost the re-put) would
+  unload healthy slices for the leader's entire term, under the reassuring log line
+  `"orphaned slice entries (no matching blueprint)"`.
+  It now confirms against the committed `SliceTargetValue` before destroying anything. The VERSION is
+  part of the check: a target that has moved on means this artifact is superseded and genuinely is an
+  orphan, so supersession still cleans up. Fail-safe as elsewhere — an absent or unreadable target falls
+  through to the previous behaviour, so this can only spare a slice the cluster still targets.
+  Also added the `coreMembershipResolved()` gate that the class javadoc already claimed **all** cleanups
+  had; the three siblings gated, this one did not.
+  Third instance of one defect class found by a single audit — see the community-placement and
+  stuck-slice-remediator entries. In each, a local projection or self-reported value was consumed as
+  observed truth by code that then acted destructively.
+  `[verified: unit + mutation — ClusterDeploymentStateActiveTest$OrphanSweepStaleProjection pins both
+  directions (a committed target spares the slice; a genuinely absent one still cleans up).]`
+
+### Fixed
+- **Rabia sync quorum was derived from CONNECTIVITY, so it collapsed to one at the partition edge (#557,
+  second defect).** `RabiaEngine.syncQuorumSize()` computed `min(connectedNodeCount(), clusterSize) / 2 + 1`,
+  which evaluates to **1** at connectivity 0 or 1 — so a node reaching exactly one peer would
+  `restoreState` from a SINGLE response, adopting another node's consensus state wholesale precisely when
+  it is least likely to be talking to the majority side of a partition. The old docstring justified this
+  as "adapts to actual connectivity", which is the defect stated as its own rationale: connectivity is
+  what a partition manipulates, so a safety threshold derived from it collapses exactly when needed. It
+  is now a majority of the CLUSTER (`clusterSize <= 1` yields 1, since a single-node cluster has no peer
+  to adopt from).
+  **Direction is one-way — strictly stricter, so it cannot admit a sync that was previously refused.** The
+  cost is liveness, deliberately: a node that cannot reach a cluster majority now stays inactive instead
+  of syncing from a minority. Refusing to adopt state is the recoverable failure; adopting the wrong
+  state is not.
+  The test fallout was itself the evidence: exactly two tests broke, both in a stall-detector fixture that
+  builds a **5-node** cluster and feeds **2** sync responses — a minority, which only ever activated
+  because the old gate had collapsed. The fixture now supplies a genuine majority; no assertion was
+  changed. The main 3-node fixture, where 2 responses IS a majority, stayed green throughout.
+  `[verified: unit + mutation — RabiaEngineTest$SyncQuorum pins both directions (one response must not
+  activate, two must, so it cannot pass against an engine that never activates); restoring the old
+  formula turns exactly that test red and leaves the other 31 green. integrations/consensus 707/0.]`
+- **Community placement read the community's own frozen member list (#590, at the placement grain).**
+  `CommunityLivenessView` — built as #590's fix — had exactly ONE consumer in the codebase, the
+  community-state FSM. `CommunityPlacementPlanner` never called it, and went on reading
+  `announcement.members()` and `memberCount()` raw: the community's claim about ITSELF, which under
+  partition cannot be rewritten, so it does not expire — it FREEZES. The core therefore kept weighting a
+  cut-off community at its full size and naming nodes it could not reach in `WorkerSliceDirectiveValue`s.
+  This is #590's stated consequence at a grain its own ACTIVE/DEGRADED gate cannot catch, because a
+  community can sit comfortably above the viability floor while having lost members.
+  Both placement axes now filter through the liveness view — WHICH nodes (`placeableMembers`) and HOW MANY
+  instances (`liveMemberCount`) — and the filter itself moved onto `CommunityLivenessView.liveMembers` so
+  the two cannot drift apart. Fail-safe throughout: `isAbsent` reports only POSITIVELY observed absence
+  and is `false` when the collector is unwired, so an unwired deployment places exactly as before; and a
+  community that publishes no member list keeps its declared count rather than being re-weighted to 1 on
+  no evidence.
+  `[verified: unit + mutation — CommunityPlacementPlannerTest 3 new tests covering partitioned members,
+  a wholly-absent community, and the unwired default; aether-deployment 832/0, aether/node 868/0.]`
+
+### Verification (2026-08-16)
+
+`02y-stream-crash` and `02w-entity-crash`, `--env remote` on cluster B: **2 suites, 2 passed, 0 failed.**
+This is the run that backs the integration-verified claims on the three stream/deploy fixes below. Same
+scenario that produced the data loss — 5 nodes, `min-sync-replicas=2`, `docker kill` of the node owning
+partitions 0 AND 2 with 40 publishes in flight:
+
+| | before the fixes | after |
+|---|---|---|
+| deploy to all-instances ACTIVE | timed out at 240s | **3s** |
+| ACKED events surviving the crash | 39 of 80 (41 lost) | **80 of 80, 0 missing** |
+| non-empty partitions post-crash | 2 of 4 | 4 of 4 |
+| 02y suite | FAIL, 327s | **PASS, 85s** |
+
+Not a vacuous pass: the suite's non-vacuity gate confirms 80 ACKED events were actually checked (that
+gate exists because an earlier run reported "0 acked, 0 missing" as success).
+
+The three fixes compose — any one alone leaves 02y red. The min-sync barrier makes the ack honest, slot
+preemption makes the guarantee *achievable* (the replica can now reach in-sync instead of starving for
+4½ minutes), and the remediator fix stops a healthy slice being destroyed while it converges.
+
+**Scope of the claim:** one run. Multi-node with failure injection, which is the feature-catalog bar for
+*Integration-verified* — but a single run does not establish the absence of a race.
+
+### Fixed
 - **The leader force-unloaded a healthy, serving slice on the strength of a stale in-memory view.**
   `StuckTransitionalRemediator` judged a slice by `Active.sliceStates()` — a leader-local PROJECTION — and
   destroyed it without ever re-reading the authority it mirrors, the committed `NodeArtifactValue` in the
@@ -33,7 +115,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   and ACTIVATING still has no node-local remediation arm of its own.
   `[verified: unit + mutation — ClusterDeploymentStateActiveTest$StaleViewProtection 2/2; bypassing the KV
   confirmation turns the stale-view test red and leaves the still-transitional control green.
-  aether-deployment 829/0, aether/node 868/0, ./build.sh green with 0 new lint. NOT integration-verified.]`
+  aether-deployment 829/0, aether/node 868/0, ./build.sh green with 0 new lint. integration-verified — see **Verification (2026-08-16)** below.]`
 
 ### Fixed
 - **A stalled backfill held its reshuffle slot forever, starving the partitions queued behind it.** A slot
@@ -59,7 +141,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   `[verified: unit + mutation — StreamReshuffleLifecycleTest$StalledSlotPreemption 3/3; removing the
   preempt step from the reconcile tick turns exactly the starvation and permit-accounting tests red and
   leaves the empty-queue control green. aether-config 333/0, aether-stream 665/0, aether/node 868/0,
-  ./build.sh green with 0 new lint. NOT integration-verified.]`
+  ./build.sh green with 0 new lint. integration-verified — see **Verification (2026-08-16)** below.]`
 
 ### Added
 - **`[streaming] reshuffle_concurrency` is now a real config key.** It bounds how many partitions one node
@@ -99,7 +181,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   control green. The tests wire a REAL ReplicationManager over an empty ReplicaRegistry deliberately: the
   NOOP manager's awaitReplication returns success unconditionally, so a test on the default bare
   streamPartitionManager would pass with or without the barrier. aether-stream 662/0, aether/node 868/0,
-  ./build.sh green with 0 new lint. NOT integration-verified.]`
+  ./build.sh green with 0 new lint. integration-verified — see **Verification (2026-08-16)** below.]`
 
 ### Changed
 - **Durable-entity error surface renamed to entity-centric names (#432).** `DurableEntityError` →
