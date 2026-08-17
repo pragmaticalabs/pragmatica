@@ -10,6 +10,7 @@ import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.deployment.node.NodeDeploymentManager;
 import org.pragmatica.aether.slice.SliceActionConfig;
+import org.pragmatica.aether.slice.SliceBridge;
 import org.pragmatica.aether.slice.SliceState;
 import org.pragmatica.aether.slice.SliceStore;
 import org.pragmatica.aether.slice.generation.Epoch;
@@ -43,8 +44,11 @@ import org.pragmatica.statemachine.Fsm;
 import org.pragmatica.statemachine.FsmTestHarness;
 
 import java.net.SocketAddress;
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Function;
 
@@ -67,6 +71,37 @@ class NodeDeploymentStateSeedEpochAckTest {
     private static final NodeId OTHER = NodeId.nodeId("other").unwrap();
     private static final NodeId UNRELATED = NodeId.nodeId("unrelated").unwrap();
     private static final Artifact ARTIFACT = Artifact.artifact("org.example:slice-a:1.0.0").unwrap();
+
+    /// Artifacts the stub `InvocationHandler` reports as registered for invocation — i.e. able to SERVE.
+    /// The activation-remediation gate turns on exactly this distinction, so it has to be controllable.
+    private static final Set<Artifact> SERVING_ARTIFACTS = ConcurrentHashMap.newKeySet();
+
+    /// KV commands the stub cluster was asked to apply. A forced state transition shows up here, so an
+    /// absent transition is observable rather than merely unasserted.
+    private static final List<KVCommand<AetherKey>> APPLIED_COMMANDS = Collections.synchronizedList(new ArrayList<>());
+
+    /// Minimal `SliceBridge`: the remediation gate only checks PRESENCE, never invokes it.
+    private static final SliceBridge STUB_BRIDGE = new SliceBridge() {
+        @Override public Promise<byte[]> invoke(String methodName, byte[] input) {
+            return Promise.success(new byte[0]);
+        }
+
+        @Override public Promise<Unit> start() {
+            return Promise.unitPromise();
+        }
+
+        @Override public Promise<Unit> stop() {
+            return Promise.unitPromise();
+        }
+
+        @Override public ClassLoader classLoader() {
+            return NodeDeploymentStateSeedEpochAckTest.class.getClassLoader();
+        }
+
+        @Override public List<String> methodNames() {
+            return List.of();
+        }
+    };
     private static final Epoch SEED_EPOCH = Epoch.epoch(7L, 42L);
 
     private KVStore<AetherKey, AetherValue> kvStore;
@@ -218,6 +253,64 @@ class NodeDeploymentStateSeedEpochAckTest {
         }
     }
 
+    /// #601 — the node-local ACTIVATING-timeout remediation arm. ACTIVATING previously had NO local
+    /// remediation (a bare `case ACTIVATING -> {}` observer), so a stalled activation had nothing local
+    /// to recover it and only the leader-side remediator could act — which judges by a projection and,
+    /// before `d9b37e180`, force-UNLOADed a slice that had been serving traffic 35s earlier.
+    ///
+    /// The load-bearing property is the GATE, not the transition: forcing ACTIVE is allowed only on
+    /// positive proof that the slice is registered for invocation. "Loaded" is deliberately not enough —
+    /// the chain loads the slice one step before it registers it, so a chain stalled in between would
+    /// otherwise be promoted to a phantom-ACTIVE the cluster routes traffic to but which cannot answer.
+    @Nested
+    class ActivationRemediation {
+
+        @Test
+        void remediateStuckActivating_registeredForInvocation_forcesActive() {
+            harness.dispatch(new QuorumEstablished());
+            var key = sliceKey(SELF, ARTIFACT);
+            seedDeploymentState(key, SliceState.ACTIVATING);
+            SERVING_ARTIFACTS.add(ARTIFACT);
+            APPLIED_COMMANDS.clear();
+
+            activeState().remediateStuckActivating(key);
+
+            assertThat(APPLIED_COMMANDS)
+                    .as("a slice that is serving locally must be force-progressed out of ACTIVATING")
+                    .isNotEmpty();
+        }
+
+        @Test
+        void remediateStuckActivating_notRegisteredForInvocation_doesNotForceActive() {
+            harness.dispatch(new QuorumEstablished());
+            var key = sliceKey(SELF, ARTIFACT);
+            seedDeploymentState(key, SliceState.ACTIVATING);
+            SERVING_ARTIFACTS.remove(ARTIFACT);
+            APPLIED_COMMANDS.clear();
+
+            activeState().remediateStuckActivating(key);
+
+            assertThat(APPLIED_COMMANDS)
+                    .as("promoting a slice that cannot serve would manufacture a phantom-ACTIVE the cluster routes to")
+                    .isEmpty();
+        }
+
+        @Test
+        void remediateStuckActivating_sliceNoLongerActivating_isNoOp() {
+            harness.dispatch(new QuorumEstablished());
+            var key = sliceKey(SELF, ARTIFACT);
+            seedDeploymentState(key, SliceState.ACTIVE);
+            SERVING_ARTIFACTS.add(ARTIFACT);
+            APPLIED_COMMANDS.clear();
+
+            activeState().remediateStuckActivating(key);
+
+            assertThat(APPLIED_COMMANDS)
+                    .as("a slice that already left ACTIVATING must not be transitioned again")
+                    .isEmpty();
+        }
+    }
+
     private NodeDeploymentState.Active activeState() {
         assertThat(harness.state()).isInstanceOf(NodeDeploymentState.Active.class);
 
@@ -335,6 +428,8 @@ class NodeDeploymentStateSeedEpochAckTest {
             }
 
             @Override public <R> Promise<List<R>> apply(List<KVCommand<AetherKey>> commands) {
+                APPLIED_COMMANDS.addAll(commands);
+
                 return Promise.success(Collections.emptyList());
             }
         };
@@ -388,15 +483,17 @@ class NodeDeploymentStateSeedEpochAckTest {
         return new org.pragmatica.aether.invoke.InvocationHandler() {
             @Override public void onInvokeRequest(org.pragmatica.aether.invoke.InvocationMessage.InvokeRequest request) {}
 
-            @Override public void registerSlice(Artifact artifact, org.pragmatica.aether.slice.SliceBridge bridge) {}
+            @Override public void registerSlice(Artifact artifact, SliceBridge bridge) {}
 
             @Override public void unregisterSlice(Artifact artifact) {}
 
-            @Override public Option<org.pragmatica.aether.slice.SliceBridge> localSlice(Artifact artifact) {
-                return Option.none();
+            @Override public Option<SliceBridge> localSlice(Artifact artifact) {
+                return SERVING_ARTIFACTS.contains(artifact)
+                       ? Option.some(STUB_BRIDGE)
+                       : Option.none();
             }
 
-            @Override public Option<org.pragmatica.aether.slice.SliceBridge> findBridgeByClassLoader(ClassLoader classLoader) {
+            @Override public Option<SliceBridge> findBridgeByClassLoader(ClassLoader classLoader) {
                 return Option.none();
             }
 

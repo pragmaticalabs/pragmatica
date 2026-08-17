@@ -7,6 +7,32 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ## [1.0.0-rc3] - Unreleased
 
 ### Fixed
+- **ACTIVATING had no node-local remediation arm at all (#601).** `processStateTransition` carried a bare
+  `case ACTIVATING -> {}` observer — structurally the same gap #325 closed for ROUTING — so a node whose
+  activation stalled had nothing local to recover or report it. The only recourse was the leader-side
+  remediator, which judges by a projection and, before `d9b37e180`, force-UNLOADed a slice that had been
+  serving traffic 35 seconds earlier.
+  **The gate, not the transition, is the load-bearing part.** ROUTING's arm force-progresses
+  unconditionally, and its own javadoc earns that: the routes are already published and serving locally,
+  so the cross-node ack is a confirmation optimisation. ACTIVATING cannot borrow that reasoning — the
+  chain loads the slice at `activateSliceWithTimeout` and registers it for invocation only at the NEXT
+  step, so a chain stalled in between leaves the slice loaded but unable to answer a call. Forcing ACTIVE
+  there would manufacture a phantom-ACTIVE that the cluster routes traffic to, which is strictly worse
+  than a slice stuck activating — and the same run exhibited that state elsewhere
+  (`KV claims ACTIVE … not loaded locally`).
+  So the arm forces ACTIVATING → ACTIVE only on positive proof of serving:
+  `invocationHandler().localSlice(artifact)`, present exactly when the bridge is registered. That held in
+  the observed incident — the chain had run past registration and published endpoints, and the node was
+  serving `publish` calls when the leader unloaded it.
+  When the slice is NOT serving the arm deliberately does nothing beyond a loud warning: failing it there
+  would preempt the activation chain's own longer timeout, which may still legitimately complete. The
+  chain's timeout and the (now KV-confirming) cluster remediator remain the backstops.
+  `[verified: unit + mutation — NodeDeploymentStateSeedEpochAckTest$ActivationRemediation 3/3 (serving
+  forces, not-serving must NOT force, already-left is a no-op); removing the serving gate turns exactly
+  the phantom-ACTIVE test red. aether-deployment 837/0, aether/node 868/0, ./build.sh green, 0 new lint.
+  NOT integration-verified.]`
+
+### Fixed
 - **The orphan sweep force-unloaded slices cluster-wide off a projection nothing re-derives.**
   `StaleEntryCleaner.cleanupOrphanedSliceEntries` classified a slice as orphaned purely from
   `active.blueprints()` — a leader-local map rebuilt only on `Active` entry, never re-derived during a
