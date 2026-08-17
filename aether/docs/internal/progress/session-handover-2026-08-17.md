@@ -1,8 +1,9 @@
 # Session handover — 2026-08-16/17: one defect class, seven fixes, and 02y turned green
 
-**Branch:** `release-1.0.0-rc3` · **HEAD:** see git log (handover amended after the design ruling) · **ALL PUSHED** · tree clean ·
-**candidate tag re-pointed once, to `cf3f26b5e`** (deliberately not re-pointed again for `cd36c2c27` —
-a second re-point in quick succession is what races the Release asset uploads).
+**Branch:** `release-1.0.0-rc3` · **HEAD when this handover was last amended:** `d8708827b` (the design
+ruling in §11/§12) · **ALL PUSHED** · tree clean · **candidate tag at `cf3f26b5e`**, deliberately behind
+HEAD: it tracks the last CODE change, and the commits after it are docs-only. Re-point it once when the
+§11 fix lands — a second re-point in quick succession is what races the Release asset uploads.
 
 Started from the previous handover's §5 open question. It resolved in the first twenty minutes, and
 everything after came out of chasing why.
