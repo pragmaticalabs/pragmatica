@@ -1,6 +1,6 @@
 # Session handover — 2026-08-16/17: one defect class, seven fixes, and 02y turned green
 
-**Branch:** `release-1.0.0-rc3` · **HEAD:** `cd36c2c27` · **ALL PUSHED** · tree clean ·
+**Branch:** `release-1.0.0-rc3` · **HEAD:** see git log (handover amended after the design ruling) · **ALL PUSHED** · tree clean ·
 **candidate tag re-pointed once, to `cf3f26b5e`** (deliberately not re-pointed again for `cd36c2c27` —
 a second re-point in quick succession is what races the Release asset uploads).
 
@@ -91,10 +91,7 @@ guard can only ever spare, never strand. ~10 lines plus two tests each.
 from a replica that stopped acking (stale data, no error), and `caughtUpOthers` over-counts so an owner
 may release its ring believing enough replicas are caught up.
 
-Deliberately left: `ReplicaDescriptor` has no timestamp and the existing `caughtUpNeedsReverify` seam
-serves the redrive path (#333), not read-serving. A real fix needs a freshness stamp, a clock seam, and a
-TTL applied on the hot read path — and **the TTL source is a design decision**: too short regresses
-availability, too long fixes little. Not something to land late in a long session on the read path.
+**DESIGN DECIDED (owner, 2026-08-17) — lag-based, bound expressed in OFFSETS. See §11.**
 
 ## §5 A safety threshold derived from what the failure controls (#557, second defect)
 
@@ -154,8 +151,9 @@ carries `blocking` and may mean something narrower — owner's call.
 (mechanism built, needs a real partition run), #509 (its mask #597 is lifted, needs one confirming run).
 
 **Not filed, worth filing:** `aether cluster autoheal off` is cosmetic — `autoHealEnabled` is read only by
-the status route, `LeaderReconciler` never consults it. And #444's premise is wrong: `SourceProfile` is
-already provider-agnostic; the real residual is that auto-heal replacements provision **unfirewalled**.
+the status route, `LeaderReconciler` never consults it. **FILED as #603.** And #444's premise is wrong:
+`SourceProfile` is already provider-agnostic; the real residual is that auto-heal replacements provision
+**unfirewalled** — **retriaged on #444, and now §11, the first item of the next session.**
 
 ## §9 Doc corrections
 - Catalog row 139 (sync replication ack) Complete → Partial, with the forward-path gap.
@@ -165,9 +163,74 @@ already provider-agnostic; the real residual is that auto-heal replacements prov
 - The `min-sync-replicas ≥ 2` remedy named in known-limitations was itself the guarantee that did not hold.
 
 ## §10 Next
-1. **`CAUGHT_UP` freshness** (§4) — decide the TTL source first.
-2. **#596** — top remaining blocker.
-3. **#590 / #509 verification runs** — both need a cluster, neither needs code.
-4. **#599** zone test — now unblocked: the zone axis genuinely enters formation, so a two-zone test can no
-   longer pass for the wrong reason.
-5. File the two §8 items.
+
+**Owner-decided ordering (2026-08-17): §11 first, then §12.** Both are DESIGN-SETTLED — implement as
+specified, do not re-open the choice. Then #596; #590 and #509 need cluster runs, not code.
+
+## §11 FIRST — unfirewalled auto-heal replacements (residual of #444, see its retriage comment)
+
+**The defect.** `buildCreateRequest` takes firewall IDs (`HetznerComputeProvider.java:367` ←
+`config.firewallIds()`), and at runtime that resolves to empty
+(`HetznerEnvironmentIntegrationFactory.java:75`, `getOrDefault("firewall_ids", "")`). `firewall_ids` is
+populated ONLY on the CLI bootstrap path (`ProviderResolver.java:236`). `SourceProfile` persists firewall
+**rules**, never the created firewall's **id**. So every CTM-provisioned auto-heal replacement is created
+with **no firewall association**, and the code states the consequence itself at
+`HetznerComputeProvider.java:455`: such servers **accept ALL inbound**. The window `ProviderResolver.java:205-207`
+was explicitly written to close is closed for bootstrap nodes and wide open for every replacement.
+
+**DECIDED — mechanism: resolve by label at create.** The capability already exists and is used by the
+ingress path: `client.listFirewalls(firewallSelector(cluster, sourceId))`
+(`HetznerComputeProvider.java:475`), one firewall per `(cluster, source)`. When `config.firewallIds()` is
+empty, resolve through that selector and pass the result to server-create.
+
+Rejected, and why — do not revisit without new information:
+- *Persist the ids at bootstrap* — adds state that goes stale the moment the firewall is recreated out of
+  band, and staleness in a security control is the worst failure mode available here.
+- *Re-create from `SourceProfile.firewallRules`* — viable (create/patch is already idempotent, `:449-451`)
+  but heavier per provision and turns rule drift into a silent reconciliation.
+
+**DECIDED — failure policy: FAIL THE PROVISION when no firewall resolves.** This is a deliberate
+behaviour change: today the node is created anyway. A missing replacement is a visible, recoverable
+degradation; a publicly-reachable one is neither. Same fail-safe direction as every other fix in this
+session — refuse on a negative reading rather than proceed on an unknown.
+
+**Verification note.** End-to-end verification means provisioning real PAID servers. Land with unit
+coverage and tag the claim honestly as **not cloud-verified** unless a run is explicitly authorised.
+Do not quietly imply cloud verification.
+
+## §12 SECOND — CAUGHT_UP staleness on the read path
+
+**DECIDED — lag-based freshness, bound expressed in OFFSETS, not time.**
+
+A replica counts as caught-up FOR READ SERVING only when its `confirmedOffset` is within a bounded
+distance of the partition's current high-water.
+
+**A time-based TTL was considered and REJECTED — this is the important part to not re-derive.**
+`updateWatermark` is driven purely by acks and backfill milestones (`DefaultReplicationManager.java:94`,
+`PartitionBackfill.java:669/875/906/1055/1158`); NOTHING refreshes it on a quiet partition. A TTL would
+therefore age out every replica of a write-idle stream and stop serving reads from the healthiest streams
+in the cluster. This is the same trap `#333` documented in its own seam — *"on a write-idle partition (no
+live batch re-arms the gap loop) it would serve stale/empty data forever"* — and note that #333 also did
+NOT reach for a timer: it added a caller-supplied owner-aware predicate and kept the registry free of
+topology knowledge.
+
+Lag is naturally correct when quiet: if the owner has not advanced, there is no lag, so no false
+staleness. It also catches the asymmetric-partition case that motivated the finding — a replica readers
+can still reach but which stopped acking to the owner falls behind while writes continue.
+
+**Still to choose during implementation:** the bound itself. Zero (exact high-water) is too strict —
+replication is asynchronous by design, so a healthy replica is transiently behind on every write. Pick a
+small offset bound (or "behind for more than N reconcile ticks"), and keep it expressed in offsets so it
+stays immune to the idle-stream problem above.
+
+**Apply at both consumers**, not one: `ForwardingReadRouter.isCaughtUp` (which selects read targets) and
+the `caughtUpOthers` count feeding the ring-release guard (`AetherNode.streamCatchupView`). Fixing one
+reader and not the other is exactly the half-applied-fix mistake that left #590 live at the placement
+grain (§4, instance 5).
+
+## §13 After those
+1. **#596** — top remaining blocker (durable entities unusable behind the shipped ingress).
+2. **#590 / #509 verification runs** — both need a cluster, neither needs code.
+3. **#599** zone test — now unblocked: the zone axis genuinely enters formation (#592), so a two-zone test
+   can no longer pass for the wrong reason.
+4. **#603** — `aether cluster autoheal off` is cosmetic (filed 2026-08-17).
