@@ -4,6 +4,8 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.function.Consumer;
 import java.util.function.Predicate;
+import java.util.stream.Collectors;
+import java.util.stream.IntStream;
 import java.util.stream.Stream;
 
 import org.pragmatica.lang.Option;
@@ -42,15 +44,11 @@ public final class CstNodes {
     public static String tokenText(Cursor node) {
         var tokens = node.cst()
                          .tokens();
-        var builder = new StringBuilder();
 
-        for (int t = node.firstTokenIdx(); t <= node.lastTokenIdx(); t++) {
-            if (!tokens.isTrivia(t)) {
-                builder.append(tokens.textAt(t));
-            }
-        }
-
-        return builder.toString();
+        return IntStream.rangeClosed(node.firstTokenIdx(), node.lastTokenIdx())
+                        .filter(t -> !tokens.isTrivia(t))
+                        .mapToObj(tokens::textAt)
+                        .collect(Collectors.joining());
     }
 
     // ===== Rule predicates =====

@@ -3,9 +3,10 @@ package org.pragmatica.jbct.lint.cst.rules;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
-import java.util.Map;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
+import java.util.regex.Pattern;
 import java.util.stream.Stream;
 
 import org.pragmatica.jbct.lint.Diagnostic;
@@ -17,6 +18,8 @@ import org.pragmatica.jbct.parser.RuleKind;
 import org.pragmatica.lang.Option;
 
 import static org.pragmatica.jbct.parser.CstNodes.*;
+import static org.pragmatica.lang.Option.none;
+import static org.pragmatica.lang.Option.some;
 
 
 /// JBCT-BND-01: Forbidden boundary types in business logic.
@@ -54,6 +57,11 @@ import static org.pragmatica.jbct.parser.CstNodes.*;
 public class CstBoundaryTypeRule implements CstLintRule {
     private static final String RULE_ID = "JBCT-BND-01";
 
+    /// `import` / `import static` prefix, and the whitespace and semicolons around a qualified
+    /// name — precompiled so the import scan does not recompile them per declaration.
+    private static final Pattern IMPORT_PREFIX = Pattern.compile("^\\s*import\\s+(?:static\\s+)?");
+    private static final Pattern SEPARATORS = Pattern.compile("[\\s;]+");
+
     /// Forbidden boundary types, by simple name — used for the message and its suggested
     /// replacement. Matching NEVER keys on this alone; see [#FORBIDDEN_FQNS].
     private static final Set<String> FORBIDDEN = Set.of("Optional",
@@ -90,7 +98,7 @@ public class CstBoundaryTypeRule implements CstLintRule {
             return Stream.empty();
         }
 
-        var scope = NameScope.of(root);
+        var scope = NameScope.nameScope(root);
 
         return Stream.concat(forbiddenImports(root, ctx), forbiddenTypes(root, scope, ctx));
     }
@@ -98,7 +106,7 @@ public class CstBoundaryTypeRule implements CstLintRule {
     /// What the simple names in this file can denote: explicit imports, star-imported
     /// packages, and the types the file declares itself (which shadow any star import).
     private record NameScope(Map<String, String> imports, Set<String> starPackages, Set<String> declaredTypes) {
-        static NameScope of(Cursor root) {
+        static NameScope nameScope(Cursor root) {
             var imports = new HashMap<String, String>();
             var starPackages = new HashSet<String>();
 
@@ -133,24 +141,24 @@ public class CstBoundaryTypeRule implements CstLintRule {
         /// it a boundary type.
         Option<String> originOf(String simpleName) {
             if (declaredTypes.contains(simpleName)) {
-                return Option.none();
+                return none();
             }
 
             var explicit = imports.get(simpleName);
 
             if (explicit != null) {
-                return Option.some(explicit);
+                return some(explicit);
             }
 
             for (var pkg : starPackages) {
                 var candidate = pkg + "." + simpleName;
 
                 if (FORBIDDEN_FQNS.contains(candidate)) {
-                    return Option.some(candidate);
+                    return some(candidate);
                 }
             }
 
-            return Option.none();
+            return none();
         }
     }
 
@@ -217,12 +225,11 @@ public class CstBoundaryTypeRule implements CstLintRule {
     /// Fully qualified name of an import declaration, `.*` retained for a star import. Static
     /// member imports yield a name that is simply not in the forbidden set.
     private static String importedName(Cursor imp) {
-        return text(imp).trim()
-                        .replaceFirst("^import\\s+", "")
-                        .replaceFirst("^static\\s+", "")
-                        .replaceAll(";\\s*$", "")
-                        .replaceAll("\\s+", "")
-                        .trim();
+        var body = IMPORT_PREFIX.matcher(text(imp))
+                                .replaceFirst("");
+
+        return SEPARATORS.matcher(body)
+                         .replaceAll("");
     }
 
     /// Leading type name of a `Type` / `RefType` node text: everything before the first generic

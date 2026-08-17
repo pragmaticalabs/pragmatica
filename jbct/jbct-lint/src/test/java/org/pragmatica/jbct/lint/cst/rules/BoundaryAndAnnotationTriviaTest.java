@@ -3,12 +3,13 @@ package org.pragmatica.jbct.lint.cst.rules;
 import java.nio.file.Path;
 import java.util.List;
 
-import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Test;
 import org.pragmatica.jbct.lint.Diagnostic;
 import org.pragmatica.jbct.lint.LintContext;
 import org.pragmatica.jbct.lint.cst.CstLinter;
 import org.pragmatica.jbct.shared.SourceFile;
+
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -31,10 +32,14 @@ class BoundaryAndAnnotationTriviaTest {
 
     private List<String> rulesFor(String fileName, String source) {
         return linter.lint(SourceFile.sourceFile(Path.of(fileName), source))
-                     .map(diagnostics -> diagnostics.stream()
-                                                    .map(Diagnostic::ruleId)
-                                                    .toList())
+                     .map(BoundaryAndAnnotationTriviaTest::ruleIds)
                      .or(List.of());
+    }
+
+    private static List<String> ruleIds(List<Diagnostic> diagnostics) {
+        return diagnostics.stream()
+                          .map(Diagnostic::ruleId)
+                          .toList();
     }
 
     // ===== A bare annotation still applies when a comment follows it =====
