@@ -19,10 +19,12 @@
             <groupId>org.pragmatica-lite</groupId>
             <artifactId>core</artifactId>
         </dependency>
+        <!-- Peglib runtime — the 0.7.x generator emits a tokens-first lexer+parser whose API
+             exposes CstArray / TokenArray, so the runtime is compile-scoped rather than
+             test-scoped as it was for the self-contained 0.5.x-era parser. -->
         <dependency>
             <groupId>org.pragmatica-lite</groupId>
-            <artifactId>peglib</artifactId>
-            <scope>test</scope>
+            <artifactId>peglib-runtime</artifactId>
         </dependency>
 
         <dependency>
@@ -43,7 +45,7 @@
                     <plugin>
                         <groupId>org.pragmatica-lite</groupId>
                         <artifactId>peglib-maven-plugin</artifactId>
-                        <version>${peglib.maven.plugin.version}</version>
+                        <version>${peglib.version}</version>
                         <executions>
                             <execution>
                                 <id>generate-pg-parser</id>
@@ -55,8 +57,9 @@
                                     <grammarFile>${project.basedir}/src/main/resources/org/pragmatica/aether/pg/parser/postgres.peg</grammarFile>
                                     <outputDirectory>${project.basedir}/src/main/java</outputDirectory>
                                     <packageName>org.pragmatica.aether.pg.parser</packageName>
-                                    <className>PgSqlParser</className>
-                                    <errorReporting>ADVANCED</errorReporting>
+                                    <lexerClassName>PgSqlLexer</lexerClassName>
+                                    <parserClassName>PgSqlParser</parserClassName>
+                                    <visitorClassName>PgSqlVisitor</visitorClassName>
                                 </configuration>
                             </execution>
                         </executions>
