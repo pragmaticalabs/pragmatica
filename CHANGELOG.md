@@ -7,6 +7,32 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ## [1.0.0-rc3] - Unreleased
 
 ### Fixed
+- **Worker-community zone grouping parsed the zone out of the NodeId instead of reading it (#592).**
+  `GroupAssignment` string-split the `NodeId` at its last dash, so `node-1` grouped into a zone called
+  `"node"` and a CTM-minted `…-r<clock36>` worker into everything before the suffix. That is identifier
+  parsing, not zone awareness; it looked correct only because uniform naming put every node in one zone,
+  which hid the defect behind the single-community case. The operator-facing `[worker] zone` knob and the
+  `zone` label the Hello handshake propagates for exactly this purpose were both unread on this path.
+  `computeGroups` now takes a zone resolver — kept as a seam so the assignment logic stays pure and
+  directly testable — and `GroupMembershipTracker` binds it to the SWIM membership labels, which is where
+  the advertised zone actually arrives.
+  **The ticket described only half of it.** `AETHER_ZONE` was absent from
+  `ClusterIdentityEnv.IDENTITY_VARS`, and both provisioning paths iterate that allow-list, so a
+  provisioned node never received the variable and came up zoneless regardless. Fixing the grouping alone
+  would have left the whole chain inert — the same unwired-gate shape as the core-absence fence. It is now
+  in the allow-list, completing `AETHER_ZONE` → `NodeInfo.LABEL_ZONE` → announce → `SwimMember.labels` →
+  grouping.
+  A node advertising no zone falls back to `WorkerConfig.DEFAULT_ZONE` rather than to a fragment of its
+  name: one honest bucket for "zone unknown" beats several confident-looking wrong ones. Since nothing
+  sets `AETHER_ZONE` today, live behaviour collapses to exactly the previous single-zone case — this is a
+  correctness fix that changes nothing until an operator sets a zone.
+  `[verified: unit + mutation — GroupAssignmentTest 4/4, each written to FAIL against the old derivation
+  (node names deliberately chosen to split into the same fragment while advertising different zones, and
+  vice versa); re-deriving the zone from the name turns all four red. There was previously NO test
+  coverage of this path at all. aether/node 872/0, environment-integration 59/0, ./build.sh green, 0 new
+  lint. NOT integration-verified — a two-zone cluster run is #599.]`
+
+### Fixed
 - **ACTIVATING had no node-local remediation arm at all (#601).** `processStateTransition` carried a bare
   `case ACTIVATING -> {}` observer — structurally the same gap #325 closed for ROUTING — so a node whose
   activation stalled had nothing local to recover or report it. The only recourse was the leader-side
