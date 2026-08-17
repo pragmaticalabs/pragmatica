@@ -45,11 +45,34 @@ a rule reference, which a DFA lexer cannot honour:
 
 Under 0.6.0's single-phase PEG this worked naturally. It does not survive lex-then-parse.
 
-**peglib has exactly the right mechanism — identifier fallback — but it is case-sensitive only.**
-`DfaBuilder.buildIdentifierFallbacks` skips any inline literal whose key does not end `/cs`, and
-`inlineLiteralKey` gives case-insensitive literals `/i`. Every SQL keyword is `'SELECT'i`, so the
-keyword-skip shape is detected and the fallback set comes back empty. Extending it to `/i` also needs
-case-folding on the `hardKeywords` containment test, since those are extracted as written (uppercase).
+**peglib has exactly the right mechanism — identifier fallback — but TWO independent gates block it**,
+both confirmed by peglib after measuring:
+
+1. `DfaBuilder.buildIdentifierFallbacks` skips any inline literal whose key does not end `/cs`, and
+   `inlineLiteralKey` gives case-insensitive literals `/i`. Every SQL keyword is `'SELECT'i`. Fixing
+   this also needs case-folding on the `hardKeywords` containment test, since those are extracted as
+   written (uppercase). **Necessary but not sufficient** — with it applied, the fallback set was still
+   empty.
+2. `RuleClassifier.detectSkipPrefixRules` requires the skip-prefix body to be pure-lexical with **no
+   rule references** (`!bodyProps.usesOnlyLexicalConstructs() || bodyProps.referencesAnyRule()`).
+   `ColId`'s body is three rule references, so `keywordSkip()` is empty and the fallback loop never
+   runs at all.
+
+**And the obvious grammar-side repair is blocked by a third rule.** Inlining the identifier body to
+satisfy gate 2 is not acceptable here: lines 469/470 are the ONLY references to `QuotedIdentifier`
+and `UnicodeIdentifier` in the whole grammar, so inlining drops quoted-identifier support outright —
+`CREATE TABLE "my table"`, `COLLATE "en_US"` (already covered by a test), and every case-preserving or
+reserved-word identifier. Splitting it back out does not work either, because a rule whose body
+references only lexer rules is demoted to LEXER:
+
+```peg
+ColIdRaw <- !ReservedKeyword < [a-zA-Z_] [a-zA-Z0-9_$]* >   # lexer, satisfies the skip-prefix gate
+ColId    <- ColIdRaw / QuotedIdentifier / UnicodeIdentifier  # only lexer refs -> demoted to LEXER
+```
+
+So the guard and the alternatives cannot live in the same place. Resolving this needs an exemption in
+one of those two classifier rules, not just the `/cs` filter — it is a peglib design decision, not a
+grammar tidy-up.
 
 **Hand-expanding the guard inline is not viable**, and was priced rather than assumed: the verified
 idiom requires the lookahead spelled inline in each parser rule with no intermediate rule, and
@@ -80,7 +103,9 @@ Testcontainers tests needing Docker (`StatementSplitter*DiffTest`).
 
 ## Resume
 
-1. Wait on peglib extending identifier fallback to case-insensitive literals (asked; no commitment).
+1. Wait on peglib. Two code changes are needed (CI filter with folding, plus an exemption in either the
+   skip-prefix gate or the LEXER demotion rule), and peglib has it written up with postgres.peg as a
+   checked-in test case. No commitment or date — do not poll.
 2. Regenerate, build, run the pg-parser suite — expect the 230 failures to clear.
 3. Run the CST differential against the 0.6.0 baseline and account for every difference.
 4. Then the full pg-tools suite, then PR.
