@@ -168,6 +168,11 @@ the status route, `LeaderReconciler` never consults it. **FILED as #603.** And #
 **Owner-decided ordering (2026-08-17): §11 first, then §12.** Both are DESIGN-SETTLED — implement as
 specified, do not re-open the choice. Then #596; #590 and #509 need cluster runs, not code.
 
+**§11 is LANDED** (see its AMENDED note — the fail policy needed one owner-approved refinement, and the
+reason it needed one is worth reading before touching that code). **§12 is LANDED** (see its own LANDED
+note — three things the spec did not anticipate, including a mutation-found hole in its first test pass).
+**§13 is the current item: #596 is the top remaining blocker.**
+
 ## §11 FIRST — unfirewalled auto-heal replacements (residual of #444, see its retriage comment)
 
 **The defect.** `buildCreateRequest` takes firewall IDs (`HetznerComputeProvider.java:367` ←
@@ -194,6 +199,50 @@ Rejected, and why — do not revisit without new information:
 behaviour change: today the node is created anyway. A missing replacement is a visible, recoverable
 degradation; a publicly-reachable one is neither. Same fail-safe direction as every other fix in this
 session — refuse on a negative reading rather than proceed on an unknown.
+
+### AMENDED 2026-08-17 (owner-approved during implementation) — the policy above was incomplete
+
+**LANDED.** Mechanism as decided (resolve by label at create). The failure policy needed one refinement,
+approved by the owner before any code was written, because the ruling rested on a premise that does not
+hold: it assumed the selector resolves whenever a firewall SHOULD exist.
+
+**What the premise missed.** `allow_ingress` is OPTIONAL. `BootstrapPhaseFirewall.managesIngressFor`
+creates a firewall only for a Hetzner cloud source with non-empty `effectiveRules` — declared
+`allow_ingress`, or an ELECTED load balancer. PF-23 in `ClusterBootstrapConfigValidator` goes further and
+explicitly instructs operators to *"Manage ingress via your own security groups and remove
+`[source.X.firewall]`"*. So "no firewall for this source" is a first-class, validator-endorsed
+configuration — and in it, every BOOTSTRAP node is equally unfirewalled. A bare fail-closed would have
+permanently disabled auto-heal for those clusters while buying no security at all: the peers are already
+open.
+
+Two situations produce an empty lookup and they want OPPOSITE answers, yet are indistinguishable from
+the source-scoped lookup alone:
+- source manages no ingress (above) ⇒ creating the replacement is PARITY, not new exposure;
+- a firewall EXISTS but this provision's source name did not select it — `ClusterTopologyManagerRecord.
+  replacementSourceName` falls back to `ProvisionContext.DEFAULT_SOURCE_NAME` (`default`) when the
+  persisted cluster config is unparseable or carries no cloud source for the role ⇒ the peers ARE
+  firewalled and proceeding recreates exactly the exposure this item is about.
+
+**The rule as implemented.** Source-scoped lookup non-empty ⇒ attach. Lookup ERROR ⇒ refuse (unknown is
+not evidence of safe; this one is structural — the failed lookup propagates and no server is built
+either way, the mapped cause only supplies the reason). Empty ⇒ ONE cluster-scoped list to separate the
+two: firewalls exist for this cluster but none for this source ⇒ REFUSE; none anywhere ⇒ create with a
+loud WARN. The extra call is paid only on the empty path.
+
+**Do not "simplify" this back to a bare fail-closed.** That is the whole finding.
+
+Also landed with it: the create-time log line now reports the firewall count beside the labels
+(`firewalls=0` means accepts-all-inbound, readable when it is decided rather than inferred later from the
+Hetzner console); both refusals are plain `Cause` records, not wrapped exceptions, since
+`toProvisionError` re-wraps whatever reaches it and the previous shape allocated two stack-filled
+throwables per refusal to carry a string.
+
+`[verified: unit + mutation — HetznerComputeProviderTest.FirewallAssociationTests 5/5, hetzner module
+83/0, jbct:check clean with zero new warnings. Mutation set re-run against the FINAL code shape after a
+restructure invalidated the first run: inert lookup, never-failing empty branch, dropped error mapping,
+removed configured-ids short-circuit — each killed by at least one test, none leaves all five green.]`
+**NOT cloud-verified** — end-to-end proof requires provisioning real paid servers, so the guarantee is
+asserted against the create REQUEST, not against a live server.
 
 **Verification note.** End-to-end verification means provisioning real PAID servers. Land with unit
 coverage and tag the claim honestly as **not cloud-verified** unless a run is explicitly authorised.
@@ -228,6 +277,47 @@ stays immune to the idle-stream problem above.
 the `caughtUpOthers` count feeding the ring-release guard (`AetherNode.streamCatchupView`). Fixing one
 reader and not the other is exactly the half-applied-fix mistake that left #590 live at the placement
 grain (§4, instance 5).
+
+### LANDED 2026-08-17/18 — with three things the spec did not anticipate
+
+**Reference (owner-approved): the freshest PEER watermark, not the owner's ring head.** `ForwardingReadRouter`
+runs on nodes that forward precisely BECAUSE they hold no local partition, so a head-based reference is
+unavailable at the consumer that needs it most, and `ReplicaRegistry` has no head or HRW knowledge by
+design. `lag = max(peer confirmedOffset) - this peer's confirmedOffset` is computable anywhere the
+descriptors are. Implemented as ONE method, `ReplicaRegistry.freshPeersFor`, called by both consumers.
+
+**1. "Apply at both consumers" was right, but for a reason worth writing down.** There are four raw
+`CAUGHT_UP` readings, not two — and the other two must NOT be guarded. `selfCoversPartition`,
+`selfCaughtUp` and `LinearizableOwnerServe.isCaughtUp` are all SELF rows: a node never acks itself, so its
+descriptor keeps the `SYNCING` / `-1` seed (#593) and reaches `CAUGHT_UP` via backfill completion, not the
+ack path. Lag-checking a self row reports staleness on a healthy owner. Note that inside
+`ForwardingReadRouter` a SINGLE helper served both a peer check and a self check — guarding it wholesale
+would have been the bug. "Apply the §4 lesson everywhere `CAUGHT_UP` is read" is the wrong generalisation.
+
+**2. `PartitionBackfill.selectSource` is a fifth peer-side reader and is correctly unguarded.** An audit
+will flag it as a half-applied fix; it is not. It takes `max(confirmedOffset)` over non-self `CAUGHT_UP`
+peers, which IS the freshness reference, so its donor has lag 0 by construction — routing it through the
+guard returns the identical node. Picking the freshest is strictly stronger than being within a bound of
+the freshest. Recorded in `freshPeersFor`'s javadoc so it is not "completed" later.
+
+**3. The knob is bound, and the bound is a guess.** `[streaming] caught_up_max_lag_offsets` parses in
+`ConfigLoader` and validates `>= 0` in `ConfigValidator`. Adding the field WITHOUT the TOML key would have
+reproduced the `reshuffle_concurrency` defect — a knob the docs name as tunable that nothing can set — in
+the very file that documents it. The DEFAULT of 1024 is NOT measured; what would settle it is observed
+peer lag under the 02y publish load.
+
+Also: the no-argument `ReplicaRegistry` factory defaults to the BOUNDED value, so an unwired path comes up
+guarded rather than silently inert.
+
+**Mutation testing found a real hole, which is the part to remember.** The first pass left the whole suite
+green when the `CAUGHT_UP`-state filter was deleted: the test meant to pin it was passing on the lag
+arithmetic instead, because a freshly registered peer seeds at `-1` and exceeded the bound regardless.
+Same shape as 2026-08-15 — a signal whose provenance is never exercised. Closed by a case with a SYNCING
+peer AT the reference watermark, where only the state can reject it.
+
+`[verified: unit + mutation — ReplicaRegistryTest$FreshPeersTests 9/9, aether-stream 674/0, node 872/0,
+./build.sh green, 0 new lint.]` **NOT integration-verified** — no multi-node run has exercised a replica
+that stops acking while writes continue. That, not more unit coverage, is what would raise this claim.
 
 ## §13 After those
 1. **#596** — top remaining blocker (durable entities unusable behind the shipped ingress).

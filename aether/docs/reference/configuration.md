@@ -371,6 +371,7 @@ publish_forward_timeout = "5s"
 read_forward_timeout = "2s"
 max_read_response_bytes = "28MB"
 reshuffle_concurrency = 2
+caught_up_max_lag_offsets = 1024
 ```
 
 | Field | Type | Default | Description |
@@ -379,12 +380,36 @@ reshuffle_concurrency = 2
 | `read_forward_timeout` | timespan | `2s` | Wait for a read forwarded to the partition owner |
 | `max_read_response_bytes` | data size | `28MB` | Cap on a single forwarded-read response |
 | `reshuffle_concurrency` | int | `2` | Partitions one node may hold in materialize+backfill at once. Must be `>= 1` |
+| `caught_up_max_lag_offsets` | long | `1024` | How far a `CAUGHT_UP` replica may trail the freshest peer watermark and still serve reads or count toward the ring-release catch-up gate. Must be `>= 0` |
 
 `reshuffle_concurrency` paces backfill work so a large reshuffle cannot flood a node. Raise it when
 partitions queue behind slow backfills; lower it when backfill traffic competes with serving. A partition
 that cannot get a slot is queued, not rejected, and the caller sees a retryable paced error naming this
 key. A slot held past a bounded tenure while others are queued is preempted — the backfill continues but
 stops counting against this limit — so a stalled backfill cannot starve the queue indefinitely.
+
+`caught_up_max_lag_offsets` exists because the `CAUGHT_UP` replication state never downgrades: nothing
+moves a replica out of it when it stops acking, so under a partition the state does not go stale — it
+FREEZES at its last good value and reads as healthy indefinitely. Without a freshness bound a replica
+that readers can still reach but which stopped acking to the owner keeps serving increasingly stale data
+with no error, and the ring-release gate over-counts it, so an owner can release its partition believing
+enough replicas are caught up.
+
+Lag is measured in OFFSETS relative to the freshest peer watermark, deliberately not as a time-to-live: a
+replica's watermark advances only on acks and backfill milestones, and nothing refreshes it on a quiet
+partition, so a time-based rule would age out every replica of a write-idle stream and stop serving reads
+from the healthiest streams in the cluster.
+
+Raise it if healthy replicas are being skipped as read sources under heavy write bursts — normal
+asynchronous replication means a healthy replica is transiently behind on every write. Lower it to demand
+tighter read freshness at the cost of forwarding more reads to the owner. `0` demands exact watermark
+parity and is legitimate but very strict. Two limits are inherent to a relative measure: a partition with
+a single registered peer has nothing to compare against and is always considered fresh, and if every
+replica freezes together their lags stay equal and none is flagged.
+
+**The default is not a measured value.** It has not been derived from an observed steady-state lag
+distribution; it is set above a typical in-flight batch depth and exposed as a knob so it can be relieved
+without a rebuild.
 
 ## Cloud Configuration
 

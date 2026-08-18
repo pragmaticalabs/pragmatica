@@ -7,6 +7,94 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ## [1.0.0-rc3] - Unreleased
 
 ### Fixed
+- **A `CAUGHT_UP` replica that stopped acking served stale reads forever and inflated the ring-release
+  gate (§12 of the 2026-08-17 handover).** `ReplicationState.CAUGHT_UP` never downgrades — nothing moves
+  a replica out of it. Under a partition the value does not go stale, it FREEZES at its last good reading
+  and goes on reading as healthy indefinitely, which is the defect class the same session catalogued with
+  seven instances. Two consumers acted on that raw state: `ForwardingReadRouter` selected read targets
+  with it, so a replica readers could still reach but which had stopped acking kept serving stale data
+  with no error; and `AetherNode.streamCatchupView` counted it, so an owner could release its partition
+  ring believing enough replicas were caught up.
+  A replica now additionally has to be FRESH: its `confirmedOffset` must trail the freshest peer watermark
+  by no more than `[streaming] caught_up_max_lag_offsets`. Both consumers go through one method,
+  `ReplicaRegistry.freshPeersFor` — a guard applied at one reader and not the other is exactly what left
+  #590 live at the placement grain, so sharing the implementation makes that structural rather than a
+  review question.
+  **Lag, not a TTL, and the reason matters.** A watermark advances only on acks and backfill milestones;
+  NOTHING refreshes it on a quiet partition. A time-based rule would therefore age out every replica of a
+  write-idle stream and stop serving reads from the healthiest streams in the cluster — the trap #333
+  documented in its own seam. Lag is self-correcting when quiet: if the owner has not advanced, no peer is
+  behind. It also catches the case that motivated the finding, where writes continue while one replica
+  stops acking.
+  **Self rows are deliberately never lag-checked** — `selfCoversPartition`, `selfCaughtUp` and
+  `LinearizableOwnerServe` still read the raw state, each with a comment saying why. A node never acks
+  itself, so its own descriptor keeps the `SYNCING` / `-1` seed (#593) and reaches `CAUGHT_UP` through
+  backfill completion rather than the ack path; measuring it against a peer watermark would report
+  staleness on a perfectly healthy owner. Within `ForwardingReadRouter` one helper served both a peer and
+  a self check, so guarding it wholesale would have been wrong. `PartitionBackfill.selectSource` also
+  reads the raw state and is also correct: it takes the `max(confirmedOffset)` over `CAUGHT_UP` peers,
+  which is the very value used as the freshness reference, so its donor has lag 0 by construction and
+  routing it through the guard would select the identical node.
+  Known limits of a relative measure, both pinned by tests so they are decisions rather than surprises: a
+  partition with one registered peer compares it against itself and never finds it stale, and if every
+  peer row freezes together their lags stay equal and none is flagged.
+  **The default bound of 1024 is a guess** — not derived from a measured steady-state lag distribution.
+  It is a config key (validated `>= 0`) so an operator hitting false staleness can relieve it without a
+  rebuild; what would settle the value is observed peer lag under the 02y publish load.
+  `[verified: unit + mutation — ReplicaRegistryTest$FreshPeersTests 9/9, aether-stream 674/0, node 872/0,
+  ./build.sh green with 0 new lint. Mutation testing found a REAL HOLE on the first pass: deleting the
+  CAUGHT_UP-state filter left the whole suite green, because the one test meant to pin it was passing on
+  the lag arithmetic instead (a freshly registered peer seeds at -1, so it exceeded the bound anyway). A
+  case with a SYNCING peer AT the reference watermark now isolates the state filter, and deleting that
+  filter fails exactly that test. NOT integration-verified: no multi-node run has exercised a replica that
+  stops acking while writes continue.]`
+
+### Fixed
+- **Auto-heal replacements were provisioned with no firewall association at all (#444 residual).**
+  `HetznerComputeProvider.buildCreateRequest` took its firewall ids from `config.firewallIds()`, which is
+  populated ONLY on the CLI bootstrap path — `ProviderResolver` threads in the ids `BootstrapPhaseFirewall`
+  just created. A CTM auto-heal replacement is built from a `SourceProfile`, and that persists firewall
+  **rules** but never the created firewall's **id**, so the list resolved to empty and the server was
+  created unassociated. The provider's own javadoc states the consequence: a Hetzner server with no
+  firewall accepts ALL inbound. The window `ProviderResolver` was written to close was shut for bootstrap
+  nodes and wide open for every replacement — and the feature catalog claimed "no node is briefly
+  unfirewalled" on the strength of bootstrap-only live runs.
+  The association is now resolved BY LABEL at create, reusing the one-firewall-per-`(cluster, source)`
+  selector the ingress path already owns. Persisting the ids at bootstrap was rejected — they go stale the
+  moment a firewall is recreated out of band, and staleness in a security control is the worst failure mode
+  available. Re-creating from `SourceProfile.firewallRules` was rejected as heavier per provision and as
+  turning rule drift into a silent reconciliation.
+  **The interesting half is the empty lookup, and a bare fail-closed would have been wrong.** "This source
+  manages no ingress" and "a firewall exists but this source name did not select it" are indistinguishable
+  from the source-scoped lookup alone, and they want opposite answers: the first is PF-23's explicitly
+  endorsed *manage ingress via your own security groups* configuration, where every bootstrap peer is
+  equally unfirewalled, so refusing would permanently disable auto-heal and buy no security; the second is
+  the `ClusterTopologyManagerRecord.replacementSourceName` → `default` degradation, where the peers ARE
+  firewalled and proceeding recreates the exposure. A cluster-scoped second look separates them — firewalls
+  exist for this cluster but none for this source ⇒ refuse; none anywhere ⇒ create with a WARN. A lookup
+  ERROR always refuses: unknown firewall state is not evidence of a safe one. That last one is earned
+  structurally rather than by a guard — the failed lookup propagates through the create chain, so no
+  server is built either way; the error mapping only makes the operator-facing reason say so.
+  Refusing to provision is a deliberate behaviour change — today the node is created anyway. A missing
+  replacement is a visible, recoverable degradation; a publicly reachable one is neither. The create-time
+  log line now carries the firewall count next to the labels, so `firewalls=0` is readable at the moment
+  it is decided rather than inferred later from the Hetzner console.
+  The two provider-side lookups (cluster-scoped SSH keys, label-resolved firewall) are independent account
+  queries and now run concurrently rather than chained, so a refusal costs one extra read-only list call
+  that the sequential form would have skipped — and a lookup failure arrives as a composed error, which is
+  what the error mapping now renders into an operator-facing reason.
+  Both refusals are plain `Cause` records rather than wrapped exceptions: a fail-closed refusal is an
+  expected outcome on this path, not an exceptional one, and `toProvisionError` re-wraps whatever reaches
+  it — so the previous shape allocated and stack-filled two throwables per refusal purely to carry a
+  string, and lost the structured fields on the way.
+  `[verified: unit + mutation — HetznerComputeProviderTest.FirewallAssociationTests 5/5, hetzner module
+  83/0. Four mutations checked: making the label lookup inert, forcing the empty-cluster branch to never
+  fail, dropping the error mapping, and removing the configured-ids short-circuit. Each turns exactly the
+  pinning test(s) red and leaves the controls green; none leaves all five green. NOT cloud-verified:
+  end-to-end proof requires provisioning real paid servers, so the guarantee that a replacement comes up
+  firewalled is asserted against the create REQUEST, not against a live server.]`
+
+### Fixed
 - **Worker-community zone grouping parsed the zone out of the NodeId instead of reading it (#592).**
   `GroupAssignment` string-split the `NodeId` at its last dash, so `node-1` grouped into a zone called
   `"node"` and a CTM-minted `…-r<clock36>` worker into everything before the suffix. That is identifier
