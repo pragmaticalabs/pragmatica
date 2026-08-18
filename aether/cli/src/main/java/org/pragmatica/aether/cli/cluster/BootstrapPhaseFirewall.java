@@ -8,6 +8,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 
 import org.pragmatica.aether.cli.cluster.ClusterBootstrapOrchestrator.BootstrapContext;
+import org.pragmatica.aether.config.cluster.CloudProviderName;
 import org.pragmatica.aether.config.cluster.FirewallRule;
 import org.pragmatica.aether.config.cluster.LoadBalancerMode;
 import org.pragmatica.aether.config.cluster.SourceProfile;
@@ -55,11 +56,55 @@ public sealed interface BootstrapPhaseFirewall {
         ClusterBootstrapOrchestrator.logPhase(CREATE_FIREWALL,
                                               "Applying ingress firewall rules for %d cloud source(s)",
                                               applicable);
+        warnIfIngressUnmanaged(ctx);
         if (applicable == 0) {
             return success(ctx);
         }
 
         return applyForAllSources(ctx, computeResolver);
+    }
+
+    /// #615 — REQ-5.1.8.2's auto-open AND the warning it dictates were both Hetzner-only, because the
+    /// entire phase is gated on [#managesIngressFor]. An elected LB on AWS/GCP/Azure therefore had its
+    /// `app_http` port neither opened nor mentioned: the operator saw a clean bootstrap and a load
+    /// balancer that served nothing, with no line anywhere pointing at ingress.
+    ///
+    /// Deliberately called BEFORE the `applicable == 0` early return — a cluster whose only cloud source
+    /// is non-Hetzner takes exactly that path, so a warning emitted after it would never fire for the
+    /// case it exists to cover.
+    ///
+    /// A WARNING, not an error. Security groups / VPC firewall rules / network security groups all deny
+    /// inbound by default, so such a node is UNREACHABLE rather than exposed, and managing ingress
+    /// yourself there is the supported arrangement PF-23 explicitly directs operators to. The defect is
+    /// the silence, so silence is what this fixes.
+    private static void warnIfIngressUnmanaged(BootstrapContext ctx) {
+        var appHttpPort = ctx.config().operations().ports().appHttp();
+
+        ctx.config().sources().forEach((name, source) -> warnIfElectedWithoutIngress(name, source, appHttpPort));
+    }
+
+    private static void warnIfElectedWithoutIngress(String name, SourceProfile source, int appHttpPort) {
+        if (manages(source) || source.type() != SourceType.CLOUD || source.loadBalancer() != LoadBalancerMode.ELECTED) {
+            return;
+        }
+
+        System.out.printf("  WARN: Source '%s' has an elected load balancer, but provider '%s' has no Aether-managed"
+                         + " ingress, so app_http port %d was NOT opened. Open it yourself (AWS security group / GCP"
+                         + " VPC firewall rule / Azure network security group) or the elected LB will not serve"
+                         + " traffic.%n",
+                          name,
+                          providerName(source),
+                          appHttpPort);
+    }
+
+    private static boolean manages(SourceProfile source) {
+        return HETZNER_PROVIDER.equals(providerName(source));
+    }
+
+    private static String providerName(SourceProfile source) {
+        return source.provider()
+                     .map(CloudProviderName::value)
+                     .or("unknown");
     }
 
     /// The resolver seam: (source, clusterName) → a provider able to manage ingress.
@@ -98,7 +143,7 @@ public sealed interface BootstrapPhaseFirewall {
     /// inbound, so an unmanaged source there is unreachable rather than exposed (§6.2).
     private static boolean managesIngressFor(SourceProfile source) {
         return source.type() == SourceType.CLOUD
-               && HETZNER_PROVIDER.equals(source.provider().map(provider -> provider.value()).or(""))
+               && manages(source)
                && !effectiveRules(source, 0).isEmpty();
     }
 

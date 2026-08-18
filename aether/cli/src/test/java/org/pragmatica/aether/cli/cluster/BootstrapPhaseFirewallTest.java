@@ -29,9 +29,13 @@ import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 
+import java.io.ByteArrayOutputStream;
+import java.io.PrintStream;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.function.Supplier;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -238,6 +242,104 @@ class BootstrapPhaseFirewallTest {
                                                      (_, _, _, _) -> Result.success(new RefusingCompute()));
 
         assertTrue(result.isFailure(), "a refused ingress rule must abort bootstrap, not proceed");
+    }
+
+    /// #615 — REQ-5.1.8.2's auto-open and the warning it mandates were BOTH gated on `managesIngressFor`,
+    /// which requires Hetzner. An elected LB on AWS/GCP/Azure got its app_http port neither opened nor
+    /// mentioned: a clean-looking bootstrap and an LB that serves nothing.
+    @Test
+    void execute_electedLbOnProviderWithoutIngress_warnsThatPortWasNotOpened() {
+        var ctx = contextWith(cloudSource("us-1", CloudProviderName.AWS, LoadBalancerMode.ELECTED, List.of()));
+
+        var output = captureStdoutOf(() -> BootstrapPhaseFirewall.execute(ctx,
+                                                                           (_, _, _, _) -> Result.success(new RefusingCompute()))).output();
+
+        assertTrue(output.contains("WARN"), "the operator must be told, not left with a silent no-op: " + output);
+        assertTrue(output.contains("us-1"), "the warning must name the source: " + output);
+        assertTrue(output.contains("aws"), "the warning must name the provider: " + output);
+        assertTrue(output.contains("NOT opened"), "the warning must say the port was not opened: " + output);
+    }
+
+    /// The regression that matters: such a cluster has ZERO manageable sources, so it takes the
+    /// `applicable == 0` early return. A warning emitted after that return would never fire.
+    @Test
+    void execute_electedLbOnProviderWithoutIngress_warnsEvenThoughNoSourceIsManageable() {
+        var ctx = contextWith(cloudSource("gcp-1", CloudProviderName.GCP, LoadBalancerMode.ELECTED, List.of()));
+
+        var result = captureStdoutOf(() -> BootstrapPhaseFirewall.execute(ctx,
+                                                                           (_, _, _, _) -> Result.success(new RefusingCompute())));
+
+        assertTrue(result.value().isSuccess(), "an unmanageable source is not an error, only a warning");
+        assertTrue(result.output().contains("WARN"), "the early return must not swallow the warning: " + result.output());
+    }
+
+    @Test
+    void execute_hetznerElectedLb_doesNotEmitTheUnmanagedIngressWarning() {
+        // Hetzner DOES auto-open app_http here, so it must get REQ-5.1.8.2's own warning instead of the
+        // "not opened" one — asserting the absence keeps the two paths from converging on one message.
+        var ctx = contextWith(hetznerSource("eu-1", LoadBalancerMode.ELECTED, List.of()));
+
+        var output = captureStdoutOf(() -> BootstrapPhaseFirewall.execute(ctx,
+                                                                           (_, _, _, _) -> Result.success(new RecordingCompute()))).output();
+
+        assertTrue(!output.contains("NOT opened"), "Hetzner opens the port, so it must not claim otherwise: " + output);
+    }
+
+    @Test
+    void execute_nonElectedLbOnProviderWithoutIngress_staysSilent() {
+        // Nothing was promised, so there is nothing to warn about — the warning must not become noise on
+        // every non-Hetzner cloud source.
+        var ctx = contextWith(cloudSource("us-2", CloudProviderName.AWS, LoadBalancerMode.NONE, List.of()));
+
+        var output = captureStdoutOf(() -> BootstrapPhaseFirewall.execute(ctx,
+                                                                           (_, _, _, _) -> Result.success(new RefusingCompute()))).output();
+
+        assertTrue(!output.contains("WARN"), "no elected LB means no unopened-port promise: " + output);
+    }
+
+    private static SourceProfile cloudSource(String name,
+                                             CloudProviderName provider,
+                                             LoadBalancerMode lbMode,
+                                             List<FirewallRule> rules) {
+        return SourceProfile.sourceProfile(name,
+                                            SourceType.CLOUD,
+                                            Option.some(provider),
+                                            Option.some("token"),
+                                            Option.some("us-east-1"),
+                                            Option.empty(),
+                                            Option.empty(),
+                                            Option.empty(),
+                                            Option.empty(),
+                                            lbMode,
+                                            List.of(),
+                                            Option.empty(),
+                                            Map.of(),
+                                            Map.of(NodeRole.CORE,
+                                                    RoleSubTable.roleSubTable(NodeRole.CORE,
+                                                                                Option.some(3),
+                                                                                Option.empty(),
+                                                                                Option.empty(),
+                                                                                "default")),
+                                            rules);
+    }
+
+    /// The warning IS the behaviour under test, and it is written to stdout in the same style as
+    /// REQ-5.1.8.2's mandated warning beside it — so stdout is what has to be asserted on.
+    private record Captured(String output, Result<BootstrapContext> value) {}
+
+    private static Captured captureStdoutOf(Supplier<Result<BootstrapContext>> action) {
+        var original = System.out;
+        var buffer = new ByteArrayOutputStream();
+
+        try (var stream = new PrintStream(buffer, true, StandardCharsets.UTF_8)) {
+            System.setOut(stream);
+
+            var value = action.get();
+
+            return new Captured(buffer.toString(StandardCharsets.UTF_8), value);
+        } finally {
+            System.setOut(original);
+        }
     }
 
     private static final class RefusingCompute implements ComputeProvider {
