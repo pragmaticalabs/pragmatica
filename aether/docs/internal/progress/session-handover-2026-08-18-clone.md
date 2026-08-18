@@ -9,11 +9,13 @@
 > - **This stream** (`~/IdeaProjects/pragmatica-clone`): design artifacts, jbct tooling, and code that
 >   ships as PRs for the main stream to review. Everything below is that work.
 > - **aether-main** (`~/IdeaProjects/pragmatica`): releases, the integration-test environment and cloud
->   sweeps. Its handovers are the same-named files for other dates — e.g.
+>   sweeps. Its handovers are the unsuffixed files in this directory — e.g.
 >   `session-handover-2026-08-17.md`.
 >
-> If both streams produce a handover for the same date, this file's name will collide with theirs;
-> disambiguate by stream rather than assuming the later commit supersedes the earlier one.
+> **Naming convention:** this stream suffixes its handovers `-clone`
+> (`session-handover-<date>-clone.md`); aether-main keeps the unsuffixed name. Both streams can then
+> file on the same date without colliding, and neither ever silently supersedes the other. Keep the
+> suffix on future handovers written from this clone.
 
 
 **Nothing in this session touched `release-1.0.0-rc3` except this document.** All work is on two open
