@@ -1,13 +1,24 @@
 # Session handover — 2026-08-16/17: one defect class, seven fixes, and 02y turned green
 
-> **Audience: the `aether-main` agent.** This document is written for whoever picks up the Aether
-> runtime work next, and its rulings and §-references assume that context. It is NOT the only live
-> handover — `session-handover-2026-08-18.md` was written in parallel by another session covering jbct
-> / peglib / lint-PR work and knows nothing about §11 or §12 below. Read both; neither supersedes the
-> other, they cover different subsystems.
+> **Stream: `aether-main` (release / integration / cloud stream). Written for the aether-main agent.**
+>
+> This document is written for whoever picks up the Aether runtime work next, and its rulings and
+> §-references assume that context. Two streams write handovers into this directory on this shared
+> branch, so check the stream banner before reading one as your own state.
+>
+> - **This stream** (`~/IdeaProjects/pragmatica`): releases, the integration-test environment and cloud
+>   sweeps. Handovers keep the UNSUFFIXED name (`session-handover-<date>.md`).
+> - **pragmatica-clone** (`~/IdeaProjects/pragmatica-clone`): design artifacts, jbct tooling, and code
+>   shipped as PRs for this stream to review. Its handovers carry a `-clone` suffix — currently
+>   `session-handover-2026-08-18-clone.md`, which covers peglib/jbct/lint work and knows nothing about
+>   §11, §12 or §14 below.
+>
+> Neither stream's handover supersedes the other; they cover disjoint subsystems and will disagree about
+> what is in flight. Convention agreed with the clone stream on 2026-08-18 — keep the unsuffixed name
+> for handovers written from here.
 
-**Branch:** `release-1.0.0-rc3` · **HEAD:** `9a7fc9e26` · **ALL PUSHED** · tree clean · **candidate tag
-re-pointed to `9a7fc9e26`** now that §11 and §12 have both landed (one re-point for the batch — a second
+**Branch:** `release-1.0.0-rc3` · **HEAD:** `<pending — see git log>` · **ALL PUSHED** · tree clean · **candidate tag
+re-pointed each batch** (§11+§12, then #615) — one re-point per batch — a second
 in quick succession is what races the Release asset uploads). Release CI and CI both green on it.
 
 Started from the previous handover's §5 open question. It resolved in the first twenty minutes, and
