@@ -34,6 +34,8 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 
+import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -910,6 +912,11 @@ class HetznerComputeProviderTest {
                                                                                 Map.of()));
 
         String lastFirewallSelector;
+        /// Selector-keyed overrides so a test can make the source-scoped lookup and the
+        /// cluster-scoped fallback answer DIFFERENTLY — the two-call disambiguation in
+        /// `resolveFirewallIds` is exactly the behaviour a single canned response cannot express.
+        final Map<String, Promise<List<Firewall>>> firewallsBySelector = new HashMap<>();
+        final List<String> firewallSelectors = new ArrayList<>();
         Firewall.CreateFirewallRequest lastCreateFirewallRequest;
         long lastSetRulesFirewallId;
         List<Firewall.Rule> lastSetRules;
@@ -1003,7 +1010,9 @@ class HetznerComputeProviderTest {
         @Override
         public Promise<List<Firewall>> listFirewalls(String labelSelector) {
             lastFirewallSelector = labelSelector;
-            return listFirewallsResponse;
+            firewallSelectors.add(labelSelector);
+
+            return firewallsBySelector.getOrDefault(labelSelector, listFirewallsResponse);
         }
 
         @Override
@@ -1134,6 +1143,137 @@ class HetznerComputeProviderTest {
                     .onFailure(cause -> assertThat(cause).isNull());
 
             assertThat(testClient.lastCreateServerRequest.labels()).containsEntry("aether-cluster", "prod-eu");
+        }
+    }
+
+    /// #444 residual — a CTM auto-heal replacement is built from a `SourceProfile`, which persists
+    /// firewall RULES but never the created firewall's ID, so `config.firewallIds()` is empty on
+    /// that path and every replacement used to be created with NO firewall association. A Hetzner
+    /// server without one accepts ALL inbound traffic.
+    ///
+    /// The resolution is by label, and the interesting half is what happens when it finds nothing:
+    /// "this source manages no ingress" (create — its bootstrap peers are equally open) and "a
+    /// firewall exists but this source name did not select it" (refuse — its peers ARE firewalled)
+    /// are indistinguishable from the source-scoped lookup alone, and are separated by a
+    /// cluster-scoped second look.
+    @Nested
+    class FirewallAssociationTests {
+        private static final String CLUSTER = "prod-eu";
+        private static final String SOURCE = "hetzner-eu";
+        private static final String SOURCE_SELECTOR = "aether-cluster=prod-eu,aether-source=hetzner-eu";
+        private static final String CLUSTER_SELECTOR = "aether-cluster=prod-eu";
+
+        /// Empty `firewallIds` is the CTM auto-heal shape — the bootstrap path is the one that
+        /// carries them.
+        private HetznerComputeProvider replacementProvider() {
+            var config = HetznerEnvironmentConfig.hetznerEnvironmentConfig(hetznerConfig("test-token"),
+                                                                            "cx22",
+                                                                            "ubuntu-24.04",
+                                                                            "fsn1",
+                                                                            List.of(1L),
+                                                                            List.of(10L),
+                                                                            List.of(),
+                                                                            "").unwrap();
+
+            return HetznerComputeProvider.hetznerComputeProvider(testClient, config).unwrap();
+        }
+
+        private ProvisionRequest replacementRequest(String sourceName) {
+            return new ProvisionRequest(InstanceType.ON_DEMAND,
+                                        "cx22",
+                                        "ubuntu-24.04",
+                                        "fsn1",
+                                        Option.empty(),
+                                        MarketOptions.ON_DEMAND,
+                                        ProvisionContext.forReplacement(CLUSTER,
+                                                                        "core",
+                                                                        sourceName,
+                                                                        "node-01",
+                                                                        "node-00:10.0.0.1:8090",
+                                                                        3));
+        }
+
+        private static Firewall firewall(long id) {
+            return new Firewall(id, "aether-prod-eu-hetzner-eu", List.of(), Map.of());
+        }
+
+        @Test
+        void createFrom_whenConfigCarriesFirewallIds_usesThemWithoutLookup() {
+            // The bootstrap path is unchanged: ProviderResolver already threaded the just-created
+            // ids in, and they must win outright — no lookup, no chance of resolving differently.
+            provider.createFrom(replacementRequest(SOURCE)).await().onFailure(cause -> assertThat(cause).isNull());
+
+            assertThat(testClient.lastCreateServerRequest.firewalls()).extracting(CreateServerRequest.FirewallRef::firewall)
+                                                                     .containsExactly(5L);
+            assertThat(testClient.firewallSelectors).as("configured ids must short-circuit the lookup entirely")
+                                                   .isEmpty();
+        }
+
+        @Test
+        void createFrom_whenSourceFirewallResolves_attachesItToCreate() {
+            // The defect itself: this is the association that was silently absent on every
+            // CTM-provisioned replacement.
+            testClient.firewallsBySelector.put(SOURCE_SELECTOR, Promise.success(List.of(firewall(91))));
+
+            replacementProvider().createFrom(replacementRequest(SOURCE))
+                                 .await()
+                                 .onFailure(cause -> assertThat(cause).isNull());
+
+            assertThat(testClient.lastCreateServerRequest.firewalls()).extracting(CreateServerRequest.FirewallRef::firewall)
+                                                                     .containsExactly(91L);
+        }
+
+        @Test
+        void createFrom_whenClusterManagesNoIngress_createsUnfirewalled() {
+            // PF-23 explicitly endorses "manage ingress via your own security groups", so a source
+            // with no `allow_ingress` has no firewall by design. Its bootstrap nodes are equally
+            // unfirewalled — refusing here would kill auto-heal for a supported configuration and
+            // buy no security at all.
+            testClient.firewallsBySelector.put(SOURCE_SELECTOR, Promise.success(List.of()));
+            testClient.firewallsBySelector.put(CLUSTER_SELECTOR, Promise.success(List.of()));
+
+            replacementProvider().createFrom(replacementRequest(SOURCE))
+                                 .await()
+                                 .onFailure(cause -> assertThat(cause).isNull());
+
+            assertThat(testClient.lastCreateServerRequest).isNotNull();
+            assertThat(testClient.lastCreateServerRequest.firewalls()).isEmpty();
+            assertThat(testClient.firewallSelectors).as("the cluster-scoped second look is what proves ingress is unmanaged")
+                                                   .containsExactly(SOURCE_SELECTOR, CLUSTER_SELECTOR);
+        }
+
+        @Test
+        void createFrom_whenClusterHasFirewallsButNoneForSource_refusesToCreate() {
+            // The `replacementSourceName` -> "default" degradation: a firewall for this cluster
+            // exists, this provision just failed to select it. Its peers ARE firewalled, so
+            // creating the server would produce exactly the publicly-reachable node #444 is about.
+            testClient.firewallsBySelector.put("aether-cluster=prod-eu,aether-source=default",
+                                               Promise.success(List.of()));
+            testClient.firewallsBySelector.put(CLUSTER_SELECTOR, Promise.success(List.of(firewall(91))));
+
+            replacementProvider().createFrom(replacementRequest(ProvisionContext.DEFAULT_SOURCE_NAME))
+                                 .await()
+                                 .onSuccess(info -> assertThat(info).isNull())
+                                 .onFailure(cause -> assertThat(cause.message()).contains("Refusing to provision")
+                                                                                .contains("accept ALL inbound"));
+
+            assertThat(testClient.lastCreateServerRequest).as("no server may be created less firewalled than its peers")
+                                                          .isNull();
+        }
+
+        @Test
+        void createFrom_whenFirewallLookupFails_refusesToCreate() {
+            // Unknown firewall state is not evidence of a safe one. Fail rather than proceed.
+            testClient.firewallsBySelector.put(SOURCE_SELECTOR,
+                                               new HetznerError.ApiError(503, "unavailable", "service unavailable").promise());
+
+            replacementProvider().createFrom(replacementRequest(SOURCE))
+                                 .await()
+                                 .onSuccess(info -> assertThat(info).isNull())
+                                 .onFailure(cause -> assertThat(cause.message()).contains("Refusing to provision")
+                                                                                .contains("UNKNOWN firewall state"));
+
+            assertThat(testClient.lastCreateServerRequest).isNull();
         }
     }
 

@@ -118,15 +118,12 @@ public record HetznerComputeProvider(HetznerClient client, HetznerEnvironmentCon
                                                                                                        + "a SPOT request reaching this provider is a bug"));
 
     private Promise<InstanceInfo> createAndConfirm(ProvisionRequest request, Map<String, String> labels) {
-        return resolveSshKeyIds(clusterNameOrDefault(request.context())).map(sshKeyIds -> buildCreateRequest(request,
-                                                                                                             sshKeyIds,
-                                                                                                             labels))
-                               .onSuccess(HetznerComputeProvider::logCreateRequest)
-                               .flatMap(client::createServer)
-                               .map(HetznerComputeProvider::toInstanceInfo)
-                               .flatMap(info -> confirmRunning(info,
-                                                               ReadinessPolicy.cloudDefault()))
-                               .onFailure(HetznerComputeProvider::logProvisionFailureRollbackGap);
+        return buildCreateRequest(request, labels).onSuccess(HetznerComputeProvider::logCreateRequest)
+                                 .flatMap(client::createServer)
+                                 .map(HetznerComputeProvider::toInstanceInfo)
+                                 .flatMap(info -> confirmRunning(info,
+                                                                 ReadinessPolicy.cloudDefault()))
+                                 .onFailure(HetznerComputeProvider::logProvisionFailureRollbackGap);
     }
 
     /// #442 v2b — operator-visible record of the EXACT labels sent to Hetzner at create time. The
@@ -135,11 +132,16 @@ public record HetznerComputeProvider(HetznerClient client, HetznerEnvironmentCon
     /// (any absence is then Hetzner-side) from a caller that supplied an unlabeled context (a wiring
     /// gap). Fires once per provisioned VM (bootstrap seed, CTM replacement, scale) — all
     /// infrequent, so INFO is not hot-path noise.
+    ///
+    /// #444 residual — the firewall count is on the SAME line for the same reason: it is the ground
+    /// truth for "was this VM created firewalled?", and `firewalls=0` means the server accepts ALL
+    /// inbound. Reading it here beats inferring it from a later Hetzner console check.
     private static void logCreateRequest(CreateServerRequest request) {
-        log.info("Hetzner provision: creating server '{}' (serverType={}) with {} ssh key(s) and labels {}",
+        log.info("Hetzner provision: creating server '{}' (serverType={}) with {} ssh key(s), {} firewall(s) and labels {}",
                  request.name(),
                  request.serverType(),
                  request.sshKeys().size(),
+                 request.firewalls().size(),
                  request.labels());
     }
 
@@ -356,20 +358,167 @@ public record HetznerComputeProvider(HetznerClient client, HetznerEnvironmentCon
         return List.of();
     }
 
-    private CreateServerRequest buildCreateRequest(ProvisionRequest request,
-                                                   List<Long> sshKeyIds,
-                                                   Map<String, String> labels) {
+    /// Both provider-side lookups (cluster-scoped SSH keys, label-resolved firewall) are independent
+    /// account queries, so they run concurrently and the create request is assembled from the pair.
+    private Promise<CreateServerRequest> buildCreateRequest(ProvisionRequest request, Map<String, String> labels) {
+        return Promise.all(resolveSshKeyIds(clusterNameOrDefault(request.context())),
+                           resolveFirewallIds(request.context()))
+                      .map((sshKeyIds, firewallIds) -> createServerRequestFor(request, sshKeyIds, firewallIds, labels));
+    }
+
+    private CreateServerRequest createServerRequestFor(ProvisionRequest request,
+                                                       List<Long> sshKeyIds,
+                                                       List<Long> firewallIds,
+                                                       Map<String, String> labels) {
         return CreateServerRequest.createServerRequest(generateServerName(),
                                                        request.instanceSize(),
                                                        request.image(),
                                                        sshKeyIds,
                                                        config.networkIds(),
-                                                       config.firewallIds(),
+                                                       firewallIds,
                                                        request.zone(),
                                                        request.userData().or(""),
                                                        true,
                                                        IPV4_ONLY,
                                                        labels);
+    }
+
+    /// #444 residual — the firewall association for a server being CREATED.
+    ///
+    /// `config.firewallIds()` is populated on the CLI bootstrap path ONLY (`ProviderResolver`
+    /// threads the ids [BootstrapPhaseFirewall] just created into `[cloud.compute] firewall_ids`).
+    /// A CTM auto-heal replacement is built from a `SourceProfile`, which persists firewall RULES
+    /// but never the created firewall's ID — so this resolved to empty and every replacement was
+    /// created with no firewall association at all. Per §6.2 (and [#openIngress] below) a Hetzner
+    /// server with no firewall accepts ALL inbound: the window `ProviderResolver` closes for
+    /// bootstrap nodes was wide open for every replacement.
+    ///
+    /// Resolution is BY LABEL, reusing the one-firewall-per-(cluster, source) selector the ingress
+    /// path already owns — deliberately not by persisting ids (they go stale the moment a firewall
+    /// is recreated out of band, and staleness in a security control is the worst failure mode
+    /// available here) and not by re-creating from `SourceProfile.firewallRules` (viable, since
+    /// create-or-patch is idempotent, but it turns rule drift into a silent reconciliation).
+    private Promise<List<Long>> resolveFirewallIds(ProvisionContext ctx) {
+        var configured = config.firewallIds();
+
+        if (!configured.isEmpty()) {
+            return Promise.success(configured);
+        }
+
+        var cluster = clusterNameOrDefault(ctx);
+        var source = ctx.sourceName();
+
+        return client.listFirewalls(firewallSelector(cluster, source))
+                     .mapError(cause -> FirewallLookupFailed.firewallLookupFailed(cluster, source, cause))
+                     .flatMap(found -> resolvedOrAbsent(found, cluster, source));
+    }
+
+    private Promise<List<Long>> resolvedOrAbsent(List<Firewall> found, String cluster, String source) {
+        if (found.isEmpty()) {
+            return noFirewallForSource(cluster, source);
+        }
+
+        return Promise.success(idsOf(found));
+    }
+
+    private static List<Long> idsOf(List<Firewall> firewalls) {
+        return firewalls.stream()
+                        .map(Firewall::id)
+                        .toList();
+    }
+
+    /// The per-source selector found nothing. Two very different situations produce that, and they
+    /// are indistinguishable from the source-scoped lookup alone:
+    ///
+    ///  - the source genuinely declares no `allow_ingress` and is not an elected LB, so
+    ///    [BootstrapPhaseFirewall] never created a firewall for it. PF-23 explicitly endorses this
+    ///    ("manage ingress via your own security groups"). Every BOOTSTRAP node of that source is
+    ///    equally unfirewalled, so creating the replacement is PARITY, not new exposure — refusing
+    ///    would kill auto-heal permanently for a supported configuration and buy no security.
+    ///  - a firewall for this cluster DOES exist but this provision's source name did not select it
+    ///    (e.g. `ClusterTopologyManagerRecord.replacementSourceName` degraded to `default` because
+    ///    the persisted cluster config was unparseable or carried no cloud source for the role).
+    ///    Here the peers ARE firewalled and proceeding would create exactly the open node #444 is
+    ///    about.
+    ///
+    /// A cluster-scoped list separates them: firewalls exist for this cluster but none for this
+    /// source ⇒ the selector missed one, so FAIL. Nothing cluster-wide ⇒ ingress is unmanaged here,
+    /// so proceed and say so loudly. The extra call is paid only on the empty path.
+    private Promise<List<Long>> noFirewallForSource(String cluster, String source) {
+        return client.listFirewalls(CLUSTER_LABEL + "=" + sanitizeLabelValue(cluster))
+                     .mapError(cause -> FirewallLookupFailed.firewallLookupFailed(cluster, source, cause))
+                     .flatMap(clusterWide -> unmanagedOrMissed(clusterWide, cluster, source));
+    }
+
+    private static Promise<List<Long>> unmanagedOrMissed(List<Firewall> clusterWide, String cluster, String source) {
+        if (clusterWide.isEmpty()) {
+            return ingressUnmanaged(cluster, source);
+        }
+
+        return FirewallSelectorMissed.firewallSelectorMissed(cluster,
+                                                             source,
+                                                             clusterWide.size())
+                                     .promise();
+    }
+
+    private static Promise<List<Long>> ingressUnmanaged(String cluster, String source) {
+        log.warn("Hetzner provision: no Aether-managed firewall exists for cluster '{}' (source '{}') — the server is "
+                + "created with NO firewall association and therefore accepts ALL inbound traffic. This matches how the "
+                + "bootstrap nodes of this source were created (no `allow_ingress` declared, not an elected LB), so it "
+                + "is not a regression for this cluster; declare `[source.{}.firewall] allow_ingress` to scope it.",
+                 cluster,
+                 source,
+                 source);
+
+        return Promise.success(List.of());
+    }
+
+    /// FAIL-CLOSED. A missing replacement is a visible, recoverable degradation; a publicly
+    /// reachable one is neither, and it would be silent.
+    ///
+    /// A plain [Cause], not a wrapped exception: a refusal to provision is an expected outcome on
+    /// this path, not an exceptional one, and [#toProvisionError] re-wraps whatever arrives here
+    /// into `ProvisionFailed` anyway — so a throwable built here would be allocated, stack-filled
+    /// and discarded for its message alone.
+    /// The component is `sourceName`, NOT `source`: [Cause] already declares `source()` returning
+    /// `Option<Cause>` for cause chaining, and a record component named `source` would generate a
+    /// clashing `String source()`.
+    record FirewallSelectorMissed(String cluster, String sourceName, int clusterWideCount) implements Cause {
+        static FirewallSelectorMissed firewallSelectorMissed(String cluster, String sourceName, int clusterWideCount) {
+            return new FirewallSelectorMissed(cluster, sourceName, clusterWideCount);
+        }
+
+        @Override
+        public String message() {
+            return """
+                   Refusing to provision: cluster '%s' has %d Aether-managed firewall(s), but none labelled \
+                   %s=%s. The server would be created with no firewall association and accept ALL inbound \
+                   traffic while its peers are firewalled. This usually means the provisioning source name \
+                   did not round-trip (a replacement falling back to '%s' because the persisted cluster \
+                   config was unparseable or carried no cloud source for the role). Fix the source name or \
+                   declare the firewall for this source.""".formatted(cluster,
+                                                                      clusterWideCount,
+                                                                      SOURCE_LABEL,
+                                                                      sanitizeLabelValue(sourceName),
+                                                                      ProvisionContext.DEFAULT_SOURCE_NAME);
+        }
+    }
+
+    /// Unknown firewall state is not evidence of a safe one. Note the refusal itself is structural —
+    /// the failed lookup propagates through the create chain, so no server is built either way; this
+    /// cause only makes the operator-facing reason say WHY.
+    record FirewallLookupFailed(String cluster, String sourceName, Cause lookupCause) implements Cause {
+        static FirewallLookupFailed firewallLookupFailed(String cluster, String sourceName, Cause lookupCause) {
+            return new FirewallLookupFailed(cluster, sourceName, lookupCause);
+        }
+
+        @Override
+        public String message() {
+            return """
+                   Refusing to provision: could not determine the firewall association for cluster '%s', \
+                   source '%s' (%s). Creating the server on an UNKNOWN firewall state risks a node that \
+                   accepts ALL inbound traffic.""".formatted(cluster, sourceName, lookupCause.message());
+        }
     }
 
     private Map<String, String> labelsFor(ProvisionContext ctx, String clusterLabel) {
