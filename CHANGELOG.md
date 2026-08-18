@@ -7,6 +7,30 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ## [1.0.0-rc3] - Unreleased
 
 ### Fixed
+- **An elected load balancer on AWS/GCP/Azure opened no ingress and said nothing about it (#615).**
+  REQ-5.1.8.2's auto-open of `app_http` for an elected LB — and the warning that requirement dictates
+  verbatim — were BOTH reachable only through `BootstrapPhaseFirewall.managesIngressFor`, which requires
+  Hetzner. Three gates each declined to cover the combination for individually sound reasons: PF-17
+  restricts `ELECTED` only on SSH sources, PF-23 returns early when a source declares no explicit
+  `allow_ingress`, and the `CREATE_FIREWALL` phase skips non-Hetzner sources entirely. The operator saw a
+  clean bootstrap and a load balancer that served nothing, with no line anywhere pointing at ingress.
+  Any cloud source with an elected LB whose provider has no Aether-managed ingress now gets a warning
+  naming the source, the provider and the port that was NOT opened. It is emitted BEFORE the
+  `applicable == 0` early return — such a cluster has zero manageable sources and takes exactly that
+  path, so a warning placed after it would never fire for the only case it exists to cover.
+  **A warning, not an error.** Security groups, VPC firewall rules and network security groups all deny
+  inbound by default, so such a node is UNREACHABLE rather than exposed — the inverse of Hetzner, where an
+  unassociated server accepts all inbound. Managing ingress yourself there is the arrangement PF-23
+  explicitly directs operators to, so the config is legitimate; the defect was the silence.
+  Implementing `openIngress` for those three providers remains separate feature work — their native
+  mechanisms all exist, only the clients are missing.
+  `[verified: unit + mutation — BootstrapPhaseFirewallTest 4 new cases, aether/cli 656/0. Four mutations,
+  each killed: moving the call after the early return, deleting it, dropping the elected-LB condition, and
+  dropping the provider condition. Note the first two produce identical failures — the tests pin THAT the
+  warning fires, not where the call sits, so the placement is load-bearing and documented rather than
+  test-enforced.]`
+
+### Fixed
 - **A `CAUGHT_UP` replica that stopped acking served stale reads forever and inflated the ring-release
   gate (§12 of the 2026-08-17 handover).** `ReplicationState.CAUGHT_UP` never downgrades — nothing moves
   a replica out of it. Under a partition the value does not go stale, it FREEZES at its last good reading

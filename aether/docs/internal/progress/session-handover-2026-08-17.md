@@ -1,9 +1,14 @@
 # Session handover — 2026-08-16/17: one defect class, seven fixes, and 02y turned green
 
-**Branch:** `release-1.0.0-rc3` · **HEAD when this handover was last amended:** `d8708827b` (the design
-ruling in §11/§12) · **ALL PUSHED** · tree clean · **candidate tag at `cf3f26b5e`**, deliberately behind
-HEAD: it tracks the last CODE change, and the commits after it are docs-only. Re-point it once when the
-§11 fix lands — a second re-point in quick succession is what races the Release asset uploads.
+> **Audience: the `aether-main` agent.** This document is written for whoever picks up the Aether
+> runtime work next, and its rulings and §-references assume that context. It is NOT the only live
+> handover — `session-handover-2026-08-18.md` was written in parallel by another session covering jbct
+> / peglib / lint-PR work and knows nothing about §11 or §12 below. Read both; neither supersedes the
+> other, they cover different subsystems.
+
+**Branch:** `release-1.0.0-rc3` · **HEAD:** `9a7fc9e26` · **ALL PUSHED** · tree clean · **candidate tag
+re-pointed to `9a7fc9e26`** now that §11 and §12 have both landed (one re-point for the batch — a second
+in quick succession is what races the Release asset uploads). Release CI and CI both green on it.
 
 Started from the previous handover's §5 open question. It resolved in the first twenty minutes, and
 everything after came out of chasing why.
@@ -325,3 +330,31 @@ that stops acking while writes continue. That, not more unit coverage, is what w
 3. **#599** zone test — now unblocked: the zone axis genuinely enters formation (#592), so a two-zone test
    can no longer pass for the wrong reason.
 4. **#603** — `aether cluster autoheal off` is cosmetic (filed 2026-08-17).
+
+## §14 #615 — elected LB on non-Hetzner clouds was silently ingress-less (filed AND fixed 2026-08-18)
+
+Found while reconciling #444's remaining scope. REQ-5.1.8.2's `app_http` auto-open AND the warning that
+requirement dictates verbatim were both reachable only via `managesIngressFor`, which requires Hetzner.
+Three gates each declined to cover the combination for individually sound reasons — PF-17 restricts
+`ELECTED` only on SSH, PF-23 returns early when no explicit `allow_ingress` is declared, and the
+`CREATE_FIREWALL` phase skips non-Hetzner sources — so an elected LB on AWS/GCP/Azure got a clean-looking
+bootstrap and a load balancer serving nothing, with no diagnostic anywhere.
+
+**Not a security hole, and the direction is the point.** Security groups / VPC firewall rules / NSGs deny
+inbound by DEFAULT, so such a node is unreachable rather than exposed — the exact inverse of Hetzner,
+where an unassociated server accepts all inbound (which is what made §11 urgent). Fixed with a warning
+rather than a rejection: managing ingress yourself there is what PF-23 explicitly directs operators to do,
+so the config is legitimate and the defect was purely the silence.
+
+**The placement is load-bearing and is NOT test-enforced.** The warning is emitted BEFORE the
+`applicable == 0` early return, because a cluster whose only cloud source is non-Hetzner takes exactly
+that path. Mutation testing showed that moving the call after the return and deleting it outright produce
+IDENTICAL failures — the tests pin THAT the warning fires, not WHERE the call sits. Do not relocate it.
+
+`[verified: unit + mutation — BootstrapPhaseFirewallTest 4 new cases, aether/cli 656/0, jbct:check clean.]`
+
+**Still unfiled:** cross-provider `openIngress` for AWS/GCP/Azure. Their native mechanisms all exist —
+only the clients are missing (`openIngress` has exactly ONE implementation in the repo). This is the last
+item standing between #444 and a clean close; #444's other scope items are done, moot (#439 is CLOSED), or
+were satisfied by other means (the whole cluster TOML persists as `ClusterConfigValue.tomlContent`, so the
+"not KV-reconstructible" premise no longer holds).
