@@ -64,6 +64,14 @@ public final class ConfigValidator {
         if (streaming.reshuffleConcurrency() < 1) {
             errors.add("streaming.reshuffle_concurrency must be >= 1 (0 would stall every replica backfill). Got: " + streaming.reshuffleConcurrency());
         }
+        // A negative bound would reject every peer including a perfectly in-sync one, so reads would stop
+        // being served from replicas and the ring-release catch-up gate could never be satisfied. Zero is
+        // ALLOWED and means "exact watermark parity", which is legitimate though very strict: replication
+        // is asynchronous, so a healthy peer is transiently behind on every write.
+        if (streaming.caughtUpMaxLagOffsets() < 0) {
+            errors.add("streaming.caught_up_max_lag_offsets must be >= 0 (a negative bound rejects every replica, "
+                      + "stopping replica-served reads and blocking the ring-release catch-up gate). Got: " + streaming.caughtUpMaxLagOffsets());
+        }
     }
 
     private static Result<AetherConfig> toResult(AetherConfig config, List<String> errors) {

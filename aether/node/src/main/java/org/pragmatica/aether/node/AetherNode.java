@@ -899,15 +899,23 @@ public interface AetherNode extends ManageableNode {
     /// effective, clamped RF); `selfCaughtUp` is whether THIS node has finished backfilling the partition (so
     /// its reshuffle slot may free). Self is excluded from the count so the "≥ RF caught-up remain AFTER I
     /// release" invariant holds regardless of whether the controller has already unregistered self.
+    ///
+    /// The OTHERS count goes through [ReplicaRegistry#freshPeersFor], which additionally requires each peer to
+    /// be within the configured lag bound of the freshest peer watermark. `CAUGHT_UP` never downgrades, so a
+    /// peer that stopped acking stays CAUGHT_UP forever; counting it raw let an owner release its ring
+    /// believing enough replicas were caught up when they had frozen. That method is shared with
+    /// `ForwardingReadRouter` on purpose — a guard applied at one reader and not the other is the same
+    /// half-applied fix that left #590 live at the placement grain.
+    ///
+    /// `selfCaughtUp` stays on the RAW state: a node never acks itself, so its own descriptor keeps the
+    /// `SYNCING` / `-1` seed (#593) and its `CAUGHT_UP` comes from backfill completion, not the ack path.
+    /// Lag-checking a self row would report staleness on a healthy owner.
     private static StreamPartitionManager.ReplicaCatchupSource.CatchupView streamCatchupView(ReplicaRegistry registry,
                                                                                              NodeId self,
                                                                                              String stream,
                                                                                              int partition) {
         var replicas = registry.replicasFor(stream, partition);
-        var caughtUpOthers = (int) replicas.stream()
-                                           .filter(descriptor -> descriptor.state() == ReplicationState.CAUGHT_UP && !descriptor.nodeId()
-                                                                                                                                .equals(self))
-                                           .count();
+        var caughtUpOthers = registry.freshPeersFor(stream, partition, self).size();
         var selfCaughtUp = replicas.stream()
                                    .anyMatch(descriptor -> descriptor.nodeId()
                                                                      .equals(self) && descriptor.state() == ReplicationState.CAUGHT_UP);
@@ -3074,7 +3082,7 @@ public interface AetherNode extends ManageableNode {
         // ReplicationManager.NONE. On every publishLocal the owner now replicates the event to its
         // registered replica set; the receive/apply side (streamReplicationReceiveHandler, wired below)
         // lands replicated events offset-preserving WITHOUT re-replicating (appendRecovered).
-        var streamReplicaRegistry = ReplicaRegistry.replicaRegistry();
+        var streamReplicaRegistry = ReplicaRegistry.replicaRegistry(config.streaming().caughtUpMaxLagOffsets());
         org.pragmatica.aether.stream.replication.ReplicationTransport streamReplicationTransport = clusterNode.network()::send;
         // #261: the live-ack path promotes a replica to CAUGHT_UP only when its confirmed offset
         // reaches back to the owner's earliest retained offset. The partition manager is constructed
