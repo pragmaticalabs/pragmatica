@@ -1,5 +1,21 @@
 # Session handover — 2026-08-18: peglib 0.7.2 in jbct, two lint PRs, pg-tools parked upstream
 
+> **Stream: `pragmatica-clone` (design/implementation stream). Written for the aether-clone agent.**
+>
+> This is **not** the aether-main handover. Both streams write handovers into this directory on this
+> shared branch, so check the stream banner before reading one as your own state — the two cover
+> disjoint work and will disagree about what is in flight.
+>
+> - **This stream** (`~/IdeaProjects/pragmatica-clone`): design artifacts, jbct tooling, and code that
+>   ships as PRs for the main stream to review. Everything below is that work.
+> - **aether-main** (`~/IdeaProjects/pragmatica`): releases, the integration-test environment and cloud
+>   sweeps. Its handovers are the same-named files for other dates — e.g.
+>   `session-handover-2026-08-17.md`.
+>
+> If both streams produce a handover for the same date, this file's name will collide with theirs;
+> disambiguate by stream rather than assuming the later commit supersedes the earlier one.
+
+
 **Nothing in this session touched `release-1.0.0-rc3` except this document.** All work is on two open
 PRs and one unpushed WIP branch. The release branch builds exactly as it did.
 
@@ -108,6 +124,27 @@ inline-literal lookup break. Plus a staleness stamp, from a suggestion made here
 - **After a generator upgrade, check for `skipped (up-to-date)` first.** peglib's mojo decided staleness
   from mtimes alone; "I regenerated and nothing changed" meant "it skipped". This produced a wrong bug
   report. Now mitigated by the version stamp peglib added.
+
+## §5a Design-review triage (filed after the sections above)
+
+The oss-session design review (`../oss/tmp/aether-design-review-actions.md`) was analysed, regrouped and
+filed against this milestone: **#604–#614**, plus comments folding three items into existing issues
+(**#264** effectively-once, **#496** overview contradictions, **#582** codec self-resolution) rather than
+duplicating them.
+
+- #605 / #606 / #607 are cross-linked as one cluster — nothing exercises the developer-facing path end
+  to end. Converting the examples onto the testkit surfaces the other two on its own.
+- **One review claim was refuted and not filed:** `aether/e2e-tests` is not empty — 12 Java files, zero
+  `@Test`, i.e. fixture slices consumed by the real E2E suite.
+- **One flagged-unverified claim was confirmed** and filed as #612 (proxies silently drop non-`Promise`
+  methods).
+- Two findings went beyond the review, both in #606: banking never touches its injected `SqlConnector`
+  (only the import lines match `db.`), and `compensateDebit` discards the returned `Promise`, so the
+  transfer is marked `COMPENSATED` whether or not the compensating credit succeeded. `JBCT-RET-07`
+  cannot catch that — its detection is syntactic and has no type resolution.
+
+#609 (OTLP) and possibly #611 may belong on rc4; #611 sits on rc3 because the *decision* must precede
+the interface freeze even if implementation lands later.
 
 ## §6 Resume
 
