@@ -6,6 +6,7 @@ package org.pragmatica.aether.pg.parser.transform;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Set;
 
 import org.pragmatica.aether.pg.parser.ast.common.DataTypeName;
 import org.pragmatica.aether.pg.parser.ast.common.Identifier;
@@ -41,41 +42,194 @@ public final class CstExtractor {
             return Identifier.unquoted(nav.span(), unquoted.unwrap());
         }
 
-        var anyText = nav.firstTokenText().or("???");
+        return classifyRawIdentifier(nav.span(), nav.firstTokenText().or("???"));
+    }
 
-        return Identifier.unquoted(nav.span(), anyText);
+    /// peglib 0.7.x lexes an identifier as ONE token — `ColId`, or the kind of whatever keyword rule
+    /// spells the same text under identifier fallback — instead of 0.6.0's
+    /// `ColId -> QuotedIdentifier` nesting whose `< >` capture yielded the inner text. The quote
+    /// style therefore has to be read back off the lexeme rather than off the node name, and the
+    /// delimiters stripped here rather than by the grammar.
+    private static Identifier classifyRawIdentifier(SourceSpan span, String raw) {
+        if (raw.length() > 3 && (raw.startsWith("U&\"") || raw.startsWith("u&\"")) && raw.endsWith("\"")) {
+            return new Identifier(span, unescapeDoubled(raw.substring(3, raw.length() - 1)), Identifier.QuoteStyle.UNICODE_QUOTED);
+        }
+
+        if (raw.length() > 1 && raw.startsWith("\"") && raw.endsWith("\"")) {
+            return Identifier.quoted(span, unescapeDoubled(raw.substring(1, raw.length() - 1)));
+        }
+
+        return Identifier.unquoted(span, raw);
+    }
+
+    private static String unescapeDoubled(String inner) {
+        return inner.replace("\"\"", "\"");
+    }
+
+    /// The identifier at a fixed grammatical POSITION — the first leaf child — rather than by rule
+    /// name. Under peglib 0.7.x identifier fallback the same identifier can arrive three ways:
+    /// as `Token ColId` (`id`), as another rule's kind when it spells that rule's literal
+    /// (`public` -> `Token PublicKW`), or as an ANONYMOUS `Terminal` when it collides with an
+    /// inline literal (`name` -> `Terminal [name]`, no kind at all). Looking one up by the name
+    /// "ColId" therefore drops an arbitrary subset — silently, since a missing identifier reads as
+    /// "no column here" rather than as an error.
+    public static Option<Identifier> leadingIdentifier(CstNavigator nav) {
+        for (var child : nav.children()) {
+            switch (child) {
+                case CstNode.Token tok -> {
+                    return Option.present(classifyRawIdentifier(tok.span(), tok.text()));
+                }
+                case CstNode.Terminal term -> {
+                    return Option.present(classifyRawIdentifier(term.span(), term.text()));
+                }
+                default -> {
+                    return Option.empty();
+                }
+            }
+        }
+
+        return Option.empty();
+    }
+
+    /// The last leaf child appearing BEFORE the first nested rule — the identifier in shapes like
+    /// `AlterColumnAction <- AlterKW ColumnKW? ColId AlterColumnCmd`, where the number of leading
+    /// keywords varies and the name itself may arrive as any kind or as an anonymous Terminal.
+    /// See [#leadingIdentifier] for why the name cannot be used to find it.
+    public static Option<Identifier> identifierBeforeNested(CstNavigator nav) {
+        Option<Identifier> last = Option.empty();
+
+        for (var child : nav.children()) {
+            switch (child) {
+                case CstNode.Token tok -> last = Option.present(classifyRawIdentifier(tok.span(), tok.text()));
+                case CstNode.Terminal term -> last = Option.present(classifyRawIdentifier(term.span(), term.text()));
+                default -> {
+                    return last;
+                }
+            }
+        }
+
+        return last;
+    }
+
+    /// Leaf identifiers of `nav`, skipping leaves whose text is one of `keywords` (compared
+    /// case-insensitively). For fixed-shape rules such as
+    /// `RenameAction <- RenameKW (ColumnKW ColId ToKW ColId / ToKW ColId)` the keywords are known
+    /// and everything else is a name — which is the only way to pick the names out when they may
+    /// arrive under any kind or as anonymous Terminals. See [#leadingIdentifier].
+    public static List<Identifier> leafIdentifiers(CstNavigator nav, Set<String> keywords) {
+        var result = new ArrayList<Identifier>();
+
+        for (var child : nav.children()) {
+            var leaf = switch (child) {
+                case CstNode.Token tok -> Option.present(classifyRawIdentifier(tok.span(), tok.text()));
+                case CstNode.Terminal term -> Option.present(classifyRawIdentifier(term.span(), term.text()));
+                default -> Option.<Identifier>empty();
+            };
+
+            leaf.filter(id -> !keywords.contains(id.value().toLowerCase()))
+                .onPresent(result::add);
+        }
+
+        return result;
+    }
+
+    /// Text of a `StringLiteral` with its SQL delimiters removed. 0.6.0's grammar captured the
+    /// inner text via a `< >` capture; 0.7.x hands back the whole lexeme, quotes included, so
+    /// enum labels and defaults arrived as `'pending'` rather than `pending`.
+    public static Option<String> stringLiteralText(CstNavigator nav) {
+        return deepLeafText(nav).map(CstExtractor::unquoteSqlString);
+    }
+
+    private static String unquoteSqlString(String raw) {
+        if (raw.length() > 2 && (raw.startsWith("E'") || raw.startsWith("e'")) && raw.endsWith("'")) {
+            return raw.substring(2, raw.length() - 1).replace("''", "'");
+        }
+
+        if (raw.length() > 1 && raw.startsWith("'") && raw.endsWith("'")) {
+            return raw.substring(1, raw.length() - 1).replace("''", "'");
+        }
+
+        return raw;
+    }
+
+    /// True when any direct leaf of `nav` has this text (case-insensitive). Needed where a keyword's
+    /// kind is unpredictable: `CREATE UNIQUE INDEX` lexes UNIQUE as `UniqueColConstraint`, because
+    /// that rule spells the same literal and claimed the kind, so findAll("UniqueKW") sees nothing.
+    public static boolean hasLeafText(CstNavigator nav, String text) {
+        for (var child : nav.children()) {
+            var leaf = switch (child) {
+                case CstNode.Token tok -> tok.text();
+                case CstNode.Terminal term -> term.text();
+                default -> "";
+            };
+
+            if (leaf.equalsIgnoreCase(text)) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     public static QualifiedName extractQualifiedName(CstNavigator nav) {
         var parts = new ArrayList<Identifier>();
-        var firstColId = nav.child("ColId");
 
-        if (firstColId.isPresent()) {
-            parts.add(extractIdentifier(firstColId.unwrap()));
-        }
-
-        for (var child : nav.findAll("ColId")) {
-            if (firstColId.isPresent() && child.span().equals(firstColId.unwrap().span())) {
-                continue;
-            }
-
-            if (parts.isEmpty() || !child.span().equals(parts.getLast().span())) {
-                parts.add(extractIdentifier(child));
-            }
-        }
-
-        var deduped = new ArrayList<Identifier>();
-
-        for (var part : parts) {
-            if (deduped.isEmpty() || !part.span().equals(deduped.getLast().span())) {
-                deduped.add(part);
+        // `QualifiedName <- ColId ('.' (ColId / '*'))*`, so every direct TOKEN child is a name part
+        // and the dots arrive as Terminals. Selecting by position rather than by the name "ColId" is
+        // required under identifier fallback: a part that happens to spell a keyword is lexed under
+        // THAT keyword's kind, so `public.users` yields PublicKW + ColId and a name-based lookup
+        // silently drops the schema.
+        for (var child : nav.children()) {
+            switch (child) {
+                case CstNode.Token tok -> parts.add(classifyRawIdentifier(tok.span(), tok.text()));
+                // A part colliding with an inline literal arrives as an anonymous Terminal; the '.'
+                // and '*' separators arrive the same way, so they are the only things to skip.
+                case CstNode.Terminal term when !term.text().equals(".") && !term.text().equals("*") ->
+                        parts.add(classifyRawIdentifier(term.span(), term.text()));
+                default -> {}
             }
         }
 
-        return new QualifiedName(nav.span(),
-                                 deduped.isEmpty()
-                                 ? parts
-                                 : deduped);
+        if (parts.isEmpty()) {
+            // `QualifiedTypeName` wraps a nested `QualifiedName`; descend before giving up.
+            var nested = nav.child("QualifiedName");
+
+            if (nested.isPresent()) {
+                return extractQualifiedName(nested.unwrap());
+            }
+
+            nav.findAll("ColId")
+               .forEach(colId -> parts.add(extractIdentifier(colId)));
+        }
+
+        return new QualifiedName(nav.span(), parts);
+    }
+
+    /// Text of the first leaf under `nav`, descending through however many wrapper rules the
+    /// grammar interposes. `ScalarType -> DateTimeType -> TimestampType -> Terminal [timestamptz]`
+    /// cannot be reached by enumerating rule names — the enumeration was already missing
+    /// `DateTimeType`, and every future type rule would have to be added to it by hand.
+    private static Option<String> deepLeafText(CstNavigator nav) {
+        for (var child : nav.children()) {
+            switch (child) {
+                case CstNode.Token tok -> {
+                    return Option.present(tok.text());
+                }
+                case CstNode.Terminal term -> {
+                    return Option.present(term.text());
+                }
+                case CstNode.NonTerminal nt -> {
+                    var deeper = deepLeafText(CstNavigator.of(nt));
+
+                    if (deeper.isPresent()) {
+                        return deeper;
+                    }
+                }
+                default -> {}
+            }
+        }
+
+        return Option.empty();
     }
 
     public static DataTypeName extractDataType(CstNavigator nav) {
@@ -83,10 +237,14 @@ public final class CstExtractor {
         var arrayDims = arrayType.isPresent()
                         ? countArrayDimensions(arrayType.unwrap())
                         : 0;
-        var scalarTokenText = nav.tokenText("ScalarType");
+        // 0.7.x always interposes ArrayType between DataType and ScalarType, even for a scalar with
+        // zero dimensions; 0.6.0 nested ScalarType directly under DataType. Look through it, or every
+        // ScalarType lookup below misses and the type reads as "unknown".
+        var typeRoot = arrayType.or(nav);
+        var scalarTokenText = typeRoot.tokenText("ScalarType");
 
         if (scalarTokenText.isPresent() && !scalarTokenText.unwrap().isEmpty()) {
-            var scalarType = nav.child("ScalarType");
+            var scalarType = typeRoot.child("ScalarType");
 
             if (scalarType.isPresent() && scalarType.unwrap().has("TypeModifiers")) {} else {
                 var dt = DataTypeName.builtin(nav.span(),
@@ -98,7 +256,7 @@ public final class CstExtractor {
             }
         }
 
-        var scalarType = nav.child("ScalarType").or(nav);
+        var scalarType = typeRoot.child("ScalarType").or(typeRoot);
         var directToken = scalarType.firstTokenText();
 
         if (directToken.isPresent() && !directToken.unwrap().isEmpty() && !scalarType.has("TypeModifiers")) {
@@ -223,7 +381,7 @@ public final class CstExtractor {
     }
 
     private static String extractTimestampTypeName(CstNavigator nav) {
-        var text = nav.firstTokenText().or("timestamp").trim().toLowerCase();
+        var text = deepLeafText(nav).or("timestamp").trim().toLowerCase();
 
         if (text.contains("timestamptz")) {
             return "timestamptz";
@@ -241,7 +399,7 @@ public final class CstExtractor {
     }
 
     private static String extractTimeTypeName(CstNavigator nav) {
-        var text = nav.firstTokenText().or("time").trim().toLowerCase();
+        var text = deepLeafText(nav).or("time").trim().toLowerCase();
 
         if (text.contains("timetz")) {
             return "timetz";
