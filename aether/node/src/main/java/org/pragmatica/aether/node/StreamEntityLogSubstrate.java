@@ -191,6 +191,18 @@ public final class StreamEntityLogSubstrate implements EntityLogSubstrate {
         return "presented " + stale.presented() + ", current " + stale.current();
     }
 
+    /// `minSyncReplicas` COUNTS THE OWNER; `awaitReplication` counts DISTINCT NON-SELF acks. The two
+    /// differ by exactly one, and this call passed the raw value — so a keyspace configured for `2`
+    /// ("the owner plus one peer", per [DurableEntityConfig#minSyncReplicas]) waited for TWO peers.
+    ///
+    /// At the default `replicationFactor = 3` that is satisfiable only while BOTH peers are alive and
+    /// caught up, so losing a single peer failed every entity write with `ReplicationBarrierUnmet` —
+    /// precisely the failure replication is there to survive. At `replicationFactor = 2` there is only
+    /// one non-self replica in existence, so no entity write could ever succeed.
+    ///
+    /// Both stream writers already subtract: `StreamWriteRouter:78` and
+    /// `StreamForwardHandler.awaitMinSync`. This is the third writer on the same barrier and it was the
+    /// odd one out.
     private Promise<Long> awaitBarrier(String keyspace, String stream, int partition, long offset) {
         var minSyncReplicas = partitionManager.minSyncReplicasFor(stream);
 
@@ -198,7 +210,7 @@ public final class StreamEntityLogSubstrate implements EntityLogSubstrate {
             return Promise.success(offset);
         }
 
-        return partitionManager.awaitReplication(stream, partition, offset, minSyncReplicas)
+        return partitionManager.awaitReplication(stream, partition, offset, minSyncReplicas - 1)
                                .map(_ -> offset)
                                .mapError(cause -> new EntityLogError.ReplicationBarrierUnmet(keyspace,
                                                                                              partition,
