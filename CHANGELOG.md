@@ -7,6 +7,50 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ## [1.0.0-rc3] - Unreleased
 
 ### Fixed
+- **The entity min-sync barrier counted the owner twice (#345 I3 path).** `minSyncReplicas` COUNTS the
+  owner — `DurableEntityConfig.minSyncReplicas()` states it outright: "`2` means the owner plus one peer,
+  i.e. `awaitReplication(..., minAcks)` blocks on ONE distinct non-self ack". But `awaitReplication`
+  counts DISTINCT NON-SELF acks, and `StreamEntityLogSubstrate.awaitBarrier` passed the raw value, so a
+  keyspace configured for `2` waited for TWO peers. At the default `replicationFactor = 3` that is
+  satisfiable only while BOTH peers are alive and caught up — losing a single peer failed every entity
+  write with `ReplicationBarrierUnmet`, which is precisely the failure replication exists to survive. At
+  `replicationFactor = 2` there is only one non-self replica in existence, so no entity write could ever
+  succeed. Both stream writers already subtract (`StreamWriteRouter`, `StreamForwardHandler.awaitMinSync`);
+  this was the third writer on the same barrier and the only one that did not.
+  Distinct from #596 (entities unreachable off the partition owner, no owner-forwarding) — same subsystem,
+  independent causes. #596's own evidence rules this out as its cause: 4 of 40 creates acked, which could
+  not happen if the barrier failed everything.
+  `[verified: unit + mutation — new StreamEntityLogSubstrateTest, 2 cases (minSync 2→1 ack, 3→2 acks, the
+  second guarding a mutant that hardcodes 1); reverting the fix turns both red. aether/node 874/0.]`
+- **A segment whose age was unknown blocked size- and count-based eviction too.**
+  `SegmentIndex.rebuildFromRefs` reconstructs the index from ref NAMES, and a ref name carries only
+  `streams/<stream>/<partition>/<start>-<end>` — so after a restart every rebuilt segment came back with
+  `maxTimestamp = 0`. `RetentionEnforcer.isSegmentExpired` returned `false` on that, and because the check
+  sat BEFORE the policy call it withheld the segment from the count and size limits as well. Every segment
+  sealed before a restart was therefore permanently unreclaimable and disk grew without bound across
+  restarts. An unknown age is now passed as `0`, which disables only the AGE term: under `ANY` the size and
+  count limits are ORed and work again; under `ALL` every limit must be exceeded, so an unknown age still
+  withholds the segment — conservative in the direction that cannot delete data.
+  **This does not restore age-based retention for pre-restart segments** — their age is genuinely recorded
+  nowhere. That needs `maxTimestamp` persisted, which is a ref-name/metadata format change and a
+  stored-format decision rather than a local fix.
+  `[verified: unit + mutation — 2 new RetentionEnforcerTest cases (maxTimestamp=0 evicted under mode ANY on
+  maxCount and on maxBytes); reverting the early return turns both red, and the pre-existing
+  "never evicts on age alone" case still passes. aether-stream 676/0.]`
+
+### Changed
+- **A sync-quorum test raced the resync timer rather than a too-short sleep.** `RabiaEngineTest$SyncQuorum`
+  failed ~80% of the time locally and twice on CI — including on a docs-only commit, which is what proved
+  it was never a code regression. The cause was not timing slack: `testConfig()` retries the sync round
+  every ~100ms and `RabiaEngine.doSynchronize` CLEARS `syncResponses` when a retry finds fewer than a
+  quorum, so the test's first response was discarded before its second arrived and the node could never
+  reach a quorum. Waiting longer could not have helped — the discarded response is gone and the test sends
+  no more. The test now runs with a 60s sync-retry interval, keeping exactly one sync round in flight for
+  its duration, and bounded polls replace the sleeps.
+  `[verified: 12/12 passes (was 2/10); consensus module 707/0; mutating syncQuorumSize() to 1 still fails
+  the safety assertion, so the test remains discriminating rather than merely quiet.]`
+
+### Fixed
 - **An elected load balancer on AWS/GCP/Azure opened no ingress and said nothing about it (#615).**
   REQ-5.1.8.2's auto-open of `app_http` for an elected LB — and the warning that requirement dictates
   verbatim — were BOTH reachable only through `BootstrapPhaseFirewall.managesIngressFor`, which requires
