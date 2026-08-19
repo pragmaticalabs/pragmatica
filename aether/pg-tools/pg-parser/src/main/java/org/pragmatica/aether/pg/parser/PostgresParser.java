@@ -209,12 +209,25 @@ public final class PostgresParser {
     }
 
     private static List<CstNode> extractStatements(CstNode root) {
-        return switch (root) {
+        return switch (unwrapRoot(root)) {
             case CstNode.NonTerminal nt -> nt.children().stream().filter(child -> switch (child) {
                 case CstNode.NonTerminal c -> !c.ruleName().equals("EmptyStatement");
                 default -> false;
             }).toList();
             default -> List.of(root);
         };
+    }
+
+    /// peglib 0.7.x wraps the whole parse in a synthetic `_ROOT` node above the grammar's start
+    /// rule; 0.6.0 handed back `Input` directly. Without unwrapping, every script reports exactly
+    /// one statement — the `Input` node itself — instead of the statements inside it.
+    private static CstNode unwrapRoot(CstNode node) {
+        return node instanceof CstNode.NonTerminal nt && nt.ruleName().equals("_ROOT")
+               ? nt.children()
+                   .stream()
+                   .filter(CstNode.NonTerminal.class::isInstance)
+                   .findFirst()
+                   .orElse(node)
+               : node;
     }
 }
